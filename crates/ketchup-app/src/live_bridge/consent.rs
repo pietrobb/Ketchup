@@ -191,7 +191,7 @@ impl KetchupApp {
         };
         if let Ok(mut discovery) = broker.discovery.lock() {
             discovery.document = document;
-            discovery.available = !self.live.consent_attached;
+            discovery.available = !self.live.consent_attached && !self.live.launch_attached;
         }
         let Ok(request) = broker.requests.try_recv() else {
             return;
@@ -208,10 +208,12 @@ impl KetchupApp {
             // Nobody waits for this grant: the current client keeps the window.
             return;
         }
-        if self.live.consent_attached {
+        if self.live.consent_attached || self.live.launch_attached {
             // The previous client may be gone or forgotten without disconnecting;
             // a new local attach takes over with a fresh credential.
-            self.revoke_live_consent();
+            self.live.consent_attached = false;
+            self.live.launch_attached = false;
+            self.supersede_live_bridge();
         }
         self.allow_live_consent(context, request);
     }

@@ -480,6 +480,173 @@ fn stand_in_window(root: &Path) -> mpsc::Receiver<Value> {
     received
 }
 
+/// How a scripted window ends one connection after answering its first request.
+enum Ending {
+    /// Answers the second request: another client took the window over meanwhile.
+    SupersededInFlight,
+    /// Tells the idle client it was taken over, before its next request.
+    SupersededIdle,
+    /// Just closes, like a window that ends the connection for another reason.
+    Close,
+}
+
+/// A window `instance` that ends its successive connections as `endings` say.
+/// Returns one message per attach and one per ended connection.
+fn scripted_window(
+    root: &Path,
+    instance: &'static str,
+    endings: Vec<Ending>,
+) -> mpsc::Receiver<&'static str> {
+    let attach = TcpListener::bind("127.0.0.1:0").unwrap();
+    let bridge = TcpListener::bind("127.0.0.1:0").unwrap();
+    let bridge_address = bridge.local_addr().unwrap().to_string();
+    let mut registry = crate::local_auth::create(&root.join(format!("{instance}.json"))).unwrap();
+    write!(
+        registry,
+        "{}",
+        json!({"version": 1, "instance_id": instance,
+        "consent_address": attach.local_addr().unwrap().to_string(), "bootstrap": TOKEN})
+    )
+    .unwrap();
+    drop(registry);
+    let (events, received) = mpsc::channel();
+    let attached = events.clone();
+    std::thread::spawn(move || {
+        for stream in attach.incoming() {
+            let mut stream = stream.unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let mut reply = json!({"version": 1, "nonce": request["nonce"], "instance_id": instance,
+                                   "status": "available", "document": "stolik.ketchup"});
+            if request["action"] == "attach" {
+                reply["status"] = "allowed".into();
+                reply["live_bridge_address"] = bridge_address.clone().into();
+                reply["token"] = TOKEN.into();
+                let _ = attached.send("attach");
+            }
+            stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+        }
+    });
+    std::thread::spawn(move || {
+        let frame = |stream: &mut std::net::TcpStream, value: Value| {
+            let body = value.to_string();
+            stream
+                .write_all(&(body.len() as u32).to_be_bytes())
+                .unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+        };
+        let read_id = |stream: &mut std::net::TcpStream| {
+            let mut header = [0_u8; 4];
+            stream.read_exact(&mut header).unwrap();
+            let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+            stream.read_exact(&mut body).unwrap();
+            serde_json::from_slice::<Value>(&body).unwrap()["id"].clone()
+        };
+        let stamp = json!({"document_id": 1, "revision": 7, "canonical_digest": "d",
+                           "mutation_epoch": 0});
+        for ending in endings {
+            let (mut stream, _) = bridge.accept().unwrap();
+            let id = read_id(&mut stream);
+            frame(
+                &mut stream,
+                json!({"version": 1, "id": id, "ok": true, "stamp": stamp, "result": {}}),
+            );
+            let superseded = |id: Value| {
+                json!({"version": 1, "id": id, "ok": false,
+                       "error": crate::SUPERSEDED_BY_ANOTHER_CLIENT})
+            };
+            match ending {
+                Ending::SupersededInFlight => {
+                    let id = read_id(&mut stream);
+                    frame(&mut stream, superseded(id));
+                }
+                Ending::SupersededIdle => frame(&mut stream, superseded(json!(0))),
+                Ending::Close => {}
+            }
+            drop(stream);
+            let _ = events.send("ended");
+        }
+    });
+    received
+}
+
+/// MCP-1: a window another client took over is not taken back behind the
+/// user's back, whether the takeover came during a request or between two.
+#[test]
+fn a_taken_over_window_is_not_reconnected_silently() {
+    let root = tempfile::tempdir().unwrap();
+    let events = scripted_window(
+        root.path(),
+        INSTANCE,
+        vec![Ending::SupersededInFlight, Ending::SupersededIdle],
+    );
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let status = json!({"action": "status"});
+    assert_eq!(
+        call(&mut tools, "inspect", status.clone())["isError"],
+        false
+    );
+    let in_flight = text(&call(&mut tools, "inspect", status.clone()));
+    assert_eq!(in_flight["error"], "connection_taken_over");
+    let message = in_flight["message"].as_str().unwrap();
+    assert!(
+        message.contains("may or may not have been applied"),
+        "{message}"
+    );
+    assert_eq!(
+        text(&call(&mut tools, "inspect", status.clone()))["error"],
+        "connection_taken_over",
+        "the next call does not take the window back"
+    );
+    assert_eq!(events.recv().unwrap(), "attach");
+    assert_eq!(events.recv().unwrap(), "ended");
+    assert!(events.try_recv().is_err(), "no second attach");
+
+    assert_eq!(call(&mut tools, "connect", json!({}))["isError"], false);
+    assert_eq!(events.recv().unwrap(), "attach");
+    assert_eq!(events.recv().unwrap(), "ended");
+    let idle = text(&call(&mut tools, "inspect", status));
+    assert_eq!(idle["error"], "connection_taken_over");
+    let message = idle["message"].as_str().unwrap();
+    assert!(message.contains("was not sent"), "{message}");
+    assert!(events.try_recv().is_err(), "no third attach");
+}
+
+/// MCP-2: after its window closed, the server never moves to another window.
+#[test]
+fn a_lost_window_is_never_replaced_by_another_open_window() {
+    let root = tempfile::tempdir().unwrap();
+    let events = scripted_window(root.path(), INSTANCE, vec![Ending::Close]);
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let status = json!({"action": "status"});
+    assert_eq!(
+        call(&mut tools, "inspect", status.clone())["isError"],
+        false
+    );
+    assert_eq!(events.recv().unwrap(), "attach");
+    assert_eq!(events.recv().unwrap(), "ended");
+    std::fs::remove_file(root.path().join(format!("{INSTANCE}.json"))).unwrap();
+    let other = scripted_window(
+        root.path(),
+        "fedcba9876543210fedcba9876543210",
+        vec![Ending::Close],
+    );
+
+    let lost = text(&call(&mut tools, "inspect", status.clone()));
+    assert_eq!(lost["error"], "connection_lost");
+    let message = lost["message"].as_str().unwrap();
+    assert!(message.contains("was not sent"), "{message}");
+    assert_eq!(
+        text(&call(&mut tools, "inspect", status))["error"],
+        "window_closed"
+    );
+    assert!(
+        other.try_recv().is_err(),
+        "the other window is not attached"
+    );
+}
+
 fn call(tools: &mut Tools, name: &str, arguments: Value) -> Value {
     let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                          "params": {"name": name, "arguments": arguments}});

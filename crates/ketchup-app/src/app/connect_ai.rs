@@ -10,7 +10,7 @@ impl KetchupApp {
             .id_salt("connect-ai")
             .default_open(false)
             .show(ui, |ui| {
-                let status = if self.live.consent_attached {
+                let status = if self.live.consent_attached || self.live.launch_attached {
                     "connect-ai-connected"
                 } else {
                     "connect-ai-waiting"

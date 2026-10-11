@@ -63,6 +63,7 @@ impl KetchupApp {
                 bridge: None,
                 consent_broker: None,
                 consent_attached: false,
+                launch_attached: false,
                 client_export: false,
             },
             close_guard: close_guard::CloseGuard::default(),

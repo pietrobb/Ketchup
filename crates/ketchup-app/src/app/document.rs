@@ -135,6 +135,7 @@ impl KetchupApp {
         }
         let live_consent_broker = self.live.consent_broker.take();
         let live_consent_attached = self.live.consent_attached;
+        let live_launch_attached = self.live.launch_attached;
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         let catalog = self.catalog.clone();
         let outliner_visible = self.panels.outliner_visible;
@@ -153,6 +154,7 @@ impl KetchupApp {
         self.live.bridge = live_bridge;
         self.live.consent_broker = live_consent_broker;
         self.live.consent_attached = live_consent_attached;
+        self.live.launch_attached = live_launch_attached;
         self.render.wgpu_target_format = wgpu_target_format;
         self.render.wgpu_device = wgpu_device;
         self.render.wgpu_queue = wgpu_queue;

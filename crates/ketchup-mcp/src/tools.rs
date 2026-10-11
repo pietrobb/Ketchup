@@ -122,6 +122,11 @@ pub struct Tools {
     app_executable: Option<PathBuf>,
     discovery_root: Option<PathBuf>,
     attached: Option<Attached>,
+    /// The window this server last worked with: after a lost connection it
+    /// reconnects only to this one, never silently to another window.
+    window_id: Option<String>,
+    /// Another client took that window over; only connect or open_window ends this.
+    taken_over: bool,
 }
 
 impl Tools {
@@ -130,6 +135,8 @@ impl Tools {
             app_executable,
             discovery_root,
             attached: None,
+            window_id: None,
+            taken_over: false,
         }
     }
 
@@ -505,6 +512,8 @@ impl Tools {
                 return Err(failed(error));
             }
         };
+        self.window_id = Some(window.instance_id.clone());
+        self.taken_over = false;
         self.attached = Some(Attached { window, connection });
         self.send("status", Map::new(), DEFAULT_WAIT)
     }
@@ -555,8 +564,33 @@ impl Tools {
         };
         let grant = discovery::attach(&window).map_err(failed)?;
         let connection = Connection::open(grant.address, grant.token).map_err(failed)?;
+        self.window_id = Some(window.instance_id.clone());
+        self.taken_over = false;
         self.attached = Some(Attached { connection, window });
         Ok(())
+    }
+
+    /// The window a call without a connection goes to: the one this server
+    /// worked with, or with no history the only open window.
+    fn reconnect_window(&self) -> Result<Window, ToolError> {
+        let Some(id) = self.window_id.as_deref() else {
+            return self.sole_window();
+        };
+        if self.taken_over {
+            return Err(taken_over(None));
+        }
+        self.list_windows()
+            .into_iter()
+            .find(|window| window.instance_id == id)
+            .ok_or_else(|| {
+                ToolError::new(
+                    "window_closed",
+                    format!(
+                        "The Kečup window this server worked with ({id}) is no longer open. \
+                         Call windows, then connect to the window to use."
+                    ),
+                )
+            })
     }
 
     fn send(
@@ -596,7 +630,7 @@ impl Tools {
         wait: Duration,
     ) -> Result<Reply, ToolError> {
         if self.attached.is_none() {
-            let window = self.sole_window()?;
+            let window = self.reconnect_window()?;
             self.attach(window)?;
         }
         let Some(attached) = self.attached.as_mut() else {
@@ -622,12 +656,46 @@ impl Tools {
                     format!(
                         "The connection to the Kečup window failed ({error}). A change may or may \
                          not have been applied: read inspect action=status before changing \
-                         anything again. The next call reconnects."
+                         anything again. The next call reconnects to the same window."
                     ),
                 ))
             }
+            Err(BridgeError::Closed(error)) => {
+                self.attached = None;
+                Err(ToolError::new(
+                    "connection_lost",
+                    format!(
+                        "The Kečup window had ended this connection ({error}); the request was \
+                         not sent. The next call reconnects to the same window."
+                    ),
+                ))
+            }
+            Err(BridgeError::Superseded { sent }) => {
+                self.attached = None;
+                self.taken_over = true;
+                Err(taken_over(Some(sent)))
+            }
         }
     }
+}
+
+/// `sent`: whether the request had reached the window; `None` for a later call.
+fn taken_over(sent: Option<bool>) -> ToolError {
+    let request = match sent {
+        Some(true) => "The request in progress may or may not have been applied. ",
+        Some(false) => "This request was not sent. ",
+        None => "",
+    };
+    ToolError::new(
+        "connection_taken_over",
+        format!(
+            "Another AI client connected to this Kečup window and took it over. {request}This \
+             server does not reconnect by itself: call connect only if the user wants this \
+             client to take the window back (the other client is then disconnected) and read \
+             inspect action=status before changing anything, or call open_window for a window \
+             of its own."
+        ),
+    )
 }
 
 fn launch_connection(

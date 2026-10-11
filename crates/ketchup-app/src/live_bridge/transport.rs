@@ -42,6 +42,8 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
     let (sender, queue) = mpsc::sync_channel(QUEUE_CAPACITY);
     let stopped = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&stopped);
+    let superseded = Arc::new(AtomicBool::new(false));
+    let taken_over = Arc::clone(&superseded);
     let active_connections = Arc::new(AtomicUsize::new(0));
     let connection_count = Arc::clone(&active_connections);
     let secret = token.clone();
@@ -62,6 +64,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                         let secret = secret.clone();
                         let sender = sender.clone();
                         let stop = Arc::clone(&stop);
+                        let taken_over = Arc::clone(&taken_over);
                         let context = context.clone();
                         let authenticated = Arc::new(AtomicBool::new(false));
                         let _ = std::thread::Builder::new()
@@ -73,7 +76,10 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                                     session,
                                     &secret,
                                     &sender,
-                                    &stop,
+                                    Shutdown {
+                                        stop: &stop,
+                                        superseded: &taken_over,
+                                    },
                                     &context,
                                     &authenticated,
                                 );
@@ -103,6 +109,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
         address,
         token,
         stopped,
+        superseded,
         worker: Some(worker),
         #[cfg(test)]
         active_connections,
@@ -137,7 +144,7 @@ struct RawEnvelope {
     request: Box<serde_json::value::RawValue>,
 }
 
-use ketchup_mcp::DEFAULT_RESPONSE_WAIT;
+use ketchup_mcp::{DEFAULT_RESPONSE_WAIT, SUPERSEDED_BY_ANOTHER_CLIENT};
 
 /// How long the connection waits for the UI thread's answer. A verified edit
 /// may legitimately run up to its own `timeout_ms`, so the connection must not
@@ -349,19 +356,39 @@ fn await_response(
     }
 }
 
+/// Why a connection ends: the bridge stopped, and whether another client took it over.
+struct Shutdown<'a> {
+    stop: &'a AtomicBool,
+    superseded: &'a AtomicBool,
+}
+
 fn serve(
     mut stream: TcpStream,
     session: u64,
     secret: &str,
     sender: &mpsc::SyncSender<Queued>,
-    stop: &AtomicBool,
+    Shutdown { stop, superseded }: Shutdown<'_>,
     context: &egui::Context,
     authenticated_session: &AtomicBool,
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
     let mut session_authenticated = false;
+    // A client whose window another client took over is told so in a last frame.
+    let tell_superseded = |stream: &mut TcpStream, id: u64| {
+        if superseded.load(Ordering::Acquire) {
+            let _ = write_response(stream, Response::error(id, SUPERSEDED_BY_ANOTHER_CLIENT));
+        }
+    };
     while !stop.load(Ordering::Acquire) {
-        let bytes = read_frame(&mut stream, session_authenticated, stop)?;
+        let bytes = match read_frame(&mut stream, session_authenticated, stop) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if session_authenticated {
+                    tell_superseded(&mut stream, 0);
+                }
+                return Err(error);
+            }
+        };
         let envelope: RawEnvelope = match serde_json::from_slice(&bytes) {
             Ok(envelope) => envelope,
             Err(_) => {
@@ -434,7 +461,10 @@ fn serve(
                 drop(in_flight);
                 Response::error(envelope.id, "response_timeout")
             }
-            Awaited::Ended => return Ok(()),
+            Awaited::Ended => {
+                tell_superseded(&mut stream, envelope.id);
+                return Ok(());
+            }
         };
         write_response(&mut stream, response)?;
         if disconnect {
@@ -651,6 +681,54 @@ mod tests {
             .expect("the well-formed request reaches the UI queue");
         assert_eq!(queued.id, 8);
         assert!(matches!(queued.request, Request::Status { .. }));
+    }
+
+    /// MCP-1: when another client takes the window over, each client is told
+    /// so in a last frame instead of a bare end of stream.
+    #[test]
+    fn a_takeover_tells_the_idle_and_the_waiting_client_why_their_connection_ends() {
+        let token = "a".repeat(64);
+        let bridge = start_with_token(egui::Context::default(), token.clone()).unwrap();
+        let mut idle = TcpStream::connect(bridge.address).unwrap();
+        authenticate(&mut idle, &token);
+        let mut waiting = TcpStream::connect(bridge.address).unwrap();
+        authenticate(&mut waiting, &token);
+        let body = serde_json::to_vec(
+            &json!({"version":1,"id":5,"token":token,"request":{"method":"status"}}),
+        )
+        .unwrap();
+        waiting
+            .write_all(&(body.len() as u32).to_be_bytes())
+            .unwrap();
+        waiting.write_all(&body).unwrap();
+        let queued = bridge.queue.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(queued.id, 5, "the request waits for the UI thread");
+
+        bridge.superseded.store(true, Ordering::Release);
+        drop(bridge);
+        let last_frame = |stream: &mut TcpStream| {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut header = [0; 4];
+            stream.read_exact(&mut header).unwrap();
+            let mut frame = vec![0; u32::from_be_bytes(header) as usize];
+            stream.read_exact(&mut frame).unwrap();
+            let mut rest = [0];
+            assert_eq!(stream.read(&mut rest).unwrap(), 0, "then the stream ends");
+            serde_json::from_slice::<Value>(&frame).unwrap()
+        };
+        let answer = last_frame(&mut waiting);
+        assert_eq!(
+            (answer["id"].as_u64(), answer["error"].as_str()),
+            (Some(5), Some(SUPERSEDED_BY_ANOTHER_CLIENT))
+        );
+        let notice = last_frame(&mut idle);
+        assert_eq!(
+            (notice["id"].as_u64(), notice["error"].as_str()),
+            (Some(0), Some(SUPERSEDED_BY_ANOTHER_CLIENT))
+        );
+        drop(queued);
     }
 
     #[test]

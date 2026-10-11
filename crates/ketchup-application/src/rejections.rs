@@ -542,6 +542,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Create the workset again from the current document.",
     ),
     entry(
+        "superseded_by_another_client",
+        Io,
+        "window",
+        "Another AI client attached to this window and took it over; this connection ended. A request that was running may or may not have been applied.",
+        "Connect again only if the user wants this client back, then read inspect action=status before changing anything.",
+    ),
+    entry(
         "unauthorized",
         Request,
         "token",

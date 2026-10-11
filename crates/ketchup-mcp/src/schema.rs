@@ -23,7 +23,8 @@ export_drawings writes the project drawings as PDF; save/save_as/open handle .ke
 To look at the model use view action=image only when asked or when the result is unclear; \
 the validation report of an edit is the check, not a picture.
 Every result carries a stamp; pass it back as expected only to guard against concurrent edits \
-by the user (required for patch and report). After error connection_lost never repeat a change before reading status.
+by the user (required for patch and report). After error connection_lost never repeat a change before reading status. \
+After connection_taken_over another AI client holds the window: connect again only if the user wants it back.
 Preserve the requested join type and simplicity; do not substitute other fasteners without approval. \
 Consider transport size, access and assembly order early; offer modular alternatives, do not impose them. \
 Geometric contact is not load capacity or FEA verification. Distinguish changed requirements from bugs, \

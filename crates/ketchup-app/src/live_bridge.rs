@@ -1010,6 +1010,8 @@ pub(crate) struct LiveBridge {
     address: SocketAddr,
     token: String,
     stopped: Arc<AtomicBool>,
+    /// Set before the bridge stops because another client attached.
+    superseded: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     #[cfg(test)]
     active_connections: Arc<AtomicUsize>,
@@ -1066,6 +1068,15 @@ impl KetchupApp {
         self.live.bridge = None;
     }
 
+    /// Ends every connection because another client takes the window over;
+    /// each one gets a last frame saying so instead of a bare end of stream.
+    pub(crate) fn supersede_live_bridge(&mut self) {
+        if let Some(bridge) = &self.live.bridge {
+            bridge.superseded.store(true, Ordering::Release);
+        }
+        self.disable_live_bridge();
+    }
+
     pub fn live_bridge_stamp(&self) -> Stamp {
         let snapshot = self.document.current();
         Stamp {
@@ -1090,6 +1101,7 @@ impl KetchupApp {
             };
             if queued.connection_closed {
                 bridge.remove_client(queued.session);
+                self.live.launch_attached = false;
                 if self.live.consent_attached {
                     revoke_consent = true;
                     break;
@@ -1217,6 +1229,7 @@ impl KetchupApp {
             context.request_repaint();
             if disconnect {
                 bridge.remove_client(session);
+                self.live.launch_attached = false;
             }
             if disconnect && self.live.consent_attached {
                 revoke_consent = true;

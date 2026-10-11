@@ -251,6 +251,8 @@ impl PendingBootstrap {
         });
         if result.is_err() {
             app.disable_live_bridge();
+        } else {
+            app.live.launch_attached = true;
         }
         result
     }

@@ -28,6 +28,9 @@ pub const PROGRAM_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from
 pub const OPEN_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 /// Every request the window answers within this, whatever the request.
 pub const DEFAULT_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The window's last frame on a connection it ends because another client
+/// attached: id of the request in flight, or 0 when the client was idle.
+pub const SUPERSEDED_BY_ANOTHER_CLIENT: &str = "superseded_by_another_client";
 
 /// How long the window waits for a verified edit of `timeout_ms`: the job
 /// itself, plus queueing and publishing on the UI thread, never below the

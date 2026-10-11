@@ -304,6 +304,49 @@ fn readiness_identifies_the_actual_child_window_when_broker_is_enabled() {
     assert_eq!(response.stamp, Some(shell.app().live_bridge_stamp()));
 }
 
+/// Review 2026-10-11 MCP-1: a window started by `open_window` was listed as
+/// free, so a second client got the launcher's own token and both drove it.
+#[test]
+fn a_second_client_takes_over_a_window_its_launcher_still_holds() {
+    let root = tempfile::tempdir().unwrap();
+    let mut shell = Shell::new();
+    let context = eframe::egui::Context::default();
+    // The order of the native start: broker first, then the launch bridge.
+    let broker = shell
+        .app_mut()
+        .enable_live_consent_broker_in(&context, root.path())
+        .unwrap();
+    let output = Output::default();
+    pending()
+        .enable(shell.app_mut(), &context, output.clone())
+        .unwrap();
+    let ready: serde_json::Value = serde_json::from_slice(&output.bytes()).unwrap();
+    let mut launcher = TcpStream::connect(ready["live_bridge_address"].as_str().unwrap()).unwrap();
+    assert!(call(&mut shell, &mut launcher, TOKEN, Request::Status {}).ok);
+    assert_eq!(
+        request_broker(broker, "list", &"a".repeat(64))["status"],
+        "busy"
+    );
+
+    let bootstrap = bootstrap(&shell, Some(root.path()));
+    let second = std::thread::spawn(move || request_consent(broker, &"b".repeat(64), &bootstrap));
+    let allowed = finish_attach(&mut shell, second);
+    assert_eq!(allowed["status"], "allowed");
+    assert_ne!(allowed["token"].as_str().unwrap(), TOKEN);
+
+    // The launcher hears why its connection ended instead of a bare end of stream.
+    launcher.set_read_timeout(Some(RESPONSE_DEADLINE)).unwrap();
+    let mut header = [0; 4];
+    launcher.read_exact(&mut header).unwrap();
+    let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+    launcher.read_exact(&mut bytes).unwrap();
+    let last: Response = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        last.error.as_deref(),
+        Some(ketchup_mcp::SUPERSEDED_BY_ANOTHER_CLIENT)
+    );
+}
+
 #[test]
 fn readiness_authentication_and_detach_use_the_actual_app() {
     let mut shell = Shell::new();
@@ -1089,7 +1132,12 @@ fn file_open_clears_line_chain_and_measurement_before_live_mutation() {
     assert_eq!(blocked.error.as_deref(), Some("busy"));
 
     shell.click_menu_command("menu-file", AppCommand::Open);
-    assert_eq!(shell.app().canonical_digest(), saved_digest);
+    // The file is read in the background; a loaded machine finishes it later.
+    let opened = shell.wait_until(|shell| {
+        shell.step();
+        shell.app().canonical_digest() == saved_digest
+    });
+    assert!(opened, "the saved file was not opened");
     assert_eq!(shell.app().occurrence_count(), saved_occurrence_count);
     assert_eq!(shell.app().measured_points(), None);
     assert!(shell.app().value_input().is_empty());

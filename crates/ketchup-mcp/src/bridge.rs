@@ -48,6 +48,13 @@ pub enum BridgeError {
     /// The connection failed after the request was written: the window may
     /// or may not have acted on it.
     Transport(io::Error),
+    /// The window had already ended the connection; the request was not sent.
+    Closed(io::Error),
+    /// Another client took the window over; `sent` tells whether this request
+    /// had reached the window (it may then have been applied).
+    Superseded {
+        sent: bool,
+    },
 }
 
 impl Connection {
@@ -77,6 +84,7 @@ impl Connection {
             }
             body = self.envelope(&request);
         }
+        self.ensure_open()?;
         let id = self.last_id + 1;
         self.last_id = id;
         let mut frame = (body.len() as u32).to_be_bytes().to_vec();
@@ -85,6 +93,9 @@ impl Connection {
             .write_all(&frame)
             .map_err(BridgeError::Transport)?;
         let reply = self.read_reply(wait).map_err(BridgeError::Transport)?;
+        if reply["error"] == crate::SUPERSEDED_BY_ANOTHER_CLIENT {
+            return Err(BridgeError::Superseded { sent: true });
+        }
         if reply["id"] != id {
             return Err(BridgeError::Transport(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -101,6 +112,35 @@ impl Connection {
         }
         let code = reply["error"].as_str().unwrap_or("rejected").to_owned();
         Ok(Reply::Rejected { code, result })
+    }
+
+    /// Between requests the window sends nothing, except one last frame when
+    /// another client takes it over. A pending frame or end of stream is read
+    /// before writing, so the request is known not to have been sent.
+    fn ensure_open(&mut self) -> Result<(), BridgeError> {
+        let mut byte = [0_u8; 1];
+        self.stream
+            .set_nonblocking(true)
+            .map_err(BridgeError::Closed)?;
+        let peeked = self.stream.peek(&mut byte);
+        self.stream
+            .set_nonblocking(false)
+            .map_err(BridgeError::Closed)?;
+        match peeked {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
+            Err(error) => Err(BridgeError::Closed(error)),
+            Ok(0) => Err(BridgeError::Closed(io::ErrorKind::UnexpectedEof.into())),
+            Ok(_) => match self.read_reply(WRITE_TIMEOUT) {
+                Ok(reply) if reply["error"] == crate::SUPERSEDED_BY_ANOTHER_CLIENT => {
+                    Err(BridgeError::Superseded { sent: false })
+                }
+                Ok(_) => Err(BridgeError::Closed(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unrequested reply",
+                ))),
+                Err(error) => Err(BridgeError::Closed(error)),
+            },
+        }
     }
 
     /// The framed body of the next request.
