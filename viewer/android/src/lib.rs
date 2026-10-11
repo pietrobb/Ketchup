@@ -52,7 +52,9 @@ fn android_main(android_app: android_activity::AndroidApp) {
             Ok(Box::new(SafeArea {
                 app,
                 android_app,
-                measured: None,
+                measured_for: None,
+                bars: [0; 4],
+                keyboard: 0,
             }))
         }),
     );
@@ -61,14 +63,20 @@ fn android_main(android_app: android_activity::AndroidApp) {
     }
 }
 
-/// Keeps the Viewer out of the status bar, gesture bar and camera cutout:
-/// apps targeting Android 15+ are drawn edge to edge, under all of them.
+/// Keeps the Viewer out of the status bar, gesture bar, camera cutout and
+/// on-screen keyboard: apps targeting Android 15+ are drawn edge to edge,
+/// under all of them, and a NativeActivity window does not shrink for the
+/// keyboard, which would otherwise cover the comment being typed.
 #[cfg(target_os = "android")]
 struct SafeArea {
     app: ketchup_viewer::app::ViewerApp,
     android_app: android_activity::AndroidApp,
-    /// Screen size the insets were read for; rotation reads them again.
-    measured: Option<(eframe::egui::Vec2, [i32; 4])>,
+    /// Screen size the bar insets were read for; rotation reads them again.
+    measured_for: Option<eframe::egui::Vec2>,
+    /// System bar and cutout insets in pixels as [left, top, right, bottom].
+    bars: [i32; 4],
+    /// Height of the on-screen keyboard in pixels, 0 when closed.
+    keyboard: i32,
 }
 
 #[cfg(target_os = "android")]
@@ -77,21 +85,37 @@ impl eframe::App for SafeArea {
         use eframe::egui;
         let (screen, pixels_per_point) =
             ctx.input(|input| (input.screen_rect().size(), input.pixels_per_point()));
-        let insets = match self.measured {
-            Some((size, insets)) if size == screen => insets,
-            _ => {
-                let insets = system_insets(&self.android_app).unwrap_or_else(|error| {
-                    log::error!("Reading the system bar insets failed: {error}");
-                    [0; 4]
-                });
-                log::info!("Insets {insets:?} px for screen {screen:?} pt");
-                // Insets arrive once the window is laid out; keep asking until then.
-                if insets != [0; 4] || ctx.cumulative_frame_nr() > 60 {
-                    self.measured = Some((screen, insets));
+        let typing = ctx.wants_keyboard_input();
+        let measured = self.measured_for == Some(screen);
+        if !measured || typing || self.keyboard > 0 {
+            match system_insets(&self.android_app) {
+                Ok((bars, keyboard)) => {
+                    // Insets arrive once the window is laid out; keep asking until then.
+                    if !measured && (bars != [0; 4] || ctx.cumulative_frame_nr() > 60) {
+                        log::info!("System bar insets {bars:?} px for screen {screen:?} pt");
+                        self.measured_for = Some(screen);
+                    }
+                    if typing && self.keyboard > 0 && keyboard == 0 {
+                        // Closed with Back: release the field so a tap opens it again.
+                        ctx.memory_mut(|memory| memory.stop_text_input());
+                    }
+                    self.bars = bars;
+                    self.keyboard = keyboard;
                 }
-                insets
+                Err(error) => {
+                    if !measured {
+                        log::error!("Reading the system bar insets failed: {error}");
+                        self.measured_for = Some(screen);
+                    }
+                }
             }
-        };
+        }
+        // The keyboard slides in after the field is focused; follow it.
+        if typing || self.keyboard > 0 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        let mut insets = self.bars;
+        insets[3] = insets[3].max(self.keyboard);
         let [left, top, right, bottom] = insets.map(|px| px.max(0) as f32 / pixels_per_point);
         let frame_fill = egui::Frame::NONE.fill(ctx.style().visuals.panel_fill);
         if top > 0.0 {
@@ -152,13 +176,14 @@ fn backend() -> eframe::wgpu::Backends {
     chosen
 }
 
-/// System bar and display cutout insets in pixels as [left, top, right, bottom].
-/// Below Android 15 the window is not drawn under the bars, so they are zero.
+/// System bar and display cutout insets in pixels as [left, top, right, bottom],
+/// and the on-screen keyboard height in pixels. Below Android 15 the window is
+/// neither drawn under the bars nor covered by the keyboard, so all are zero.
 #[cfg(target_os = "android")]
 #[allow(unsafe_code)] // The VM and activity pointers come from android-activity and outlive this call.
 fn system_insets(
     android_app: &android_activity::AndroidApp,
-) -> Result<[i32; 4], jni::errors::Error> {
+) -> Result<([i32; 4], i32), jni::errors::Error> {
     use jni::objects::JObject;
     use jni::{jni_sig, jni_str};
     let vm = unsafe { jni::JavaVM::from_raw(android_app.vm_as_ptr().cast()) };
@@ -171,7 +196,7 @@ fn system_insets(
             )?
             .i()?;
         if sdk < 35 {
-            return Ok([0; 4]);
+            return Ok(([0; 4], 0));
         }
         let activity = unsafe { JObject::from_raw(env, android_app.activity_as_ptr().cast()) };
         let window = env
@@ -199,36 +224,46 @@ fn system_insets(
             )?
             .l()?;
         if insets.is_null() {
-            return Ok([0; 4]);
+            return Ok(([0; 4], 0));
         }
-        let mut kind = 0;
-        for name in [jni_str!("systemBars"), jni_str!("displayCutout")] {
-            kind |= env
-                .call_static_method(
-                    jni_str!("android/view/WindowInsets$Type"),
-                    name,
-                    jni_sig!("()I"),
-                    &[],
+        let mut kind = |names: &[&jni::strings::JNIStr]| -> jni::errors::Result<i32> {
+            let mut kind = 0;
+            for name in names {
+                kind |= env
+                    .call_static_method(
+                        jni_str!("android/view/WindowInsets$Type"),
+                        name,
+                        jni_sig!("()I"),
+                        &[],
+                    )?
+                    .i()?;
+            }
+            Ok(kind)
+        };
+        let bars_kind = kind(&[jni_str!("systemBars"), jni_str!("displayCutout")])?;
+        let keyboard_kind = kind(&[jni_str!("ime")])?;
+        let mut sides = |kind: i32| -> jni::errors::Result<[i32; 4]> {
+            let edges = env
+                .call_method(
+                    &insets,
+                    jni_str!("getInsets"),
+                    jni_sig!("(I)Landroid/graphics/Insets;"),
+                    &[kind.into()],
                 )?
-                .i()?;
-        }
-        let bars = env
-            .call_method(
-                &insets,
-                jni_str!("getInsets"),
-                jni_sig!("(I)Landroid/graphics/Insets;"),
-                &[kind.into()],
-            )?
-            .l()?;
-        let mut sides = [0; 4];
-        for (side, name) in sides.iter_mut().zip([
-            jni_str!("left"),
-            jni_str!("top"),
-            jni_str!("right"),
-            jni_str!("bottom"),
-        ]) {
-            *side = env.get_field(&bars, name, jni_sig!("I"))?.i()?;
-        }
-        Ok(sides)
+                .l()?;
+            let mut sides = [0; 4];
+            for (side, name) in sides.iter_mut().zip([
+                jni_str!("left"),
+                jni_str!("top"),
+                jni_str!("right"),
+                jni_str!("bottom"),
+            ]) {
+                *side = env.get_field(&edges, name, jni_sig!("I"))?.i()?;
+            }
+            Ok(sides)
+        };
+        let bars = sides(bars_kind)?;
+        let keyboard = sides(keyboard_kind)?[3];
+        Ok((bars, keyboard))
     })
 }
