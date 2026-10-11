@@ -2,7 +2,8 @@
 
 Kečup Viewer je samostatná Rust aplikácia na offline prezeranie súborov
 `.ketchup-view` (export z Kečupu) a `.ketchup-comments` (pripomienky zákazníka).
-Windows verzia, webová verzia a Android knižnica sú hotové. Chýba macOS a iOS.
+Windows verzia, webová verzia a Android aplikácia sú hotové (Android overený
+v emulátore). Chýba macOS a iOS.
 Tvoja úloha: postaviť a reálne spustiť obe verzie na tomto Macu, opraviť, čo
 treba, a výsledok pushnúť späť. Pravidlá repozitára sú v `AGENTS.md`.
 
@@ -14,7 +15,12 @@ treba, a výsledok pushnúť späť. Pravidlá repozitára sú v `AGENTS.md`.
   `metal`, na macOS aj `rfd` (dialóg na otvorenie súboru) a `accesskit`.
   Binárka `ketchup-viewer` (`src/main.rs`) berie cestu k súboru ako argument
   a má `--verify-open <súbor>` (otvorí bez okna a vypíše počty).
-- `viewer/android` — tenký vstupný bod pre Android (vzor pre iOS vrstvu).
+- `viewer/android` — Android aplikácia, vzor pre iOS vrstvu: `src/lib.rs`
+  (štart, odsadenie od systémových líšt a klávesnice), `src/files.rs` +
+  `java/.../ViewerActivity.java` (systémový výber súboru, „Uložiť ako“,
+  „Otvoriť v“/zdieľanie z iných aplikácií; balík od komentárov rozlišuje
+  `Package::has_signature`). Na iOS tomu zodpovedá `UIDocumentPickerViewController`
+  a `CFBundleDocumentTypes`. Build: `scripts/windows/build-android-viewer.ps1`.
 - `viewer/web` — webová verzia (pre Mac netreba, ale Safari test je vítaný).
 - `viewer/samples/kitchen.ketchup-view` — skutočný export (20 dielov, 1 scéna).
 
