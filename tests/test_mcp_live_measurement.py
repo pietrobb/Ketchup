@@ -25,6 +25,8 @@ def mcp(tmp_path):
     env = os.environ.copy()
     env["APPDATA"] = str(tmp_path / "roaming")
     env["LOCALAPPDATA"] = str(tmp_path / "local")
+    # The tests read English window text; without this the system language decides.
+    env["KETCHUP_LANGUAGE"] = "en-US"
     Path(env["APPDATA"]).mkdir()
     Path(env["LOCALAPPDATA"]).mkdir()
     lines = queue.Queue()
@@ -585,11 +587,11 @@ def test_house_project_drawings_pdf_with_title_block_through_public_mcp(mcp, tmp
     mcp("view", action="tag_visibility", name="koncept", visible=False)
     sheet = tmp_path / "domcek.pdf"
     title_block = {"client": "Ján Novák", "location": "Žilina, parc. č. 1234/5", "drawing_number": "D.1.01", "stage": "DSP"}
-    def export(**arguments):
+    def export(target=sheet, **arguments):
         # The sheet waits for the exact evaluation of every visible part.
         deadline = time.monotonic() + 300
         while True:
-            result = mcp("file", action="export_drawings", path=str(sheet), error=None, **arguments)
+            result = mcp("file", action="export_drawings", path=str(target), error=None, **arguments)
             if result.get("error") != "drawings_unavailable" or time.monotonic() > deadline:
                 return result["result"]
             time.sleep(2)
@@ -605,13 +607,14 @@ def test_house_project_drawings_pdf_with_title_block_through_public_mcp(mcp, tmp
     for expected in ["Ján Novák", "Žilina, parc. č. 1234/5", "D.1.01", "1:50", result["format"], "Longitudinal section"]:
         assert expected in text, expected
     assert mcp("file", action="export_drawings", path=str(tmp_path / "sheet.svg"), error=True)["error"] == "invalid_path"
-    assert mcp("file", action="export_drawings", path=str(sheet), format="B5", error=True)["error"] == "invalid_sheet_format"
+    assert mcp("file", action="export_drawings", path=str(tmp_path / "b5.pdf"), format="B5", error=True)["error"] == "invalid_sheet_format"
 
     # The title block is kept in the document.
     saved = tmp_path / "house.ketchup"
     mcp("file", action="save_as", path=str(saved))
     mcp("file", action="open", path=str(saved))
-    again = export()
+    # An existing sheet is never replaced, so the second export writes a new file.
+    again = export(tmp_path / "domcek-2.pdf")
     assert again["title_block"]["location"] == "Žilina, parc. č. 1234/5" and again["dirty"] is False, again
 
 
