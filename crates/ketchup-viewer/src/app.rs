@@ -718,7 +718,7 @@ impl ViewerApp {
 
     /// Whether the opened comments may be replaced now; the first attempt
     /// with unsaved comments only shows a warning.
-    fn may_discard_comments(&mut self) -> bool {
+    pub fn may_discard_comments(&mut self) -> bool {
         let allowed = self.review.as_mut().is_none_or(Review::may_discard);
         if !allowed {
             self.error = Some(

@@ -1,0 +1,22 @@
+[package]
+name = "ketchup-viewer-macos"
+description = "macOS app of the Kečup Viewer: Finder and \"Open with\" hand files over by Apple Event"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ketchup-viewer = { path = "../../crates/ketchup-viewer" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSString", "NSURL", "objc2-core-services"] }
+
+[lints.rust]
+# Allowed only where marked: registering the Objective-C Apple Event handler.
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "deny"

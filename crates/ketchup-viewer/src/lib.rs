@@ -3,6 +3,8 @@
 
 pub mod app;
 pub mod camera;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod desktop;
 pub mod dimensions;
 pub mod gpu;
 pub mod guides;
