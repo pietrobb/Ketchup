@@ -749,6 +749,75 @@ impl KetchupApp {
             .map(|(_, _, s)| s)
     }
 
+    /// The whole visible edge nearest the pointer within `tolerance_px`, as a
+    /// world polyline, and its length in millimetres. A full circle reports
+    /// its exact circumference; other edges the length of their polyline.
+    pub(super) fn edge_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        tolerance_px: f32,
+    ) -> Option<(Vec<Vec3>, f64)> {
+        let snapshot = self.document.current();
+        self.refresh_interaction_projection_cache(&snapshot);
+        let cache = self.hover.projection_cache.borrow();
+        let geometry = cache
+            .as_ref()?
+            .snap_geometry
+            .get_or_init(|| self.build_scene_snap_geometry(&snapshot));
+        let ray = self.view_ray(pointer, rect)?;
+        let shown = |p: Vec3| dot(p - ray.origin, ray.direction) >= 0.0 && self.section_keeps(p);
+        let screen_distance = |points: &[Vec3]| {
+            points
+                .windows(2)
+                .filter(|s| shown(s[0]) && shown(s[1]))
+                .filter_map(|s| {
+                    let from = self.project(s[0], rect);
+                    let to = self.project(s[1], rect);
+                    let direction = to - from;
+                    let factor = if direction.length_sq() <= f32::EPSILON {
+                        0.0
+                    } else {
+                        ((pointer - from).dot(direction) / direction.length_sq()).clamp(0.0, 1.0)
+                    };
+                    let distance = from.lerp(to, factor).distance(pointer);
+                    distance.is_finite().then_some(distance)
+                })
+                .min_by(f32::total_cmp)
+        };
+        let nearest_edge = geometry
+            .edges
+            .iter()
+            .filter_map(|(_, points)| Some((screen_distance(points)?, points)))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(distance, points)| {
+                let length = points.windows(2).map(|s| s[0].distance(s[1])).sum();
+                (distance, points.clone(), length)
+            });
+        let nearest_circle = geometry
+            .circles
+            .iter()
+            .filter_map(|(_, center, x, y, radius)| {
+                let points: Vec<_> = (0..=96)
+                    .map(|step| {
+                        let angle = std::f64::consts::TAU * f64::from(step) / 96.0;
+                        *center + (*x * angle.cos() + *y * angle.sin()) * *radius
+                    })
+                    .collect();
+                let distance = screen_distance(&points)?;
+                // The circle's axes carry the occurrence scale.
+                let length = std::f64::consts::TAU * *radius * x.length();
+                Some((distance, points, length))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        nearest_edge
+            .into_iter()
+            .chain(nearest_circle)
+            .filter(|(distance, _, _)| *distance <= tolerance_px)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, points, length)| (points, length))
+    }
+
     pub(super) fn datum_snap_at_screen(
         &self,
         pointer: Pos2,

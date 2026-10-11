@@ -1190,6 +1190,17 @@ impl KetchupApp {
         self.gesture.measure.start = None;
         self.gesture.measure.cursor = None;
         self.gesture.measure.end = None;
+        self.gesture.measure.edge = None;
+    }
+
+    /// The length in millimetres of the edge read with Ctrl held, if any.
+    #[must_use]
+    pub fn measured_edge_length_mm(&self) -> Option<f64> {
+        self.gesture
+            .measure
+            .edge
+            .as_ref()
+            .map(|(_, length)| *length)
     }
 
     /// The measured distance in millimetres, once both points are placed.
@@ -2422,6 +2433,18 @@ impl KetchupApp {
             self.gesture.measure.cursor = Some(cursor);
             self.digest = self.measurement_text(start, cursor, "digest-measure-live");
         }
+        self.gesture.measure.edge = (self.active_tool == ActiveTool::Measure
+            && response.hovered()
+            && ui.input(|input| input.modifiers.command))
+        .then(|| ui.input(|input| input.pointer.hover_pos()))
+        .flatten()
+        .and_then(|pointer| self.edge_at_screen(pointer, response.rect, 8.0));
+        if let Some((_, edge_length)) = &self.gesture.measure.edge {
+            self.digest = self.catalog.format(
+                "digest-measure-edge",
+                &BTreeMap::from([("length", format_height(*edge_length))]),
+            );
+        }
         if let Some((start, end)) = self.measure_span()
             && !ui.ctx().wants_keyboard_input()
             && !self.value_box.focus
@@ -3497,6 +3520,23 @@ impl KetchupApp {
                         end.z - start.z,
                     )))
                 ),
+                egui::FontId::proportional(14.0),
+                Color32::WHITE,
+            );
+        }
+        if let Some((points, edge_length)) = &self.gesture.measure.edge {
+            let stroke = Stroke::new(3.0_f32, Color32::from_rgb(120, 205, 255));
+            let screen: Vec<_> = points
+                .iter()
+                .map(|point| self.project(*point, response.rect))
+                .collect();
+            painter.add(egui::Shape::line(screen.clone(), stroke));
+            let middle = screen.len() / 2;
+            let label = screen[middle.saturating_sub(1)].lerp(screen[middle], 0.5);
+            painter.text(
+                label - Vec2::new(0.0, 14.0),
+                egui::Align2::CENTER_CENTER,
+                format!("{} mm", format_height(*edge_length)),
                 egui::FontId::proportional(14.0),
                 Color32::WHITE,
             );

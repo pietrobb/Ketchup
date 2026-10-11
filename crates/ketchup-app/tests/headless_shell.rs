@@ -11512,6 +11512,41 @@ fn snapped_measurement_updates_the_value_box_without_mutating_the_document() {
 }
 
 #[test]
+fn holding_ctrl_over_an_edge_reads_its_whole_length_without_clicking() {
+    let mut shell = Shell::new();
+    shell.click_command(AppCommand::Measure);
+    let midpoint = shell
+        .app()
+        .viewport_position(Vec3::new(50.0, 0.0, 20.0))
+        .unwrap();
+    let centre = shell.viewport_rect().center();
+    let pointer = midpoint + (centre - midpoint).normalized() * 2.0;
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+
+    shell.move_pointer(pointer);
+    assert_eq!(
+        shell.app().measured_edge_length_mm(),
+        None,
+        "without Ctrl the edge is not read"
+    );
+
+    shell.set_modifiers(ctrl());
+    assert_eq!(shell.app().measured_edge_length_mm(), Some(100.0));
+    assert!(
+        shell.app().action_digest().contains("100 mm"),
+        "the edge length is shown: {}",
+        shell.app().action_digest()
+    );
+
+    shell.set_modifiers(eframe::egui::Modifiers::NONE);
+    assert_eq!(shell.app().measured_edge_length_mm(), None);
+    assert_eq!(shell.app().measured_points(), None, "no point was placed");
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+}
+
+#[test]
 fn a_click_outside_geometry_clears_the_selection() {
     let mut shell = Shell::new();
     let rect = shell.viewport_rect();
