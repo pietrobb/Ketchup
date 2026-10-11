@@ -31,6 +31,9 @@ pub enum FileRequest {
     OpenComments,
     SaveComments,
     SaveCommentedCopy,
+    /// Hand the comments file to the system share sheet (mail, chat), offered
+    /// only by hosts set up [`ViewerApp::with_host_sharing`].
+    ShareComments,
 }
 
 /// The read-only Viewer window: one opened package, its active scene and the
@@ -56,6 +59,8 @@ pub struct ViewerApp {
     language: Language,
     /// `Some` when the host handles file actions; the requests wait here.
     host_files: Option<Vec<FileRequest>>,
+    /// The host can share the comments file with other apps.
+    host_sharing: bool,
     /// The host is still downloading the shared model.
     loading: bool,
 }
@@ -80,6 +85,7 @@ impl ViewerApp {
             renderer: None,
             target: None,
             host_files: None,
+            host_sharing: false,
             loading: false,
         }
     }
@@ -95,6 +101,14 @@ impl ViewerApp {
     pub fn with_host_files(mut self) -> Self {
         self.host_files = Some(vec![]);
         self
+    }
+
+    /// Host files plus a button that sends the comments through the system
+    /// share sheet, as phones offer.
+    #[must_use]
+    pub fn with_host_sharing(mut self) -> Self {
+        self.host_sharing = true;
+        self.with_host_files()
     }
 
     /// File actions the customer asked for since the last call.
@@ -339,8 +353,14 @@ impl ViewerApp {
                 self.error = Some(error);
             }
             // A translated headline; the rejection itself is the technical detail.
+            // With a model on screen the failure was a file action, not the model.
             if let Some(error) = &self.error {
-                ui.colored_label(egui::Color32::LIGHT_RED, self.t("viewer-error"));
+                let headline = if self.model.is_some() {
+                    "viewer-error-file"
+                } else {
+                    "viewer-error"
+                };
+                ui.colored_label(egui::Color32::LIGHT_RED, self.t(headline));
                 ui.small(error.to_string());
                 ui.small(error.fix_hint_text());
             }

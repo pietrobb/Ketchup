@@ -19,6 +19,7 @@ fn request_code(request: FileRequest) -> i32 {
         FileRequest::OpenComments => 2,
         FileRequest::SaveComments => 3,
         FileRequest::SaveCommentedCopy => 4,
+        FileRequest::ShareComments => 5,
     }
 }
 
@@ -65,6 +66,12 @@ impl Files {
         let name = self.model_name.as_deref();
         let save = match request {
             FileRequest::OpenPackage | FileRequest::OpenComments => None,
+            FileRequest::ShareComments => {
+                let mut bytes = Vec::new();
+                app.save_comments(&mut bytes)?;
+                let name = ketchup_viewer::share::download_name(name, ".ketchup-comments");
+                return self.share(&name, &bytes);
+            }
             FileRequest::SaveComments => {
                 let mut bytes = Vec::new();
                 app.save_comments(&mut bytes)?;
@@ -209,6 +216,33 @@ impl Files {
         .map_err(|error| error.to_string())
         .and_then(|read| read)
         .map_err(|detail| android_error("viewer.android.read", target, detail))
+    }
+
+    /// Opens the share sheet with `bytes` as file `name`; the sheet needs no answer.
+    fn share(&self, name: &str, bytes: &[u8]) -> Result<(), Rejection> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        with_activity(&self.android_app, |env, activity| {
+            let file_name = env.new_string(name)?;
+            let data = env.byte_array_from_slice(bytes)?;
+            let shared = env
+                .call_method(
+                    activity,
+                    jni_str!("share"),
+                    jni_sig!("(Ljava/lang/String;[B)Z"),
+                    &[(&file_name).into(), (&data).into()],
+                )?
+                .z()?;
+            if shared {
+                Ok(Ok(()))
+            } else {
+                last_error(env, activity).map(Err)
+            }
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|shared| shared)
+        .map_err(|detail| android_error("viewer.android.share", name, detail))
     }
 
     fn write(&self, uri: &str, bytes: &[u8]) -> Result<(), Rejection> {

@@ -46,8 +46,8 @@ fn android_main(android_app: android_activity::AndroidApp) {
         "Kečup Viewer",
         options,
         Box::new(move |cc| {
-            let mut app =
-                ketchup_viewer::app::ViewerApp::new(cc.wgpu_render_state.clone()).with_host_files();
+            let mut app = ketchup_viewer::app::ViewerApp::new(cc.wgpu_render_state.clone())
+                .with_host_sharing();
             if let Some(path) = path
                 && path.exists()
                 && let Err(error) = app.open_path(&path)

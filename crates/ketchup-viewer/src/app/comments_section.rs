@@ -141,6 +141,9 @@ impl ViewerApp {
         let language = self.language;
         let t = |key| language.text(key);
         ui.horizontal_wrapped(|ui| {
+            if self.host_sharing && ui.button(t("viewer-comments-share")).clicked() {
+                self.request_file(FileRequest::ShareComments);
+            }
             for (key, request) in [
                 ("viewer-comments-open", FileRequest::OpenComments),
                 ("viewer-comments-save", FileRequest::SaveComments),

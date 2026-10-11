@@ -151,7 +151,8 @@ impl WebViewer {
             FileRequest::OpenComments => {
                 return pick_file(".ketchup-comments", true, self.inbox.clone(), ctx.clone());
             }
-            FileRequest::SaveComments => {
+            // The web Viewer offers no share button; a download is its way out.
+            FileRequest::SaveComments | FileRequest::ShareComments => {
                 let mut bytes = Vec::new();
                 self.app.save_comments(&mut bytes)?;
                 (bytes, share::download_name(name, ".ketchup-comments"))

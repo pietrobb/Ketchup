@@ -35,5 +35,11 @@
                 <data android:mimeType="application/json" />
             </intent-filter>
         </activity>
+        <!-- Lends shared comment files read-only to the app picked in the share sheet. -->
+        <provider
+            android:name="sk.ketchup.viewer.SharedFiles"
+            android:authorities="sk.ketchup.viewer.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

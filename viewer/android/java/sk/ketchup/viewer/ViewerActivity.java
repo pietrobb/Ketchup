@@ -1,12 +1,16 @@
 package sk.ketchup.viewer;
 
 import android.app.NativeActivity;
+import android.content.ClipData;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayDeque;
@@ -86,6 +90,50 @@ public class ViewerActivity extends NativeActivity {
                     .putExtra(Intent.EXTRA_TITLE, name);
             startActivityForResult(intent, code);
         });
+    }
+
+    /**
+     * Offers {@code data} as file {@code name} in the system share sheet;
+     * false with {@link #lastError} set when it could not be prepared.
+     */
+    public boolean share(String name, byte[] data) {
+        File folder = SharedFiles.folder(this);
+        File file = new File(folder, name);
+        if (!file.getParentFile().equals(folder)) {
+            lastError = "Not a plain file name: " + name;
+            return false;
+        }
+        try {
+            // Earlier shares are done with; only the newest file stays lent out.
+            File[] old = folder.listFiles();
+            if (old != null) {
+                for (File each : old) {
+                    each.delete();
+                }
+            }
+            if (!folder.isDirectory() && !folder.mkdirs()) {
+                lastError = "Cannot create " + folder;
+                return false;
+            }
+            try (OutputStream out = new FileOutputStream(file)) {
+                out.write(data);
+            }
+        } catch (Exception error) {
+            lastError = error.toString();
+            return false;
+        }
+        Uri uri = new Uri.Builder().scheme("content").authority(SharedFiles.AUTHORITY)
+                .appendPath(name).build();
+        Intent send = new Intent(Intent.ACTION_SEND)
+                .setType("application/octet-stream")
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        send.setClipData(ClipData.newRawUri(name, uri));
+        Intent chooser = Intent.createChooser(send, null)
+                .putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS,
+                        new ComponentName[] {new ComponentName(this, ViewerActivity.class)});
+        runOnUiThread(() -> startActivity(chooser));
+        return true;
     }
 
     /** The file name the providing app shows for {@code uri}, or "". */

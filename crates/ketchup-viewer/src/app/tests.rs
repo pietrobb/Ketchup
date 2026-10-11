@@ -667,7 +667,7 @@ fn customer_comments_restore_their_view_keep_arrows_on_parts_and_travel_offline(
     other.write(&mut other_bytes).unwrap();
     let mut stranger = ViewerApp::new(None).with_language(Language::ENGLISH);
     stranger.open(other_bytes.as_slice()).unwrap();
-    assert!(stranger.open_comments(returned.as_slice()).is_err());
+    let refused = stranger.open_comments(returned.as_slice()).unwrap_err();
     assert!(
         stranger
             .review
@@ -677,6 +677,14 @@ fn customer_comments_restore_their_view_keep_arrows_on_parts_and_travel_offline(
             .comments
             .is_empty()
     );
+    // The model stays on screen, so the headline blames the file, not the model.
+    stranger.report(refused);
+    let mut shown = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), stranger);
+    shown.run();
+    shown.get_by_label("The file could not be opened or saved.");
+    assert!(shown.query_by_label("The model cannot be shown.").is_none());
 
     // Delete removes only that comment.
     harness.run();
@@ -747,6 +755,33 @@ fn system_opened_comments_file_finds_its_own_package_in_the_folder() {
         ])
     );
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn only_a_sharing_host_offers_sending_comments_to_the_author() {
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    for (app, offered) in [
+        (ViewerApp::new(None).with_host_files(), false),
+        (ViewerApp::new(None).with_host_sharing(), true),
+    ] {
+        let mut app = app.with_language(Language::ENGLISH);
+        app.open(bytes.as_slice()).expect("open");
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
+        harness.run();
+        let button = harness.query_by_label("Send comments to the author");
+        assert_eq!(button.is_some(), offered);
+        if let Some(button) = button {
+            button.click();
+            harness.run();
+            assert_eq!(
+                harness.state_mut().take_file_requests(),
+                [FileRequest::ShareComments]
+            );
+        }
+    }
 }
 
 #[test]
