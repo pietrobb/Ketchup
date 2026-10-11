@@ -3477,6 +3477,7 @@ impl KetchupApp {
         self.paint_origin_snap(painter, response.hover_pos(), response.rect);
         self.paint_rotation_guide(painter, response.rect);
         self.paint_mirror_preview(painter, response.rect);
+        self.paint_received_comment(painter, response.rect);
 
         if let Some((start, end)) = self.measure_span() {
             let from = self.project(start, response.rect);

@@ -30,6 +30,28 @@ pub(crate) struct ViewerSettings {
     /// The scene the Viewer opens first.
     #[serde(default)]
     pub(crate) start_scene: Option<u64>,
+    /// Dimensions the author prepared for the Viewer.
+    #[serde(default)]
+    pub(crate) dimensions: Vec<ViewerDimension>,
+    /// Shared saved views that show none of the author's dimensions.
+    #[serde(default)]
+    pub(crate) scenes_without_dimensions: BTreeSet<u64>,
+}
+
+/// A linear dimension between two measured world points; its value is the
+/// distance of the picked source points, not of the display mesh.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ViewerDimension {
+    pub(crate) id: u64,
+    pub(crate) from_mm: [f64; 3],
+    pub(crate) to_mm: [f64; 3],
+}
+
+impl ViewerDimension {
+    pub(crate) fn value_mm(&self) -> f64 {
+        ketchup_geometry::linalg::distance(self.from_mm, self.to_mm)
+    }
 }
 
 impl ViewerSettings {
@@ -172,6 +194,84 @@ impl KetchupApp {
         self.edit_viewer_settings(|settings| settings.start_scene = Some(id.0))
     }
 
+    /// Add the finished measurement as a Viewer dimension; `false` without one.
+    pub fn add_viewer_measured_dimension(&mut self) -> bool {
+        let Some((from, to)) = self.measured_points() else {
+            return false;
+        };
+        let (from_mm, to_mm) = (from.to_array(), to.to_array());
+        if from_mm == to_mm || from_mm.iter().chain(&to_mm).any(|v| !v.is_finite()) {
+            return false;
+        }
+        self.edit_viewer_settings(|settings| {
+            let id = settings.dimensions.iter().map(|d| d.id).max().unwrap_or(0) + 1;
+            settings
+                .dimensions
+                .push(ViewerDimension { id, from_mm, to_mm });
+        })
+    }
+
+    /// Remove one Viewer dimension.
+    pub fn remove_viewer_dimension(&mut self, id: u64) -> bool {
+        self.edit_viewer_settings(|settings| settings.dimensions.retain(|d| d.id != id))
+    }
+
+    /// Show or hide the author's dimensions in one saved view.
+    pub fn set_viewer_scene_dimensions(&mut self, id: SavedViewId, shown: bool) -> bool {
+        self.edit_viewer_settings(|settings| {
+            if shown {
+                settings.scenes_without_dimensions.remove(&id.0);
+            } else {
+                settings.scenes_without_dimensions.insert(id.0);
+            }
+        })
+    }
+
+    /// The prepared dimensions, listed with a measured one ready to add.
+    pub(super) fn show_viewer_dimensions(&mut self, ui: &mut egui::Ui) {
+        let Ok(settings) = self.stored_viewer_settings() else {
+            return;
+        };
+        let measured = self.measured_points();
+        if settings.dimensions.is_empty() && measured.is_none() {
+            return;
+        }
+        egui::CollapsingHeader::new(self.catalog.text("viewer-dimensions-title"))
+            .id_salt("viewer-dimensions")
+            .default_open(true)
+            .show(ui, |ui| {
+                if let Some((from, to)) = measured {
+                    let value = format_height(length(to - from));
+                    let label = self
+                        .catalog
+                        .format("viewer-dimension-add", &BTreeMap::from([("value", value)]));
+                    if ui.button(label).clicked() {
+                        self.add_viewer_measured_dimension();
+                    }
+                } else {
+                    ui.small(self.catalog.text("viewer-dimension-measure-hint"));
+                }
+                for dimension in &settings.dimensions {
+                    let value = format_height(dimension.value_mm());
+                    ui.horizontal(|ui| {
+                        ui.label(&value);
+                        let named = self.catalog.format(
+                            "viewer-dimension-remove-named",
+                            &BTreeMap::from([("value", value.clone())]),
+                        );
+                        let remove = ui.small_button(self.catalog.text("viewer-dimension-remove"));
+                        remove.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &named)
+                        });
+                        if remove.clicked() {
+                            self.remove_viewer_dimension(dimension.id);
+                        }
+                    });
+                }
+            });
+        ui.separator();
+    }
+
     /// Shared saved views in document order, the opening scene first; a start
     /// scene that is no longer shared falls back to the first shared scene.
     pub(crate) fn viewer_export_scenes(&self, settings: &ViewerSettings) -> Vec<SavedViewId> {
@@ -224,6 +324,25 @@ impl KetchupApp {
         });
         if opening.clicked() {
             self.set_viewer_start_scene(id);
+        }
+        if !settings.dimensions.is_empty() {
+            let mut shown = !settings.scenes_without_dimensions.contains(&id.0);
+            let toggle = ui.add_enabled(
+                shared,
+                egui::Checkbox::new(&mut shown, self.catalog.text("viewer-scene-dimensions")),
+            );
+            toggle.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Checkbox,
+                    shared,
+                    shown,
+                    self.catalog
+                        .format("viewer-scene-dimensions-named", &arguments),
+                )
+            });
+            if toggle.changed() {
+                self.set_viewer_scene_dimensions(id, shown);
+            }
         }
     }
 

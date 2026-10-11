@@ -69,6 +69,24 @@ impl KetchupApp {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
+                    if let Some((done, total)) = self.exact_geometry_progress() {
+                        // Without this a large model looks empty, or frozen, until all
+                        // bodies arrive at once. No spinner: it repaints every frame.
+                        ui.label(self.catalog.format(
+                            "viewport-exact-progress",
+                            &BTreeMap::from([
+                                ("done", done.to_string()),
+                                ("total", total.to_string()),
+                            ]),
+                        ));
+                        // Whole percents convert to f32 without loss.
+                        let percent =
+                            u16::try_from(done.saturating_mul(100) / total.max(1)).unwrap_or(100);
+                        ui.add(
+                            egui::ProgressBar::new(f32::from(percent) / 100.0).desired_width(120.0),
+                        );
+                        ui.separator();
+                    }
                     ui.strong(self.edit_context_readout());
                     if let Some(sharing) = self.edit_context_sharing_readout() {
                         ui.label(sharing);

@@ -9,6 +9,7 @@ mod document;
 mod drawing;
 mod exact;
 mod export;
+pub(crate) mod file_activity;
 #[cfg(test)]
 #[path = "app/hidden_selection_tests.rs"]
 mod hidden_selection_tests;
@@ -32,6 +33,8 @@ mod project_drawings_tests;
 #[cfg(test)]
 #[path = "app/push_pull_house_tests.rs"]
 mod push_pull_house_tests;
+pub(crate) mod received_comments;
+mod save_activity;
 pub(crate) mod saved_views;
 #[cfg(test)]
 #[path = "app/scene_tabs_tests.rs"]
@@ -50,6 +53,7 @@ mod takeoff;
 mod takeoff_tests;
 mod transform;
 mod viewer_export;
+mod viewer_export_activity;
 pub(crate) mod viewer_settings;
 #[cfg(test)]
 #[path = "app/viewer_settings_tests.rs"]

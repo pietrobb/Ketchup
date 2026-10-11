@@ -1,6 +1,6 @@
 use crate::*;
 use egui_kittest::{Harness, kittest::Queryable as _};
-use ketchup_model::document::RuleProgramSource;
+use ketchup_model::document::{RuleProgramSource, SavedViewId};
 
 fn viewport() -> Rect {
     Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))
@@ -140,6 +140,61 @@ fn notes_tell_definition_from_occurrence_and_survive_save_reopen_and_reexport() 
             .occurrence_note(&paths[0]),
         ""
     );
+}
+
+#[test]
+fn measured_dimensions_go_to_chosen_scenes_without_touching_cad_and_survive_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("dimensions.ketchup");
+    let mut app = cabinet();
+    let front = app.save_view("Front").expect("scene");
+    let back = app.save_view("Back").expect("scene");
+    assert!(
+        !app.add_viewer_measured_dimension(),
+        "nothing measured, nothing added"
+    );
+    app.add_measured_point(Vec3::new(0.0, 0.0, 0.0));
+    app.add_measured_point(Vec3::new(600.0, 0.0, 400.0));
+    let digest = app.document.current().canonical_digest();
+    let undo = app.undo_step_count();
+    assert!(app.add_viewer_measured_dimension());
+    assert!(app.set_viewer_scene_dimensions(back, false));
+    assert_eq!(app.document.current().canonical_digest(), digest);
+    assert_eq!(
+        app.undo_step_count(),
+        undo,
+        "dimensions never change CAD or Undo"
+    );
+
+    let check = |app: &KetchupApp| {
+        let manifest = export(app).package.manifest;
+        assert_eq!(manifest.dimensions.len(), 1);
+        let dimension = &manifest.dimensions[0];
+        assert_eq!(dimension.from.point_mm, [0.0, 0.0, 0.0]);
+        assert_eq!(dimension.to.point_mm, [600.0, 0.0, 400.0]);
+        assert!((dimension.value_mm - 600.0_f64.hypot(400.0)).abs() < 1e-9);
+        let shown = |id: SavedViewId| {
+            manifest
+                .scenes
+                .iter()
+                .find(|scene| scene.id == id.0)
+                .expect("scene")
+                .visible_dimensions
+                .clone()
+        };
+        assert_eq!(shown(front), [dimension.id]);
+        assert!(shown(back).is_empty(), "the author hid dimensions in Back");
+    };
+    check(&app);
+    assert!(app.save_document_to(&path));
+    let mut reopened = KetchupApp::new();
+    assert!(reopened.open_document_path(&path));
+    reopened.wait_for_program_evaluation();
+    install_geometry(&mut reopened);
+    check(&reopened);
+    let id = reopened.stored_viewer_settings().unwrap().dimensions[0].id;
+    assert!(reopened.remove_viewer_dimension(id));
+    assert!(export(&reopened).package.manifest.dimensions.is_empty());
 }
 
 #[test]

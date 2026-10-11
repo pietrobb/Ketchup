@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 130] = [
+    pub(crate) const COMMANDS: [CommandSpec; 131] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -109,6 +109,12 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ExportViewer,
             label_key: "file-export-viewer",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::OpenViewerComments,
+            label_key: "file-open-viewer-comments",
             tool: None,
             implemented: true,
         },

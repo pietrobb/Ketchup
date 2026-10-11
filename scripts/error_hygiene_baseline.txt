@@ -4,7 +4,7 @@ crates/ketchup-app/src/app/document.rs unreachable 2
 crates/ketchup-app/src/app/export.rs unreachable 1
 crates/ketchup-app/src/drawn_shape.rs stringified_variant 1
 crates/ketchup-app/src/lib.rs unreachable 1
-crates/ketchup-application/src/cam_workflow.rs stringified_variant 10
+crates/ketchup-application/src/cam_workflow.rs stringified_variant 8
 crates/ketchup-application/src/creation.rs unreachable 2
 crates/ketchup-application/src/evaluation.rs unreachable 2
 crates/ketchup-application/src/fea_workflow.rs stringified_variant 3
@@ -21,7 +21,7 @@ crates/ketchup-geometry/src/sketch/solver.rs unreachable 4
 crates/ketchup-headless/src/protocol.rs stringified_variant 2
 crates/ketchup-headless/src/protocol.rs unreachable 2
 crates/ketchup-model/src/exact_brep_graph.rs stringified_variant 3
-crates/ketchup-model/src/import/dxf.rs unreachable 3
+crates/ketchup-model/src/import/dxf.rs unreachable 1
 crates/ketchup-model/src/import/glb.rs stringified_variant 1
 crates/ketchup-model/src/persistence.rs formatted_variant 2
 crates/ketchup-model/src/persistence.rs stringified_variant 1

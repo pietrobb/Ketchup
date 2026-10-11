@@ -11,6 +11,7 @@ repository.workspace = true
 eframe = { version = "0.32.3", default-features = false, features = ["default_fonts", "wgpu"] }
 ketchup-rejection = { path = "../ketchup-rejection" }
 ketchup-view-format = { path = "../ketchup-view-format" }
+ketchup-tolerance = { path = "../ketchup-tolerance" }
 ketchup-geometry = { path = "../ketchup-geometry" }
 num-traits = "0.2.19"
 serde = { version = "1.0", features = ["derive"] }
@@ -27,6 +28,9 @@ wgpu = { version = "25.0.2", default-features = false, features = ["metal"] }
 [target.'cfg(target_os = "android")'.dependencies]
 eframe = { version = "0.32.3", default-features = false, features = ["android-native-activity"] }
 wgpu = { version = "25.0.2", default-features = false, features = ["vulkan"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "25.0.2", default-features = false, features = ["webgpu", "webgl"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 rfd = "0.15.4"

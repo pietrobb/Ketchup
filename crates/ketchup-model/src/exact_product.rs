@@ -1686,6 +1686,17 @@ impl ExactResultRegistry {
         &'a self,
         snapshot: &Snapshot,
     ) -> Result<BTreeMap<ExactBodyResultKey, &'a Arc<ExactBodyPackage>>, ExactProductError> {
+        self.body_values_of(snapshot, None)
+    }
+
+    /// [`Self::body_values`] of one definition only, or of all of them. A
+    /// single lookup must not check every body of the document: per occurrence
+    /// that froze large models for seconds.
+    fn body_values_of<'a>(
+        &'a self,
+        snapshot: &Snapshot,
+        only: Option<DefinitionId>,
+    ) -> Result<BTreeMap<ExactBodyResultKey, &'a Arc<ExactBodyPackage>>, ExactProductError> {
         let mut values = BTreeMap::new();
         let mut occupied = BTreeSet::new();
         let document_id = snapshot.document_id();
@@ -1702,6 +1713,9 @@ impl ExactResultRegistry {
                 continue;
             }
             let definition_id = package.definition_id();
+            if only.is_some_and(|only| only != definition_id) {
+                continue;
+            }
             let producer_feature_id = package.producer_feature_id();
             let definition = snapshot
                 .definition(definition_id)
@@ -1741,7 +1755,7 @@ impl ExactResultRegistry {
         body_id: BodyId,
     ) -> Result<Option<&Arc<ExactBodyPackage>>, ExactProductError> {
         Ok(self
-            .body_values(snapshot)?
+            .body_values_of(snapshot, Some(definition_id))?
             .into_iter()
             .find_map(|(key, package)| {
                 (key.definition_id == definition_id && key.body_id == body_id).then_some(package)
@@ -1799,7 +1813,15 @@ impl ExactResultRegistry {
         &'a self,
         snapshot: &'a Snapshot,
     ) -> impl Iterator<Item = &'a Arc<ExactBodyPackage>> {
-        self.body_values(snapshot)
+        self.render_values_of(snapshot, None)
+    }
+
+    fn render_values_of<'a>(
+        &'a self,
+        snapshot: &'a Snapshot,
+        only: Option<DefinitionId>,
+    ) -> impl Iterator<Item = &'a Arc<ExactBodyPackage>> {
+        self.body_values_of(snapshot, only)
             .unwrap_or_default()
             .into_iter()
             .filter_map(move |(key, package)| {
@@ -1835,9 +1857,7 @@ impl ExactResultRegistry {
         snapshot: &'a Snapshot,
         definition_id: DefinitionId,
     ) -> Option<&'a Arc<ExactBodyPackage>> {
-        let mut matches = self
-            .render_values(snapshot)
-            .filter(|package| package.definition_id() == definition_id);
+        let mut matches = self.render_values_of(snapshot, Some(definition_id));
         let package = matches.next()?;
         matches.next().is_none().then_some(package)
     }

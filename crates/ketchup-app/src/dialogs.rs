@@ -79,6 +79,12 @@ pub trait FileDialogs {
 
     fn pick_import_path(&mut self, request: ImportDialogRequest<'_>) -> Option<PathBuf>;
 
+    /// Ask for a file to review beside the model, e.g. returned comments;
+    /// it is read only. `None` cancels.
+    fn pick_review_path(&mut self, _filter_label: &str, _extensions: &[&str]) -> Option<PathBuf> {
+        None
+    }
+
     /// Ask whether unsaved changes in the active document may be discarded.
     fn confirm_discard(&mut self, request: DiscardRequest<'_>) -> bool;
 
@@ -201,6 +207,12 @@ impl FileDialogs for NativeFileDialogs {
     fn pick_import_path(&mut self, request: ImportDialogRequest<'_>) -> Option<PathBuf> {
         self.file_dialog()
             .add_filter(request.filter_label, request.extensions)
+            .pick_file()
+    }
+
+    fn pick_review_path(&mut self, filter_label: &str, extensions: &[&str]) -> Option<PathBuf> {
+        self.file_dialog()
+            .add_filter(filter_label, extensions)
             .pick_file()
     }
 

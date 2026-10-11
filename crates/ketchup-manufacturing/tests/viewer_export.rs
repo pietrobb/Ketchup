@@ -1,7 +1,7 @@
 use ketchup_manufacturing::blender_export::MeshGlbInstance;
 use ketchup_manufacturing::viewer_export::{
-    DefinitionMetadata, DesktopCameraContext, OccurrenceMetadata, ViewerExportData,
-    model_viewer_export,
+    DefinitionMetadata, DesktopCameraContext, DesktopView, OccurrenceMetadata, ViewerExportData,
+    model_viewer_export, received,
 };
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
@@ -838,4 +838,257 @@ fn saved_scene_export_maps_root_and_shared_nested_layers_without_mutating_model(
         ..Default::default()
     };
     assert!(model_viewer_export(&snapshot, &instances, &data).is_err());
+}
+
+fn exported_package(document: &DocumentStore) -> view::Package {
+    let snapshot = document.current();
+    let body = box_package(&snapshot, DefinitionId(1), FeatureId(3), "current", &[]).unwrap();
+    let occurrences = snapshot.scene_query();
+    let instances: Vec<_> = occurrences
+        .iter()
+        .filter(|item| item.definition_id == DefinitionId(1))
+        .map(|occurrence| MeshGlbInstance {
+            source: MeshExportSource::Exact(&body),
+            occurrence,
+        })
+        .collect();
+    model_viewer_export(&snapshot, &instances, &ViewerExportData::default())
+        .unwrap()
+        .package
+}
+
+fn customer_comments(package: &view::Package) -> view::Comments {
+    let mut comments = view::Comments::new(package).unwrap();
+    comments.comments.push(view::Comment {
+        id: 1,
+        author: Some("Customer".into()),
+        text: "Make this door wider".into(),
+        view: view::CommentView {
+            camera: camera_context().camera(&desktop_camera(true)).unwrap(),
+            hidden: vec![],
+            style: view::DisplayStyle::Shaded,
+            section: None,
+        },
+        selected: Some(view_path(10)),
+        arrows: vec![view::Arrow {
+            tip: view::Anchor {
+                occurrence: Some(view_path(11)),
+                point_mm: [5.0, 5.0, 10.0],
+            },
+            tail: view::Anchor {
+                occurrence: None,
+                point_mm: [0.0, 0.0, 500.0],
+            },
+        }],
+    });
+    // The customer's file as the author receives it.
+    let mut bytes = Vec::new();
+    comments.write(&mut bytes, package).unwrap();
+    view::Comments::read_unbound(bytes.as_slice()).unwrap()
+}
+
+fn world_tip(document: &DocumentStore) -> [f64; 3] {
+    let snapshot = document.current();
+    let resolved = snapshot.resolve_instance_path(&source_path(11)).unwrap();
+    resolved.world_transform.transform_point([5.0, 5.0, 10.0])
+}
+
+fn assert_close(actual: [f64; 3], expected: [f64; 3]) {
+    for axis in 0..3 {
+        assert!(
+            (actual[axis] - expected[axis]).abs() < 1e-9,
+            "{actual:?} != {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn returned_comments_match_the_exported_nested_parts_by_identity() {
+    let document = nested_document();
+    let comments = customer_comments(&exported_package(&document));
+    let snapshot = document.current();
+    assert_eq!(
+        received::export_state(&snapshot, &comments).unwrap(),
+        received::ExportState::Current
+    );
+    let comment = &comments.comments[0];
+    assert_eq!(
+        received::model_path(&snapshot, comment.selected.as_ref().unwrap()),
+        Some(source_path(10))
+    );
+    assert_close(
+        received::anchor_point(&snapshot, &comment.arrows[0].tip).unwrap(),
+        world_tip(&document),
+    );
+    assert_eq!(
+        received::anchor_point(&snapshot, &comment.arrows[0].tail),
+        Some([0.0, 0.0, 500.0])
+    );
+    assert!(received::missing_parts(&snapshot, comment).is_empty());
+    assert_eq!(
+        snapshot.canonical_digest(),
+        document.current().canonical_digest()
+    );
+}
+
+#[test]
+fn returned_comments_on_another_project_are_refused() {
+    let document = nested_document();
+    let mut comments = customer_comments(&exported_package(&document));
+    comments.export.source.document_id ^= 1;
+    let error = received::export_state(&document.current(), &comments).unwrap_err();
+    assert_eq!(error.code(), "viewer.comments.project");
+}
+
+#[test]
+fn changed_model_follows_moved_parts_and_marks_deleted_or_replaced_ones() {
+    let mut document = nested_document();
+    let comments = customer_comments(&exported_package(&document));
+    let comment = &comments.comments[0];
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(11),
+                transform: Transform::from_translation(900.0, 800.0, 700.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    assert_eq!(
+        received::export_state(&snapshot, &comments).unwrap(),
+        received::ExportState::Changed
+    );
+    assert_close(
+        received::anchor_point(&snapshot, &comment.arrows[0].tip).unwrap(),
+        world_tip(&document),
+    );
+
+    // A deleted nested occurrence is reported, never matched to its sibling.
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteOccurrence {
+                id: OccurrenceId(11),
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    assert_eq!(received::model_path(&snapshot, &view_path(11)), None);
+    assert_eq!(
+        received::anchor_point(&snapshot, &comment.arrows[0].tip),
+        None
+    );
+    assert_eq!(
+        received::missing_parts(&snapshot, comment),
+        vec![&view_path(11)]
+    );
+    assert_eq!(
+        received::model_path(&snapshot, &view_path(10)),
+        Some(source_path(10))
+    );
+
+    // The same root ID now holding another definition is not the old part.
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(11),
+                definition_id: DefinitionId(1),
+                name: "Assembly 11".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    assert_eq!(received::model_path(&snapshot, &view_path(11)), None);
+
+    // A removed nested occurrence inside the shared assembly is gone everywhere.
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteLocalOccurrence {
+                key: LocalOccurrenceKey {
+                    definition_id: DefinitionId(5),
+                    local_id: LocalOccurrenceId(7),
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    assert_eq!(received::model_path(&snapshot, &view_path(10)), None);
+    assert_eq!(received::missing_parts(&snapshot, comment).len(), 2);
+}
+
+fn angle_difference(a: f64, b: f64) -> f64 {
+    let tau = std::f64::consts::TAU;
+    ((a - b).rem_euclid(tau) + tau / 2.0).rem_euclid(tau) - tau / 2.0
+}
+
+#[test]
+fn desktop_view_inverts_the_exported_scene_camera() {
+    let context = camera_context();
+    for parallel in [true, false] {
+        for (yaw_rad, pitch_rad) in [(0.0, 1.2), (0.7, 0.4), (-2.5, 2.0), (1.9, 0.0)] {
+            let saved = ketchup_model::document::SavedCamera {
+                parallel,
+                yaw_rad,
+                pitch_rad,
+                target_z_mm: 40.0,
+                zoom: 2.0,
+                pan: [120.0, -60.0],
+            };
+            let camera = context.camera(&saved).unwrap();
+            let desktop =
+                DesktopView::of(&camera, context.viewport_points, context.orbit_target_xy_mm)
+                    .unwrap();
+            let case = format!("{parallel} {yaw_rad} {pitch_rad}: {desktop:?}");
+            assert_eq!(desktop.parallel, parallel, "{case}");
+            assert!(
+                angle_difference(desktop.yaw_rad, yaw_rad).abs() < 1e-9,
+                "{case}"
+            );
+            assert!((desktop.pitch_rad - pitch_rad).abs() < 1e-9, "{case}");
+            assert!(
+                (desktop.points_per_mm - context.points_per_mm).abs() < 1e-9,
+                "{case}"
+            );
+            // The same view rebuilt from the desktop values draws every point
+            // where the customer saw it.
+            let rebuilt = context
+                .camera(&ketchup_model::document::SavedCamera {
+                    target_z_mm: desktop.target_z_mm,
+                    pan: desktop.pan,
+                    ..saved
+                })
+                .unwrap();
+            for point in [[57.0, 13.0, 86.0], [-3.0, 120.0, 11.0], [20.0, 30.0, 40.0]] {
+                for size in [[1200.0, 600.0], [360.0, 780.0]] {
+                    let expected = portable_screen(&camera, point, size);
+                    let actual = portable_screen(&rebuilt, point, size);
+                    for axis in 0..2 {
+                        assert!(
+                            (actual[axis] - expected[axis]).abs() < 1e-6,
+                            "{case} {point:?}: {actual:?} != {expected:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn desktop_view_refuses_degenerate_cameras_and_viewports() {
+    let context = camera_context();
+    let camera = context.camera(&desktop_camera(false)).unwrap();
+    for (viewport, orbit) in [
+        ([0.0, 600.0], [0.0, 0.0]),
+        ([1200.0, f64::NAN], [0.0, 0.0]),
+        ([1200.0, 600.0], [f64::INFINITY, 0.0]),
+    ] {
+        assert!(DesktopView::of(&camera, viewport, orbit).is_err());
+    }
+    let mut looking_up = camera.clone();
+    looking_up.up = [0.0, -1.0, 0.0];
+    assert!(DesktopView::of(&looking_up, context.viewport_points, [0.0; 2]).is_err());
 }

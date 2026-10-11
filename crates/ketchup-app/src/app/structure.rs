@@ -2914,10 +2914,24 @@ impl KetchupApp {
         local_box: Option<ProjectedBox>,
         use_exact_bounds: bool,
     ) -> Option<[Vec3; 2]> {
-        if let Some(package) = use_exact_bounds
-            .then(|| self.exact_results_for_snapshot(snapshot))
-            .flatten()
-            .and_then(|results| results.get_render(snapshot, definition_id))
+        Self::definition_bounds(
+            snapshot,
+            use_exact_bounds
+                .then(|| self.exact_results_for_snapshot(snapshot))
+                .flatten(),
+            definition_id,
+            local_box,
+        )
+    }
+
+    pub(super) fn definition_bounds(
+        snapshot: &Snapshot,
+        results: Option<&ExactResultRegistry>,
+        definition_id: DefinitionId,
+        local_box: Option<ProjectedBox>,
+    ) -> Option<[Vec3; 2]> {
+        if let Some(package) =
+            results.and_then(|results| results.get_render(snapshot, definition_id))
         {
             let [minimum, maximum] = package.bounds_mm();
             return Some([

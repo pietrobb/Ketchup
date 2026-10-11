@@ -3,8 +3,12 @@
 
 pub mod app;
 pub mod camera;
+pub mod dimensions;
 pub mod gpu;
+pub mod guides;
 pub mod model;
+pub mod review;
+pub mod share;
 pub mod text;
 
 #[cfg(test)]

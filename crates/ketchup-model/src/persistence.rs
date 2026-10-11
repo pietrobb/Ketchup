@@ -986,6 +986,18 @@ pub fn save_atomic_document_store_current_snapshot_with_container_if_absent(
     Ok(FileIdentity::from_bytes(&bytes))
 }
 
+/// Publish already prepared native bytes, preserving validation and compare-before-write.
+pub fn save_prepared_document_if_unchanged(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<FileIdentity>,
+) -> Result<(), FilePersistenceError> {
+    match expected {
+        Some(identity) => save_atomic_bytes(path, bytes, Some(identity)),
+        None => save_atomic_bytes_if_absent(path, bytes),
+    }
+}
+
 fn save_atomic_bytes(
     path: &Path,
     bytes: &[u8],

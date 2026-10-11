@@ -76,6 +76,90 @@ impl DesktopCameraContext {
     }
 }
 
+/// How the desktop viewport shows a Viewer camera: its turntable angles, the
+/// orbit target height, the scale at the target and the screen pan.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DesktopView {
+    pub parallel: bool,
+    pub yaw_rad: f64,
+    pub pitch_rad: f64,
+    pub target_z_mm: f64,
+    pub points_per_mm: f64,
+    /// Screen-space pan in points.
+    pub pan: [f64; 2],
+}
+
+impl DesktopView {
+    /// The desktop view of `camera` in a viewport of `viewport_points`
+    /// orbiting `orbit_target_xy_mm`: the inverse of
+    /// [`DesktopCameraContext::camera`]. The look direction, scale and the
+    /// screen position of the target are kept; a perspective eye may sit at
+    /// the desktop's own distance from the scene.
+    pub fn of(
+        camera: &view::Camera,
+        viewport_points: [f64; 2],
+        orbit_target_xy_mm: [f64; 2],
+    ) -> Result<Self, Rejection> {
+        camera.validate()?;
+        if viewport_points.iter().any(|v| !v.is_finite() || *v <= 0.0)
+            || orbit_target_xy_mm.iter().any(|v| !v.is_finite())
+        {
+            return Err(invalid(
+                "comments.camera.viewport",
+                "The view needs a finite positive viewport and orbit target.",
+            ));
+        }
+        let eye = Vec3::from(camera.eye_mm);
+        let target = Vec3::from(camera.target_mm);
+        let distance = eye.distance(target);
+        let degenerate = || invalid("comments.camera", "The camera has no viewing direction.");
+        let forward = (target - eye).normalized().ok_or_else(degenerate)?;
+        let right = forward
+            .cross(Vec3::from(camera.up))
+            .normalized()
+            .ok_or_else(degenerate)?;
+        let up = right.cross(forward);
+        let short = viewport_points[0].min(viewport_points[1]);
+        let (parallel, short_span_mm, mut pan) = match camera.projection {
+            view::Projection::Orthographic { short_span_mm } => (true, short_span_mm, [0.0; 2]),
+            view::Projection::Perspective {
+                short_fov_radians,
+                lens_shift_short,
+            } => (
+                false,
+                2.0 * distance * (short_fov_radians / 2.0).tan(),
+                [lens_shift_short[0] * short, -lens_shift_short[1] * short],
+            ),
+        };
+        let points_per_mm = short / short_span_mm;
+        // The desktop orbits a fixed point; the target sits where the pan puts it.
+        let offset = target - Vec3::new(orbit_target_xy_mm[0], orbit_target_xy_mm[1], target.z);
+        pan[0] -= offset.dot(right) * points_per_mm;
+        pan[1] += offset.dot(up) * points_per_mm;
+        let view = Self {
+            parallel,
+            yaw_rad: (-right.y).atan2(right.x),
+            pitch_rad: (-forward.z).clamp(-1.0, 1.0).acos(),
+            target_z_mm: target.z,
+            points_per_mm,
+            pan,
+        };
+        let finite = [
+            view.yaw_rad,
+            view.pitch_rad,
+            view.points_per_mm,
+            pan[0],
+            pan[1],
+        ]
+        .iter()
+        .all(|v| v.is_finite());
+        if !finite || view.points_per_mm <= 0.0 {
+            return Err(degenerate());
+        }
+        Ok(view)
+    }
+}
+
 /// A Viewer scene and the notes of anything it could not carry.
 pub(super) fn saved_scene(
     snapshot: &Snapshot,
@@ -127,7 +211,7 @@ pub(super) fn saved_scene(
                 .map(|(n, p)| n * p)
                 .sum(),
         }),
-        // Desktop saved views do not yet carry a dimension visibility list.
+        // The exporter fills in the author's dimensions this scene shows.
         visible_dimensions: Vec::new(),
     };
     Ok((scene, omitted))

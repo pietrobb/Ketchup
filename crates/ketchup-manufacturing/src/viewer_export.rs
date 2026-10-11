@@ -7,11 +7,12 @@ use ketchup_model::document::{
 };
 use ketchup_model::exact_product::MeshExportSource;
 use ketchup_rejection::{Rejection, RejectionPhase};
-use ketchup_view_format as view;
+pub use ketchup_view_format as view;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod received;
 mod scenes;
-pub use scenes::DesktopCameraContext;
+pub use scenes::{DesktopCameraContext, DesktopView};
 
 /// Author-side data is supplied by the project/program adapter, never guessed
 /// from names, colors or a world-space bounding box.
@@ -40,7 +41,10 @@ pub struct ViewerExportData {
     /// Selected document views, evaluated in the explicitly supplied export
     /// viewport. Legacy saved views do not store their original viewport size.
     pub saved_views: BTreeMap<SavedViewId, DesktopCameraContext>,
+    /// Shown in every scene made from a saved view, except those listed in
+    /// `scenes_without_dimensions` (saved-view IDs).
     pub dimensions: Vec<view::Dimension>,
+    pub scenes_without_dimensions: BTreeSet<u64>,
     pub start_scene: Option<u64>,
 }
 
@@ -131,7 +135,10 @@ pub fn model_viewer_export(
                 "A selected saved view is missing from this document.",
             )
         })?;
-        let (scene, omitted) = scenes::saved_scene(snapshot, saved, context, &occurrences)?;
+        let (mut scene, omitted) = scenes::saved_scene(snapshot, saved, context, &occurrences)?;
+        if !data.scenes_without_dimensions.contains(&id.0) {
+            scene.visible_dimensions = data.dimensions.iter().map(|d| d.id).collect();
+        }
         if !omitted.is_empty() {
             use std::fmt::Write;
             writeln!(

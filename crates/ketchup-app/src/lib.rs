@@ -1470,7 +1470,7 @@ fn definition_mesh_body(snapshot: &Snapshot, definition_id: DefinitionId) -> Opt
 }
 
 enum CurrentVisibleMeshSource {
-    Exact(Box<ExactBodyPackage>),
+    Exact(Arc<ExactBodyPackage>),
     Canonical {
         definition_id: DefinitionId,
         producer_feature_id: FeatureId,
@@ -1884,6 +1884,7 @@ pub enum AppCommand {
     ExportPrintThreeMf,
     ExportBlenderGlb,
     ExportViewer,
+    OpenViewerComments,
     ExportGeneralFabrication,
     ExportWeldmentCutList,
     ExportProjectDrawings,

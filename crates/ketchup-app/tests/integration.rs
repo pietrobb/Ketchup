@@ -36,6 +36,8 @@ mod rectangle_spatial_ui;
 mod scene_snapping_ui;
 mod timber_frame_house;
 mod validator_panel_ui;
+mod viewer_export_house;
+mod viewer_release_smoke;
 mod viewport_shell;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]

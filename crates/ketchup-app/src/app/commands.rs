@@ -149,7 +149,7 @@ impl KetchupApp {
     }
 
     pub(crate) fn dispatch_command(&mut self, id: AppCommand) {
-        if !self.command_enabled(id) {
+        if !self.command_enabled(id) || self.defer_file_activity(id) {
             return;
         }
         let spec = CommandRegistry::spec(id);
@@ -323,6 +323,7 @@ impl KetchupApp {
             | AppCommand::ExportHundeggerBtlx => {
                 self.dispatch_file_command(id);
             }
+            AppCommand::OpenViewerComments => self.open_viewer_comments(),
             AppCommand::Undo => {
                 if self.undo() {
                     self.digest = self.catalog.text("digest-undo");

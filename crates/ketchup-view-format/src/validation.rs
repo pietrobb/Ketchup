@@ -1,17 +1,21 @@
 //! Manifest checks against the embedded GLB, run on every read and write, so a
 //! package that passes can be shown without further trust in its author.
 
+use crate::container::{MAX_ATTRIBUTES, MAX_ENTRIES, MAX_PATH_STEPS, MAX_SCENES};
 use crate::{
     Camera, InstancePath, LocalDimensions, Manifest, PathStep, Projection, glb::Info, reject,
 };
 use ketchup_rejection::Rejection;
 use std::collections::BTreeSet;
 
+/// Hex digits of the source digest the exporter writes.
+const SOURCE_DIGEST_DIGITS: usize = 16;
+
 impl Manifest {
     /// Check identity, references, limits and text against the GLB nodes in `info`.
     pub(crate) fn validate(&self, info: &Info) -> Result<(), Rejection> {
         if self.source.document_id == 0
-            || self.source.canonical_digest.len() != 16
+            || self.source.canonical_digest.len() != SOURCE_DIGEST_DIGITS
             || !self
                 .source
                 .canonical_digest
@@ -24,10 +28,10 @@ impl Manifest {
                 "Manifest source identity does not match the geometry.",
             ));
         }
-        if self.definitions.len() > 100_000
-            || self.occurrences.len() > 100_000
-            || self.scenes.len() > 1_000
-            || self.dimensions.len() > 100_000
+        if self.definitions.len() > MAX_ENTRIES
+            || self.occurrences.len() > MAX_ENTRIES
+            || self.scenes.len() > MAX_SCENES
+            || self.dimensions.len() > MAX_ENTRIES
         {
             return Err(reject("manifest", "The manifest exceeds its item limits."));
         }
@@ -86,7 +90,7 @@ impl Manifest {
             validate_occurrence(occurrence, info, &parents, &definitions)?;
             optional_text(&occurrence.note, 65_536)?;
             optional_text(&occurrence.material, 4_096)?;
-            if occurrence.attributes.len() > 1_024 {
+            if occurrence.attributes.len() > MAX_ATTRIBUTES {
                 return Err(reject("attributes", "A component has too many attributes."));
             }
             for (key, value) in &occurrence.attributes {
@@ -259,7 +263,7 @@ impl InstancePath {
 /// Nonzero ids and a bounded depth.
 fn validate_path(path: &InstancePath) -> Result<(), Rejection> {
     if path.root_occurrence_id == 0
-        || path.steps.len() > 128
+        || path.steps.len() > MAX_PATH_STEPS
         || path.steps.iter().any(|step| match step {
             PathStep::Group {
                 owner_definition_id,
@@ -288,7 +292,9 @@ impl Camera {
         let forward = std::array::from_fn::<_, 3, _>(|i| self.target_mm[i] - self.eye_mm[i]);
         let length2: f64 = forward.iter().map(|v| v * v).sum();
         let dot: f64 = forward.iter().zip(self.up).map(|(a, b)| a * b).sum();
-        if length2 < 1e-12 || dot * dot / length2 > 1.0 - 1e-8 {
+        if length2 < ketchup_tolerance::NEGLIGIBLE
+            || dot * dot / length2 > 1.0 - ketchup_tolerance::ACCUMULATED_ROUNDING
+        {
             return Err(reject(
                 "camera",
                 "Camera needs distinct eye/target and a nonparallel up vector.",
@@ -352,14 +358,15 @@ fn finite(v: f64) -> Result<(), Rejection> {
     }
     Ok(())
 }
-fn point(v: &[f64; 3]) -> Result<(), Rejection> {
+pub(crate) fn point(v: &[f64; 3]) -> Result<(), Rejection> {
     for &n in v {
         finite(n)?;
     }
     Ok(())
 }
 fn unit_direction(v: &[f64; 3]) -> Result<(), Rejection> {
-    if v.iter().any(|n| !n.is_finite()) || (v.iter().map(|n| n * n).sum::<f64>() - 1.0).abs() > 1e-6
+    if v.iter().any(|n| !n.is_finite())
+        || (v.iter().map(|n| n * n).sum::<f64>() - 1.0).abs() > ketchup_tolerance::APPROXIMATION
     {
         return Err(reject(
             "direction",

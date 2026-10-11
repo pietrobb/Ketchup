@@ -27,13 +27,22 @@ fn color() -> vec3<f32> {
     return select(instance.color.rgb, vec3<f32>(1.0, 0.65, 0.08),
         view.selection.x == instance.identity.x);
 }
+// The target holds sRGB-encoded bytes, as egui samples them. Encoding here
+// instead of through an sRGB view keeps WebGL2, which has none, working.
+fn encode(linear: vec3<f32>) -> vec4<f32> {
+    let low = linear * 12.92;
+    let high = 1.055 * pow(linear, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return vec4<f32>(select(high, low, linear <= vec3<f32>(0.0031308)), 1.0);
+}
 @fragment fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     if view.options.x > 0.0 && dot(in.world, view.section.xyz) > view.section.w { discard; }
     let normal = normalize(cross(dpdx(in.world), dpdy(in.world)));
     let light = 0.35 + 0.65 * abs(dot(normal, normalize(vec3<f32>(0.3, 0.5, 0.8))));
-    return vec4<f32>(color() * light, 1.0);
+    return encode(color() * light);
 }
 @fragment fn fragment_edge(in: VertexOut) -> @location(0) vec4<f32> {
-    if view.options.x > 0.0 && dot(in.world, view.section.xyz) > view.section.w { discard; }
-    return vec4<f32>(color(), 1.0);
+    // identity.y marks the axes and grid, which a section never cuts.
+    if view.options.x > 0.0 && instance.identity.y == 0.0
+        && dot(in.world, view.section.xyz) > view.section.w { discard; }
+    return encode(color());
 }

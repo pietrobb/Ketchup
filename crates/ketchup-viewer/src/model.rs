@@ -15,6 +15,8 @@ pub struct Model {
     package: Package,
     pub bodies: Vec<Body>,
     pub bounds_mm: Bounds,
+    /// Per manifest occurrence: column-major source Z-up/mm placement.
+    pub occurrence_matrices_mm: Vec<[f64; 16]>,
 }
 
 /// One mesh placed in the scene, with the component it belongs to.
@@ -27,6 +29,10 @@ pub struct Body {
     /// Column-major placement for source Z-up/mm local vertex buffers.
     pub world_matrix_mm: [f32; 16],
     pub bounds_mm: Bounds,
+    /// The mesh's own bounds before placement.
+    pub mesh_bounds_mm: Bounds,
+    /// Column-major source placement in full precision.
+    pub world_matrix_f64_mm: [f64; 16],
 }
 
 impl Model {
@@ -82,21 +88,41 @@ impl Model {
                 occurrence,
                 world_matrix_mm,
                 bounds_mm: world_bounds,
+                mesh_bounds_mm: bounds[mesh],
+                world_matrix_f64_mm: matrix,
             });
         }
         if bodies.is_empty() {
             return Err(invalid("geometry", "The package has no display bodies."));
         }
+        let occurrence_matrices_mm = package
+            .manifest
+            .occurrences
+            .iter()
+            .map(|occurrence| {
+                geometry
+                    .nodes
+                    .get(occurrence.glb_node)
+                    .map(|node| source_matrix(node.world_matrix))
+                    .ok_or_else(|| invalid("occurrence", "A component has no geometry node."))
+            })
+            .collect::<Result<_, _>>()?;
         Ok(Self {
             package,
             bodies,
             bounds_mm: total_bounds,
+            occurrence_matrices_mm,
         })
     }
 
     /// The package manifest, unchanged.
     pub fn manifest(&self) -> &Manifest {
         &self.package.manifest
+    }
+
+    /// The opened package, unchanged.
+    pub fn package(&self) -> &Package {
+        &self.package
     }
 
     /// The package geometry, borrowed and revalidated.
@@ -316,6 +342,7 @@ pub(crate) mod tests {
             .flatten()
             .zip([83.0, 205.0, 309.0, 515.0, 217.0, 319.0])
         {
+            // not a tolerance: precision this test expects of f32 display bounds.
             assert!((actual - expected).abs() < 1e-5);
         }
         let geometry = model.geometry().expect("display buffers");

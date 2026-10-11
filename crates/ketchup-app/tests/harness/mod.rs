@@ -43,6 +43,21 @@ pub const WAIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60
 /// Pause between polls of [`Shell::wait_until`].
 const WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(5);
 
+/// Polls `done` until it holds or `within` elapses; false on timeout. Tests that drive
+/// their own `Harness` (frame timing of real documents) wait here instead of sleeping.
+pub fn poll_until(within: std::time::Duration, mut done: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        if done() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(WAIT_POLL);
+    }
+}
+
 pub struct ScriptedAssistantTransport {
     responses: Mutex<VecDeque<(String, AssistantChatResult)>>,
     cad_edit_programs: Mutex<VecDeque<(String, AssistantCadEditProgram)>>,
@@ -358,16 +373,7 @@ impl Shell {
     /// state it was waiting on. This is the one place a UI test waits: a slow machine needs
     /// one deadline raised, not a guess in every test.
     pub fn wait_until(&mut self, mut done: impl FnMut(&mut Self) -> bool) -> bool {
-        let deadline = std::time::Instant::now() + WAIT_DEADLINE;
-        loop {
-            if done(self) {
-                return true;
-            }
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(WAIT_POLL);
-        }
+        poll_until(WAIT_DEADLINE, || done(self))
     }
 
     pub fn step(&mut self) {

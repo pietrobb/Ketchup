@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="sk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kečup Viewer — test vloženia</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    iframe { width: 100%; max-width: 960px; height: 600px; border: 1px solid #888; }
+  </style>
+</head>
+<body>
+  <h1>Návrh kuchyne</h1>
+  <p>Test vloženia Vieweru do stránky výrobcu cez iframe.</p>
+  <!-- allow="fullscreen" only; the Viewer needs no camera, microphone or storage access. -->
+  <iframe id="ketchup-viewer-embed"
+          title="Kečup Viewer"
+          src="index.html?model=model.ketchup-view"
+          allow="fullscreen"
+          sandbox="allow-scripts allow-same-origin allow-downloads"
+          loading="lazy"></iframe>
+</body>
+</html>

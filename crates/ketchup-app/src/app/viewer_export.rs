@@ -14,68 +14,44 @@ impl KetchupApp {
     pub(crate) fn export_current_model_viewer_to(&mut self, path: &Path) -> bool {
         self.side_effect_receipts.clear();
         let result = (|| -> Result<(), ExportError> {
-            if !path
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value.eq_ignore_ascii_case("ketchup-view"))
-            {
-                return Err(ExportError::Destination {
-                    requirement: "an explicit .ketchup-view destination",
-                });
-            }
-            let viewport = self.camera.viewport_rect.ok_or_else(|| {
-                source_error("viewport", "The 3D viewport has not been laid out yet.")
-            })?;
-            let settings = self.stored_viewer_settings().map_err(|error| {
-                source_error("viewer_settings", "The stored Viewer notes cannot be read.")
-                    .caused_by(error)
-            })?;
-            let saved_views = self.viewer_export_scenes(&settings);
-            if saved_views.is_empty() {
-                return Err(
-                    source_error("scenes", "No shared saved scene is available.")
-                        .fix_hint("Save a view under Scenes and tick Viewer, then export again.")
-                        .into(),
-                );
-            }
-            let bundle = self.current_model_viewer_export(&saved_views, viewport)?;
-            let mut bytes = Vec::new();
-            bundle.package.write(&mut bytes)?;
-            let report_path = path.with_extension("ketchup-view.loss.txt");
-            let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
-            let evidence = super::export::export_bundle_evidence(
-                b"ketchup.current-model-viewer-export.v1",
+            let input = self.viewer_file_input(path)?;
+            let prepared = super::viewer_export_activity::PreparedExport::prepare(path, input)?;
+            let precondition = ExportBundlePrecondition::capture(
                 path,
-                &bytes,
-                &report_path,
-                bundle.loss_report.as_bytes(),
-            );
-            self.authorize_export_bundle(
-                ExportConsent {
-                    class: HighRiskClass::LossyConversion,
-                    operation: "export-current-model-viewer-with-loss-report",
-                    title_key: "dialog-export-viewer-title",
-                    risk_key: "dialog-export-viewer-risk",
-                    overwrite_title_key: "dialog-export-viewer-overwrite-title",
-                    overwrite_operations: [
-                        "overwrite-current-model-viewer-export",
-                        "overwrite-current-model-viewer-loss-report",
-                    ],
-                },
-                path,
-                &report_path,
-                &precondition,
-                &evidence,
+                &path.with_extension("ketchup-view.loss.txt"),
             )?;
-            Ok(write_export_bundle(
-                path,
-                &bytes,
-                &report_path,
-                bundle.loss_report.as_bytes(),
-                &precondition,
-            )?)
+            prepared.authorize(self, path, &precondition)?;
+            prepared.write(path, &precondition)
         })();
         self.report_export_outcome("viewer", path, result)
+    }
+
+    pub(super) fn viewer_file_input(&self, path: &Path) -> Result<ViewerExportInput, ExportError> {
+        if !path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("ketchup-view"))
+        {
+            return Err(ExportError::Destination {
+                requirement: "an explicit .ketchup-view destination",
+            });
+        }
+        let viewport = self.camera.viewport_rect.ok_or_else(|| {
+            source_error("viewport", "The 3D viewport has not been laid out yet.")
+        })?;
+        let settings = self.stored_viewer_settings().map_err(|error| {
+            source_error("viewer_settings", "The stored Viewer notes cannot be read.")
+                .caused_by(error)
+        })?;
+        let saved_views = self.viewer_export_scenes(&settings);
+        if saved_views.is_empty() {
+            return Err(
+                source_error("scenes", "No shared saved scene is available.")
+                    .fix_hint("Save a view under Scenes and tick Viewer, then export again.")
+                    .into(),
+            );
+        }
+        Ok(self.viewer_export_input(&saved_views, viewport)?)
     }
 
     /// Build a read-only package from current accepted geometry, including hidden bodies.
@@ -85,7 +61,15 @@ impl KetchupApp {
         saved_views: &[SavedViewId],
         viewport: Rect,
     ) -> Result<ViewerExport, Rejection> {
-        let start_scene = saved_views.first().ok_or_else(|| {
+        self.viewer_export_input(saved_views, viewport)?.build()
+    }
+
+    pub(super) fn viewer_export_input(
+        &self,
+        saved_views: &[SavedViewId],
+        viewport: Rect,
+    ) -> Result<ViewerExportInput, Rejection> {
+        saved_views.first().ok_or_else(|| {
             source_error(
                 "scenes",
                 "Select at least one saved scene for the opening view.",
@@ -96,62 +80,15 @@ impl KetchupApp {
             source_error("viewer_settings", "The stored Viewer notes cannot be read.")
                 .caused_by(error)
         })?;
-        let mut scene = self.current_mesh_scene(&snapshot, true).map_err(|error| {
-            source_error(
-                "geometry",
-                "A component has no current exportable body geometry.",
-            )
-            .caused_by(error)
-        })?;
-        // Unshared components leave the package entirely, not only the scenes.
-        scene.retain(|body| {
-            !settings
-                .excluded_roots
-                .contains(&body.occurrence.instance_path.root_occurrence().0)
-        });
-        if scene.is_empty() {
-            return Err(source_error(
-                "components",
-                "Every component is excluded from Viewer sharing.",
-            ));
-        }
-        let paths = scene
-            .iter()
-            .map(|body| body.occurrence.instance_path.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let mut data = self.viewer_source_data(&paths, saved_views, viewport)?;
-        data.start_scene = Some(start_scene.0);
-        apply_author_notes(&settings, &mut data);
-        let instances = scene
-            .iter()
-            .map(|body| MeshGlbInstance {
-                source: body.source.as_export_source(),
-                occurrence: &body.occurrence,
-            })
-            .collect::<Vec<_>>();
-        let mut export = model_viewer_export(&snapshot, &instances, &data)?;
-        export.loss_report.push_str("viewer_geometry=display tessellation, not manufacturing CAD; all shared body occurrences, including hidden components; scene visibility is not removal of confidential geometry\n");
-        if !settings.excluded_roots.is_empty() {
-            use std::fmt::Write;
-            writeln!(
-                export.loss_report,
-                "viewer_excluded_components={}; not in the package",
-                settings.excluded_roots.len()
-            )
-            .expect("writing to a String cannot fail");
-        }
-        let omitted_dimensions = snapshot.persistent_dimensions().count();
-        if omitted_dimensions > 0 {
-            use std::fmt::Write;
-            writeln!(
-                export.loss_report,
-                "viewer_omitted_dimensions={omitted_dimensions}; source dimensions have no stored 3D anchors or label offsets"
-            )
-            .expect("writing to a String cannot fail");
-        }
-        Ok(export)
+        let evaluated = self.viewer_program_metadata()?;
+        Ok(ViewerExportInput {
+            snapshot,
+            results: self.exact.results.clone(),
+            evaluated,
+            saved_views: saved_views.to_vec(),
+            viewport,
+            settings,
+        })
     }
 
     /// Prepare metadata for evaluated export paths without activating scenes or changing CAD.
@@ -161,11 +98,50 @@ impl KetchupApp {
         saved_views: &[SavedViewId],
         viewport: Rect,
     ) -> Result<ViewerExportData, Rejection> {
+        let snapshot = self.document.current();
+        let evaluated = self.viewer_program_metadata()?;
+        Self::source_data(
+            &snapshot,
+            self.exact_results_for_snapshot(&snapshot),
+            evaluated.as_deref(),
+            paths,
+            saved_views,
+            viewport,
+        )
+    }
+
+    fn viewer_program_metadata(
+        &self,
+    ) -> Result<Option<Arc<ketchup_program::Evaluated>>, Rejection> {
+        let Some(source) = self.document.current_rule_program() else {
+            return Ok(None);
+        };
+        match self.program_evaluations.try_get(source) {
+            Lookup::Pending => Err(source_error(
+                "program",
+                "The current program metadata is still being evaluated.",
+            )),
+            Lookup::Ready(Err(error)) => Err(source_error(
+                "program",
+                "The current program metadata could not be evaluated.",
+            )
+            .caused_by(error)),
+            Lookup::Ready(Ok(evaluated)) => Ok(Some(evaluated)),
+        }
+    }
+
+    fn source_data(
+        snapshot: &Snapshot,
+        results: Option<&ExactResultRegistry>,
+        evaluated: Option<&ketchup_program::Evaluated>,
+        paths: &[InstancePath],
+        saved_views: &[SavedViewId],
+        viewport: Rect,
+    ) -> Result<ViewerExportData, Rejection> {
         let mut data = ViewerExportData {
-            saved_views: self.viewer_saved_view_contexts(saved_views, viewport)?,
+            saved_views: Self::saved_view_contexts(snapshot, results, saved_views, viewport)?,
             ..ViewerExportData::default()
         };
-        let snapshot = self.document.current();
         let resolved = paths
             .iter()
             .map(|path| {
@@ -181,28 +157,12 @@ impl KetchupApp {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let Some(source) = self.document.current_rule_program() else {
+        let Some(evaluated) = evaluated else {
             return Ok(data);
-        };
-        let evaluated = match self.program_evaluations.try_get(source) {
-            Lookup::Pending => {
-                return Err(source_error(
-                    "program",
-                    "The current program metadata is still being evaluated.",
-                ));
-            }
-            Lookup::Ready(Err(error)) => {
-                return Err(source_error(
-                    "program",
-                    "The current program metadata could not be evaluated.",
-                )
-                .caused_by(error));
-            }
-            Lookup::Ready(Ok(evaluated)) => evaluated,
         };
         let parts = evaluated.model.parts_by_name();
         for (path, definition_id) in resolved {
-            let Some(name) = ketchup_application::rule_program_part_name(&snapshot, path) else {
+            let Some(name) = ketchup_application::rule_program_part_name(snapshot, path) else {
                 continue;
             };
             let Some(part) = parts.get(name.as_str()) else {
@@ -235,6 +195,86 @@ impl KetchupApp {
     }
 }
 
+pub(super) struct ViewerExportInput {
+    pub(super) snapshot: Snapshot,
+    pub(super) settings: ViewerSettings,
+    results: ExactResultRegistry,
+    evaluated: Option<Arc<ketchup_program::Evaluated>>,
+    saved_views: Vec<SavedViewId>,
+    viewport: Rect,
+}
+
+impl ViewerExportInput {
+    pub(super) fn build(self) -> Result<ViewerExport, Rejection> {
+        let mut scene =
+            KetchupApp::mesh_scene(&self.snapshot, &self.results, true).map_err(|error| {
+                source_error(
+                    "geometry",
+                    "A component has no current exportable body geometry.",
+                )
+                .caused_by(error)
+            })?;
+        // Unshared components leave the package entirely, not only the scenes.
+        scene.retain(|body| {
+            !self
+                .settings
+                .excluded_roots
+                .contains(&body.occurrence.instance_path.root_occurrence().0)
+        });
+        if scene.is_empty() {
+            return Err(source_error(
+                "components",
+                "Every component is excluded from Viewer sharing.",
+            ));
+        }
+        let paths = scene
+            .iter()
+            .map(|body| body.occurrence.instance_path.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut data = KetchupApp::source_data(
+            &self.snapshot,
+            Some(&self.results),
+            self.evaluated.as_deref(),
+            &paths,
+            &self.saved_views,
+            self.viewport,
+        )?;
+        data.start_scene = self.saved_views.first().map(|id| id.0);
+        apply_author_notes(&self.settings, &mut data);
+        apply_author_dimensions(&self.settings, &mut data);
+        let instances = scene
+            .iter()
+            .map(|body| MeshGlbInstance {
+                source: body.source.as_export_source(),
+                occurrence: &body.occurrence,
+            })
+            .collect::<Vec<_>>();
+        let mut export = model_viewer_export(&self.snapshot, &instances, &data)?;
+        export.loss_report.push_str("viewer_geometry=display tessellation, not manufacturing CAD; all shared body occurrences, including hidden components; scene visibility is not removal of confidential geometry\n");
+        if !self.settings.excluded_roots.is_empty() {
+            use std::fmt::Write;
+            writeln!(
+                export.loss_report,
+                "viewer_excluded_components={}; not in the package",
+                self.settings.excluded_roots.len()
+            )
+            .expect("writing to a String cannot fail");
+        }
+        let omitted_dimensions = self.snapshot.persistent_dimensions().count();
+        if omitted_dimensions > 0 {
+            use std::fmt::Write;
+            writeln!(
+                export.loss_report,
+                "viewer_omitted_dimensions={omitted_dimensions}; source dimensions have no stored 3D anchors or label offsets"
+            )
+            .expect("writing to a String cannot fail");
+        }
+        Ok(export)
+    }
+}
+
 /// Notes of exported definitions and paths only; the exporter ignores notes of
 /// components that are not in the package.
 fn apply_author_notes(settings: &ViewerSettings, data: &mut ViewerExportData) {
@@ -244,6 +284,29 @@ fn apply_author_notes(settings: &ViewerSettings, data: &mut ViewerExportData) {
     for (path, note) in &settings.occurrence_notes {
         data.occurrences.entry(path.clone()).or_default().note = Some(note.clone());
     }
+}
+
+/// The author's measured dimensions as world-anchored package dimensions.
+fn apply_author_dimensions(settings: &ViewerSettings, data: &mut ViewerExportData) {
+    use ketchup_manufacturing::viewer_export::view::{Anchor, Dimension, LengthUnit};
+    let world = |point_mm| Anchor {
+        occurrence: None,
+        point_mm,
+    };
+    data.dimensions = settings
+        .dimensions
+        .iter()
+        .map(|dimension| Dimension {
+            id: dimension.id,
+            from: world(dimension.from_mm),
+            to: world(dimension.to_mm),
+            label_offset_mm: [0.0; 3],
+            value_mm: dimension.value_mm(),
+            display_unit: LengthUnit::Millimetre,
+        })
+        .collect();
+    data.scenes_without_dimensions
+        .clone_from(&settings.scenes_without_dimensions);
 }
 
 fn source_error(target: &str, reason: &str) -> Rejection {

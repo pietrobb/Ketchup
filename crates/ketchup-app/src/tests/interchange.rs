@@ -1,5 +1,6 @@
 //! Import and export: STL, DXF, STEP, SketchUp, GLB, BTLX, MPR and fabrication.
 
+use super::shell::step_until;
 use super::*;
 
 #[test]
@@ -128,7 +129,24 @@ fn viewer_menu_exports_saved_scenes_and_package_without_editing_cad() {
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
-    harness.run();
+    harness.step();
+    assert!(!path.exists());
+    let activity = harness
+        .state()
+        .file_activity_label()
+        .expect("export indication");
+    assert!(
+        harness
+            .query_all(egui_kittest::kittest::by().label(&activity))
+            .next()
+            .is_some()
+    );
+    step_until(
+        &mut harness,
+        Duration::from_secs(10),
+        "Viewer export did not finish",
+        |app| app.file_activity_label().is_none(),
+    );
     let package = ketchup_view_format::Package::read(std::fs::File::open(&path).unwrap()).unwrap();
     assert_eq!(package.manifest.start_scene, Some(first.0));
     assert_eq!(package.manifest.scenes.len(), 2);
@@ -213,6 +231,7 @@ fn viewer_renders_every_exported_scene(path: &std::path::Path) {
                 visible: &visible,
                 style: &DisplayStyle::Shaded,
                 section: None,
+                guides: false,
             },
         );
         let pixels = target.read_rgba(&device, &queue).expect("readback");
@@ -349,6 +368,21 @@ fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent
     let export = harness
         .state()
         .command_label(AppCommand::ExportSheetMetalManufacturing);
+    let present_export = |harness: &mut Harness<'_, KetchupApp>| {
+        harness.step();
+        let label = harness
+            .state()
+            .file_activity_label()
+            .expect("export indication");
+        assert!(
+            harness
+                .query_all(egui_kittest::kittest::by().label(&label))
+                .next()
+                .is_some()
+        );
+        harness.run();
+        assert!(harness.state().file_activity_label().is_none());
+    };
 
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
@@ -357,7 +391,7 @@ fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
-    harness.run();
+    present_export(&mut harness);
     assert!(!flat_pattern.exists());
     assert!(!bend_table.exists());
     assert!(harness.state().side_effect_receipts.is_empty());
@@ -369,7 +403,7 @@ fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
-    harness.run();
+    present_export(&mut harness);
     let initial_dxf = std::fs::read(&flat_pattern).unwrap();
     let initial_bends = std::fs::read(&bend_table).unwrap();
     assert!(
@@ -391,7 +425,7 @@ fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
-    harness.run();
+    present_export(&mut harness);
     assert_eq!(std::fs::read(&flat_pattern).unwrap(), initial_dxf);
     assert_eq!(std::fs::read(&bend_table).unwrap(), initial_bends);
     assert_eq!(harness.state().side_effect_receipts.len(), 3);

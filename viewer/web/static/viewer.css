@@ -1,0 +1,28 @@
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #1b1b1b;
+  color: #ddd;
+  font-family: system-ui, sans-serif;
+}
+
+#ketchup-viewer {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+#ketchup-viewer-status {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  height: 1.5em;
+  text-align: center;
+}
+
+#ketchup-viewer-status:empty {
+  display: none;
+}

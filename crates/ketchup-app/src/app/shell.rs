@@ -67,6 +67,7 @@ impl KetchupApp {
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {
+                activity: Default::default(),
                 container_data: ketchup_model::persistence::ContainerData::default(),
                 review_candidate: None,
                 migration_review_plan: None,
@@ -232,6 +233,7 @@ impl KetchupApp {
                 worker_path: None,
                 worker_attempted: false,
                 task: None,
+                task_started: None,
                 mutation_readiness: MutationReadiness::Ready,
                 results: ExactResultRegistry::default(),
                 topology_results: ExactResultRegistry::default(),
@@ -308,6 +310,14 @@ impl KetchupApp {
         snapshot: &Snapshot,
         include_hidden: bool,
     ) -> Result<Vec<CurrentVisibleMesh>, ExportError> {
+        Self::mesh_scene(snapshot, &self.exact.results, include_hidden)
+    }
+
+    pub(super) fn mesh_scene(
+        snapshot: &Snapshot,
+        results: &ExactResultRegistry,
+        include_hidden: bool,
+    ) -> Result<Vec<CurrentVisibleMesh>, ExportError> {
         let occurrences = snapshot
             .scene_query()
             .into_iter()
@@ -334,10 +344,24 @@ impl KetchupApp {
             });
         }
 
+        // Resolved once: per occurrence this rescanned every result of the
+        // document, which froze large models (1 854 parts) for minutes.
+        let mut packages = BTreeMap::new();
+        for package in results.render_values(snapshot) {
+            packages
+                .entry((package.definition_id(), package.producer_feature_id()))
+                .or_insert(package);
+        }
+        let mut terminals_by_definition = BTreeMap::new();
         let mut scene = Vec::new();
         for occurrence in occurrences {
-            let terminals = exact_body_terminal_features(snapshot, occurrence.definition_id)
-                .map_err(ExportError::failed)?;
+            let terminals = match terminals_by_definition.entry(occurrence.definition_id) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => entry.insert(
+                    exact_body_terminal_features(snapshot, occurrence.definition_id)
+                        .map_err(ExportError::failed)?,
+                ),
+            };
             if terminals.is_empty() {
                 return Err(ExportError::OccurrenceNotExportable {
                     occurrence: occurrence.instance_path.clone(),
@@ -358,18 +382,13 @@ impl KetchupApp {
                         mesh: Box::new(mesh.clone()),
                     }
                 } else {
-                    let package = self
-                        .exact.results
-                        .render_values(snapshot)
-                        .find(|package| {
-                            package.definition_id() == occurrence.definition_id
-                                && package.producer_feature_id() == *producer_feature_id
-                        })
+                    let package = packages
+                        .get(&(occurrence.definition_id, *producer_feature_id))
                         .ok_or_else(|| ExportError::OccurrenceNotExportable {
                             occurrence: occurrence.instance_path.clone(),
                             reason: "has no current accepted exact result for a terminal body feature",
                         })?;
-                    CurrentVisibleMeshSource::Exact(Box::new((**package).clone()))
+                    CurrentVisibleMeshSource::Exact(Arc::clone(package))
                 };
                 scene.push(CurrentVisibleMesh {
                     source,
@@ -615,7 +634,7 @@ impl KetchupApp {
     }
 
     /// What a typed length expression comes to, shown above the value box
-    /// ("600+2*18" → "= 636 mm"). Angles, counts and factors get none.
+    /// ("600+2*18" â†’ "= 636 mm"). Angles, counts and factors get none.
     pub(crate) fn value_box_length_preview(&self) -> Option<String> {
         let length_field = matches!(
             self.value_label_key(),
@@ -648,7 +667,7 @@ impl KetchupApp {
         self.theme
     }
 
-    /// Switch appearance. Purely presentational — the document never changes.
+    /// Switch appearance. Purely presentational â€” the document never changes.
     pub fn set_theme(&mut self, theme: ThemeKind) {
         self.theme = theme;
         self.digest = self.catalog.text(theme.label_key());
@@ -899,6 +918,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ExportPrintThreeMf);
                 self.menu_command(ui, AppCommand::ExportBlenderGlb);
                 self.menu_command(ui, AppCommand::ExportViewer);
+                self.menu_command(ui, AppCommand::OpenViewerComments);
                 self.menu_command(ui, AppCommand::ExportGeneralFabrication);
                 self.menu_command(ui, AppCommand::ExportWeldmentCutList);
                 self.menu_command(ui, AppCommand::ExportProjectDrawings);
@@ -1259,15 +1279,28 @@ impl KetchupApp {
                 },
                 self.catalog.text("status-refs-guaranteed"),
             ]);
-            chips.push(if self.exact.results.is_empty() {
-                self.catalog.text("status-exact-unavailable")
-            } else {
-                let (bodies, refs) = self.exact_status_counts();
-                self.catalog.format(
-                    "status-exact-current",
-                    &BTreeMap::from([("bodies", bodies.to_string()), ("refs", refs.to_string())]),
-                )
-            });
+            chips.push(
+                if let Some((done, total)) = self.exact_geometry_progress() {
+                    self.catalog.format(
+                        "viewport-exact-progress",
+                        &BTreeMap::from([("done", done.to_string()), ("total", total.to_string())]),
+                    )
+                } else if self.exact.results.is_empty() {
+                    self.catalog.text("status-exact-unavailable")
+                } else {
+                    let (bodies, refs) = self.exact_status_counts();
+                    self.catalog.format(
+                        "status-exact-current",
+                        &BTreeMap::from([
+                            ("bodies", bodies.to_string()),
+                            ("refs", refs.to_string()),
+                        ]),
+                    )
+                },
+            );
+            if let Some(label) = self.file_activity_label() {
+                chips.push(label);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(16.0);
                 ui.label(
@@ -1288,6 +1321,7 @@ impl KetchupApp {
     /// integration and by the offscreen [`crate::testing::HeadlessShell`].
     pub fn ui(&mut self, context: &egui::Context) {
         self.begin_live_image_frame();
+        self.file.activity.context = Some(context.clone());
         self.poll_live_consent(context);
         self.poll_live_bridge(context);
         self.poll_validator_panel(context);
@@ -1373,6 +1407,8 @@ impl KetchupApp {
                         self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
                         self.show_viewer_notes(ui);
+                        self.show_viewer_dimensions(ui);
+                        self.show_received_comments(ui);
                         self.show_helix_tool(ui);
                         self.show_parameter_editor(ui);
                         if !Self::is_manual_alpha_build() {
@@ -1417,6 +1453,8 @@ impl KetchupApp {
                         self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
                         self.show_viewer_notes(ui);
+                        self.show_viewer_dimensions(ui);
+                        self.show_received_comments(ui);
                         self.show_helix_tool(ui);
                         self.show_parameter_editor(ui);
                         self.show_validator_panel(ui);
@@ -1475,6 +1513,7 @@ impl KetchupApp {
         self.show_live_consent(context);
         self.poll_assistant_chat(context);
         self.finish_live_image_frame(context);
+        self.finish_file_activity_frame(context);
         self.show_close_guard(context);
         self.refresh_work_recovery_checkpoint();
     }

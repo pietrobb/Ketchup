@@ -159,7 +159,7 @@ fn main() -> eframe::Result {
                     );
                 }
                 if let Some(path) = document_path.as_deref() {
-                    app.open_document_path(path);
+                    app.queue_open_document_path(path);
                 }
             }
             Ok(Box::new(app))

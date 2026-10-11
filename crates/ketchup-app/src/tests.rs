@@ -374,4 +374,5 @@ mod interchange;
 mod organization;
 pub(crate) mod shell;
 mod transform;
+mod viewer_comments;
 mod viewport;

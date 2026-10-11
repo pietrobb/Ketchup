@@ -2482,6 +2482,7 @@ dependencies = [
  "ketchup-manufacturing",
  "ketchup-model",
  "ketchup-rejection",
+ "ketchup-tolerance",
  "serde",
  "serde_json",
  "sha2",
@@ -2495,6 +2496,7 @@ dependencies = [
  "egui_kittest",
  "ketchup-geometry",
  "ketchup-rejection",
+ "ketchup-tolerance",
  "ketchup-view-format",
  "num-traits",
  "pollster",
@@ -2512,6 +2514,19 @@ dependencies = [
  "android-activity",
  "eframe",
  "ketchup-viewer",
+]
+
+[[package]]
+name = "ketchup-viewer-web"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "js-sys",
+ "ketchup-rejection",
+ "ketchup-viewer",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -5170,6 +5185,7 @@ dependencies = [
  "hashbrown 0.15.5",
  "js-sys",
  "log",
+ "naga",
  "parking_lot",
  "portable-atomic",
  "profiling",
@@ -5177,6 +5193,7 @@ dependencies = [
  "smallvec",
  "static_assertions",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
  "wgpu-core",
  "wgpu-hal",
@@ -5209,6 +5226,7 @@ dependencies = [
  "thiserror 2.0.19",
  "wgpu-core-deps-apple",
  "wgpu-core-deps-emscripten",
+ "wgpu-core-deps-wasm",
  "wgpu-core-deps-windows-linux-android",
  "wgpu-hal",
  "wgpu-types",
@@ -5228,6 +5246,15 @@ name = "wgpu-core-deps-emscripten"
 version = "25.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f09ad7aceb3818e52539acc679f049d3475775586f3f4e311c30165cf2c00445"
+dependencies = [
+ "wgpu-hal",
+]
+
+[[package]]
+name = "wgpu-core-deps-wasm"
+version = "25.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eca8809ad123f6c7f2c5e01a2c7117c4fdfd02f70bd422ee2533f69dfa98756c"
 dependencies = [
  "wgpu-hal",
 ]

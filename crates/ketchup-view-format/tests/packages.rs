@@ -2,14 +2,14 @@ use ketchup_view_format::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-fn path(root_occurrence_id: u64) -> InstancePath {
+pub(crate) fn path(root_occurrence_id: u64) -> InstancePath {
     InstancePath {
         root_occurrence_id,
         steps: vec![],
     }
 }
 
-fn camera() -> Camera {
+pub(crate) fn camera() -> Camera {
     Camera {
         eye_mm: [200.0, -300.0, 200.0],
         target_mm: [0.0; 3],
@@ -79,7 +79,7 @@ fn manifest(digest: String, document_id: u64, revision: u64) -> Manifest {
     }
 }
 
-fn encode_glb(doc: &Value, binary: &[u8]) -> Vec<u8> {
+pub(crate) fn encode_glb(doc: &Value, binary: &[u8]) -> Vec<u8> {
     let mut json = serde_json::to_vec(doc).expect("json");
     while !json.len().is_multiple_of(4) {
         json.push(b' ');
@@ -108,7 +108,7 @@ fn encode_glb(doc: &Value, binary: &[u8]) -> Vec<u8> {
     data
 }
 
-fn fixture() -> (Manifest, Value, Vec<u8>) {
+pub(crate) fn fixture() -> (Manifest, Value, Vec<u8>) {
     let digest = "a".repeat(16);
     let identity = [
         1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -294,6 +294,23 @@ fn offline_roundtrip_preserves_scenes_notes_units_and_shared_occurrences() {
         reopened.manifest.definitions[0].local_dimensions,
         Some(LocalDimensions::AuthoredAxes { size_mm: [10.0; 3] })
     );
+}
+
+#[test]
+fn real_export_dimensions_and_camera_roundtrip_without_float_drift() {
+    let (mut manifest, doc, binary) = fixture();
+    manifest.definitions[0].local_dimensions = Some(LocalDimensions::AuthoredAxes {
+        size_mm: [654.3767280093307, 1528.9853375461387, 12.0],
+    });
+    manifest.scenes[0].camera.target_mm[1] = 3970.2126872349427;
+    manifest.scenes[0].camera.projection = Projection::Orthographic {
+        short_span_mm: 21490.237817102257,
+    };
+    let package = Package {
+        manifest,
+        glb: encode_glb(&doc, &binary),
+    };
+    assert_eq!(Package::read(bytes(&package).as_slice()).unwrap(), package);
 }
 
 #[test]

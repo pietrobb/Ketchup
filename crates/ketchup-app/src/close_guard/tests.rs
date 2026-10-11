@@ -1,6 +1,8 @@
+use crate::tests::shell::step_until;
 use crate::{AssistantChatMessage, AssistantMessageRole, KetchupApp, dialogs::ScriptedFileDialogs};
 use eframe::egui::{self, ViewportCommand, ViewportEvent, ViewportId, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable as _};
+use std::time::Duration;
 
 fn shell(dialogs: ScriptedFileDialogs, dirty: bool) -> Harness<'static, KetchupApp> {
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
@@ -46,6 +48,12 @@ fn click(harness: &mut Harness<'_, KetchupApp>, key: &str) {
     let label = harness.state().catalog.text(key);
     harness.get_by_role_and_label(Role::Button, &label).click();
     harness.step();
+    step_until(
+        harness,
+        Duration::from_secs(10),
+        "save did not finish",
+        |app| !app.native_save_in_progress(),
+    );
     assert_eq!(
         harness.output().viewport_output[&ViewportId::ROOT]
             .commands
@@ -181,6 +189,98 @@ fn canceled_save_and_failed_write_leave_the_document_open_and_dirty() {
         close_event(&mut harness);
         assert!(canceled(&harness));
     }
+}
+
+#[test]
+fn save_on_close_remains_responsive_while_disk_is_locked_and_protects_new_edits() {
+    for concurrent_edit in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("close-locked.ketchup");
+        let lock = std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap();
+        lock.lock().unwrap();
+        let mut harness = shell(ScriptedFileDialogs::new().queue_save(&path), true);
+        close_event(&mut harness);
+        harness.run();
+        let save = harness.state().catalog.text("file-save");
+        harness.get_by_role_and_label(Role::Button, &save).click();
+        harness.step();
+        step_until(
+            &mut harness,
+            Duration::from_secs(10),
+            "save did not start writing",
+            |app| app.native_save_is_writing(),
+        );
+        for _ in 0..8 {
+            let started = std::time::Instant::now();
+            harness.step();
+            assert!(started.elapsed() < std::time::Duration::from_millis(500));
+            let label = harness.state().file_activity_label().unwrap();
+            assert!(
+                harness
+                    .query_all(egui_kittest::kittest::by().label(&label))
+                    .next()
+                    .is_some()
+            );
+            assert!(
+                !harness.output().viewport_output[&ViewportId::ROOT]
+                    .commands
+                    .contains(&ViewportCommand::Close)
+            );
+        }
+        assert!(!path.exists());
+        if concurrent_edit {
+            assert!(harness.state_mut().create_box());
+        }
+        lock.unlock().unwrap();
+        step_until(
+            &mut harness,
+            Duration::from_secs(10),
+            "save did not finish",
+            |app| !app.native_save_in_progress(),
+        );
+        assert!(path.is_file());
+        assert_eq!(harness.state().is_dirty(), concurrent_edit);
+        assert_eq!(harness.state().close_guard.pending, concurrent_edit);
+        assert_eq!(
+            harness.output().viewport_output[&ViewportId::ROOT]
+                .commands
+                .contains(&ViewportCommand::Close),
+            !concurrent_edit
+        );
+        close_event(&mut harness);
+        assert_eq!(canceled(&harness), concurrent_edit);
+    }
+}
+
+#[test]
+fn saving_elsewhere_during_close_preparation_does_not_authorize_closing() {
+    let directory = tempfile::tempdir().unwrap();
+    let requested = directory.path().join("requested.ketchup");
+    let elsewhere = directory.path().join("elsewhere.ketchup");
+    let mut harness = shell(ScriptedFileDialogs::new().queue_save(&requested), true);
+    close_event(&mut harness);
+    harness.run();
+    let save = harness.state().catalog.text("file-save");
+    harness.get_by_role_and_label(Role::Button, &save).click();
+    harness.step();
+    assert!(harness.state().native_save_in_progress());
+    assert!(harness.state_mut().save_document_to(&elsewhere));
+    assert!(!harness.state().is_dirty());
+    step_until(
+        &mut harness,
+        Duration::from_secs(10),
+        "save did not finish",
+        |app| !app.native_save_in_progress(),
+    );
+    assert!(elsewhere.is_file());
+    assert!(!requested.exists());
+    assert!(harness.state().close_guard.pending);
+    assert!(harness.state().close_guard.approved.is_none());
+    assert!(
+        !harness.output().viewport_output[&ViewportId::ROOT]
+            .commands
+            .contains(&ViewportCommand::Close)
+    );
 }
 
 #[test]

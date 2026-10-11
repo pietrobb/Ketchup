@@ -1,6 +1,6 @@
 //! The binary `.ketchup-view` envelope: header, size limits and checksum.
 
-use crate::{Manifest, glb, reject};
+use crate::{Comments, MAX_COMMENTS_BYTES, Manifest, glb, reject};
 use ketchup_rejection::Rejection;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
@@ -11,10 +11,25 @@ const MAGIC: &[u8; 11] = b"KETCHUPVIEW";
 const VERSION: u16 = 1;
 /// Magic, version, two payload lengths and the SHA-256 of both payloads.
 const HEADER_BYTES: usize = 11 + 2 + 4 + 4 + 32;
+/// Signature of the optional comments section after the payload.
+const COMMENTS_MAGIC: &[u8; 11] = b"KETCHUPNOTE";
+/// Comments magic, JSON length and the SHA-256 of the JSON.
+const COMMENTS_HEADER_BYTES: usize = 11 + 4 + 32;
 /// Largest accepted manifest JSON.
 pub const MAX_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
 /// Largest accepted embedded GLB.
 pub const MAX_GLB_BYTES: usize = 256 * 1024 * 1024;
+/// Most entries in one list of a package: GLB nodes, meshes, primitives, accessors and
+/// buffer views; manifest definitions, occurrences and dimensions.
+pub(crate) const MAX_ENTRIES: usize = 100_000;
+/// Most scenes in one package.
+pub(crate) const MAX_SCENES: usize = 1_000;
+/// Most source attributes on one occurrence.
+pub(crate) const MAX_ATTRIBUTES: usize = 1_024;
+/// Most steps in one occurrence path.
+pub(crate) const MAX_PATH_STEPS: usize = 128;
+/// Longest definition or instance-path key a GLB node carries.
+pub(crate) const MAX_KEY_BYTES: usize = 4096;
 
 /// One `.ketchup-view` package: the manifest and its embedded display GLB.
 #[derive(Clone, Debug, PartialEq)]
@@ -32,7 +47,71 @@ impl Package {
     }
 
     /// Read and fully validate a package; size limits are checked before allocating.
-    pub fn read(mut reader: impl Read) -> Result<Self, Rejection> {
+    /// Comments saved into a copy of the package are validated and dropped.
+    pub fn read(reader: impl Read) -> Result<Self, Rejection> {
+        Ok(Self::read_with_comments(reader)?.0)
+    }
+
+    /// Read a package and the customer's comments saved into this copy, if any.
+    /// The comments section follows the payload and is not part of the export
+    /// identity, so the comments stay bound to the package they were written on.
+    pub fn read_with_comments(
+        mut reader: impl Read,
+    ) -> Result<(Self, Option<Comments>), Rejection> {
+        let package = Self::read_payload(&mut reader)?;
+        let mut rest = Vec::new();
+        reader
+            .take(u64::try_from(COMMENTS_HEADER_BYTES + MAX_COMMENTS_BYTES + 1).expect("bounded"))
+            .read_to_end(&mut rest)
+            .map_err(|error| {
+                reject("payload", "The package end could not be read.").caused_by(error)
+            })?;
+        if rest.is_empty() {
+            return Ok((package, None));
+        }
+        let trailing = || reject("payload", "Trailing data is not part of a Viewer package.");
+        if rest.len() < COMMENTS_HEADER_BYTES || &rest[..11] != COMMENTS_MAGIC {
+            return Err(trailing());
+        }
+        let len = length(&rest[11..15], MAX_COMMENTS_BYTES, "comments")?;
+        let json = &rest[COMMENTS_HEADER_BYTES..];
+        if json.len() != len {
+            return Err(trailing());
+        }
+        if Sha256::digest(json)[..] != rest[15..COMMENTS_HEADER_BYTES] {
+            return Err(reject(
+                "checksum",
+                "The comments in the package are damaged.",
+            ));
+        }
+        let comments = Comments::read(json, &package)?;
+        Ok((package, Some(comments)))
+    }
+
+    /// Write this package followed by `comments` on it, as a commented copy.
+    pub fn write_with_comments(
+        &self,
+        mut writer: impl Write,
+        comments: &Comments,
+    ) -> Result<(), Rejection> {
+        let mut json = Vec::new();
+        comments.write(&mut json, self)?;
+        let mut package = Vec::new();
+        self.write(&mut package)?;
+        package.extend_from_slice(COMMENTS_MAGIC);
+        package.extend_from_slice(
+            &u32::try_from(json.len())
+                .expect("4 MiB fits u32")
+                .to_le_bytes(),
+        );
+        package.extend_from_slice(&Sha256::digest(&json));
+        package.extend_from_slice(&json);
+        writer.write_all(&package).map_err(|error| {
+            reject("output", "The Viewer package could not be written.").caused_by(error)
+        })
+    }
+
+    fn read_payload(mut reader: impl Read) -> Result<Self, Rejection> {
         let mut header = [0; HEADER_BYTES];
         reader.read_exact(&mut header).map_err(|error| {
             reject("header", "The package header is incomplete.").caused_by(error)
@@ -57,16 +136,6 @@ impl Package {
             })?;
         if payload.len() != total {
             return Err(reject("payload", "The package payload is truncated."));
-        }
-        let mut trailing = [0];
-        if reader.read(&mut trailing).map_err(|error| {
-            reject("payload", "The package end could not be read.").caused_by(error)
-        })? != 0
-        {
-            return Err(reject(
-                "payload",
-                "Trailing data is not part of a Viewer package.",
-            ));
         }
         if Sha256::digest(&payload)[..] != header[21..] {
             return Err(reject("checksum", "The package contents are damaged."));

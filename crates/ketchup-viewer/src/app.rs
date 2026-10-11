@@ -3,15 +3,35 @@
 
 use crate::{
     camera::{Camera, StandardView},
+    dimensions,
     gpu::{MeshRenderer, RenderTarget, RenderView},
     model::Model,
+    review::Review,
     text::Language,
 };
 use eframe::egui;
 use ketchup_rejection::{Rejection, RejectionPhase};
-use ketchup_view_format::{DisplayStyle, LocalDimensions, Section};
+use ketchup_view_format::{CommentView, DisplayStyle, InstancePath, LocalDimensions, Section};
 use num_traits::ToPrimitive;
-use std::{io::Read, path::Path};
+use std::{
+    io::{Read, Write},
+    path::Path,
+};
+
+mod comments_section;
+
+/// Screens narrower than this (in points) get the phone layout.
+const NARROW_WIDTH: f32 = 650.0;
+
+/// A file action the host performs for the Viewer when it has no native file
+/// dialogs, as in a web page: it picks or downloads the file itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileRequest {
+    OpenPackage,
+    OpenComments,
+    SaveComments,
+    SaveCommentedCopy,
+}
 
 /// The read-only Viewer window: one opened package, its active scene and the
 /// viewer-only state (selection, visibility, camera) that never edits the package.
@@ -23,11 +43,21 @@ pub struct ViewerApp {
     visible: Vec<bool>,
     style: DisplayStyle,
     section: Option<Section>,
+    /// Axes and ground grid, on by default as in the Kečup editor.
+    guides: bool,
+    /// The customer's "Show dimensions" switch over the scene's dimensions.
+    dimensions: bool,
+    /// Comments on the opened package.
+    review: Option<Review>,
     error: Option<Rejection>,
     render_state: Option<eframe::egui_wgpu::RenderState>,
     renderer: Option<MeshRenderer>,
     target: Option<(RenderTarget, egui::TextureId)>,
     language: Language,
+    /// `Some` when the host handles file actions; the requests wait here.
+    host_files: Option<Vec<FileRequest>>,
+    /// The host is still downloading the shared model.
+    loading: bool,
 }
 
 impl ViewerApp {
@@ -42,11 +72,53 @@ impl ViewerApp {
             visible: vec![],
             style: DisplayStyle::ShadedEdges,
             section: None,
+            guides: true,
+            dimensions: true,
+            review: None,
             error: None,
             render_state,
             renderer: None,
             target: None,
+            host_files: None,
+            loading: false,
         }
+    }
+
+    /// While the host downloads a shared model the empty view says so.
+    pub fn set_loading(&mut self, loading: bool) {
+        self.loading = loading;
+    }
+
+    /// Let the host pick and download files: the file buttons queue
+    /// [`FileRequest`]s for [`Self::take_file_requests`] instead of opening dialogs.
+    #[must_use]
+    pub fn with_host_files(mut self) -> Self {
+        self.host_files = Some(vec![]);
+        self
+    }
+
+    /// File actions the customer asked for since the last call.
+    pub fn take_file_requests(&mut self) -> Vec<FileRequest> {
+        self.host_files
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    fn request_file(&mut self, request: FileRequest) {
+        if let Some(requests) = &mut self.host_files {
+            requests.push(request);
+        }
+    }
+
+    /// Show a failure the host met while reading or writing files.
+    pub fn report(&mut self, error: Rejection) {
+        self.error = Some(error);
+    }
+
+    /// The failure the Viewer shows now, if any.
+    pub fn error(&self) -> Option<&Rejection> {
+        self.error.as_ref()
     }
 
     /// Use `language` instead of the system language.
@@ -84,8 +156,18 @@ impl ViewerApp {
     }
 
     // Mobile adapters can supply bytes from their sandbox or document picker.
+    /// Comments saved into a commented copy are opened with it.
     pub fn open(&mut self, reader: impl Read) -> Result<(), Rejection> {
-        let model = Model::read(reader)?;
+        let (package, comments) = ketchup_view_format::Package::read_with_comments(reader)?;
+        self.open_package(package, comments)
+    }
+
+    fn open_package(
+        &mut self,
+        package: ketchup_view_format::Package,
+        comments: Option<ketchup_view_format::Comments>,
+    ) -> Result<(), Rejection> {
+        let model = Model::from_package(package)?;
         // Validate every scene before replacing the current model or its GPU resources.
         let cameras = model
             .manifest()
@@ -103,12 +185,17 @@ impl ViewerApp {
             .as_ref()
             .map(|state| MeshRenderer::new(&state.device, &model))
             .transpose()?;
+        let review = match comments {
+            Some(comments) => Review::with(comments),
+            None => Review::new(&model)?,
+        };
         self.visible = visibility(&model, scene);
         self.style = scene.map_or(DisplayStyle::ShadedEdges, |i| {
             model.manifest().scenes[i].style.clone()
         });
         self.section = scene.and_then(|i| model.manifest().scenes[i].section.clone());
         self.model = Some(model);
+        self.review = Some(review);
         self.renderer = renderer;
         self.camera = Some(camera);
         self.scene = scene;
@@ -117,16 +204,33 @@ impl ViewerApp {
         Ok(())
     }
 
-    /// Open a local `.ketchup-view` file; the current model stays on failure.
+    /// Open a local `.ketchup-view`, or a `.ketchup-comments` with the
+    /// package it was written on: the open one, else the matching package in
+    /// the same folder. The current model stays when nothing matches.
     pub fn open_path(&mut self, path: &Path) -> Result<(), Rejection> {
-        let file = std::fs::File::open(path).map_err(|error| {
-            Rejection::new("viewer.file.open", RejectionPhase::Io)
-                .target(path.display().to_string())
-                .reason("The local file could not be opened.")
-                .fix_hint("Choose an accessible .ketchup-view exported from Kečup.")
-                .caused_by(error)
-        })?;
-        self.open(file)
+        let is_comments = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("ketchup-comments"));
+        if !is_comments {
+            return self.open(std::io::BufReader::new(open_file(path)?));
+        }
+        let mut bytes = Vec::new();
+        open_file(path)?
+            .read_to_end(&mut bytes)
+            .map_err(|error| file_error(path, error))?;
+        let wanted = ketchup_view_format::Comments::read_unbound(bytes.as_slice())?
+            .export
+            .package_sha256;
+        let open = self
+            .model
+            .as_ref()
+            .is_some_and(|model| model.package().payload_sha256().is_ok_and(|s| s == wanted));
+        if !open {
+            let package = sibling_package(path, &wanted)?;
+            self.open_package(package, None)?;
+        }
+        self.open_comments(bytes.as_slice())
     }
 
     /// Switch to a saved scene: its camera, visibility, style and section.
@@ -147,40 +251,73 @@ impl ViewerApp {
         Ok(())
     }
 
-    /// Toolbar with scenes on top, information panel at the side (bottom on
+    /// The desktop Open button with the system file dialog.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    fn open_with_dialog(&mut self, ui: &mut egui::Ui) {
+        if ui.button(self.t("viewer-open")).clicked()
+            && self.may_discard_comments()
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter(self.t("viewer-file-filter"), &["ketchup-view"])
+                .pick_file()
+            && let Err(error) = self.open_path(&path)
+        {
+            self.error = Some(error);
+        }
+    }
+
+    /// Standard views and the axes/grid and dimensions switches.
+    fn view_controls(&mut self, ui: &mut egui::Ui) {
+        for view in StandardView::ALL {
+            let label = self.t(match view {
+                StandardView::Iso => "viewer-view-iso",
+                StandardView::Front => "viewer-view-front",
+                StandardView::Back => "viewer-view-back",
+                StandardView::Left => "viewer-view-left",
+                StandardView::Right => "viewer-view-right",
+                StandardView::Top => "viewer-view-top",
+            });
+            if ui.small_button(label).clicked()
+                && let (Some(model), Some(camera)) = (&self.model, &mut self.camera)
+            {
+                camera.standard(model, view);
+            }
+        }
+        let guides = self.t("viewer-guides");
+        ui.checkbox(&mut self.guides, guides);
+        if self.model.is_some() {
+            let label = self.t("viewer-dimensions");
+            ui.checkbox(&mut self.dimensions, label);
+        }
+    }
+
+    /// Toolbar with scenes on top, part information at the side (bottom on
     /// narrow phone screens) and the 3D view in the middle.
     pub fn show(&mut self, ctx: &egui::Context) {
+        let narrow = ctx.screen_rect().width() < NARROW_WIDTH;
         egui::TopBottomPanel::top("viewer_toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.heading(self.t("viewer-title"));
-                #[cfg(any(target_os = "windows", target_os = "macos"))]
-                if ui.button(self.t("viewer-open")).clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter(self.t("viewer-file-filter"), &["ketchup-view"])
-                        .pick_file()
-                    && let Err(error) = self.open_path(&path)
-                {
-                    self.error = Some(error);
+                if !narrow {
+                    ui.heading(self.t("viewer-title"));
+                }
+                if self.host_files.is_some() {
+                    if ui.button(self.t("viewer-open")).clicked() && self.may_discard_comments() {
+                        self.request_file(FileRequest::OpenPackage);
+                    }
+                } else {
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    self.open_with_dialog(ui);
                 }
                 if ui.button(self.t("viewer-fit")).clicked()
                     && let Some(model) = &self.model
                 {
                     self.camera = Some(Camera::fit(model));
                 }
-                for view in StandardView::ALL {
-                    let label = self.t(match view {
-                        StandardView::Iso => "viewer-view-iso",
-                        StandardView::Front => "viewer-view-front",
-                        StandardView::Back => "viewer-view-back",
-                        StandardView::Left => "viewer-view-left",
-                        StandardView::Right => "viewer-view-right",
-                        StandardView::Top => "viewer-view-top",
-                    });
-                    if ui.small_button(label).clicked()
-                        && let (Some(model), Some(camera)) = (&self.model, &mut self.camera)
-                    {
-                        camera.standard(model, view);
-                    }
+                // On a phone the views and switches fold into one menu, so the
+                // toolbar stays one row and the model keeps the screen.
+                if narrow {
+                    ui.menu_button(self.t("viewer-views"), |ui| self.view_controls(ui));
+                } else {
+                    self.view_controls(ui);
                 }
             });
             let mut requested = None;
@@ -208,17 +345,25 @@ impl ViewerApp {
                 ui.small(error.fix_hint_text());
             }
         });
-        if ctx.screen_rect().width() < 650.0 {
+        if narrow {
             egui::TopBottomPanel::bottom("viewer_info_mobile")
                 .max_height(160.0)
                 .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.information(ui))
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.information(ui);
+                        self.comments(ui);
+                    })
                 });
         } else {
+            // A fixed minimum width keeps the side from jumping wider when a comment starts.
             egui::SidePanel::right("viewer_info")
                 .default_width(220.0)
+                .min_width(220.0)
                 .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.information(ui))
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.information(ui);
+                        self.comments(ui);
+                    })
                 });
         }
         egui::CentralPanel::default().show(ctx, |ui| self.viewport(ui));
@@ -304,7 +449,11 @@ impl ViewerApp {
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Image, true, viewport_label)
         });
-        let prompt = self.t("viewer-open-prompt");
+        let prompt = self.t(if self.loading {
+            "viewer-loading"
+        } else {
+            "viewer-open-prompt"
+        });
         let (Some(model), Some(camera)) = (&self.model, &mut self.camera) else {
             ui.painter().text(
                 rect.center(),
@@ -315,6 +464,9 @@ impl ViewerApp {
             );
             return;
         };
+        if response.double_clicked() {
+            *camera = Camera::fit(model);
+        }
         let aspect = rect.width().max(1.0) / rect.height().max(1.0);
         let touch = ui.input(egui::InputState::multi_touch);
         let short_px = rect.width().min(rect.height()).max(1.0);
@@ -325,12 +477,12 @@ impl ViewerApp {
                 short_px,
             );
         } else if response.dragged() {
+            // As in SketchUp: left or middle button orbits, Shift with either
+            // pans; the right button pans too, there is no context menu.
             let (delta, pan) = ui.input(|input| {
                 (
                     input.pointer.delta(),
-                    input.pointer.secondary_down()
-                        || input.pointer.middle_down()
-                        || input.modifiers.shift,
+                    input.pointer.secondary_down() || input.modifiers.shift,
                 )
             });
             if pan {
@@ -343,17 +495,35 @@ impl ViewerApp {
         if response.hovered() || multitouch {
             let factor =
                 ui.input(|input| input.zoom_delta() * (input.smooth_scroll_delta.y * 0.002).exp());
-            camera.zoom(factor);
+            if factor != 1.0 {
+                // Zoom towards the pointer, or the pinch centre on a phone.
+                let anchor = touch
+                    .filter(|touch| touch.num_touches > 1)
+                    .map(|touch| touch.center_pos)
+                    .or_else(|| response.hover_pos());
+                match anchor {
+                    Some(point) => camera.zoom_at(factor, ndc(rect, point), aspect),
+                    None => camera.zoom(factor),
+                }
+            }
         }
         if response.clicked()
             && let Some(point) = response.interact_pointer_pos()
         {
-            let ndc = [
-                (point.x - rect.left()) / rect.width() * 2.0 - 1.0,
-                1.0 - (point.y - rect.top()) / rect.height() * 2.0,
-            ];
-            match camera.pick(model, ndc, aspect, &self.visible, self.section.as_ref()) {
-                Ok(selected) => self.selected = selected,
+            let at = ndc(rect, point);
+            match camera.pick_point(model, at, aspect, &self.visible, self.section.as_ref()) {
+                Ok(hit) => match &mut self.review {
+                    // While placing an arrow, clicks place its ends, not a selection.
+                    Some(review)
+                        if review
+                            .draft
+                            .as_ref()
+                            .is_some_and(|draft| draft.placing.is_some()) =>
+                    {
+                        review.place_arrow_end(model, hit, camera.point_on_view_plane(at, aspect));
+                    }
+                    _ => self.selected = hit.map(|(index, _)| index),
+                },
                 Err(error) => self.error = Some(error),
             }
         }
@@ -393,6 +563,7 @@ impl ViewerApp {
                         visible: &self.visible,
                         style: &self.style,
                         section: self.section.as_ref(),
+                        guides: self.guides,
                     },
                 );
                 ui.painter().image(
@@ -403,7 +574,242 @@ impl ViewerApp {
                 );
             }
         }
+        if self.dimensions {
+            let mut placed =
+                dimensions::placed(model, self.scene, &self.visible, self.section.as_ref());
+            if let Some(index) = self.selected {
+                placed.extend(dimensions::overall(model, index));
+            }
+            paint_dimensions(&ui.painter_at(rect), rect, camera, &placed);
+        }
+        if let Some(review) = &self.review {
+            let arrows = review
+                .visible_arrows()
+                .iter()
+                .filter_map(|arrow| {
+                    Some((
+                        dimensions::world_point(model, &arrow.tail, &self.visible)?,
+                        dimensions::world_point(model, &arrow.tip, &self.visible)?,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            paint_arrows(&ui.painter_at(rect), rect, camera, &arrows);
+        }
     }
+
+    /// What is shown now, for a new comment.
+    fn current_view(&self) -> Option<(CommentView, Option<InstancePath>)> {
+        let (model, camera) = (self.model.as_ref()?, self.camera.as_ref()?);
+        let occurrences = &model.manifest().occurrences;
+        Some((
+            CommentView {
+                camera: camera.to_scene(),
+                hidden: occurrences
+                    .iter()
+                    .zip(&self.visible)
+                    .filter(|(_, visible)| !**visible)
+                    .map(|(occurrence, _)| occurrence.path.clone())
+                    .collect(),
+                style: self.style.clone(),
+                section: self.section.clone(),
+            },
+            self.selected.map(|index| occurrences[index].path.clone()),
+        ))
+    }
+
+    /// Restore the view comment `id` was written in.
+    fn show_comment(&mut self, id: u64) -> Result<(), Rejection> {
+        let (Some(model), Some(review)) = (&self.model, &mut self.review) else {
+            return Ok(());
+        };
+        let Some(comment) = review.comments.comments.iter().find(|c| c.id == id) else {
+            return Ok(());
+        };
+        let camera = Camera::from_scene(model, &comment.view.camera)?;
+        let occurrences = &model.manifest().occurrences;
+        self.visible = occurrences
+            .iter()
+            .map(|occurrence| {
+                !comment.view.hidden.iter().any(|hidden| {
+                    hidden.root_occurrence_id == occurrence.path.root_occurrence_id
+                        && occurrence.path.steps.starts_with(&hidden.steps)
+                })
+            })
+            .collect();
+        self.style = comment.view.style.clone();
+        self.section = comment.view.section.clone();
+        self.selected = comment
+            .selected
+            .as_ref()
+            .and_then(|path| occurrences.iter().position(|o| &o.path == path));
+        self.camera = Some(camera);
+        self.scene = None;
+        review.active = Some(id);
+        Ok(())
+    }
+
+    /// Comments returned for the opened package; the current ones stay on failure.
+    pub fn open_comments(&mut self, reader: impl Read) -> Result<(), Rejection> {
+        let Some(model) = &self.model else {
+            return Err(
+                Rejection::new("viewer.comments.open", RejectionPhase::Request)
+                    .reason("Open the Viewer package the comments belong to first.")
+                    .fix_hint("Open the .ketchup-view, then its .ketchup-comments."),
+            );
+        };
+        self.review = Some(Review::open(reader, model)?);
+        Ok(())
+    }
+
+    /// Write the comments for the author; the package file is never touched.
+    pub fn save_comments(&mut self, writer: impl Write) -> Result<(), Rejection> {
+        match (&self.model, &mut self.review) {
+            (Some(model), Some(review)) => review.save(writer, model),
+            _ => Ok(()),
+        }
+    }
+
+    /// Write a copy of the package with every comment in it; the opened
+    /// file is untouched unless the customer chooses its path.
+    pub fn save_commented_copy(&mut self, writer: impl Write) -> Result<(), Rejection> {
+        match (&self.model, &mut self.review) {
+            (Some(model), Some(review)) => review.save_copy(writer, model),
+            _ => Ok(()),
+        }
+    }
+
+    /// Components, scenes and comments of the opened package, for the
+    /// headless `--verify-open` check of an installed Viewer.
+    pub fn opened_counts(&self) -> Option<[usize; 3]> {
+        let model = self.model.as_ref()?;
+        Some([
+            model.manifest().occurrences.len(),
+            model.manifest().scenes.len(),
+            self.review
+                .as_ref()
+                .map_or(0, |review| review.comments.comments.len()),
+        ])
+    }
+
+    /// Unsaved comments would be lost by opening another package or closing.
+    pub fn has_unsaved_comments(&self) -> bool {
+        self.review.as_ref().is_some_and(|review| review.unsaved)
+    }
+
+    /// Whether the opened comments may be replaced now; the first attempt
+    /// with unsaved comments only shows a warning.
+    fn may_discard_comments(&mut self) -> bool {
+        let allowed = self.review.as_mut().is_none_or(Review::may_discard);
+        if !allowed {
+            self.error = Some(
+                Rejection::new("viewer.comments.unsaved", RejectionPhase::Request)
+                    .reason("The comments have not been saved.")
+                    .fix_hint("Save the comments, or repeat the action to discard them."),
+            );
+        }
+        allowed
+    }
+}
+
+/// Comment arrows from tail to tip, drawn over the 3D image.
+fn paint_arrows(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    camera: &Camera,
+    arrows: &[([f64; 3], [f64; 3])],
+) {
+    let aspect = rect.width().max(1.0) / rect.height().max(1.0);
+    let stroke = egui::Stroke::new(3.0_f32, egui::Color32::from_rgb(64, 200, 255));
+    let screen = |point: [f64; 3]| {
+        let p = camera.project(point.map(|v| v.to_f32().unwrap_or(f32::MAX)), aspect);
+        ((0.0..=1.0).contains(&p[2]) && p[0].is_finite() && p[1].is_finite()).then(|| {
+            egui::pos2(
+                rect.left() + (p[0] + 1.0) * 0.5 * rect.width(),
+                rect.top() + (1.0 - p[1]) * 0.5 * rect.height(),
+            )
+        })
+    };
+    for &(tail, tip) in arrows {
+        let (Some(tail), Some(tip)) = (screen(tail), screen(tip)) else {
+            continue;
+        };
+        painter.line_segment([tail, tip], stroke);
+        let back = (tail - tip).normalized();
+        if back.is_finite() && back != egui::Vec2::ZERO {
+            let base = tip + back * 16.0;
+            let across = back.rot90() * 7.0;
+            painter.add(egui::Shape::convex_polygon(
+                vec![tip, base + across, base - across],
+                stroke.color,
+                egui::Stroke::NONE,
+            ));
+        }
+        painter.circle_filled(tip, 3.0, stroke.color);
+    }
+}
+
+/// Extension lines, the dimension line with arrows and the value label,
+/// drawn over the 3D image; points behind the camera are left out.
+fn paint_dimensions(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    camera: &Camera,
+    placed: &[dimensions::Placed],
+) {
+    let aspect = rect.width().max(1.0) / rect.height().max(1.0);
+    let line = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(255, 214, 102));
+    let screen = |point: [f64; 3]| {
+        let p = camera.project(point.map(|v| v.to_f32().unwrap_or(f32::MAX)), aspect);
+        ((0.0..=1.0).contains(&p[2]) && p[0].is_finite() && p[1].is_finite()).then(|| {
+            egui::pos2(
+                rect.left() + (p[0] + 1.0) * 0.5 * rect.width(),
+                rect.top() + (1.0 - p[1]) * 0.5 * rect.height(),
+            )
+        })
+    };
+    for dimension in placed {
+        let shifted = |p: [f64; 3]| std::array::from_fn(|i| p[i] + dimension.offset[i]);
+        let (Some(from), Some(to), Some(a), Some(b)) = (
+            screen(dimension.from),
+            screen(dimension.to),
+            screen(shifted(dimension.from)),
+            screen(shifted(dimension.to)),
+        ) else {
+            continue;
+        };
+        painter.line_segment([from, a], line);
+        painter.line_segment([to, b], line);
+        painter.line_segment([a, b], line);
+        let along = (b - a).normalized();
+        if along.is_finite() && along != egui::Vec2::ZERO {
+            let across = along.rot90() * 4.0;
+            for (tip, back) in [(a, along), (b, -along)] {
+                let base = tip + back * 10.0;
+                painter.line_segment([tip, base + across], line);
+                painter.line_segment([tip, base - across], line);
+            }
+        }
+        let galley = painter.layout_no_wrap(
+            dimension.text.clone(),
+            egui::FontId::proportional(14.0),
+            egui::Color32::WHITE,
+        );
+        let label = egui::Rect::from_center_size(a.lerp(b, 0.5), galley.size()).expand(3.0);
+        painter.rect_filled(label, 3.0, egui::Color32::from_black_alpha(190));
+        painter.galley(
+            label.min + egui::vec2(3.0, 3.0),
+            galley,
+            egui::Color32::WHITE,
+        );
+    }
+}
+
+/// A screen point as normalized device coordinates of the 3D view `rect`.
+fn ndc(rect: egui::Rect, point: egui::Pos2) -> [f32; 2] {
+    [
+        (point.x - rect.left()) / rect.width() * 2.0 - 1.0,
+        1.0 - (point.y - rect.top()) / rect.height() * 2.0,
+    ]
 }
 
 /// Millimetres with at most two decimals and no trailing zeros: `600`, `18.5`.
@@ -429,208 +835,56 @@ fn visibility(model: &Model, scene: Option<usize>) -> Vec<bool> {
         .collect()
 }
 
+fn file_error(path: &Path, error: std::io::Error) -> Rejection {
+    Rejection::new("viewer.file.open", RejectionPhase::Io)
+        .target(path.display().to_string())
+        .reason("The local file could not be opened.")
+        .fix_hint("Choose an accessible .ketchup-view or .ketchup-comments file.")
+        .caused_by(error)
+}
+
+fn open_file(path: &Path) -> Result<std::fs::File, Rejection> {
+    std::fs::File::open(path).map_err(|error| file_error(path, error))
+}
+
+/// The `.ketchup-view` next to `comments` whose payload has `sha256`; other
+/// packages and unreadable files are skipped, never matched by name.
+fn sibling_package(
+    comments: &Path,
+    sha256: &str,
+) -> Result<ketchup_view_format::Package, Rejection> {
+    let folder = comments.parent().unwrap_or_else(|| Path::new("."));
+    let entries = std::fs::read_dir(folder).map_err(|error| file_error(folder, error))?;
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("ketchup-view"))
+        })
+        .filter_map(|path| {
+            let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+            Some(ketchup_view_format::Package::read_with_comments(file).ok()?.0)
+        })
+        .find(|package| package.payload_sha256().is_ok_and(|s| s == sha256))
+        .ok_or_else(|| {
+            Rejection::new("viewer.comments.package", RejectionPhase::Request)
+                .target(comments.display().to_string())
+                .reason("The Viewer package these comments were written on is not in this folder.")
+                .fix_hint("Put the .ketchup-comments next to its .ketchup-view, or open that package first.")
+        })
+}
+
 impl eframe::App for ViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Closing with unsaved comments warns once; closing again discards them.
+        if ctx.input(|input| input.viewport().close_requested()) && !self.may_discard_comments() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         self.show(ctx);
     }
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use crate::model::tests::package;
-    use egui_kittest::kittest::Queryable as _;
-    use ketchup_view_format::{Camera as SceneCamera, Projection, Scene};
-
-    pub(crate) fn scene_package() -> ketchup_view_format::Package {
-        let mut package = package(0.1);
-        let camera = SceneCamera {
-            eye_mm: [98.0, 210.0, 500.0],
-            target_mm: [98.0, 210.0, 309.0],
-            up: [0.0, 1.0, 0.0],
-            projection: Projection::Orthographic {
-                short_span_mm: 30.0,
-            },
-        };
-        package.manifest.scenes = vec![
-            Scene {
-                id: 1,
-                name: "First scene".into(),
-                camera: camera.clone(),
-                hidden: vec![package.manifest.occurrences[1].path.clone()],
-                style: DisplayStyle::ShadedEdges,
-                section: None,
-                visible_dimensions: vec![],
-            },
-            Scene {
-                id: 2,
-                name: "Second scene".into(),
-                camera: SceneCamera {
-                    target_mm: [508.0, 210.0, 310.0],
-                    eye_mm: [508.0, 210.0, 500.0],
-                    ..camera
-                },
-                hidden: vec![package.manifest.occurrences[0].path.clone()],
-                style: DisplayStyle::Wireframe,
-                section: Some(Section {
-                    normal: [1.0, 0.0, 0.0],
-                    offset_mm: 510.0,
-                }),
-                visible_dimensions: vec![],
-            },
-        ];
-        package.manifest.start_scene = Some(1);
-        package
-    }
-
-    #[test]
-    fn package_open_selection_and_scenes_preserve_source_data_and_failed_open_state() {
-        let package = scene_package();
-        let mut bytes = Vec::new();
-        package.write(&mut bytes).expect("fixture");
-        let mut app = ViewerApp::new(None).with_language(Language::ENGLISH);
-        app.open(bytes.as_slice()).expect("package open");
-        assert_eq!(app.visible, [true, false]);
-        assert_eq!(
-            app.model.as_ref().expect("model").manifest(),
-            &package.manifest
-        );
-        assert!(app.open(&b"bad data"[..]).is_err());
-        assert_eq!(app.scene, Some(0));
-        let model = app.model.as_ref().expect("model");
-        let camera = app.camera.as_ref().expect("camera");
-        let point = camera.project([88.0, 208.0, 312.0], 1.0);
-        assert_eq!(
-            camera
-                .pick(model, [point[0], point[1]], 1.0, &app.visible, None)
-                .expect("pick"),
-            Some(0)
-        );
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(900.0, 600.0))
-            .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
-        harness.run();
-        let rect = harness.get_by_label("Model view").rect();
-        let projected = harness
-            .state()
-            .camera
-            .as_ref()
-            .expect("camera")
-            .project([88.0, 208.0, 314.0], rect.width() / rect.height());
-        let point = egui::pos2(
-            rect.left() + (projected[0] + 1.0) * rect.width() * 0.5,
-            rect.top() + (1.0 - projected[1]) * rect.height() * 0.5,
-        );
-        harness
-            .input_mut()
-            .events
-            .push(egui::Event::PointerMoved(point));
-        harness.input_mut().events.push(egui::Event::PointerButton {
-            pos: point,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: egui::Modifiers::NONE,
-        });
-        harness.run();
-        harness.input_mut().events.push(egui::Event::PointerButton {
-            pos: point,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: egui::Modifiers::NONE,
-        });
-        harness.run();
-        assert_eq!(harness.state().selected, Some(0));
-        harness.get_by_label("Source path: occurrence:10");
-        harness.get_by_label("Material: Authored material");
-        harness.get_by_label("Definition note");
-        harness.get_by_label("Size: 10 × 10 × 10 mm");
-        harness.get_by_label("Second scene").click();
-        harness.run();
-        assert_eq!(harness.state().scene, Some(1));
-        assert_eq!(harness.state().visible, [false, true]);
-        assert!(matches!(harness.state().style, DisplayStyle::Wireframe));
-        assert_eq!(
-            harness.state().section.as_ref().expect("section").offset_mm,
-            510.0
-        );
-        assert_eq!(
-            harness.state().camera.as_ref().expect("camera").center,
-            [508.0, 210.0, 310.0]
-        );
-        harness.set_size(egui::vec2(390.0, 700.0));
-        harness.run();
-        let scale = harness.state().camera.as_ref().expect("camera").scale;
-        let yaw = harness.state().camera.as_ref().expect("camera").yaw;
-        let touch = |id, phase, x| egui::Event::Touch {
-            device_id: egui::TouchDeviceId(0),
-            id: egui::TouchId(id),
-            phase,
-            pos: egui::pos2(x, 250.0),
-            force: None,
-        };
-        harness.input_mut().events.extend([
-            touch(1, egui::TouchPhase::Start, 150.0),
-            touch(2, egui::TouchPhase::Start, 250.0),
-        ]);
-        harness.run();
-        harness.input_mut().events.extend([
-            touch(1, egui::TouchPhase::Move, 100.0),
-            touch(2, egui::TouchPhase::Move, 300.0),
-        ]);
-        harness.run();
-        let camera = harness.state().camera.as_ref().expect("camera");
-        assert!(
-            camera.scale < scale * 0.75,
-            "pinch must zoom mobile viewport"
-        );
-        assert_eq!(camera.yaw, yaw, "pinch must not also orbit");
-    }
-
-    #[test]
-    fn hide_isolate_views_and_pan_change_only_the_view_in_slovak() {
-        let mut bytes = Vec::new();
-        scene_package().write(&mut bytes).expect("fixture");
-        let mut app =
-            ViewerApp::new(None).with_language(Language::from_tag("sk").expect("Slovak catalog"));
-        app.open(bytes.as_slice()).expect("open");
-        let manifest = app.model.as_ref().expect("model").manifest().clone();
-        app.selected = Some(0);
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(900.0, 600.0))
-            .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
-        harness.run();
-        harness.get_by_label("Rozmer: 10 × 10 × 10 mm");
-        harness.get_by_label("Definition note");
-        harness.get_by_label("Izolovať").click();
-        harness.run();
-        assert_eq!(harness.state().visible, [true, false]);
-        harness.get_by_label("Skryť").click();
-        harness.run();
-        assert_eq!(harness.state().visible, [false, false]);
-        assert_eq!(harness.state().selected, None);
-        harness.get_by_label("Obnoviť scénu").click();
-        harness.run();
-        assert_eq!(harness.state().visible, [true, false], "scene visibility");
-        harness.get_by_label("Zhora").click();
-        harness.run();
-        let camera = harness.state().camera.clone().expect("camera");
-        assert!((camera.pitch - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
-        let top = camera.project(camera.center, 1.0);
-        assert!(
-            top[0].abs() < 1e-4 && top[1].abs() < 1e-4,
-            "framed on model"
-        );
-        let mut panned = camera.clone();
-        panned.pan([100.0, 0.0], 500.0);
-        let moved = panned.project(camera.center, 1.0);
-        assert!(
-            (moved[0] - 0.4).abs() < 1e-3 && moved[1].abs() < 1e-4,
-            "a 100 px drag on a 500 px view moves the model 1:1 to the right"
-        );
-        assert_eq!(
-            harness.state().model.as_ref().expect("model").manifest(),
-            &manifest,
-            "the package is never edited"
-        );
-    }
-}
+pub(crate) mod tests;

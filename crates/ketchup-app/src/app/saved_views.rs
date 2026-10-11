@@ -207,17 +207,7 @@ impl KetchupApp {
             return false;
         }
         let before = self.camera_view_state();
-        let camera = view.camera;
-        self.camera.projection_mode = if camera.parallel {
-            ProjectionMode::Parallel
-        } else {
-            ProjectionMode::Perspective
-        };
-        self.camera.yaw = camera.yaw_rad as f32;
-        self.camera.pitch = camera.pitch_rad as f32;
-        self.camera.target_z = camera.target_z_mm;
-        self.camera.zoom = camera.zoom as f32;
-        self.camera.pan = Vec2::new(camera.pan[0] as f32, camera.pan[1] as f32);
+        self.set_saved_camera(&view.camera);
         for flag in ViewFlag::ALL {
             self.view.set(flag, view.style.contains(flag_name(flag)));
         }
@@ -230,6 +220,20 @@ impl KetchupApp {
             &BTreeMap::from([("name", view.name)]),
         );
         true
+    }
+
+    /// Point the camera as `camera` describes; display state is unchanged.
+    pub(crate) fn set_saved_camera(&mut self, camera: &SavedCamera) {
+        self.camera.projection_mode = if camera.parallel {
+            ProjectionMode::Parallel
+        } else {
+            ProjectionMode::Perspective
+        };
+        self.camera.yaw = camera.yaw_rad as f32;
+        self.camera.pitch = camera.pitch_rad as f32;
+        self.camera.target_z = camera.target_z_mm;
+        self.camera.zoom = camera.zoom as f32;
+        self.camera.pan = Vec2::new(camera.pan[0] as f32, camera.pan[1] as f32);
     }
 
     /// The scene tab stays highlighted only while the layers show what the

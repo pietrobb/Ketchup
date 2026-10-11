@@ -333,7 +333,19 @@ impl KetchupApp {
                         }
                     }
                 }
-                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Empty) => {
+                    // Wake for the progress indicator of a long evaluation.
+                    if let Some(started) = self.exact.task_started {
+                        let shown_at = started + Duration::from_secs(1);
+                        context.request_repaint_after(
+                            shown_at.saturating_duration_since(Instant::now()).max(
+                                Duration::from_secs_f32(context.input(|input| input.predicted_dt))
+                                    + Duration::from_millis(250),
+                            ),
+                        );
+                    }
+                    return;
+                }
                 Err(TryRecvError::Disconnected) => {
                     self.exact.task.take();
                     self.exact.retry_at = Some(Instant::now() + Duration::from_secs(1));
@@ -357,6 +369,7 @@ impl KetchupApp {
                 .find(|path| path.is_file());
         }
         let repaint = context.clone();
+        self.exact.task_started = Some(Instant::now());
         self.exact.task = Some(ketchup_application::evaluation::start_exact_evaluation(
             snapshot,
             &self.file.container_data,
@@ -440,6 +453,18 @@ impl KetchupApp {
             .render_values(snapshot)
             .filter(|package| visible_definitions.contains(&package.definition_id()))
             .collect()
+    }
+
+    /// Finished and total bodies while exact geometry has been computing for
+    /// over a second; quick edits do not flash an indicator.
+    #[must_use]
+    pub fn exact_geometry_progress(&self) -> Option<(usize, usize)> {
+        if self.exact.task_started?.elapsed() < Duration::from_secs(1) {
+            return None;
+        }
+        let progress = self.exact.task.as_ref()?.progress();
+        (progress.completed_producers < progress.total_producers)
+            .then_some((progress.completed_producers, progress.total_producers))
     }
 
     #[must_use]

@@ -6,6 +6,7 @@ use super::*;
 /// The open file: where it lives, what was saved, and the recovery and
 /// migration reviews around opening it.
 pub(crate) struct FileState {
+    pub(crate) activity: crate::app::file_activity::FileActivity,
     pub(crate) container_data: ketchup_model::persistence::ContainerData,
     pub(crate) review_candidate: Option<ketchup_model::persistence::LoadOutcome>,
     pub(crate) migration_review_plan: Option<MigrationReviewPlan>,
@@ -206,6 +207,8 @@ pub(crate) struct ExactState {
     pub(crate) worker_path: Option<PathBuf>,
     pub(crate) worker_attempted: bool,
     pub(crate) task: Option<ExactEvaluationTask>,
+    /// When the running evaluation started; progress is shown only for long ones.
+    pub(crate) task_started: Option<Instant>,
     pub(crate) mutation_readiness: MutationReadiness,
     pub(crate) results: ExactResultRegistry,
     pub(crate) topology_results: ExactResultRegistry,
@@ -245,6 +248,8 @@ pub(crate) struct DrawingsState {
 pub(crate) struct ViewerPrepState {
     /// Notes or sharing choices changed since the document was opened or saved.
     pub(crate) unsaved: bool,
+    /// Customer comments returned on an export of this document.
+    pub(crate) received: crate::app::received_comments::ReceivedComments,
 }
 
 pub(crate) struct TakeoffCache {

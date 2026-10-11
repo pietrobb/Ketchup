@@ -1,7 +1,7 @@
 //! wgpu rendering of a package: one shared upload per GLB buffer, one draw per
 //! body instance, colors, selection, visibility, display style and section.
 
-use crate::{camera::Camera, model::Model};
+use crate::{camera::Camera, guides::Guides, model::Model};
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_view_format::{DisplayStyle, PrimitiveTopology, Section};
 use num_traits::ToPrimitive;
@@ -15,7 +15,15 @@ pub struct MeshRenderer {
     vertices: BTreeMap<usize, wgpu::Buffer>,
     indices: BTreeMap<usize, wgpu::Buffer>,
     draws: Vec<Draw>,
+    guides: Vec<GuideDraw>,
     uniform: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+/// One colour of the axes and ground grid, drawn as plain line segments.
+struct GuideDraw {
+    vertices: wgpu::Buffer,
+    count: u32,
     bind_group: wgpu::BindGroup,
 }
 
@@ -69,6 +77,7 @@ impl RenderTarget {
                 view_formats: &[],
             })
             .create_view(&wgpu::TextureViewDescriptor::default());
+        // The shader writes gamma-encoded bytes, which egui samples through `view`.
         let view = color.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
             color,
@@ -234,12 +243,14 @@ impl MeshRenderer {
                 });
             }
         }
+        let guides = guide_draws(device, &layout, &Guides::new(model.bounds_mm));
         Ok(Self {
             triangles,
             lines,
             vertices,
             indices,
             draws,
+            guides,
             uniform,
             bind_group,
         })
@@ -299,9 +310,9 @@ impl MeshRenderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.025,
-                            g: 0.035,
-                            b: 0.05,
+                            r: linear_srgb(0.025),
+                            g: linear_srgb(0.035),
+                            b: linear_srgb(0.05),
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -318,7 +329,7 @@ impl MeshRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_bind_group(0, &self.bind_group, &[0]);
             // Fill depth for every body before drawing any display edges.
             for draw in [PrimitiveTopology::Triangles, PrimitiveTopology::Lines]
                 .into_iter()
@@ -343,7 +354,7 @@ impl MeshRenderer {
                 } else {
                     &self.triangles
                 });
-                pass.set_bind_group(1, &draw.bind_group, &[]);
+                pass.set_bind_group(1, &draw.bind_group, &[0]);
                 pass.set_vertex_buffer(0, self.vertices[&draw.positions].slice(..));
                 pass.set_index_buffer(
                     self.indices[&draw.indices].slice(..),
@@ -351,17 +362,86 @@ impl MeshRenderer {
                 );
                 pass.draw_indexed(0..draw.count, 0, 0..1);
             }
+            if view.guides {
+                // After the bodies, so the model hides the grid and axes behind it.
+                pass.set_pipeline(&self.lines);
+                for guide in &self.guides {
+                    pass.set_bind_group(1, &guide.bind_group, &[0]);
+                    pass.set_vertex_buffer(0, guide.vertices.slice(..));
+                    pass.draw(0..guide.count, 0..1);
+                }
+            }
         }
         queue.submit([encoder.finish()]);
     }
 }
 
-/// The view state of a frame: selection, visibility, style and section.
+/// The view state of a frame: selection, visibility, style, section and
+/// whether the orientation axes and ground grid are shown.
 pub struct RenderView<'a> {
     pub selected: Option<usize>,
     pub visible: &'a [bool],
     pub style: &'a DisplayStyle,
     pub section: Option<&'a Section>,
+    pub guides: bool,
+}
+
+/// Upload the guides once per model, one draw per colour.
+fn guide_draws(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    guides: &Guides,
+) -> Vec<GuideDraw> {
+    const X: [f32; 3] = [0.85, 0.06, 0.05];
+    const Y: [f32; 3] = [0.05, 0.62, 0.08];
+    const Z: [f32; 3] = [0.08, 0.2, 0.95];
+    let dim = |c: [f32; 3]| c.map(|v| v * 0.55);
+    let groups = [
+        (&guides.grid, [0.11, 0.13, 0.16]),
+        (&guides.axes[0], X),
+        (&guides.axes[1], Y),
+        (&guides.axes[2], Z),
+        (&guides.negative_axes[0], dim(X)),
+        (&guides.negative_axes[1], dim(Y)),
+        (&guides.negative_axes[2], dim(Z)),
+    ];
+    let identity = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    groups
+        .into_iter()
+        .filter(|(segments, _)| !segments.is_empty())
+        .map(|(segments, [r, g, b])| {
+            // Package geometry is glTF metres with Y up; the shader converts back.
+            let bytes: Vec<u8> = segments
+                .iter()
+                .flatten()
+                .flat_map(|[x, y, z]| [x / 1000.0, z / 1000.0, -y / 1000.0])
+                .flat_map(f32::to_le_bytes)
+                .collect();
+            let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Viewer axes and grid"),
+                contents: &bytes,
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            // Never selectable (-2) and never cut by the scene section (1).
+            let uniform: Vec<u8> = identity
+                .into_iter()
+                .chain([r, g, b, 1.0, -2.0, 1.0, 0.0, 0.0])
+                .flat_map(f32::to_le_bytes)
+                .collect();
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Viewer guide colour"),
+                contents: &uniform,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            GuideDraw {
+                vertices,
+                count: u32::try_from(segments.len() * 2).expect("bounded guide count"),
+                bind_group: uniform_group(device, layout, &buffer),
+            }
+        })
+        .collect()
 }
 
 /// Refuse geometry over the device buffer limit or the upload and draw budget.
@@ -405,7 +485,8 @@ fn uniform_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
+                // Root CBVs avoid static descriptor aliasing observed on DX12/WARP.
+                has_dynamic_offset: true,
                 min_binding_size: None,
             },
             count: None,
@@ -426,6 +507,15 @@ fn uniform_group(
             resource: buffer.as_entire_binding(),
         }],
     })
+}
+
+/// Linear light as an sRGB-encoded channel, like the shader's `encode`.
+fn linear_srgb(value: f64) -> f64 {
+    if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// An 8-bit sRGB channel as linear light.
@@ -489,8 +579,10 @@ fn pipeline(
             depth_write_enabled: !lines,
             depth_compare: wgpu::CompareFunction::LessEqual,
             stencil: Default::default(),
+            // Faces are pushed back so their edges stay visible; WebGPU allows
+            // depth bias only on triangles, never on lines.
             bias: wgpu::DepthBiasState {
-                constant: if lines { -1 } else { 0 },
+                constant: if lines { 0 } else { 1 },
                 ..Default::default()
             },
         }),

@@ -31,6 +31,7 @@ fn package_instances_visibility_selection_edges_and_section_change_gpu_pixels() 
         visible: &[true, false],
         style: &DisplayStyle::Shaded,
         section: None,
+        guides: false,
     };
     renderer.render(&device, &queue, &target, &camera, &view);
     let before = pixels(&device, &queue, &target);
@@ -111,6 +112,75 @@ fn package_instances_visibility_selection_edges_and_section_change_gpu_pixels() 
     assert!(
         MeshRenderer::new(&device, &oversized).is_err(),
         "instance primitive budget checked before GPU allocation"
+    );
+    assert!(pollster::block_on(device.pop_error_scope()).is_none());
+}
+
+#[test]
+fn axes_and_grid_are_drawn_behind_the_model_and_ignore_the_section() {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("GPU adapter required, never skip rendering proof");
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("GPU device");
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let model = Model::from_package(crate::app::tests::scene_package()).expect("package");
+    let renderer = MeshRenderer::new(&device, &model).expect("upload");
+    let target = RenderTarget::new(&device, [128, 128]);
+    let mut camera = Camera::fit(&model);
+    camera.standard(&model, crate::camera::StandardView::Iso);
+    camera.zoom(0.3);
+    let section = Section {
+        normal: [0.0, 0.0, -1.0],
+        offset_mm: -1e6,
+    };
+    let mut view = RenderView {
+        selected: None,
+        visible: &[false, false],
+        style: &DisplayStyle::Shaded,
+        section: None,
+        guides: false,
+    };
+    renderer.render(&device, &queue, &target, &camera, &view);
+    let plain = pixels(&device, &queue, &target);
+    let background = plain[0..4].to_vec();
+    assert!(plain.chunks_exact(4).all(|p| p == background));
+    view.guides = true;
+    renderer.render(&device, &queue, &target, &camera, &view);
+    let guided = pixels(&device, &queue, &target);
+    let reddish = |p: &[u8]| {
+        p.chunks_exact(4)
+            .filter(|p| p[0] > p[1].saturating_add(80) && p[0] > p[2].saturating_add(80))
+            .count()
+    };
+    let blueish = |p: &[u8]| {
+        p.chunks_exact(4)
+            .filter(|p| p[2] > p[0].saturating_add(80) && p[2] > p[1].saturating_add(60))
+            .count()
+    };
+    assert!(reddish(&guided) > 10, "red X axis visible");
+    assert!(blueish(&guided) > 10, "blue Z axis visible");
+    assert!(
+        guided
+            .chunks_exact(4)
+            .filter(|p| p[1] > p[0].saturating_add(60) && p[1] > p[2].saturating_add(60))
+            .count()
+            > 10,
+        "green Y axis visible"
+    );
+    assert!(
+        guided.chunks_exact(4).filter(|p| *p != background).count()
+            > reddish(&guided) + blueish(&guided),
+        "grid lines visible besides the axes"
+    );
+    view.section = Some(&section);
+    renderer.render(&device, &queue, &target, &camera, &view);
+    assert_eq!(
+        guided,
+        pixels(&device, &queue, &target),
+        "a section never cuts the guides"
     );
     assert!(pollster::block_on(device.pop_error_scope()).is_none());
 }

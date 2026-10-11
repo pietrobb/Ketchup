@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="sk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <!-- Other origins (space-separated) whose models shared links may open, e.g.
+       "https://cdn.example.com". Empty: only models on this site. -->
+  <meta name="ketchup-viewer-allowed-origins" content="">
+  <title>Kečup Viewer</title>
+  <link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+  <canvas id="ketchup-viewer" aria-label="Kečup Viewer"></canvas>
+  <p id="ketchup-viewer-status" role="status">Načítava sa Kečup Viewer…</p>
+  <noscript>Kečup Viewer potrebuje JavaScript a WebAssembly.</noscript>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

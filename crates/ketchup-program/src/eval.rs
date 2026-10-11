@@ -1426,6 +1426,74 @@ mod joints;
 mod machining;
 mod support;
 
+/// Booleans between parts and tool bodies.
+#[starlark_module]
+fn boolean_builtins(builder: &mut GlobalsBuilder) {
+    /// Removes the volume of `tool` (a tool body or another part, as it is
+    /// now) from `part`. Applied after the part's other features.
+    fn subtract<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] tool: Value<'v>,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        apply_boolean(part, tool, name, ProgramBooleanKind::Subtract, eval)
+    }
+
+    /// Keeps only the volume `part` shares with `tool` (as it is now).
+    fn intersect<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] tool: Value<'v>,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        apply_boolean(part, tool, name, ProgramBooleanKind::Intersect, eval)
+    }
+
+    /// Joins `other` (touching or overlapping `part`) into `part` as one
+    /// solid; `other` stops being a separate part.
+    fn union<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] other: Value<'v>,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let (target, joined) = (part_name(part, heap)?, part_name(other, heap)?);
+        {
+            let state = state(eval)?;
+            let model = state.model.borrow();
+            if let Some(other) = model.part(&joined).or_else(|| model.tool(&joined))
+                && (other.holes().next().is_some() || other.pockets().next().is_some())
+            {
+                anyhow::bail!(
+                    "union({target:?}, {joined:?}): {joined:?} has holes or pockets; drill and mill after the union, on {target:?}"
+                );
+            }
+            if let (Some(a), Some(b)) = (model.part(&target), model.part(&joined)) {
+                let apart = Relation::between(a, b).distance;
+                if apart > TOLERANCE_MM {
+                    anyhow::bail!(
+                        "union({target:?}, {joined:?}): the parts are {apart:.3} mm apart; they must touch or overlap to become one solid"
+                    );
+                }
+            }
+        }
+        let result = apply_boolean(part, other, name, ProgramBooleanKind::Union, eval)?;
+        let state = state(eval)?;
+        state
+            .model
+            .borrow_mut()
+            .parts
+            .retain(|part| part.name != joined);
+        let mut sources = state.part_sources.borrow_mut();
+        if let Some(lines) = sources.remove(&joined) {
+            sources.entry(target).or_default().extend(lines);
+        }
+        Ok(result)
+    }
+}
+
 #[starlark_module]
 fn builtins(builder: &mut GlobalsBuilder) {
     /// A named number the caller can override. Returns an int when the
@@ -2050,70 +2118,6 @@ fn builtins(builder: &mut GlobalsBuilder) {
         })
     }
 
-    /// Removes the volume of `tool` (a tool body or another part, as it is
-    /// now) from `part`. Applied after the part's other features.
-    fn subtract<'v>(
-        #[starlark(require = pos)] part: Value<'v>,
-        #[starlark(require = pos)] tool: Value<'v>,
-        #[starlark(require = named)] name: Option<Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        apply_boolean(part, tool, name, ProgramBooleanKind::Subtract, eval)
-    }
-
-    /// Keeps only the volume `part` shares with `tool` (as it is now).
-    fn intersect<'v>(
-        #[starlark(require = pos)] part: Value<'v>,
-        #[starlark(require = pos)] tool: Value<'v>,
-        #[starlark(require = named)] name: Option<Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        apply_boolean(part, tool, name, ProgramBooleanKind::Intersect, eval)
-    }
-
-    /// Joins `other` (touching or overlapping `part`) into `part` as one
-    /// solid; `other` stops being a separate part.
-    fn union<'v>(
-        #[starlark(require = pos)] part: Value<'v>,
-        #[starlark(require = pos)] other: Value<'v>,
-        #[starlark(require = named)] name: Option<Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        let heap = eval.heap();
-        let (target, joined) = (part_name(part, heap)?, part_name(other, heap)?);
-        {
-            let state = state(eval)?;
-            let model = state.model.borrow();
-            if let Some(other) = model.part(&joined).or_else(|| model.tool(&joined))
-                && (other.holes().next().is_some() || other.pockets().next().is_some())
-            {
-                anyhow::bail!(
-                    "union({target:?}, {joined:?}): {joined:?} has holes or pockets; drill and mill after the union, on {target:?}"
-                );
-            }
-            if let (Some(a), Some(b)) = (model.part(&target), model.part(&joined)) {
-                let apart = Relation::between(a, b).distance;
-                if apart > TOLERANCE_MM {
-                    anyhow::bail!(
-                        "union({target:?}, {joined:?}): the parts are {apart:.3} mm apart; they must touch or overlap to become one solid"
-                    );
-                }
-            }
-        }
-        let result = apply_boolean(part, other, name, ProgramBooleanKind::Union, eval)?;
-        let state = state(eval)?;
-        state
-            .model
-            .borrow_mut()
-            .parts
-            .retain(|part| part.name != joined);
-        let mut sources = state.part_sources.borrow_mut();
-        if let Some(lines) = sources.remove(&joined) {
-            sources.entry(target).or_default().extend(lines);
-        }
-        Ok(result)
-    }
-
     /// Drills a hole into `face` (a face name or a face() value) along its
     /// inward normal. Give either face coordinates `at=(u, v)` (on a curved
     /// face `at=(angle, v)`, see face()) or a world point `world=(x, y, z)`
@@ -2356,6 +2360,7 @@ fn globals() -> Globals {
     .with(joints::builtins)
     .with(support::builtins)
     .with(path_builtins)
+    .with(boolean_builtins)
     .with_namespace("math", math_functions)
     .build()
 }
@@ -2601,6 +2606,7 @@ mod tests {
             .with(joints::builtins)
             .with(support::builtins)
             .with(path_builtins)
+            .with(boolean_builtins)
             .build()
             .names()
         {

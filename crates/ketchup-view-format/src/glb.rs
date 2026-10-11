@@ -1,6 +1,7 @@
 //! The embedded subset emitted by the existing Kečup GLB exporter: shared
 //! float POSITION accessors, u32 indices, matrices, colors and a node forest.
 //! No textures, extensions, sparse accessors, URIs, animation or executable data.
+use crate::container::{MAX_ENTRIES, MAX_KEY_BYTES};
 use crate::{MAX_GLB_BYTES, MAX_MANIFEST_BYTES, reject};
 use ketchup_rejection::Rejection;
 use serde::Deserialize;
@@ -125,9 +126,12 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<Info, Rejection> {
     })
 }
 
+/// GLB header plus the headers of its JSON and binary chunks.
+const GLB_MIN_BYTES: usize = 12 + 8 + 8;
+
 /// Parse the GLB chunks and check the whole document; returns it with its binary chunk.
 fn validated_document(bytes: &[u8]) -> Result<(Document, &[u8]), Rejection> {
-    if bytes.len() < 28
+    if bytes.len() < GLB_MIN_BYTES
         || bytes.len() > MAX_GLB_BYTES
         || &bytes[..4] != b"glTF"
         || word(&bytes[4..8]) != 2
@@ -208,11 +212,11 @@ fn validate_document(doc: &Document, binary: &[u8]) -> Result<(), Rejection> {
         || doc.buffers[0].byte_length > binary.len()
         || binary.len() - doc.buffers[0].byte_length > 3
         || doc.nodes.is_empty()
-        || doc.nodes.len() > 100_000
+        || doc.nodes.len() > MAX_ENTRIES
         || doc.meshes.is_empty()
-        || doc.meshes.len() > 100_000
-        || doc.accessors.len() > 100_000
-        || doc.buffer_views.len() > 100_000
+        || doc.meshes.len() > MAX_ENTRIES
+        || doc.accessors.len() > MAX_ENTRIES
+        || doc.buffer_views.len() > MAX_ENTRIES
     {
         return Err(reject(
             "glb",
@@ -259,7 +263,7 @@ fn validate_document(doc: &Document, binary: &[u8]) -> Result<(), Rejection> {
     for mesh in &doc.meshes {
         let _mesh_name = &mesh.name;
         primitive_count += mesh.primitives.len();
-        if mesh.primitives.is_empty() || primitive_count > 100_000 {
+        if mesh.primitives.is_empty() || primitive_count > MAX_ENTRIES {
             return Err(reject("glb.meshes", "Empty mesh or too many primitives."));
         }
         for primitive in &mesh.primitives {
@@ -393,7 +397,7 @@ fn validate_tree(doc: &Document) -> Result<(), Rejection> {
                 .as_str()
                 .is_some_and(|s| matches!(s, "group" | "occurrence" | "body")),
             "ketchupDefinition" | "ketchupInstancePath" => {
-                !value.as_str().is_some_and(|s| s.len() <= 4096)
+                !value.as_str().is_some_and(|s| s.len() <= MAX_KEY_BYTES)
             }
             _ => true,
         }) {

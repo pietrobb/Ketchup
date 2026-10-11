@@ -30,6 +30,11 @@ impl StandardView {
     ];
 }
 
+/// The Kečup editor's orbit speed, so both programs turn alike.
+const ORBIT_RADIANS_PER_PX: f32 = 0.006;
+/// Just short of straight up or down, where the turntable would flip.
+const MAX_PITCH: f32 = 1.55;
+
 /// An orbit camera around `center`; `scale` is the half span of the shorter
 /// viewport side in millimetres.
 #[derive(Clone, Debug)]
@@ -113,6 +118,7 @@ impl Camera {
                 camera.lens_shift = lens_shift_short.map(|v| v.to_f32().expect("bounded shift"));
             }
         }
+        // not a tolerance: smallest span whose f32 projection matrix stays finite.
         if !camera.scale.is_finite() || camera.scale < 1e-6 {
             return Err(
                 Rejection::new("viewer.camera.range", RejectionPhase::Request)
@@ -126,16 +132,52 @@ impl Camera {
         Ok(camera)
     }
 
-    /// Rotate around the center by a pointer delta in pixels.
+    /// Turntable orbit around the center by a pointer delta in pixels, as in
+    /// SketchUp and the Kečup editor: dragging right turns the model right
+    /// about the vertical axis, dragging down tips its top towards the viewer.
+    /// Z stays up and the view never flips over the pole.
     pub fn orbit(&mut self, delta: [f32; 2]) {
-        self.yaw = (self.yaw + delta[0] * 0.01) % std::f32::consts::TAU;
-        self.pitch = (self.pitch + delta[1] * 0.01).clamp(-1.5, 1.5);
+        if !delta.iter().all(|v| v.is_finite()) {
+            return;
+        }
+        self.yaw = (self.yaw - delta[0] * ORBIT_RADIANS_PER_PX) % std::f32::consts::TAU;
+        self.pitch = (self.pitch + delta[1] * ORBIT_RADIANS_PER_PX).clamp(-MAX_PITCH, MAX_PITCH);
+        // A tilted scene camera levels out once the customer turns the model.
+        self.roll = 0.0;
     }
 
     /// Zoom by `factor` (> 1 zooms in), limited relative to the model size.
     pub fn zoom(&mut self, factor: f32) {
         if factor.is_finite() && factor > 0.0 {
             self.scale = (self.scale / factor).clamp(self.radius * 0.01, self.radius * 100.0);
+        }
+    }
+
+    /// Zoom by `factor` keeping the point under the pointer at `ndc` in place,
+    /// like the mouse wheel in SketchUp; the orbit center moves along.
+    pub fn zoom_at(&mut self, factor: f32, ndc: [f32; 2], aspect: f32) {
+        let before = self.scale;
+        self.zoom(factor);
+        let kept = 1.0 - self.scale / before;
+        if !(kept.is_finite() && ndc.iter().all(|v| v.is_finite()) && aspect > 0.0) {
+            return;
+        }
+        let (_, right, up) = self.basis();
+        let sx = aspect.max(1.0);
+        let sy = (1.0 / aspect).max(1.0);
+        let shift = if self.short_fov.is_some() {
+            [2.0 * self.lens_shift[0] / sx, 2.0 * self.lens_shift[1] / sy]
+        } else {
+            [0.0; 2]
+        };
+        // Offset of the pointed point from the center on the target plane.
+        let offset = [
+            (ndc[0] - shift[0]) * before * sx,
+            (ndc[1] - shift[1]) * before * sy,
+        ];
+        for i in 0..3 {
+            self.center[i] = (self.center[i] + (right[i] * offset[0] + up[i] * offset[1]) * kept)
+                .clamp(-1e9, 1e9);
         }
     }
 
@@ -271,6 +313,20 @@ impl Camera {
         visible: &[bool],
         section: Option<&Section>,
     ) -> Result<Option<usize>, Rejection> {
+        Ok(self
+            .pick_point(model, ndc, aspect, visible, section)?
+            .map(|(index, _)| index))
+    }
+
+    /// Like [`Camera::pick`], with the world point hit on that occurrence.
+    pub fn pick_point(
+        &self,
+        model: &Model,
+        ndc: [f32; 2],
+        aspect: f32,
+        visible: &[bool],
+        section: Option<&Section>,
+    ) -> Result<Option<(usize, [f64; 3])>, Rejection> {
         let geometry = model.geometry()?;
         let (direction, right, up) = self.basis();
         let direction = Vec3::from(direction.map(f64::from));
@@ -297,7 +353,7 @@ impl Camera {
                 -direction,
             )
         };
-        let mut nearest: Option<(usize, f32)> = None;
+        let mut nearest: Option<(usize, f32, [f64; 3])> = None;
         for body in &model.bodies {
             if !visible[body.occurrence] {
                 continue;
@@ -337,14 +393,61 @@ impl Camera {
                         if section.is_some_and(|s| Vec3::from(s.normal).dot(hit) > s.offset_mm) {
                             continue;
                         }
-                        if nearest.is_none_or(|(_, z)| depth < z) {
-                            nearest = Some((body.occurrence, depth));
+                        if nearest.is_none_or(|(_, z, _)| depth < z) {
+                            nearest = Some((body.occurrence, depth, coordinates));
                         }
                     }
                 }
             }
         }
-        Ok(nearest.map(|(index, _)| index))
+        Ok(nearest.map(|(index, _, point)| (index, point)))
+    }
+
+    /// The point on the plane through the orbit center facing the viewer
+    /// that `ndc` shows; where an arrow's free end goes.
+    pub fn point_on_view_plane(&self, ndc: [f32; 2], aspect: f32) -> [f64; 3] {
+        let (_, right, up) = self.basis();
+        let sx = aspect.max(1.0);
+        let sy = (1.0 / aspect).max(1.0);
+        let shift = if self.short_fov.is_some() {
+            [2.0 * self.lens_shift[0] / sx, 2.0 * self.lens_shift[1] / sy]
+        } else {
+            [0.0; 2]
+        };
+        let offset = [
+            (ndc[0] - shift[0]) * self.scale * sx,
+            (ndc[1] - shift[1]) * self.scale * sy,
+        ];
+        std::array::from_fn(|i| {
+            f64::from(self.center[i] + right[i] * offset[0] + up[i] * offset[1])
+        })
+    }
+
+    /// This view as a package camera, so a comment restores it elsewhere.
+    pub fn to_scene(&self) -> ketchup_view_format::Camera {
+        let (direction, _, up) = self.basis();
+        let target = self.center.map(f64::from);
+        let (distance, projection) = match self.short_fov {
+            Some(fov) => (
+                f64::from(self.scale / (fov * 0.5).tan()),
+                Projection::Perspective {
+                    short_fov_radians: f64::from(fov),
+                    lens_shift_short: self.lens_shift.map(f64::from),
+                },
+            ),
+            None => (
+                f64::from(self.radius * 2.0),
+                Projection::Orthographic {
+                    short_span_mm: f64::from(self.scale * 2.0),
+                },
+            ),
+        };
+        ketchup_view_format::Camera {
+            eye_mm: std::array::from_fn(|i| target[i] + f64::from(direction[i]) * distance),
+            target_mm: target,
+            up: up.map(f64::from),
+            projection,
+        }
     }
 }
 
@@ -355,7 +458,9 @@ fn ray_hit(origin: Vec3, ray: Vec3, points: [[f32; 3]; 3]) -> Option<Vec3> {
     let edge2 = c - a;
     let p = ray.cross(edge2);
     let determinant = edge1.dot(p);
-    if determinant.abs() <= edge1.length() * edge2.length() * ray.length() * 1e-12 {
+    if determinant.abs()
+        <= edge1.length() * edge2.length() * ray.length() * ketchup_tolerance::NEGLIGIBLE
+    {
         return None;
     }
     let offset = origin - a;
@@ -471,5 +576,68 @@ mod tests {
         assert_eq!(camera.scale, scale / 2.0);
         camera.zoom(f32::NAN);
         assert_eq!(camera.scale, scale / 2.0);
+    }
+
+    #[test]
+    fn orbit_turns_like_sketchup_and_wheel_zoom_keeps_the_pointed_point() {
+        let model = Model::from_package(package(0.1)).expect("fixture");
+        let mut camera = Camera::fit(&model);
+        camera.standard(&model, StandardView::Front);
+        // A point on the front-right of the center, seen from the front.
+        let point = std::array::from_fn(|i| camera.center[i] + [10.0, -10.0, 0.0][i]);
+        let x = camera.project(point, 1.0)[0];
+        camera.orbit([40.0, 0.0]);
+        assert!(
+            camera.project(point, 1.0)[0] > x,
+            "dragging right turns the model right: its near side follows the pointer"
+        );
+        let top = std::array::from_fn(|i| camera.center[i] + [0.0, 0.0, 10.0][i]);
+        let depth = camera.project(top, 1.0)[2];
+        camera.orbit([0.0, 40.0]);
+        assert!(
+            camera.project(top, 1.0)[2] < depth,
+            "dragging down raises the eye, the top tips towards the viewer"
+        );
+        for _ in 0..100 {
+            camera.orbit([0.0, 500.0]);
+        }
+        let (_, _, up) = camera.basis();
+        assert!(
+            camera.pitch <= MAX_PITCH && up[2] > 0.0,
+            "never over the pole"
+        );
+        camera.roll = 0.3;
+        camera.orbit([1.0, 0.0]);
+        assert_eq!(camera.roll, 0.0, "orbit keeps Z up");
+
+        for perspective in [false, true] {
+            let mut camera = Camera::fit(&model);
+            if perspective {
+                camera.short_fov = Some(0.8);
+                camera.lens_shift = [0.1, -0.05];
+            }
+            for aspect in [0.5, 1.6] {
+                let pointed = [0.4, -0.3];
+                let (_, right, up) = camera.basis();
+                let shift = camera.project(camera.center, aspect);
+                let sx = aspect.max(1.0);
+                let sy = (1.0 / aspect).max(1.0);
+                let world: [f32; 3] = std::array::from_fn(|i| {
+                    camera.center[i]
+                        + right[i] * (pointed[0] - shift[0]) * camera.scale * sx
+                        + up[i] * (pointed[1] - shift[1]) * camera.scale * sy
+                });
+                let before = camera.project(world, aspect);
+                camera.zoom_at(1.7, pointed, aspect);
+                let after = camera.project(world, aspect);
+                assert!(
+                    (before[0] - pointed[0]).abs() < 1e-4
+                        && (after[0] - before[0]).abs() < 1e-4
+                        && (after[1] - before[1]).abs() < 1e-4,
+                    "the point under the pointer stays put: {before:?} -> {after:?}"
+                );
+                camera.zoom_at(1.0 / 1.7, pointed, aspect);
+            }
+        }
     }
 }

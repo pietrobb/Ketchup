@@ -13,6 +13,21 @@ impl KetchupApp {
         ids: &[SavedViewId],
         viewport: Rect,
     ) -> Result<BTreeMap<SavedViewId, DesktopCameraContext>, Rejection> {
+        let snapshot = self.document.current();
+        Self::saved_view_contexts(
+            &snapshot,
+            self.exact_results_for_snapshot(&snapshot),
+            ids,
+            viewport,
+        )
+    }
+
+    pub(crate) fn saved_view_contexts(
+        snapshot: &Snapshot,
+        results: Option<&ExactResultRegistry>,
+        ids: &[SavedViewId],
+        viewport: Rect,
+    ) -> Result<BTreeMap<SavedViewId, DesktopCameraContext>, Rejection> {
         let viewport_points = [f64::from(viewport.width()), f64::from(viewport.height())];
         if viewport_points
             .iter()
@@ -23,7 +38,6 @@ impl KetchupApp {
                 "The export viewport must have a finite positive size.",
             ));
         }
-        let snapshot = self.document.current();
         let selected = ids
             .iter()
             .map(|id| {
@@ -35,25 +49,25 @@ impl KetchupApp {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
+        let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
         let mut local_bounds = BTreeMap::new();
         let mut world_bounds = Vec::new();
         for occurrence in projection.occurrences() {
             let bounds = *local_bounds
                 .entry(occurrence.body.definition_id)
                 .or_insert_with(|| {
-                    self.definition_local_bounds(
-                        &snapshot,
+                    Self::definition_bounds(
+                        snapshot,
+                        results,
                         occurrence.body.definition_id,
                         occurrence.local_box,
-                        true,
                     )
                 });
             let Some([minimum, maximum]) = bounds else {
                 continue;
             };
             // Match the viewport's mesh bounds: transformed vertices, not a rotated local AABB.
-            let mesh = definition_mesh_body(&snapshot, occurrence.body.definition_id);
+            let mesh = definition_mesh_body(snapshot, occurrence.body.definition_id);
             let bounds = if let Some(mesh) = mesh {
                 bounds_of(mesh.vertices_mm.iter().map(|point| {
                     transform_model_point(occurrence.canonical_world_transform, Vec3::from(*point))
@@ -81,7 +95,7 @@ impl KetchupApp {
             let target = Vec3::new(BOX_WIDTH_MM * 0.5, BOX_DEPTH_MM * 0.5, camera.target_z_mm);
             let radius = world_bounds
                 .iter()
-                .filter(|(path, _)| scene_path_visible(&snapshot, saved, path))
+                .filter(|(path, _)| scene_path_visible(snapshot, saved, path))
                 .flat_map(|(_, [minimum, maximum])| {
                     let size = *maximum - *minimum;
                     box_corners(size.x, size.y, size.z)

@@ -187,6 +187,15 @@ impl KetchupApp {
         path: &Path,
         discard_confirmed: bool,
     ) -> bool {
+        self.open_document_in_context(path, discard_confirmed, None)
+    }
+
+    pub(crate) fn open_document_in_context(
+        &mut self,
+        path: &Path,
+        discard_confirmed: bool,
+        context: Option<&egui::Context>,
+    ) -> bool {
         self.cancel_pending_assistant_work();
         let discard_owned = discard_confirmed
             && self.file.work_recovery_lock.is_some()
@@ -224,7 +233,27 @@ impl KetchupApp {
                 }
             }
         };
-        match ketchup_model::persistence::load_file_with_source(path) {
+        if let Some(context) = context {
+            self.start_document_read(path.to_owned(), recovery_lock, context);
+            return true;
+        }
+        self.install_loaded_document(
+            path,
+            recovery_lock,
+            ketchup_model::persistence::load_file_with_source(path),
+        )
+    }
+
+    pub(crate) fn install_loaded_document(
+        &mut self,
+        path: &Path,
+        recovery_lock: Option<ketchup_model::persistence::WorkRecoveryLock>,
+        result: Result<
+            ketchup_model::persistence::LoadedFile,
+            ketchup_model::persistence::FilePersistenceError,
+        >,
+    ) -> bool {
+        match result {
             Ok(loaded_file) => {
                 let (outcome, effective_path, source, work_recovery_identity) =
                     loaded_file.into_parts();
@@ -418,7 +447,7 @@ impl KetchupApp {
         Ok(())
     }
 
-    fn report_file_persistence_error(
+    pub(super) fn report_file_persistence_error(
         &mut self,
         key: &str,
         path: &Path,
@@ -449,6 +478,9 @@ impl KetchupApp {
     }
 
     pub(crate) fn refresh_work_recovery_checkpoint(&mut self) {
+        if self.file.activity.saving.is_some() {
+            return;
+        }
         if let Err(error) = self.retry_pending_work_recovery_cleanup() {
             let path = self
                 .file
@@ -526,7 +558,17 @@ impl KetchupApp {
         path: &Path,
         request_authorized: impl Fn() -> bool,
     ) -> Result<(), SaveFailure> {
-        if !request_authorized() {
+        self.save_document_prepared_while(path, request_authorized, None, None)
+    }
+
+    pub(super) fn save_document_prepared_while(
+        &mut self,
+        path: &Path,
+        request_authorized: impl Fn() -> bool,
+        prepared: Option<super::save_activity::PreparedSave>,
+        context: Option<&egui::Context>,
+    ) -> Result<(), SaveFailure> {
+        if self.native_save_is_writing() || !request_authorized() {
             return Err(SaveFailure::Cancelled);
         }
         if path.is_dir() {
@@ -555,7 +597,7 @@ impl KetchupApp {
                 .recovery_open
                 .as_ref()
                 .is_some_and(|recovery| recovery.requested_path == path);
-        let _target_lock = if active_target && self.file.work_recovery_lock.is_some() {
+        let target_lock = if active_target && self.file.work_recovery_lock.is_some() {
             None
         } else {
             match ketchup_model::persistence::WorkRecoveryLock::acquire(path) {
@@ -578,31 +620,11 @@ impl KetchupApp {
         }
         self.store_assistant_conversation();
         self.store_assistant_memory();
-        let (prepared, truncate_history) = match ketchup_model::persistence::save_document_store(
-            &self.document,
-            &self.file.container_data,
-        ) {
-            Ok(bytes) => (bytes, false),
-            Err(
-                ketchup_model::persistence::PersistenceError::ResourceLimit
-                | ketchup_model::persistence::PersistenceError::TooLarge { .. },
-            ) => {
-                let bytes = match ketchup_model::persistence::save_document_store_current_snapshot(
-                    &self.document,
-                    &self.file.container_data,
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        self.digest = self.catalog.format(
-                            "error-save-document",
-                            &BTreeMap::from([
-                                ("path", path.display().to_string()),
-                                ("reason", error.to_string()),
-                            ]),
-                        );
-                        return Err(SaveFailure::Failed);
-                    }
-                };
+        let (prepared, truncate_history) = match prepared.unwrap_or_else(|| {
+            super::save_activity::prepare_save(&self.document, &self.file.container_data)
+        }) {
+            Ok((bytes, false)) => (bytes, false),
+            Ok((bytes, true)) => {
                 let title = self.catalog.text("dialog-save-current-only-title");
                 let description = self.catalog.format(
                     "dialog-save-current-only-description",
@@ -698,34 +720,33 @@ impl KetchupApp {
         if !request_authorized() {
             return Err(SaveFailure::Cancelled);
         }
-        let result = match (truncate_history, expected_identity) {
-            (true, Some(expected)) => ketchup_model::persistence::save_atomic_document_store_current_snapshot_with_container_if_unchanged(
+        if let Some(context) = context {
+            let target_lock = target_lock.or_else(|| self.file.work_recovery_lock.take());
+            self.start_prepared_write(
                 path,
-                &self.document,
-                &self.file.container_data,
-                expected,
-            )
-            .map(|_| ()),
-            (false, Some(expected)) => ketchup_model::persistence::save_atomic_document_store_with_container_if_unchanged(
-                path,
-                &self.document,
-                &self.file.container_data,
-                expected,
-            )
-            .map(|_| ()),
-            (true, None) => ketchup_model::persistence::save_atomic_document_store_current_snapshot_with_container_if_absent(
-                path,
-                &self.document,
-                &self.file.container_data,
-            )
-            .map(|_| ()),
-            (false, None) => ketchup_model::persistence::save_atomic_document_store_with_container_if_absent(
-                path,
-                &self.document,
-                &self.file.container_data,
-            )
-            .map(|_| ()),
-        };
+                prepared,
+                truncate_history,
+                expected_identity,
+                target_lock,
+                context,
+            );
+            return Ok(());
+        }
+        let result = ketchup_model::persistence::save_prepared_document_if_unchanged(
+            path,
+            &prepared,
+            expected_identity,
+        );
+        self.finish_document_save(path, truncate_history, saved_identity, result)
+    }
+
+    pub(super) fn finish_document_save(
+        &mut self,
+        path: &Path,
+        truncate_history: bool,
+        saved_identity: ketchup_model::persistence::FileIdentity,
+        result: Result<(), ketchup_model::persistence::FilePersistenceError>,
+    ) -> Result<(), SaveFailure> {
         let (result, publication_error) = match result {
             Err(error) if error.published_identity(path).is_some() => (Ok(()), Some(error)),
             result => (result, None),
