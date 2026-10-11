@@ -123,6 +123,107 @@ fn dropping_exact_worker_terminates_descendants() {
     );
 }
 
+const SLEEPING_WORKER_ARGS: [&str; 4] = [
+    "--exact",
+    "request_timeout_tests::sleeping_worker",
+    "--ignored",
+    "--nocapture",
+];
+
+// Stand in for a crashed scheduler or plugin host: hold a busy child and get killed from outside.
+#[test]
+#[ignore = "subprocess used by request timeout tests"]
+fn parent_holding_a_busy_worker() {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(SLEEPING_WORKER_ARGS)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    hold_busy_child(spawn_exact_worker_command(command).unwrap());
+}
+
+#[test]
+#[ignore = "subprocess used by request timeout tests"]
+fn parent_holding_a_busy_plugin() {
+    let arguments = SLEEPING_WORKER_ARGS.map(std::ffi::OsString::from);
+    let child =
+        crate::plugin::spawn_plugin_process(&std::env::current_exe().unwrap(), &arguments).unwrap();
+    hold_busy_child(child);
+}
+
+fn hold_busy_child(mut child: Box<dyn ChildWrapper>) {
+    assert!(
+        BufReader::new(child.stdout().take().unwrap())
+            .lines()
+            .any(|line| line.unwrap() == "WORKER_READY")
+    );
+    println!("WORKER_PID {}", child.id());
+    std::thread::sleep(Duration::from_secs(120));
+}
+
+#[cfg(windows)]
+fn process_is_running(pid: u32) -> bool {
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+}
+
+#[cfg(windows)]
+#[test]
+fn a_busy_exact_worker_dies_with_its_killed_parent() {
+    assert_child_dies_with_its_killed_parent("parent_holding_a_busy_worker");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_busy_plugin_dies_with_its_killed_host() {
+    assert_child_dies_with_its_killed_parent("parent_holding_a_busy_plugin");
+}
+
+#[cfg(windows)]
+fn assert_child_dies_with_its_killed_parent(parent_test: &str) {
+    let mut parent = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("request_timeout_tests::{parent_test}"),
+            "--ignored",
+            "--nocapture",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let worker_pid: u32 = BufReader::new(parent.stdout.take().unwrap())
+        .lines()
+        .find_map(|line| {
+            line.unwrap()
+                .strip_prefix("WORKER_PID ")
+                .map(|pid| pid.parse().unwrap())
+        })
+        .expect("parent reported its worker");
+    assert!(process_is_running(worker_pid));
+
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_is_running(worker_pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let survived = process_is_running(worker_pid);
+    if survived {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &worker_pid.to_string()])
+            .output();
+    }
+    assert!(
+        !survived,
+        "child {worker_pid} of {parent_test} outlived its killed parent by 5 s"
+    );
+}
+
 #[test]
 fn oversized_step_xde_worker_output_is_rejected_before_hashing() {
     let (mut worker, writes, responses) = controlled_worker();

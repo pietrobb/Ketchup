@@ -38,9 +38,9 @@ use ketchup_model::import::{
     STEP_MESH_MAGIC, StepImportEvidence, StepImportMesh, StepXdeImportEvidence,
     StepXdeNodeEvidence, StepXdePartEvidence,
 };
-#[cfg(windows)]
-use process_wrap::std::JobObject;
 use process_wrap::std::{ChildWrapper, CommandWrap};
+#[cfg(windows)]
+use process_wrap::std::{JobObject, KillOnDrop};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -1029,8 +1029,10 @@ fn verify_exact_worker_identity(
 
 fn spawn_exact_worker_command(command: Command) -> io::Result<Box<dyn ChildWrapper>> {
     let mut command = CommandWrap::from(command);
+    // KillOnDrop makes the job kill-on-close: the worker dies with this process even when
+    // it crashes or is killed mid-request, instead of outliving it as an orphan.
     #[cfg(windows)]
-    command.wrap(JobObject);
+    command.wrap(KillOnDrop).wrap(JobObject);
     command.spawn()
 }
 

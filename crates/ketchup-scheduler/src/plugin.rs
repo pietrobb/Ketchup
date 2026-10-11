@@ -3,9 +3,9 @@ use ketchup_assistant::extension::{
     PluginLimits, PluginManifest, PluginRequest, PluginResponse,
 };
 use ketchup_model::document::{DocumentStore, FeatureId, NodeId, Proposal, ProposalBudget};
-#[cfg(windows)]
-use process_wrap::std::JobObject;
 use process_wrap::std::{ChildWrapper, CommandWrap};
+#[cfg(windows)]
+use process_wrap::std::{JobObject, KillOnDrop};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
@@ -20,7 +20,7 @@ pub const MAX_PLUGIN_REQUEST_LINE_BYTES: usize = 4 * 1024;
 pub const MAX_PLUGIN_RESPONSE_LINE_BYTES: usize = 2 * PluginLimits::HOST_MAX.max_query_bytes + 32;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-fn spawn_plugin_process(
+pub(crate) fn spawn_plugin_process(
     executable: &Path,
     arguments: &[OsString],
 ) -> Result<Box<dyn ChildWrapper>, PluginHostError> {
@@ -32,8 +32,9 @@ fn spawn_plugin_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let mut command = CommandWrap::from(command);
+    // Kill-on-close job: the plugin dies with the host process, see spawn_exact_worker_command.
     #[cfg(windows)]
-    command.wrap(JobObject);
+    command.wrap(KillOnDrop).wrap(JobObject);
     command
         .spawn()
         .map_err(|error| PluginHostError::Spawn(error.to_string()))
