@@ -14,12 +14,14 @@ android-activity = { version = "0.6.1", features = ["native-activity"] }
 android_logger = "0.15"
 eframe = { version = "0.32.3", default-features = false, features = ["wgpu", "default_fonts", "android-native-activity"] }
 jni = "0.22"
+ketchup-rejection = { path = "../../crates/ketchup-rejection" }
+ketchup-view-format = { path = "../../crates/ketchup-view-format" }
 ketchup-viewer = { path = "../../crates/ketchup-viewer" }
 log = "0.4"
 
 [lints.rust]
 # Allowed only where marked: the exported NativeActivity symbol and the JNI
-# pointers android-activity hands over for reading the system bar insets.
+# pointers android-activity hands over for calling the activity.
 unsafe_code = "deny"
 
 [lints.clippy]

@@ -39,6 +39,12 @@ pub struct Package {
 }
 
 impl Package {
+    /// Whether `bytes` start like a package, to tell a package from a comments
+    /// file when the file arrives without a name; it says nothing about validity.
+    pub fn has_signature(bytes: &[u8]) -> bool {
+        bytes.starts_with(MAGIC)
+    }
+
     /// Revalidates public package fields before exposing borrowed renderer data.
     pub fn geometry(&self) -> Result<crate::Geometry<'_>, Rejection> {
         let (geometry, info) = glb::geometry::decode(&self.glb)?;

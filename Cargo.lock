@@ -2542,6 +2542,8 @@ dependencies = [
  "android_logger",
  "eframe",
  "jni",
+ "ketchup-rejection",
+ "ketchup-view-format",
  "ketchup-viewer",
  "log",
 ]

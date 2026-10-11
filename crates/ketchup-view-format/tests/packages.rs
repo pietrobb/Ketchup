@@ -279,6 +279,11 @@ fn offline_roundtrip_preserves_scenes_notes_units_and_shared_occurrences() {
         glb: encode_glb(&doc, &binary),
     };
     let saved = bytes(&package);
+    assert!(Package::has_signature(&saved));
+    assert!(!Package::has_signature(
+        b"{\"format\": \"ketchup-comments\"}"
+    ));
+    assert!(!Package::has_signature(&saved[..5]));
     let reopened = Package::read(saved.as_slice()).expect("read");
     assert_eq!(reopened, package);
     assert_eq!(

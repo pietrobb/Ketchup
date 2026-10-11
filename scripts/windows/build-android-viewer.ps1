@@ -48,13 +48,25 @@ foreach ($abi in $Abi) {
     if ($LASTEXITCODE -ne 0) { throw "llvm-strip for $abi failed" }
 }
 
+$androidJar = Join-Path $platform.FullName "android.jar"
+# ViewerActivity (Java) carries the file traffic native code cannot do.
+$classes = Join-Path $stage "classes"
+New-Item $classes -ItemType Directory -Force | Out-Null
+$sources = @((Get-ChildItem (Join-Path $root "viewer\android\java") -Recurse -Filter *.java).FullName)
+& (Join-Path (Split-Path $keytool) "javac.exe") --release 11 -Xlint -Werror -classpath $androidJar -d $classes @sources
+if ($LASTEXITCODE -ne 0) { throw "javac failed" }
+$classFiles = @((Get-ChildItem $classes -Recurse -Filter *.class).FullName)
+& (Join-Path $buildTools.FullName "d8.bat") --min-api 28 --lib $androidJar --output $stage @classFiles
+if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
+
 $unsigned = Join-Path $targetDir "unsigned.apk"
 $aligned = Join-Path $targetDir "aligned.apk"
-& (Join-Path $buildTools.FullName "aapt2.exe") link -o $unsigned -I (Join-Path $platform.FullName "android.jar") --manifest (Join-Path $root "viewer\android\AndroidManifest.xml")
+& (Join-Path $buildTools.FullName "aapt2.exe") link -o $unsigned -I $androidJar --manifest (Join-Path $root "viewer\android\AndroidManifest.xml")
 if ($LASTEXITCODE -ne 0) { throw "aapt2 link failed" }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::Open($unsigned, "Update")
 try {
+    [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $stage "classes.dex"), "classes.dex")
     foreach ($so in Get-ChildItem (Join-Path $stage "lib") -Recurse -File) {
         $entry = "lib/" + $so.Directory.Name + "/" + $so.Name
         [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $so.FullName, $entry)
@@ -82,5 +94,5 @@ if ($InstallWithModel) {
     & $adb push $InstallWithModel $remote
     if ($LASTEXITCODE -ne 0) { throw "adb push failed" }
     & $adb shell am force-stop sk.ketchup.viewer
-    & $adb shell am start -n sk.ketchup.viewer/android.app.NativeActivity
+    & $adb shell am start -n sk.ketchup.viewer/.ViewerActivity
 }

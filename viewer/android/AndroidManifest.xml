@@ -7,10 +7,10 @@
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x400003" android:required="false" />
     <application
         android:label="Kečup Viewer"
-        android:hasCode="false"
+        android:hasCode="true"
         android:extractNativeLibs="true">
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="sk.ketchup.viewer.ViewerActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density|uiMode"
             android:launchMode="singleTask">
@@ -18,6 +18,21 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Packages arrive from mail and chat apps as untyped content and
+                 comment files as JSON; the Viewer checks what they are on opening. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/json" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/json" />
             </intent-filter>
         </activity>
     </application>

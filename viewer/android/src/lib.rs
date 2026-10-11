@@ -1,5 +1,9 @@
-//! Android entry point of the Kečup Viewer: opens the package placed in the
-//! app's external data directory.
+//! Android entry point of the Kečup Viewer: opens packages and comment files
+//! other apps hand over or the customer picks, and the package placed in the
+//! app's external data directory by the development install.
+
+#[cfg(target_os = "android")]
+mod files;
 
 /// Called by android-activity when the app starts.
 #[cfg(target_os = "android")]
@@ -42,15 +46,17 @@ fn android_main(android_app: android_activity::AndroidApp) {
         "Kečup Viewer",
         options,
         Box::new(move |cc| {
-            let mut app = ketchup_viewer::app::ViewerApp::new(cc.wgpu_render_state.clone());
+            let mut app =
+                ketchup_viewer::app::ViewerApp::new(cc.wgpu_render_state.clone()).with_host_files();
             if let Some(path) = path
                 && path.exists()
                 && let Err(error) = app.open_path(&path)
             {
                 log::error!("{error}; {}", error.fix_hint_text());
             }
-            Ok(Box::new(SafeArea {
+            Ok(Box::new(AndroidViewer {
                 app,
+                files: files::Files::new(android_app.clone()),
                 android_app,
                 measured_for: None,
                 bars: [0; 4],
@@ -63,13 +69,15 @@ fn android_main(android_app: android_activity::AndroidApp) {
     }
 }
 
-/// Keeps the Viewer out of the status bar, gesture bar, camera cutout and
-/// on-screen keyboard: apps targeting Android 15+ are drawn edge to edge,
-/// under all of them, and a NativeActivity window does not shrink for the
-/// keyboard, which would otherwise cover the comment being typed.
+/// The Viewer with Android's file traffic, kept out of the status bar,
+/// gesture bar, camera cutout and on-screen keyboard: apps targeting
+/// Android 15+ are drawn edge to edge, under all of them, and a
+/// NativeActivity window does not shrink for the keyboard, which would
+/// otherwise cover the comment being typed.
 #[cfg(target_os = "android")]
-struct SafeArea {
+struct AndroidViewer {
     app: ketchup_viewer::app::ViewerApp,
+    files: files::Files,
     android_app: android_activity::AndroidApp,
     /// Screen size the bar insets were read for; rotation reads them again.
     measured_for: Option<eframe::egui::Vec2>,
@@ -80,7 +88,7 @@ struct SafeArea {
 }
 
 #[cfg(target_os = "android")]
-impl eframe::App for SafeArea {
+impl eframe::App for AndroidViewer {
     fn update(&mut self, ctx: &eframe::egui::Context, frame: &mut eframe::Frame) {
         use eframe::egui;
         let (screen, pixels_per_point) =
@@ -148,7 +156,17 @@ impl eframe::App for SafeArea {
                 .show_separator_line(false)
                 .show(ctx, |_| {});
         }
+        self.files.receive(&mut self.app);
         self.app.update(ctx, frame);
+        for request in self.app.take_file_requests() {
+            if let Err(error) = self.files.request(&mut self.app, request) {
+                self.app.report(error);
+            }
+        }
+        // The picker's answer comes back with the activity, not as input.
+        if self.files.waiting {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
     }
 }
 
@@ -180,14 +198,11 @@ fn backend() -> eframe::wgpu::Backends {
 /// and the on-screen keyboard height in pixels. Below Android 15 the window is
 /// neither drawn under the bars nor covered by the keyboard, so all are zero.
 #[cfg(target_os = "android")]
-#[allow(unsafe_code)] // The VM and activity pointers come from android-activity and outlive this call.
 fn system_insets(
     android_app: &android_activity::AndroidApp,
 ) -> Result<([i32; 4], i32), jni::errors::Error> {
-    use jni::objects::JObject;
     use jni::{jni_sig, jni_str};
-    let vm = unsafe { jni::JavaVM::from_raw(android_app.vm_as_ptr().cast()) };
-    vm.attach_current_thread(|env| {
+    files::with_activity(android_app, |env, activity| {
         let sdk = env
             .get_static_field(
                 jni_str!("android/os/Build$VERSION"),
@@ -198,10 +213,9 @@ fn system_insets(
         if sdk < 35 {
             return Ok(([0; 4], 0));
         }
-        let activity = unsafe { JObject::from_raw(env, android_app.activity_as_ptr().cast()) };
         let window = env
             .call_method(
-                &activity,
+                activity,
                 jni_str!("getWindow"),
                 jni_sig!("()Landroid/view/Window;"),
                 &[],
