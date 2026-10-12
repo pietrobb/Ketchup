@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::mass::MassProperties;
 
 pub(super) fn collect_output(
     native: cxx::UniquePtr<ffi::NativeOperationResult>,
@@ -127,6 +128,17 @@ pub(super) fn collect_output(
         shell_count: summary.shell_count,
         solid_count: summary.solid_count,
         volume_mm3: summary.volume_mm3,
+        mass: summary.has_mass.then_some(MassProperties {
+            centroid_mm: [summary.centroid_x, summary.centroid_y, summary.centroid_z],
+            inertia_mm5: [
+                summary.inertia_xx,
+                summary.inertia_yy,
+                summary.inertia_zz,
+                summary.inertia_xy,
+                summary.inertia_xz,
+                summary.inertia_yz,
+            ],
+        }),
         bounds_mm: Bounds3 {
             min: Point3 {
                 x: summary.min_x,

@@ -824,6 +824,7 @@ fn pending_native_capture_rejects_exact_registry_replacement_without_document_mu
             ExactBRepGraphPackage::from_worker_evidence(
                 &graph,
                 ExactBRepGraphWorkerEvidence {
+                    mass: None,
                     exact_input_digest: "image-registry-guard-fixture-input".into(),
                     result_fingerprint: fingerprint.into(),
                     volume_mm3: 120_000.0,

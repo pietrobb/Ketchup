@@ -449,6 +449,8 @@ pub struct WorkerExactBRepGraphResult {
     pub result_fingerprint: String,
     pub exact_input_digest: String,
     pub volume_mm3: f64,
+    #[serde(default)]
+    pub mass: Option<ketchup_geometry::mass::MassProperties>,
     pub area_mm2: f64,
     pub bounds_mm: [f64; 6],
     pub topology_counts: [u32; 5],
@@ -2111,6 +2113,7 @@ impl ExactWorkerSupervisor {
                 exact_input_digest: result.exact_input_digest,
                 result_fingerprint: result.result_fingerprint,
                 volume_mm3: result.volume_mm3,
+                mass: result.mass,
                 area_mm2: result.area_mm2,
                 topology_counts: result.topology_counts,
                 wire_count: result.wire_count,

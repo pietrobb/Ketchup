@@ -1968,6 +1968,7 @@ fn worker_transforms_a_circle_pad_from_its_arbitrary_workplane_frame() {
             ExactBRepGraphPackage::from_worker_evidence(
                 &graph,
                 ExactBRepGraphWorkerEvidence {
+                    mass: None,
                     exact_input_digest: result.identity.exact_input_digest.clone(),
                     result_fingerprint: result.identity.result_fingerprint.clone(),
                     volume_mm3: result.volume_mm3,
@@ -4036,9 +4037,25 @@ fn surface_knit_round_trips_and_real_worker_requires_connected_watertight_inputs
     assert_eq!(open_package.volume_mm3, 0.0);
     assert!((open_package.area_mm2 - 800.0).abs() <= 1.0e-7);
     assert_eq!(open_package.topology_counts[2..], [2, 1, 0]);
+    assert_eq!(open_package.mass, None);
     let solid_package = supervisor.evaluate_exact_brep_graph(&solid_graph).unwrap();
     assert!((solid_package.volume_mm3 - 6_000.0).abs() <= 1.0e-7);
     assert_eq!(solid_package.topology_counts[2..], [6, 1, 1]);
+    // The knitted box carries its centre and central inertia through the worker.
+    let mass = solid_package
+        .mass
+        .as_deref()
+        .expect("a knitted solid has mass properties");
+    let [low, high] = solid_package.bounds_mm;
+    let size: [f64; 3] = std::array::from_fn(|axis| high[axis] - low[axis]);
+    let moment = |a: usize, b: usize| 6_000.0 * (size[a] * size[a] + size[b] * size[b]) / 12.0;
+    let expected = [moment(1, 2), moment(0, 2), moment(0, 1), 0.0, 0.0, 0.0];
+    for axis in 0..3 {
+        assert!((mass.centroid_mm[axis] - (low[axis] + high[axis]) / 2.0).abs() <= 1.0e-7);
+    }
+    for (actual, wanted) in mass.inertia_mm5.into_iter().zip(expected) {
+        assert!((actual - wanted).abs() <= expected[0] * 1.0e-9, "{mass:?}");
+    }
     assert_eq!(
         supervisor.evaluate_exact_brep_graph(&solid_graph).unwrap(),
         solid_package
@@ -4314,6 +4331,7 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
             .collect(),
     };
     let evidence = |area_mm2| ExactBRepGraphWorkerEvidence {
+        mass: None,
         exact_input_digest: package.identity.exact_input_digest.clone(),
         result_fingerprint: package.identity.result_fingerprint.clone(),
         volume_mm3: package.volume_mm3,
@@ -4569,6 +4587,7 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
                 .collect(),
         };
         let evidence = ExactBRepGraphWorkerEvidence {
+            mass: None,
             exact_input_digest: package.identity.exact_input_digest.clone(),
             result_fingerprint: package.identity.result_fingerprint.clone(),
             volume_mm3: package.volume_mm3,
@@ -4588,6 +4607,7 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
             ExactBRepGraphPackage::from_worker_evidence(
                 &graph,
                 ExactBRepGraphWorkerEvidence {
+                    mass: None,
                     area_mm2: package.area_mm2 * 0.5,
                     ..evidence
                 },

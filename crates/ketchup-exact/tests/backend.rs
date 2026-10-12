@@ -976,6 +976,67 @@ fn spline_loft_rejects_elevation_beyond_coordinate_limit() {
 }
 
 #[test]
+fn a_box_turned_45_degrees_about_z_has_the_tensor_product_of_inertia_by_hand() {
+    // A 100 × 50 × 20 box centred on (10, 20, 10), its long side along x = y.
+    let (a, b, c, center) = (100.0_f64, 50.0_f64, 20.0_f64, [10.0, 20.0]);
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    let corner = |u: f64, v: f64| [center[0] + half * (u - v), center[1] + half * (u + v)];
+    let corners = [
+        corner(-a / 2.0, -b / 2.0),
+        corner(a / 2.0, -b / 2.0),
+        corner(a / 2.0, b / 2.0),
+        corner(-a / 2.0, b / 2.0),
+    ];
+    let outline = (0..4)
+        .map(|index| PlanarProfileSegment::Line {
+            start_mm: corners[index],
+            end_mm: corners[(index + 1) % 4],
+        })
+        .collect::<Vec<_>>();
+    let output = ExactBackend::new()
+        .extrude_mixed_profile(&outline, c)
+        .unwrap();
+    assert_valid(&output);
+    let volume = a * b * c;
+    assert!((output.body.topology.volume_mm3 - volume).abs() <= volume * 1.0e-9);
+    let mass = output
+        .body
+        .topology
+        .mass
+        .expect("a solid has mass properties");
+    for (actual, expected) in mass.centroid_mm.into_iter().zip([10.0, 20.0, 10.0]) {
+        assert!(
+            (actual - expected).abs() <= 1.0e-7,
+            "{actual} != {expected}"
+        );
+    }
+    // In its own axes Ixx' = V(b² + c²)/12, Iyy' = V(a² + c²)/12, Izz = V(a² + b²)/12.
+    // Turned by 45°: Ixx = Iyy = (Ixx' + Iyy')/2 and the tensor entry
+    // Ixy = −∫x·y dV = −(Iyy' − Ixx')/2 = −V(a² − b²)/24 < 0, since the mass lies
+    // along x = y where x·y > 0.
+    let (own_xx, own_yy) = (
+        volume * (b * b + c * c) / 12.0,
+        volume * (a * a + c * c) / 12.0,
+    );
+    let expected = [
+        (own_xx + own_yy) / 2.0,
+        (own_xx + own_yy) / 2.0,
+        volume * (a * a + b * b) / 12.0,
+        -volume * (a * a - b * b) / 24.0,
+        0.0,
+        0.0,
+    ];
+    let scale = expected[2];
+    for (actual, wanted) in mass.inertia_mm5.into_iter().zip(expected) {
+        assert!(
+            (actual - wanted).abs() <= scale * 1.0e-9,
+            "{:?} != {expected:?}",
+            mass.inertia_mm5
+        );
+    }
+}
+
+#[test]
 fn exact_edge_evidence_finds_two_upper_circular_rim_edges_without_ordinals() {
     let backend = ExactBackend::new();
     let output = backend

@@ -139,6 +139,18 @@ mod ffi {
         max_x: f64,
         max_y: f64,
         max_z: f64,
+        /// Unit-density centre of mass and central matrix of inertia
+        /// (`GProp_GProps::MatrixOfInertia`), present for solids only.
+        has_mass: bool,
+        centroid_x: f64,
+        centroid_y: f64,
+        centroid_z: f64,
+        inertia_xx: f64,
+        inertia_yy: f64,
+        inertia_zz: f64,
+        inertia_xy: f64,
+        inertia_xz: f64,
+        inertia_yz: f64,
     }
 
     struct NativeFaceEvidence {

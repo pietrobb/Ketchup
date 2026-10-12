@@ -8,6 +8,7 @@ pub mod dimension;
 pub mod helix;
 pub mod id;
 pub mod linalg;
+pub mod mass;
 pub mod prismatic;
 pub mod reference;
 pub mod sketch;

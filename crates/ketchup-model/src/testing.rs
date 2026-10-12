@@ -106,6 +106,7 @@ pub fn box_package(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let evidence = ExactBRepGraphWorkerEvidence {
+        mass: None,
         exact_input_digest: "fixture-input".to_owned(),
         result_fingerprint: result_fingerprint.to_owned(),
         volume_mm3: size[0] * size[1] * size[2],

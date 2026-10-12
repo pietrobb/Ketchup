@@ -2835,6 +2835,7 @@ fn graph_package_for(
     ExactBRepGraphPackage::from_worker_evidence(
         &graph,
         ExactBRepGraphWorkerEvidence {
+            mass: None,
             exact_input_digest: "m17-graph-input".to_owned(),
             result_fingerprint: result_fingerprint.to_owned(),
             volume_mm3: (maximum[0] - minimum[0])

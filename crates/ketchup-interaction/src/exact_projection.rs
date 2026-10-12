@@ -907,6 +907,7 @@ mod tests {
             ExactBRepGraphPackage::from_worker_evidence(
                 &graph,
                 ExactBRepGraphWorkerEvidence {
+                    mass: None,
                     exact_input_digest: "generated-headless-input".into(),
                     result_fingerprint: "generated-headless-result".into(),
                     volume_mm3: 1_000.0,

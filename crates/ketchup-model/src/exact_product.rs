@@ -32,6 +32,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use ketchup_geometry::linalg::CubicBezier;
+pub use ketchup_geometry::mass::MassProperties;
 use ketchup_geometry::reference::reference_lineage_digest;
 pub use ketchup_geometry::reference::{
     BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ReferenceStability,
@@ -170,6 +171,10 @@ pub struct ExactBRepGraphPackage {
     pub identity: BodyResultIdentity,
     pub graph: Arc<ExactBRepGraph>,
     pub volume_mm3: f64,
+    /// Unit-density mass properties in the definition frame; `None` when the
+    /// worker did not measure them (surfaces, or evidence from before they existed).
+    /// Boxed so the package stays within its size budget.
+    pub mass: Option<Box<MassProperties>>,
     pub area_mm2: f64,
     pub topology_counts: [u32; 5],
     pub bounds_mm: [[f64; 3]; 2],
@@ -216,6 +221,7 @@ pub struct ExactBRepGraphWorkerEvidence {
     pub exact_input_digest: String,
     pub result_fingerprint: String,
     pub volume_mm3: f64,
+    pub mass: Option<MassProperties>,
     pub area_mm2: f64,
     pub topology_counts: [u32; 5],
     pub wire_count: Option<u32>,
@@ -588,6 +594,10 @@ impl ExactBRepGraphPackage {
             identity,
             graph: Arc::new(graph.clone()),
             volume_mm3: evidence.volume_mm3,
+            mass: evidence
+                .mass
+                .filter(|mass| mass.is_finite() && evidence.volume_mm3 > 0.0)
+                .map(Box::new),
             area_mm2: evidence.area_mm2,
             topology_counts: evidence.topology_counts,
             bounds_mm: evidence.bounds_mm,

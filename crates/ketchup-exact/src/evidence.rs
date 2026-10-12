@@ -89,6 +89,8 @@ pub struct TopologyEvidence {
     pub shell_count: u32,
     pub solid_count: u32,
     pub volume_mm3: f64,
+    /// Unit-density mass properties; `None` for bodies without a solid volume.
+    pub mass: Option<ketchup_geometry::mass::MassProperties>,
     pub bounds_mm: Bounds3,
     pub faces: Vec<FaceEvidence>,
     pub edges: Vec<EdgeEvidence>,

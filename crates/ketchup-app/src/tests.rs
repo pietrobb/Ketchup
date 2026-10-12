@@ -75,6 +75,7 @@ fn install_graph_result(
     let package = ExactBRepGraphPackage::from_worker_evidence(
         &graph,
         ExactBRepGraphWorkerEvidence {
+            mass: None,
             exact_input_digest: "headless-topology-input".into(),
             result_fingerprint: "headless-topology-result".into(),
             volume_mm3: size.x * size.y * size.z,

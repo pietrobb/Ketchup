@@ -377,6 +377,7 @@ fn surface_knit_creates_a_solid_only_from_a_closed_watertight_shell() {
     assert_eq!(shell.body.topology.shell_count, 1);
     assert_eq!(shell.body.topology.face_count, 6);
     assert_close(shell.body.topology.volume_mm3, 0.0);
+    assert_eq!(shell.body.topology.mass, None);
     assert_close(
         shell
             .body
@@ -393,6 +394,7 @@ fn surface_knit_creates_a_solid_only_from_a_closed_watertight_shell() {
     assert_eq!(solid.body.topology.shell_count, 1);
     assert_eq!(solid.body.topology.face_count, 6);
     assert_close(solid.body.topology.volume_mm3, 6_000.0);
+    assert!(solid.body.topology.mass.is_some());
 
     assert!(backend.knit_surfaces(&surfaces[..5], 1.0e-7, true).is_err());
 }

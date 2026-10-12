@@ -1880,6 +1880,7 @@ fn solid_tool_preview_survives_accepted_exact_bounds_refresh_and_commits_once() 
     let package = ExactBRepGraphPackage::from_worker_evidence(
         &graph,
         ExactBRepGraphWorkerEvidence {
+            mass: None,
             exact_input_digest: "solid-tool-refreshed-input".into(),
             result_fingerprint: "solid-tool-refreshed-result".into(),
             volume_mm3: size.x * size.y * size.z,

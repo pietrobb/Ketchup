@@ -308,6 +308,11 @@ std::unique_ptr<NativeOperationResult> success_result(
   const double volume = (allow_planar_face || allow_surface) && solids == 0
       ? 0.0
       : properties.Mass();
+  // Unit-density mass properties of a closed solid: OCCT's centre of mass and
+  // its matrix of inertia about that centre (see topology_summary in lib.rs).
+  const bool has_mass = solids > 0 && volume > 0.0;
+  const gp_Pnt centre = has_mass ? properties.CentreOfMass() : gp_Pnt();
+  const gp_Mat inertia = has_mass ? properties.MatrixOfInertia() : gp_Mat();
 
   TopTools_IndexedMapOfShape vertices;
   TopTools_IndexedMapOfShape edges;
@@ -339,7 +344,17 @@ std::unique_ptr<NativeOperationResult> success_result(
       min_z,
       max_x,
       max_y,
-      max_z};
+      max_z,
+      has_mass,
+      centre.X(),
+      centre.Y(),
+      centre.Z(),
+      inertia.Value(1, 1),
+      inertia.Value(2, 2),
+      inertia.Value(3, 3),
+      inertia.Value(1, 2),
+      inertia.Value(1, 3),
+      inertia.Value(2, 3)};
 
   for (Standard_Integer face_index = 1; face_index <= faces.Extent(); ++face_index) {
     const auto face_ordinal = static_cast<std::uint32_t>(face_index - 1);

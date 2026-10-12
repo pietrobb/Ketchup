@@ -538,6 +538,7 @@ fn exact_brep_graph_response(backend: &ExactBackend, input: &GraphInput) -> Work
         result_fingerprint: output.body.result_fingerprint.clone(),
         exact_input_digest: output.input_digest.clone(),
         volume_mm3: topology.volume_mm3,
+        mass: topology.mass.filter(|_| !graph.terminal_is_surface()),
         area_mm2,
         bounds_mm: [
             topology.bounds_mm.min.x,

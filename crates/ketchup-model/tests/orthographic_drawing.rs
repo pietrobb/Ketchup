@@ -154,6 +154,7 @@ fn graph_registry_with_circle(
     let package = ExactBRepGraphPackage::from_worker_evidence(
         &graph,
         ExactBRepGraphWorkerEvidence {
+            mass: None,
             exact_input_digest: format!("typed-dimension-input:{fingerprint}"),
             result_fingerprint: fingerprint.into(),
             volume_mm3: (maximum[0] - minimum[0])

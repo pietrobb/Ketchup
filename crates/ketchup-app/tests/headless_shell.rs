@@ -10235,6 +10235,7 @@ fn install_general_finish_graph_result(shell: &mut Shell, producer_feature_id: F
     let package = ExactBRepGraphPackage::from_worker_evidence(
         &graph,
         ExactBRepGraphWorkerEvidence {
+            mass: None,
             exact_input_digest: format!("headless-finish-input-{}", producer_feature_id.0),
             result_fingerprint: format!("headless-finish-result-{}", producer_feature_id.0),
             volume_mm3: 120_000.0,
