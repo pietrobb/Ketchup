@@ -1,7 +1,10 @@
-use crate::intent::{
-    IntentCapability, IntentError, IntentGrant, IntentRequest, WorkflowIntent, propose_intent,
-};
-use ketchup_model::document::{DocumentStore, FeatureId, NodeId, Proposal, ProposalBudget};
+//! The plugin gateway: what a plugin may ask the host for. A plugin edits the
+//! model only with the typed CAD program MCP uses; the gateway checks the
+//! capability, the operation allowlist and the budgets and hands the program
+//! back, and the caller plans and commits it on the same path as MCP.
+
+use crate::sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
+use ketchup_model::document::Snapshot;
 use ketchup_model::state_view::encode_semantic_state;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -11,8 +14,7 @@ pub const PLUGIN_PROTOCOL_V1: &str = "ketchup.plugin.v1";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PluginCapability {
     QueryAgentState,
-    SetRuleDimension,
-    SetFeatureDimension,
+    EditCadProgram,
 }
 
 impl PluginCapability {
@@ -20,9 +22,15 @@ impl PluginCapability {
     pub const fn protocol_name(self) -> &'static str {
         match self {
             Self::QueryAgentState => "query.agent-state.v1",
-            Self::SetRuleDimension => "intent.set-rule-dimension.v1",
-            Self::SetFeatureDimension => "intent.set-feature-dimension.v1",
+            Self::EditCadProgram => "edit.cad-program.v1",
         }
+    }
+
+    #[must_use]
+    pub fn from_protocol_name(name: &str) -> Option<Self> {
+        [Self::QueryAgentState, Self::EditCadProgram]
+            .into_iter()
+            .find(|capability| capability.protocol_name() == name)
     }
 }
 
@@ -30,29 +38,35 @@ impl PluginCapability {
 pub struct PluginLimits {
     pub max_requests: usize,
     pub max_query_bytes: usize,
-    pub proposal_budget: ProposalBudget,
+    /// Operations one `Apply` program may carry.
+    pub max_operations: usize,
 }
 
 impl PluginLimits {
     pub const HOST_MAX: Self = Self {
         max_requests: 8,
         max_query_bytes: 64 * 1024,
-        proposal_budget: ProposalBudget::HOST_MAX,
+        max_operations: 64,
     };
 
     pub const M7B_PILOT: Self = Self {
         max_requests: 4,
         max_query_bytes: 32 * 1024,
-        proposal_budget: ProposalBudget::M7A_SINGLE_CHANGE,
+        max_operations: 1,
     };
 
     fn within(self, maximum: Self) -> bool {
         self.max_requests <= maximum.max_requests
             && self.max_query_bytes <= maximum.max_query_bytes
-            && self.proposal_budget.max_commands <= maximum.proposal_budget.max_commands
-            && self.proposal_budget.max_read_dependencies
-                <= maximum.proposal_budget.max_read_dependencies
-            && self.proposal_budget.max_write_targets <= maximum.proposal_budget.max_write_targets
+            && self.max_operations <= maximum.max_operations
+    }
+
+    fn min(self, other: Self) -> Self {
+        Self {
+            max_requests: self.max_requests.min(other.max_requests),
+            max_query_bytes: self.max_query_bytes.min(other.max_query_bytes),
+            max_operations: self.max_operations.min(other.max_operations),
+        }
     }
 }
 
@@ -145,10 +159,13 @@ impl PluginManifest {
     }
 }
 
+/// What the user allowed one plugin: its capabilities, the typed operations
+/// (by their wire name, e.g. `set_dimension`) it may send, and its budgets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginGrant {
     principal_id: u64,
     capabilities: BTreeSet<PluginCapability>,
+    allowed_operations: BTreeSet<String>,
     limits: PluginLimits,
 }
 
@@ -157,11 +174,13 @@ impl PluginGrant {
     pub fn new(
         principal_id: u64,
         capabilities: impl IntoIterator<Item = PluginCapability>,
+        allowed_operations: impl IntoIterator<Item = impl Into<String>>,
         limits: PluginLimits,
     ) -> Self {
         Self {
             principal_id,
             capabilities: capabilities.into_iter().collect(),
+            allowed_operations: allowed_operations.into_iter().map(Into::into).collect(),
             limits,
         }
     }
@@ -177,30 +196,27 @@ impl PluginGrant {
     }
 
     #[must_use]
+    pub const fn allowed_operations(&self) -> &BTreeSet<String> {
+        &self.allowed_operations
+    }
+
+    #[must_use]
     pub const fn limits(&self) -> PluginLimits {
         self.limits
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PluginRequest {
     QueryAgentState,
-    SetRuleDimension {
-        target: NodeId,
-        value_text: String,
-    },
-    SetFeatureDimension {
-        target: FeatureId,
-        value_text: String,
-    },
+    Apply(AssistantCadEditProgram),
 }
 
 impl PluginRequest {
     const fn required_capability(&self) -> PluginCapability {
         match self {
             Self::QueryAgentState => PluginCapability::QueryAgentState,
-            Self::SetRuleDimension { .. } => PluginCapability::SetRuleDimension,
-            Self::SetFeatureDimension { .. } => PluginCapability::SetFeatureDimension,
+            Self::Apply(_) => PluginCapability::EditCadProgram,
         }
     }
 }
@@ -208,7 +224,8 @@ impl PluginRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PluginResponse {
     AgentState(String),
-    Proposal(Box<Proposal>),
+    /// A program that passed the gateway; the caller plans and commits it.
+    Program(AssistantCadEditProgram),
 }
 
 pub struct PluginGateway {
@@ -241,16 +258,12 @@ impl PluginGateway {
 
     pub fn handle(
         &mut self,
-        store: &DocumentStore,
+        snapshot: &Snapshot,
         request: PluginRequest,
     ) -> Result<PluginResponse, PluginGatewayError> {
+        let limits = self.manifest.limits.min(self.grant.limits);
         self.request_count = self.request_count.saturating_add(1);
-        let effective_max_requests = self
-            .manifest
-            .limits
-            .max_requests
-            .min(self.grant.limits.max_requests);
-        if self.request_count > effective_max_requests {
+        if self.request_count > limits.max_requests {
             return Err(PluginGatewayError::RequestBudgetExceeded);
         }
 
@@ -263,97 +276,60 @@ impl PluginGateway {
 
         match request {
             PluginRequest::QueryAgentState => {
-                let state = encode_semantic_state(&store.current()).agent();
-                let effective_max_bytes = self
-                    .manifest
-                    .limits
-                    .max_query_bytes
-                    .min(self.grant.limits.max_query_bytes);
+                let state = encode_semantic_state(snapshot).agent();
                 let next_bytes = self.query_bytes.saturating_add(state.len());
-                if next_bytes > effective_max_bytes {
+                if next_bytes > limits.max_query_bytes {
                     return Err(PluginGatewayError::QueryBudgetExceeded {
                         attempted_bytes: next_bytes,
-                        max_bytes: effective_max_bytes,
+                        max_bytes: limits.max_query_bytes,
                     });
                 }
                 self.query_bytes = next_bytes;
                 Ok(PluginResponse::AgentState(state))
             }
-            PluginRequest::SetRuleDimension { target, value_text } => self.propose(
-                store,
-                IntentCapability::SetRuleDimension,
-                WorkflowIntent::SetRuleDimension { target, value_text },
-            ),
-            PluginRequest::SetFeatureDimension { target, value_text } => self.propose(
-                store,
-                IntentCapability::SetFeatureDimension,
-                WorkflowIntent::SetFeatureDimension { target, value_text },
-            ),
+            PluginRequest::Apply(program) => {
+                if program.operations.len() > limits.max_operations {
+                    return Err(PluginGatewayError::OperationBudgetExceeded {
+                        operations: program.operations.len(),
+                        max_operations: limits.max_operations,
+                    });
+                }
+                for operation in &program.operations {
+                    let name = wire_name(operation);
+                    if !self.grant.allowed_operations.contains(&name) {
+                        return Err(PluginGatewayError::OperationNotAllowed(name));
+                    }
+                }
+                Ok(PluginResponse::Program(program))
+            }
         }
-    }
-
-    fn propose(
-        &self,
-        store: &DocumentStore,
-        intent_capability: IntentCapability,
-        intent: WorkflowIntent,
-    ) -> Result<PluginResponse, PluginGatewayError> {
-        let requested_budget = PluginLimits {
-            max_requests: self
-                .manifest
-                .limits
-                .max_requests
-                .min(self.grant.limits.max_requests),
-            max_query_bytes: self
-                .manifest
-                .limits
-                .max_query_bytes
-                .min(self.grant.limits.max_query_bytes),
-            proposal_budget: ProposalBudget {
-                max_commands: self
-                    .manifest
-                    .limits
-                    .proposal_budget
-                    .max_commands
-                    .min(self.grant.limits.proposal_budget.max_commands),
-                max_read_dependencies: self
-                    .manifest
-                    .limits
-                    .proposal_budget
-                    .max_read_dependencies
-                    .min(self.grant.limits.proposal_budget.max_read_dependencies),
-                max_write_targets: self
-                    .manifest
-                    .limits
-                    .proposal_budget
-                    .max_write_targets
-                    .min(self.grant.limits.proposal_budget.max_write_targets),
-            },
-        }
-        .proposal_budget;
-        let request = IntentRequest {
-            grant: IntentGrant::m7b_plugin(self.manifest.principal_id, [intent_capability]),
-            intent,
-            requested_budget,
-        };
-        propose_intent(store, request)
-            .map(|proposal| PluginResponse::Proposal(Box::new(proposal)))
-            .map_err(PluginGatewayError::Intent)
     }
 }
 
-#[derive(Debug, PartialEq)]
+/// The `operation` tag the operation has on the wire, as MCP and plugins write it.
+fn wire_name(operation: &AssistantCadEditOperation) -> String {
+    serde_json::to_value(operation)
+        .ok()
+        .and_then(|value| value.get("operation")?.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum PluginGatewayError {
     InvalidManifest(String),
     PrincipalMismatch,
     HostLimitExceeded,
     CapabilityDenied(PluginCapability),
+    OperationNotAllowed(String),
     RequestBudgetExceeded,
     QueryBudgetExceeded {
         attempted_bytes: usize,
         max_bytes: usize,
     },
-    Intent(IntentError),
+    OperationBudgetExceeded {
+        operations: usize,
+        max_operations: usize,
+    },
 }
 
 impl fmt::Display for PluginGatewayError {
@@ -375,6 +351,9 @@ impl fmt::Display for PluginGatewayError {
                     capability.protocol_name()
                 )
             }
+            Self::OperationNotAllowed(name) => {
+                write!(formatter, "plugin operation {name:?} was not granted")
+            }
             Self::RequestBudgetExceeded => {
                 formatter.write_str("plugin request budget was exceeded")
             }
@@ -385,7 +364,13 @@ impl fmt::Display for PluginGatewayError {
                 formatter,
                 "plugin query budget exceeded: {attempted_bytes} bytes requested, {max_bytes} allowed"
             ),
-            Self::Intent(error) => error.fmt(formatter),
+            Self::OperationBudgetExceeded {
+                operations,
+                max_operations,
+            } => write!(
+                formatter,
+                "plugin program has {operations} operations, {max_operations} allowed"
+            ),
         }
     }
 }

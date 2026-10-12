@@ -23,6 +23,7 @@ mod feature_history_verifier;
 mod format_golden;
 mod free_workplane;
 mod generic_sketch_pocket;
+mod human_confirmation;
 mod import_contract;
 mod joint_format_migration;
 mod large_document_history;

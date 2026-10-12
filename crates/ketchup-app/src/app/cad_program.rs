@@ -123,38 +123,4 @@ impl KetchupApp {
         };
         self.validation_context(&snapshot, &self.exact.results, &selection)
     }
-
-    /// Commits one workflow intent the way a reviewed proposal is committed;
-    /// lets headless tests set up tags, names and visibility in one call.
-    #[cfg(feature = "testing")]
-    pub fn headless_apply_workflow_intent(
-        &mut self,
-        intent: ketchup_assistant::intent::WorkflowIntent,
-    ) -> bool {
-        use ketchup_assistant::intent::{IntentRequest, WorkflowIntent, propose_intent};
-        let Ok(proposal) = propose_intent(&self.document, IntentRequest::m7a(intent.clone()))
-        else {
-            return false;
-        };
-        let proposal = if matches!(intent, WorkflowIntent::SetFeatureDimension { .. }) {
-            let context = ProposalContext {
-                principal: ProposalPrincipal::LocalAssistant,
-                goal: proposal.goal(),
-                assumptions: proposal.assumptions().to_vec(),
-                risk: proposal.risk(),
-                confirmation: proposal.confirmation().clone(),
-                requested_budget: proposal.requested_budget(),
-            };
-            match self
-                .prepare_smart_push_pull_proposal_with_context(proposal.batch().clone(), context)
-            {
-                Ok(proposal) => proposal,
-                Err(_) => return false,
-            }
-        } else {
-            proposal
-        };
-        self.commit_verified_proposal_with_work_recovery(&proposal)
-            .is_ok()
-    }
 }

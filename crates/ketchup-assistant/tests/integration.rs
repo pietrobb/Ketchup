@@ -2,7 +2,6 @@
 //! module here, so the crate links one test executable instead of one per file.
 
 mod assistant_sidecar;
-mod intent_review_and_commit;
 mod old_intent_entities_file;
 mod pin_joint_schema;
 mod workplane_frame_schema;

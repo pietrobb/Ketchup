@@ -2,7 +2,8 @@ use ketchup_assistant::extension::{
     PLUGIN_PROTOCOL_V1, PluginCapability, PluginGateway, PluginGatewayError, PluginGrant,
     PluginLimits, PluginManifest, PluginRequest, PluginResponse,
 };
-use ketchup_model::document::{DocumentStore, FeatureId, NodeId, Proposal, ProposalBudget};
+use ketchup_assistant::sidecar::AssistantCadEditProgram;
+use ketchup_model::document::DocumentStore;
 use process_wrap::std::{ChildWrapper, CommandWrap};
 #[cfg(windows)]
 use process_wrap::std::{JobObject, KillOnDrop};
@@ -44,7 +45,9 @@ pub(crate) fn spawn_plugin_process(
 pub struct PluginRunResult {
     pub manifest: PluginManifest,
     pub query_count: usize,
-    pub proposal: Option<Proposal>,
+    /// The program the plugin sent with `APPLY`, checked by the gateway but
+    /// not yet planned: the caller plans and commits it the way MCP does.
+    pub program: Option<AssistantCadEditProgram>,
 }
 
 pub fn run_plugin_process(
@@ -81,6 +84,7 @@ pub fn run_plugin_process(
             .ok_or(PluginHostError::ExitedBeforeDone)?;
         let manifest = parse_manifest(&hello)?;
         let mut gateway = PluginGateway::new(manifest.clone(), grant)?;
+        let snapshot = store.current();
         send_line(
             &writer,
             "READY\tketchup.plugin.v1".to_owned(),
@@ -89,7 +93,7 @@ pub fn run_plugin_process(
         )?;
 
         let mut query_count = 0usize;
-        let mut proposal = None;
+        let mut program = None;
         loop {
             let line = receive_line(&receiver, deadline, cancelled)?
                 .ok_or(PluginHostError::ExitedBeforeDone)?;
@@ -98,7 +102,7 @@ pub fn run_plugin_process(
                 break;
             }
             let request = parse_request(&line)?;
-            match gateway.handle(store, request)? {
+            match gateway.handle(&snapshot, request)? {
                 PluginResponse::AgentState(state) => {
                     query_count = query_count.saturating_add(1);
                     send_line(
@@ -108,31 +112,24 @@ pub fn run_plugin_process(
                         cancelled,
                     )?;
                 }
-                PluginResponse::Proposal(candidate) => {
-                    if proposal.is_some() {
-                        return Err(PluginHostError::MultipleProposals);
+                PluginResponse::Program(accepted) => {
+                    if program.is_some() {
+                        return Err(PluginHostError::MultiplePrograms);
                     }
                     send_line(
                         &writer,
-                        format!(
-                            "PROPOSAL\t{}\t{}\t{}\t{}\t{}",
-                            candidate.command_digest(),
-                            candidate.intended_result_digest(),
-                            candidate.cost().commands,
-                            candidate.cost().read_dependencies,
-                            candidate.cost().write_targets
-                        ),
+                        format!("ACCEPTED\t{}", accepted.operations.len()),
                         deadline,
                         cancelled,
                     )?;
-                    proposal = Some(*candidate);
+                    program = Some(accepted);
                 }
             }
         }
         Ok(PluginRunResult {
             manifest,
             query_count,
-            proposal,
+            program,
         })
     })();
 
@@ -162,9 +159,7 @@ fn parse_manifest(line: &str) -> Result<PluginManifest, PluginHostError> {
         capabilities,
         max_requests,
         max_query_bytes,
-        max_commands,
-        max_read_dependencies,
-        max_write_targets,
+        max_operations,
     ] = fields.as_slice()
     else {
         return Err(PluginHostError::MalformedProtocol(
@@ -186,41 +181,31 @@ fn parse_manifest(line: &str) -> Result<PluginManifest, PluginHostError> {
     let limits = PluginLimits {
         max_requests: parse_usize(max_requests, "max requests")?,
         max_query_bytes: parse_usize(max_query_bytes, "max query bytes")?,
-        proposal_budget: ProposalBudget {
-            max_commands: parse_usize(max_commands, "max commands")?,
-            max_read_dependencies: parse_usize(max_read_dependencies, "max reads")?,
-            max_write_targets: parse_usize(max_write_targets, "max writes")?,
-        },
+        max_operations: parse_usize(max_operations, "max operations")?,
     };
     PluginManifest::new(*plugin_id, *name, principal_id, capabilities, limits)
         .map_err(PluginHostError::Gateway)
 }
 
 fn parse_capability(value: &str) -> Result<PluginCapability, PluginHostError> {
-    match value {
-        "query.agent-state.v1" => Ok(PluginCapability::QueryAgentState),
-        "intent.set-rule-dimension.v1" => Ok(PluginCapability::SetRuleDimension),
-        "intent.set-feature-dimension.v1" => Ok(PluginCapability::SetFeatureDimension),
-        _ => Err(PluginHostError::MalformedProtocol(
-            PluginProtocolViolation::UnknownCapability(value.to_owned()),
-        )),
-    }
+    PluginCapability::from_protocol_name(value).ok_or_else(|| {
+        PluginHostError::MalformedProtocol(PluginProtocolViolation::UnknownCapability(
+            value.to_owned(),
+        ))
+    })
 }
 
+/// `QUERY\tAGENT_STATE`, or `APPLY\t<typed CAD program JSON, as MCP takes it>`.
 fn parse_request(line: &str) -> Result<PluginRequest, PluginHostError> {
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        ["QUERY", "AGENT_STATE"] => Ok(PluginRequest::QueryAgentState),
-        ["INTENT", "SET_RULE_DIMENSION", target, value] => Ok(PluginRequest::SetRuleDimension {
-            target: NodeId(parse_u64(target, "rule target")?),
-            value_text: (*value).to_owned(),
-        }),
-        ["INTENT", "SET_FEATURE_DIMENSION", target, value] => {
-            Ok(PluginRequest::SetFeatureDimension {
-                target: FeatureId(parse_u64(target, "feature target")?),
-                value_text: (*value).to_owned(),
-            })
-        }
+    match line.split_once('\t') {
+        Some(("QUERY", "AGENT_STATE")) => Ok(PluginRequest::QueryAgentState),
+        Some(("APPLY", program)) => serde_json::from_str(program)
+            .map(PluginRequest::Apply)
+            .map_err(|error| {
+                PluginHostError::MalformedProtocol(PluginProtocolViolation::InvalidProgram(
+                    error.to_string(),
+                ))
+            }),
         _ => Err(PluginHostError::MalformedProtocol(
             PluginProtocolViolation::RequestOutsideVocabulary,
         )),
@@ -431,16 +416,23 @@ pub enum PluginProtocolViolation {
     HelloFieldCount,
     UnknownCapability(String),
     RequestOutsideVocabulary,
+    InvalidProgram(String),
     NotUnsignedInteger { field: &'static str },
 }
 
 impl fmt::Display for PluginProtocolViolation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::HelloFieldCount => formatter.write_str("expected 11-field HELLO"),
+            Self::HelloFieldCount => formatter.write_str("expected 9-field HELLO"),
             Self::UnknownCapability(value) => write!(formatter, "unknown capability {value:?}"),
             Self::RequestOutsideVocabulary => {
                 formatter.write_str("request is outside the bounded plugin vocabulary")
+            }
+            Self::InvalidProgram(message) => {
+                write!(
+                    formatter,
+                    "APPLY program is not a typed CAD program: {message}"
+                )
             }
             Self::NotUnsignedInteger { field } => {
                 write!(formatter, "{field} must be an unsigned integer")
@@ -456,7 +448,7 @@ pub enum PluginHostError {
     ProtocolMismatch(String),
     MalformedProtocol(PluginProtocolViolation),
     Gateway(PluginGatewayError),
-    MultipleProposals,
+    MultiplePrograms,
     ResponseLineTooLarge,
     ExitedBeforeDone,
     ExitedUnsuccessfully,
@@ -477,7 +469,7 @@ impl fmt::Display for PluginHostError {
                 write!(formatter, "malformed plugin protocol: {violation}")
             }
             Self::Gateway(error) => error.fmt(formatter),
-            Self::MultipleProposals => formatter.write_str("plugin emitted more than one proposal"),
+            Self::MultiplePrograms => formatter.write_str("plugin applied more than one program"),
             Self::ResponseLineTooLarge => {
                 formatter.write_str("plugin response line exceeded byte limit")
             }

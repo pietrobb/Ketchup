@@ -1,10 +1,10 @@
 from dataclasses import dataclass
+import json
 import sys
 
 PROTOCOL_V1 = "ketchup.plugin.v1"
 QUERY_AGENT_STATE = "query.agent-state.v1"
-SET_RULE_DIMENSION = "intent.set-rule-dimension.v1"
-SET_FEATURE_DIMENSION = "intent.set-feature-dimension.v1"
+EDIT_CAD_PROGRAM = "edit.cad-program.v1"
 _MAX_HOST_LINE_BYTES = 128 * 1024
 
 
@@ -16,9 +16,7 @@ class ProtocolError(RuntimeError):
 class Limits:
     max_requests: int = 4
     max_query_bytes: int = 32 * 1024
-    max_commands: int = 1
-    max_reads: int = 64
-    max_writes: int = 1
+    max_operations: int = 1
 
 
 @dataclass(frozen=True)
@@ -28,15 +26,6 @@ class Manifest:
     principal_id: int
     capabilities: tuple[str, ...]
     limits: Limits = Limits()
-
-
-@dataclass(frozen=True)
-class ProposalReceipt:
-    command_digest: str
-    result_digest: str
-    commands: int
-    reads: int
-    writes: int
 
 
 class Client:
@@ -60,9 +49,7 @@ class Client:
                     ",".join(self._manifest.capabilities),
                     str(limits.max_requests),
                     str(limits.max_query_bytes),
-                    str(limits.max_commands),
-                    str(limits.max_reads),
-                    str(limits.max_writes),
+                    str(limits.max_operations),
                 )
             )
         )
@@ -86,11 +73,18 @@ class Client:
             raise ProtocolError("host StateView length did not match its envelope")
         return state
 
-    def set_rule_dimension(self, target: int, value: str) -> ProposalReceipt:
-        return self._propose("SET_RULE_DIMENSION", target, value)
-
-    def set_feature_dimension(self, target: int, value: str) -> ProposalReceipt:
-        return self._propose("SET_FEATURE_DIMENSION", target, value)
+    def apply_operations(self, operations: list[dict]) -> int:
+        """Sends typed CAD operations, written as for MCP `apply_and_verify`;
+        returns how many the host accepted. The host commits them as one Undo step."""
+        self._require_active()
+        self._send("APPLY\t" + json.dumps({"operations": operations}, separators=(",", ":")))
+        fields = self._receive().split("\t")
+        if len(fields) != 2 or fields[0] != "ACCEPTED":
+            raise ProtocolError("host returned a malformed APPLY response")
+        try:
+            return int(fields[1])
+        except ValueError as error:
+            raise ProtocolError("host returned an invalid operation count") from error
 
     def finish(self) -> None:
         self._require_active()
@@ -98,25 +92,6 @@ class Client:
         if self._receive() != "BYE":
             raise ProtocolError("host did not close the plugin session")
         self._finished = True
-
-    def _propose(self, operation: str, target: int, value: str) -> ProposalReceipt:
-        self._require_active()
-        if "\t" in value or "\n" in value or "\r" in value:
-            raise ValueError("dimension value cannot contain protocol delimiters")
-        self._send(f"INTENT\t{operation}\t{target}\t{value}")
-        fields = self._receive().split("\t")
-        if len(fields) != 6 or fields[0] != "PROPOSAL":
-            raise ProtocolError("host returned a malformed Proposal response")
-        try:
-            return ProposalReceipt(
-                command_digest=fields[1],
-                result_digest=fields[2],
-                commands=int(fields[3]),
-                reads=int(fields[4]),
-                writes=int(fields[5]),
-            )
-        except ValueError as error:
-            raise ProtocolError("host returned invalid Proposal costs") from error
 
     def _require_active(self) -> None:
         if not self._started or self._finished:

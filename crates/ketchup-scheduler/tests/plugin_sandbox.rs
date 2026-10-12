@@ -1,10 +1,9 @@
 use ketchup_assistant::extension::{
     PluginCapability, PluginGatewayError, PluginGrant, PluginLimits,
 };
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_assistant::sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-    ProposalCommitError, ProposalPrincipal,
 };
 use ketchup_scheduler::plugin::{PluginHostError, PluginProtocolViolation, run_plugin_process};
 use std::ffi::OsString;
@@ -69,8 +68,9 @@ fn pilot_grant(limits: PluginLimits) -> PluginGrant {
         PRINCIPAL,
         [
             PluginCapability::QueryAgentState,
-            PluginCapability::SetFeatureDimension,
+            PluginCapability::EditCadProgram,
         ],
+        ["set_dimension"],
         limits,
     )
 }
@@ -126,10 +126,12 @@ fn run_example(
     )
 }
 
+/// The host only checks and hands back the program; planning and committing
+/// it is the caller's job, so the document is untouched here.
 #[test]
-fn python_plugin_queries_bounded_state_and_returns_one_review_only_proposal() {
+fn python_plugin_queries_bounded_state_and_hands_back_one_typed_program() {
     let _turn = crate::integration_support::file_turn();
-    let mut store = seed();
+    let store = seed();
     let digest_before = store.current().canonical_digest();
     let undo_before = store.visible_undo_steps();
 
@@ -137,33 +139,25 @@ fn python_plugin_queries_bounded_state_and_returns_one_review_only_proposal() {
     assert_eq!(run.manifest.package(), "org.ketchup.dimension-pilot");
     assert_eq!(run.manifest.principal_id(), PRINCIPAL);
     assert_eq!(run.query_count, 1);
+    assert_eq!(
+        run.program,
+        Some(AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::SetDimension {
+                feature_id: EXTRUSION.0,
+                constraint_id: None,
+                value_mm: 35.0,
+            }],
+        })
+    );
     assert_eq!(store.current().canonical_digest(), digest_before);
     assert_eq!(store.visible_undo_steps(), undo_before);
-
-    let proposal = run.proposal.unwrap();
-    assert_eq!(proposal.principal(), ProposalPrincipal::Plugin(PRINCIPAL));
-    assert_eq!(proposal.cost().commands, 1);
-    assert_eq!(proposal.cost().write_targets, 1);
-    store.commit_verified_proposal(&proposal).unwrap();
-    assert_eq!(store.visible_undo_steps(), undo_before + 1);
-    let snapshot = store.current();
-    let FeatureKind::Pad(PadSpec {
-        profile: PadProfile::Feature(_),
-        extent: FeatureExtent::Blind(height),
-        operation: PadOperation::NewBody,
-        ..
-    }) = snapshot.feature(EXTRUSION).unwrap().kind()
-    else {
-        panic!("fixture extrusion changed kind");
-    };
-    assert_eq!(height.millimetres(), 35.0);
 }
 
 #[test]
 fn host_max_query_state_fits_the_declared_response_line() {
     let _turn = crate::integration_support::file_turn();
     let store = host_max_store();
-    let script = "import sys\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.host-max\\t1.0.0\\t7001\\tquery.agent-state.v1\\t2\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\nstate = sys.stdin.readline()\nassert state.startswith('STATE\\t65536\\t')\nprint('DONE', flush=True)\nsys.stdin.readline()";
+    let script = "import sys\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.host-max\\t1.0.0\\t7001\\tquery.agent-state.v1\\t2\\t65536\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\nstate = sys.stdin.readline()\nassert state.startswith('STATE\\t65536\\t')\nprint('DONE', flush=True)\nsys.stdin.readline()";
 
     let run = run_plugin_process(
         python(),
@@ -176,7 +170,7 @@ fn host_max_query_state_fits_the_declared_response_line() {
     .unwrap();
 
     assert_eq!(run.query_count, 1);
-    assert!(run.proposal.is_none());
+    assert!(run.program.is_none());
 }
 
 #[test]
@@ -185,7 +179,7 @@ fn host_max_response_honors_timeout_when_plugin_stops_reading() {
     let store = host_max_store();
     let directory = tempfile::tempdir().unwrap();
     let stopped_reading = directory.path().join("stopped-reading");
-    let script = "import pathlib,sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.backpressure\\t1.0.0\\t7001\\tquery.agent-state.v1\\t1\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\npathlib.Path(sys.argv[1]).touch()\ntime.sleep(30)";
+    let script = "import pathlib,sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.backpressure\\t1.0.0\\t7001\\tquery.agent-state.v1\\t1\\t65536\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\npathlib.Path(sys.argv[1]).touch()\ntime.sleep(30)";
     let (sender, receiver) = mpsc::channel();
     let marker = stopped_reading.clone().into_os_string();
     std::thread::spawn(move || {
@@ -221,7 +215,7 @@ fn flooding_plugin_is_backpressured_while_host_response_is_blocked() {
         std::process::id()
     ));
     let _ = std::fs::remove_file(&marker);
-    let script = "import pathlib,sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.queue-backpressure\\t1.0.0\\t7001\\tquery.agent-state.v1\\t8\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\nsys.stdout.write('QUERY\\tAGENT_STATE\\n' * 20000)\nsys.stdout.flush()\npathlib.Path(sys.argv[1]).touch()\ntime.sleep(5)";
+    let script = "import pathlib,sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.queue-backpressure\\t1.0.0\\t7001\\tquery.agent-state.v1\\t8\\t65536\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\nsys.stdout.write('QUERY\\tAGENT_STATE\\n' * 20000)\nsys.stdout.flush()\npathlib.Path(sys.argv[1]).touch()\ntime.sleep(5)";
 
     let result = run_plugin_process(
         python(),
@@ -275,7 +269,7 @@ fn host_max_response_honors_cancellation_when_plugin_stops_reading() {
     let store = host_max_store();
     let directory = tempfile::tempdir().unwrap();
     let stopped_reading = directory.path().join("stopped-reading");
-    let script = "import pathlib,sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.backpressure-cancel\\t1.0.0\\t7001\\tquery.agent-state.v1\\t1\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\npathlib.Path(sys.argv[1]).touch()\ntime.sleep(30)";
+    let script = "import pathlib,sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.backpressure-cancel\\t1.0.0\\t7001\\tquery.agent-state.v1\\t1\\t65536\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\npathlib.Path(sys.argv[1]).touch()\ntime.sleep(30)";
     let cancelled = Arc::new(AtomicBool::new(false));
     let run_cancelled = Arc::clone(&cancelled);
     let (sender, receiver) = mpsc::channel();
@@ -312,18 +306,19 @@ fn host_max_response_honors_cancellation_when_plugin_stops_reading() {
 }
 
 #[test]
-fn host_denies_ungranted_intent_and_request_or_query_budget_exhaustion() {
+fn host_denies_ungranted_edit_and_request_or_query_budget_exhaustion() {
     let _turn = crate::integration_support::file_turn();
     let store = seed();
     let query_only = PluginGrant::new(
         PRINCIPAL,
         [PluginCapability::QueryAgentState],
+        ["set_dimension"],
         PluginLimits::M7B_PILOT,
     );
     assert!(matches!(
         run_example(&store, query_only),
         Err(PluginHostError::Gateway(
-            PluginGatewayError::CapabilityDenied(PluginCapability::SetFeatureDimension)
+            PluginGatewayError::CapabilityDenied(PluginCapability::EditCadProgram)
         ))
     ));
 
@@ -354,7 +349,7 @@ fn host_denies_ungranted_intent_and_request_or_query_budget_exhaustion() {
 fn plugin_process_does_not_inherit_parent_environment() {
     let _turn = crate::integration_support::file_turn();
     let store = seed();
-    let script = "import os,sys\npackage = 'org.ketchup.ambient-leak' if os.environ.get('PATH') else 'org.ketchup.isolated'\nprint(f'HELLO\\tketchup.plugin.v1\\t{package}\\t1.0.0\\t7001\\t\\t1\\t1\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()";
+    let script = "import os,sys\npackage = 'org.ketchup.ambient-leak' if os.environ.get('PATH') else 'org.ketchup.isolated'\nprint(f'HELLO\\tketchup.plugin.v1\\t{package}\\t1.0.0\\t7001\\t\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()";
 
     let run = run_plugin_process(
         python(),
@@ -373,7 +368,7 @@ fn plugin_process_does_not_inherit_parent_environment() {
 fn process_rejects_direct_mutation_vocabulary_and_oversized_input() {
     let _turn = crate::integration_support::file_turn();
     let store = seed();
-    let hello = "HELLO\\tketchup.plugin.v1\\torg.ketchup.dimension-pilot\\t1.0.0\\t7001\\tquery.agent-state.v1,intent.set-feature-dimension.v1\\t4\\t32768\\t1\\t64\\t1";
+    let hello = "HELLO\\tketchup.plugin.v1\\torg.ketchup.dimension-pilot\\t1.0.0\\t7001\\tquery.agent-state.v1,edit.cad-program.v1\\t4\\t32768\\t1";
     let direct_mutation = format!(
         "import sys; print('{hello}', flush=True); sys.stdin.readline(); print('MUTATE\\tRAW_DOCUMENT', flush=True); sys.stdin.readline()"
     );
@@ -389,6 +384,24 @@ fn process_rejects_direct_mutation_vocabulary_and_oversized_input() {
         result,
         Err(PluginHostError::MalformedProtocol(
             PluginProtocolViolation::RequestOutsideVocabulary
+        ))
+    ));
+
+    let not_a_program = format!(
+        "import sys; print('{hello}', flush=True); sys.stdin.readline(); print('APPLY\\t{{\\\"operations\\\":[{{\\\"operation\\\":\\\"raw_document\\\"}}]}}', flush=True); sys.stdin.readline()"
+    );
+    let result = run_plugin_process(
+        python(),
+        &[OsString::from("-c"), OsString::from(not_a_program)],
+        &store,
+        pilot_grant(PluginLimits::M7B_PILOT),
+        Duration::from_secs(5),
+        &AtomicBool::new(false),
+    );
+    assert!(matches!(
+        result,
+        Err(PluginHostError::MalformedProtocol(
+            PluginProtocolViolation::InvalidProgram(_)
         ))
     ));
 
@@ -476,7 +489,7 @@ fn timeout_terminates_plugin_descendants() {
     let directory = tempfile::tempdir().unwrap();
     let sentinel = directory.path().join("escaped-descendant.txt");
     let script = format!(
-        "{SPAWN_DESCENDANT}print('HELLO\\tketchup.plugin.v1\\torg.ketchup.process-tree\\t1.0.0\\t7001\\t\\t1\\t1\\t1\\t1\\t1', flush=True)\ntime.sleep(30)"
+        "{SPAWN_DESCENDANT}print('HELLO\\tketchup.plugin.v1\\torg.ketchup.process-tree\\t1.0.0\\t7001\\t\\t1\\t1\\t1', flush=True)\ntime.sleep(30)"
     );
 
     let result = run_plugin_process(
@@ -511,7 +524,7 @@ fn completed_runs_terminate_plugin_descendants_on_success_and_failure() {
         let directory = tempfile::tempdir().unwrap();
         let sentinel = directory.path().join("escaped-after-done.txt");
         let script = format!(
-            "{SPAWN_DESCENDANT}print('HELLO\\tketchup.plugin.v1\\torg.ketchup.process-tree\\t1.0.0\\t7001\\t\\t1\\t1\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()\nsys.exit(int(sys.argv[3]))"
+            "{SPAWN_DESCENDANT}print('HELLO\\tketchup.plugin.v1\\torg.ketchup.process-tree\\t1.0.0\\t7001\\t\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()\nsys.exit(int(sys.argv[3]))"
         );
 
         let run = run_plugin_process(
@@ -541,24 +554,4 @@ fn completed_runs_terminate_plugin_descendants_on_success_and_failure() {
             "plugin descendant survived parent exit code {exit_code}"
         );
     }
-}
-
-#[test]
-fn plugin_proposal_remains_revision_bound_and_non_replayable() {
-    let _turn = crate::integration_support::file_turn();
-    let mut store = seed();
-    let run = run_example(&store, pilot_grant(PluginLimits::M7B_PILOT)).unwrap();
-    let proposal = run.proposal.unwrap();
-    store
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetFeatureDimension {
-                id: EXTRUSION,
-                dimension: dimension("30", 30.0),
-            },
-        ]))
-        .unwrap();
-    assert!(matches!(
-        store.commit_verified_proposal(&proposal),
-        Err(ProposalCommitError::Stale(_))
-    ));
 }

@@ -1,6 +1,6 @@
 [package]
 name = "ketchup-assistant"
-description = "Typed CAD edit programs, operation catalog, workflow intents and plugins that AI clients drive over MCP"
+description = "Typed CAD edit programs, operation catalog and the plugin gateway that AI clients drive over MCP"
 version.workspace = true
 edition.workspace = true
 autotests = false

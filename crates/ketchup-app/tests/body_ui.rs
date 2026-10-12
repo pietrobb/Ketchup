@@ -10,7 +10,6 @@ use eframe::egui::{Key, accesskit::Role};
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_assistant::intent::WorkflowIntent;
 use ketchup_assistant::sidecar::AssistantStructureChange;
 use ketchup_model::document::{BodyId, BooleanOperation, DefinitionId, FeatureId, FeatureKind};
 use ketchup_model::exact_product::producer_exact_graph;
@@ -329,14 +328,11 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
     );
 
     open_body_editor(&mut shell);
-    assert!(
-        shell
-            .app_mut()
-            .headless_apply_workflow_intent(WorkflowIntent::SetFeatureDimension {
-                target: TOOL_EXTRUSION,
-                value_text: "120".to_owned(),
-            })
-    );
+    assert!(harness::set_feature_dimension(
+        shell.app_mut(),
+        TOOL_EXTRUSION.0,
+        120.0
+    ));
     shell.settle();
     assert!(matches!(
         shell
@@ -445,14 +441,11 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
         .app_mut()
         .headless_force_exact_worker_path(directory.path().join("missing-body-worker.exe"));
     open_body_editor(&mut shell);
-    assert!(
-        shell
-            .app_mut()
-            .headless_apply_workflow_intent(WorkflowIntent::SetFeatureDimension {
-                target: failed_body_feature,
-                value_text: "120".to_owned(),
-            })
-    );
+    assert!(harness::set_feature_dimension(
+        shell.app_mut(),
+        failed_body_feature.0,
+        120.0
+    ));
     shell.settle();
     let after_failed_edit = (
         shell.app().document_revision(),

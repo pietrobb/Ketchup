@@ -20,6 +20,7 @@ mod mesh_conversion;
 mod model_query;
 mod model_query_catalogs;
 mod operations_support;
+mod plugin_apply;
 mod rule_exact_assemblies;
 mod rule_exact_collisions;
 mod rule_exact_measurements;

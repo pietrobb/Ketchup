@@ -10,7 +10,6 @@ use eframe::egui::{Key, Modifiers, accesskit::Role};
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_assistant::intent::WorkflowIntent;
 use ketchup_assistant::sidecar::AssistantStructureChange;
 use ketchup_interaction::LocaleCatalog;
 use ketchup_model::assembly::{AssemblyMateKind, AssemblySolveStatus};
@@ -1570,14 +1569,11 @@ fn definition_edit_requires_reviewed_assembly_recompute_before_solve() {
         .clone();
     open_assembly_editor(&mut shell);
     let definition_revision = shell.app().document_revision();
-    assert!(
-        shell
-            .app_mut()
-            .headless_apply_workflow_intent(WorkflowIntent::SetFeatureDimension {
-                target: FeatureId(2),
-                value_text: "120".to_owned(),
-            },)
-    );
+    assert!(harness::set_feature_dimension(
+        shell.app_mut(),
+        FeatureId(2).0,
+        120.0
+    ));
     shell.settle();
     assert_eq!(shell.app().document_revision(), definition_revision + 1);
     assert!(matches!(
@@ -1798,11 +1794,10 @@ fn lost_reference_solve_after_open_is_fail_closed_without_exact_results() {
         .app_mut()
         .connect_exact_worker(&unavailable_worker)
         .unwrap();
-    assert!(reopened.app_mut().headless_apply_workflow_intent(
-        WorkflowIntent::SetFeatureDimension {
-            target: FeatureId(2),
-            value_text: "120".to_owned(),
-        }
+    assert!(harness::set_feature_dimension(
+        reopened.app_mut(),
+        FeatureId(2).0,
+        120.0
     ));
     reopened.settle();
     assert!(matches!(

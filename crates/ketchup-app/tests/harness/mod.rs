@@ -149,6 +149,19 @@ pub fn apply_structure(app: &mut KetchupApp, change: AssistantStructureChange) -
     .is_ok()
 }
 
+/// Sets one feature dimension with a typed `set_dimension` program, the MCP
+/// path; false when the document refuses it.
+pub fn set_feature_dimension(app: &mut KetchupApp, feature_id: u64, value_mm: f64) -> bool {
+    app.headless_apply_cad_program(&AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::SetDimension {
+            feature_id,
+            constraint_id: None,
+            value_mm,
+        }],
+    })
+    .is_ok()
+}
+
 /// A running instance of the shell, driven entirely in memory.
 pub struct Shell {
     harness: Harness<'static, KetchupApp>,
