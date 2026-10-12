@@ -26,6 +26,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque, hash_map::RandomState};
 use std::hash::BuildHasher;
 use std::sync::Mutex;
 
+mod product_rows;
+
 pub const MAX_PAGE: usize = 100;
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 pub const MAX_INSTANCE_INDEX_ITEMS: usize = 10_000;
@@ -48,6 +50,20 @@ pub enum EntityKind {
     Relations,
     Faces,
     Edges,
+    Spaces,
+    ClearanceVolumes,
+    Joints,
+    Dimensions,
+}
+
+impl EntityKind {
+    /// Product entities that belong to no definition and are not geometry.
+    const fn is_product_entity(self) -> bool {
+        matches!(
+            self,
+            Self::Spaces | Self::ClearanceVolumes | Self::Joints | Self::Dimensions
+        )
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -99,7 +115,8 @@ fn valid_page_request(request: &PageRequest) -> bool {
         && request.classification_category_id != Some(0)
         && !(request.classification_category_id.is_some()
             && request.classification_dimension_id.is_none())
-        && !(request.kind == EntityKind::Definitions && request.definition_id.is_some())
+        && !((request.kind == EntityKind::Definitions || request.kind.is_product_entity())
+            && request.definition_id.is_some())
         && !((request.tag_id.is_some() || request.classification_dimension_id.is_some())
             && !matches!(
                 request.kind,
@@ -305,7 +322,11 @@ impl ModelQuery {
                 "tags":snapshot.tags().count(),
                 "instances":instance_count,
                 "definitions":snapshot.definitions().count(),"features":snapshot.features().count(),
-                "relations":relation_count(snapshot)},
+                "relations":relation_count(snapshot),
+                "spaces":snapshot.spaces().count(),
+                "clearance_volumes":snapshot.clearance_volumes().count(),
+                "joints":snapshot.joints().count(),
+                "dimensions":snapshot.persistent_dimensions().count()},
             "complete":complete,"resource_budget":resource_budget,
             "limits":{"max_page":MAX_PAGE,"max_output_bytes":MAX_OUTPUT_BYTES,
                 "max_name_bytes":limits::NAME_BYTES,"max_search_bytes":limits::NAME_BYTES,
@@ -684,6 +705,18 @@ impl ModelQuery {
                 snapshot
                     .features()
                     .map(|f| (f.id().0, f.definition_id().0, f.name())),
+            ),
+            EntityKind::Spaces => Box::new(snapshot.spaces().map(|s| (s.id().0, 0, s.purpose()))),
+            EntityKind::ClearanceVolumes => Box::new(
+                snapshot
+                    .clearance_volumes()
+                    .map(|c| (c.id().0, 0, c.reason())),
+            ),
+            EntityKind::Joints => Box::new(snapshot.joints().map(|j| (j.id().0, 0, ""))),
+            EntityKind::Dimensions => Box::new(
+                snapshot
+                    .persistent_dimensions()
+                    .map(|d| (d.id.0, 0, d.name.as_str())),
             ),
         };
         let mut items = Vec::new();
@@ -1320,6 +1353,10 @@ impl ModelQuery {
                 json!(["bodies", "nested_hierarchy", "properties"])
             }
             EntityKind::Features => json!(["parameters", "dependencies", "geometry", "properties"]),
+            EntityKind::Spaces
+            | EntityKind::ClearanceVolumes
+            | EntityKind::Joints
+            | EntityKind::Dimensions => json!([]),
         };
         let result = json!({"identity":identity(snapshot),"coverage":coverage(Some(kind)),"item":item,
             "completeness":{"metadata_only":true,"omitted":omitted}});
@@ -1537,6 +1574,8 @@ fn coverage(kind: Option<EntityKind>) -> Value {
         "instances":"expanded_qualified_hierarchy","definitions":"canonical_catalog",
         "features":"canonical_catalog",
         "relations":"canonical_hierarchy_definition_and_assembly_edges",
+        "spaces":"canonical_catalog","clearance_volumes":"canonical_catalog",
+        "joints":"canonical_catalog","dimensions":"canonical_catalog",
         "nested_hierarchy":kind == Some(EntityKind::Instances),
         "relations_streamed":kind == Some(EntityKind::Relations),
         "topology":matches!(kind, Some(EntityKind::Edges | EntityKind::Faces)),
@@ -2147,6 +2186,10 @@ fn row(snapshot: &Snapshot, kind: EntityKind, id: u64) -> Option<Value> {
                 "kind":feature_kind(f.kind()),"construction":construction_geometry(f.kind()),
                 "suppressed":snapshot.feature_is_suppressed(f.id())})
         }
+        EntityKind::Spaces => product_rows::space_row(snapshot, id)?,
+        EntityKind::ClearanceVolumes => product_rows::clearance_volume_row(snapshot, id)?,
+        EntityKind::Joints => product_rows::joint_row(snapshot, id)?,
+        EntityKind::Dimensions => product_rows::dimension_row(snapshot, id)?,
     })
 }
 /// The fields of a construction feature as the document stores them, plus its geometry type.

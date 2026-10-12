@@ -112,7 +112,7 @@ pub fn tools() -> Value {
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
                 "action": {"type": "string", "enum": ["status", "summary", "operations", "query", "detail", "measure", "workset_create", "workset_status"]},
                 "operation": {"type": "string", "description": "For operations: one operation name, e.g. create_part."}, "faces": face_targets, "mode":{"type":"string","enum":["minimum","supporting_planes"]}, "direction":{"type":"array","minItems":3,"maxItems":3,"items":{"type":"number"}},
-                "kind": {"type": "string", "enum": ["occurrences", "instances", "definitions", "features", "relations", "faces", "edges"], "description": "For query, workset_create and detail (required for detail)."},
+                "kind": {"type": "string", "enum": ["occurrences", "instances", "definitions", "features", "relations", "faces", "edges", "spaces", "clearance_volumes", "joints", "dimensions"], "description": "For query, workset_create and detail (required for detail). spaces, clearance_volumes, joints and dimensions list the product's spaces, keep-clear volumes, joints between derived parts and persistent dimensions (with value and status resolved/ambiguous/lost)."},
                 "entity_id": {"type": "integer", "minimum": 1, "description": "For detail, with kind."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                 "search": {"type": "string", "description": "Name substring, or relation type (uses_definition, member_of_group, assembly_mate)."},
