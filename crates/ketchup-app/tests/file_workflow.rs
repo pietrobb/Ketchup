@@ -195,6 +195,32 @@ fn wait_for_current_exact_body(shell: &mut Shell) {
     );
 }
 
+/// Wait until exactly `expected_producers` have current exact bodies, one rendered body
+/// each with triangles, and the painted scene shows them.
+fn wait_for_exact_render(shell: &mut Shell, expected_producers: &[FeatureId]) {
+    let mut expected = expected_producers.to_vec();
+    expected.sort_unstable();
+    let rendered = shell.wait_until(|shell| {
+        shell.settle();
+        let mut producers = shell.app().exact_current_producer_ids();
+        producers.sort_unstable();
+        producers == expected
+            && shell.app().exact_render_body_count() == expected.len()
+            && shell.app().exact_render_triangle_count() > 0
+            && shell.app().instanced_scene_triangle_count() > 0
+    });
+    assert!(
+        rendered,
+        "waited {:?} for the exact render of {expected:?}: current producers {:?}, \
+         rendered bodies {}, exact triangles {}, painted triangles {}",
+        harness::WAIT_DEADLINE,
+        shell.app().exact_current_producer_ids(),
+        shell.app().exact_render_body_count(),
+        shell.app().exact_render_triangle_count(),
+        shell.app().instanced_scene_triangle_count()
+    );
+}
+
 fn arrange_one_visible_and_one_hidden_occurrence_with_redo(shell: &mut Shell) {
     shell.click_menu_command("menu-edit", AppCommand::SelectAll);
     shell.click_menu_command("menu-edit", AppCommand::Copy);
@@ -3942,25 +3968,9 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
         shell.app().import_receipt_count(),
         before.import_receipts + 1
     );
-    for _ in 0..100 {
-        shell.settle();
-        if shell.app().exact_current_producer_ids() == [imported_feature_id]
-            && shell.app().instanced_scene_triangle_count() > 0
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert_eq!(shell.app().exact_render_body_count(), 1);
-    assert!(
-        shell.app().exact_render_triangle_count() > 0,
-        "an imported STEP body without triangles is invisible and unpickable"
-    );
-    shell.settle();
-    assert!(
-        shell.app().instanced_scene_triangle_count() > 0,
-        "an exact product that arrives after its revision must still reach the painted scene"
-    );
+    // An imported STEP body without triangles is invisible and unpickable, and an exact
+    // product that arrives after its revision must still reach the painted scene.
+    wait_for_exact_render(&mut shell, &[imported_feature_id]);
     let bounds = shell.app().exact_render_bounds()[0];
     let centre = Vec3::new(
         (bounds[0][0] + bounds[1][0]) * 0.5,
@@ -4167,20 +4177,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     expected_producers.sort_unstable();
     drop(snapshot);
 
-    for _ in 0..150 {
-        shell.settle();
-        let mut producers = shell.app().exact_current_producer_ids();
-        producers.sort_unstable();
-        if producers == expected_producers && shell.app().instanced_scene_triangle_count() > 0 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let mut producers = shell.app().exact_current_producer_ids();
-    producers.sort_unstable();
-    assert_eq!(producers, expected_producers);
-    assert_eq!(shell.app().exact_render_body_count(), 2);
-    assert!(shell.app().exact_render_triangle_count() > 0);
+    wait_for_exact_render(&mut shell, &expected_producers);
     assert!(
         shell.app().instanced_scene_triangle_count() > shell.app().exact_render_triangle_count(),
         "the shared bracket definition must be instanced twice in the painted scene"
@@ -4202,18 +4199,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     assert_eq!(shell.app().definition_count(), before.definitions + 2);
     assert_eq!(shell.app().occurrence_count(), before.occurrences + 3);
     assert_eq!(shell.app().group_count(), before_groups + 2);
-    for _ in 0..150 {
-        shell.settle();
-        let mut producers = shell.app().exact_current_producer_ids();
-        producers.sort_unstable();
-        if producers == expected_producers && shell.app().instanced_scene_triangle_count() > 0 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let mut reopened_producers = shell.app().exact_current_producer_ids();
-    reopened_producers.sort_unstable();
-    assert_eq!(reopened_producers, expected_producers);
+    wait_for_exact_render(&mut shell, &expected_producers);
 
     let state = ketchup_model::state_view::encode_semantic_state(&shell.app().document_snapshot())
         .agent()
