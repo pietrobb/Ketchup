@@ -29,7 +29,6 @@ const KEPT: &[&str] = &[
     "document_id",
     "units",
     "tolerance",
-    "support",
     "floor_z_mm",
     "evaluator_nodes",
     "overrides",
@@ -108,13 +107,11 @@ fn prunable_references<'a>(
             .filter(|(path, _)| names(path))
             .collect::<Vec<_>>(),
         product
-            .support
             .grounded_instances
             .iter()
             .filter(|path| names(path))
             .collect::<Vec<_>>(),
         product
-            .support
             .contact_joints
             .iter()
             .filter(|joint| joint.parts.iter().any(&names))
@@ -172,14 +169,10 @@ mod tests {
 
     #[test]
     fn every_product_field_is_classified_as_pruned_or_kept() {
-        let mut fields = struct_fields(
+        let fields = struct_fields(
             include_str!("../document.rs"),
             "pub(crate) struct ProductModel {",
         );
-        fields.extend(struct_fields(
-            include_str!("support.rs"),
-            "pub(crate) struct SupportDeclarations {",
-        ));
         assert!(fields.len() > 40, "{fields:?}");
         let unclassified = fields
             .iter()

@@ -32,21 +32,22 @@ pub(super) fn compare(snapshot: &Snapshot, bytes: &[u8]) -> Result<Encoding, Per
 mod tests {
     use super::super::*;
 
+    /// `snapshot` as the earlier direct writer stored it: the product, the last field
+    /// of the snapshot map, as an indefinite-length map.
     fn indefinite_snapshot(snapshot: &Snapshot) -> Vec<u8> {
-        #[derive(serde::Serialize)]
-        struct OldSnapshot<'a> {
-            revision_id: u64,
-            product: &'a crate::document::ProductModel,
-        }
-        let mut payload = Vec::new();
-        ciborium::into_writer(
-            &OldSnapshot {
-                revision_id: snapshot.revision_id(),
-                product: snapshot.product(),
-            },
-            &mut payload,
-        )
-        .unwrap();
+        let canonical = save(snapshot);
+        let definite = &canonical[MAGIC.len() + 2 + 32..];
+        let at = definite
+            .windows(8)
+            .position(|key| key == b"\x67product")
+            .unwrap()
+            + 8;
+        let header = match definite[at] {
+            0xa0..=0xb7 => 1,
+            0xb8 => 2,
+            other => panic!("product map header {other:#x}"),
+        };
+        let payload = [&definite[..at], &[0xbf], &definite[at + header..], &[0xff]].concat();
         let mut bytes = MAGIC.to_vec();
         bytes.extend_from_slice(&CURRENT_SCHEMA.to_le_bytes());
         bytes.extend_from_slice(&crate::graph::sha256_bytes(&payload));

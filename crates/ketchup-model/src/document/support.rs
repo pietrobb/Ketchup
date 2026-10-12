@@ -1,39 +1,24 @@
 //! Persistent support plane, independent of geometry and program ownership.
 use super::*;
 
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SupportDeclarations {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub floor_z_mm: Option<f64>,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub grounded_instances: BTreeSet<InstancePath>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub contact_joints: Vec<ContactJoint>,
-}
-
 impl Snapshot {
     /// Explicit world-Z support height; absent means the conventional z=0 plane.
     #[must_use]
     pub fn floor_z_mm(&self) -> Option<f64> {
-        self.product.support.floor_z_mm
+        self.product.floor_z_mm
     }
 
     pub fn grounded_instances(&self) -> &BTreeSet<InstancePath> {
-        &self.product.support.grounded_instances
+        &self.product.grounded_instances
     }
 
     #[must_use]
     pub fn instance_is_grounded(&self, path: &InstancePath) -> bool {
         self.occurrence_is_grounded(path.root_occurrence())
-            || self
-                .product
-                .support
-                .grounded_instances
-                .iter()
-                .any(|anchor| {
-                    anchor.root_occurrence() == path.root_occurrence()
-                        && path.steps().starts_with(anchor.steps())
-                })
+            || self.product.grounded_instances.iter().any(|anchor| {
+                anchor.root_occurrence() == path.root_occurrence()
+                    && path.steps().starts_with(anchor.steps())
+            })
     }
 }
 
@@ -104,7 +89,7 @@ pub(super) fn set_grounded_instances(
     paths: &BTreeSet<InstancePath>,
 ) -> Result<(), CanonicalError> {
     validate_grounded_instances(product, paths)?;
-    product.support.grounded_instances = paths.clone();
+    product.grounded_instances = paths.clone();
     Ok(())
 }
 
@@ -126,7 +111,7 @@ pub(super) fn apply_setting(
     command: &CanonicalCommand,
 ) -> Result<(), CanonicalError> {
     match command {
-        CanonicalCommand::SetFloorHeight { z_mm } => product.support.floor_z_mm = *z_mm,
+        CanonicalCommand::SetFloorHeight { z_mm } => product.floor_z_mm = *z_mm,
         CanonicalCommand::SetContactJoints { joints } => contact_joint::set(product, joints)?,
         CanonicalCommand::SetOccurrenceGrounded { id, grounded } => {
             set_occurrence_grounded(product, *id, *grounded)?
@@ -139,8 +124,7 @@ pub(super) fn apply_setting(
 }
 
 pub(super) fn prune_grounded_instances(product: &mut ProductModel) {
-    product.support.grounded_instances = product
-        .support
+    product.grounded_instances = product
         .grounded_instances
         .iter()
         .filter(|path| resolve_product_instance_path(product, path).is_some())

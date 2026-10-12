@@ -161,8 +161,13 @@ pub(crate) struct ProductModel {
     pub(crate) units: UnitSystem,
     #[serde(default, skip_serializing_if = "TolerancePolicy::is_default")]
     pub(crate) tolerance: TolerancePolicy,
-    #[serde(flatten)]
-    pub(crate) support: support::SupportDeclarations,
+    /// Explicit world-Z support height; absent means the conventional z=0 plane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) floor_z_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) grounded_instances: BTreeSet<InstancePath>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) contact_joints: Vec<ContactJoint>,
     pub(crate) evaluator_nodes: BTreeMap<NodeId, Arc<EvaluatorNode>>,
     pub(crate) overrides: BTreeMap<u64, Arc<CanonicalOverride>>,
     pub(crate) feature_parameter_bindings:
@@ -298,7 +303,9 @@ impl Default for ProductModel {
             document_id: allocate_document_id(),
             units: UnitSystem::Millimetres,
             tolerance: TolerancePolicy::default(),
-            support: support::SupportDeclarations::default(),
+            floor_z_mm: None,
+            grounded_instances: BTreeSet::new(),
+            contact_joints: Vec::new(),
             evaluator_nodes: BTreeMap::new(),
             overrides: BTreeMap::new(),
             feature_parameter_bindings: BTreeMap::new(),

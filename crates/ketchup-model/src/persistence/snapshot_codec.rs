@@ -10,7 +10,8 @@
 //! that is written when it has its default. The one change without a new number is a
 //! new field with both `#[serde(default)]` and a `skip_serializing_if` for that default,
 //! because files without it encode back unchanged. `tests/format_golden.rs` fails on
-//! any other change.
+//! any other change. The encoder writes the serde form directly, so every map in it
+//! must state its length: `#[serde(flatten)]` would write an indefinite-length map.
 
 use super::sheet_metal_v1::{SheetMetalV1, bend_path, flange_path};
 use super::{MAGIC, PersistenceError};
@@ -41,11 +42,10 @@ struct DecodedSnapshot {
 pub(super) fn encode(snapshot: &Snapshot) -> Vec<u8> {
     let mut payload = Vec::new();
     ciborium::into_writer(
-        &ciborium::Value::serialized(&EncodedSnapshot {
+        &EncodedSnapshot {
             revision_id: snapshot.revision_id(),
             product: snapshot.product(),
-        })
-        .expect("the product model serializes into memory"),
+        },
         &mut payload,
     )
     .expect("the product model serializes into memory");

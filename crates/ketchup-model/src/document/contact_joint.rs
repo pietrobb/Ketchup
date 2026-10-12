@@ -10,7 +10,7 @@ pub struct ContactJoint {
 
 impl Snapshot {
     pub fn contact_joints(&self) -> &[ContactJoint] {
-        &self.product.support.contact_joints
+        &self.product.contact_joints
     }
 }
 
@@ -39,13 +39,12 @@ pub(super) fn set(
     joints: &[ContactJoint],
 ) -> Result<(), CanonicalError> {
     validate(product, joints)?;
-    product.support.contact_joints = joints.to_vec();
+    product.contact_joints = joints.to_vec();
     Ok(())
 }
 
 pub(super) fn prune(product: &mut ProductModel) {
-    product.support.contact_joints = product
-        .support
+    product.contact_joints = product
         .contact_joints
         .iter()
         .filter(|joint| {
