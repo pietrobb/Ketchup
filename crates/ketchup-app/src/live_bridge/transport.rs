@@ -386,7 +386,9 @@ fn await_response(
 ) -> io::Result<Awaited> {
     loop {
         if stop.load(Ordering::Acquire) {
-            return Ok(Awaited::Ended);
+            // The UI answers before it stops the bridge (Disconnect does
+            // both in one frame), so a queued answer is still delivered.
+            return Ok(receiver.try_recv().map_or(Awaited::Ended, Awaited::Answer));
         }
         if Instant::now() >= deadline {
             // An answer that came in during the last wait is still an answer.

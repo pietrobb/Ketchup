@@ -216,12 +216,71 @@ fn process_tree_memory_high_water_bytes() -> u64 {
     })
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+/// Lifetime peak physical footprint, the figure Activity Monitor reports as
+/// the high-water mark; `None` once the process has exited.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn macos_process_memory_high_water_bytes(pid: u32) -> Option<u64> {
+    let pid = i32::try_from(pid).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::zeroed();
+    // SAFETY: the kernel writes at most one `rusage_info_v4` into the buffer
+    // this frame owns, and it is read only after the call reported success.
+    unsafe {
+        (libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V4, info.as_mut_ptr().cast()) == 0)
+            .then(|| info.assume_init().ri_lifetime_max_phys_footprint)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_memory_high_water_bytes() -> u64 {
+    macos_process_memory_high_water_bytes(std::process::id())
+        .expect("proc_pid_rusage must measure this process")
+}
+
+#[cfg(target_os = "macos")]
+fn process_tree_memory_high_water_bytes() -> u64 {
+    let output = Command::new("/bin/ps")
+        .args(["-A", "-o", "pid=,ppid="])
+        .output()
+        .expect("ps must list processes for process-tree memory");
+    assert!(output.status.success(), "ps process listing failed");
+    let relationships: Vec<(u32, u32)> = String::from_utf8(output.stdout)
+        .expect("ps output must be UTF-8")
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().map(|field| field.parse().ok());
+            Some((fields.next()??, fields.next()??))
+        })
+        .collect();
+    let mut descendants = HashSet::from([std::process::id()]);
+    loop {
+        let previous_len = descendants.len();
+        for &(pid, parent) in &relationships {
+            if descendants.contains(&parent) {
+                descendants.insert(pid);
+            }
+        }
+        if descendants.len() == previous_len {
+            break;
+        }
+    }
+    // A descendant that exited after the listing no longer holds memory.
+    descendants
+        .into_iter()
+        .filter_map(macos_process_memory_high_water_bytes)
+        .fold(0_u64, |total, bytes| {
+            total
+                .checked_add(bytes)
+                .expect("process-tree memory high-water overflow")
+        })
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn process_memory_high_water_bytes() -> u64 {
     panic!("memory high-water measurement is unsupported on this platform")
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn process_tree_memory_high_water_bytes() -> u64 {
     panic!("process-tree memory high-water measurement is unsupported on this platform")
 }

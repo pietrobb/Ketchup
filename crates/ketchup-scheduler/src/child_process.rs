@@ -2,7 +2,22 @@ use process_wrap::std::ChildWrapper;
 use std::io;
 
 pub(crate) fn terminate(child: &mut dyn ChildWrapper) -> io::Result<()> {
+    // On Unix the kill is a plain signal to the PID. Once the child has been
+    // reaped that PID may already belong to an unrelated process, so never
+    // signal a child whose exit status we already hold; a child that exits
+    // between the check and the signal reports ESRCH, which is also success.
+    #[cfg(not(windows))]
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
     // Preserve the wrapper: on Windows this terminates the entire Job Object.
+    #[cfg(not(windows))]
+    match child.start_kill() {
+        // ESRCH is 3 on Linux and macOS alike.
+        Err(error) if error.raw_os_error() == Some(3) => {}
+        result => result?,
+    }
+    #[cfg(windows)]
     child.start_kill()?;
     // Windows process termination is asynchronous. Waiting for pending kernel I/O
     // can take seconds even after TerminateJobObject succeeds. There are no Unix

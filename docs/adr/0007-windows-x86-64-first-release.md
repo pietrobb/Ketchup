@@ -30,3 +30,7 @@ V4-O08 required an explicit choice between a Windows-only first release and para
 ## Acceptance
 
 Accepted by the project owner on 2026-08-09 with the explicit direction that Windows is sufficient for the first release and that proving the product actually works takes priority over other desktop platforms.
+
+## Addendum 2026-10-11: macOS development build
+
+The project owner approved a macOS (Apple Silicon) development build that does not gate the Windows release. `scripts/macos/build-occt.sh` builds the same pinned OCCT 8.0.1 module set and `scripts/macos/build-app.sh` packages `Kečup.app` with the exact worker and OCCT libraries; the app renders with Metal. The first release still targets Windows x86-64 only, and this build carries no release, signing, notarization or hardware evidence. As on Windows, AI clients drive the app through MCP (`ketchup-app --mcp`).

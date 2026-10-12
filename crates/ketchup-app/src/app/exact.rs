@@ -3,15 +3,23 @@
 use crate::*;
 
 /// Prefer discrete hardware for normal startup; explicit diagnostics remain unique.
+/// The one graphics API the app renders with: Direct3D 12 on Windows, Metal on macOS.
+#[cfg(not(target_os = "macos"))]
+const NATIVE_BACKEND: (eframe::wgpu::Backend, eframe::wgpu::Backends) =
+    (eframe::wgpu::Backend::Dx12, eframe::wgpu::Backends::DX12);
+#[cfg(target_os = "macos")]
+const NATIVE_BACKEND: (eframe::wgpu::Backend, eframe::wgpu::Backends) =
+    (eframe::wgpu::Backend::Metal, eframe::wgpu::Backends::METAL);
+
 fn select_native_adapter(
     candidates: impl IntoIterator<Item = (eframe::wgpu::AdapterInfo, bool)>,
     requirement: Option<&AdapterRequirement>,
 ) -> Result<usize, &'static str> {
-    use eframe::wgpu::{Backend, DeviceType};
+    use eframe::wgpu::DeviceType;
     let mut selected = None;
     for (index, (info, surface_supported)) in candidates.into_iter().enumerate() {
         if !surface_supported
-            || info.backend != Backend::Dx12
+            || info.backend != NATIVE_BACKEND.0
             || matches!(info.device_type, DeviceType::Cpu | DeviceType::VirtualGpu)
             || requirement.is_some_and(|r| r.name != info.name || r.device_type != info.device_type)
         {
@@ -23,7 +31,7 @@ fn select_native_adapter(
             _ => 2,
         };
         if requirement.is_some() && selected.is_some() {
-            return Err("multiple Direct3D 12 physical adapters matched the frozen requirement");
+            return Err("multiple physical graphics adapters matched the frozen requirement");
         }
         if selected.is_none_or(|(_, best)| rank < best) {
             selected = Some((index, rank));
@@ -31,7 +39,7 @@ fn select_native_adapter(
     }
     selected
         .map(|(index, _)| index)
-        .ok_or("no Direct3D 12 physical adapter matched the requested configuration")
+        .ok_or("no physical graphics adapter matched the requested configuration")
 }
 
 impl KetchupApp {
@@ -148,7 +156,7 @@ impl KetchupApp {
         selected_info: SelectedAdapterInfo,
     ) -> eframe::NativeOptions {
         let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::default();
-        setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
+        setup.instance_descriptor.backends = NATIVE_BACKEND.1;
         setup.native_adapter_selector = Some(Arc::new(move |adapters, surface| {
             let candidates = adapters.iter().map(|adapter| {
                 (
@@ -465,6 +473,14 @@ impl KetchupApp {
         let progress = self.exact.task.as_ref()?.progress();
         (progress.completed_producers < progress.total_producers)
             .then_some((progress.completed_producers, progress.total_producers))
+    }
+
+    /// Whether exact geometry is still being computed, so a test waits for the
+    /// scene to settle instead of guessing how long the worker takes.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn exact_evaluation_running(&self) -> bool {
+        self.exact.task.is_some()
     }
 
     #[must_use]
@@ -1172,7 +1188,7 @@ pub(crate) fn exact_worker_unavailable() -> Rejection {
 #[cfg(test)]
 mod adapter_tests {
     use super::*;
-    use eframe::wgpu::{AdapterInfo, Backend, DeviceType};
+    use eframe::wgpu::{AdapterInfo, DeviceType};
 
     fn adapter(name: &str, device_type: DeviceType) -> (AdapterInfo, bool) {
         (
@@ -1183,7 +1199,7 @@ mod adapter_tests {
                 device_type,
                 driver: String::new(),
                 driver_info: String::new(),
-                backend: Backend::Dx12,
+                backend: NATIVE_BACKEND.0,
             },
             true,
         )

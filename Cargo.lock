@@ -2293,6 +2293,7 @@ dependencies = [
  "ketchup-assistant",
  "ketchup-geometry",
  "ketchup-interaction",
+ "ketchup-macos-open",
  "ketchup-manufacturing",
  "ketchup-mcp",
  "ketchup-model",
@@ -2303,6 +2304,7 @@ dependencies = [
  "ketchup-test-env",
  "ketchup-view-format",
  "ketchup-viewer",
+ "libc",
  "pollster",
  "raw-window-handle",
  "rfd",
@@ -2388,6 +2390,14 @@ dependencies = [
  "ketchup-geometry",
  "ketchup-model",
  "ketchup-tolerance",
+]
+
+[[package]]
+name = "ketchup-macos-open"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -2552,9 +2562,8 @@ dependencies = [
 name = "ketchup-viewer-macos"
 version = "0.1.0"
 dependencies = [
+ "ketchup-macos-open",
  "ketchup-viewer",
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
 ]
 
 [[package]]

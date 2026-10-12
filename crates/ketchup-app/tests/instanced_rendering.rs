@@ -15,6 +15,16 @@ use ketchup_scheduler::general::{
 };
 use std::time::Instant;
 
+/// The graphics API the desktop app renders with on this platform.
+#[cfg(not(target_os = "macos"))]
+const NATIVE_BACKENDS: wgpu::Backends = wgpu::Backends::DX12;
+#[cfg(not(target_os = "macos"))]
+const NATIVE_BACKEND: wgpu::Backend = wgpu::Backend::Dx12;
+#[cfg(target_os = "macos")]
+const NATIVE_BACKENDS: wgpu::Backends = wgpu::Backends::METAL;
+#[cfg(target_os = "macos")]
+const NATIVE_BACKEND: wgpu::Backend = wgpu::Backend::Metal;
+
 const DEFINITION: DefinitionId = DefinitionId(1);
 const PROFILE: FeatureId = FeatureId(1);
 const BODY: FeatureId = FeatureId(2);
@@ -324,7 +334,7 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
     );
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::DX12,
+        backends: NATIVE_BACKENDS,
         ..Default::default()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -332,9 +342,9 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .expect("M16 product proof requires a hardware DX12 adapter");
+    .expect("M16 product proof requires a hardware DX12/Metal adapter");
     let adapter_info = adapter.get_info();
-    assert_eq!(adapter_info.backend, wgpu::Backend::Dx12);
+    assert_eq!(adapter_info.backend, NATIVE_BACKEND);
     assert!(!matches!(
         adapter_info.device_type,
         wgpu::DeviceType::Cpu | wgpu::DeviceType::VirtualGpu
@@ -588,7 +598,7 @@ fn garden_studio_hardware_gpu_camera_frames() {
     }
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::DX12,
+        backends: NATIVE_BACKENDS,
         ..Default::default()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -596,9 +606,9 @@ fn garden_studio_hardware_gpu_camera_frames() {
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .expect("garden regression requires a physical DX12 GPU, never software fallback");
+    .expect("garden regression requires a physical DX12/Metal GPU, never software fallback");
     let adapter_info = adapter.get_info();
-    assert_eq!(adapter_info.backend, wgpu::Backend::Dx12);
+    assert_eq!(adapter_info.backend, NATIVE_BACKEND);
     assert!(matches!(
         adapter_info.device_type,
         wgpu::DeviceType::DiscreteGpu | wgpu::DeviceType::IntegratedGpu

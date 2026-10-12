@@ -98,8 +98,9 @@ fn reaches_in(zone: &Part, part: &Part) -> Option<bool> {
     .then_some(true)
 }
 
+/// `+ 0.0` folds `-0.0` into `0.0`, as in `validate.rs`.
 fn round(value: f64) -> f64 {
-    (value * 1000.0).round() / 1000.0
+    (value * 1000.0).round() / 1000.0 + 0.0
 }
 
 pub(crate) fn issues(model: &ProgramModel, issues: &mut Vec<Issue>) {

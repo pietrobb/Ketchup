@@ -24,6 +24,7 @@ LAYERS = {
     "ketchup-tolerance": 0,
     "ketchup-rejection": 0,
     "ketchup-test-env": 0,
+    "ketchup-macos-open": 0,
     "ketchup-geometry": 1,
     "ketchup-model": 2,
     "ketchup-exact": 2,
@@ -336,6 +337,8 @@ CASTS_AND_ALLOWS = {
     "ketchup-geometry casts": 5,
     "ketchup-headless casts": 4,
     "ketchup-interaction casts": 21,
+    # Objective-C callback for Finder open-file events (application:openURLs:).
+    "ketchup-macos-open allows": 1,
     "ketchup-manufacturing allows": 11,
     "ketchup-manufacturing casts": 43,
     "ketchup-mcp allows": 2,

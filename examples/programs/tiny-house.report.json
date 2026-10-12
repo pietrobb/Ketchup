@@ -3129,7 +3129,7 @@
       "message": "the bounding boxes of konštrukcia/strecha južná/debnenie 1 and konštrukcia/fasáda západ/fasáda 9 overlap by 32.5 x 139.97 x 117.449 mm; whether the solids themselves overlap needs the exact shapes",
       "where_mm": [
         [
-          -0.0,
+          0.0,
           1500.0,
           5544.94
         ],
@@ -3165,7 +3165,7 @@
       "message": "the bounding boxes of konštrukcia/strecha južná/debnenie 1 and konštrukcia/fasáda západ/fasáda 10 overlap by 32.5 x 1047.47 x 878.931 mm; whether the solids themselves overlap needs the exact shapes",
       "where_mm": [
         [
-          -0.0,
+          0.0,
           172.5,
           4431.036
         ],
@@ -4069,7 +4069,7 @@
       "message": "the bounding boxes of konštrukcia/strecha južná/krytina 1 and konštrukcia/fasáda západ/fasáda 9 overlap by 32.5 x 105.744 x 88.73 mm; whether the solids themselves overlap needs the exact shapes",
       "where_mm": [
         [
-          -0.0,
+          0.0,
           1500.0,
           5573.659
         ],
@@ -4105,7 +4105,7 @@
       "message": "the bounding boxes of konštrukcia/strecha južná/krytina 1 and konštrukcia/fasáda západ/fasáda 10 overlap by 32.5 x 1013.244 x 850.212 mm; whether the solids themselves overlap needs the exact shapes",
       "where_mm": [
         [
-          -0.0,
+          0.0,
           172.5,
           4459.755
         ],
@@ -14966,7 +14966,7 @@
       "where_mm": [
         [
           60.0,
-          -0.0,
+          0.0,
           3625.026
         ],
         [
@@ -19066,7 +19066,7 @@
       "where_mm": [
         [
           917.143,
-          -0.0,
+          0.0,
           3625.026
         ],
         [
@@ -20302,7 +20302,7 @@
       "where_mm": [
         [
           1774.286,
-          -0.0,
+          0.0,
           3625.026
         ],
         [
@@ -20354,7 +20354,7 @@
       "where_mm": [
         [
           2631.429,
-          -0.0,
+          0.0,
           3625.026
         ],
         [
@@ -20410,7 +20410,7 @@
       "where_mm": [
         [
           3488.571,
-          -0.0,
+          0.0,
           3625.026
         ],
         [
@@ -24646,7 +24646,7 @@
       "where_mm": [
         [
           3500.0,
-          -0.0,
+          0.0,
           3625.026
         ],
         [
@@ -24838,7 +24838,7 @@
       "where_mm": [
         [
           4345.714,
-          -0.0,
+          0.0,
           3625.026
         ],
         [
@@ -24890,7 +24890,7 @@
       "where_mm": [
         [
           5202.857,
-          -0.0,
+          0.0,
           3625.026
         ],
         [
@@ -26066,7 +26066,7 @@
       "where_mm": [
         [
           6060.0,
-          -0.0,
+          0.0,
           3625.026
         ],
         [

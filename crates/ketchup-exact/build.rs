@@ -2,6 +2,13 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The functions third_party/crmath/ketchup_crmath.c replaces.
+const CRMATH_FUNCTIONS: [&str; 26] = [
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh", "acosh",
+    "atanh", "exp", "exp2", "exp10", "log", "log2", "log10", "log1p", "pow", "cbrt", "hypot",
+    "acosf", "powf", "tanf",
+];
+
 fn copy_runtime_dlls(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).expect("failed to create OCCT runtime destination");
     for entry in fs::read_dir(source).expect("failed to read frozen OCCT runtime directory") {
@@ -70,15 +77,41 @@ fn main() {
         .filter(|path| path.extension().is_some_and(|extension| extension == "cc"))
         .collect();
     native_units.sort();
-    cxx_build::bridge("src/lib.rs")
+    let mut native = cxx_build::bridge("src/lib.rs");
+    native
         .files(&native_units)
         .include("include")
         .include(&include_dir)
         .std("c++17")
         .flag_if_supported("/EHsc")
-        .compile("ketchup_exact_native");
+        // No fused multiply-add: results must match MSVC bit for bit (see
+        // scripts/macos/build-occt.sh).
+        .flag_if_supported("-ffp-contract=off");
+    // Math calls go to the correctly rounded crmath below; the compiler must
+    // not fold or fuse them with its own host libm.
+    for function in CRMATH_FUNCTIONS {
+        native.flag_if_supported(format!("-fno-builtin-{function}"));
+    }
+    native.compile("ketchup_exact_native");
 
     println!("cargo:rustc-link-search=native={}", library_dir.display());
+    // Correctly rounded libm (third_party/crmath), installed with OCCT by the
+    // build-occt script. Linked whole into every binary that uses this crate:
+    // a definition inside the binary wins over the system libm, so Rust's
+    // f64::sin etc. on the exact path give the same bits on macOS and Windows,
+    // like OCCT itself.
+    let crmath = library_dir.join(if windows {
+        "ketchup_crmath.lib"
+    } else {
+        "libketchup_crmath.a"
+    });
+    assert!(
+        crmath.is_file(),
+        "missing {}: rebuild OCCT with scripts/*/build-occt",
+        crmath.display()
+    );
+    println!("cargo:rerun-if-changed={}", crmath.display());
+    println!("cargo:rustc-link-lib=static:+whole-archive,-bundle=ketchup_crmath");
     for library in [
         "TKernel",
         "TKMath",

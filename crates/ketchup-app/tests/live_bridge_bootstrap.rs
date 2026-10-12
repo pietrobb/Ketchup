@@ -26,6 +26,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The broker refuses a discovery root other users can read, as a real
+/// per-user runtime directory is; a default temp dir on Unix is 0755.
+fn private_tempdir() -> tempfile::TempDir {
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir().unwrap()
+}
+
 // Test-only fixed credential; production launchers generate secrets.token_hex(32).
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 fn opted_in() -> LiveStdinBootstrap {
@@ -276,7 +288,7 @@ fn call(shell: &mut Shell, stream: &mut TcpStream, token: &str, request: Request
 
 #[test]
 fn readiness_identifies_the_actual_child_window_when_broker_is_enabled() {
-    let root = tempfile::tempdir().unwrap();
+    let root = private_tempdir();
     let mut shell = Shell::new();
     let context = eframe::egui::Context::default();
     shell
@@ -308,7 +320,7 @@ fn readiness_identifies_the_actual_child_window_when_broker_is_enabled() {
 /// free, so a second client got the launcher's own token and both drove it.
 #[test]
 fn a_second_client_takes_over_a_window_its_launcher_still_holds() {
-    let root = tempfile::tempdir().unwrap();
+    let root = private_tempdir();
     let mut shell = Shell::new();
     let context = eframe::egui::Context::default();
     // The order of the native start: broker first, then the launch bridge.
@@ -468,6 +480,8 @@ fn request_consent(
 fn bootstrap(shell: &Shell, root: Option<&std::path::Path>) -> String {
     let default = std::env::var_os(if cfg!(windows) {
         "LOCALAPPDATA"
+    } else if cfg!(target_os = "macos") {
+        "TMPDIR"
     } else {
         "XDG_RUNTIME_DIR"
     })
@@ -522,7 +536,7 @@ fn failed_optional_broker_leaves_manual_cad_available_without_ai_authority() {
 
 #[test]
 fn bootstrap_window_reconnects_in_place_after_client_loss() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let mut shell = Shell::new();
     let before = shell.app().live_bridge_stamp();
     let output = Output::default();
@@ -630,7 +644,7 @@ fn bootstrap_window_reconnects_in_place_after_client_loss() {
 
 #[test]
 fn per_user_registry_lists_only_nonce_verified_live_window_metadata() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let registry_path;
     {
         let mut shell = Shell::new();
@@ -674,7 +688,7 @@ fn per_user_registry_lists_only_nonce_verified_live_window_metadata() {
 
 #[test]
 fn consent_broker_cleanup_preserves_an_externally_replaced_registry_entry() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let registry_path;
     {
         let mut shell = Shell::new();
@@ -697,7 +711,7 @@ fn consent_broker_cleanup_preserves_an_externally_replaced_registry_entry() {
 
 #[test]
 fn consent_broker_request_deadline_is_cumulative_across_slow_bytes() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let mut shell = Shell::new();
     let address = shell
         .app_mut()
@@ -748,7 +762,7 @@ fn consent_broker_request_deadline_is_cumulative_across_slow_bytes() {
 
 #[test]
 fn consent_broker_accepts_a_request_arriving_after_the_connection() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let mut shell = Shell::new();
     let address = shell
         .app_mut()
@@ -777,7 +791,7 @@ fn consent_broker_accepts_a_request_arriving_after_the_connection() {
 
 #[test]
 fn malformed_attach_request_with_claimed_identity_is_rejected() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let mut shell = Shell::new();
     let address = shell
         .app_mut()
@@ -976,7 +990,7 @@ fn disconnected_attach_requester_cannot_leave_window_busy() {
 
 #[test]
 fn file_new_preserves_window_live_services_and_invalidates_document_authority() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let mut shell = Shell::new();
     let consent_address = shell
         .app_mut()

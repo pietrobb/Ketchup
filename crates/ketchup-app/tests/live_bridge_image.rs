@@ -23,9 +23,16 @@ fn harness() -> Harness<'static, KetchupApp> {
         .with_size(egui::vec2(1600.0, 1000.0))
         .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
     h.ctx.style_mut(|s| s.animation_time = 0.0);
-    for _ in 0..30 {
+    // At least 30 frames, then until the exact scene settles: the exact worker's
+    // first start (loading the OCCT libraries) can outlast them, and a capture
+    // taken mid-evaluation is rightly stale.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut frames = 0;
+    while frames < 30 || h.state().exact_evaluation_running() {
+        assert!(Instant::now() < deadline, "exact scene did not settle");
         h.step();
         std::thread::sleep(Duration::from_millis(10));
+        frames += 1;
     }
     h.render()
         .expect("initialize real offscreen wgpu before request deadline");

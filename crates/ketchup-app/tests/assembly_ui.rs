@@ -396,7 +396,7 @@ fn rigid_assembly_authoring_is_previewed_atomic_undoable_and_losslessly_persiste
     shell.click_button_label(&edit);
     let value_label = shell.catalog().text("assembly-distance-value");
     shell.focus_text_input(&value_label);
-    shell.key(Key::A, Modifiers::CTRL);
+    shell.key(Key::A, Modifiers::COMMAND);
     shell.type_text("5");
     let update = shell.catalog().text("assembly-preview-update-mate");
     shell.click_button_label(&update);
@@ -1683,7 +1683,7 @@ fn invalid_selection_stale_confirmation_and_conflict_are_fail_closed() {
 
     let value_label = shell.catalog().text("assembly-distance-value");
     shell.focus_text_input(&value_label);
-    shell.key(Key::A, Modifiers::CTRL);
+    shell.key(Key::A, Modifiers::COMMAND);
     shell.type_text("5");
     let before_conflict = (
         shell.app().document_revision(),

@@ -105,6 +105,30 @@ foreach ($tool in $expectedToolHashes.Keys) {
     if ($actualHash -ne $expectedToolHashes[$tool]) { throw "Native tool hash mismatch: $tool" }
 }
 
+# Correctly rounded libm (third_party/crmath; see scripts/macos/build-occt.sh):
+# Microsoft's and Apple's sin, cos, pow, ... differ in the last bit, and
+# documents pin exact results bit for bit. CORE-MATH needs clang, so crmath is
+# built with the ClangCL toolset of the same Visual Studio and linked into
+# every OCCT DLL with /WHOLEARCHIVE; the gate after the build proves no DLL
+# still imports one of those functions from the CRT.
+$clangCl = Join-Path $vs.installationPath "VC\Tools\Llvm\x64\bin\clang-cl.exe"
+if (-not (Test-Path $clangCl)) {
+    throw "crmath needs the Visual Studio component Microsoft.VisualStudio.Component.VC.Llvm.Clang (C++ Clang tools for Windows)."
+}
+Write-Host "clang-cl SHA-256: $((Get-FileHash $clangCl -Algorithm SHA256).Hash.ToLowerInvariant())"
+$crmathBuild = Assert-ChildPath "$BuildDir-crmath" $thirdPartyRoot "crmath BuildDir"
+if (Test-Path $crmathBuild) { Remove-Item -Recurse -Force $crmathBuild }
+$runtimeRoot = Join-Path $InstallDir "win64\vc14"
+& $cmake -S (Join-Path $thirdPartyRoot "crmath") -B $crmathBuild `
+    -G "Visual Studio 17 2022" -A x64 -T ClangCL `
+    "-DCMAKE_GENERATOR_INSTANCE=$($vs.installationPath.Replace('\', '/'))" `
+    "-DCMAKE_SYSTEM_VERSION=$sdkVersion" `
+    "-DCMAKE_INSTALL_PREFIX=$($runtimeRoot.Replace('\', '/'))"
+if ($LASTEXITCODE -ne 0) { throw "crmath CMake configuration failed." }
+& $cmake --build $crmathBuild --config Release --target INSTALL
+if ($LASTEXITCODE -ne 0) { throw "crmath build or install failed." }
+$crmath = Join-Path $runtimeRoot "lib\ketchup_crmath.lib"
+
 $configure = @(
     "-S", $SourceDir,
     "-B", $BuildDir,
@@ -115,6 +139,7 @@ $configure = @(
     "-DCMAKE_SYSTEM_VERSION=$sdkVersion",
     "-DCMAKE_RC_COMPILER=$($rc.Replace('\', '/'))",
     "-DCMAKE_MT=$($mt.Replace('\', '/'))",
+    "-DCMAKE_SHARED_LINKER_FLAGS=/WHOLEARCHIVE:$($crmath.Replace('\', '/'))",
     "-DBUILD_LIBRARY_TYPE=Shared",
     "-DBUILD_CPP_STANDARD=C++17",
     "-DBUILD_MODULE_FoundationClasses=ON",
@@ -155,3 +180,12 @@ $configure = @(
 if ($LASTEXITCODE -ne 0) { throw "OCCT CMake configuration failed." }
 & $cmake --build $BuildDir --config Release --target INSTALL --parallel $ParallelJobs
 if ($LASTEXITCODE -ne 0) { throw "OCCT Release build or install failed." }
+
+$dumpbin = Join-Path $vs.installationPath "VC\Tools\MSVC\$msvcVersion\bin\HostX64\x64\dumpbin.exe"
+$systemMath = '^\s+[0-9A-Fa-f]+\s+((a?(sin|cos|tan)h?|atan2|exp(2|10|m1)?|log(2|10|1p)?|pow|cbrt|hypot|erfc?|[lt]gamma)f?|__vdecl_\w+|_?_libm_sse2\w*)$'
+$leaks = foreach ($dll in Get-ChildItem (Join-Path $runtimeRoot "bin") -Filter "TK*.dll") {
+    & $dumpbin /nologo /imports $dll.FullName |
+        Where-Object { $_ -match $systemMath } |
+        ForEach-Object { "$($dll.Name): $($_.Trim())" }
+}
+if ($leaks) { throw "OCCT still takes math functions from the CRT:`n$($leaks -join "`n")" }
