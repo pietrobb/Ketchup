@@ -957,6 +957,7 @@ impl KetchupApp {
         // does not remove it unseen.
         self.picked_space = None;
         self.picked_dimension = None;
+        self.picked_joint = None;
         self.tool_preview.close::<EphemeralBoxPreview>();
         self.status_key = "status-object-deleted";
         self.digest = self.catalog.format(
@@ -973,6 +974,9 @@ impl KetchupApp {
             }
             if let Some(id) = self.picked_dimension_id() {
                 return self.delete_picked_dimension(id);
+            }
+            if let Some(id) = self.picked_joint_id() {
+                return self.delete_picked_joint(id);
             }
             let hidden = self.hidden_selected_count();
             if hidden > 0 {

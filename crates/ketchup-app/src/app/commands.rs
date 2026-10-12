@@ -35,6 +35,7 @@ impl KetchupApp {
                     self.delete_selection_source_plan().is_some()
                         || self.picked_space_row().is_some()
                         || self.picked_dimension_id().is_some()
+                        || self.picked_joint_id().is_some()
                 }
                 AppCommand::Deselect => self.deselect_source_plan().is_some(),
                 AppCommand::SelectAll => self.select_all_source_plan().is_some(),

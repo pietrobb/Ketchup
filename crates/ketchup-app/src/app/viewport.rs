@@ -3344,6 +3344,7 @@ impl KetchupApp {
         self.paint_selected_topological_edges(painter, response.rect);
         self.paint_picked_space(painter, response.rect);
         self.paint_picked_dimension(painter, response.rect);
+        self.paint_picked_joint(painter, response.rect);
 
         let profile_move_stroke = Stroke::new(2.4_f32, Color32::from_rgb(255, 199, 68));
         for path in self.move_profile_preview_paths() {

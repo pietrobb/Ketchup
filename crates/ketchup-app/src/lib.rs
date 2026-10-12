@@ -2547,6 +2547,10 @@ pub struct KetchupApp {
     /// picked together with.
     picked_dimension: Option<(PersistentDimensionId, BTreeSet<InstancePath>)>,
     dimension_fields: app::dimensions_ui::DimensionFields,
+    /// The declared joint picked in the dock, with the part selection it was
+    /// picked together with.
+    picked_joint: Option<(ketchup_geometry::prismatic::JointId, BTreeSet<InstancePath>)>,
+    joint_fields: app::joints_ui::JointFields,
     hover: app_state::HoverState,
     active_tool: ActiveTool,
     panels: app_state::Panels,

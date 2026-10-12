@@ -323,6 +323,7 @@ impl KetchupApp {
     fn pick_space_row(&mut self, row: SpaceRow) {
         self.clear_selection();
         self.picked_dimension = None;
+        self.picked_joint = None;
         self.picked_space = Some((row, BTreeSet::new()));
     }
 

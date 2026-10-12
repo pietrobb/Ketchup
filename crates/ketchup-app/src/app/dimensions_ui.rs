@@ -304,6 +304,7 @@ impl KetchupApp {
     fn pick_dimension(&mut self, id: PersistentDimensionId) {
         self.clear_selection();
         self.picked_space = None;
+        self.picked_joint = None;
         self.picked_dimension = Some((id, BTreeSet::new()));
     }
 

@@ -26,6 +26,10 @@ pub(crate) mod import_file;
 #[cfg(test)]
 #[path = "app/interactive_house_tests.rs"]
 mod interactive_house_tests;
+pub(crate) mod joints_ui;
+#[cfg(test)]
+#[path = "app/joints_ui_tests.rs"]
+mod joints_ui_tests;
 mod local_outliner;
 mod mirror;
 mod outliner;
