@@ -158,6 +158,7 @@ pub struct ExactEvaluationTask {
     pub(super) total_producers: usize,
     pub(super) completed_producers: Arc<AtomicUsize>,
     pub(super) reused_producers: usize,
+    pub(super) requested_producers: usize,
     pub(super) active_producer: Arc<Mutex<Option<(ProducerKey, Instant)>>>,
 }
 impl Drop for ExactEvaluationTask {
@@ -166,6 +167,10 @@ impl Drop for ExactEvaluationTask {
     }
 }
 impl ExactEvaluationTask {
+    /// The producers this evaluation sends to the exact worker; current ones are reused.
+    pub fn requested_producers(&self) -> usize {
+        self.requested_producers
+    }
     pub fn progress(&self) -> ExactEvaluationProgress {
         let active = *self
             .active_producer
@@ -406,6 +411,7 @@ mod tests {
             total_producers: 1,
             completed_producers: Arc::new(AtomicUsize::new(1)),
             reused_producers: 0,
+            requested_producers: 0,
             active_producer: Arc::new(Mutex::new(None)),
         };
         let products = ExactEvaluationProducts {

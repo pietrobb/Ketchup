@@ -1183,6 +1183,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
         total_producers,
         completed_producers,
         reused_producers,
+        requested_producers: total_producers - initial_completed_producers,
         active_producer,
     }
 }

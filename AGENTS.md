@@ -90,6 +90,11 @@ reproduced failure that they catch, or explicit approval by the owner.
   `cargo clippy --locked --workspace --all-targets -- -D warnings` are the only other cargo
   commands. A test that starts external processes (workers, plugins) takes
   `crate::integration_support::file_turn()` first; the app harness `Shell` takes it itself.
+- Per step, run only the tests of the code you change and of its direct dependents, with the
+  canonical command and a filter (`-- <filter>`). The unfiltered suite and all
+  `scripts/check_*.py` run once at the end of a block of steps (e.g. B1–B5), and before an
+  installer build or a push. When the full suite fails, fix it and rerun only the failed tests
+  by filter; the next full run is at the end of the next block.
 - Report the net line delta in every PR description.
 
 ## 7. Communication
@@ -100,9 +105,10 @@ reproduced failure that they catch, or explicit approval by the owner.
 
 ## 8. Definition of done
 
-1. `cargo test --locked --workspace --all-targets`,
+1. A step: the filtered tests of the changed code (§6),
    `cargo clippy --locked --workspace --all-targets -- -D warnings` and
-   `cargo fmt --all -- --check` pass.
+   `cargo fmt --all -- --check` pass. A block of steps, an installer build or a push: also the
+   unfiltered `cargo test --locked --workspace --all-targets` and all `scripts/check_*.py`.
 2. The named-product check passes, once `scripts/check_no_named_products.py` exists. It is a
    ratchet: the baseline may only shrink.
 3. Manual smoke test:

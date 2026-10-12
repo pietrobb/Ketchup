@@ -185,6 +185,9 @@ pub(crate) struct ExactState {
     pub(crate) task: Option<ExactEvaluationTask>,
     /// When the running evaluation started; progress is shown only for long ones.
     pub(crate) task_started: Option<Instant>,
+    /// How many producers the started evaluations sent to the exact worker;
+    /// producers whose exact results are current are reused, not counted.
+    pub(crate) producers_requested: usize,
     pub(crate) mutation_readiness: MutationReadiness,
     pub(crate) results: ExactResultRegistry,
     pub(crate) topology_results: ExactResultRegistry,

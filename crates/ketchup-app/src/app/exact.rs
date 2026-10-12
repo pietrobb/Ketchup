@@ -370,14 +370,16 @@ impl KetchupApp {
         }
         let repaint = context.clone();
         self.exact.task_started = Some(Instant::now());
-        self.exact.task = Some(ketchup_application::evaluation::start_exact_evaluation(
+        let task = ketchup_application::evaluation::start_exact_evaluation(
             snapshot,
             &self.file.container_data,
             &self.exact.results,
             &self.exact.topology_results,
             self.exact.worker_path.clone(),
             move || repaint.request_repaint(),
-        ));
+        );
+        self.exact.producers_requested += task.requested_producers();
+        self.exact.task = Some(task);
     }
 
     #[cfg(feature = "testing")]

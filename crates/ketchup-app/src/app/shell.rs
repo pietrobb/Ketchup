@@ -210,6 +210,7 @@ impl KetchupApp {
                 worker_attempted: false,
                 task: None,
                 task_started: None,
+                producers_requested: 0,
                 mutation_readiness: MutationReadiness::Ready,
                 results: ExactResultRegistry::default(),
                 topology_results: ExactResultRegistry::default(),

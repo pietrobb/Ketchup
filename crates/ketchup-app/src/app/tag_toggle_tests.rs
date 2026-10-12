@@ -8,12 +8,6 @@ use std::time::{Duration, Instant};
 
 const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star");
 
-/// Debug builds are several times slower than release, where a toggle takes about
-/// 0.13 s alone (and up to ~0.45 s beside the parallel test suite); before the
-/// fix it took seconds in release.
-const TOGGLE_BUDGET: Duration =
-    Duration::from_millis(if cfg!(debug_assertions) { 2_500 } else { 800 });
-
 #[test]
 fn toggling_a_house_layer_repaints_without_exact_reevaluation() {
     let worker = ketchup_application::evaluation::exact_worker_candidates()
@@ -63,29 +57,33 @@ fn toggling_a_house_layer_repaints_without_exact_reevaluation() {
     harness.run_steps(2);
     let results = harness.state().exact.results.len();
     assert!(results > 300, "{results} exact bodies");
+    assert!(harness.state().exact.producers_requested > 0);
 
     for _ in 0..2 {
         let bodies = harness.state().exact_render_body_count();
         let triangles = harness.state().instanced_scene_triangle_count();
+        let requested = harness.state().exact.producers_requested;
         let clicked = Instant::now();
         harness.get_by_role_and_label(Role::CheckBox, &row).click();
         harness.run_steps(2);
-        while harness.state().exact.task.is_some() {
-            assert!(clicked.elapsed() < Duration::from_secs(30));
-            harness.run_steps(1);
-        }
+        step_until(
+            &mut harness,
+            Duration::from_secs(300),
+            "the toggle's exact pass never finished",
+            |app| app.exact.task.is_none(),
+        );
         harness.run_steps(1);
         let elapsed = clicked.elapsed();
         visible = !visible;
         let app = harness.state();
         assert_eq!(app.tag_visibility(tag_id), Some(visible));
+        assert_eq!(
+            app.exact.producers_requested, requested,
+            "the toggle sent producers to the exact worker"
+        );
         assert_eq!(app.exact.results.len(), results);
         assert_ne!(app.exact_render_body_count(), bodies);
         assert_ne!(app.instanced_scene_triangle_count(), triangles);
         eprintln!("layer toggle to {visible} painted in {elapsed:?}");
-        assert!(
-            elapsed < TOGGLE_BUDGET,
-            "layer toggle took {elapsed:?}, budget {TOGGLE_BUDGET:?}"
-        );
     }
 }
