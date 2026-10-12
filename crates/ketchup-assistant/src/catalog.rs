@@ -178,8 +178,25 @@ mod tests {
             .iter()
             .map(|entry| entry["operation"].as_str().unwrap())
             .collect();
-        for expected in ["create_part", "create_pin_joint", "delete", "transform"] {
+        for expected in [
+            "create_part",
+            "create_pin_joint",
+            "delete",
+            "transform",
+            "structure",
+        ] {
             assert!(names.contains(&expected), "{expected} missing");
+        }
+        let structure = cad_operation_catalog(Some("structure")).unwrap();
+        let changes = structure["types"]["AssistantStructureChange"]
+            .as_str()
+            .unwrap();
+        for change in [
+            "\"create_group\"",
+            "\"make_component\"",
+            "\"delete_definition\"",
+        ] {
+            assert!(changes.contains(change), "{changes}");
         }
         let part = cad_operation_catalog(Some("create_part")).unwrap();
         let fields = part["fields"].as_str().unwrap();

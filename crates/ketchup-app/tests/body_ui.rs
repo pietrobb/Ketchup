@@ -11,6 +11,7 @@ use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_assistant::intent::WorkflowIntent;
+use ketchup_assistant::sidecar::AssistantStructureChange;
 use ketchup_model::document::{BodyId, BooleanOperation, DefinitionId, FeatureId, FeatureKind};
 use ketchup_model::exact_product::producer_exact_graph;
 
@@ -524,14 +525,13 @@ fn invalid_selection_and_stale_confirmation_are_fail_closed() {
     shell.click_button_label(&create);
     assert!(shell.app().body_preview_pending());
     open_body_editor(&mut shell);
-    assert!(
-        shell
-            .app_mut()
-            .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                target: DefinitionId(1),
-                name: "Intervening body edit".to_owned(),
-            })
-    );
+    assert!(harness::apply_structure(
+        shell.app_mut(),
+        AssistantStructureChange::RenameDefinition {
+            definition_id: DefinitionId(1).0,
+            name: "Intervening body edit".to_owned(),
+        }
+    ));
     shell.settle();
     let after_intervening_edit = (
         shell.app().document_revision(),

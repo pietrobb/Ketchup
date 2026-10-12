@@ -1590,6 +1590,7 @@ impl LiveBridge {
                 | AssistantCadEditOperation::SetDimension { .. }
                 | AssistantCadEditOperation::SetFeatureParameter { .. }
                 | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
+                | AssistantCadEditOperation::Structure { .. }
                 | AssistantCadEditOperation::CreateAssemblyJoint { .. }
                 | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
                 | AssistantCadEditOperation::CreateDrawing { .. }

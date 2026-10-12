@@ -31,6 +31,7 @@ mod rule_program;
 mod rule_support;
 mod rule_tags;
 mod sketch;
+mod structure_change;
 pub mod topology;
 pub mod transforms;
 pub mod validation;

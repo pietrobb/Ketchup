@@ -5,7 +5,7 @@ use crate::harness;
 use eframe::egui::{Key, accesskit::Role};
 use harness::{Shell, ctrl};
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
-use ketchup_assistant::intent::WorkflowIntent;
+use ketchup_assistant::sidecar::AssistantStructureChange;
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_model::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
@@ -933,14 +933,13 @@ fn component_replacement_stale_confirm_preserves_intervening_state_and_outputs()
     preview_component_replacement(&mut shell);
     assert!(shell.app().feature_history_preview_pending());
 
-    assert!(
-        shell
-            .app_mut()
-            .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                target: REPLACEMENT_SOURCE,
-                name: "Intervening source name".to_owned(),
-            },)
-    );
+    assert!(harness::apply_structure(
+        shell.app_mut(),
+        AssistantStructureChange::RenameDefinition {
+            definition_id: REPLACEMENT_SOURCE.0,
+            name: "Intervening source name".to_owned(),
+        }
+    ));
     shell.settle();
     let intervening = stamp(&shell);
     let bounds = shell.app().exact_render_bounds();
@@ -1812,14 +1811,13 @@ fn complete_serial_accesskit_history_replay_is_atomic_stale_safe_and_persistent(
     click_preview(&mut shell, "feature-history-preview-edit");
     assert!(shell.app().feature_history_preview_pending());
     let before_intervening_edit = stamp(&shell);
-    assert!(
-        shell
-            .app_mut()
-            .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                target: DEFINITION,
-                name: "Intervening edit".to_owned(),
-            },)
-    );
+    assert!(harness::apply_structure(
+        shell.app_mut(),
+        AssistantStructureChange::RenameDefinition {
+            definition_id: DEFINITION.0,
+            name: "Intervening edit".to_owned(),
+        }
+    ));
     shell.settle();
     let after_intervening_edit = stamp(&shell);
     assert_eq!(after_intervening_edit.0, before_intervening_edit.0 + 1);

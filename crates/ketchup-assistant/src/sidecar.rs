@@ -1837,6 +1837,12 @@ pub enum AssistantCadEditOperation {
     MakeOccurrenceUnique {
         occurrence_id: u64,
     },
+    /// One scene-tree change that leaves geometry untouched: groups, components,
+    /// definition names and swaps, occurrence visibility, and removal of an
+    /// empty group, an unassigned tag or a definition no occurrence uses.
+    Structure {
+        change: AssistantStructureChange,
+    },
     CreateAssemblyJoint {
         parent_instance_path: AssistantInstancePath,
         child_instance_path: AssistantInstancePath,
@@ -1969,6 +1975,111 @@ pub enum AssistantCadEditOperation {
         plane_origin_mm: [f64; 3],
         plane_normal: [f64; 3],
     },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantStructureChange {
+    /// A new empty group at the root, or inside `parent_group_id`.
+    CreateGroup {
+        group_id: u64,
+        name: String,
+        parent_group_id: Option<u64>,
+    },
+    /// Moves an occurrence into `group_id`, or back to the root without it.
+    MoveOccurrence {
+        occurrence_id: u64,
+        group_id: Option<u64>,
+    },
+    /// Nests a group inside `parent_group_id`, or moves it back to the root.
+    MoveGroup {
+        group_id: u64,
+        parent_group_id: Option<u64>,
+    },
+    /// Sets the translation of a group, keeping its rotation; its content moves with it.
+    SetGroupTranslation {
+        group_id: u64,
+        translation_mm: [f64; 3],
+    },
+    /// Removes an empty group.
+    DeleteGroup {
+        group_id: u64,
+    },
+    /// Turns a group and its content into one component occurrence of a new definition.
+    MakeComponent {
+        group_id: u64,
+        name: String,
+    },
+    /// Points an occurrence at another existing definition.
+    ReplaceDefinition {
+        occurrence_id: u64,
+        definition_id: u64,
+    },
+    RenameDefinition {
+        definition_id: u64,
+        name: String,
+    },
+    SetOccurrenceVisibility {
+        occurrence_id: u64,
+        visible: bool,
+    },
+    /// Removes a tag no occurrence carries.
+    DeleteTag {
+        tag_id: u64,
+    },
+    /// Removes a definition no occurrence uses.
+    DeleteDefinition {
+        definition_id: u64,
+    },
+}
+
+impl AssistantStructureChange {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
+        let name_is_valid = |name: &str| {
+            !name.trim().is_empty()
+                && name.len() <= limits::NAME_BYTES
+                && !name.chars().any(char::is_control)
+        };
+        let valid = match self {
+            Self::CreateGroup {
+                group_id,
+                name,
+                parent_group_id,
+            } => *group_id != 0 && name_is_valid(name) && *parent_group_id != Some(0),
+            Self::MoveOccurrence {
+                occurrence_id,
+                group_id,
+            } => *occurrence_id != 0 && *group_id != Some(0),
+            Self::MoveGroup {
+                group_id,
+                parent_group_id,
+            } => {
+                *group_id != 0 && *parent_group_id != Some(0) && *parent_group_id != Some(*group_id)
+            }
+            Self::SetGroupTranslation {
+                group_id,
+                translation_mm,
+            } => *group_id != 0 && assistant_cad_vector_is_bounded(*translation_mm),
+            Self::MakeComponent { group_id, name } => *group_id != 0 && name_is_valid(name),
+            Self::ReplaceDefinition {
+                occurrence_id,
+                definition_id,
+            } => *occurrence_id != 0 && *definition_id != 0,
+            Self::RenameDefinition {
+                definition_id,
+                name,
+            } => *definition_id != 0 && name_is_valid(name),
+            Self::SetOccurrenceVisibility { occurrence_id, .. } => *occurrence_id != 0,
+            Self::DeleteGroup { group_id } => *group_id != 0,
+            Self::DeleteTag { tag_id } => *tag_id != 0,
+            Self::DeleteDefinition { definition_id } => *definition_id != 0,
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(AssistantRequestInvalid::invalid("CAD structure change"))
+        }
+    }
 }
 
 fn assistant_cad_vector_is_bounded(vector: [f64; 3]) -> bool {
@@ -2777,6 +2888,7 @@ impl AssistantCadEditProgram {
             | AssistantCadEditOperation::SetDimension { .. }
             | AssistantCadEditOperation::SetFeatureParameter { .. }
             | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
+            | AssistantCadEditOperation::Structure { .. }
             | AssistantCadEditOperation::CreateAssemblyJoint { .. }
             | AssistantCadEditOperation::CreatePinJoint { .. }
             | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
@@ -3447,6 +3559,10 @@ impl AssistantCadEditProgram {
                 if *tag_id == 0 {
                     return Err(AssistantRequestInvalid::invalid("CAD tag visibility"));
                 }
+                0
+            }
+            AssistantCadEditOperation::Structure { change } => {
+                change.validate()?;
                 0
             }
             _ => 0,

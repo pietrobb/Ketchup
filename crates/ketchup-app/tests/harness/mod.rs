@@ -22,7 +22,8 @@ use ketchup_app::{AppCommand, KetchupApp};
 use ketchup_assistant::sidecar::{
     AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
     AssistantCadEntitySelector, AssistantCadPartFeature, AssistantCadRotation,
-    AssistantPrincipalPlane, AssistantSketchEntity, AssistantWorkplaneSpec,
+    AssistantPrincipalPlane, AssistantSketchEntity, AssistantStructureChange,
+    AssistantWorkplaneSpec,
 };
 use ketchup_interaction::{LocaleCatalog, Vec3};
 
@@ -137,6 +138,15 @@ pub fn rotate_occurrence(
     }];
     app.headless_apply_cad_program(&AssistantCadEditProgram { operations })
         .unwrap();
+}
+
+/// Commits one scene-tree change as a typed `structure` program, the MCP path;
+/// false when the document refuses it.
+pub fn apply_structure(app: &mut KetchupApp, change: AssistantStructureChange) -> bool {
+    app.headless_apply_cad_program(&AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::Structure { change }],
+    })
+    .is_ok()
 }
 
 /// A running instance of the shell, driven entirely in memory.

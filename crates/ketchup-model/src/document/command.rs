@@ -653,12 +653,6 @@ impl ProposalBudget {
         max_write_targets: 2,
     };
 
-    pub const M18C_CLONE_PROFILE_DEFINITION: Self = Self {
-        max_commands: 1,
-        max_read_dependencies: 64,
-        max_write_targets: 3,
-    };
-
     pub const T18_ATOMIC_MULTI_COMMAND_EDIT: Self = Self {
         max_commands: 3,
         max_read_dependencies: 64,

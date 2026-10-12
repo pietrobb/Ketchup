@@ -11,6 +11,7 @@ use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_assistant::intent::WorkflowIntent;
+use ketchup_assistant::sidecar::AssistantStructureChange;
 use ketchup_interaction::LocaleCatalog;
 use ketchup_model::assembly::{AssemblyMateKind, AssemblySolveStatus};
 use ketchup_model::assembly_joint::{
@@ -1709,14 +1710,13 @@ fn invalid_selection_stale_confirmation_and_conflict_are_fail_closed() {
     shell.click_button_label(&preview_insert);
     assert!(shell.app().assembly_preview_pending());
     open_assembly_editor(&mut shell);
-    assert!(
-        shell
-            .app_mut()
-            .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                target: DefinitionId(1),
-                name: "Stale assembly definition".to_owned(),
-            })
-    );
+    assert!(harness::apply_structure(
+        shell.app_mut(),
+        AssistantStructureChange::RenameDefinition {
+            definition_id: DefinitionId(1).0,
+            name: "Stale assembly definition".to_owned(),
+        }
+    ));
     shell.settle();
     let after_intervening_edit = (
         shell.app().document_revision(),

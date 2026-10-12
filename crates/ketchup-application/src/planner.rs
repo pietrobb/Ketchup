@@ -5,6 +5,7 @@ use crate::diagnostics::{
     assistant_planning_rejection, assistant_rejection,
 };
 use crate::rule_operations::OperationPlanner;
+use crate::structure_change::plan_structure_change;
 use crate::transforms::{
     MirrorCopyError, mirrored_copy_commands, rotation_in_parent_space, translated_transform,
     world_axis_rotation_transform, world_plane_mirror_transform,
@@ -1880,53 +1881,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
         .checked_add(1);
 
     for (operation_index, operation) in program.operations.iter().enumerate() {
-        let operation_name = match operation {
-            AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
-            AssistantCadEditOperation::CreatePart { .. } => "create_part",
-            AssistantCadEditOperation::CreateSpatialPath { .. } => "create_spatial_path",
-            AssistantCadEditOperation::CreateConstructionPoint { .. } => {
-                "create_construction_point"
-            }
-            AssistantCadEditOperation::CreateConstructionAxis { .. } => "create_construction_axis",
-            AssistantCadEditOperation::CreateConstructionPlane { .. } => {
-                "create_construction_plane"
-            }
-            AssistantCadEditOperation::CreateHelix { .. } => "create_helix",
-            AssistantCadEditOperation::FilletEdges { .. } => "fillet_edges",
-            AssistantCadEditOperation::ChamferEdges { .. } => "chamfer_edges",
-            AssistantCadEditOperation::AppendFeature { .. } => "append_feature",
-            AssistantCadEditOperation::BindProgramOutput { .. } => "bind_program_output",
-            AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
-            AssistantCadEditOperation::SetFeatureParameter { .. } => "set_feature_parameter",
-            AssistantCadEditOperation::MakeOccurrenceUnique { .. } => "make_occurrence_unique",
-            AssistantCadEditOperation::CreateAssemblyJoint { .. } => "create_assembly_joint",
-            AssistantCadEditOperation::CreatePinJoint { .. } => "create_pin_joint",
-            AssistantCadEditOperation::DeletePhysicalPinJoint { .. } => "delete_physical_pin_joint",
-            AssistantCadEditOperation::MovePhysicalPinPair { .. } => "move_physical_pin_pair",
-            AssistantCadEditOperation::SetAssemblyJointPosition { .. } => {
-                "set_assembly_joint_position"
-            }
-            AssistantCadEditOperation::CreateDrawing { .. } => "create_drawing",
-            AssistantCadEditOperation::UpsertCamPlan { .. } => "upsert_cam_plan",
-            AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
-            AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
-            AssistantCadEditOperation::SetColor { .. } => "set_color",
-            AssistantCadEditOperation::SetGrounded { .. } => "set_grounded",
-            AssistantCadEditOperation::CreateTag { .. } => "create_tag",
-            AssistantCadEditOperation::SetOccurrenceTag { .. } => "set_occurrence_tag",
-            AssistantCadEditOperation::SetTagVisibility { .. } => "set_tag_visibility",
-            AssistantCadEditOperation::UpsertClassificationDimension { .. } => {
-                "upsert_classification_dimension"
-            }
-            AssistantCadEditOperation::SetOccurrenceClassification { .. } => {
-                "set_occurrence_classification"
-            }
-            AssistantCadEditOperation::CreateEvaluatorInput { .. } => "create_evaluator_input",
-            AssistantCadEditOperation::Copy { .. } => "copy_occurrence",
-            AssistantCadEditOperation::LinearPattern { .. } => "linear_pattern_occurrence",
-            AssistantCadEditOperation::CircularPattern { .. } => "circular_pattern_occurrence",
-            AssistantCadEditOperation::Mirror { .. } => "mirror_occurrence",
-        };
+        let operation_name = operation_name(operation);
         staged_planning.refresh(operation_name, &document_target)?;
         let normalized_operation = match operation {
             AssistantCadEditOperation::CreatePart {
@@ -2025,6 +1980,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             | AssistantCadEditOperation::SetDimension { .. }
             | AssistantCadEditOperation::SetFeatureParameter { .. }
             | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
+            | AssistantCadEditOperation::Structure { .. }
             | AssistantCadEditOperation::CreateAssemblyJoint { .. }
             | AssistantCadEditOperation::CreatePinJoint { .. }
             | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
@@ -2565,6 +2521,26 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             feature_id_map,
                         ),
                     ));
+                }
+            }
+            AssistantCadEditOperation::Structure { change } => {
+                let (command, created) = plan_structure_change(
+                    change,
+                    staged_planning.staged_snapshot(),
+                    &mut next_definition,
+                    &mut next_occurrence,
+                    &document_target,
+                )?;
+                staged_planning.push(command);
+                if let Some((definition_id, occurrence_id)) = created {
+                    staged_planning.record_output(
+                        operation_index,
+                        StagedProgramOutput::Definition(definition_id),
+                    );
+                    staged_planning.record_output(
+                        operation_index,
+                        StagedProgramOutput::Occurrence(occurrence_id),
+                    );
                 }
             }
             AssistantCadEditOperation::CreateAssemblyJoint {
@@ -3806,6 +3782,52 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
         }
     }
     Ok(AssistantCadProgramPlan { batch, outputs })
+}
+
+/// The operation name used in rejection diagnostics.
+const fn operation_name(operation: &AssistantCadEditOperation) -> &'static str {
+    match operation {
+        AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
+        AssistantCadEditOperation::CreatePart { .. } => "create_part",
+        AssistantCadEditOperation::CreateSpatialPath { .. } => "create_spatial_path",
+        AssistantCadEditOperation::CreateConstructionPoint { .. } => "create_construction_point",
+        AssistantCadEditOperation::CreateConstructionAxis { .. } => "create_construction_axis",
+        AssistantCadEditOperation::CreateConstructionPlane { .. } => "create_construction_plane",
+        AssistantCadEditOperation::CreateHelix { .. } => "create_helix",
+        AssistantCadEditOperation::FilletEdges { .. } => "fillet_edges",
+        AssistantCadEditOperation::ChamferEdges { .. } => "chamfer_edges",
+        AssistantCadEditOperation::AppendFeature { .. } => "append_feature",
+        AssistantCadEditOperation::BindProgramOutput { .. } => "bind_program_output",
+        AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
+        AssistantCadEditOperation::SetFeatureParameter { .. } => "set_feature_parameter",
+        AssistantCadEditOperation::MakeOccurrenceUnique { .. } => "make_occurrence_unique",
+        AssistantCadEditOperation::Structure { .. } => "structure",
+        AssistantCadEditOperation::CreateAssemblyJoint { .. } => "create_assembly_joint",
+        AssistantCadEditOperation::CreatePinJoint { .. } => "create_pin_joint",
+        AssistantCadEditOperation::DeletePhysicalPinJoint { .. } => "delete_physical_pin_joint",
+        AssistantCadEditOperation::MovePhysicalPinPair { .. } => "move_physical_pin_pair",
+        AssistantCadEditOperation::SetAssemblyJointPosition { .. } => "set_assembly_joint_position",
+        AssistantCadEditOperation::CreateDrawing { .. } => "create_drawing",
+        AssistantCadEditOperation::UpsertCamPlan { .. } => "upsert_cam_plan",
+        AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
+        AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
+        AssistantCadEditOperation::SetColor { .. } => "set_color",
+        AssistantCadEditOperation::SetGrounded { .. } => "set_grounded",
+        AssistantCadEditOperation::CreateTag { .. } => "create_tag",
+        AssistantCadEditOperation::SetOccurrenceTag { .. } => "set_occurrence_tag",
+        AssistantCadEditOperation::SetTagVisibility { .. } => "set_tag_visibility",
+        AssistantCadEditOperation::UpsertClassificationDimension { .. } => {
+            "upsert_classification_dimension"
+        }
+        AssistantCadEditOperation::SetOccurrenceClassification { .. } => {
+            "set_occurrence_classification"
+        }
+        AssistantCadEditOperation::CreateEvaluatorInput { .. } => "create_evaluator_input",
+        AssistantCadEditOperation::Copy { .. } => "copy_occurrence",
+        AssistantCadEditOperation::LinearPattern { .. } => "linear_pattern_occurrence",
+        AssistantCadEditOperation::CircularPattern { .. } => "circular_pattern_occurrence",
+        AssistantCadEditOperation::Mirror { .. } => "mirror_occurrence",
+    }
 }
 
 /// Plans many `create_part` operations as one command batch. Used by rule

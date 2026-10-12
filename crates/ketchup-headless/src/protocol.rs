@@ -1996,8 +1996,9 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 35);
+        assert_eq!(variants.len(), 36);
         for operation in [
+            "structure",
             "move_physical_pin_pair",
             "append_feature",
             "create_pin_joint",
@@ -2021,6 +2022,64 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn structure_programs_apply_and_an_invalid_one_leaves_the_document_unchanged() {
+        use ketchup_model::document::GroupId;
+        let mut server = Server::new(SessionSettings::default());
+        let caps = request(&mut server, "capabilities", json!({}));
+        let structure = caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]
+            ["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|variant| variant["properties"]["operation"]["const"] == "structure")
+            .expect("structure in capabilities");
+        assert_eq!(
+            structure["properties"]["change"]["$ref"],
+            "#/$defs/AssistantStructureChange"
+        );
+
+        let applied = request(
+            &mut server,
+            "apply",
+            json!({"selection":[],"program":{"operations":[
+                {"operation":"create_part","name":"Leg",
+                 "workplane":{"type":"principal","plane":"xy"},
+                 "entities":[{"type":"circle","id":1,"center_mm":[0,0],"radius_mm":5}],
+                 "constraints":[],"feature":{"type":"extrusion","distance_mm":10},
+                 "translation_mm":[0,0,0]},
+                {"operation":"structure","change":{"kind":"create_group","group_id":7,"name":"Legs"}},
+                {"operation":"structure","change":
+                    {"kind":"move_occurrence","occurrence_id":1,"group_id":7}}
+            ]}}),
+        );
+        assert!(applied["error"].is_null(), "{applied}");
+        let snapshot = server.session.snapshot();
+        assert_eq!(snapshot.group(GroupId(7)).unwrap().name(), "Legs");
+        assert_eq!(
+            snapshot.occurrence(OccurrenceId(1)).unwrap().parent(),
+            Some(GroupId(7))
+        );
+
+        let digest = snapshot.canonical_digest();
+        let undo_steps = server.session.visible_undo_steps();
+        let refused = request(
+            &mut server,
+            "apply",
+            json!({"selection":[],"program":{"operations":[
+                {"operation":"structure","change":{"kind":"delete_group","group_id":7}}
+            ]}}),
+        );
+        assert!(
+            refused["error"]["details"]["diagnostic"]
+                .as_str()
+                .is_some_and(|diagnostic| diagnostic.contains("GroupNotEmpty")),
+            "{refused}"
+        );
+        assert_eq!(server.session.snapshot().canonical_digest(), digest);
+        assert_eq!(server.session.visible_undo_steps(), undo_steps);
+    }
+
     #[test]
     fn schema_covers_program_body_feature_references() {
         let mut s = Server::new(SessionSettings::default());

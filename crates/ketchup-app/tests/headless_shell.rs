@@ -17,9 +17,9 @@ use ketchup_app::{
     AlignMode, AppCommand, DistributionMode, GeneralFinishKind, KetchupApp, RectangularPatternSpec,
     ViewFlag,
 };
-use ketchup_assistant::intent::WorkflowIntent;
 use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantStructureChange,
 };
 use ketchup_interaction::{
     Axis, ElementId, LocaleCatalog, Side, SnapKind, Vec3, exact_projection::TopologicalPickLocator,
@@ -3834,13 +3834,12 @@ fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
 
         shell.click_menu_command("menu-model", AppCommand::AssignTag);
         shell.click_role_and_label(Role::CheckBox, "Temporary");
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::DeleteTag {
-                    target: temporary_tag,
-                })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::DeleteTag {
+                tag_id: temporary_tag.0,
+            }
+        ));
         let missing_revision = shell.app().document_revision();
         let missing_digest = shell.app().canonical_digest();
         let missing_undo_steps = shell.app().undo_step_count();
@@ -3858,14 +3857,13 @@ fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
 
         shell.click_menu_command("menu-model", AppCommand::AssignTag);
         let stale_revision = shell.app().document_revision();
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                    target: DefinitionId(1),
-                    name: "Intervening definition".to_owned(),
-                })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::RenameDefinition {
+                definition_id: DefinitionId(1).0,
+                name: "Intervening definition".to_owned(),
+            }
+        ));
         let intervening_revision = shell.app().document_revision();
         assert!(intervening_revision > stale_revision);
         shell.settle();
@@ -3992,14 +3990,13 @@ fn tags_panel_create_is_localized_canonical_stale_safe_and_undoable() {
         shell.click_role_and_label(Role::Button, &create_label);
         shell.focus_text_input(&name_label);
         shell.type_text("Stale tag");
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                    target: DefinitionId(1),
-                    name: "Intervening definition".to_owned(),
-                })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::RenameDefinition {
+                definition_id: DefinitionId(1).0,
+                name: "Intervening definition".to_owned(),
+            }
+        ));
         shell.settle();
         assert!(!shell.app().tag_creation_visible());
         assert!(
@@ -4185,14 +4182,13 @@ fn tags_panel_create_from_selection_is_localized_atomic_stale_safe_and_undoable(
         shell.click_role_and_label(Role::Button, &create_label);
         shell.focus_text_input(&name_label);
         shell.type_text("Stale tag");
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                    target: DefinitionId(1),
-                    name: "Intervening definition".to_owned(),
-                })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::RenameDefinition {
+                definition_id: DefinitionId(1).0,
+                name: "Intervening definition".to_owned(),
+            }
+        ));
         shell.settle();
         assert!(!shell.app().tag_creation_visible());
         assert!(
@@ -4265,14 +4261,13 @@ fn tags_panel_delete_unused_is_localized_context_bound_and_undoable() {
         assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
 
         shell.click_role_and_label(Role::Button, &unused_delete);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                    target: DefinitionId(1),
-                    name: "Intervening definition".to_owned(),
-                })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::RenameDefinition {
+                definition_id: DefinitionId(1).0,
+                name: "Intervening definition".to_owned(),
+            }
+        ));
         shell.settle();
         assert!(!shell.app().tag_deletion_visible());
         assert!(shell.app().document_snapshot().tag(unused_tag).is_some());
@@ -4444,14 +4439,13 @@ fn tags_panel_delete_used_exact_plan_is_localized_atomic_stale_safe_and_undoable
         assert!(shell.app().document_snapshot().tag(tag).is_some());
 
         shell.click_role_and_label(Role::Button, &delete_label);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                    target: DefinitionId(1),
-                    name: "Intervening definition".to_owned(),
-                })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::RenameDefinition {
+                definition_id: DefinitionId(1).0,
+                name: "Intervening definition".to_owned(),
+            }
+        ));
         shell.settle();
         assert!(!shell.app().tag_deletion_visible());
         let stale = shell.app().document_snapshot();
@@ -4525,13 +4519,12 @@ fn tags_panel_deletes_a_layer_held_only_inside_a_component_in_one_undo_step() {
         );
         shell.click_role_and_label(Role::Button, &missing_delete);
         assert!(shell.app().tag_deletion_visible());
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::DeleteTag {
-                    target: missing_tag,
-                })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::DeleteTag {
+                tag_id: missing_tag.0,
+            }
+        ));
         let revision = shell.app().document_revision();
         let digest = shell.app().canonical_digest();
         let undo_steps = shell.app().undo_step_count();
@@ -4571,9 +4564,10 @@ fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
         for target in [OccurrenceId(1), OccurrenceId(2)] {
             assert!(set_occurrence_tag(shell.app_mut(), target, Some(used_tag)));
         }
-        assert!(shell.app_mut().headless_apply_workflow_intent(
-            WorkflowIntent::SetOccurrenceVisibility {
-                target: OccurrenceId(2),
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::SetOccurrenceVisibility {
+                occurrence_id: OccurrenceId(2).0,
                 visible: false,
             }
         ));
@@ -4639,14 +4633,13 @@ fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
         shell.settle();
 
         shell.click_role_and_label(Role::Button, &clear_used);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                    target: DefinitionId(1),
-                    name: "Intervening definition".to_owned(),
-                })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::RenameDefinition {
+                definition_id: DefinitionId(1).0,
+                name: "Intervening definition".to_owned(),
+            }
+        ));
         let stale_revision = shell.app().document_revision();
         let stale_digest = shell.app().canonical_digest();
         let stale_undo_steps = shell.app().undo_step_count();
@@ -4750,13 +4743,12 @@ fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
         shell.click_role_and_label(Role::Button, &clear_missing);
         assert!(shell.app().tag_clear_visible());
         assert!(set_occurrence_tag(shell.app_mut(), OccurrenceId(1), None));
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::DeleteTag {
-                    target: missing_tag,
-                })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::DeleteTag {
+                tag_id: missing_tag.0,
+            }
+        ));
         let missing_revision = shell.app().document_revision();
         let missing_digest = shell.app().canonical_digest();
         let missing_undo_steps = shell.app().undo_step_count();
@@ -4913,11 +4905,12 @@ fn tags_panel_rename_is_localized_canonical_stale_safe_and_undoable() {
         );
         shell.click_role_and_label(Role::Button, &other_rename_label);
         assert!(shell.app().tag_rename_visible());
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::DeleteTag { target: other_tag })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::DeleteTag {
+                tag_id: other_tag.0
+            }
+        ));
         let missing_revision = shell.app().document_revision();
         let missing_digest = shell.app().canonical_digest();
         let missing_undo_steps = shell.app().undo_step_count();
@@ -4947,14 +4940,13 @@ fn tags_panel_rename_is_localized_canonical_stale_safe_and_undoable() {
         shell.focus_text_input(&name_label);
         shell.key(Key::A, ctrl());
         shell.type_text("Stale name");
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
-                    target: DefinitionId(1),
-                    name: "Intervening definition".to_owned(),
-                })
-        );
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::RenameDefinition {
+                definition_id: DefinitionId(1).0,
+                name: "Intervening definition".to_owned(),
+            }
+        ));
         shell.settle();
         assert!(!shell.app().tag_rename_visible());
         assert_eq!(
@@ -6194,9 +6186,10 @@ fn tags_panel_select_matching_is_localized_ephemeral_and_fail_closed() {
         ] {
             assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
-        assert!(shell.app_mut().headless_apply_workflow_intent(
-            WorkflowIntent::SetOccurrenceVisibility {
-                target: OccurrenceId(4),
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::SetOccurrenceVisibility {
+                occurrence_id: OccurrenceId(4).0,
                 visible: false,
             }
         ));
@@ -6329,9 +6322,10 @@ fn tags_panel_select_all_tagged_is_localized_ephemeral_and_fail_closed() {
         ] {
             assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
-        assert!(shell.app_mut().headless_apply_workflow_intent(
-            WorkflowIntent::SetOccurrenceVisibility {
-                target: OccurrenceId(4),
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::SetOccurrenceVisibility {
+                occurrence_id: OccurrenceId(4).0,
                 visible: false,
             }
         ));
@@ -6503,9 +6497,10 @@ fn tags_panel_select_untagged_is_localized_ephemeral_and_fail_closed() {
             OccurrenceId(1),
             Some(tag)
         ));
-        assert!(shell.app_mut().headless_apply_workflow_intent(
-            WorkflowIntent::SetOccurrenceVisibility {
-                target: OccurrenceId(3),
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::SetOccurrenceVisibility {
+                occurrence_id: OccurrenceId(3).0,
                 visible: false,
             }
         ));
@@ -6908,9 +6903,10 @@ fn hide_unhide_selection_is_localized_exact_state_bound_and_undoable() {
         );
 
         assert_eq!(shell.app().selected_occurrence_count(), 2);
-        assert!(shell.app_mut().headless_apply_workflow_intent(
-            WorkflowIntent::SetOccurrenceVisibility {
-                target: OccurrenceId(1),
+        assert!(harness::apply_structure(
+            shell.app_mut(),
+            AssistantStructureChange::SetOccurrenceVisibility {
+                occurrence_id: OccurrenceId(1).0,
                 visible: false,
             }
         ));
