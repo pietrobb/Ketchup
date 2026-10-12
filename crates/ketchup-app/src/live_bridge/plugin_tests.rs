@@ -5,9 +5,9 @@ use super::*;
 use crate::live_bridge::measurement::tests::integration_support::file_turn;
 use ketchup_model::document::{FeatureParameterTarget, ParameterValueType};
 
-const EXTRUSION: u64 = 2;
+pub(super) const EXTRUSION: u64 = 2;
 
-fn height(app: &KetchupApp) -> f64 {
+pub(super) fn height(app: &KetchupApp) -> f64 {
     let target = FeatureParameterTarget::new(
         FeatureId(EXTRUSION),
         "extent.distance",
@@ -21,7 +21,7 @@ fn height(app: &KetchupApp) -> f64 {
 }
 
 /// A window whose user answers the plugin consent prompts from `dialogs`.
-fn plugin_wire_answering(dialogs: ScriptedFileDialogs) -> Wire {
+pub(super) fn plugin_wire_answering(dialogs: ScriptedFileDialogs) -> Wire {
     let mut wire = Wire::new();
     wire.app.dialogs = Box::new(dialogs);
     wire.app
@@ -43,7 +43,7 @@ fn plugin_wire() -> Wire {
 }
 
 /// The bridge takes only an absolute executable path.
-fn python() -> String {
+pub(super) fn python() -> String {
     let output = std::process::Command::new(ketchup_test_env::python())
         .args(["-c", "import sys; print(sys.executable)"])
         .output()
@@ -151,7 +151,6 @@ fn a_plugin_whose_document_changes_while_it_runs_is_refused() {
     }) {
         assert!(Instant::now() < deadline, "the plugin did not start");
         wire.app.poll_live_bridge(&wire.context);
-        std::thread::sleep(Duration::from_millis(5));
     }
 
     // A human edit while the plugin runs.
@@ -168,12 +167,11 @@ fn a_plugin_whose_document_changes_while_it_runs_is_refused() {
 
     let deadline = Instant::now() + Duration::from_secs(30);
     let response = loop {
-        if let Ok(response) = rx.try_recv() {
+        if let Ok(response) = rx.recv_timeout(Duration::from_millis(5)) {
             break response;
         }
         assert!(Instant::now() < deadline, "no answer to the stale plugin");
         wire.app.poll_live_bridge(&wire.context);
-        std::thread::sleep(Duration::from_millis(5));
     };
     reader_thread.join().unwrap();
     assert!(!response.ok);
@@ -314,7 +312,7 @@ fn folder_manifest(operations: &[&str]) -> String {
     .to_string()
 }
 
-fn folder_request(folder: &Path, inputs: Value) -> RunPluginRequest {
+pub(super) fn folder_request(folder: &Path, inputs: Value) -> RunPluginRequest {
     RunPluginRequest {
         plugin: Some(folder.to_string_lossy().into_owned()),
         inputs: inputs.as_object().cloned(),
@@ -343,11 +341,10 @@ fn assert_refused_without_prompt(
     assert_eq!(wire.app.live_bridge_stamp(), before);
 }
 
-#[test]
-fn a_plugin_folder_is_allowed_with_all_its_files_and_takes_inputs_only_by_protocol() {
-    let _turn = file_turn();
-    let directory = tempfile::tempdir().unwrap();
-    let folder = directory.path().join("height");
+/// `root/height`: a plugin folder setting the extrusion height to its input
+/// `height_mm`, with its own copy of the SDK. Returns the folder and the SDK source.
+pub(super) fn height_folder(root: &Path) -> (PathBuf, String) {
+    let folder = root.join("height");
     let sdk = folder.join("ketchup_sdk/__init__.py");
     std::fs::create_dir_all(sdk.parent().unwrap()).unwrap();
     let sdk_source = std::fs::read_to_string(
@@ -361,6 +358,15 @@ fn a_plugin_folder_is_allowed_with_all_its_files_and_takes_inputs_only_by_protoc
         folder_manifest(&["set_dimension"]),
     )
     .unwrap();
+    (folder, sdk_source)
+}
+
+#[test]
+fn a_plugin_folder_is_allowed_with_all_its_files_and_takes_inputs_only_by_protocol() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, sdk_source) = height_folder(directory.path());
+    let sdk = folder.join("ketchup_sdk/__init__.py");
     let python = python();
     let python_sha256 = std::fs::File::open(&python)
         .and_then(ketchup_model::graph::sha256_reader_hex)
@@ -452,6 +458,64 @@ fn a_plugin_folder_is_allowed_with_all_its_files_and_takes_inputs_only_by_protoc
     .unwrap();
     assert_consent_required(&mut wire, folder_request(&folder, json!({"height_mm": 35})));
     assert_eq!(probe.high_risk_prompts().len(), 4);
+    assert_eq!(height(&wire.app), original);
+    assert_eq!(wire.app.undo_step_count(), undo);
+}
+
+/// A directory link: a junction on Windows (no privilege needed), a symlink elsewhere.
+fn link_directory(link: &Path, target: &Path) {
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn a_link_in_or_as_a_plugin_folder_is_refused_without_a_prompt() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let elsewhere = directory.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("module.py"), "x = 1\n").unwrap();
+    let dialogs = ScriptedFileDialogs::new().always_confirm_high_risk_as(1);
+    let probe = dialogs.clone();
+    let mut wire = plugin_wire_answering(dialogs);
+    let original = height(&wire.app);
+    let undo = wire.app.undo_step_count();
+
+    // A link inside the folder would bring in files the consent never hashed.
+    link_directory(&folder.join("linked"), &elsewhere);
+    let request = folder_request(&folder, json!({"height_mm": 35}));
+    assert_refused_without_prompt(
+        &mut wire,
+        request.clone(),
+        "plugin_manifest_invalid",
+        &probe,
+    );
+    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(30));
+    let reason = response.result.unwrap()["reason"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(reason.starts_with("linked is a link"), "{reason}");
+    std::fs::remove_dir(folder.join("linked")).unwrap();
+
+    // So would a link naming the plugin folder itself.
+    let alias = directory.path().join("alias");
+    link_directory(&alias, &folder);
+    let request = folder_request(&alias, json!({"height_mm": 35}));
+    assert_refused_without_prompt(&mut wire, request, "plugin_manifest_invalid", &probe);
+
+    assert!(probe.high_risk_prompts().is_empty());
     assert_eq!(height(&wire.app), original);
     assert_eq!(wire.app.undo_step_count(), undo);
 }

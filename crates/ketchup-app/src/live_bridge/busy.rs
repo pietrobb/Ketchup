@@ -116,6 +116,8 @@ pub(super) fn blockers(app: &KetchupApp, ui_busy: bool) -> Vec<Blocker> {
         (app.body_preview_pending(), "preview", "body_preview", "A body preview is pending."),
         (app.feature_history_preview_pending(), "preview", "feature_history_preview", "A feature history preview is pending."),
         (app.face_workflow.xray_preview(), "preview", "face_xray_preview", "A face workflow X-ray preview is active."),
+        // Taken out of the app while it is polled, so it never blocks itself.
+        (app.live.plugin_menu.is_running(), "job", "window_plugin", "A plugin started from the Plugins menu is running."),
     ];
     for (active, kind, target, reason) in conditions {
         if active {

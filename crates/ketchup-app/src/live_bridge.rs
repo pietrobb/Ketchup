@@ -77,6 +77,7 @@ mod measurement;
 mod plugin;
 pub(crate) mod plugin_consent;
 mod plugin_manifest;
+pub(crate) mod plugin_menu;
 pub use plugin::RunPluginRequest;
 pub(crate) mod program_pick;
 mod program_validate;
@@ -1204,7 +1205,12 @@ impl KetchupApp {
                     continue;
                 }
                 Request::RunPlugin(request) => {
-                    bridge.start_plugin(self, context, id, reply, cancelled, request, ui_busy);
+                    let answer = plugin::PluginAnswer {
+                        id,
+                        reply,
+                        cancelled,
+                    };
+                    bridge.start_plugin(self, context, answer, request, ui_busy);
                     continue;
                 }
                 Request::MeasureFaces {

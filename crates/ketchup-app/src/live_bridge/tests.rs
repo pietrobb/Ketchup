@@ -12,6 +12,8 @@ mod idle_retry;
 mod interchange;
 #[path = "mesh_conversion_tests.rs"]
 mod mesh_conversion;
+#[path = "plugin_menu_tests.rs"]
+mod plugin_menu;
 #[path = "plugin_tests.rs"]
 mod run_plugin;
 #[path = "topology_recovery_tests.rs"]
@@ -305,6 +307,10 @@ impl FileDialogs for DisconnectOnHighRisk {
         let mut byte = [0];
         assert_eq!(stream.read(&mut byte).unwrap(), 0);
         Some(7)
+    }
+
+    fn show_folder(&mut self, _path: &Path) -> std::io::Result<()> {
+        unreachable!("this test never opens a folder")
     }
 }
 

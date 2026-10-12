@@ -720,7 +720,8 @@ fn a_client_initializes_and_lists_every_tool() {
             "edit",
             "file",
             "view",
-            "batch"
+            "batch",
+            "run_plugin"
         ]
     );
     let unknown = handle(

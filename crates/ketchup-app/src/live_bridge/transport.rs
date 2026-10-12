@@ -105,12 +105,49 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                 }
             }
         })?;
-    Ok(LiveBridge {
+    Ok(assemble(
         address,
         token,
         stopped,
         superseded,
-        worker: Some(worker),
+        Some(worker),
+        queue,
+        #[cfg(test)]
+        active_connections,
+    ))
+}
+
+/// A bridge without a socket for the jobs the window itself starts, such as a
+/// plugin run from the Plugins menu.
+pub(super) fn local() -> LiveBridge {
+    let (_sender, queue) = mpsc::sync_channel(1);
+    assemble(
+        SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
+        String::new(),
+        Arc::new(AtomicBool::new(true)),
+        Arc::new(AtomicBool::new(false)),
+        None,
+        queue,
+        #[cfg(test)]
+        Arc::new(AtomicUsize::new(0)),
+    )
+}
+
+fn assemble(
+    address: SocketAddr,
+    token: String,
+    stopped: Arc<AtomicBool>,
+    superseded: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+    queue: mpsc::Receiver<Queued>,
+    #[cfg(test)] active_connections: Arc<AtomicUsize>,
+) -> LiveBridge {
+    LiveBridge {
+        address,
+        token,
+        stopped,
+        superseded,
+        worker,
         #[cfg(test)]
         active_connections,
         queue,
@@ -129,7 +166,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
         batch_job_key: RandomState::new(),
         next_batch_job: 1,
         image: image::ImageState::default(),
-    })
+    }
 }
 
 /// Envelope whose request body is parsed only after authentication, so a

@@ -11,7 +11,7 @@ use ketchup_scheduler::plugin::{
 };
 use std::ffi::OsString;
 
-const fn default_plugin_timeout_ms() -> u64 {
+pub(super) const fn default_plugin_timeout_ms() -> u64 {
     30_000
 }
 
@@ -60,6 +60,14 @@ pub(super) struct PluginJob {
     validators: Vec<String>,
     strict: bool,
     receiver: mpsc::Receiver<Result<PluginRunResult, PluginHostError>>,
+}
+
+/// Where a plugin run answers: the request id, its reply channel and whether
+/// the caller has gone.
+pub(super) struct PluginAnswer {
+    pub id: u64,
+    pub reply: mpsc::SyncSender<Response>,
+    pub cancelled: Arc<AtomicBool>,
 }
 
 /// What starts, what it may do, and what the user allows.
@@ -195,17 +203,19 @@ impl LiveBridge {
         launch(request)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn start_plugin(
         &mut self,
         app: &mut KetchupApp,
         context: &egui::Context,
-        id: u64,
-        reply: mpsc::SyncSender<Response>,
-        cancelled: Arc<AtomicBool>,
+        answer: PluginAnswer,
         request: RunPluginRequest,
         ui_busy: bool,
     ) {
+        let PluginAnswer {
+            id,
+            reply,
+            cancelled,
+        } = answer;
         take_error_details();
         // The user decides only on a run that could otherwise start.
         let PluginLaunch {

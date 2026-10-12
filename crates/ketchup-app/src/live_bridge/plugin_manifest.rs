@@ -46,9 +46,9 @@ struct InputDeclaration {
     default: Option<Value>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-enum InputType {
+pub(super) enum InputType {
     Number,
     Integer,
     Boolean,
@@ -156,7 +156,7 @@ fn read_manifest(folder: &Path) -> Result<(Manifest, String), &'static str> {
         &mut bytes,
     )
     .map_err(unreadable)?;
-    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+    if !u64::try_from(bytes.len()).is_ok_and(|length| length <= MAX_MANIFEST_BYTES) {
         return Err(invalid(format!(
             "{MANIFEST} is larger than {MAX_MANIFEST_BYTES} bytes"
         )));
@@ -274,13 +274,26 @@ fn inputs(
     Ok(resolved)
 }
 
-/// Reads and hashes the plugin folder; `given` inputs are checked against
-/// the declared ones and are not part of the consent.
-pub(super) fn load(
-    plugin: &str,
-    given: Option<&serde_json::Map<String, Value>>,
-) -> Result<FolderLaunch, &'static str> {
+/// A plugin folder read and hashed, nothing started.
+struct ReadFolder {
+    folder: PathBuf,
+    manifest: Manifest,
+    files: Vec<(String, String)>,
+    executable: PathBuf,
+    outside: Vec<HashedFile>,
+}
+
+fn read_folder(plugin: &str) -> Result<ReadFolder, &'static str> {
     let folder = plugin_folder(plugin)?;
+    if fs::symlink_metadata(&folder)
+        .map_err(unreadable)?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(invalid(
+            "the plugin folder is a link; a plugin folder holds its own files only",
+        ));
+    }
     let (manifest, manifest_sha256) = read_manifest(&folder)?;
     let files = folder_files(&folder)?;
     // The manifest read is the manifest hashed with the folder.
@@ -288,6 +301,60 @@ pub(super) fn load(
         return Err(invalid(format!("{MANIFEST} changed while it was read")));
     }
     let (executable, outside) = outside_files(&folder, &manifest, &files)?;
+    Ok(ReadFolder {
+        folder,
+        manifest,
+        files,
+        executable,
+        outside,
+    })
+}
+
+/// One input a manifest declares.
+pub(super) struct DeclaredInput {
+    pub name: String,
+    pub kind: InputType,
+    pub default: Option<Value>,
+}
+
+/// What the window lists for a plugin folder: its name and declared inputs.
+pub(super) struct Description {
+    pub name: String,
+    pub inputs: Vec<DeclaredInput>,
+}
+
+/// Reads the plugin folder exactly as a run does, so a folder that could not
+/// run is refused here with the same code and reason.
+pub(super) fn describe(folder: &Path) -> Result<Description, &'static str> {
+    let read = read_folder(&folder.to_string_lossy())?;
+    Ok(Description {
+        name: read.manifest.name,
+        inputs: read
+            .manifest
+            .inputs
+            .into_iter()
+            .map(|(name, declaration)| DeclaredInput {
+                name,
+                kind: declaration.kind,
+                default: declaration.default,
+            })
+            .collect(),
+    })
+}
+
+/// Reads and hashes the plugin folder; `given` inputs are checked against
+/// the declared ones and are not part of the consent.
+pub(super) fn load(
+    plugin: &str,
+    given: Option<&serde_json::Map<String, Value>>,
+) -> Result<FolderLaunch, &'static str> {
+    let ReadFolder {
+        folder,
+        manifest,
+        files,
+        executable,
+        outside,
+    } = read_folder(plugin)?;
     let inputs = inputs(&manifest, given)?;
     let consent = PluginConsent::of_folder(
         ConsentFolder::new(manifest.name.clone(), folder.clone(), files),

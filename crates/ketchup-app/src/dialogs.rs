@@ -6,7 +6,7 @@
 //! workflow can be replayed offscreen without a human at the keyboard.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ketchup_model::import::ImportFormat;
@@ -93,6 +93,9 @@ pub trait FileDialogs {
 
     /// Return the authenticated local human who approved the exact high-risk evidence.
     fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest<'_>) -> Option<u64>;
+
+    /// Show an existing folder in the system file manager.
+    fn show_folder(&mut self, path: &Path) -> std::io::Result<()>;
 }
 
 /// The main window a native dialog is owned by.
@@ -247,6 +250,19 @@ impl FileDialogs for NativeFileDialogs {
             == rfd::MessageDialogResult::Yes)
             .then_some(1)
     }
+
+    fn show_folder(&mut self, path: &Path) -> std::io::Result<()> {
+        #[cfg(windows)]
+        let manager = "explorer";
+        #[cfg(target_os = "macos")]
+        let manager = "open";
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let manager = "xdg-open";
+        std::process::Command::new(manager)
+            .arg(path)
+            .spawn()
+            .map(drop)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -266,6 +282,7 @@ struct ScriptState {
     discard_prompts: usize,
     history_truncation_prompts: Vec<String>,
     high_risk_prompts: Vec<String>,
+    shown_folders: Vec<PathBuf>,
 }
 
 /// A scripted stand-in for the native dialogs, used by acceptance tests.
@@ -394,6 +411,12 @@ impl ScriptedFileDialogs {
         self.state().high_risk_prompts.clone()
     }
 
+    /// The folders the shell showed in the file manager, in order.
+    #[must_use]
+    pub fn shown_folders(&self) -> Vec<PathBuf> {
+        self.state().shown_folders.clone()
+    }
+
     /// The file names the shell proposed to the Save dialog, in order.
     #[must_use]
     pub fn suggested_names(&self) -> Vec<String> {
@@ -503,6 +526,11 @@ impl FileDialogs for ScriptedFileDialogs {
             std::fs::write(path, bytes).expect("the scripted external write succeeds");
         }
         approval
+    }
+
+    fn show_folder(&mut self, path: &Path) -> std::io::Result<()> {
+        self.state().shown_folders.push(path.to_owned());
+        Ok(())
     }
 }
 

@@ -66,6 +66,7 @@ impl KetchupApp {
                 launch_attached: false,
                 client_export: false,
                 plugin_consents: Vec::new(),
+                plugin_menu: live_bridge::plugin_menu::PluginMenu::new(),
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {
@@ -1087,6 +1088,9 @@ impl KetchupApp {
                     }
                 });
             });
+            ui.menu_button(self.catalog.text("menu-plugins"), |ui| {
+                self.show_plugins_menu(ui);
+            });
             ui.menu_button(self.catalog.text("menu-help"), |ui| {
                 self.menu_command(ui, AppCommand::Shortcuts);
                 self.menu_command(ui, AppCommand::About);
@@ -1305,6 +1309,7 @@ impl KetchupApp {
         self.file.activity.context = Some(context.clone());
         self.poll_live_consent(context);
         self.poll_live_bridge(context);
+        self.poll_window_plugin(context);
         self.poll_validator_panel(context);
         self.poll_mesh_conversion(context);
         if let Some(program) = self.document.current_rule_program() {
@@ -1427,6 +1432,7 @@ impl KetchupApp {
         self.show_mesh_conversion_window(context);
         self.show_shortcuts_window(context);
         self.show_about_window(context);
+        self.show_plugin_window(context);
         self.show_program_detach_notice(context);
         self.show_material_takeoff_window(context);
         self.show_project_drawings_window(context);

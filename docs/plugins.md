@@ -33,12 +33,26 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
   with `Client.inputs()` (`QUERY\tINPUTS`), never from its arguments. An
   undeclared, missing or mistyped input is refused before anything runs.
 
+- A link (symlink or junction) in the folder, or as the folder, is refused.
+
+## Plugins menu
+
+The window lists every folder under `%APPDATA%\Ketchup\plugins` when the menu
+first opens and on **Refresh list**; it does not watch the folder. **Open
+plugins folder** creates it if it is missing. A folder that could not run is
+listed as unavailable with the code and reason a run would get. Choosing a
+plugin with inputs opens a form built from the declared inputs and defaults;
+the values are checked as for MCP. A run from the menu is the MCP `run_plugin`
+run: the same consent, one Undo step, and the window is busy for MCP while it
+runs.
+
 ## Consent
 
 Before a plugin first runs, the window asks the user, showing the folder with
 one SHA-256 over all its files, every file outside it the command line names
 (e.g. the interpreter) with its SHA-256, the command line, principal,
-capabilities and operations. The consent lasts while the window is open. Any
+capabilities and operations. The consent lasts while the window is open and
+holds for runs from the menu and from MCP alike. Any
 changed file, another command line or a further permission asks again; other
 input values do not. A Python plugin runs with `PYTHONDONTWRITEBYTECODE=1`, so
 it does not change its own folder.
