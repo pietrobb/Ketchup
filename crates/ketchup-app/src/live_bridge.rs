@@ -709,8 +709,8 @@ fn program_edit_result(
         .take(MAX_REPORTED_ISSUES)
         .map(|issue| compact_issue(&serde_json::to_value(issue).unwrap_or(Value::Null)))
         .collect::<Vec<_>>();
-    // The change is already published: its answer must fit one frame, or the
-    // agent reads `response_limit` and sends the change again.
+    // The change is already published: its answer is bounded so the agent gets
+    // the report itself, not just `response_limit` with `applied: true`.
     let last_lines = &report.log[report.log.len().saturating_sub(MAX_PROGRAM_LOG_LINES)..];
     let log = last_lines
         .iter()
@@ -844,6 +844,29 @@ impl Response {
                 ERROR_DETAILS.with(|slot| slot.borrow_mut().take()),
             )),
             error: Some(code.into()),
+        }
+    }
+
+    /// `response_limit` in place of an answer that does not fit one frame. A
+    /// request with an effect that succeeded has already run: the answer says
+    /// so and carries the stamp after it, so the client never repeats the change.
+    fn too_large(response: &Self, has_effect: bool) -> Self {
+        if !(response.ok && has_effect) {
+            return Self::error(response.id, "response_limit");
+        }
+        let rejection = rejected("response_limit").fix_hint(
+            "The request already ran; only its answer was too large. Do not send it again: \
+             read inspect action=status to see the change, and use details.stamp as expected.",
+        );
+        let mut result = serde_json::to_value(rejection).unwrap_or(Value::Null);
+        result["details"] = json!({"applied": true, "stamp": response.stamp});
+        Self {
+            version: 1,
+            id: response.id,
+            ok: false,
+            stamp: response.stamp.clone(),
+            result: Some(result),
+            error: Some("response_limit".into()),
         }
     }
 

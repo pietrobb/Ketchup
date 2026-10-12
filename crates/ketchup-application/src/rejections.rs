@@ -454,8 +454,8 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "response_limit",
         Io,
         "response",
-        "The answer does not fit in one response frame.",
-        "Narrow the request (smaller limit, fewer targets or a smaller image) and send it again.",
+        "The answer does not fit in one response frame. With details.applied=true the request already ran.",
+        "With details.applied=true read status instead of sending it again; otherwise narrow the request (smaller limit, fewer targets or a smaller image) and send it again.",
     ),
     entry(
         "response_timeout",

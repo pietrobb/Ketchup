@@ -169,6 +169,57 @@ fn response_wait(request: &Request) -> Duration {
     }
 }
 
+/// Whether answering `request` means something already changed: the document,
+/// a file, the window or this connection's handles. Its answer must never ask
+/// the client to send it again.
+fn has_effect(request: &Request) -> bool {
+    match request {
+        Request::Status {}
+        | Request::Summary {}
+        | Request::ListValidators {}
+        | Request::Operations { .. }
+        | Request::EditContext { .. }
+        | Request::Query { .. }
+        | Request::Detail { .. }
+        | Request::WorksetStatus { .. }
+        | Request::BatchJobStatus { .. }
+        | Request::Program { .. }
+        | Request::ProgramContext { .. }
+        | Request::ProgramPiece { .. }
+        | Request::ProgramReport { .. }
+        | Request::CheckProgram { .. }
+        | Request::MeasureFaces { .. }
+        | Request::ValidateProgram { .. }
+        | Request::SavedViews { .. }
+        | Request::Image(_) => false,
+        Request::WorksetCreate { .. }
+        | Request::BatchJobStart { .. }
+        | Request::BatchJobStep { .. }
+        | Request::BatchJobCancel { .. }
+        | Request::Propose { .. }
+        | Request::Commit { .. }
+        | Request::ApplyAndVerify { .. }
+        | Request::PatchProgram { .. }
+        | Request::SetProgramParams { .. }
+        | Request::ApplyProgram { .. }
+        | Request::Undo { .. }
+        | Request::Redo { .. }
+        | Request::Save { .. }
+        | Request::SaveAs { .. }
+        | Request::Open { .. }
+        | Request::ExportDrawings { .. }
+        | Request::Import { .. }
+        | Request::Export { .. }
+        | Request::Selection { .. }
+        | Request::View { .. }
+        | Request::SaveView { .. }
+        | Request::ShowView { .. }
+        | Request::TagVisibility { .. }
+        | Request::Section { .. }
+        | Request::Disconnect {} => true,
+    }
+}
+
 fn authenticated(supplied: &str, expected: &str) -> bool {
     if supplied.len() != 64 {
         return false;
@@ -275,7 +326,10 @@ fn write_frame_until(
     Ok(())
 }
 
-fn write_response(stream: &mut TcpStream, response: Response) -> io::Result<()> {
+/// Writes `response` in one frame. An answer too large for it becomes
+/// `response_limit`; when the request `has_effect` and succeeded, that answer
+/// says the change already ran and carries the stamp after it.
+fn write_response(stream: &mut TcpStream, response: Response, has_effect: bool) -> io::Result<()> {
     let result = response.result.as_ref();
     let limit =
         if result.and_then(|r| r.get("scope")).and_then(Value::as_str) == Some("cad_viewport") {
@@ -291,7 +345,7 @@ fn write_response(stream: &mut TcpStream, response: Response) -> io::Result<()> 
         };
     let mut bytes = serde_json::to_vec(&response).map_err(io::Error::other)?;
     if bytes.len() > limit {
-        bytes = serde_json::to_vec(&Response::error(response.id, "response_limit"))
+        bytes = serde_json::to_vec(&Response::too_large(&response, has_effect))
             .map_err(io::Error::other)?;
     }
     write_frame_until(&bytes, Instant::now() + IO_DEADLINE, |buffer, budget| {
@@ -376,7 +430,11 @@ fn serve(
     // A client whose window another client took over is told so in a last frame.
     let tell_superseded = |stream: &mut TcpStream, id: u64| {
         if superseded.load(Ordering::Acquire) {
-            let _ = write_response(stream, Response::error(id, SUPERSEDED_BY_ANOTHER_CLIENT));
+            let _ = write_response(
+                stream,
+                Response::error(id, SUPERSEDED_BY_ANOTHER_CLIENT),
+                false,
+            );
         }
     };
     while !stop.load(Ordering::Acquire) {
@@ -392,18 +450,23 @@ fn serve(
         let envelope: RawEnvelope = match serde_json::from_slice(&bytes) {
             Ok(envelope) => envelope,
             Err(_) => {
-                write_response(&mut stream, Response::error(0, "invalid_request"))?;
+                write_response(&mut stream, Response::error(0, "invalid_request"), false)?;
                 return Ok(());
             }
         };
         if !authenticated(&envelope.token, secret) {
-            write_response(&mut stream, Response::error(envelope.id, "unauthorized"))?;
+            write_response(
+                &mut stream,
+                Response::error(envelope.id, "unauthorized"),
+                false,
+            )?;
             return Ok(());
         }
         if envelope.version != 1 {
             write_response(
                 &mut stream,
                 Response::error(envelope.id, "unsupported_version"),
+                false,
             )?;
             return Ok(());
         }
@@ -422,11 +485,13 @@ fn serve(
                 write_response(
                     &mut stream,
                     Response::invalid_params(envelope.id, &error.to_string()),
+                    false,
                 )?;
                 continue;
             }
         };
         let disconnect = matches!(envelope.request, Request::Disconnect {});
+        let has_effect = has_effect(&envelope.request);
         let response_wait = response_wait(&envelope.request);
         let (reply, receiver) = mpsc::sync_channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -442,6 +507,7 @@ fn serve(
             write_response(
                 &mut stream,
                 Response::error(envelope.id, "queue_unavailable"),
+                false,
             )?;
             return Ok(());
         }
@@ -466,7 +532,7 @@ fn serve(
                 return Ok(());
             }
         };
-        write_response(&mut stream, response)?;
+        write_response(&mut stream, response, has_effect)?;
         if disconnect {
             return Ok(());
         }
@@ -644,10 +710,11 @@ mod tests {
         write_response(
             &mut server,
             ok(json!({"file_name": "big.star", "source": source})),
+            false,
         )
         .unwrap();
         assert_eq!(read(&mut client)["result"]["source"], source.as_str());
-        write_response(&mut server, ok(json!({"rows": source}))).unwrap();
+        write_response(&mut server, ok(json!({"rows": source})), false).unwrap();
         assert_eq!(read(&mut client)["error"], "response_limit");
     }
 

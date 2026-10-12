@@ -40,7 +40,7 @@ const SUMMARY_ITEMS: usize = 20;
 
 /// The first entries of `items` and their total count. The import has already
 /// happened when the answer is written, so a large review must never push it
-/// over the response limit, whose advice is to send the request again.
+/// over the response limit, which would leave only `applied: true`.
 pub(crate) fn bounded<T: serde::Serialize>(items: &[T]) -> (Value, usize) {
     (json!(&items[..items.len().min(SUMMARY_ITEMS)]), items.len())
 }

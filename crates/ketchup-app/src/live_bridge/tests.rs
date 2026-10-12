@@ -2415,6 +2415,11 @@ impl Wire {
         self.call_within(request, Duration::from_secs(4))
     }
     fn call_within(&mut self, request: Request, timeout: Duration) -> Response {
+        let response = self.answer_within(request, timeout);
+        assert!(response.ok, "{:?}", response.error);
+        response
+    }
+    fn answer_within(&mut self, request: Request, timeout: Duration) -> Response {
         self.stream.set_read_timeout(Some(timeout)).unwrap();
         self.send(request, false);
         let mut reader = self.stream.try_clone().unwrap();
@@ -2437,7 +2442,6 @@ impl Wire {
             std::thread::sleep(Duration::from_millis(5));
         };
         handle.join().unwrap();
-        assert!(response.ok, "{:?}", response.error);
         response
     }
     fn closed(&mut self, timeout: Duration) {
@@ -2652,6 +2656,62 @@ fn multiple_clients_reconnect_same_host_and_cannot_cross_window_boundary() {
     assert_eq!(rejected.error.as_deref(), Some("unauthorized"));
     assert_eq!(window_b.app.live_bridge_stamp(), before_b);
     assert!(window_b.call(Request::Status {}).ok);
+}
+
+/// Review 2026-10-09 MCP-3: an answer too large for one frame became a bare
+/// `response_limit` advising to send the request again, even after a change
+/// had been published, so the agent repeated it. A request that changed the
+/// document now gets `applied: true` with the stamp after it; a read keeps the
+/// advice to narrow the request.
+#[test]
+fn an_oversized_answer_to_a_change_says_it_was_applied_and_the_change_is_made_once() {
+    let mut wire = Wire::new();
+    // A large first frame is read only after the connection authenticated.
+    wire.call(Request::Status {});
+    let undo_steps = wire.app.undo_step_count();
+    let name = "v".repeat(MAX_RESPONSE_FRAME_BYTES + 1024);
+    let answer = wire.answer_within(
+        Request::SaveView {
+            expected: None,
+            name: name.clone(),
+        },
+        Duration::from_secs(4),
+    );
+    let after = wire.app.live_bridge_stamp();
+    assert!(!answer.ok);
+    assert_eq!(answer.error.as_deref(), Some("response_limit"));
+    let result = answer.result.unwrap();
+    assert_eq!(result["details"]["applied"], true, "{result}");
+    assert_eq!(result["details"]["stamp"], json!(after));
+    assert_eq!(answer.stamp, Some(after.clone()));
+    assert!(
+        result["fix_hint"]
+            .as_str()
+            .unwrap()
+            .contains("Do not send it again")
+    );
+    assert_eq!(wire.app.undo_step_count(), undo_steps + 1);
+    let snapshot = wire.app.document.current();
+    let names = snapshot
+        .saved_views()
+        .map(|view| view.name())
+        .collect::<Vec<_>>();
+    assert_eq!(names, [name.as_str()]);
+
+    let read = wire.answer_within(
+        Request::SavedViews { expected: None },
+        Duration::from_secs(4),
+    );
+    assert_eq!(read.error.as_deref(), Some("response_limit"));
+    let result = read.result.unwrap();
+    assert!(result.get("details").is_none(), "{result}");
+    assert!(
+        result["fix_hint"]
+            .as_str()
+            .unwrap()
+            .contains("narrow the request")
+    );
+    assert_eq!(wire.app.live_bridge_stamp(), after);
 }
 
 #[test]
