@@ -732,13 +732,14 @@ fn consent_broker_request_deadline_is_cumulative_across_slow_bytes() {
     .unwrap();
     let mut response = String::new();
     let read = std::io::BufRead::read_line(&mut std::io::BufReader::new(prompt), &mut response);
+    let answered_after = started.elapsed();
     dripper.join().unwrap();
 
     assert!(
         read.is_ok(),
         "valid request was blocked by a slow peer: {read:?}"
     );
-    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(answered_after < Duration::from_secs(3));
     let response: serde_json::Value = serde_json::from_str(&response).unwrap();
     assert_eq!(response["status"], "available");
     assert_eq!(response["nonce"], "6".repeat(64));
