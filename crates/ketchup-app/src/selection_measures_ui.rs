@@ -43,7 +43,14 @@ impl KetchupApp {
     /// Measures of the selected parts in the painted geometry, or `None`
     /// when nothing measurable is selected.
     pub(crate) fn selection_measures(&self) -> Option<SelectionMeasures> {
-        let selected = self.selected_instance_paths();
+        self.measures_of(&self.selected_instance_paths())
+    }
+
+    /// Measures of the parts at `selected` in the painted geometry.
+    pub(crate) fn measures_of(
+        &self,
+        selected: &BTreeSet<InstancePath>,
+    ) -> Option<SelectionMeasures> {
         if selected.is_empty() {
             return None;
         }

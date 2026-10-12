@@ -5,6 +5,10 @@
 mod cad_program;
 mod commands;
 mod connect_ai;
+pub(crate) mod dimensions_ui;
+#[cfg(test)]
+#[path = "app/dimensions_ui_tests.rs"]
+mod dimensions_ui_tests;
 mod document;
 mod drawing;
 mod exact;

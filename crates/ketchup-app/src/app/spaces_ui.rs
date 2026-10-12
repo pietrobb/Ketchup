@@ -254,7 +254,7 @@ impl KetchupApp {
                     }
                 }
             };
-            self.commit_space_operation(operation);
+            self.commit_dock_operation(operation);
         }
     }
 
@@ -279,7 +279,7 @@ impl KetchupApp {
             adjacent_to: Vec::new(),
             accessible_to: Vec::new(),
         };
-        if self.commit_space_operation(operation) {
+        if self.commit_dock_operation(operation) {
             self.pick_space_row(SpaceRow::Space(SpaceId(id)));
         }
     }
@@ -315,13 +315,14 @@ impl KetchupApp {
             severity: AssistantClearanceSeverity::Required,
             tolerance_mm: None,
         };
-        if self.commit_space_operation(operation) {
+        if self.commit_dock_operation(operation) {
             self.pick_space_row(SpaceRow::Clearance(ClearanceVolumeId(id)));
         }
     }
 
     fn pick_space_row(&mut self, row: SpaceRow) {
         self.clear_selection();
+        self.picked_dimension = None;
         self.picked_space = Some((row, BTreeSet::new()));
     }
 
@@ -347,7 +348,7 @@ impl KetchupApp {
                 clearance_volume_id: id.0,
             },
         };
-        let deleted = self.commit_space_operation(operation);
+        let deleted = self.commit_dock_operation(operation);
         if deleted {
             self.picked_space = None;
         }
@@ -357,7 +358,7 @@ impl KetchupApp {
     /// Plans and commits one operation as MCP `edit propose` + `commit` do:
     /// one Undo step, or the rejection in the status line and the document
     /// unchanged.
-    fn commit_space_operation(&mut self, operation: AssistantCadEditOperation) -> bool {
+    pub(crate) fn commit_dock_operation(&mut self, operation: AssistantCadEditOperation) -> bool {
         let program = AssistantCadEditProgram {
             operations: vec![operation],
         };
@@ -385,7 +386,18 @@ impl KetchupApp {
         let Some((_, volume)) = self.picked_space_row() else {
             return;
         };
-        let (min, max) = (volume.min(), volume.max());
+        let stroke = Stroke::new(1.8_f32, Color32::from_rgb(240, 78, 35));
+        self.paint_dashed_box(painter, rect, volume.min(), volume.max(), stroke);
+    }
+
+    pub(crate) fn paint_dashed_box(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        min: [f64; 3],
+        max: [f64; 3],
+        stroke: Stroke,
+    ) {
         let corner = |index: usize| {
             Vec3::new(
                 if index & 1 == 0 { min[0] } else { max[0] },
@@ -393,7 +405,6 @@ impl KetchupApp {
                 if index & 4 == 0 { min[2] } else { max[2] },
             )
         };
-        let stroke = Stroke::new(1.8_f32, Color32::from_rgb(240, 78, 35));
         for start in 0..8 {
             for bit in [1, 2, 4] {
                 if start & bit == 0 {

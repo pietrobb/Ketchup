@@ -953,6 +953,10 @@ impl KetchupApp {
             return false;
         }
         self.selection.clear();
+        // A pick the deleted parts took over stays gone, so the next Delete
+        // does not remove it unseen.
+        self.picked_space = None;
+        self.picked_dimension = None;
         self.tool_preview.close::<EphemeralBoxPreview>();
         self.status_key = "status-object-deleted";
         self.digest = self.catalog.format(
@@ -966,6 +970,9 @@ impl KetchupApp {
         let Some(plan) = self.delete_selection_source_plan() else {
             if let Some((row, _)) = self.picked_space_row() {
                 return self.delete_picked_space_row(row);
+            }
+            if let Some(id) = self.picked_dimension_id() {
+                return self.delete_picked_dimension(id);
             }
             let hidden = self.hidden_selected_count();
             if hidden > 0 {

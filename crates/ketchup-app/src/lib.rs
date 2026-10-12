@@ -68,9 +68,9 @@ use ketchup_model::document::{
     ConvertGroupPlan, DefinitionId, Dimension, DocumentId, DocumentStore, EdgeFinishKind, EdgeRef,
     EvaluationIdentity, EvaluatorParameterEdit, FaceRef, FeatureId, FeatureKind, GroupId,
     HighRiskClass, HighRiskScope, InstancePath, LoftContinuity, LoftSection,
-    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MeshBodySpec, NodeId, OccurrenceId, ProfileSegment,
-    Proposal, ProposalCommitError, ProposalContext, ProposalPrepareError, ProposalPrincipal,
-    SPLINE_MIN_POINTS, SceneOccurrence, SceneQueryContext, SectionPlane,
+    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
+    ProfileSegment, Proposal, ProposalCommitError, ProposalContext, ProposalPrepareError,
+    ProposalPrincipal, SPLINE_MIN_POINTS, SceneOccurrence, SceneQueryContext, SectionPlane,
     SideEffectAuthorizationReceipt, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
     TipReplacementParent, TipReplacementProposal, Transform, TrustedConfirmationSurface,
     ellipse_segments, polygon_segments, regular_polygon_points,
@@ -2543,6 +2543,10 @@ pub struct KetchupApp {
     /// finding, with the part selection it was picked together with.
     picked_space: Option<(app::spaces_ui::SpaceRow, BTreeSet<InstancePath>)>,
     space_fields: app::spaces_ui::SpaceFields,
+    /// The dimension picked in the dock, with the part selection it was
+    /// picked together with.
+    picked_dimension: Option<(PersistentDimensionId, BTreeSet<InstancePath>)>,
+    dimension_fields: app::dimensions_ui::DimensionFields,
     hover: app_state::HoverState,
     active_tool: ActiveTool,
     panels: app_state::Panels,
