@@ -403,12 +403,21 @@ impl DigestV3 {
         self.u64(provenance.applied_value_bits);
     }
 
-    fn joint(&mut self, joint: &CanonicalJoint) {
+    fn joint(&mut self, joint: &DocumentJoint) {
         self.u64(joint.id().0);
-        self.u64(joint.participant_a().root_rule_node_id.0);
-        self.slot_path(&joint.participant_a().slot_path);
-        self.u64(joint.participant_b().root_rule_node_id.0);
-        self.slot_path(&joint.participant_b().slot_path);
+        for participant in [joint.participant_a(), joint.participant_b()] {
+            match participant {
+                JointParticipant::Derived(identity) => {
+                    self.u64(identity.root_rule_node_id.0);
+                    self.slot_path(&identity.slot_path);
+                }
+                // Rule node 0 is reserved, so a part never digests like a derived value.
+                JointParticipant::Part(path) => {
+                    self.u64(0);
+                    self.instance_path(path);
+                }
+            }
+        }
         for value in joint.volume().min().into_iter().chain(joint.volume().max()) {
             self.u64(value.to_bits());
         }

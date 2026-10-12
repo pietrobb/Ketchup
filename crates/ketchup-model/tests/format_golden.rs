@@ -1,22 +1,28 @@
-//! Snapshot format 102 with an Undo history, committed as written (MD-3).
+//! Snapshot formats with an Undo history, committed as written (MD-3).
 //!
-//! The saved serde form of the product model is the file format. The fixture must
-//! keep opening with every revision and the digests it was written with, and saving
-//! it again must give the same bytes. When this test fails because the bytes
-//! changed, the change altered the format: give it a new number and its
-//! conversion in `snapshot_codec::decode`, keep this file as the golden of format
-//! 102 (drop the byte comparison for it) and add a golden of the new format.
-//! Regenerate only for a new format with `KETCHUP_UPDATE_GOLDEN=1`.
+//! The saved serde form of the product model is the file format. The fixture of the
+//! current format must keep opening with every revision and the digests it was written
+//! with, and saving it again must give the same bytes. When that test fails because the
+//! bytes changed, the change altered the format: give it a new number and its
+//! conversion in `snapshot_codec::decode`, keep the fixture as the golden of its format
+//! (drop the byte comparison for it) and add a golden of the new format. Regenerate
+//! only for a new format with `KETCHUP_UPDATE_GOLDEN=1`.
+use ketchup_geometry::prismatic::{Aabb, CanonicalJoint, JointId};
 use ketchup_model::document::*;
 use ketchup_model::persistence::{self, ContainerData, LoadOutcome};
 
-const FIXTURE: &str = concat!(
+const FIXTURE_102: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/persistence/history-format102.bin"
 );
 
+const FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/history-format103.bin"
+);
+
 /// Canonical digest of every revision, oldest first, as format 102 wrote them.
-const REVISION_DIGESTS: &[&str] = &[
+const REVISION_DIGESTS_102: &[&str] = &[
     "e51eff18704562b7",
     "1ebf22ce3f9227c2",
     "ba84736e268125d3",
@@ -24,6 +30,18 @@ const REVISION_DIGESTS: &[&str] = &[
     "ac95765522bbdcd1",
     "37d5c7ca6e51948c",
     "32004c2fb9d7739d",
+];
+
+/// Canonical digest of every revision, oldest first, as format 103 wrote them.
+const REVISION_DIGESTS: &[&str] = &[
+    "a2bfa71d0ad7e6b3",
+    "6cd3c1af4f1f9c26",
+    "41e384da97b177b7",
+    "ceba4f5a02d6379c",
+    "bd01bc074ad79469",
+    "0c7e44701364923c",
+    "38598be34ea8becd",
+    "695c01140f69ddb9",
 ];
 
 fn occurrence(id: u64, name: &str) -> CanonicalCommand {
@@ -39,7 +57,8 @@ fn occurrence(id: u64, name: &str) -> CanonicalCommand {
 }
 
 /// Seven revisions that touch the product fields most likely to move: support
-/// declarations, contact joints, tags, classification, local structure.
+/// declarations, contact joints, tags, classification, local structure. Format 103
+/// adds a joint of two placed parts.
 fn written() -> DocumentStore {
     let mut document = DocumentStore::new();
     let batches = vec![
@@ -89,6 +108,15 @@ fn written() -> DocumentStore {
                 category_id: Some(ClassificationCategoryId(1)),
             },
         ],
+        vec![CanonicalCommand::UpsertJoint(
+            CanonicalJoint::new(
+                JointId(1),
+                InstancePath::root(OccurrenceId(20)).into(),
+                InstancePath::root(OccurrenceId(21)).into(),
+                Aabb::new([50., 0., 0.], [60., 30., 18.]).unwrap(),
+            )
+            .unwrap(),
+        )],
     ];
     for commands in batches {
         document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -104,7 +132,20 @@ fn revision_digests(document: &DocumentStore) -> Vec<String> {
 }
 
 #[test]
-fn a_format_102_file_with_history_opens_with_every_revision_and_saves_the_same_bytes() {
+fn a_format_102_file_with_history_opens_with_every_revision_it_was_written_with() {
+    let LoadOutcome::Editable {
+        document, audit, ..
+    } = persistence::load(&std::fs::read(FIXTURE_102).unwrap()).unwrap()
+    else {
+        panic!("the golden is editable")
+    };
+    assert_eq!(audit.source_schema, 102);
+    assert_eq!(audit.history_discarded, None);
+    assert_eq!(revision_digests(&document), REVISION_DIGESTS_102);
+}
+
+#[test]
+fn a_format_103_file_with_history_opens_with_every_revision_and_saves_the_same_bytes() {
     if ketchup_test_env::update_golden() {
         let document = written();
         let bytes = persistence::save_document_store(&document, &ContainerData::default()).unwrap();

@@ -190,12 +190,12 @@ impl Snapshot {
         self.product.overrides.get(&id).map(Arc::as_ref)
     }
 
-    pub fn joints(&self) -> impl Iterator<Item = &CanonicalJoint> {
+    pub fn joints(&self) -> impl Iterator<Item = &DocumentJoint> {
         self.product.joints.values().map(Arc::as_ref)
     }
 
     #[must_use]
-    pub fn joint(&self, id: JointId) -> Option<&CanonicalJoint> {
+    pub fn joint(&self, id: JointId) -> Option<&DocumentJoint> {
         self.product.joints.get(&id).map(Arc::as_ref)
     }
 

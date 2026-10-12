@@ -1,6 +1,6 @@
 //! Plans the CAD edit operations on product entities that are not geometry:
-//! spaces, clearance volumes, persistent dimensions and evaluator input
-//! values. Spaces refer to each other (mutual
+//! spaces, clearance volumes, joints of parts, persistent dimensions and
+//! evaluator input values. Spaces refer to each other (mutual
 //! adjacency), so they are staged without a preview and the document store
 //! checks them together with what follows; a refused change never reaches
 //! the document.
@@ -13,9 +13,9 @@ use crate::model_query::canonical_instance_path;
 use crate::planner::StagedPlanningContext;
 use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantClearanceOwner, AssistantClearanceSeverity,
-    AssistantDimensionUnit,
+    AssistantDimensionUnit, AssistantInstancePath,
 };
-use ketchup_geometry::prismatic::Aabb;
+use ketchup_geometry::prismatic::{Aabb, CanonicalJoint, JointId, PrismaticError};
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, Dimension, DimensionDisplayUnit, DimensionPresentation,
     FeatureId, FeatureParameterTarget, NodeId, ParameterValueType, PersistentDimension,
@@ -80,6 +80,16 @@ pub(crate) fn plan_product_change(
             clearance_volume_id,
         } => Ok(CanonicalCommand::DeleteClearanceVolume {
             id: ClearanceVolumeId(*clearance_volume_id),
+        }),
+        AssistantCadEditOperation::UpsertJoint {
+            joint_id,
+            part_a,
+            part_b,
+            min_mm,
+            max_mm,
+        } => plan_joint(staged, *joint_id, [part_a, part_b], (*min_mm, *max_mm)),
+        AssistantCadEditOperation::DeleteJoint { joint_id } => Ok(CanonicalCommand::DeleteJoint {
+            id: JointId(*joint_id),
         }),
         AssistantCadEditOperation::UpsertDimension {
             dimension_id,
@@ -179,6 +189,37 @@ fn plan_clearance(
         })
         .map(CanonicalCommand::UpsertClearanceVolume)
         .map_err(|error| rejected(error, OPERATION, "clearance_volume", id))
+}
+
+fn plan_joint(
+    staged: &mut StagedPlanningContext,
+    id: u64,
+    parts: [&AssistantInstancePath; 2],
+    (min_mm, max_mm): ([f64; 3], [f64; 3]),
+) -> AssistantPlanningResult<CanonicalCommand> {
+    const OPERATION: &str = "upsert_joint";
+    let target = format!("joint:{id}");
+    // The parts may come from earlier operations of this program.
+    let document = format!("document:{}", staged.base_snapshot().document_id().0);
+    staged.refresh(OPERATION, &document)?;
+    let [part_a, part_b] = parts.map(|part| {
+        canonical_instance_path(staged.staged_snapshot(), part).map_err(|error| {
+            assistant_planning_rejection(
+                "planning.joint_part_not_found",
+                OPERATION,
+                &target,
+                format!("a part instance path does not resolve ({error:?})"),
+                "Name two existing occurrence paths, e.g. from inspect query instances.",
+            )
+        })
+    });
+    let invalid = |error: PrismaticError| {
+        assistant_canonical_rejection(CanonicalError::Prismatic(error), OPERATION, &target)
+    };
+    let volume = Aabb::new(min_mm, max_mm).map_err(invalid)?;
+    CanonicalJoint::new(JointId(id), part_a?.into(), part_b?.into(), volume)
+        .map(CanonicalCommand::UpsertJoint)
+        .map_err(invalid)
 }
 
 fn plan_dimension(

@@ -267,6 +267,7 @@ fn validate_document_entries(
         if *id != joint.id() || !joint.volume().has_positive_volume() {
             return Err(CanonicalError::Prismatic(PrismaticError::EmptyVolume));
         }
+        joint::validate(product, joint)?;
     }
     for (id, space) in &product.spaces {
         if *id != space.id() || !space.volume().has_positive_volume() {

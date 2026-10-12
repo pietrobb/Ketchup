@@ -1096,10 +1096,10 @@ fn read_feature_parameter_provenance(
     }
 }
 
-fn read_joint(reader: &mut Reader<'_>) -> Result<CanonicalJoint, PersistenceError> {
+fn read_joint(reader: &mut Reader<'_>) -> Result<crate::document::DocumentJoint, PersistenceError> {
     let id = JointId(reader.u64()?);
-    let participant_a = read_identity(reader)?;
-    let participant_b = read_identity(reader)?;
+    let participant_a = read_identity(reader)?.into();
+    let participant_b = read_identity(reader)?.into();
     let volume = read_bounded_volume(reader)?;
     CanonicalJoint::new(id, participant_a, participant_b, volume)
         .map_err(CanonicalError::from)

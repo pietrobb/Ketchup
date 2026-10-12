@@ -2005,6 +2005,20 @@ pub enum AssistantCadEditOperation {
     DeleteClearanceVolume {
         clearance_volume_id: u64,
     },
+    /// Creates or replaces a joint of two placed parts (ordinary or program
+    /// parts): they may overlap inside the world box from `min_mm` to
+    /// `max_mm`, e.g. a tenon in its mortise. A deleted part takes its joints
+    /// with it.
+    UpsertJoint {
+        joint_id: u64,
+        part_a: AssistantInstancePath,
+        part_b: AssistantInstancePath,
+        min_mm: [f64; 3],
+        max_mm: [f64; 3],
+    },
+    DeleteJoint {
+        joint_id: u64,
+    },
     /// Creates or replaces a named dimension that keeps showing the live
     /// value of one length parameter of a feature, e.g. `extent.distance` of
     /// an extrusion. `unit` defaults to mm, `decimal_places` (0–9) to 1.
@@ -3002,6 +3016,8 @@ impl AssistantCadEditProgram {
             | AssistantCadEditOperation::DeleteSpace { .. }
             | AssistantCadEditOperation::UpsertClearanceVolume { .. }
             | AssistantCadEditOperation::DeleteClearanceVolume { .. }
+            | AssistantCadEditOperation::UpsertJoint { .. }
+            | AssistantCadEditOperation::DeleteJoint { .. }
             | AssistantCadEditOperation::UpsertDimension { .. }
             | AssistantCadEditOperation::DeleteDimension { .. }
             | AssistantCadEditOperation::SetEvaluatorInput { .. } => 0,
@@ -3708,6 +3724,30 @@ impl AssistantCadEditProgram {
             } => {
                 if *clearance_volume_id == 0 {
                     return Err(AssistantRequestInvalid::invalid("CAD clearance deletion"));
+                }
+                0
+            }
+            AssistantCadEditOperation::UpsertJoint {
+                joint_id,
+                part_a,
+                part_b,
+                min_mm,
+                max_mm,
+            } => {
+                // The parts and the volume are checked when planned.
+                part_a.validate()?;
+                part_b.validate()?;
+                if *joint_id == 0
+                    || !assistant_cad_vector_is_bounded(*min_mm)
+                    || !assistant_cad_vector_is_bounded(*max_mm)
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD joint"));
+                }
+                0
+            }
+            AssistantCadEditOperation::DeleteJoint { joint_id } => {
+                if *joint_id == 0 {
+                    return Err(AssistantRequestInvalid::invalid("CAD joint deletion"));
                 }
                 0
             }

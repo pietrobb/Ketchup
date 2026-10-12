@@ -116,6 +116,8 @@ mod error;
 mod feature_validation;
 mod group_conversion;
 mod instance_path;
+mod joint;
+pub use joint::{DocumentJoint, JointParticipant};
 mod parameters;
 mod part_references;
 mod persistent_dimension;
@@ -174,7 +176,7 @@ pub(crate) struct ProductModel {
         BTreeMap<FeatureParameterTarget, Arc<FeatureParameterBinding>>,
     pub(crate) feature_parameter_provenance:
         BTreeMap<FeatureParameterTarget, Arc<FeatureParameterProvenance>>,
-    pub(crate) joints: BTreeMap<JointId, Arc<CanonicalJoint>>,
+    pub(crate) joints: BTreeMap<JointId, Arc<DocumentJoint>>,
     pub(crate) spaces: BTreeMap<SpaceId, Arc<CanonicalSpace>>,
     pub(crate) clearance_volumes: BTreeMap<ClearanceVolumeId, Arc<CanonicalClearanceVolume>>,
     pub(crate) cam_plans: BTreeMap<CamPlanId, Arc<CamPlan>>,

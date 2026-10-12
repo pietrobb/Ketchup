@@ -1464,16 +1464,7 @@ pub(super) fn authoritative_dependencies(
             }
             CanonicalCommand::UpsertJoint(joint) => {
                 dependencies.insert(AuthoritativeDependency::Joint(joint.id()));
-                add_evaluator_dependency_closure(
-                    snapshot,
-                    joint.participant_a().root_rule_node_id,
-                    &mut dependencies,
-                );
-                add_evaluator_dependency_closure(
-                    snapshot,
-                    joint.participant_b().root_rule_node_id,
-                    &mut dependencies,
-                );
+                joint::add_dependencies(snapshot, joint, &mut dependencies);
             }
             CanonicalCommand::DeleteJoint { id } => {
                 dependencies.insert(AuthoritativeDependency::Joint(*id));

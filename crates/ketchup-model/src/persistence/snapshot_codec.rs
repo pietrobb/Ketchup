@@ -19,7 +19,7 @@ use crate::document::{FeatureId, ProductModel, Snapshot};
 use std::collections::BTreeMap;
 
 /// Format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 102;
+pub(super) const SNAPSHOT_FORMAT: u16 = 103;
 
 /// First format this codec wrote. Numbers below it belong to the retired hand-written
 /// codec.
@@ -110,6 +110,7 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
     };
     if let Some(product) = field(&mut value, "product") {
         format_101_occurrence_tags(product, false);
+        format_102_joint_participants(product, false);
     }
     let decoded: DecodedSnapshot = value.deserialized().map_err(|error| invalid(&error))?;
     // The writer hashed the identity form under its own field names, and before
@@ -118,6 +119,7 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
         crate::document::identity_form(|| ciborium::Value::serialized(&decoded.product))
             .map_err(|error| invalid(&error))?;
     restore_format_100_sheet_metal(&mut writer_form, sheet_metal);
+    format_102_joint_participants(&mut writer_form, true);
     format_101_occurrence_tags(&mut writer_form, true);
     if format_98 {
         rename_format_98_fields(&mut writer_form, |(old, new)| (new, old));
@@ -223,6 +225,36 @@ fn format_101_occurrence_tags(product: &mut ciborium::Value, back: bool) {
                     tags.pop().unwrap_or(ciborium::Value::Null)
                 }
                 id if !back => ciborium::Value::Array(vec![id]),
+                other => other,
+            };
+        }
+    }
+}
+
+/// Format 103 lets a joint join placed parts as well as values a rule derives: each
+/// participant became a `JointParticipant`, so an older one (always derived) is
+/// `{"Derived": old}`. Converts every joint of `product` to the new form, or with
+/// `back` from it to the old one.
+fn format_102_joint_participants(product: &mut ciborium::Value, back: bool) {
+    const DERIVED: &str = "Derived";
+    let Some(ciborium::Value::Map(joints)) = field(product, "joints") else {
+        return;
+    };
+    for (_, joint) in joints {
+        for name in ["participant_a", "participant_b"] {
+            let Some(participant) = field(joint, name) else {
+                continue;
+            };
+            let old = std::mem::replace(participant, ciborium::Value::Null);
+            *participant = match old {
+                ciborium::Value::Map(mut variant)
+                    if back && variant.len() == 1 && variant[0].0.as_text() == Some(DERIVED) =>
+                {
+                    variant.pop().expect("one entry").1
+                }
+                old if !back => {
+                    ciborium::Value::Map(vec![(ciborium::Value::Text(DERIVED.to_owned()), old)])
+                }
                 other => other,
             };
         }

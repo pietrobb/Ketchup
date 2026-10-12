@@ -1624,6 +1624,8 @@ impl LiveBridge {
                 | AssistantCadEditOperation::DeleteSpace { .. }
                 | AssistantCadEditOperation::UpsertClearanceVolume { .. }
                 | AssistantCadEditOperation::DeleteClearanceVolume { .. }
+                | AssistantCadEditOperation::UpsertJoint { .. }
+                | AssistantCadEditOperation::DeleteJoint { .. }
                 | AssistantCadEditOperation::UpsertDimension { .. }
                 | AssistantCadEditOperation::DeleteDimension { .. }
                 | AssistantCadEditOperation::SetEvaluatorInput { .. } => None,

@@ -123,6 +123,11 @@ pub enum CanonicalError {
     OverrideNotFound(u64),
     JointAlreadyExists(JointId),
     JointNotFound(JointId),
+    /// A part the joint names does not resolve to a placed instance.
+    JointPartNotFound {
+        joint: JointId,
+        path: InstancePath,
+    },
     SpaceAlreadyExists(SpaceId),
     SpaceNotFound(SpaceId),
     ClearanceVolumeAlreadyExists(ClearanceVolumeId),
@@ -319,6 +324,7 @@ impl CanonicalError {
             Self::OverrideNotFound(..) => "canonical.override_not_found",
             Self::JointAlreadyExists(..) => "canonical.joint_already_exists",
             Self::JointNotFound(..) => "canonical.joint_not_found",
+            Self::JointPartNotFound { .. } => "canonical.joint_part_not_found",
             Self::SpaceAlreadyExists(..) => "canonical.space_already_exists",
             Self::SpaceNotFound(..) => "canonical.space_not_found",
             Self::ClearanceVolumeAlreadyExists(..) => "canonical.clearance_volume_already_exists",
@@ -683,6 +689,11 @@ impl fmt::Display for CanonicalError {
             Self::OverrideNotFound(id) => write!(formatter, "override {id} does not exist"),
             Self::JointAlreadyExists(id) => write!(formatter, "joint {} already exists", id.0),
             Self::JointNotFound(id) => write!(formatter, "joint {} does not exist", id.0),
+            Self::JointPartNotFound { joint, path } => write!(
+                formatter,
+                "joint {} names part {path:?}, which is not placed in the model",
+                joint.0
+            ),
             Self::SpaceAlreadyExists(id) => write!(formatter, "space {} already exists", id.0),
             Self::SpaceNotFound(id) => write!(formatter, "space {} does not exist", id.0),
             Self::ClearanceVolumeAlreadyExists(id) => {

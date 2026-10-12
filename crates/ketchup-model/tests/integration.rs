@@ -24,6 +24,7 @@ mod format_golden;
 mod free_workplane;
 mod generic_sketch_pocket;
 mod import_contract;
+mod joint_format_migration;
 mod large_document_history;
 mod legacy_migration;
 mod mechanical_contract;

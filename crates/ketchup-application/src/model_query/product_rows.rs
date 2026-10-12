@@ -1,11 +1,12 @@
 //! Rows of the product entities that are not geometry: spaces, clearance
-//! volumes, joints between derived parts and persistent dimensions.
+//! volumes, joints between derived values or placed parts and persistent
+//! dimensions.
 
 use super::{bounded_text, qualified_path};
 use ketchup_geometry::prismatic::{Aabb, JointId};
 use ketchup_model::document::{
-    DerivedIdentity, DimensionReferenceHealth, ParameterValueType, PersistentDimensionId,
-    PersistentDimensionTarget, SlotResolution, Snapshot,
+    DerivedIdentity, DimensionReferenceHealth, InstancePath, JointParticipant, ParameterValueType,
+    PersistentDimensionId, PersistentDimensionTarget, SlotResolution, Snapshot,
 };
 use ketchup_model::space::{ClearanceOwner, ClearanceSeverity, ClearanceVolumeId, SpaceId};
 use serde_json::{Value, json};
@@ -21,12 +22,7 @@ pub(super) fn space_row(snapshot: &Snapshot, id: u64) -> Option<Value> {
 pub(super) fn clearance_volume_row(snapshot: &Snapshot, id: u64) -> Option<Value> {
     let clearance = snapshot.clearance_volume(ClearanceVolumeId(id))?;
     let owner = match clearance.owner() {
-        ClearanceOwner::Occurrence(path) => {
-            let resolved = qualified_path(snapshot, path, path.steps().len());
-            json!({"kind":"instance","root_occurrence_id":path.root_occurrence().0,
-                "resolved":resolved.is_some(),
-                "instance_path":resolved.map(|(path, _, _)| path)})
-        }
+        ClearanceOwner::Occurrence(path) => instance_value(snapshot, path),
         ClearanceOwner::Space(space) => json!({"kind":"space","space_id":space.0,
             "resolved":snapshot.space(*space).is_some()}),
     };
@@ -44,10 +40,25 @@ pub(super) fn clearance_volume_row(snapshot: &Snapshot, id: u64) -> Option<Value
 
 pub(super) fn joint_row(snapshot: &Snapshot, id: u64) -> Option<Value> {
     let joint = snapshot.joint(JointId(id))?;
+    let participant = |participant: &JointParticipant| match participant {
+        JointParticipant::Derived(identity) => {
+            let mut value = derived_value(snapshot, identity);
+            value["kind"] = json!("derived");
+            value
+        }
+        JointParticipant::Part(path) => instance_value(snapshot, path),
+    };
     Some(json!({"id":id,
-        "participant_a":derived_value(snapshot, joint.participant_a()),
-        "participant_b":derived_value(snapshot, joint.participant_b()),
+        "participant_a":participant(joint.participant_a()),
+        "participant_b":participant(joint.participant_b()),
         "volume":volume_value(joint.volume())}))
+}
+
+fn instance_value(snapshot: &Snapshot, path: &InstancePath) -> Value {
+    let resolved = qualified_path(snapshot, path, path.steps().len());
+    json!({"kind":"instance","root_occurrence_id":path.root_occurrence().0,
+        "resolved":resolved.is_some(),
+        "instance_path":resolved.map(|(path, _, _)| path)})
 }
 
 pub(super) fn dimension_row(snapshot: &Snapshot, id: u64) -> Option<Value> {

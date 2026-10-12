@@ -1352,14 +1352,8 @@ impl DocumentStore {
                     previous_evaluation = Some(report.clone());
                     evaluation_identity = report.identity;
                 }
-                CanonicalCommand::UpsertJoint(joint) => {
-                    product.joints.insert(joint.id(), Arc::new(joint.clone()));
-                }
-                CanonicalCommand::DeleteJoint { id } => {
-                    if product.joints.remove(id).is_none() {
-                        return Err(CanonicalError::JointNotFound(*id));
-                    }
-                }
+                CanonicalCommand::UpsertJoint(joint) => joint::upsert(&mut product, joint)?,
+                CanonicalCommand::DeleteJoint { id } => joint::delete(&mut product, *id)?,
                 CanonicalCommand::UpsertSpace(space) => {
                     product.spaces.insert(space.id(), Arc::new(space.clone()));
                 }
@@ -3097,6 +3091,7 @@ impl DocumentStore {
 
         support::prune_grounded_instances(&mut product);
         contact_joint::prune(&mut product);
+        joint::prune(&mut product);
         refresh_sketch_projections(&mut product)?;
         validate_graph(&product.evaluator_nodes)?;
         refresh_override_health(&mut product);

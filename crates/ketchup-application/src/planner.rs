@@ -1844,42 +1844,12 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
     let mut staged_planning = StagedPlanningContext::new(&snapshot);
     let mut appended_exact_features = Vec::new();
     let mut appended_planar_offsets = Vec::new();
-    let mut next_definition = snapshot
-        .definitions()
-        .map(|definition| definition.id().0)
-        .max()
-        .unwrap_or(0)
-        .checked_add(1);
-    let mut next_occurrence = snapshot
-        .occurrences()
-        .map(|occurrence| occurrence.id().0)
-        .max()
-        .unwrap_or(0)
-        .checked_add(1);
-    let mut next_feature = snapshot
-        .features()
-        .map(|feature| feature.id().0)
-        .max()
-        .unwrap_or(0)
-        .checked_add(1);
-    let mut next_assembly_joint = snapshot
-        .assembly_joints()
-        .map(|joint| joint.id().0)
-        .max()
-        .unwrap_or(0)
-        .checked_add(1);
-    let mut next_pin_joint = snapshot
-        .pin_joints()
-        .map(|joint| joint.id.0)
-        .max()
-        .unwrap_or(0)
-        .checked_add(1);
-    let mut next_drawing_sheet = snapshot
-        .drawing_sheets()
-        .map(|sheet| sheet.id().0)
-        .max()
-        .unwrap_or(0)
-        .checked_add(1);
+    let mut next_definition = next_id(snapshot.definitions().map(|item| item.id().0));
+    let mut next_occurrence = next_id(snapshot.occurrences().map(|item| item.id().0));
+    let mut next_feature = next_id(snapshot.features().map(|item| item.id().0));
+    let mut next_assembly_joint = next_id(snapshot.assembly_joints().map(|item| item.id().0));
+    let mut next_pin_joint = next_id(snapshot.pin_joints().map(|item| item.id.0));
+    let mut next_drawing_sheet = next_id(snapshot.drawing_sheets().map(|item| item.id().0));
 
     for (operation_index, operation) in program.operations.iter().enumerate() {
         let operation_name = operation_name(operation);
@@ -3675,6 +3645,8 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             | AssistantCadEditOperation::DeleteSpace { .. }
             | AssistantCadEditOperation::UpsertClearanceVolume { .. }
             | AssistantCadEditOperation::DeleteClearanceVolume { .. }
+            | AssistantCadEditOperation::UpsertJoint { .. }
+            | AssistantCadEditOperation::DeleteJoint { .. }
             | AssistantCadEditOperation::UpsertDimension { .. }
             | AssistantCadEditOperation::DeleteDimension { .. }
             | AssistantCadEditOperation::CreateEvaluatorInput { .. }
@@ -3798,6 +3770,8 @@ const fn operation_selector(
         | AssistantCadEditOperation::DeleteSpace { .. }
         | AssistantCadEditOperation::UpsertClearanceVolume { .. }
         | AssistantCadEditOperation::DeleteClearanceVolume { .. }
+        | AssistantCadEditOperation::UpsertJoint { .. }
+        | AssistantCadEditOperation::DeleteJoint { .. }
         | AssistantCadEditOperation::UpsertDimension { .. }
         | AssistantCadEditOperation::DeleteDimension { .. }
         | AssistantCadEditOperation::SetEvaluatorInput { .. } => None,
@@ -3857,6 +3831,8 @@ const fn operation_name(operation: &AssistantCadEditOperation) -> &'static str {
         AssistantCadEditOperation::DeleteSpace { .. } => "delete_space",
         AssistantCadEditOperation::UpsertClearanceVolume { .. } => "upsert_clearance_volume",
         AssistantCadEditOperation::DeleteClearanceVolume { .. } => "delete_clearance_volume",
+        AssistantCadEditOperation::UpsertJoint { .. } => "upsert_joint",
+        AssistantCadEditOperation::DeleteJoint { .. } => "delete_joint",
         AssistantCadEditOperation::UpsertDimension { .. } => "upsert_dimension",
         AssistantCadEditOperation::DeleteDimension { .. } => "delete_dimension",
         AssistantCadEditOperation::SetEvaluatorInput { .. } => "set_evaluator_input",
@@ -3865,6 +3841,11 @@ const fn operation_name(operation: &AssistantCadEditOperation) -> &'static str {
         AssistantCadEditOperation::CircularPattern { .. } => "circular_pattern_occurrence",
         AssistantCadEditOperation::Mirror { .. } => "mirror_occurrence",
     }
+}
+
+/// The id after the largest of `ids`; `None` when it would overflow.
+fn next_id(ids: impl Iterator<Item = u64>) -> Option<u64> {
+    ids.max().unwrap_or(0).checked_add(1)
 }
 
 /// Plans many `create_part` operations as one command batch. Used by rule
@@ -3876,10 +3857,9 @@ pub fn plan_part_batch(
 ) -> Result<CommandBatch, Box<AssistantRejectionDiagnostic>> {
     let snapshot = document.current();
     let document_target = format!("document:{}", snapshot.document_id().0);
-    let next_id = |ids: &mut dyn Iterator<Item = u64>| ids.max().unwrap_or(0).checked_add(1);
-    let mut next_definition = next_id(&mut snapshot.definitions().map(|item| item.id().0));
-    let mut next_occurrence = next_id(&mut snapshot.occurrences().map(|item| item.id().0));
-    let mut next_feature = next_id(&mut snapshot.features().map(|item| item.id().0));
+    let mut next_definition = next_id(snapshot.definitions().map(|item| item.id().0));
+    let mut next_occurrence = next_id(snapshot.occurrences().map(|item| item.id().0));
+    let mut next_feature = next_id(snapshot.features().map(|item| item.id().0));
     let mut staged = StagedPlanningContext::new(&snapshot);
     for operation in parts {
         staged.refresh("rule_part", &document_target)?;

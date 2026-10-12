@@ -120,8 +120,8 @@ fn a_file_saved_with_the_deleted_intents_still_opens_with_its_entities() {
         Some(
             &CanonicalJoint::new(
                 JointId(98),
-                output(RULE_OUTPUTS, "left"),
-                output(RULE_OUTPUTS, "right"),
+                output(RULE_OUTPUTS, "left").into(),
+                output(RULE_OUTPUTS, "right").into(),
                 Aabb::new([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]).unwrap(),
             )
             .unwrap()

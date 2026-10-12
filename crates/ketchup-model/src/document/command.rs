@@ -74,7 +74,7 @@ pub enum CanonicalCommand {
         identity: EvaluationIdentity,
         scope: FeatureParameterRecomputeScope,
     },
-    UpsertJoint(CanonicalJoint),
+    UpsertJoint(DocumentJoint),
     DeleteJoint {
         id: JointId,
     },

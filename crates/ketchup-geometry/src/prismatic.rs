@@ -416,19 +416,22 @@ pub fn collide_axis_aligned_prisms(
 )]
 pub struct JointId(pub u64);
 
+/// A declared joint between two participants. The validators here name them by
+/// [`DerivedIdentity`]; a document may also name placed parts (see
+/// `ketchup_model::document::JointParticipant`).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct CanonicalJoint {
+pub struct CanonicalJoint<P = DerivedIdentity> {
     id: JointId,
-    participant_a: DerivedIdentity,
-    participant_b: DerivedIdentity,
+    participant_a: P,
+    participant_b: P,
     volume: Aabb,
 }
 
-impl CanonicalJoint {
+impl<P: PartialEq> CanonicalJoint<P> {
     pub fn new(
         id: JointId,
-        participant_a: DerivedIdentity,
-        participant_b: DerivedIdentity,
+        participant_a: P,
+        participant_b: P,
         volume: Aabb,
     ) -> Result<Self, PrismaticError> {
         if id.0 == 0 {
@@ -454,12 +457,12 @@ impl CanonicalJoint {
     }
 
     #[must_use]
-    pub const fn participant_a(&self) -> &DerivedIdentity {
+    pub const fn participant_a(&self) -> &P {
         &self.participant_a
     }
 
     #[must_use]
-    pub const fn participant_b(&self) -> &DerivedIdentity {
+    pub const fn participant_b(&self) -> &P {
         &self.participant_b
     }
 
@@ -469,7 +472,7 @@ impl CanonicalJoint {
     }
 
     #[must_use]
-    pub fn connects(&self, left: &DerivedIdentity, right: &DerivedIdentity) -> bool {
+    pub fn connects(&self, left: &P, right: &P) -> bool {
         (&self.participant_a == left && &self.participant_b == right)
             || (&self.participant_a == right && &self.participant_b == left)
     }

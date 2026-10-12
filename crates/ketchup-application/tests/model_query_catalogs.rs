@@ -113,8 +113,8 @@ fn product_entities() -> DocumentStore {
             CanonicalCommand::UpsertJoint(
                 CanonicalJoint::new(
                     JointId(98),
-                    rule_output("left"),
-                    rule_output("right"),
+                    rule_output("left").into(),
+                    rule_output("right").into(),
                     aabb([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]),
                 )
                 .unwrap(),
@@ -195,7 +195,7 @@ fn spaces_clearances_joints_and_dimensions_are_listed_with_their_stored_fields()
     assert_eq!(joints[0]["id"], 98);
     assert_eq!(
         joints[0]["participant_a"],
-        json!({"root_rule_node_id":4,
+        json!({"kind":"derived","root_rule_node_id":4,
             "slot_path":[{"producer_rule_id":4,"output_port":"result","semantic_key":"left"}],
             "resolution":{"status":"lost"}})
     );
