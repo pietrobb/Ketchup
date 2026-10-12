@@ -145,7 +145,8 @@ fn the_plan_cut_height_and_the_automatic_scale_follow_the_sheet_settings() {
 }
 
 #[test]
-fn the_house_sheet_has_plan_sections_and_elevations_of_the_visible_layers() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_the_house_sheet_has_plan_sections_and_elevations_of_the_visible_layers() {
     let worker = ketchup_application::evaluation::exact_worker_candidates()
         .into_iter()
         .find(|path| path.is_file())

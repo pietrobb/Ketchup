@@ -89,7 +89,8 @@ fn timed_click(harness: &mut Harness<'_, KetchupApp>, at: Vec3, what: &str) {
 }
 
 #[test]
-fn hovering_and_selecting_across_the_house_stays_interactive() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_hovering_and_selecting_across_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = harness(house());
     tool(&mut harness, AppCommand::Select);
@@ -113,7 +114,8 @@ fn hovering_and_selecting_across_the_house_stays_interactive() {
 }
 
 #[test]
-fn moving_a_box_beside_the_house_stays_interactive() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_moving_a_box_beside_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = house_with_box();
     tool(&mut harness, AppCommand::Move);
@@ -122,7 +124,8 @@ fn moving_a_box_beside_the_house_stays_interactive() {
 }
 
 #[test]
-fn scaling_a_box_beside_the_house_stays_interactive() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_scaling_a_box_beside_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = house_with_box();
     let corner = Vec3::new(END.x, END.y, TOP);
@@ -137,7 +140,8 @@ fn scaling_a_box_beside_the_house_stays_interactive() {
 }
 
 #[test]
-fn rotating_a_box_beside_the_house_stays_interactive() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_rotating_a_box_beside_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = house_with_box();
     tool(&mut harness, AppCommand::Rotate);
@@ -155,7 +159,8 @@ fn rotating_a_box_beside_the_house_stays_interactive() {
 }
 
 #[test]
-fn filleting_a_box_edge_beside_the_house_stays_interactive() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_filleting_a_box_edge_beside_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = house_with_box();
     tool(&mut harness, AppCommand::Select);

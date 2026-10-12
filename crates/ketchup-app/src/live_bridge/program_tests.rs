@@ -697,7 +697,7 @@ fn saved_views_through_mcp_keep_the_program_and_survive_save_and_open() {
 #[test]
 fn the_house_switches_concept_and_construction_by_views_after_a_new_length() {
     let (mut app, mut bridge) = setup();
-    let house = include_str!("../../../../examples/programs/tiny-house.star");
+    let house = include_str!("../../tests/fixtures/small-house.star");
     bridge.execute(&mut app, apply(house, true), false).unwrap();
     let tag = |app: &KetchupApp, name: &str| {
         app.document

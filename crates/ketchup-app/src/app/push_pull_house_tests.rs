@@ -3,12 +3,15 @@
 //! the release turns the shape into a part of the house program. Once the house
 //! no longer owns the document, pulling the top of the pulled shape again
 //! lengthens its extrusion, also without a slow frame.
+//! Frame times are measured on the 750-part house (`large_house_*`, full suite
+//! only); what a pull does is checked on a small house of the same layers.
 use crate::tests::shell::step_until;
 use crate::*;
 use egui_kittest::Harness;
 use std::time::{Duration, Instant};
 
 const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star");
+const SMALL_HOUSE: &str = include_str!("../../tests/fixtures/small-house.star");
 
 /// One frame of the drag or of the held button. In release a frame takes about
 /// 20-60 ms; before the fixes every drag step re-planned the house, or looked
@@ -89,18 +92,28 @@ pub(super) fn click(harness: &mut Harness<'_, KetchupApp>, world: Vec3) {
     button(harness, screen, false);
 }
 
-pub(super) fn house() -> KetchupApp {
+fn program(file_name: &str, source: &str) -> KetchupApp {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
-            file_name: "tiny-house.star".into(),
-            source: HOUSE.into(),
+            file_name: file_name.into(),
+            source: source.into(),
             overrides: BTreeMap::new(),
         },
         true,
     )
     .unwrap();
     app
+}
+
+/// The 750-part timber-frame house, for the tests that time frames against its size.
+pub(super) fn house() -> KetchupApp {
+    program("tiny-house.star", HOUSE)
+}
+
+/// A house of a few dozen parts, for the tests that check what a pull does.
+pub(super) fn small_house() -> KetchupApp {
+    program("small-house.star", SMALL_HOUSE)
 }
 
 /// Renaming one part by hand is an edit outside the program, so the house parts
@@ -220,12 +233,14 @@ fn pull_shape_beside_house(ellipse: bool) {
 }
 
 #[test]
-fn pulling_a_rectangle_beside_the_house_stays_interactive() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_pulling_a_rectangle_beside_the_house_stays_interactive() {
     pull_shape_beside_house(false);
 }
 
 #[test]
-fn pulling_an_ellipse_beside_the_house_stays_interactive() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_pulling_an_ellipse_beside_the_house_stays_interactive() {
     pull_shape_beside_house(true);
 }
 
@@ -236,7 +251,7 @@ fn pulling_an_ellipse_beside_the_house_stays_interactive() {
 #[test]
 fn pulling_a_shape_while_the_house_is_being_evaluated_plans_without_waiting() {
     let _turn = one_at_a_time();
-    let mut harness = harness(house());
+    let mut harness = harness(small_house());
     draw(&mut harness, false);
     let program = harness
         .state()
@@ -301,7 +316,7 @@ fn pulling_a_shape_while_the_house_is_being_evaluated_plans_without_waiting() {
 /// twice the pulled height; no face offset with a seam is fused on top.
 fn pull_top_of_pulled_ellipse(detach_before_drawing: bool) {
     let _turn = one_at_a_time();
-    let mut app = house();
+    let mut app = small_house();
     if detach_before_drawing {
         detach(&mut app);
     }

@@ -1,4 +1,4 @@
-//! Turning a layer of the timber-frame house on or off through its dock checkbox
+//! Turning a layer of a small house on or off through its dock checkbox
 //! repaints at once: the exact solids are reused, not evaluated or published again.
 use crate::tests::shell::step_until;
 use crate::*;
@@ -6,7 +6,7 @@ use eframe::egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
 use std::time::{Duration, Instant};
 
-const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star");
+const HOUSE: &str = include_str!("../../tests/fixtures/small-house.star");
 
 #[test]
 fn toggling_a_house_layer_repaints_without_exact_reevaluation() {
@@ -17,7 +17,7 @@ fn toggling_a_house_layer_repaints_without_exact_reevaluation() {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
-            file_name: "tiny-house.star".into(),
+            file_name: "small-house.star".into(),
             source: HOUSE.into(),
             overrides: BTreeMap::new(),
         },
@@ -56,7 +56,7 @@ fn toggling_a_house_layer_repaints_without_exact_reevaluation() {
     );
     harness.run_steps(2);
     let results = harness.state().exact.results.len();
-    assert!(results > 300, "{results} exact bodies");
+    assert!(results > 20, "{results} exact bodies");
     assert!(harness.state().exact.producers_requested > 0);
 
     for _ in 0..2 {

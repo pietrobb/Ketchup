@@ -95,6 +95,13 @@ reproduced failure that they catch, or explicit approval by the owner.
   `scripts/check_*.py` run once at the end of a block of steps (e.g. B1–B5), and before an
   installer build or a push. When the full suite fails, fix it and rerun only the failed tests
   by filter; the next full run is at the end of the next block.
+- Tests that need the large house or a document of its size (750-part `tiny-house.star`,
+  history past the file limit, whole-house drawings) are named `large_house_*` and marked
+  `#[ignore = "large-house: runs in full suite"]`, so per-step runs skip them. The end of a
+  block also runs them: `cargo test --locked --workspace --all-targets -- --ignored large_house`
+  (plain `--include-ignored` would also start the opt-in tests that need Blender, a GPU or
+  external fixtures). A test that only needs "some model" uses the small house
+  `crates/ketchup-app/tests/fixtures/small-house.star`, not the large one.
 - Report the net line delta in every PR description.
 
 ## 7. Communication
@@ -105,10 +112,11 @@ reproduced failure that they catch, or explicit approval by the owner.
 
 ## 8. Definition of done
 
-1. A step: the filtered tests of the changed code (§6),
+1. A step: the filtered tests of the changed code without the large-house tests (§6),
    `cargo clippy --locked --workspace --all-targets -- -D warnings` and
    `cargo fmt --all -- --check` pass. A block of steps, an installer build or a push: also the
-   unfiltered `cargo test --locked --workspace --all-targets` and all `scripts/check_*.py`.
+   unfiltered `cargo test --locked --workspace --all-targets`, the large-house tests
+   (`-- --ignored large_house`) and all `scripts/check_*.py`.
 2. The named-product check passes, once `scripts/check_no_named_products.py` exists. It is a
    ratchet: the baseline may only shrink.
 3. Manual smoke test:

@@ -1964,8 +1964,12 @@ fn two_open_windows_detect_external_save_and_offer_safe_save_as() {
     );
 }
 
+/// Grows a document past the native file limit (about 140 s in debug), so it
+/// runs with the large-house tests.
 #[test]
-fn save_as_requires_explicit_consent_before_preserving_current_revision_without_full_history() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_save_as_requires_explicit_consent_before_preserving_current_revision_without_full_history()
+ {
     let directory = tempfile::tempdir().unwrap();
     let boundary = directory.path().join("history-boundary.ketchup");
     let saved = directory.path().join("current-only.ketchup");
