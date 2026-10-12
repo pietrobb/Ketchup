@@ -45,6 +45,10 @@ mod scene_tabs_tests;
 mod section;
 mod selection;
 mod shell;
+pub(crate) mod spaces_ui;
+#[cfg(test)]
+#[path = "app/spaces_ui_tests.rs"]
+mod spaces_ui_tests;
 mod structure;
 #[cfg(test)]
 #[path = "app/tag_toggle_tests.rs"]

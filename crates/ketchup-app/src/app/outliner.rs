@@ -127,6 +127,7 @@ impl KetchupApp {
                         ui.add_space(2.0);
                     }
                 });
+            self.show_spaces_section(ui);
         }
     }
 

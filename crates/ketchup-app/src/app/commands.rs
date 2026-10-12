@@ -31,7 +31,10 @@ impl KetchupApp {
                 AppCommand::Cut => self.cut_source_plan().is_some(),
                 AppCommand::Paste => self.paste_source_plan().is_some(),
                 AppCommand::Duplicate => self.duplicate_source_plan().is_some(),
-                AppCommand::Delete => self.delete_selection_source_plan().is_some(),
+                AppCommand::Delete => {
+                    self.delete_selection_source_plan().is_some()
+                        || self.picked_space_row().is_some()
+                }
                 AppCommand::Deselect => self.deselect_source_plan().is_some(),
                 AppCommand::SelectAll => self.select_all_source_plan().is_some(),
                 AppCommand::InvertSelection => self.invert_selection_source_plan().is_some(),

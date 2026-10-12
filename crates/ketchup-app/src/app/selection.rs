@@ -963,6 +963,9 @@ impl KetchupApp {
     }
 
     pub fn delete_selected(&mut self) -> bool {
+        if let Some((row, _)) = self.picked_space_row() {
+            return self.delete_picked_space_row(row);
+        }
         let Some(plan) = self.delete_selection_source_plan() else {
             let hidden = self.hidden_selected_count();
             if hidden > 0 {

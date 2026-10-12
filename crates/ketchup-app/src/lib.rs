@@ -2528,6 +2528,8 @@ pub struct KetchupApp {
     /// The section plane cutting the viewport open; display only, never the model.
     section: Option<SectionPlane>,
     selection: SelectionState,
+    /// The space or clearance volume picked in the dock.
+    picked_space: Option<app::spaces_ui::SpaceRow>,
     hover: app_state::HoverState,
     active_tool: ActiveTool,
     panels: app_state::Panels,
