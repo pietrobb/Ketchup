@@ -1,7 +1,9 @@
 mod capacity;
+mod clearance;
 mod coverage;
 pub use crate::part_role::{PartRole, RoleFrame, RoleFunction};
 use crate::validation_rules::{ValidationRules, occurrence_materials};
+pub use clearance::assistant_clearance_occupancy_report;
 use ketchup_geometry::linalg::dot;
 use ketchup_model::assembly_joint::AssemblyJointKind;
 use ketchup_model::assembly_recipe::{RecipePartMobility, RecipeRelationKind};
@@ -32,7 +34,7 @@ const MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS: usize = 100;
 const MAX_STRUCTURAL_ROLE_CATEGORIES: usize = 10_000;
 pub const ASSEMBLY_RETENTION_ROLE_DIMENSION_V1: &str = "ketchup.assembly-retention-role.v1";
 pub const DEFLECTION_CHECK: &str = "beam_deflection";
-pub const ASSISTANT_VALIDATOR_IDS: [&str; 11] = [
+pub const ASSISTANT_VALIDATOR_IDS: [&str; 12] = [
     "group_connectivity",
     "collision",
     "assembly_retention",
@@ -43,13 +45,14 @@ pub const ASSISTANT_VALIDATOR_IDS: [&str; 11] = [
     "hardware_manufacturing",
     "room_placement",
     "passage_clearance",
+    "clearance_occupancy",
     "static_load",
 ];
 /// What each validator actually checks, in provider-facing English. The
 /// Assistant cannot honestly offer a validator it cannot describe, so this
 /// catalog travels with every validation context and is what the
 /// `list_validators` sidecar tool reads.
-pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 11] = [
+pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 12] = [
     (
         "group_connectivity",
         "separated group/component members and physical joints beyond their allowed gap, using solid contact independently of grounding and kinematic constraints",
@@ -89,6 +92,10 @@ pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 11] = [
     (
         "passage_clearance",
         "walking passages narrower or lower than the declared minimum",
+    ),
+    (
+        "clearance_occupancy",
+        "visible bodies that intrude into a declared clearance volume such as a door swing or service zone",
     ),
     (
         "static_load",
@@ -3428,6 +3435,16 @@ fn gravity_rigid_connections(
     connections
 }
 
+fn report_state(report: &serde_json::Value) -> &str {
+    report["state"].as_str().unwrap_or("not_evaluated")
+}
+
+fn report_issue_count(report: &serde_json::Value) -> usize {
+    report["issue_count"]
+        .as_u64()
+        .map_or(0, |count| usize::try_from(count).unwrap_or(usize::MAX))
+}
+
 pub(crate) fn assistant_validation_context_base(
     snapshot: &Snapshot,
     exact_results: &ExactResultRegistry,
@@ -3559,6 +3576,14 @@ pub(crate) fn assistant_validation_context_base(
                 "not_evaluated": [],
             },
             "passage_clearance": {
+                "state": "skipped",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues": [],
+                "not_evaluated": [],
+            },
+            "clearance_occupancy": {
                 "state": "skipped",
                 "complete": false,
                 "applicable_count": 0,
@@ -3740,6 +3765,14 @@ pub(crate) fn assistant_validation_context_base(
         selection.requested.contains("passage_clearance"),
         coverage_complete,
     );
+    let clearance_occupancy = assistant_clearance_occupancy_report(
+        snapshot,
+        exact_results,
+        &participants,
+        &names,
+        selection.requested.contains("clearance_occupancy"),
+        coverage_complete,
+    );
     let static_load = assistant_static_load_report(
         snapshot,
         &names,
@@ -3851,42 +3884,32 @@ pub(crate) fn assistant_validation_context_base(
         } else {
             retention_only_state
         };
-    let beam_state = beam_deflection["state"].as_str().unwrap_or("not_evaluated");
-    let tipping_state = tipping["state"].as_str().unwrap_or("not_evaluated");
-    let anchoring_state = anchoring["state"].as_str().unwrap_or("not_evaluated");
-    let hardware_manufacturing_state = hardware_manufacturing["state"]
-        .as_str()
-        .unwrap_or("not_evaluated");
-    let room_placement_state = room_placement["state"].as_str().unwrap_or("not_evaluated");
-    let passage_clearance_state = passage_clearance["state"]
-        .as_str()
-        .unwrap_or("not_evaluated");
-    let static_load_state = static_load["state"].as_str().unwrap_or("not_evaluated");
-    let assembly_retention_issue_count = assembly_retention["issue_count"].as_u64().unwrap_or(0)
-        as usize
-        + assembly_constraints["issue_count"].as_u64().unwrap_or(0) as usize;
-    let beam_issue_count = beam_deflection["issue_count"].as_u64().unwrap_or(0) as usize;
-    let tipping_issue_count = tipping["issue_count"].as_u64().unwrap_or(0) as usize;
-    let anchoring_issue_count = anchoring["issue_count"].as_u64().unwrap_or(0) as usize;
-    let hardware_manufacturing_issue_count =
-        hardware_manufacturing["issue_count"].as_u64().unwrap_or(0) as usize;
-    let room_placement_issue_count = room_placement["issue_count"].as_u64().unwrap_or(0) as usize;
-    let passage_clearance_issue_count =
-        passage_clearance["issue_count"].as_u64().unwrap_or(0) as usize;
-    let static_load_issue_count = static_load["issue_count"].as_u64().unwrap_or(0) as usize;
-    let mut not_evaluated = Vec::new();
-    for (validator, validator_state) in [
+    let simple_reports = [
+        ("beam_deflection", &beam_deflection),
+        ("tipping", &tipping),
+        ("anchoring", &anchoring),
+        ("hardware_manufacturing", &hardware_manufacturing),
+        ("room_placement", &room_placement),
+        ("passage_clearance", &passage_clearance),
+        ("clearance_occupancy", &clearance_occupancy),
+        ("static_load", &static_load),
+    ];
+    let assembly_retention_issue_count =
+        report_issue_count(&assembly_retention) + report_issue_count(&assembly_constraints);
+    let validator_states = [
         ("collision", collision_state),
         ("assembly_retention", assembly_retention_state),
         ("gravity_support", gravity_state),
-        ("beam_deflection", beam_state),
-        ("tipping", tipping_state),
-        ("anchoring", anchoring_state),
-        ("hardware_manufacturing", hardware_manufacturing_state),
-        ("room_placement", room_placement_state),
-        ("passage_clearance", passage_clearance_state),
-        ("static_load", static_load_state),
-    ] {
+    ]
+    .into_iter()
+    .chain(
+        simple_reports
+            .iter()
+            .map(|(validator, report)| (*validator, report_state(report))),
+    )
+    .collect::<Vec<_>>();
+    let mut not_evaluated = Vec::new();
+    for &(validator, validator_state) in &validator_states {
         if selection.requested.contains(validator)
             && ((validator == "collision" && collision["complete"].as_bool() != Some(true))
                 || (validator == "gravity_support" && gravity_unproven_count > 0)
@@ -3907,21 +3930,7 @@ pub(crate) fn assistant_validation_context_base(
             }));
         }
     }
-    let state = if [
-        collision_state,
-        assembly_retention_state,
-        gravity_state,
-        beam_state,
-        tipping_state,
-        anchoring_state,
-        hardware_manufacturing_state,
-        room_placement_state,
-        passage_clearance_state,
-        static_load_state,
-    ]
-    .into_iter()
-    .any(|state| state == "failed")
-    {
+    let state = if validator_states.iter().any(|(_, state)| *state == "failed") {
         "failed"
     } else if not_evaluated.is_empty() {
         "passed"
@@ -3938,43 +3947,22 @@ pub(crate) fn assistant_validation_context_base(
                     || assembly_constraints["complete"].as_bool() == Some(true))))
         && (!selection.requested.contains("gravity_support")
             || gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES)
-        && (!selection.requested.contains("beam_deflection")
-            || beam_deflection["complete"].as_bool() == Some(true))
-        && (!selection.requested.contains("tipping")
-            || tipping["complete"].as_bool() == Some(true))
-        && (!selection.requested.contains("anchoring")
-            || anchoring["complete"].as_bool() == Some(true))
-        && (!selection.requested.contains("hardware_manufacturing")
-            || hardware_manufacturing["complete"].as_bool() == Some(true))
-        && (!selection.requested.contains("room_placement")
-            || room_placement["complete"].as_bool() == Some(true))
-        && (!selection.requested.contains("passage_clearance")
-            || passage_clearance["complete"].as_bool() == Some(true))
-        && (!selection.requested.contains("static_load")
-            || static_load["complete"].as_bool() == Some(true));
+        && simple_reports.iter().all(|(validator, report)| {
+            !selection.requested.contains(validator) || report["complete"].as_bool() == Some(true)
+        });
     let total_issue_count = issue_count
         + assembly_retention_issue_count
         + gravity_issue_count
-        + beam_issue_count
-        + tipping_issue_count
-        + anchoring_issue_count
-        + hardware_manufacturing_issue_count
-        + room_placement_issue_count
-        + passage_clearance_issue_count
-        + static_load_issue_count;
+        + simple_reports
+            .iter()
+            .map(|(_, report)| report_issue_count(report))
+            .sum::<usize>();
     let mut all_issues = issues.clone();
     all_issues.extend(gravity_issues.iter().cloned());
-    for report in [
-        &assembly_retention,
-        &assembly_constraints,
-        &beam_deflection,
-        &tipping,
-        &anchoring,
-        &hardware_manufacturing,
-        &room_placement,
-        &passage_clearance,
-        &static_load,
-    ] {
+    for report in [&assembly_retention, &assembly_constraints]
+        .into_iter()
+        .chain(simple_reports.iter().map(|(_, report)| *report))
+    {
         all_issues.extend(report["issues"].as_array().into_iter().flatten().cloned());
     }
     let visible_occurrence_count = if selection.requested.contains("collision") {
@@ -4054,6 +4042,7 @@ pub(crate) fn assistant_validation_context_base(
             "hardware_manufacturing": hardware_manufacturing,
             "room_placement": room_placement,
             "passage_clearance": passage_clearance,
+            "clearance_occupancy": clearance_occupancy,
             "static_load": static_load,
             "unavailable_occurrences": if selection.requested.iter().all(|id| *id == "collision") {
                 collision["unavailable_occurrences"].clone()

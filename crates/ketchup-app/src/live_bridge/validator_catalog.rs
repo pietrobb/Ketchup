@@ -95,6 +95,9 @@ fn document_inputs(id: &str) -> Vec<&'static str> {
             "Required validator role with source-frame axes; span/thickness geometry.",
             "ketchup.material.v1 via material=; absent material uses the explicitly reported library default. Design load and limits come from library rules.",
         ],
+        "clearance_occupancy" => vec![
+            "Clearance volumes declared with upsert_clearance_volume (world box, owner part or space, tolerance, severity); visible solid bodies.",
+        ],
         "static_load" => vec![
             "Required load/support roles in ketchup.validator-role.v1 with a common case.",
             "physics.gravity_x_m_s2, physics.gravity_y_m_s2, physics.gravity_z_m_s2; physics.mass_kg.occurrence.{occurrence} or physics.applied_load_n.occurrence.{occurrence}; physics.support_capacity_n.occurrence.{occurrence}.",

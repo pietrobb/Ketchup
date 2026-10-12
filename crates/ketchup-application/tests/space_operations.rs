@@ -3,14 +3,24 @@
 //! save and reopen; what the document does not allow is refused before
 //! anything changes.
 
-use ketchup_application::{DocumentSession, SaveOptions, SessionError, SessionSettings};
+use ketchup_application::validation::assistant_validation_context;
+use ketchup_application::{
+    AssistantValidationSelection, DocumentSession, SaveOptions, SessionError, SessionSettings,
+};
 use ketchup_assistant::catalog::cad_operation_catalog;
 use ketchup_assistant::sidecar::{
     AssistantCadEditOperation as Operation, AssistantCadEditProgram, AssistantClearanceOwner,
     AssistantClearanceSeverity, AssistantInstancePath,
 };
-use ketchup_model::document::InstancePath;
-use ketchup_model::space::{ClearanceOwner, ClearanceSeverity, ClearanceVolumeId, SpaceId};
+use ketchup_geometry::prismatic::Aabb;
+use ketchup_model::document::{
+    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
+    InstancePath, OccurrenceId, Transform,
+};
+use ketchup_model::exact_product::ExactResultRegistry;
+use ketchup_model::space::{
+    CanonicalClearanceVolume, ClearanceOwner, ClearanceSeverity, ClearanceVolumeId, SpaceId,
+};
 use std::collections::BTreeSet;
 
 fn space(
@@ -268,6 +278,127 @@ fn clearance_volumes_the_document_does_not_allow_are_refused_without_a_change() 
     refused(Operation::DeleteClearanceVolume {
         clearance_volume_id: 99,
     });
+}
+
+/// A 600 × 600 × 800 mm block "Cabinet" at `cabinet_x_mm` and the "Door" it
+/// faces at x = 2000 mm; volume 90 is the door's swing over x 1000–2700 mm,
+/// so the door lies inside its own clearance.
+fn swing_document(cabinet_x_mm: f64, severity: Option<ClearanceSeverity>) -> DocumentStore {
+    let mut commands = vec![
+        CanonicalCommand::CreateDefinition {
+            id: DefinitionId(1),
+            name: "Block".into(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(1),
+            definition_id: DefinitionId(1),
+            name: "Block profile".into(),
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [600.0, 0.0], [600.0, 600.0], [0.0, 600.0]]),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(2),
+            definition_id: DefinitionId(1),
+            name: "Block solid".into(),
+            kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("800", 800.0).unwrap()),
+        },
+    ];
+    for (id, name, x_mm) in [(1, "Cabinet", cabinet_x_mm), (2, "Door", 2_000.0)] {
+        commands.push(CanonicalCommand::CreateOccurrence {
+            id: OccurrenceId(id),
+            definition_id: DefinitionId(1),
+            name: name.into(),
+            transform: Transform::from_translation(x_mm, 0.0, 0.0).unwrap(),
+            parent: None,
+            tags: Default::default(),
+            visible: true,
+        });
+    }
+    let mut document = DocumentStore::new();
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    if let Some(severity) = severity {
+        let swing = CanonicalClearanceVolume::new(
+            ClearanceVolumeId(90),
+            ClearanceOwner::Occurrence(InstancePath::root(OccurrenceId(2))),
+            "Door swing",
+            Aabb::new([1_000.0, 0.0, 0.0], [2_700.0, 900.0, 2_000.0]).unwrap(),
+            document.current().tolerance(),
+            severity,
+            None,
+        )
+        .unwrap();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::UpsertClearanceVolume(swing),
+            ]))
+            .unwrap();
+    }
+    document
+}
+
+fn occupancy(document: &DocumentStore) -> serde_json::Value {
+    let report = assistant_validation_context(
+        &document.current(),
+        &ExactResultRegistry::default(),
+        &AssistantValidationSelection::only(&["clearance_occupancy"]),
+    );
+    assert_eq!(
+        report["requested"],
+        serde_json::json!(["clearance_occupancy"])
+    );
+    report
+}
+
+#[test]
+fn clearance_occupancy_names_the_part_in_a_declared_clearance() {
+    // Clear: the cabinet stands away and the door does not occupy its own swing.
+    let clear = occupancy(&swing_document(0.0, Some(ClearanceSeverity::Required)));
+    let check = &clear["clearance_occupancy"];
+    assert_eq!(check["state"], "passed", "{clear:#}");
+    assert_eq!(check["complete"], true, "{check:#}");
+    assert_eq!(check["applicable_count"], 1);
+    assert_eq!(check["evaluations"][0]["checked_body_count"], 2);
+    assert_eq!(check["evaluations"][0]["owner"]["name"], "Door");
+    assert_eq!(clear["state"], "passed");
+
+    // The cabinet moved 400 mm into the swing.
+    let blocked = occupancy(&swing_document(1_400.0, Some(ClearanceSeverity::Required)));
+    let check = &blocked["clearance_occupancy"];
+    assert_eq!(check["state"], "failed", "{blocked:#}");
+    assert_eq!(check["issue_count"], 1);
+    let issue = &check["issues"][0];
+    assert_eq!(issue["code"], "clearance.occupied");
+    assert_eq!(issue["severity"], "warning");
+    assert_eq!(issue["clearance_volume_id"], 90);
+    assert_eq!(issue["clearance_reason"], "Door swing");
+    assert_eq!(issue["occurrence_id"], 1);
+    assert_eq!(issue["name"], "Cabinet");
+    assert_eq!(blocked["state"], "failed");
+    assert_eq!(blocked["issues"][0], *issue);
+
+    // Touching the swing's face is not an intrusion.
+    let touching = occupancy(&swing_document(400.0, Some(ClearanceSeverity::Required)));
+    assert_eq!(
+        touching["clearance_occupancy"]["state"], "passed",
+        "{touching:#}"
+    );
+
+    // An advisory clearance reports the cabinet without failing.
+    let advisory = occupancy(&swing_document(1_400.0, Some(ClearanceSeverity::Advisory)));
+    let check = &advisory["clearance_occupancy"];
+    assert_eq!(check["state"], "passed", "{advisory:#}");
+    assert_eq!(check["issues"][0]["severity"], "advisory");
+    assert_eq!(check["issues"][0]["name"], "Cabinet");
+
+    // Without a declared clearance there is nothing to pass.
+    let undeclared = occupancy(&swing_document(1_400.0, None));
+    let check = &undeclared["clearance_occupancy"];
+    assert_eq!(check["state"], "not_evaluated", "{undeclared:#}");
+    assert_eq!(check["complete"], false);
+    assert_eq!(
+        check["not_evaluated"][0]["reason"],
+        "clearance_volume_not_found"
+    );
+    assert_eq!(undeclared["state"], "not_evaluated");
 }
 
 #[test]

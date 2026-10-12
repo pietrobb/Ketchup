@@ -372,6 +372,7 @@ fn validation_context_reports_beam_deflection_tipping_and_anchoring_with_explici
             "hardware_manufacturing",
             "room_placement",
             "passage_clearance",
+            "clearance_occupancy",
             "static_load"
         ])
     );
