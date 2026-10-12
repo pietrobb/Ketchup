@@ -307,10 +307,13 @@ impl Tools {
                 "workset_create",
                 "workset_status",
                 "measure",
+                "mass",
             ],
         )?;
         match action.as_str() {
             "measure" => return self.send("measure_faces", args, APPLY_PROGRAM_WAIT),
+            // The answer waits for the program's evaluation, as a report does.
+            "mass" => return self.send("mass", args, APPLY_PROGRAM_WAIT),
             "operations" => rename(&mut args, "operation", "name"),
             "workset_status" => rename(&mut args, "workset_handle", "handle"),
             "query" | "workset_create" => {

@@ -201,7 +201,8 @@ fn response_wait(request: &Request) -> Duration {
         | Request::SetProgramParams { .. }
         | Request::CheckProgram { .. }
         | Request::ValidateProgram { .. }
-        | Request::MeasureFaces { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
+        | Request::MeasureFaces { .. }
+        | Request::Mass { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
         // The user confirms the open in the window, then a large document loads;
         // imports and exports run the exact worker and may ask the user too.
         Request::Open { .. } | Request::Import { .. } | Request::Export { .. } => {
@@ -223,6 +224,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::EditContext { .. }
         | Request::Query { .. }
         | Request::Detail { .. }
+        | Request::Mass { .. }
         | Request::WorksetStatus { .. }
         | Request::BatchJobStatus { .. }
         | Request::Program { .. }

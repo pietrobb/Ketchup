@@ -17,6 +17,16 @@ use std::sync::OnceLock;
 #[serde(deny_unknown_fields)]
 pub struct MaterialProperties {
     pub elastic_modulus_n_mm2: f64,
+    /// Density with the standard it comes from; absent where the rules name none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density: Option<Density>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Density {
+    pub kg_m3: f64,
+    pub source: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

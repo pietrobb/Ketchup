@@ -1,8 +1,8 @@
 {
   "materials": {
     "engineered_wood": { "elastic_modulus_n_mm2": 2500.0 },
-    "aluminium": { "elastic_modulus_n_mm2": 70000.0 },
-    "steel": { "elastic_modulus_n_mm2": 210000.0 }
+    "aluminium": { "elastic_modulus_n_mm2": 70000.0, "density": { "kg_m3": 2700.0, "source": "EN 1999-1-1 3.2.5: aluminium alloys, density 2700 kg/m3" } },
+    "steel": { "elastic_modulus_n_mm2": 210000.0, "density": { "kg_m3": 7850.0, "source": "EN 1991-1-1 table A.4: steel 78.5 kN/m3" } }
   },
   "default_material": "engineered_wood",
   "required_roles": {

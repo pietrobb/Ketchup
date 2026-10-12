@@ -10,6 +10,7 @@ pub mod diagnostics;
 pub mod evaluation;
 pub mod fea_workflow;
 mod group_connectivity;
+pub mod mass_properties;
 pub mod measurement;
 pub mod mesh_conversion;
 pub mod model_query;

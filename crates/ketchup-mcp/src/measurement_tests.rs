@@ -52,4 +52,20 @@ fn measurement_schema_and_transport_preserve_both_modes_and_nested_paths() {
         received.recv().unwrap(),
         json!({"method":"validate_program","expected":stamp,"validators":["beam_deflection"],"motion":{"name":"travel","from":0,"to":20}})
     );
+    assert!(
+        schema["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("mass"))
+    );
+    let result = call(
+        &mut tools,
+        "inspect",
+        json!({"action":"mass", "expected":stamp, "occurrence_ids":[4, 8]}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"mass","expected":stamp,"occurrence_ids":[4, 8]})
+    );
 }

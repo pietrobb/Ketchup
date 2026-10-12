@@ -579,3 +579,98 @@ fn material_takeoff_report_counts_only_visible_layers_and_pages_completely() {
         "reading the takeoff changes nothing"
     );
 }
+
+/// #2476: steel from the rules, C24 from the program's material_weight, a
+/// conflict between both and a part without material. Only the two densities
+/// with one value are weighed; the sum is partial and names the others.
+#[test]
+fn mass_weighs_parts_with_a_cited_density_and_marks_the_sum_partial() {
+    let (mut app, mut bridge) = setup();
+    let source = "material_weight(\"C24\", kg_m3 = 420, source = \"EN 338: C24\")\n\
+        material_weight(\"aluminium\", kg_m3 = 2800, source = \"guess\")\n\
+        box(\"oceľ\", (100, 50, 20), material = \"steel\")\n\
+        box(\"trám\", (100, 50, 20), at = (200, 0, 0), material = \"C24\")\n\
+        box(\"hliník\", (10, 10, 10), at = (400, 0, 0), material = \"aluminium\")\n\
+        box(\"bez\", (10, 10, 10), at = (600, 0, 0))\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    let undo = app.undo_step_count();
+    let mass = |app: &mut KetchupApp, bridge: &mut LiveBridge, ids: Option<Vec<u64>>| {
+        let expected = Some(app.live_bridge_stamp());
+        bridge.execute(
+            app,
+            Request::Mass {
+                expected,
+                occurrence_ids: ids,
+            },
+            false,
+        )
+    };
+    // Before the exact solids exist nothing is weighed, nothing is zero.
+    let pending = mass(&mut app, &mut bridge, None).unwrap();
+    assert_eq!(pending["assembly"]["status"], "not_verified", "{pending}");
+    assert!(pending["assembly"].get("mass_kg").is_none());
+    assert_eq!(pending["parts"][0]["status"], "not_computed");
+
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let report = mass(&mut app, &mut bridge, None).unwrap();
+    let part = |name: &str| {
+        report["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|part| part["name"] == name)
+            .unwrap_or_else(|| panic!("{name} in {report}"))
+            .clone()
+    };
+    let close = |value: &Value, expected: f64| {
+        (value.as_f64().unwrap() - expected).abs() <= 1.0e-9 * expected.abs().max(1.0)
+    };
+    let steel = part("oceľ");
+    assert_eq!(steel["status"], "ok", "{steel}");
+    assert!(close(&steel["mass_kg"], 0.785), "{steel}");
+    assert!(close(&steel["inertia_kg_mm2"]["xx"], 0.785 * 2900.0 / 12.0));
+    assert_eq!(
+        steel["density"]["sources"][0]["from"],
+        "validation_rules.json"
+    );
+    let beam = part("trám");
+    assert!(close(&beam["mass_kg"], 0.042), "{beam}");
+    assert_eq!(
+        beam["density"]["sources"][0]["from"],
+        "program material_weight"
+    );
+    assert_eq!(beam["density"]["sources"][0]["citation"], "EN 338: C24");
+    let conflict = part("hliník");
+    assert_eq!(conflict["status"], "not_verified");
+    assert_eq!(conflict["density"]["sources"].as_array().unwrap().len(), 2);
+    assert!(conflict.get("mass_kg").is_none());
+    assert_eq!(part("bez")["reason"], "the part has no material");
+
+    let assembly = &report["assembly"];
+    assert_eq!(assembly["status"], "partial", "{assembly}");
+    assert_eq!(assembly["parts_counted"], 2);
+    assert_eq!(assembly["missing"].as_array().unwrap().len(), 2);
+    assert!(close(&assembly["mass_kg"], 0.827));
+    assert!(close(
+        &assembly["centroid_mm"][0],
+        (0.785 * 50.0 + 0.042 * 250.0) / 0.827
+    ));
+    assert!(
+        report["convention"]
+            .as_str()
+            .unwrap()
+            .contains("xy = −∫x·y dm")
+    );
+
+    // One named part alone is complete; an unknown occurrence is refused.
+    let id = steel["occurrence_id"].as_u64().unwrap();
+    let alone = mass(&mut app, &mut bridge, Some(vec![id])).unwrap();
+    assert_eq!(alone["assembly"]["status"], "complete", "{alone}");
+    assert_eq!(
+        mass(&mut app, &mut bridge, Some(vec![999_999])),
+        Err("invalid_params")
+    );
+    assert_eq!(app.undo_step_count(), undo, "weighing changes nothing");
+}

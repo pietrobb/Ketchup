@@ -72,6 +72,58 @@ fn evaluate(
 }
 
 impl LiveBridge {
+    /// Mass properties of the visible parts or of the named root occurrences,
+    /// with the densities of the program evaluated now (this answer waits for it).
+    pub(super) fn mass(
+        app: &KetchupApp,
+        expected: &Option<Stamp>,
+        occurrence_ids: Option<Vec<u64>>,
+    ) -> Result<Value, &'static str> {
+        Self::guard(app, expected)?;
+        let snapshot = app.document.current();
+        let scope = occurrence_ids
+            .map(|ids| {
+                ids.into_iter()
+                    .map(|id| {
+                        let id = OccurrenceId(id);
+                        snapshot
+                            .occurrence(id)
+                            .map(|_| ketchup_model::document::InstancePath::root(id))
+                            .ok_or_else(|| {
+                                super::program_access::invalid(
+                                    "occurrence_ids",
+                                    format!("No root occurrence {}.", id.0),
+                                    "Give root occurrence IDs from inspect query kind=occurrences.",
+                                )
+                            })
+                    })
+                    .collect::<Result<BTreeSet<_>, _>>()
+            })
+            .transpose()?;
+        // A bridge request answers in the same call.
+        app.wait_for_program_evaluation();
+        let evaluation = app.document.current_rule_program().and_then(|program| {
+            match app.program_evaluations.try_get(program) {
+                crate::program_evaluation::Lookup::Ready(evaluation) => Some(evaluation),
+                crate::program_evaluation::Lookup::Pending => None,
+            }
+        });
+        let mut report = ketchup_application::mass_properties::mass_report(
+            &snapshot,
+            app.exact_results_for_snapshot(&snapshot),
+            evaluation
+                .as_ref()
+                .and_then(|evaluation| evaluation.as_ref().ok())
+                .map(|evaluated| &evaluated.model),
+            ketchup_application::validation_rules::ValidationRules::library(),
+            scope.as_ref(),
+        );
+        if let Some(Err(error)) = &evaluation {
+            report["program_error"] = json!(error.to_string());
+        }
+        Ok(report)
+    }
+
     fn prepare_measurement(
         &self,
         app: &KetchupApp,
