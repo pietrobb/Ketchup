@@ -787,7 +787,6 @@ pub enum ProposalGoal {
     SetEvaluatorExpression(NodeId),
     SetRuleOutputs(NodeId),
     SetFeatureDimension(FeatureId),
-    SetProfilePoints(FeatureId),
     RenameDefinition(DefinitionId),
     SetOccurrenceVisibility(OccurrenceId),
     SetOccurrenceTranslation(OccurrenceId),
@@ -807,11 +806,8 @@ pub enum ProposalGoal {
     DeleteOccurrence(OccurrenceId),
     CreateDefinition(DefinitionId),
     DeleteDefinition(DefinitionId),
-    CreateProfileFeature(FeatureId),
-    DeleteProfileFeature(FeatureId),
     CreateGroup(GroupId),
     CreateOccurrence(OccurrenceId),
-    CloneProfileDefinitionAndRepoint(OccurrenceId),
     ConvertEmptyGroupToComponent(GroupId),
 }
 
@@ -885,7 +881,6 @@ pub enum ProposalValue {
     Boolean(bool),
     Dimension(Dimension),
     RuleOutputs(Vec<RuleOutput>),
-    ProfilePoints(Vec<[f64; 2]>),
     Transform(Transform),
     Tags(BTreeSet<TagId>),
     TagState {
@@ -902,12 +897,6 @@ pub enum ProposalValue {
         feature_ids: Vec<FeatureId>,
         local_occurrence_ids: Vec<LocalOccurrenceId>,
         local_group_ids: Vec<LocalGroupId>,
-    },
-    DefinitionFeatures(Vec<FeatureId>),
-    ProfileFeatureState {
-        definition: DefinitionId,
-        name: String,
-        points_mm: Vec<[f64; 2]>,
     },
     Group(Option<GroupId>),
     GroupState {

@@ -10,7 +10,6 @@ use std::fmt;
 pub enum IntentCapability {
     SetRuleDimension,
     SetFeatureDimension,
-    SetProfilePoints,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +43,6 @@ impl IntentGrant {
             [
                 IntentCapability::SetRuleDimension,
                 IntentCapability::SetFeatureDimension,
-                IntentCapability::SetProfilePoints,
             ],
         )
     }
@@ -78,10 +76,6 @@ pub enum WorkflowIntent {
         target: FeatureId,
         value_text: String,
     },
-    SetProfilePoints {
-        target: FeatureId,
-        points_mm: Vec<[f64; 2]>,
-    },
 }
 
 impl WorkflowIntent {
@@ -89,7 +83,6 @@ impl WorkflowIntent {
         match self {
             Self::SetRuleDimension { .. } => IntentCapability::SetRuleDimension,
             Self::SetFeatureDimension { .. } => IntentCapability::SetFeatureDimension,
-            Self::SetProfilePoints { .. } => IntentCapability::SetProfilePoints,
         }
     }
 }
@@ -143,27 +136,12 @@ pub fn propose_intent(
                 },
             )
         }
-        WorkflowIntent::SetProfilePoints { target, points_mm } => {
-            let authority = AuthoritativeDependency::Feature(target);
-            (
-                ProposalGoal::SetProfilePoints(target),
-                authority,
-                CanonicalCommand::SetProfilePoints {
-                    id: target,
-                    points_mm,
-                },
-            )
-        }
     };
 
-    let assumptions = if matches!(required, IntentCapability::SetProfilePoints) {
-        vec![ProposalAssumption::TargetExists(target)]
-    } else {
-        vec![
-            ProposalAssumption::TargetExists(target.clone()),
-            ProposalAssumption::TargetHasDimension(target),
-        ]
-    };
+    let assumptions = vec![
+        ProposalAssumption::TargetExists(target.clone()),
+        ProposalAssumption::TargetHasDimension(target),
+    ];
 
     store
         .prepare_proposal_with_context(

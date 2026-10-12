@@ -1,5 +1,6 @@
 //! Review-and-commit checks for the typed CAD operations that replaced the
-//! workflow intents (tag, transform, delete, evaluator input, make unique):
+//! workflow intents (tag, transform, delete, evaluator input, make unique,
+//! profile points):
 //! planning changes nothing, one commit is one Undo step, invalid input is
 //! refused without a change and a stale proposal keeps the concurrent edit.
 
@@ -330,6 +331,113 @@ fn stale_replacement_proposals_are_refused_and_keep_the_concurrent_edit() {
         assert_eq!(session.snapshot().canonical_digest(), changed);
         assert_eq!(session.visible_undo_steps(), undo_after_concurrent);
     }
+}
+
+const PROFILE: FeatureId = FeatureId(31);
+const EXTRUSION: FeatureId = FeatureId(32);
+const TRIANGLE: [[f64; 2]; 3] = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]];
+
+/// `set_feature_parameter` with the whole outline, built from wire JSON.
+fn set_points(feature: FeatureId, path: &str, points_mm: &[[f64; 2]]) -> AssistantCadEditProgram {
+    serde_json::from_value(serde_json::json!({"operations": [{
+        "operation": "set_feature_parameter", "feature_id": feature.0,
+        "parameter_path": path, "value_type": "length", "value": points_mm,
+    }]}))
+    .unwrap()
+}
+
+fn outline(snapshot: &Snapshot) -> Vec<[f64; 2]> {
+    let feature = snapshot.feature(PROFILE).unwrap();
+    feature.kind().polygon_points().unwrap()
+}
+
+#[test]
+fn profile_points_replace_the_outline_in_one_undo_step_and_refuse_bad_input() {
+    let mut session = DocumentSession::default();
+    commit_commands(
+        &mut session,
+        vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(30),
+                name: "Box".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DefinitionId(30),
+                name: "Outline".to_owned(),
+                kind: FeatureKind::polygon(&TRIANGLE),
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXTRUSION,
+                definition_id: DefinitionId(30),
+                name: "Extrusion".to_owned(),
+                kind: FeatureKind::extrusion(PROFILE, Dimension::new("20", 20.0).unwrap()),
+            },
+        ],
+    );
+    let digest_before = session.snapshot().canonical_digest();
+    let undo_before = session.visible_undo_steps();
+    // A fourth corner, and corners on zero that a single length parameter cannot reach.
+    let rectangle = [[0.0, 0.0], [12.0, 0.0], [12.0, 8.0], [0.0, 8.0]];
+    let proposal = session
+        .plan_cad_program(&set_points(PROFILE, "points", &rectangle), &BTreeSet::new())
+        .unwrap();
+    assert_eq!(session.snapshot().canonical_digest(), digest_before);
+    assert_eq!(session.visible_undo_steps(), undo_before);
+    assert_eq!(
+        outline(&session.apply_proposal(&proposal).unwrap()),
+        rectangle
+    );
+    assert_eq!(session.visible_undo_steps(), undo_before + 1);
+    session.undo().unwrap();
+    assert_eq!(session.snapshot().canonical_digest(), digest_before);
+
+    let triangle = [[0.0, 0.0], [12.0, 0.0], [0.0, 8.0]];
+    let crossed = [[0.0, 0.0], [10.0, 10.0], [10.0, 0.0], [0.0, 10.0]];
+    for (feature, path, points_mm) in [
+        (PROFILE, "points", &[[0.0, 0.0], [1.0, 0.0]][..]),
+        (PROFILE, "points", &crossed[..]),
+        (
+            PROFILE,
+            "points",
+            &[[0.0, 0.0], [12.0, 0.0], [12.0, 0.0]][..],
+        ),
+        (PROFILE, "segments.0.end.x", &triangle[..]),
+        (EXTRUSION, "points", &triangle[..]),
+        (FeatureId(999), "points", &triangle[..]),
+    ] {
+        let program = set_points(feature, path, points_mm);
+        let error = session
+            .plan_cad_program(&program, &BTreeSet::new())
+            .expect_err(&format!(
+                "{path} {points_mm:?} on {feature:?} must be refused"
+            ));
+        assert!(
+            matches!(
+                error,
+                SessionError::Planning(_) | SessionError::Prepare(_) | SessionError::Canonical(_)
+            ),
+            "{error:?}"
+        );
+        assert_eq!(session.snapshot().canonical_digest(), digest_before);
+    }
+
+    let proposal = session
+        .plan_cad_program(&set_points(PROFILE, "points", &triangle), &BTreeSet::new())
+        .unwrap();
+    let concurrent = vec![[0.0, 0.0], [11.0, 0.0], [0.0, 9.0]];
+    commit_commands(
+        &mut session,
+        vec![CanonicalCommand::SetProfilePoints {
+            id: PROFILE,
+            points_mm: concurrent.clone(),
+        }],
+    );
+    assert!(matches!(
+        session.apply_proposal(&proposal),
+        Err(SessionError::Commit(ProposalCommitError::Stale(_)))
+    ));
+    assert_eq!(outline(&session.snapshot()), concurrent);
 }
 
 #[test]

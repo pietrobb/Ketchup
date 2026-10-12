@@ -1015,6 +1015,19 @@ pub enum AssistantCadParameterValueType {
     Scalar,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum AssistantCadParameterValue {
+    Number(f64),
+    Points(Vec<[f64; 2]>),
+}
+
+impl From<f64> for AssistantCadParameterValue {
+    fn from(value: f64) -> Self {
+        Self::Number(value)
+    }
+}
+
 impl From<AssistantCadWeldmentJointPrimary> for WeldmentJointPrimary {
     fn from(value: AssistantCadWeldmentJointPrimary) -> Self {
         match value {
@@ -1832,7 +1845,10 @@ pub enum AssistantCadEditOperation {
         feature_id: u64,
         parameter_path: String,
         value_type: AssistantCadParameterValueType,
-        value: f64,
+        /// A number, or with `parameter_path` "points" and `value_type` "length" the
+        /// whole ordered outline `[[x, y], ...]` in mm of a straight-line profile; the
+        /// corner count may change.
+        value: AssistantCadParameterValue,
     },
     MakeOccurrenceUnique {
         occurrence_id: u64,
@@ -3237,13 +3253,28 @@ impl AssistantCadEditProgram {
                 value_type,
                 value,
             } => {
+                let value_valid = match value {
+                    AssistantCadParameterValue::Number(value) => {
+                        value.is_finite()
+                            && value.abs() <= MAX_COORDINATE_MM
+                            && (*value_type != AssistantCadParameterValueType::Length
+                                || *value > 0.0)
+                    }
+                    AssistantCadParameterValue::Points(points_mm) => {
+                        parameter_path == "points"
+                            && *value_type == AssistantCadParameterValueType::Length
+                            && points_mm.len() <= ketchup_geometry::sketch::MAX_SKETCH_ENTITIES
+                            && points_mm
+                                .iter()
+                                .flatten()
+                                .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
+                    }
+                };
                 if *feature_id == 0
                     || parameter_path.trim().is_empty()
                     || parameter_path.len() > limits::NAME_BYTES
                     || parameter_path.chars().any(char::is_control)
-                    || !value.is_finite()
-                    || value.abs() > MAX_COORDINATE_MM
-                    || (*value_type == AssistantCadParameterValueType::Length && *value <= 0.0)
+                    || !value_valid
                 {
                     return Err(AssistantRequestInvalid::invalid(
                         "CAD feature parameter edit",

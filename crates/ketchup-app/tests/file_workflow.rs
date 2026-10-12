@@ -979,7 +979,7 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
             feature_id: 80,
             parameter_path: "bounds.width".into(),
             value_type: AssistantCadParameterValueType::Length,
-            value: 6.0,
+            value: 6.0.into(),
         }],
     };
     let dialogs = ScriptedFileDialogs::new()

@@ -98,7 +98,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
                 feature_id: 95,
                 parameter_path: "bounds.height".into(),
                 value_type: AssistantCadParameterValueType::Length,
-                value: 218.0,
+                value: 218.0.into(),
             },
             Op::MakeOccurrenceUnique { occurrence_id: 2 },
             Op::MakeOccurrenceUnique { occurrence_id: 3 },

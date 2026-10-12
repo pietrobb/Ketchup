@@ -2633,7 +2633,7 @@ fn one_part_operation_creates_named_physical_holes_and_one_local_edit_moves_one_
         feature_id: 5,
         parameter_path: "entities.1.center.x".into(),
         value_type: AssistantCadParameterValueType::Length,
-        value: 20.0,
+        value: 20.0.into(),
     };
     let batch = plan(
         &document,
@@ -3384,7 +3384,7 @@ fn physical_pin_joint_geometry_regressions_fail_closed_without_mutation() {
             feature_id: first_pocket.0,
             parameter_path: "depth".into(),
             value_type: AssistantCadParameterValueType::Length,
-            value: 15.0,
+            value: 15.0.into(),
         }]),
     )
     .unwrap();
@@ -4170,7 +4170,7 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
         feature_id: profile_id.0,
         parameter_path: "entities.1.center.x".into(),
         value_type: AssistantCadParameterValueType::Length,
-        value: 1.0,
+        value: 1.0.into(),
     }]);
     let invalid_batch = plan(
         &document,

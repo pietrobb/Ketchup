@@ -260,33 +260,11 @@ pub(super) fn proposal_value(
                         return feature_parameter_dimension(&snapshot.product, parameter)
                             .map_or(ProposalValue::Missing, ProposalValue::Dimension);
                     }
-                    match (feature.kind(), feature.kind().polygon_points()) {
-                        (_, Some(points_mm))
-                            if matches!(goal, ProposalGoal::SetProfilePoints(_)) =>
-                        {
-                            ProposalValue::ProfilePoints(points_mm)
-                        }
-                        (_, Some(points_mm))
-                            if matches!(
-                                goal,
-                                ProposalGoal::CreateProfileFeature(_)
-                                    | ProposalGoal::DeleteProfileFeature(_)
-                                    | ProposalGoal::CloneProfileDefinitionAndRepoint(_)
-                            ) =>
-                        {
-                            ProposalValue::ProfileFeatureState {
-                                definition: feature.definition_id(),
-                                name: feature.name().to_owned(),
-                                points_mm,
-                            }
-                        }
-                        (
-                            FeatureKind::Pad(PadSpec {
-                                extent: FeatureExtent::Blind(height),
-                                ..
-                            }),
-                            _,
-                        ) => ProposalValue::Dimension(height.clone()),
+                    match feature.kind() {
+                        FeatureKind::Pad(PadSpec {
+                            extent: FeatureExtent::Blind(height),
+                            ..
+                        }) => ProposalValue::Dimension(height.clone()),
                         _ => ProposalValue::Digest(dependency_digest(
                             snapshot,
                             &BTreeSet::from([target]),
@@ -345,7 +323,6 @@ pub(super) fn proposal_value(
                     } else if matches!(
                         goal,
                         ProposalGoal::DeleteDefinition(_)
-                            | ProposalGoal::CloneProfileDefinitionAndRepoint(_)
                             | ProposalGoal::ConvertEmptyGroupToComponent(_)
                     ) {
                         ProposalValue::DefinitionState {
@@ -354,12 +331,6 @@ pub(super) fn proposal_value(
                             local_occurrence_ids: definition.local_occurrence_ids().to_vec(),
                             local_group_ids: definition.local_group_ids().to_vec(),
                         }
-                    } else if matches!(
-                        goal,
-                        ProposalGoal::CreateProfileFeature(_)
-                            | ProposalGoal::DeleteProfileFeature(_)
-                    ) {
-                        ProposalValue::DefinitionFeatures(definition.feature_ids().to_vec())
                     } else {
                         ProposalValue::Digest(dependency_digest(
                             snapshot,
@@ -394,7 +365,6 @@ pub(super) fn proposal_value(
                     }
                     ProposalGoal::CreateOccurrence(_)
                     | ProposalGoal::DeleteOccurrence(_)
-                    | ProposalGoal::CloneProfileDefinitionAndRepoint(_)
                     | ProposalGoal::ConvertEmptyGroupToComponent(_) => {
                         ProposalValue::OccurrenceState {
                             definition: occurrence.definition_id(),

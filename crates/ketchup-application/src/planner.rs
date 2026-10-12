@@ -14,8 +14,8 @@ use ketchup_assistant::sidecar::{
     AssistantAssemblyJointAxis, AssistantAssemblyJointKind, AssistantAssemblyJointLimits,
     AssistantAxisSpec, AssistantCadBodyFeature, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadFeatureReference, AssistantCadParameterValueType, AssistantCadPartFeature,
-    AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
+    AssistantCadFeatureReference, AssistantCadParameterValue, AssistantCadParameterValueType,
+    AssistantCadPartFeature, AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
     AssistantCadSurfaceBodySource, AssistantCamToolKind, AssistantCamWorkOffset,
     AssistantInstancePath, AssistantInstancePathStep, AssistantInstanceReference,
     AssistantPartHole, AssistantPartPocket, AssistantPinHoles, AssistantRejectionDiagnostic,
@@ -2402,37 +2402,13 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 parameter_path,
                 value_type,
                 value,
-            } => {
-                let feature_id = FeatureId(*feature_id);
-                let path = ParameterPath::new(parameter_path.clone()).map_err(|error| {
-                    assistant_planning_rejection(
-                        "planning.cad_parameter_path_invalid",
-                        operation_name,
-                        &format!("feature:{}", feature_id.0),
-                        error.to_string(),
-                        "Copy one current parameter path and value type exactly from feature inspection.",
-                    )
-                })?;
-                let dimension = Dimension::new(value.to_string(), *value).map_err(|error| {
-                    assistant_canonical_rejection(
-                        error.into(),
-                        operation_name,
-                        &format!("feature:{}", feature_id.0),
-                    )
-                })?;
-                staged_planning.push(CanonicalCommand::SetFeatureParameter {
-                    target: FeatureParameterTarget {
-                        feature_id,
-                        path,
-                        value_type: match value_type {
-                            AssistantCadParameterValueType::Length => ParameterValueType::Length,
-                            AssistantCadParameterValueType::Angle => ParameterValueType::Angle,
-                            AssistantCadParameterValueType::Scalar => ParameterValueType::Scalar,
-                        },
-                    },
-                    dimension,
-                });
-            }
+            } => staged_planning.push(feature_parameter_command(
+                FeatureId(*feature_id),
+                parameter_path,
+                *value_type,
+                value,
+                operation_name,
+            )?),
             AssistantCadEditOperation::MakeOccurrenceUnique { occurrence_id } => {
                 let occurrence_id = OccurrenceId(*occurrence_id);
                 let current = staged_planning.staged_snapshot();
@@ -3782,6 +3758,49 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
         }
     }
     Ok(AssistantCadProgramPlan { batch, outputs })
+}
+
+/// `set_feature_parameter`: one parameter value, or a profile's whole outline.
+fn feature_parameter_command(
+    feature_id: FeatureId,
+    parameter_path: &str,
+    value_type: AssistantCadParameterValueType,
+    value: &AssistantCadParameterValue,
+    operation_name: &str,
+) -> Result<CanonicalCommand, AssistantRejection> {
+    let value = match value {
+        AssistantCadParameterValue::Number(value) => *value,
+        AssistantCadParameterValue::Points(points_mm) => {
+            return Ok(CanonicalCommand::SetProfilePoints {
+                id: feature_id,
+                points_mm: points_mm.clone(),
+            });
+        }
+    };
+    let target = format!("feature:{}", feature_id.0);
+    let path = ParameterPath::new(parameter_path.to_owned()).map_err(|error| {
+        assistant_planning_rejection(
+            "planning.cad_parameter_path_invalid",
+            operation_name,
+            &target,
+            error.to_string(),
+            "Copy one current parameter path and value type exactly from feature inspection.",
+        )
+    })?;
+    let dimension = Dimension::new(value.to_string(), value)
+        .map_err(|error| assistant_canonical_rejection(error.into(), operation_name, &target))?;
+    Ok(CanonicalCommand::SetFeatureParameter {
+        target: FeatureParameterTarget {
+            feature_id,
+            path,
+            value_type: match value_type {
+                AssistantCadParameterValueType::Length => ParameterValueType::Length,
+                AssistantCadParameterValueType::Angle => ParameterValueType::Angle,
+                AssistantCadParameterValueType::Scalar => ParameterValueType::Scalar,
+            },
+        },
+        dimension,
+    })
 }
 
 /// The operation name used in rejection diagnostics.
