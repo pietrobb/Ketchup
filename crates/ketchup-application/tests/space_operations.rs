@@ -1,11 +1,16 @@
-//! `upsert_space` and `delete_space`: a space an AI declares through a CAD
-//! program commits as one Undo step and survives save and reopen; a space the
-//! document does not allow is refused before anything changes.
+//! `upsert_space`, `delete_space` and the same for clearance volumes: what an
+//! AI declares through a CAD program commits as one Undo step and survives
+//! save and reopen; what the document does not allow is refused before
+//! anything changes.
 
 use ketchup_application::{DocumentSession, SaveOptions, SessionError, SessionSettings};
 use ketchup_assistant::catalog::cad_operation_catalog;
-use ketchup_assistant::sidecar::{AssistantCadEditOperation as Operation, AssistantCadEditProgram};
-use ketchup_model::space::SpaceId;
+use ketchup_assistant::sidecar::{
+    AssistantCadEditOperation as Operation, AssistantCadEditProgram, AssistantClearanceOwner,
+    AssistantClearanceSeverity, AssistantInstancePath,
+};
+use ketchup_model::document::InstancePath;
+use ketchup_model::space::{ClearanceOwner, ClearanceSeverity, ClearanceVolumeId, SpaceId};
 use std::collections::BTreeSet;
 
 fn space(
@@ -127,6 +132,142 @@ fn spaces_commit_as_one_undo_step_and_survive_save_and_reopen() {
         session.snapshot().canonical_digest(),
         saved.canonical_digest()
     );
+}
+
+fn clearance(id: u64, owner: AssistantClearanceOwner, max_z: f64) -> Operation {
+    Operation::UpsertClearanceVolume {
+        clearance_volume_id: id,
+        reason: "Door swing".to_owned(),
+        owner,
+        min_mm: [0.0; 3],
+        max_mm: [900.0, 900.0, max_z],
+        severity: AssistantClearanceSeverity::Required,
+        tolerance_mm: Some(0.5),
+    }
+}
+
+fn of_space(space_id: u64) -> AssistantClearanceOwner {
+    AssistantClearanceOwner::Space { space_id }
+}
+
+fn of_occurrence(root_occurrence_id: u64) -> AssistantClearanceOwner {
+    AssistantClearanceOwner::Occurrence {
+        instance_path: AssistantInstancePath {
+            root_occurrence_id,
+            steps: Vec::new(),
+        },
+    }
+}
+
+#[test]
+fn clearance_volumes_of_a_space_or_a_part_survive_save_reopen_and_undo() {
+    let operations = cad_operation_catalog(Some("upsert_clearance_volume")).unwrap();
+    assert!(operations["fields"].as_str().unwrap().contains("owner"));
+    assert!(cad_operation_catalog(Some("delete_clearance_volume")).is_ok());
+
+    let mut session = DocumentSession::default();
+    commit(&mut session, vec![super::document_session::part()]);
+    let part = session.snapshot().occurrences().next().unwrap().id();
+    let empty = session.snapshot().canonical_digest();
+    // The owning space is declared in the same program.
+    commit(
+        &mut session,
+        vec![
+            kitchen(&[]),
+            clearance(90, of_space(70), 2000.0),
+            clearance(91, of_occurrence(part.0), 1000.0),
+        ],
+    );
+    let saved = session.snapshot();
+    let door = saved.clearance_volume(ClearanceVolumeId(90)).unwrap();
+    assert_eq!(door.owner(), &ClearanceOwner::Space(SpaceId(70)));
+    assert_eq!(door.severity(), ClearanceSeverity::Required);
+    assert_eq!(door.tolerance().linear_mm(), 0.5);
+    assert_eq!(door.volume().max(), [900.0, 900.0, 2000.0]);
+    assert_eq!(
+        saved
+            .clearance_volume(ClearanceVolumeId(91))
+            .unwrap()
+            .owner(),
+        &ClearanceOwner::Occurrence(InstancePath::root(part))
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("clearances.ketchup");
+    session.save(&path, SaveOptions::default()).unwrap();
+    let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    assert_eq!(
+        reopened
+            .snapshot()
+            .clearance_volumes()
+            .cloned()
+            .collect::<Vec<_>>(),
+        saved.clearance_volumes().cloned().collect::<Vec<_>>()
+    );
+
+    commit(
+        &mut session,
+        vec![Operation::DeleteClearanceVolume {
+            clearance_volume_id: 90,
+        }],
+    );
+    assert!(
+        session
+            .snapshot()
+            .clearance_volume(ClearanceVolumeId(90))
+            .is_none()
+    );
+    session.undo().unwrap();
+    assert_eq!(
+        session.snapshot().canonical_digest(),
+        saved.canonical_digest()
+    );
+    session.undo().unwrap();
+    assert_eq!(session.snapshot().canonical_digest(), empty);
+}
+
+#[test]
+fn clearance_volumes_the_document_does_not_allow_are_refused_without_a_change() {
+    let mut session = DocumentSession::default();
+    commit(&mut session, vec![kitchen(&[])]);
+    let digest = session.snapshot().canonical_digest();
+    let undo = session.visible_undo_steps();
+    let refused = |operation: Operation| {
+        let error = session
+            .plan_cad_program(&program(vec![operation.clone()]), &BTreeSet::new())
+            .expect_err(&format!("{operation:?} must be refused"));
+        assert!(
+            matches!(error, SessionError::Planning(_) | SessionError::Prepare(_)),
+            "{operation:?}: {error:?}"
+        );
+        assert_eq!(session.snapshot().canonical_digest(), digest);
+        assert_eq!(session.visible_undo_steps(), undo);
+    };
+    // No volume; owners that do not exist.
+    refused(clearance(90, of_space(70), 0.0));
+    refused(clearance(90, of_space(99), 2000.0));
+    refused(clearance(90, of_occurrence(42), 2000.0));
+    // A negative or non-finite tolerance, an empty reason.
+    for tolerance_mm in [-1.0, f64::NAN] {
+        let mut operation = clearance(90, of_space(70), 2000.0);
+        if let Operation::UpsertClearanceVolume {
+            tolerance_mm: tolerance,
+            ..
+        } = &mut operation
+        {
+            *tolerance = Some(tolerance_mm);
+        }
+        refused(operation);
+    }
+    let mut unnamed = clearance(90, of_space(70), 2000.0);
+    if let Operation::UpsertClearanceVolume { reason, .. } = &mut unnamed {
+        reason.clear();
+    }
+    refused(unnamed);
+    // One that does not exist.
+    refused(Operation::DeleteClearanceVolume {
+        clearance_volume_id: 99,
+    });
 }
 
 #[test]

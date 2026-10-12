@@ -1996,7 +1996,7 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 38);
+        assert_eq!(variants.len(), 40);
         for operation in [
             "structure",
             "move_physical_pin_pair",
@@ -2016,6 +2016,8 @@ mod tests {
             "upsert_cam_plan",
             "upsert_space",
             "delete_space",
+            "upsert_clearance_volume",
+            "delete_clearance_volume",
         ] {
             assert!(
                 variants

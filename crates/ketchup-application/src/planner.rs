@@ -104,7 +104,7 @@ enum StagedProgramOutput {
     PinJoint(PinJointId),
 }
 
-struct StagedPlanningContext {
+pub(crate) struct StagedPlanningContext {
     base_snapshot: Snapshot,
     staged_snapshot: Snapshot,
     commands: Vec<CanonicalCommand>,
@@ -125,7 +125,7 @@ impl StagedPlanningContext {
         }
     }
 
-    fn refresh(&mut self, operation: &str, target: &str) -> AssistantPlanningResult<()> {
+    pub(crate) fn refresh(&mut self, operation: &str, target: &str) -> AssistantPlanningResult<()> {
         debug_assert!(self.commands.len() >= self.staged_command_count);
         if self.commands.len() == self.staged_command_count {
             return Ok(());
@@ -140,7 +140,7 @@ impl StagedPlanningContext {
         Ok(())
     }
 
-    fn push(&mut self, command: CanonicalCommand) {
+    pub(crate) fn push(&mut self, command: CanonicalCommand) {
         self.commands.push(command);
     }
 
@@ -152,11 +152,11 @@ impl StagedPlanningContext {
         CommandBatch::new(self.commands)
     }
 
-    fn base_snapshot(&self) -> &Snapshot {
+    pub(crate) fn base_snapshot(&self) -> &Snapshot {
         &self.base_snapshot
     }
 
-    fn staged_snapshot(&self) -> &Snapshot {
+    pub(crate) fn staged_snapshot(&self) -> &Snapshot {
         &self.staged_snapshot
     }
 
@@ -1883,10 +1883,8 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
 
     for (operation_index, operation) in program.operations.iter().enumerate() {
         let operation_name = operation_name(operation);
-        // Product entities refer to each other (mutual adjacency), so they are
-        // staged without a preview and checked together with what follows.
-        if let Some(command) = plan_product_change(operation) {
-            staged_planning.push(command?);
+        if let Some(planned) = plan_product_change(operation, &mut staged_planning) {
+            planned?;
             continue;
         }
         staged_planning.refresh(operation_name, &document_target)?;
@@ -3690,7 +3688,9 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             AssistantCadEditOperation::FilletEdges { .. }
             | AssistantCadEditOperation::ChamferEdges { .. }
             | AssistantCadEditOperation::UpsertSpace { .. }
-            | AssistantCadEditOperation::DeleteSpace { .. } => {
+            | AssistantCadEditOperation::DeleteSpace { .. }
+            | AssistantCadEditOperation::UpsertClearanceVolume { .. }
+            | AssistantCadEditOperation::DeleteClearanceVolume { .. } => {
                 unreachable!("edge finishes are normalized and spaces planned before this")
             }
         }
@@ -3807,7 +3807,9 @@ const fn operation_selector(
         | AssistantCadEditOperation::UpsertClassificationDimension { .. }
         | AssistantCadEditOperation::CreateEvaluatorInput { .. }
         | AssistantCadEditOperation::UpsertSpace { .. }
-        | AssistantCadEditOperation::DeleteSpace { .. } => None,
+        | AssistantCadEditOperation::DeleteSpace { .. }
+        | AssistantCadEditOperation::UpsertClearanceVolume { .. }
+        | AssistantCadEditOperation::DeleteClearanceVolume { .. } => None,
         AssistantCadEditOperation::Delete { selector, .. }
         | AssistantCadEditOperation::Transform { selector, .. }
         | AssistantCadEditOperation::SetColor { selector, .. }
@@ -3862,6 +3864,8 @@ const fn operation_name(operation: &AssistantCadEditOperation) -> &'static str {
         AssistantCadEditOperation::CreateEvaluatorInput { .. } => "create_evaluator_input",
         AssistantCadEditOperation::UpsertSpace { .. } => "upsert_space",
         AssistantCadEditOperation::DeleteSpace { .. } => "delete_space",
+        AssistantCadEditOperation::UpsertClearanceVolume { .. } => "upsert_clearance_volume",
+        AssistantCadEditOperation::DeleteClearanceVolume { .. } => "delete_clearance_volume",
         AssistantCadEditOperation::Copy { .. } => "copy_occurrence",
         AssistantCadEditOperation::LinearPattern { .. } => "linear_pattern_occurrence",
         AssistantCadEditOperation::CircularPattern { .. } => "circular_pattern_occurrence",

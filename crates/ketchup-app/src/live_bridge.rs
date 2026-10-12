@@ -1621,7 +1621,9 @@ impl LiveBridge {
                 | AssistantCadEditOperation::UpsertClassificationDimension { .. }
                 | AssistantCadEditOperation::CreateEvaluatorInput { .. }
                 | AssistantCadEditOperation::UpsertSpace { .. }
-                | AssistantCadEditOperation::DeleteSpace { .. } => None,
+                | AssistantCadEditOperation::DeleteSpace { .. }
+                | AssistantCadEditOperation::UpsertClearanceVolume { .. }
+                | AssistantCadEditOperation::DeleteClearanceVolume { .. } => None,
             };
             if let Some(AssistantCadEntitySelector::Occurrences { occurrence_ids }) = selector {
                 Self::root_ids(app, occurrence_ids)?;

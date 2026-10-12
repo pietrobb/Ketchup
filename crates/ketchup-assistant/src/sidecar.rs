@@ -1989,6 +1989,22 @@ pub enum AssistantCadEditOperation {
     DeleteSpace {
         space_id: u64,
     },
+    /// Creates or replaces a volume that must stay free (door swing, service
+    /// access, walkway): a world box from `min_mm` to `max_mm` owned by a
+    /// space or an occurrence. `tolerance_mm` defaults to the document's.
+    UpsertClearanceVolume {
+        clearance_volume_id: u64,
+        reason: String,
+        owner: AssistantClearanceOwner,
+        min_mm: [f64; 3],
+        max_mm: [f64; 3],
+        severity: AssistantClearanceSeverity,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance_mm: Option<f64>,
+    },
+    DeleteClearanceVolume {
+        clearance_volume_id: u64,
+    },
     Copy {
         selector: AssistantCadEntitySelector,
         translation_mm: [f64; 3],
@@ -2009,6 +2025,25 @@ pub enum AssistantCadEditOperation {
         plane_origin_mm: [f64; 3],
         plane_normal: [f64; 3],
     },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantClearanceOwner {
+    Space {
+        space_id: u64,
+    },
+    Occurrence {
+        instance_path: AssistantInstancePath,
+    },
+}
+
+/// `required`: occupying the volume is an error; `advisory`: a warning.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantClearanceSeverity {
+    Advisory,
+    Required,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -2935,7 +2970,9 @@ impl AssistantCadEditProgram {
             | AssistantCadEditOperation::UpsertClassificationDimension { .. }
             | AssistantCadEditOperation::CreateEvaluatorInput { .. }
             | AssistantCadEditOperation::UpsertSpace { .. }
-            | AssistantCadEditOperation::DeleteSpace { .. } => 0,
+            | AssistantCadEditOperation::DeleteSpace { .. }
+            | AssistantCadEditOperation::UpsertClearanceVolume { .. }
+            | AssistantCadEditOperation::DeleteClearanceVolume { .. } => 0,
             AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::CreateSpatialPath { .. }
             | AssistantCadEditOperation::CreateConstructionPoint { .. }
@@ -3612,6 +3649,33 @@ impl AssistantCadEditProgram {
             AssistantCadEditOperation::DeleteSpace { space_id } => {
                 if *space_id == 0 {
                     return Err(AssistantRequestInvalid::invalid("CAD space deletion"));
+                }
+                0
+            }
+            AssistantCadEditOperation::UpsertClearanceVolume {
+                clearance_volume_id,
+                owner,
+                min_mm,
+                max_mm,
+                ..
+            } => {
+                // Text, volume, tolerance and the owner are checked when planned.
+                if let AssistantClearanceOwner::Occurrence { instance_path } = owner {
+                    instance_path.validate()?;
+                }
+                if *clearance_volume_id == 0
+                    || !assistant_cad_vector_is_bounded(*min_mm)
+                    || !assistant_cad_vector_is_bounded(*max_mm)
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD clearance volume"));
+                }
+                0
+            }
+            AssistantCadEditOperation::DeleteClearanceVolume {
+                clearance_volume_id,
+            } => {
+                if *clearance_volume_id == 0 {
+                    return Err(AssistantRequestInvalid::invalid("CAD clearance deletion"));
                 }
                 0
             }
