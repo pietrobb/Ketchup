@@ -1,10 +1,13 @@
 use super::spaces_ui::SpaceRow;
 use crate::*;
+use egui::accesskit::Role;
 use egui_kittest::kittest::{Queryable, by};
 use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantClearanceOwner, AssistantClearanceSeverity,
 };
-use ketchup_model::space::{ClearanceVolumeId, SpaceId};
+use ketchup_model::space::{ClearanceOwner, ClearanceSeverity, ClearanceVolumeId, SpaceId};
+
+type Shell = egui_kittest::Harness<'static, KetchupApp>;
 
 fn apply(app: &mut KetchupApp, operations: Vec<AssistantCadEditOperation>) {
     let proposal = app
@@ -91,7 +94,7 @@ fn dock_lists_outlines_and_deletes_spaces_and_clearance_volumes() {
     assert_eq!(harness.state().document.current().revision_id(), revision);
     assert_eq!(harness.state().document.current().spaces().count(), 1);
     let refused = harness.state().catalog.format(
-        "spaces-delete-rejected",
+        "spaces-rejected",
         &BTreeMap::from([("reason", String::new())]),
     );
     assert!(
@@ -139,4 +142,137 @@ fn a_selected_part_takes_over_from_the_picked_space() {
     let snapshot = harness.state().document.current();
     assert_eq!(snapshot.clearance_volumes().count(), 1);
     assert_eq!(snapshot.occurrences().count(), 0);
+}
+
+fn click_button(harness: &mut Shell, key: &str) {
+    let label = harness.state().catalog.text(key);
+    harness.get_by_role_and_label(Role::Button, &label).click();
+    harness.run_steps(2);
+}
+
+fn retype(harness: &mut Shell, key: &str, axis: Option<&str>, text: &str) {
+    let label = match axis {
+        Some(axis) => harness
+            .state()
+            .catalog
+            .format(key, &BTreeMap::from([("axis", axis.to_owned())])),
+        None => harness.state().catalog.text(key),
+    };
+    harness
+        .get_by_role_and_label(Role::TextInput, &label)
+        .focus();
+    harness.run_steps(1);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness
+        .get_by_role_and_label(Role::TextInput, &label)
+        .type_text(text);
+    harness.run_steps(2);
+}
+
+fn undo(harness: &mut Shell) {
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    harness.run_steps(2);
+}
+
+/// "Space from selection" puts a space around the selected board and
+/// "Clearance in front of part" a required volume owned by it, 600 mm deep
+/// toward -Y; each is one Undo step back to the same document.
+#[test]
+fn the_selected_part_gives_a_space_and_a_clearance_in_front() {
+    let mut harness = harness();
+    let digest = harness.state().document.current().canonical_digest();
+    harness.state_mut().select_all();
+    harness.run_steps(2);
+    let measures = harness.state().selection_measures().unwrap();
+    let min = measures.world_min_mm;
+    let max: [f64; 3] = std::array::from_fn(|axis| min[axis] + measures.world_size_mm[axis]);
+
+    click_button(&mut harness, "spaces-create-from-selection");
+    let snapshot = harness.state().document.current();
+    let space = snapshot.spaces().find(|space| space.id() == SpaceId(2));
+    let space = space.expect("the new space");
+    assert_eq!((space.volume().min(), space.volume().max()), (min, max));
+    assert_eq!(
+        picked_box(&harness).map(|(row, ..)| row),
+        Some(SpaceRow::Space(SpaceId(2)))
+    );
+    undo(&mut harness);
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+
+    harness.state_mut().select_all();
+    harness.run_steps(2);
+    let board = harness.state().selected_instance_paths().first().cloned();
+    let board = board.expect("the board is selected");
+    click_button(&mut harness, "spaces-create-clearance-in-front");
+    let snapshot = harness.state().document.current();
+    let volume = snapshot
+        .clearance_volumes()
+        .find(|volume| volume.id() == ClearanceVolumeId(3));
+    let volume = volume.expect("the new clearance volume");
+    assert_eq!(volume.owner(), &ClearanceOwner::Occurrence(board));
+    assert_eq!(volume.severity(), ClearanceSeverity::Required);
+    assert_eq!(
+        (volume.volume().min(), volume.volume().max()),
+        ([min[0], min[1] - 600.0, min[2]], [max[0], min[1], max[2]])
+    );
+    undo(&mut harness);
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+}
+
+/// The picked clearance volume's reason, size and severity change by typed
+/// numbers in one Undo step; a zero size is refused and changes nothing.
+#[test]
+fn the_picked_row_is_edited_by_number() {
+    let mut harness = harness();
+    let digest = harness.state().document.current().canonical_digest();
+    click_row(&mut harness, "pred dverami");
+
+    retype(&mut harness, "spaces-field-reason", None, "pred sprchou");
+    retype(&mut harness, "spaces-field-size", Some("Y"), "900");
+    let required = harness.state().catalog.text("spaces-field-required");
+    harness
+        .get_by_role_and_label(Role::CheckBox, &required)
+        .click();
+    harness.run_steps(2);
+    let revision = harness.state().document.current().revision_id();
+    click_button(&mut harness, "spaces-apply");
+    let snapshot = harness.state().document.current();
+    assert_ne!(snapshot.revision_id(), revision);
+    let volume = snapshot.clearance_volumes().next().unwrap();
+    assert_eq!(volume.reason(), "pred sprchou");
+    assert_eq!(volume.severity(), ClearanceSeverity::Advisory);
+    assert_eq!(
+        (volume.volume().min(), volume.volume().max()),
+        ([0.0; 3], [800.0, 900.0, 2000.0])
+    );
+    assert_eq!(volume.owner(), &ClearanceOwner::Space(SpaceId(1)));
+    let edited = snapshot.canonical_digest();
+
+    retype(&mut harness, "spaces-field-size", Some("X"), "0");
+    click_button(&mut harness, "spaces-apply");
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        edited
+    );
+    let refused = harness.state().catalog.format(
+        "spaces-rejected",
+        &BTreeMap::from([("reason", String::new())]),
+    );
+    assert!(
+        harness.state().digest.starts_with(refused.trim_end()),
+        "{}",
+        harness.state().digest
+    );
+
+    undo(&mut harness);
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
 }

@@ -2530,6 +2530,7 @@ pub struct KetchupApp {
     selection: SelectionState,
     /// The space or clearance volume picked in the dock.
     picked_space: Option<app::spaces_ui::SpaceRow>,
+    space_fields: app::spaces_ui::SpaceFields,
     hover: app_state::HoverState,
     active_tool: ActiveTool,
     panels: app_state::Panels,

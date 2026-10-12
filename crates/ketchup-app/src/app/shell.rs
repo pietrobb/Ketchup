@@ -150,6 +150,7 @@ impl KetchupApp {
             view: ViewSettings::default(),
             selection: SelectionState::default(),
             picked_space: None,
+            space_fields: Default::default(),
             hover: app_state::HoverState {
                 target: None,
                 drawn_profile: None,

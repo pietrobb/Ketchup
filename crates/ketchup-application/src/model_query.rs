@@ -1855,6 +1855,43 @@ pub(crate) fn canonical_instance_path(
     Ok(path)
 }
 
+/// The path as typed operations name it, or `None` when it does not resolve:
+/// the inverse of [`canonical_instance_path`].
+#[must_use]
+pub fn assistant_instance_path(
+    snapshot: &Snapshot,
+    path: &InstancePath,
+) -> Option<AssistantInstancePath> {
+    let mut owner_definition_id = snapshot.occurrence(path.root_occurrence())?.definition_id();
+    let mut steps = Vec::new();
+    for step in path.steps() {
+        steps.push(match *step {
+            InstancePathStep::Group(local_id) => AssistantInstancePathStep::Group {
+                owner_definition_id: owner_definition_id.0,
+                local_id: local_id.0,
+            },
+            InstancePathStep::Occurrence(local_id) => {
+                let step = AssistantInstancePathStep::Occurrence {
+                    owner_definition_id: owner_definition_id.0,
+                    local_id: local_id.0,
+                };
+                owner_definition_id = snapshot
+                    .local_occurrence(LocalOccurrenceKey {
+                        definition_id: owner_definition_id,
+                        local_id,
+                    })?
+                    .definition_id();
+                step
+            }
+        });
+    }
+    snapshot.resolve_instance_path(path).ok()?;
+    Some(AssistantInstancePath {
+        root_occurrence_id: path.root_occurrence().0,
+        steps,
+    })
+}
+
 fn edit_feature_value(snapshot: &Snapshot, id: FeatureId) -> Result<Value, QueryError> {
     let feature = snapshot.feature(id).ok_or(QueryError::NotFound)?;
     let parameters = feature

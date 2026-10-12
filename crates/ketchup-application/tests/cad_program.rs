@@ -15,8 +15,8 @@ use ketchup_model::assembly::{
 };
 use ketchup_model::document::{
     BodyKind, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, FeatureId, FeatureKind, GroupId, InstancePath, InstancePathStep, OccurrenceId,
-    Snapshot, SpatialPathSegment, SurfaceBodySpec, Transform,
+    DocumentStore, FeatureId, FeatureKind, GroupId, InstancePath, OccurrenceId, Snapshot,
+    SpatialPathSegment, SurfaceBodySpec, Transform,
 };
 use ketchup_model::drawing::{DrawingSource, project_orthographic_drawing};
 use ketchup_model::drawing_export::export_drawing;
@@ -125,33 +125,7 @@ fn cam_setup_operation(definition_id: u64, feature_id: u64) -> AssistantCadEditO
 }
 
 fn assistant_instance_path(snapshot: &Snapshot, path: &InstancePath) -> AssistantInstancePath {
-    let mut prefix = InstancePath::root(path.root_occurrence());
-    let mut owner_definition_id = snapshot
-        .occurrence(path.root_occurrence())
-        .unwrap()
-        .definition_id();
-    let mut steps = Vec::new();
-    for step in path.steps() {
-        steps.push(match *step {
-            InstancePathStep::Group(local_id) => AssistantInstancePathStep::Group {
-                owner_definition_id: owner_definition_id.0,
-                local_id: local_id.0,
-            },
-            InstancePathStep::Occurrence(local_id) => AssistantInstancePathStep::Occurrence {
-                owner_definition_id: owner_definition_id.0,
-                local_id: local_id.0,
-            },
-        });
-        prefix = prefix.with_step(*step);
-        owner_definition_id = snapshot
-            .resolve_instance_path(&prefix)
-            .unwrap()
-            .definition_id;
-    }
-    AssistantInstancePath {
-        root_occurrence_id: path.root_occurrence().0,
-        steps,
-    }
+    ketchup_application::model_query::assistant_instance_path(snapshot, path).unwrap()
 }
 
 fn exact_box_package(
