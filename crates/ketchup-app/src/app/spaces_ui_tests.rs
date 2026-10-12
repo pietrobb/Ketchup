@@ -225,6 +225,75 @@ fn the_selected_part_gives_a_space_and_a_clearance_in_front() {
     );
 }
 
+fn clearance_findings(harness: &mut Shell) -> Vec<ValidatorPanelFinding> {
+    let app = harness.state_mut();
+    app.validator_panel.selection = BTreeSet::from(["clearance_occupancy"]);
+    app.run_validator_panel();
+    harness.run_steps(2);
+    let report = harness.state().validator_panel_report();
+    report.expect("a report on this revision").findings.clone()
+}
+
+/// The board stands in the clearance in front of the bathroom door. Its
+/// finding in the validation panel selects the board and outlines the
+/// volume; moving the volume away by number clears the finding in one Undo
+/// step, and showing the finding changes nothing.
+#[test]
+fn a_clearance_finding_shows_the_part_and_the_volume_in_its_way() {
+    let mut harness = harness();
+    let digest = harness.state().document.current().canonical_digest();
+    let snapshot = harness.state().document.current();
+    let board = snapshot.occurrences().next().expect("the board").id();
+
+    let findings = clearance_findings(&mut harness);
+    let [finding] = findings.as_slice() else {
+        panic!("one occupant expected: {findings:#?}");
+    };
+    assert_eq!(
+        (finding.occurrences.as_slice(), finding.clearance_volume),
+        ([board].as_slice(), Some(ClearanceVolumeId(2)))
+    );
+    let title = harness.state().catalog.text("validators-title");
+    harness.get_by_role_and_label(Role::Button, &title).click();
+    harness.run_steps(2);
+    click_row(&mut harness, "clearance.occupied");
+    assert_eq!(
+        harness.state().selected_instance_paths(),
+        BTreeSet::from([InstancePath::root(board)])
+    );
+    assert_eq!(
+        picked_box(&harness),
+        Some((
+            SpaceRow::Clearance(ClearanceVolumeId(2)),
+            [0.0; 3],
+            [800.0, 600.0, 2000.0]
+        ))
+    );
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+
+    // The open validation panel pushes the dock's fields out of view.
+    harness.get_by_role_and_label(Role::Button, &title).click();
+    harness.run_steps(2);
+    retype(&mut harness, "spaces-field-position", Some("Y"), "1000");
+    click_button(&mut harness, "spaces-apply");
+    assert_ne!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+    assert!(harness.state().validator_panel_report().is_none());
+    assert_eq!(clearance_findings(&mut harness), Vec::new());
+
+    undo(&mut harness);
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+    assert_eq!(clearance_findings(&mut harness).len(), 1);
+}
+
 /// The picked clearance volume's reason, size and severity change by typed
 /// numbers in one Undo step; a zero size is refused and changes nothing.
 #[test]

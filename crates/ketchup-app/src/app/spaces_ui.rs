@@ -1,6 +1,7 @@
 //! The dock's spaces and clearance volumes: listed, outlined in the viewport
-//! while picked, created from the selection, edited by number and deleted,
-//! every change by the typed operations MCP uses.
+//! while picked in the dock or by a validator finding, created from the
+//! selection, edited by number and deleted, every change by the typed
+//! operations MCP uses.
 
 use crate::*;
 use ketchup_application::model_query::assistant_instance_path;
@@ -43,13 +44,15 @@ fn dimensions(volume: Aabb) -> String {
 }
 
 impl KetchupApp {
-    /// The picked row and its box, while no part or group is selected and the
-    /// row still exists: a part picked later takes over Delete and the outline.
+    /// The picked row and its box, while the part selection is the one it was
+    /// picked with, no group is selected and the row still exists: a part
+    /// picked later takes over the outline.
     pub(crate) fn picked_space_row(&self) -> Option<(SpaceRow, Aabb)> {
-        let row = self.picked_space?;
-        if !self.selected_instance_paths().is_empty() || self.selection.selected_group.is_some() {
+        let (row, with) = self.picked_space.as_ref()?;
+        if *with != self.selected_instance_paths() || self.selection.selected_group.is_some() {
             return None;
         }
+        let row = *row;
         let snapshot = self.document.current();
         let volume = match row {
             SpaceRow::Space(id) => snapshot.spaces().find(|space| space.id() == id)?.volume(),
@@ -118,8 +121,7 @@ impl KetchupApp {
         let picked = self.picked_space_row().map(|(row, _)| row);
         for (row, label) in rows {
             if ui.selectable_label(picked == Some(row), label).clicked() {
-                self.clear_selection();
-                self.picked_space = Some(row);
+                self.pick_space_row(row);
             }
         }
         if let Some(row) = self.picked_space_row().map(|(row, _)| row) {
@@ -265,8 +267,7 @@ impl KetchupApp {
             accessible_to: Vec::new(),
         };
         if self.commit_space_operation(operation) {
-            self.clear_selection();
-            self.picked_space = Some(SpaceRow::Space(SpaceId(id)));
+            self.pick_space_row(SpaceRow::Space(SpaceId(id)));
         }
     }
 
@@ -302,9 +303,27 @@ impl KetchupApp {
             tolerance_mm: None,
         };
         if self.commit_space_operation(operation) {
-            self.clear_selection();
-            self.picked_space = Some(SpaceRow::Clearance(ClearanceVolumeId(id)));
+            self.pick_space_row(SpaceRow::Clearance(ClearanceVolumeId(id)));
         }
+    }
+
+    fn pick_space_row(&mut self, row: SpaceRow) {
+        self.clear_selection();
+        self.picked_space = Some((row, BTreeSet::new()));
+    }
+
+    /// Selects the parts a validator finding names and outlines the
+    /// clearance volume it is about, side by side while that selection stands.
+    pub(crate) fn show_validator_finding(&mut self, finding: &ValidatorPanelFinding) {
+        self.clear_selection();
+        self.selection.occurrences = finding
+            .occurrences
+            .iter()
+            .map(|id| InstancePath::root(*id))
+            .collect();
+        self.picked_space = finding
+            .clearance_volume
+            .map(|id| (SpaceRow::Clearance(id), self.selected_instance_paths()));
     }
 
     /// Deletes the picked row with `delete_space` or `delete_clearance_volume`.

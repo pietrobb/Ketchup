@@ -1260,22 +1260,26 @@ impl KetchupApp {
             }));
             return;
         }
+        let mut shown = None;
         for finding in &report.findings {
-            ui.label(
-                self.catalog.format(
-                    "validators-finding",
-                    &BTreeMap::from([
-                        (
-                            "validator",
-                            self.catalog
-                                .text(&format!("validator-{}-name", finding.validator)),
-                        ),
-                        ("severity", finding.severity.clone()),
-                        ("code", finding.code.clone()),
-                        ("parts", finding.parts.join(", ")),
-                    ]),
-                ),
+            let text = self.catalog.format(
+                "validators-finding",
+                &BTreeMap::from([
+                    (
+                        "validator",
+                        self.catalog
+                            .text(&format!("validator-{}-name", finding.validator)),
+                    ),
+                    ("severity", finding.severity.clone()),
+                    ("code", finding.code.clone()),
+                    ("parts", finding.parts.join(", ")),
+                ]),
             );
+            if finding.occurrences.is_empty() && finding.clearance_volume.is_none() {
+                ui.label(text);
+            } else if ui.selectable_label(false, text).clicked() {
+                shown = Some(finding.clone());
+            }
             if !finding.detail.is_empty() {
                 ui.label(
                     egui::RichText::new(&finding.detail)
@@ -1283,6 +1287,9 @@ impl KetchupApp {
                         .color(self.palette().dim),
                 );
             }
+        }
+        if let Some(finding) = shown {
+            self.show_validator_finding(&finding);
         }
     }
 

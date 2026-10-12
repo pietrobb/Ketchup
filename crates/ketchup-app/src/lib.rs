@@ -239,6 +239,10 @@ pub struct ValidatorPanelFinding {
     pub severity: String,
     pub parts: Vec<String>,
     pub detail: String,
+    /// The parts named in `parts`, selected when the finding is clicked.
+    pub occurrences: Vec<OccurrenceId>,
+    /// The clearance volume the finding is about, outlined when clicked.
+    pub clearance_volume: Option<ketchup_model::space::ClearanceVolumeId>,
 }
 
 /// The result of one manual validator run, bound to the revision it was run on.
@@ -254,14 +258,14 @@ pub struct ValidatorPanelReport {
     pub not_evaluated: Vec<(String, String)>,
 }
 
-fn validator_finding_parts(issue: &serde_json::Value) -> Vec<String> {
+fn validator_finding_parts(issue: &serde_json::Value) -> Vec<(OccurrenceId, String)> {
     let labelled = |id: &serde_json::Value, name: &serde_json::Value| {
-        let id = id.as_u64();
-        match (name.as_str(), id) {
-            (Some(name), Some(id)) => Some(format!("{name} (#{id})")),
-            (None, Some(id)) => Some(format!("#{id}")),
-            _ => None,
-        }
+        let id = id.as_u64()?;
+        let label = match name.as_str() {
+            Some(name) => format!("{name} (#{id})"),
+            None => format!("#{id}"),
+        };
+        Some((OccurrenceId(id), label))
     };
     let mut parts = Vec::new();
     parts.extend(labelled(&issue["occurrence_id"], &issue["name"]));
@@ -298,21 +302,28 @@ fn validator_panel_report(validation: &serde_json::Value) -> ValidatorPanelRepor
                 .as_array()
                 .into_iter()
                 .flatten()
-                .map(|issue| ValidatorPanelFinding {
-                    validator,
-                    code: issue["code"].as_str().unwrap_or_default().to_owned(),
-                    severity: issue["severity"].as_str().unwrap_or_default().to_owned(),
-                    parts: validator_finding_parts(issue),
-                    detail: issue["rule"]
-                        .as_str()
-                        .or_else(|| issue["evidence"].as_str())
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| {
-                            issue
-                                .get("evidence")
-                                .map(ToString::to_string)
-                                .unwrap_or_default()
-                        }),
+                .map(|issue| {
+                    let (occurrences, parts) = validator_finding_parts(issue).into_iter().unzip();
+                    ValidatorPanelFinding {
+                        validator,
+                        code: issue["code"].as_str().unwrap_or_default().to_owned(),
+                        severity: issue["severity"].as_str().unwrap_or_default().to_owned(),
+                        parts,
+                        occurrences,
+                        clearance_volume: issue["clearance_volume_id"]
+                            .as_u64()
+                            .map(ketchup_model::space::ClearanceVolumeId),
+                        detail: issue["rule"]
+                            .as_str()
+                            .or_else(|| issue["evidence"].as_str())
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| {
+                                issue
+                                    .get("evidence")
+                                    .map(ToString::to_string)
+                                    .unwrap_or_default()
+                            }),
+                    }
                 })
         })
         .collect::<Vec<_>>();
@@ -2528,8 +2539,9 @@ pub struct KetchupApp {
     /// The section plane cutting the viewport open; display only, never the model.
     section: Option<SectionPlane>,
     selection: SelectionState,
-    /// The space or clearance volume picked in the dock.
-    picked_space: Option<app::spaces_ui::SpaceRow>,
+    /// The space or clearance volume picked in the dock or by a validator
+    /// finding, with the part selection it was picked together with.
+    picked_space: Option<(app::spaces_ui::SpaceRow, BTreeSet<InstancePath>)>,
     space_fields: app::spaces_ui::SpaceFields,
     hover: app_state::HoverState,
     active_tool: ActiveTool,
