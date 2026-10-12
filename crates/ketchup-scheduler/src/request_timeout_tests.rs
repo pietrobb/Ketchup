@@ -159,7 +159,8 @@ fn hold_busy_child(mut child: Box<dyn ChildWrapper>) {
             .any(|line| line.unwrap() == "WORKER_READY")
     );
     println!("WORKER_PID {}", child.id());
-    std::thread::sleep(Duration::from_secs(120));
+    // Held until the test kills this process or closes its stdin.
+    let _ = std::io::stdin().read_line(&mut String::new());
 }
 
 #[cfg(windows)]
@@ -192,6 +193,7 @@ fn assert_child_dies_with_its_killed_parent(parent_test: &str) {
             "--ignored",
             "--nocapture",
         ])
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -205,13 +207,21 @@ fn assert_child_dies_with_its_killed_parent(parent_test: &str) {
         })
         .expect("parent reported its worker");
     assert!(process_is_running(worker_pid));
+    assert!(
+        parent.try_wait().unwrap().is_none(),
+        "parent must still hold its worker"
+    );
 
     parent.kill().unwrap();
     parent.wait().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while process_is_running(worker_pid) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    // Wait-Process returns when the worker exits (at once if it is already gone) or after 5 s.
+    let _ = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("Wait-Process -Id {worker_pid} -Timeout 5 -ErrorAction SilentlyContinue"),
+        ])
+        .output();
     let survived = process_is_running(worker_pid);
     if survived {
         let _ = Command::new("taskkill")
