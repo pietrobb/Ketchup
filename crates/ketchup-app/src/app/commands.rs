@@ -531,7 +531,10 @@ impl KetchupApp {
                     && !self.program_detach_warned
                     && let Some(program) = self.document.detached_rule_program()
                 {
-                    self.program_detach_notice = Some(program.file_name.clone());
+                    self.program_detach_notice = Some(crate::ProgramDetachNotice {
+                        file_name: program.file_name.clone(),
+                        revision_id: self.document.current().revision_id(),
+                    });
                     self.program_detach_warned = true;
                 }
                 publish(self, publication);

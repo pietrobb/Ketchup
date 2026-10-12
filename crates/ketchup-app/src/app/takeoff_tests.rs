@@ -152,6 +152,7 @@ fn the_first_detaching_edit_says_so_and_undo_keeps_the_program() {
     assert!(harness.query_by_label(&owned).is_some(), "{owned:?}");
     assert!(harness.query_by_label(&undo).is_none());
 
+    let before_edit = harness.state().canonical_digest();
     rename(harness.state_mut());
     harness.run_steps(3);
     assert!(harness.state().document.current_rule_program().is_none());
@@ -162,6 +163,7 @@ fn the_first_detaching_edit_says_so_and_undo_keeps_the_program() {
         harness.state().document.current_rule_program(),
         Some(&program)
     );
+    assert_eq!(harness.state().canonical_digest(), before_edit);
     assert!(harness.query_by_label(&owned).is_some());
     assert!(harness.query_by_label(&undo).is_none());
 
@@ -171,6 +173,55 @@ fn the_first_detaching_edit_says_so_and_undo_keeps_the_program() {
     assert!(harness.query_by_label(&detached).is_some());
     assert!(harness.query_by_label(&undo).is_none());
     assert!(harness.query_by_label(&keep).is_none());
+}
+
+/// Review 2026-10-09 UNDO-1: "Undo the edit" used to call Undo blindly, so an
+/// edit made after the detaching one (by hand or by an MCP client) was undone
+/// instead and the program stayed detached. A later edit closes the notice and
+/// the document keeps both edits.
+#[test]
+fn a_later_edit_closes_the_detach_notice_and_both_edits_stay() {
+    let mut app = KetchupApp::new();
+    let program = ketchup_model::document::RuleProgramSource {
+        file_name: "house.star".into(),
+        source: SOURCE.into(),
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program, true).unwrap();
+    let undo = app.catalog.text("program-detached-undo");
+    let rename = |app: &mut KetchupApp, name: &str| {
+        let id = app.document.current().occurrences().next().unwrap().id();
+        app.apply_batch_with_work_recovery(&CommandBatch::new(vec![
+            CanonicalCommand::RenameEntity {
+                id,
+                name: name.into(),
+            },
+        ]))
+        .unwrap();
+        id
+    };
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1600.0, 1200.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run_steps(3);
+
+    rename(harness.state_mut(), "detaching");
+    harness.run_steps(3);
+    assert!(harness.query_by_label(&undo).is_some(), "{undo:?}");
+
+    let id = rename(harness.state_mut(), "later");
+    let after_later = harness.state().canonical_digest();
+    harness.run_steps(3);
+    assert!(harness.query_by_label(&undo).is_none());
+    assert!(harness.state().program_detach_notice.is_none());
+    assert!(harness.state().document.current_rule_program().is_none());
+    assert_eq!(harness.state().canonical_digest(), after_later);
+    let snapshot = harness.state().document.current();
+    let renamed = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.id() == id);
+    assert_eq!(renamed.unwrap().name(), "later");
 }
 
 /// Review 2026-10-09 BOM-1 (§5.2 step 10): with `production(tags=…)` the

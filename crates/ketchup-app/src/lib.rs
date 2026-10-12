@@ -2480,6 +2480,13 @@ impl<E: std::error::Error> std::error::Error for WorkRecoveryMutationError<E> {
     }
 }
 
+/// The detaching edit is undone only while it is still the current revision;
+/// any later change closes the notice.
+struct ProgramDetachNotice {
+    file_name: String,
+    revision_id: u64,
+}
+
 pub struct KetchupApp {
     document: DocumentStore,
     live: app_state::LiveState,
@@ -2496,7 +2503,7 @@ pub struct KetchupApp {
     remember_language: bool,
     /// The program the last edit detached, while the one-time notice about it
     /// is on screen.
-    program_detach_notice: Option<String>,
+    program_detach_notice: Option<ProgramDetachNotice>,
     /// The notice is shown for the first detaching edit of a session only.
     program_detach_warned: bool,
     assembly_editor: assembly_ui::AssemblyEditorState,

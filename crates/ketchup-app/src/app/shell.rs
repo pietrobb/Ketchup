@@ -1137,11 +1137,18 @@ impl KetchupApp {
 
     /// The program the edit just detached, shown once per session: the model
     /// is no longer driven by it, and one click undoes the edit to keep it.
+    /// Any later change, by the user or an MCP client, closes it, so the click
+    /// never undoes a different edit.
     pub(crate) fn show_program_detach_notice(&mut self, context: &egui::Context) {
-        let Some(file_name) = self.program_detach_notice.clone() else {
+        let Some(notice) = &self.program_detach_notice else {
             return;
         };
-        let arguments = BTreeMap::from([("file", file_name)]);
+        let detaching_revision = notice.revision_id;
+        if self.document.current().revision_id() != detaching_revision {
+            self.program_detach_notice = None;
+            return;
+        }
+        let arguments = BTreeMap::from([("file", notice.file_name.clone())]);
         let mut open = true;
         let mut undo = false;
         egui::Window::new(self.catalog.text("program-detached-title"))
@@ -1168,7 +1175,9 @@ impl KetchupApp {
         }
         if undo {
             self.program_detach_notice = None;
-            self.undo();
+            if self.document.current().revision_id() == detaching_revision {
+                self.undo();
+            }
         }
     }
 
