@@ -83,8 +83,12 @@ reproduced failure that they catch, or explicit approval by the owner.
   exceed 5000 lines; `scripts/check_crate_layers.py` enforces it and only lets the listed
   older modules shrink.
 - Integration tests build as one binary per crate: add `tests/<name>.rs` as `mod <name>;` in
-  that crate's `tests/integration.rs`; run one file with `cargo test -p <crate> --test
-  integration <name>::`. A test that starts external processes (workers, plugins) takes
+  that crate's `tests/integration.rs`. Build and test only with the one canonical command
+  `cargo test --locked --workspace --all-targets` (filter after `--`, e.g. `-- <name>::`;
+  build without running: `--no-run`). No `-p`, `--features` or `--all-features`: each other
+  feature set compiles a second copy of the workspace into `target\debug`. Release builds and
+  `cargo clippy --locked --workspace --all-targets -- -D warnings` are the only other cargo
+  commands. A test that starts external processes (workers, plugins) takes
   `crate::integration_support::file_turn()` first; the app harness `Shell` takes it itself.
 - Report the net line delta in every PR description.
 
@@ -96,7 +100,8 @@ reproduced failure that they catch, or explicit approval by the owner.
 
 ## 8. Definition of done
 
-1. `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings` and
+1. `cargo test --locked --workspace --all-targets`,
+   `cargo clippy --locked --workspace --all-targets -- -D warnings` and
    `cargo fmt --all -- --check` pass.
 2. The named-product check passes, once `scripts/check_no_named_products.py` exists. It is a
    ratchet: the baseline may only shrink.

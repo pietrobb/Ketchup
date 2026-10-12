@@ -137,8 +137,7 @@ def main() -> int:
         raise RunnerError("cargo is required on PATH")
 
     target_directory = cargo_target_directory(cargo)
-    run([cargo, "build", "--locked", "-p", "ketchup-headless", "--bin", "ketchup-headless"])
-    run([cargo, "build", "--locked", "-p", "ketchup-scheduler", "--bin", "ketchup-exact-worker"])
+    run([cargo, "test", "--locked", "--workspace", "--all-targets", "--no-run"])
     os.environ["KETCHUP_BUILD_VERSION"] = "production-test"
     run([
         cargo,

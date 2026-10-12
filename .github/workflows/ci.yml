@@ -60,8 +60,6 @@ jobs:
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy
-        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - name: build exact worker
-        run: cargo build --locked -p ketchup-scheduler --bin ketchup-exact-worker
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: tests
         run: cargo test --locked --workspace --all-targets --no-fail-fast -- --test-threads=2
