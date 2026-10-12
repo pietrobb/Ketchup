@@ -7,20 +7,23 @@ use crate::harness::{
 use eframe::egui;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_assistant::intent::WorkflowIntent;
-use ketchup_model::document::{ClassificationCategoryId, ClassificationDimensionId, NodeId};
+use ketchup_assistant::sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
+use ketchup_model::document::{ClassificationCategoryId, ClassificationDimensionId};
 use ketchup_model::validation::VALIDATOR_ROLE_DIMENSION_V1;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn apply_evaluator_inputs(shell: &mut Shell, inputs: &[(&str, f64)]) {
     for (index, (name, value)) in inputs.iter().enumerate() {
-        assert!(shell.app_mut().headless_apply_workflow_intent(
-            WorkflowIntent::CreateEvaluatorInput {
-                target: NodeId(900 + index as u64),
-                name: (*name).to_owned(),
-                value_text: value.to_string(),
-            }
-        ));
+        shell
+            .app_mut()
+            .headless_apply_cad_program(&AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::CreateEvaluatorInput {
+                    node_id: 900 + index as u64,
+                    name: (*name).to_owned(),
+                    value: *value,
+                }],
+            })
+            .unwrap();
     }
 }
 

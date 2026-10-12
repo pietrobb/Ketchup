@@ -43,6 +43,7 @@ mod rule_program_support;
 mod rule_program_threads;
 mod rule_program_through;
 mod timber_btlx_program;
+mod typed_ops_review_and_commit;
 mod validation_selection;
 mod workflow_trace;
 

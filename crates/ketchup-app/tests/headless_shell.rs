@@ -18,6 +18,9 @@ use ketchup_app::{
     ViewFlag,
 };
 use ketchup_assistant::intent::WorkflowIntent;
+use ketchup_assistant::sidecar::{
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+};
 use ketchup_interaction::{
     Axis, ElementId, LocaleCatalog, Side, SnapKind, Vec3, exact_projection::TopologicalPickLocator,
     mesh_projection::MeshInteractionProjection,
@@ -48,6 +51,36 @@ const PARAMETRIC_DEPENDENT: NodeId = NodeId(303);
 const PARAMETRIC_UNRELATED_SOURCE: NodeId = NodeId(305);
 const PARAMETRIC_UNRELATED: NodeId = NodeId(306);
 
+/// Commits one typed CAD operation the way MCP `edit propose` + `commit` does.
+fn apply_typed(app: &mut KetchupApp, operation: AssistantCadEditOperation) -> bool {
+    app.headless_apply_cad_program(&AssistantCadEditProgram {
+        operations: vec![operation],
+    })
+    .is_ok()
+}
+
+fn create_tag(app: &mut KetchupApp, id: TagId, name: String, visible: bool) -> bool {
+    apply_typed(
+        app,
+        AssistantCadEditOperation::CreateTag {
+            tag_id: id.0,
+            name,
+            visible,
+        },
+    )
+}
+
+fn set_occurrence_tag(app: &mut KetchupApp, occurrence: OccurrenceId, tag: Option<TagId>) -> bool {
+    apply_typed(
+        app,
+        AssistantCadEditOperation::SetOccurrenceTag {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: vec![occurrence.0],
+            },
+            tag_id: tag.map(|tag| tag.0),
+        },
+    )
+}
 fn boolean_tool_profile(
     graph: &ExactBRepGraph,
     operation: ExactBRepBooleanOperation,
@@ -403,15 +436,12 @@ fn layers_lead_the_dock_once_the_document_has_a_layer() {
         top_of(&shell, &outliner).is_some_and(|outliner_top| layers_top > outliner_top)
     }));
 
-    assert!(
-        shell
-            .app_mut()
-            .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                target: TagId(700),
-                name: "Konštrukcia".to_owned(),
-                visible: true,
-            })
-    );
+    assert!(create_tag(
+        shell.app_mut(),
+        TagId(700),
+        "Konštrukcia".to_owned(),
+        true
+    ));
     shell.settle();
     assert!(shell.app().document_snapshot().tag(TagId(700)).is_some());
     let layers_top = top_of(&shell, &layers).expect("layers header is in view");
@@ -3678,15 +3708,7 @@ fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
         let tag = TagId(700);
         let temporary_tag = TagId(701);
         for (target, name) in [(tag, "Hardware"), (temporary_tag, "Temporary")] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         shell.settle();
         assert_eq!(
@@ -3949,15 +3971,12 @@ fn tags_panel_create_is_localized_canonical_stale_safe_and_undoable() {
         shell.click_role_and_label(Role::Button, &create_label);
         shell.focus_text_input(&name_label);
         shell.type_text("Namespace drift");
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                    target: TagId(850),
-                    name: "Intervening tag".to_owned(),
-                    visible: false,
-                })
-        );
+        assert!(create_tag(
+            shell.app_mut(),
+            TagId(850),
+            "Intervening tag".to_owned(),
+            false
+        ));
         shell.settle();
         assert!(!shell.app().tag_creation_visible());
         assert!(
@@ -4026,27 +4045,21 @@ fn tags_panel_create_from_selection_is_localized_atomic_stale_safe_and_undoable(
         let cancel_label = shell.catalog().text("dialog-create-tag-cancel");
         let name_label = shell.catalog().text("dialog-create-tag-name");
         let other_tag = TagId(1401);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                    target: other_tag,
-                    name: "Other".to_owned(),
-                    visible: true,
-                })
-        );
+        assert!(create_tag(
+            shell.app_mut(),
+            other_tag,
+            "Other".to_owned(),
+            true
+        ));
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-edit", AppCommand::Copy);
         shell.click_menu_command("menu-edit", AppCommand::Paste);
         assert!(shell.app_mut().create_box());
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::SetOccurrenceTag {
-                    target: OccurrenceId(1),
-                    tag: Some(other_tag),
-                })
-        );
+        assert!(set_occurrence_tag(
+            shell.app_mut(),
+            OccurrenceId(1),
+            Some(other_tag)
+        ));
         shell.settle();
         assert!(shell.has_role_and_label(Role::Button, &create_label));
         shell.click_menu_command("menu-edit", AppCommand::Deselect);
@@ -4203,15 +4216,7 @@ fn tags_panel_delete_unused_is_localized_context_bound_and_undoable() {
         let unused_tag = TagId(801);
         let used_tag = TagId(802);
         for (target, name) in [(unused_tag, "Unused"), (used_tag, "Used")] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         shell.settle();
         shell.click_at(shell.top_face_centre(1));
@@ -4337,23 +4342,15 @@ fn tags_panel_delete_used_exact_plan_is_localized_atomic_stale_safe_and_undoable
     ] {
         let mut shell = Shell::with_catalog(catalog);
         let tag = TagId(825);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                    target: tag,
-                    name: "Hardware".to_owned(),
-                    visible: true,
-                })
-        );
+        assert!(create_tag(
+            shell.app_mut(),
+            tag,
+            "Hardware".to_owned(),
+            true
+        ));
         assert!(shell.app_mut().create_box());
         for target in [OccurrenceId(1), OccurrenceId(2)] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         shell.settle();
         shell.click_menu_command("menu-edit", AppCommand::SelectAll);
@@ -4479,25 +4476,14 @@ fn tags_panel_deletes_a_layer_held_only_inside_a_component_in_one_undo_step() {
         let local_tag = TagId(826);
         let missing_tag = TagId(827);
         for (target, name) in [(local_tag, "Local"), (missing_tag, "Missing")] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         assert!(shell.app_mut().create_box());
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::SetOccurrenceTag {
-                    target: OccurrenceId(1),
-                    tag: Some(local_tag),
-                })
-        );
+        assert!(set_occurrence_tag(
+            shell.app_mut(),
+            OccurrenceId(1),
+            Some(local_tag)
+        ));
         shell.click_menu_command("menu-edit", AppCommand::SelectAll);
         assert!(shell.app_mut().group_selected());
         assert!(shell.app_mut().make_component());
@@ -4576,27 +4562,14 @@ fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
         let used_tag = TagId(850);
         let unused_tag = TagId(851);
         for (target, name) in [(used_tag, "Hardware"), (unused_tag, "Unused")] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         shell.settle();
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-edit", AppCommand::Copy);
         shell.click_menu_command("menu-edit", AppCommand::Paste);
         for target in [OccurrenceId(1), OccurrenceId(2)] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(used_tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(used_tag)));
         }
         assert!(shell.app_mut().headless_apply_workflow_intent(
             WorkflowIntent::SetOccurrenceVisibility {
@@ -4645,15 +4618,12 @@ fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
         assert_eq!(shell.app().action_digest(), cancel_action_digest);
 
         shell.click_role_and_label(Role::Button, &clear_used);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                    target: TagId(854),
-                    name: "Namespace drift".to_owned(),
-                    visible: false,
-                })
-        );
+        assert!(create_tag(
+            shell.app_mut(),
+            TagId(854),
+            "Namespace drift".to_owned(),
+            false
+        ));
         let namespace_revision = shell.app().document_revision();
         let namespace_digest = shell.app().canonical_digest();
         let namespace_undo_steps = shell.app().undo_step_count();
@@ -4761,23 +4731,17 @@ fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
         assert_eq!(first_tag(&shell, OccurrenceId(2)), Some(used_tag));
 
         let missing_tag = TagId(852);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                    target: missing_tag,
-                    name: "Missing".to_owned(),
-                    visible: true,
-                })
-        );
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::SetOccurrenceTag {
-                    target: OccurrenceId(1),
-                    tag: Some(missing_tag),
-                })
-        );
+        assert!(create_tag(
+            shell.app_mut(),
+            missing_tag,
+            "Missing".to_owned(),
+            true
+        ));
+        assert!(set_occurrence_tag(
+            shell.app_mut(),
+            OccurrenceId(1),
+            Some(missing_tag)
+        ));
         shell.settle();
         let clear_missing = shell.catalog().format(
             "tags-clear",
@@ -4785,14 +4749,7 @@ fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
         );
         shell.click_role_and_label(Role::Button, &clear_missing);
         assert!(shell.app().tag_clear_visible());
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::SetOccurrenceTag {
-                    target: OccurrenceId(1),
-                    tag: None,
-                })
-        );
+        assert!(set_occurrence_tag(shell.app_mut(), OccurrenceId(1), None));
         assert!(
             shell
                 .app_mut()
@@ -4825,15 +4782,7 @@ fn tags_panel_rename_is_localized_canonical_stale_safe_and_undoable() {
         let tag = TagId(901);
         let other_tag = TagId(902);
         for (target, name) in [(tag, "Hardware"), (other_tag, "Other")] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         shell.settle();
         shell.click_at(shell.top_face_centre(1));
@@ -5024,15 +4973,12 @@ fn tags_panel_visibility_toggle_is_localized_canonical_and_undoable() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         let tag = TagId(701);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                    target: tag,
-                    name: "Hardware".to_owned(),
-                    visible: true,
-                })
-        );
+        assert!(create_tag(
+            shell.app_mut(),
+            tag,
+            "Hardware".to_owned(),
+            true
+        ));
         shell.settle();
 
         shell.click_at(shell.top_face_centre(1));
@@ -5121,15 +5067,7 @@ fn a_part_in_two_tags_is_hidden_while_either_tag_is_hidden() {
     let mut shell = Shell::with_catalog(LocaleCatalog::english());
     let (roof, concept) = (TagId(711), TagId(712));
     for (target, name) in [(roof, "Roof"), (concept, "Concept")] {
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                    target,
-                    name: name.to_owned(),
-                    visible: true,
-                })
-        );
+        assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
     }
     shell.settle();
 
@@ -5193,15 +5131,7 @@ fn saved_views_panel_saves_shows_renames_and_deletes_a_view() {
     use ketchup_app::ViewFlag;
     let mut shell = Shell::with_catalog(LocaleCatalog::english());
     let roof = TagId(721);
-    assert!(
-        shell
-            .app_mut()
-            .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                target: roof,
-                name: "Roof".to_owned(),
-                visible: true,
-            })
-    );
+    assert!(create_tag(shell.app_mut(), roof, "Roof".to_owned(), true));
     shell.settle();
     let catalog = shell.catalog().clone();
     let name_label = catalog.text("saved-views-name");
@@ -5315,27 +5245,19 @@ fn tags_panel_bulk_visibility_is_localized_atomic_and_undoable() {
             (visible_tag, "Hardware", true),
             (hidden_tag, "Hidden", false),
         ] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible,
-                    })
-            );
+            assert!(create_tag(
+                shell.app_mut(),
+                target,
+                name.to_owned(),
+                visible
+            ));
         }
         assert!(shell.app_mut().create_box());
         for (target, tag) in [
             (OccurrenceId(1), visible_tag),
             (OccurrenceId(2), hidden_tag),
         ] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         shell.click_at(shell.top_face_centre(1));
         assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
@@ -5487,27 +5409,19 @@ fn tags_panel_invert_visibility_is_localized_atomic_and_undoable() {
             (visible_tag, "Hardware", true),
             (hidden_tag, "Hidden", false),
         ] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible,
-                    })
-            );
+            assert!(create_tag(
+                shell.app_mut(),
+                target,
+                name.to_owned(),
+                visible
+            ));
         }
         assert!(shell.app_mut().create_box());
         for (target, tag) in [
             (OccurrenceId(1), visible_tag),
             (OccurrenceId(2), hidden_tag),
         ] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         shell.click_at(shell.top_face_centre(1));
         shell.settle();
@@ -5601,15 +5515,12 @@ fn tags_panel_isolate_is_localized_atomic_and_undoable() {
             (visible_tag, "Visible", true),
             (hidden_tag, "Hidden", false),
         ] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible,
-                    })
-            );
+            assert!(create_tag(
+                shell.app_mut(),
+                target,
+                name.to_owned(),
+                visible
+            ));
         }
         assert!(shell.app_mut().create_box());
         assert!(shell.app_mut().create_box());
@@ -5618,12 +5529,7 @@ fn tags_panel_isolate_is_localized_atomic_and_undoable() {
             (OccurrenceId(2), visible_tag),
             (OccurrenceId(3), hidden_tag),
         ] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         shell.click_at(shell.top_face_centre(2));
         assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
@@ -5740,15 +5646,7 @@ fn tags_panel_isolate_selection_is_localized_atomic_and_undoable() {
             (selected_b, "Fasteners"),
             (other, "Other"),
         ] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         assert!(shell.app_mut().create_box());
         assert!(shell.app_mut().create_box());
@@ -5757,12 +5655,7 @@ fn tags_panel_isolate_selection_is_localized_atomic_and_undoable() {
             (OccurrenceId(2), selected_b),
             (OccurrenceId(3), other),
         ] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         shell.click_at(shell.top_face_centre(1));
         shell.click_at_with(shell.top_face_centre(2), shift());
@@ -5903,15 +5796,7 @@ fn tags_panel_hide_selection_is_localized_atomic_and_undoable() {
             (selected_b, "Fasteners"),
             (other, "Other"),
         ] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         assert!(shell.app_mut().create_box());
         assert!(shell.app_mut().create_box());
@@ -5920,12 +5805,7 @@ fn tags_panel_hide_selection_is_localized_atomic_and_undoable() {
             (OccurrenceId(2), selected_b),
             (OccurrenceId(3), other),
         ] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         shell.click_at(shell.top_face_centre(1));
         shell.click_at_with(shell.top_face_centre(2), shift());
@@ -6047,15 +5927,7 @@ fn tags_panel_show_selection_is_localized_atomic_and_undoable() {
             (selected_b, "Fasteners"),
             (other, "Other"),
         ] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         assert!(shell.app_mut().create_box());
         assert!(shell.app_mut().create_box());
@@ -6064,12 +5936,7 @@ fn tags_panel_show_selection_is_localized_atomic_and_undoable() {
             (OccurrenceId(2), selected_b),
             (OccurrenceId(3), other),
         ] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         shell.click_at(shell.top_face_centre(1));
         shell.click_at_with(shell.top_face_centre(2), shift());
@@ -6197,15 +6064,7 @@ fn tags_panel_invert_selection_is_localized_atomic_and_undoable() {
             (selected_b, "Fasteners"),
             (other, "Other"),
         ] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         assert!(shell.app_mut().create_box());
         assert!(shell.app_mut().create_box());
@@ -6214,12 +6073,7 @@ fn tags_panel_invert_selection_is_localized_atomic_and_undoable() {
             (OccurrenceId(2), selected_b),
             (OccurrenceId(3), other),
         ] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         shell.click_at(shell.top_face_centre(1));
         shell.click_at_with(shell.top_face_centre(2), shift());
@@ -6325,15 +6179,7 @@ fn tags_panel_select_matching_is_localized_ephemeral_and_fail_closed() {
         let hardware = TagId(971);
         let fasteners = TagId(972);
         for (target, name) in [(hardware, "Hardware"), (fasteners, "Fasteners")] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         for _ in 0..5 {
             assert!(shell.app_mut().create_box());
@@ -6346,12 +6192,7 @@ fn tags_panel_select_matching_is_localized_ephemeral_and_fail_closed() {
             (OccurrenceId(4), fasteners),
             (OccurrenceId(5), fasteners),
         ] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         assert!(shell.app_mut().headless_apply_workflow_intent(
             WorkflowIntent::SetOccurrenceVisibility {
@@ -6361,14 +6202,11 @@ fn tags_panel_select_matching_is_localized_ephemeral_and_fail_closed() {
         ));
         assert!(shell.app_mut().select_tag_occurrences(hardware));
         assert_eq!(shell.app().selected_occurrence_count(), 2);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::SetOccurrenceTag {
-                    target: OccurrenceId(2),
-                    tag: Some(fasteners),
-                })
-        );
+        assert!(set_occurrence_tag(
+            shell.app_mut(),
+            OccurrenceId(2),
+            Some(fasteners)
+        ));
         assert_eq!(shell.app().selected_occurrence_count(), 2);
         shell.settle();
 
@@ -6471,15 +6309,12 @@ fn tags_panel_select_all_tagged_is_localized_ephemeral_and_fail_closed() {
             (fasteners, "Fasteners", true),
             (hidden, "Hidden", false),
         ] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible,
-                    })
-            );
+            assert!(create_tag(
+                shell.app_mut(),
+                target,
+                name.to_owned(),
+                visible
+            ));
         }
         for _ in 0..5 {
             assert!(shell.app_mut().create_box());
@@ -6492,12 +6327,7 @@ fn tags_panel_select_all_tagged_is_localized_ephemeral_and_fail_closed() {
             (OccurrenceId(4), fasteners),
             (OccurrenceId(5), hidden),
         ] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         assert!(shell.app_mut().headless_apply_workflow_intent(
             WorkflowIntent::SetOccurrenceVisibility {
@@ -6572,15 +6402,7 @@ fn tags_panel_select_tagged_is_localized_ephemeral_and_fail_closed() {
         let tag = TagId(1001);
         let empty_tag = TagId(1002);
         for (target, name) in [(tag, "Hardware"), (empty_tag, "Empty")] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         shell.settle();
         shell.click_at(shell.top_face_centre(1));
@@ -6589,12 +6411,7 @@ fn tags_panel_select_tagged_is_localized_ephemeral_and_fail_closed() {
         assert!(shell.app_mut().create_box());
         assert_eq!(shell.app().occurrence_count(), 3);
         for target in [OccurrenceId(1), OccurrenceId(2)] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(tag),
-                }
-            ));
+            assert!(set_occurrence_tag(shell.app_mut(), target, Some(tag)));
         }
         shell.settle();
 
@@ -6670,28 +6487,22 @@ fn tags_panel_select_untagged_is_localized_ephemeral_and_fail_closed() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         let tag = TagId(1101);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                    target: tag,
-                    name: "Hardware".to_owned(),
-                    visible: true,
-                })
-        );
+        assert!(create_tag(
+            shell.app_mut(),
+            tag,
+            "Hardware".to_owned(),
+            true
+        ));
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-edit", AppCommand::Copy);
         shell.click_menu_command("menu-edit", AppCommand::Paste);
         assert!(shell.app_mut().create_box());
         assert_eq!(shell.app().occurrence_count(), 3);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::SetOccurrenceTag {
-                    target: OccurrenceId(1),
-                    tag: Some(tag),
-                })
-        );
+        assert!(set_occurrence_tag(
+            shell.app_mut(),
+            OccurrenceId(1),
+            Some(tag)
+        ));
         assert!(shell.app_mut().headless_apply_workflow_intent(
             WorkflowIntent::SetOccurrenceVisibility {
                 target: OccurrenceId(3),
@@ -6738,14 +6549,11 @@ fn tags_panel_select_untagged_is_localized_ephemeral_and_fail_closed() {
         shell.settle();
         assert!(shell.has_role_and_label(Role::Button, &select_label));
 
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::SetOccurrenceTag {
-                    target: OccurrenceId(2),
-                    tag: Some(tag),
-                })
-        );
+        assert!(set_occurrence_tag(
+            shell.app_mut(),
+            OccurrenceId(2),
+            Some(tag)
+        ));
         let tagged_revision = shell.app().document_revision();
         let tagged_digest = shell.app().canonical_digest();
         let tagged_undo_steps = shell.app().undo_step_count();
@@ -6773,28 +6581,22 @@ fn tags_panel_assign_selection_is_localized_canonical_context_bound_and_undoable
     ] {
         let mut shell = Shell::with_catalog(catalog);
         let tag = TagId(1201);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                    target: tag,
-                    name: "Hardware".to_owned(),
-                    visible: true,
-                })
-        );
+        assert!(create_tag(
+            shell.app_mut(),
+            tag,
+            "Hardware".to_owned(),
+            true
+        ));
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-edit", AppCommand::Copy);
         shell.click_menu_command("menu-edit", AppCommand::Paste);
         assert!(shell.app_mut().create_box());
         assert_eq!(shell.app().occurrence_count(), 3);
-        assert!(
-            shell
-                .app_mut()
-                .headless_apply_workflow_intent(WorkflowIntent::SetOccurrenceTag {
-                    target: OccurrenceId(1),
-                    tag: Some(tag),
-                })
-        );
+        assert!(set_occurrence_tag(
+            shell.app_mut(),
+            OccurrenceId(1),
+            Some(tag)
+        ));
         shell.settle();
         shell.click_menu_command("menu-edit", AppCommand::SelectAll);
         assert_eq!(shell.app().selected_occurrence_count(), 3);
@@ -6887,15 +6689,7 @@ fn tags_panel_remove_selection_is_localized_canonical_context_bound_and_undoable
         let tag = TagId(1301);
         let other_tag = TagId(1302);
         for (target, name) in [(tag, "Hardware"), (other_tag, "Other")] {
-            assert!(
-                shell
-                    .app_mut()
-                    .headless_apply_workflow_intent(WorkflowIntent::CreateTag {
-                        target,
-                        name: name.to_owned(),
-                        visible: true,
-                    })
-            );
+            assert!(create_tag(shell.app_mut(), target, name.to_owned(), true));
         }
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-edit", AppCommand::Copy);
@@ -6906,11 +6700,10 @@ fn tags_panel_remove_selection_is_localized_canonical_context_bound_and_undoable
             (OccurrenceId(2), tag),
             (OccurrenceId(3), other_tag),
         ] {
-            assert!(shell.app_mut().headless_apply_workflow_intent(
-                WorkflowIntent::SetOccurrenceTag {
-                    target,
-                    tag: Some(assigned_tag),
-                }
+            assert!(set_occurrence_tag(
+                shell.app_mut(),
+                target,
+                Some(assigned_tag)
             ));
         }
         shell.settle();

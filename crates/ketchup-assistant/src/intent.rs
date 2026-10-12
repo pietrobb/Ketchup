@@ -1,39 +1,27 @@
 use ketchup_model::document::{
-    AuthoritativeDependency, CanonicalCommand, CloneDefinitionPlan, CollectionId, CommandBatch,
-    ConvertGroupPlan, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, GroupId,
-    NodeId, OccurrenceId, Proposal, ProposalAssumption, ProposalBudget, ProposalConfirmation,
-    ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, TagId,
-    Transform,
+    AuthoritativeDependency, CanonicalCommand, CommandBatch, ConvertGroupPlan, DefinitionId,
+    Dimension, DocumentStore, FeatureId, GroupId, NodeId, OccurrenceId, Proposal,
+    ProposalAssumption, ProposalBudget, ProposalConfirmation, ProposalContext, ProposalGoal,
+    ProposalPrepareError, ProposalPrincipal, ProposalRisk, TagId, Transform,
 };
 use std::collections::BTreeSet;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IntentCapability {
-    CreateEvaluatorInput,
     SetRuleDimension,
     SetFeatureDimension,
     SetProfilePoints,
     RenameDefinition,
     SetOccurrenceVisibility,
-    SetOccurrenceTranslation,
-    SetOccurrenceTag,
-    SetTagVisibility,
     RepointOccurrence,
     SetOccurrenceParent,
     SetGroupTranslation,
     SetGroupParent,
-    SetCollectionOccurrences,
-    CreateTag,
     DeleteTag,
     DeleteGroup,
-    DeleteOccurrence,
-    CreateDefinition,
     DeleteDefinition,
-    CreateProfileFeature,
     CreateGroup,
-    CreateOccurrence,
-    CloneProfileDefinitionAndRepoint,
     ConvertEmptyGroupToComponent,
 }
 
@@ -66,30 +54,19 @@ impl IntentGrant {
         Self::new(
             RequestingPrincipal::LocalAssistant,
             [
-                IntentCapability::CreateEvaluatorInput,
                 IntentCapability::SetRuleDimension,
                 IntentCapability::SetFeatureDimension,
                 IntentCapability::SetProfilePoints,
                 IntentCapability::RenameDefinition,
                 IntentCapability::SetOccurrenceVisibility,
-                IntentCapability::SetOccurrenceTranslation,
-                IntentCapability::SetOccurrenceTag,
-                IntentCapability::SetTagVisibility,
                 IntentCapability::RepointOccurrence,
                 IntentCapability::SetOccurrenceParent,
                 IntentCapability::SetGroupTranslation,
                 IntentCapability::SetGroupParent,
-                IntentCapability::SetCollectionOccurrences,
-                IntentCapability::CreateTag,
                 IntentCapability::DeleteTag,
                 IntentCapability::DeleteGroup,
-                IntentCapability::DeleteOccurrence,
-                IntentCapability::CreateDefinition,
                 IntentCapability::DeleteDefinition,
-                IntentCapability::CreateProfileFeature,
                 IntentCapability::CreateGroup,
-                IntentCapability::CreateOccurrence,
-                IntentCapability::CloneProfileDefinitionAndRepoint,
                 IntentCapability::ConvertEmptyGroupToComponent,
             ],
         )
@@ -116,11 +93,6 @@ impl IntentGrant {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkflowIntent {
-    CreateEvaluatorInput {
-        target: NodeId,
-        name: String,
-        value_text: String,
-    },
     SetRuleDimension {
         target: NodeId,
         value_text: String,
@@ -141,20 +113,6 @@ pub enum WorkflowIntent {
         target: OccurrenceId,
         visible: bool,
     },
-    SetOccurrenceTranslation {
-        target: OccurrenceId,
-        x_mm_text: String,
-        y_mm_text: String,
-        z_mm_text: String,
-    },
-    SetOccurrenceTag {
-        target: OccurrenceId,
-        tag: Option<TagId>,
-    },
-    SetTagVisibility {
-        target: TagId,
-        visible: bool,
-    },
     RepointOccurrence {
         target: OccurrenceId,
         definition: DefinitionId,
@@ -173,52 +131,17 @@ pub enum WorkflowIntent {
         target: GroupId,
         parent: Option<GroupId>,
     },
-    SetCollectionOccurrences {
-        target: CollectionId,
-        occurrence_ids: Vec<OccurrenceId>,
-    },
-    CreateTag {
-        target: TagId,
-        name: String,
-        visible: bool,
-    },
     DeleteTag {
         target: TagId,
     },
     DeleteGroup {
         target: GroupId,
     },
-    DeleteOccurrence {
-        target: OccurrenceId,
-    },
-    CreateDefinition {
-        target: DefinitionId,
-        name: String,
-    },
     DeleteDefinition {
         target: DefinitionId,
     },
-    CreateProfileFeature {
-        target: FeatureId,
-        definition: DefinitionId,
-        name: String,
-        points_mm: Vec<[f64; 2]>,
-    },
     CreateGroup {
         target: GroupId,
-        name: String,
-    },
-    CreateOccurrence {
-        target: OccurrenceId,
-        definition: DefinitionId,
-        name: String,
-    },
-    CloneProfileDefinitionAndRepoint {
-        target: OccurrenceId,
-        source_definition: DefinitionId,
-        source_feature: FeatureId,
-        new_definition: DefinitionId,
-        new_feature: FeatureId,
         name: String,
     },
     ConvertEmptyGroupToComponent {
@@ -232,32 +155,19 @@ pub enum WorkflowIntent {
 impl WorkflowIntent {
     const fn required_capability(&self) -> IntentCapability {
         match self {
-            Self::CreateEvaluatorInput { .. } => IntentCapability::CreateEvaluatorInput,
             Self::SetRuleDimension { .. } => IntentCapability::SetRuleDimension,
             Self::SetFeatureDimension { .. } => IntentCapability::SetFeatureDimension,
             Self::SetProfilePoints { .. } => IntentCapability::SetProfilePoints,
             Self::RenameDefinition { .. } => IntentCapability::RenameDefinition,
             Self::SetOccurrenceVisibility { .. } => IntentCapability::SetOccurrenceVisibility,
-            Self::SetOccurrenceTranslation { .. } => IntentCapability::SetOccurrenceTranslation,
-            Self::SetOccurrenceTag { .. } => IntentCapability::SetOccurrenceTag,
-            Self::SetTagVisibility { .. } => IntentCapability::SetTagVisibility,
             Self::RepointOccurrence { .. } => IntentCapability::RepointOccurrence,
             Self::SetOccurrenceParent { .. } => IntentCapability::SetOccurrenceParent,
             Self::SetGroupTranslation { .. } => IntentCapability::SetGroupTranslation,
             Self::SetGroupParent { .. } => IntentCapability::SetGroupParent,
-            Self::SetCollectionOccurrences { .. } => IntentCapability::SetCollectionOccurrences,
-            Self::CreateTag { .. } => IntentCapability::CreateTag,
             Self::DeleteTag { .. } => IntentCapability::DeleteTag,
             Self::DeleteGroup { .. } => IntentCapability::DeleteGroup,
-            Self::DeleteOccurrence { .. } => IntentCapability::DeleteOccurrence,
-            Self::CreateDefinition { .. } => IntentCapability::CreateDefinition,
             Self::DeleteDefinition { .. } => IntentCapability::DeleteDefinition,
-            Self::CreateProfileFeature { .. } => IntentCapability::CreateProfileFeature,
             Self::CreateGroup { .. } => IntentCapability::CreateGroup,
-            Self::CreateOccurrence { .. } => IntentCapability::CreateOccurrence,
-            Self::CloneProfileDefinitionAndRepoint { .. } => {
-                IntentCapability::CloneProfileDefinitionAndRepoint
-            }
             Self::ConvertEmptyGroupToComponent { .. } => {
                 IntentCapability::ConvertEmptyGroupToComponent
             }
@@ -276,9 +186,7 @@ impl IntentRequest {
     #[must_use]
     pub fn m7a(intent: WorkflowIntent) -> Self {
         let requested_budget = match &intent {
-            WorkflowIntent::CreateProfileFeature { .. } => ProposalBudget::M18C_CREATE_FEATURE,
-            WorkflowIntent::CloneProfileDefinitionAndRepoint { .. }
-            | WorkflowIntent::ConvertEmptyGroupToComponent { .. } => {
+            WorkflowIntent::ConvertEmptyGroupToComponent { .. } => {
                 ProposalBudget::M18C_CLONE_PROFILE_DEFINITION
             }
             _ => ProposalBudget::M7A_SINGLE_CHANGE,
@@ -300,9 +208,6 @@ pub fn propose_intent(
         return Err(IntentError::CapabilityDenied(required));
     }
     let requested_secondary_targets = match &request.intent {
-        WorkflowIntent::SetOccurrenceTag { tag: Some(tag), .. } => {
-            vec![AuthoritativeDependency::Tag(*tag)]
-        }
         WorkflowIntent::RepointOccurrence { definition, .. } => {
             vec![AuthoritativeDependency::Definition(*definition)]
         }
@@ -314,34 +219,9 @@ pub fn propose_intent(
             parent: Some(parent),
             ..
         } => vec![AuthoritativeDependency::Group(*parent)],
-        WorkflowIntent::SetCollectionOccurrences { occurrence_ids, .. } => occurrence_ids
-            .iter()
-            .copied()
-            .map(AuthoritativeDependency::Occurrence)
-            .collect(),
-        WorkflowIntent::CreateOccurrence { definition, .. }
-        | WorkflowIntent::CreateProfileFeature { definition, .. } => {
-            vec![AuthoritativeDependency::Definition(*definition)]
-        }
-        WorkflowIntent::CloneProfileDefinitionAndRepoint {
-            source_definition,
-            source_feature,
-            ..
-        } => vec![
-            AuthoritativeDependency::Definition(*source_definition),
-            AuthoritativeDependency::Feature(*source_feature),
-        ],
         _ => Vec::new(),
     };
     let requested_missing_targets = match &request.intent {
-        WorkflowIntent::CloneProfileDefinitionAndRepoint {
-            new_definition,
-            new_feature,
-            ..
-        } => vec![
-            AuthoritativeDependency::Definition(*new_definition),
-            AuthoritativeDependency::Feature(*new_feature),
-        ],
         WorkflowIntent::ConvertEmptyGroupToComponent {
             new_definition,
             new_occurrence,
@@ -354,20 +234,6 @@ pub fn propose_intent(
     };
 
     let (goal, target, command) = match request.intent {
-        WorkflowIntent::CreateEvaluatorInput {
-            target,
-            name,
-            value_text,
-        } => (
-            ProposalGoal::CreateEvaluatorInput(target),
-            AuthoritativeDependency::EvaluatorNode(target),
-            CanonicalCommand::CreateEvaluatorNode {
-                id: target,
-                name,
-                dimension: Dimension::from_decimal(value_text)?,
-                dependencies: Vec::new(),
-            },
-        ),
         WorkflowIntent::SetRuleDimension { target, value_text } => {
             let authority = AuthoritativeDependency::EvaluatorNode(target);
             (
@@ -420,25 +286,6 @@ pub fn propose_intent(
                 },
             )
         }
-        WorkflowIntent::SetOccurrenceTag { target, tag } => (
-            ProposalGoal::SetOccurrenceTags(target),
-            AuthoritativeDependency::Occurrence(target),
-            CanonicalCommand::SetOccurrenceTags {
-                id: target,
-                tags: tag.into_iter().collect(),
-            },
-        ),
-        WorkflowIntent::SetTagVisibility { target, visible } => {
-            let authority = AuthoritativeDependency::Tag(target);
-            (
-                ProposalGoal::SetTagVisibility(target),
-                authority,
-                CanonicalCommand::SetTagVisibility {
-                    id: target,
-                    visible,
-                },
-            )
-        }
         WorkflowIntent::RepointOccurrence { target, definition } => {
             let authority = AuthoritativeDependency::Occurrence(target);
             (
@@ -463,30 +310,6 @@ pub fn propose_intent(
             AuthoritativeDependency::Group(target),
             CanonicalCommand::SetGroupParent { id: target, parent },
         ),
-        WorkflowIntent::SetCollectionOccurrences {
-            target,
-            occurrence_ids,
-        } => (
-            ProposalGoal::SetCollectionOccurrences(target),
-            AuthoritativeDependency::Collection(target),
-            CanonicalCommand::SetCollectionOccurrences {
-                id: target,
-                occurrence_ids,
-            },
-        ),
-        WorkflowIntent::CreateTag {
-            target,
-            name,
-            visible,
-        } => (
-            ProposalGoal::CreateTag(target),
-            AuthoritativeDependency::Tag(target),
-            CanonicalCommand::CreateTag {
-                id: target,
-                name,
-                visible,
-            },
-        ),
         WorkflowIntent::DeleteTag { target } => (
             ProposalGoal::DeleteTag(target),
             AuthoritativeDependency::Tag(target),
@@ -496,16 +319,6 @@ pub fn propose_intent(
             ProposalGoal::DeleteGroup(target),
             AuthoritativeDependency::Group(target),
             CanonicalCommand::DeleteGroup { id: target },
-        ),
-        WorkflowIntent::DeleteOccurrence { target } => (
-            ProposalGoal::DeleteOccurrence(target),
-            AuthoritativeDependency::Occurrence(target),
-            CanonicalCommand::DeleteOccurrence { id: target },
-        ),
-        WorkflowIntent::CreateDefinition { target, name } => (
-            ProposalGoal::CreateDefinition(target),
-            AuthoritativeDependency::Definition(target),
-            CanonicalCommand::CreateDefinition { id: target, name },
         ),
         WorkflowIntent::DeleteDefinition { target } => {
             if store
@@ -527,21 +340,6 @@ pub fn propose_intent(
                 CanonicalCommand::DeleteDefinition { id: target },
             )
         }
-        WorkflowIntent::CreateProfileFeature {
-            target,
-            definition,
-            name,
-            points_mm,
-        } => (
-            ProposalGoal::CreateProfileFeature(target),
-            AuthoritativeDependency::Feature(target),
-            CanonicalCommand::CreateFeature {
-                id: target,
-                definition_id: definition,
-                name,
-                kind: FeatureKind::polygon(&points_mm),
-            },
-        ),
         WorkflowIntent::CreateGroup { target, name } => (
             ProposalGoal::CreateGroup(target),
             AuthoritativeDependency::Group(target),
@@ -552,87 +350,6 @@ pub fn propose_intent(
                 parent: None,
             },
         ),
-        WorkflowIntent::CreateOccurrence {
-            target,
-            definition,
-            name,
-        } => (
-            ProposalGoal::CreateOccurrence(target),
-            AuthoritativeDependency::Occurrence(target),
-            CanonicalCommand::CreateOccurrence {
-                id: target,
-                definition_id: definition,
-                name,
-                transform: Transform::identity(),
-                parent: None,
-                tags: Default::default(),
-                visible: true,
-            },
-        ),
-        WorkflowIntent::CloneProfileDefinitionAndRepoint {
-            target,
-            source_definition,
-            source_feature,
-            new_definition,
-            new_feature,
-            name,
-        } => {
-            let snapshot = store.current();
-            let occurrence = snapshot.occurrence(target).ok_or(
-                ketchup_model::document::CanonicalError::OccurrenceNotFound(target),
-            )?;
-            if occurrence.definition_id() != source_definition {
-                return Err(
-                    ketchup_model::document::CanonicalError::OccurrenceDefinitionMismatch.into(),
-                );
-            }
-            let definition = snapshot.definition(source_definition).ok_or(
-                ketchup_model::document::CanonicalError::DefinitionNotFound(source_definition),
-            )?;
-            if definition.feature_ids() != [source_feature]
-                || !definition.local_occurrence_ids().is_empty()
-                || !definition.local_group_ids().is_empty()
-                || snapshot
-                    .feature_parameter_bindings()
-                    .any(|binding| binding.target.feature_id == source_feature)
-            {
-                return Err(ketchup_model::document::CanonicalError::InvalidFeatureMap.into());
-            }
-            let feature = snapshot.feature(source_feature).ok_or(
-                ketchup_model::document::CanonicalError::FeatureNotFound(source_feature),
-            )?;
-            if !matches!(feature.kind(), FeatureKind::Profile { .. }) {
-                return Err(
-                    ketchup_model::document::CanonicalError::FeatureIsNotProfile(source_feature)
-                        .into(),
-                );
-            }
-            if snapshot.definition(new_definition).is_some() {
-                return Err(
-                    ketchup_model::document::CanonicalError::DefinitionAlreadyExists(
-                        new_definition,
-                    )
-                    .into(),
-                );
-            }
-            if snapshot.feature(new_feature).is_some() {
-                return Err(
-                    ketchup_model::document::CanonicalError::FeatureAlreadyExists(new_feature)
-                        .into(),
-                );
-            }
-            (
-                ProposalGoal::CloneProfileDefinitionAndRepoint(target),
-                AuthoritativeDependency::Occurrence(target),
-                CanonicalCommand::CloneDefinitionAndRepoint(CloneDefinitionPlan::new(
-                    target,
-                    source_definition,
-                    new_definition,
-                    name,
-                    vec![(source_feature, new_feature)],
-                )),
-            )
-        }
         WorkflowIntent::ConvertEmptyGroupToComponent {
             target,
             new_definition,
@@ -716,74 +433,22 @@ pub fn propose_intent(
                 },
             )
         }
-        WorkflowIntent::SetOccurrenceTranslation {
-            target,
-            x_mm_text,
-            y_mm_text,
-            z_mm_text,
-        } => {
-            let authority = AuthoritativeDependency::Occurrence(target);
-            let parse = |value: String| {
-                value
-                    .trim()
-                    .parse::<f64>()
-                    .map_err(|_: std::num::ParseFloatError| {
-                        ketchup_model::document::CanonicalError::InvalidTransform
-                    })
-            };
-            let x_mm = parse(x_mm_text)?;
-            let y_mm = parse(y_mm_text)?;
-            let z_mm = parse(z_mm_text)?;
-            let snapshot = store.current();
-            let mut matrix = *snapshot
-                .occurrence(target)
-                .ok_or(ketchup_model::document::CanonicalError::OccurrenceNotFound(
-                    target,
-                ))?
-                .transform()
-                .matrix();
-            matrix[3] = x_mm;
-            matrix[7] = y_mm;
-            matrix[11] = z_mm;
-            (
-                ProposalGoal::SetOccurrenceTranslation(target),
-                authority,
-                CanonicalCommand::SetOccurrenceTransform {
-                    id: target,
-                    transform: Transform::from_matrix(matrix)?,
-                },
-            )
-        }
     };
 
-    let mut assumptions = if matches!(
-        required,
-        IntentCapability::CreateEvaluatorInput
-            | IntentCapability::CreateTag
-            | IntentCapability::CreateDefinition
-            | IntentCapability::CreateProfileFeature
-            | IntentCapability::CreateGroup
-            | IntentCapability::CreateOccurrence
-    ) {
+    let mut assumptions = if matches!(required, IntentCapability::CreateGroup) {
         vec![ProposalAssumption::TargetMissing(target)]
     } else if matches!(
         required,
         IntentCapability::SetProfilePoints
             | IntentCapability::RenameDefinition
             | IntentCapability::SetOccurrenceVisibility
-            | IntentCapability::SetOccurrenceTranslation
-            | IntentCapability::SetOccurrenceTag
-            | IntentCapability::SetTagVisibility
             | IntentCapability::RepointOccurrence
             | IntentCapability::SetOccurrenceParent
             | IntentCapability::SetGroupTranslation
             | IntentCapability::SetGroupParent
-            | IntentCapability::SetCollectionOccurrences
             | IntentCapability::DeleteTag
             | IntentCapability::DeleteGroup
-            | IntentCapability::DeleteOccurrence
             | IntentCapability::DeleteDefinition
-            | IntentCapability::CloneProfileDefinitionAndRepoint
             | IntentCapability::ConvertEmptyGroupToComponent
     ) {
         vec![ProposalAssumption::TargetExists(target)]

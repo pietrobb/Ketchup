@@ -88,7 +88,7 @@ fn published_checkpoint_sync_failure_keeps_apply_undo_redo_and_reopen_consistent
     assert_eq!(reopened.snapshot().occurrences().count(), 1);
 }
 
-fn part() -> AssistantCadEditOperation {
+pub(super) fn part() -> AssistantCadEditOperation {
     AssistantCadEditOperation::CreatePart {
         holes: Vec::new(),
         pockets: Vec::new(),
