@@ -12,6 +12,8 @@ mod idle_retry;
 mod interchange;
 #[path = "mesh_conversion_tests.rs"]
 mod mesh_conversion;
+#[path = "plugin_tests.rs"]
+mod run_plugin;
 #[path = "topology_recovery_tests.rs"]
 mod topology_recovery;
 use ketchup_model::{

@@ -381,6 +381,20 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Change the operation named in the reason as its hint says.",
     ),
     entry(
+        "plugin_failed",
+        Io,
+        "executable",
+        "The plugin process did not start, crashed, timed out or broke the plugin protocol; nothing was published.",
+        "Fix the plugin as the cause says, then run it again.",
+    ),
+    entry(
+        "plugin_refused",
+        Validation,
+        "capabilities",
+        "The plugin asked for something its grant does not allow (a capability, an operation or a budget); nothing was published.",
+        "Grant what the cause names, or change the plugin to stay within its grant.",
+    ),
+    entry(
         "program_owned_document",
         Planning,
         "program",

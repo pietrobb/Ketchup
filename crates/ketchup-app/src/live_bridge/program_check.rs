@@ -62,6 +62,7 @@ pub(super) enum ProgramCheckJob {
     Validating(super::program_validate::ProgramValidationJob),
     Measuring(super::measurement::MeasurementJob),
     DryRun(super::program_dry_run::DryRunJob),
+    Plugin(super::plugin::PluginJob),
 }
 
 pub(super) struct ProgramPlanJob {
@@ -387,6 +388,10 @@ impl LiveBridge {
             }
             ProgramCheckJob::DryRun(job) => {
                 self.poll_program_dry_run(app, context, job);
+                return;
+            }
+            ProgramCheckJob::Plugin(job) => {
+                self.poll_plugin(app, context, job);
                 return;
             }
         };

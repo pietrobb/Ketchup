@@ -166,22 +166,13 @@ impl LiveBridge {
             ),
             (
                 self.program_check_job.is_some(),
-                if matches!(
-                    self.program_check_job,
-                    Some(program_check::ProgramCheckJob::Validating(_))
-                ) {
-                    "program_validate"
-                } else {
-                    if matches!(
-                        self.program_check_job,
-                        Some(program_check::ProgramCheckJob::Measuring(_))
-                    ) {
-                        "measure_faces"
-                    } else {
-                        "program_apply"
-                    }
+                match self.program_check_job {
+                    Some(program_check::ProgramCheckJob::Validating(_)) => "program_validate",
+                    Some(program_check::ProgramCheckJob::Measuring(_)) => "measure_faces",
+                    Some(program_check::ProgramCheckJob::Plugin(_)) => "run_plugin",
+                    _ => "program_apply",
                 },
-                "A program evaluation or geometry validation is running.",
+                "A program evaluation, geometry validation or plugin is running.",
             ),
         ] {
             if active {

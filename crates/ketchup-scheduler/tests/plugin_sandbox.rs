@@ -119,7 +119,7 @@ fn run_example(
             OsString::from(EXTRUSION.0.to_string()),
             OsString::from("35"),
         ],
-        store,
+        &store.current(),
         grant,
         Duration::from_secs(5),
         &AtomicBool::new(false),
@@ -166,7 +166,7 @@ fn host_max_query_state_fits_the_declared_response_line() {
     let run = run_plugin_process(
         python(),
         &[OsString::from("-c"), OsString::from(script)],
-        &store,
+        &store.current(),
         pilot_grant(PluginLimits::HOST_MAX),
         Duration::from_secs(5),
         &AtomicBool::new(false),
@@ -190,7 +190,7 @@ fn host_max_response_honors_timeout_when_plugin_stops_reading() {
         let result = run_plugin_process(
             python(),
             &[OsString::from("-c"), OsString::from(script), marker],
-            &store,
+            &store.current(),
             pilot_grant(PluginLimits::HOST_MAX),
             // Long enough to reach the blocked response even with slow startup.
             Duration::from_secs(3),
@@ -228,7 +228,7 @@ fn flooding_plugin_is_backpressured_while_host_response_is_blocked() {
             OsString::from(script),
             marker.clone().into_os_string(),
         ],
-        &host_max_store(),
+        &host_max_store().current(),
         pilot_grant(PluginLimits::HOST_MAX),
         Duration::from_millis(500),
         &AtomicBool::new(false),
@@ -254,7 +254,7 @@ fn unrepresentable_timeout_is_rejected_without_panicking() {
                 OsString::from("-c"),
                 OsString::from("import time; time.sleep(5)"),
             ],
-            &seed(),
+            &seed().current(),
             pilot_grant(PluginLimits::M7B_PILOT),
             Duration::MAX,
             &AtomicBool::new(false),
@@ -282,7 +282,7 @@ fn host_max_response_honors_cancellation_when_plugin_stops_reading() {
         let result = run_plugin_process(
             python(),
             &[OsString::from("-c"), OsString::from(script), marker],
-            &store,
+            &store.current(),
             pilot_grant(PluginLimits::HOST_MAX),
             Duration::from_secs(60),
             &run_cancelled,
@@ -358,7 +358,7 @@ fn plugin_process_does_not_inherit_parent_environment() {
     let run = run_plugin_process(
         python(),
         &[OsString::from("-c"), OsString::from(script)],
-        &store,
+        &store.current(),
         pilot_grant(PluginLimits::M7B_PILOT),
         Duration::from_secs(5),
         &AtomicBool::new(false),
@@ -379,7 +379,7 @@ fn process_rejects_direct_mutation_vocabulary_and_oversized_input() {
     let result = run_plugin_process(
         python(),
         &[OsString::from("-c"), OsString::from(direct_mutation)],
-        &store,
+        &store.current(),
         pilot_grant(PluginLimits::M7B_PILOT),
         Duration::from_secs(5),
         &AtomicBool::new(false),
@@ -397,7 +397,7 @@ fn process_rejects_direct_mutation_vocabulary_and_oversized_input() {
     let result = run_plugin_process(
         python(),
         &[OsString::from("-c"), OsString::from(not_a_program)],
-        &store,
+        &store.current(),
         pilot_grant(PluginLimits::M7B_PILOT),
         Duration::from_secs(5),
         &AtomicBool::new(false),
@@ -413,7 +413,7 @@ fn process_rejects_direct_mutation_vocabulary_and_oversized_input() {
     let result = run_plugin_process(
         python(),
         &[OsString::from("-c"), OsString::from(oversized)],
-        &store,
+        &store.current(),
         pilot_grant(PluginLimits::M7B_PILOT),
         Duration::from_secs(5),
         &AtomicBool::new(false),
@@ -432,7 +432,7 @@ fn pre_cancelled_run_does_not_attempt_to_spawn_the_plugin() {
     let result = run_plugin_process(
         missing_executable,
         &[],
-        &store,
+        &store.current(),
         pilot_grant(PluginLimits::M7B_PILOT),
         Duration::from_secs(5),
         &cancelled,
@@ -449,7 +449,7 @@ fn process_timeout_and_cancellation_kill_the_untrusted_client() {
     let result = run_plugin_process(
         python(),
         &[OsString::from("-c"), OsString::from(sleeper)],
-        &store,
+        &store.current(),
         pilot_grant(PluginLimits::M7B_PILOT),
         Duration::from_millis(50),
         &AtomicBool::new(false),
@@ -460,7 +460,7 @@ fn process_timeout_and_cancellation_kill_the_untrusted_client() {
     let result = run_plugin_process(
         python(),
         &[OsString::from("-c"), OsString::from(sleeper)],
-        &store,
+        &store.current(),
         pilot_grant(PluginLimits::M7B_PILOT),
         Duration::from_secs(5),
         &cancelled,
@@ -504,7 +504,7 @@ fn timeout_terminates_plugin_descendants() {
             sentinel.as_os_str().to_owned(),
             OsString::from(DESCENDANT),
         ],
-        &store,
+        &store.current(),
         pilot_grant(PluginLimits::M7B_PILOT),
         // Long enough for the plugin to start its descendant before the timeout.
         Duration::from_secs(3),
@@ -540,7 +540,7 @@ fn completed_runs_terminate_plugin_descendants_on_success_and_failure() {
                 OsString::from(DESCENDANT),
                 OsString::from(exit_code.to_string()),
             ],
-            &store,
+            &store.current(),
             pilot_grant(PluginLimits::M7B_PILOT),
             Duration::from_secs(5),
             &AtomicBool::new(false),

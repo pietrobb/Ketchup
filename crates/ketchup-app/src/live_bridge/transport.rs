@@ -154,6 +154,12 @@ fn response_wait(request: &Request) -> Duration {
         Request::ApplyAndVerify { timeout_ms, .. } => {
             ketchup_mcp::apply_and_verify_response_wait(*timeout_ms)
         }
+        // The plugin runs first, then its program is published like apply_and_verify.
+        Request::RunPlugin(request) => ketchup_mcp::apply_and_verify_response_wait(
+            request
+                .timeout_ms
+                .saturating_add(super::DEFAULT_APPLY_VERIFY_TIMEOUT_MS),
+        ),
         Request::ApplyProgram { .. }
         | Request::PatchProgram { .. }
         | Request::SetProgramParams { .. }
@@ -199,6 +205,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::Propose { .. }
         | Request::Commit { .. }
         | Request::ApplyAndVerify { .. }
+        | Request::RunPlugin(_)
         | Request::PatchProgram { .. }
         | Request::SetProgramParams { .. }
         | Request::ApplyProgram { .. }

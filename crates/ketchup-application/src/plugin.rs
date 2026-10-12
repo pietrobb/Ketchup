@@ -44,7 +44,7 @@ impl DocumentSession {
         let run = run_plugin_process(
             executable,
             arguments,
-            self.document_store(),
+            &self.snapshot(),
             grant,
             timeout,
             cancelled,

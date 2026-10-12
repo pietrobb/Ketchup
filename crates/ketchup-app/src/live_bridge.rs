@@ -74,6 +74,8 @@ mod program_dry_run;
 mod program_navigation;
 pub use program_access::{ReportSection, SourceEdit};
 mod measurement;
+mod plugin;
+pub use plugin::RunPluginRequest;
 pub(crate) mod program_pick;
 mod program_validate;
 mod program_validation_summary;
@@ -220,6 +222,11 @@ pub enum Request {
         #[serde(default)]
         strict: bool,
     },
+    /// Runs a local plugin process (`executable` with `arguments`) on the
+    /// document, with the capabilities and typed operations granted here. The
+    /// program it sends is published like `ApplyAndVerify`, only while the
+    /// document is still at the revision the plugin read.
+    RunPlugin(plugin::RunPluginRequest),
     /// The Starlark program that owns the document, with each part's occurrence and lines.
     Program {
         #[serde(default)]
@@ -1192,6 +1199,10 @@ impl KetchupApp {
                         },
                         ui_busy,
                     );
+                    continue;
+                }
+                Request::RunPlugin(request) => {
+                    bridge.start_plugin(self, context, id, reply, cancelled, request, ui_busy);
                     continue;
                 }
                 Request::MeasureFaces {
@@ -2398,7 +2409,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","program_piece","patch_program","set_program_params","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -2608,6 +2619,11 @@ impl LiveBridge {
                 self.apply_and_verify_fault,
             )
             .map_err(PlanRejection::into_code),
+            Request::RunPlugin(_) => Err(failure(
+                "invalid_request",
+                "run_plugin runs only as a queued bridge request",
+                json!({"canonical_mutation": false}),
+            )),
             request @ (Request::Program { .. }
             | Request::MeasureFaces { .. }
             | Request::ValidateProgram { .. }

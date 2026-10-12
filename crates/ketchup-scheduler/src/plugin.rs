@@ -2,7 +2,7 @@ use ketchup_assistant::extension::{
     PLUGIN_PROTOCOL_V1, PluginCapability, PluginGateway, PluginGatewayError, PluginGrant,
     PluginLimits, PluginManifest, PluginProgram, PluginRequest, PluginResponse,
 };
-use ketchup_model::document::DocumentStore;
+use ketchup_model::document::Snapshot;
 use process_wrap::std::{ChildWrapper, CommandWrap};
 #[cfg(windows)]
 use process_wrap::std::{JobObject, KillOnDrop};
@@ -45,15 +45,15 @@ pub struct PluginRunResult {
     pub manifest: PluginManifest,
     pub query_count: usize,
     /// The program the plugin sent with `APPLY`, checked by the gateway but
-    /// not yet planned: `DocumentSession::run_plugin` commits it the way MCP
-    /// does, only while the document is at the revision the plugin read.
+    /// not yet planned: the host commits it the way MCP does, only while the
+    /// document is at the revision the plugin read.
     pub program: Option<PluginProgram>,
 }
 
 pub fn run_plugin_process(
     executable: impl AsRef<Path>,
     arguments: &[OsString],
-    store: &DocumentStore,
+    snapshot: &Snapshot,
     grant: PluginGrant,
     timeout: Duration,
     cancelled: &AtomicBool,
@@ -84,7 +84,6 @@ pub fn run_plugin_process(
             .ok_or(PluginHostError::ExitedBeforeDone)?;
         let manifest = parse_manifest(&hello)?;
         let mut gateway = PluginGateway::new(manifest.clone(), grant)?;
-        let snapshot = store.current();
         send_line(
             &writer,
             "READY\tketchup.plugin.v1".to_owned(),
@@ -102,7 +101,7 @@ pub fn run_plugin_process(
                 break;
             }
             let request = parse_request(&line)?;
-            match gateway.handle(&snapshot, request)? {
+            match gateway.handle(snapshot, request)? {
                 PluginResponse::AgentState(state) => {
                     query_count = query_count.saturating_add(1);
                     send_line(
