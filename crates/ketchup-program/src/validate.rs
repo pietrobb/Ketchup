@@ -409,8 +409,10 @@ pub(crate) fn needs_exact_shapes(a: &Part, b: &Part) -> bool {
     }
 }
 
+/// `+ 0.0` folds `-0.0` into `0.0`: a coordinate a hair below zero (which side
+/// depends on the platform's sin/cos) must print the same everywhere.
 fn round(value: f64) -> f64 {
-    (value * 1000.0).round() / 1000.0
+    (value * 1000.0).round() / 1000.0 + 0.0
 }
 
 fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {

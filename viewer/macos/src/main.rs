@@ -2,12 +2,12 @@
 //! `Kečup Viewer.app`. Finder does not pass a double-clicked file on the
 //! command line but as an Apple Event, also to a Viewer that already runs.
 
-#[cfg(target_os = "macos")]
-mod open_events;
-
 fn main() -> std::process::ExitCode {
     let requests = ketchup_viewer::desktop::OpenRequests::default();
     #[cfg(target_os = "macos")]
-    let _handler = open_events::install(requests.clone());
+    let _handler = {
+        let requests = requests.clone();
+        ketchup_macos_open::install(move |path| requests.push(path))
+    };
     ketchup_viewer::desktop::main(requests)
 }

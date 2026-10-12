@@ -6,6 +6,51 @@ use ketchup_app::{
     KetchupApp, inspect_native_document, live_bridge::bootstrap::LiveStdinBootstrap,
 };
 use ketchup_model::persistence::{self, LoadOutcome};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
+
+/// Documents the operating system asks a running Ketchup to open: on macOS
+/// Finder and "Open with" send them by Apple Event, not on the command line.
+#[derive(Clone, Default)]
+struct OpenRequests(Arc<Mutex<(Vec<PathBuf>, Option<eframe::egui::Context>)>>);
+
+impl OpenRequests {
+    fn push(&self, path: PathBuf) {
+        let mut inbox = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        inbox.0.push(path);
+        if let Some(context) = &inbox.1 {
+            context.send_viewport_cmd(eframe::egui::ViewportCommand::Focus);
+            context.request_repaint();
+        }
+    }
+
+    /// The document to open now. Ketchup holds one document, so of several
+    /// files handed over at once only the first is opened.
+    fn take(&self, context: &eframe::egui::Context) -> Option<PathBuf> {
+        let mut inbox = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        inbox.1.get_or_insert_with(|| context.clone());
+        let mut paths = std::mem::take(&mut inbox.0).into_iter();
+        paths.next()
+    }
+}
+
+struct Desktop {
+    app: KetchupApp,
+    requests: OpenRequests,
+}
+
+impl eframe::App for Desktop {
+    fn update(&mut self, context: &eframe::egui::Context, frame: &mut eframe::Frame) {
+        // Wait until a running Open or Save finishes; the open itself asks
+        // before discarding unsaved changes, like the Open command.
+        if self.app.file_activity_idle()
+            && let Some(path) = self.requests.take(context)
+        {
+            self.app.queue_open_document_path(&path);
+        }
+        self.app.update(context, frame);
+    }
+}
 
 /// Reports why the launcher-requested live bridge could not start; never prints input.
 /// The launcher reads the reason from the readiness line on stdout.
@@ -104,6 +149,12 @@ fn main() -> eframe::Result {
         (None, first_argument.into_iter().chain(arguments).collect())
     };
     let live_requested = bootstrap.is_some();
+    let requests = OpenRequests::default();
+    #[cfg(target_os = "macos")]
+    let _open_events = {
+        let requests = requests.clone();
+        ketchup_macos_open::install(move |path| requests.push(path))
+    };
     let result = eframe::run_native(
         &KetchupApp::title(),
         KetchupApp::native_options(),
@@ -127,7 +178,7 @@ fn main() -> eframe::Result {
                 }
                 app.queue_startup_arguments(start_arguments);
             }
-            Ok(Box::new(app))
+            Ok(Box::new(Desktop { app, requests }))
         }),
     );
     if live_requested && let Err(error) = &result {

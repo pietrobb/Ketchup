@@ -288,7 +288,10 @@ impl KetchupApp {
 fn default_discovery_root() -> io::Result<PathBuf> {
     #[cfg(windows)]
     let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    #[cfg(unix)]
+    // Same root as `ketchup_mcp`'s discovery.
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("TMPDIR").map(PathBuf::from);
+    #[cfg(all(unix, not(target_os = "macos")))]
     let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     #[cfg(not(any(windows, unix)))]
     let base: Option<PathBuf> = None;
@@ -835,7 +838,7 @@ mod tests {
     /// reopen them forever. A newer connection evicts the oldest idle one.
     #[test]
     fn idle_connections_do_not_keep_the_bootstrap_holder_out() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let broker = start(
             egui::Context::default(),
             directory.path(),
@@ -882,9 +885,21 @@ mod tests {
         drop(idle);
     }
 
+    /// A discovery root other users can read is refused, as the real per-user
+    /// runtime directory is not; a default temp dir on Unix is 0755.
+    fn private_tempdir() -> tempfile::TempDir {
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o700));
+        }
+        builder.tempdir().unwrap()
+    }
+
     #[test]
     fn registry_destination_is_invisible_until_complete() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let instance_id = "0123456789abcdef0123456789abcdef";
         let path = directory.path().join(format!("{instance_id}.json"));
 
@@ -909,7 +924,7 @@ mod tests {
 
     #[test]
     fn pending_attach_does_not_block_discovery_requests() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let broker = start(
             egui::Context::default(),
             directory.path(),
@@ -967,7 +982,7 @@ mod tests {
 
     #[test]
     fn attach_while_the_window_holds_an_earlier_attach_is_answered_busy_not_rejected() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let broker = start(
             egui::Context::default(),
             directory.path(),
@@ -1026,7 +1041,7 @@ mod tests {
     /// sends it instead of a proof is not let in.
     #[test]
     fn an_attach_sending_the_bootstrap_itself_is_rejected() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let broker = start(
             egui::Context::default(),
             directory.path(),
@@ -1064,7 +1079,7 @@ mod tests {
     /// again and ask the user again. A replay is rejected without a prompt.
     #[test]
     fn a_replayed_attach_request_is_rejected_without_asking_again() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let broker = start(
             egui::Context::default(),
             directory.path(),
@@ -1110,7 +1125,7 @@ mod tests {
     /// the window lived. Only a request the window was handed is remembered.
     #[test]
     fn a_nonce_answered_busy_is_not_remembered() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let broker = start(
             egui::Context::default(),
             directory.path(),
@@ -1162,7 +1177,7 @@ mod tests {
 
     #[test]
     fn an_abandoned_attach_request_leaves_the_current_client_connected() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let context = egui::Context::default();
         let mut app = KetchupApp::new();
         app.enable_live_consent_broker_in(&context, directory.path())
@@ -1220,7 +1235,7 @@ mod tests {
 
     #[test]
     fn broker_drop_stops_a_pending_attach_promptly() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let broker = start(
             egui::Context::default(),
             directory.path(),
@@ -1266,7 +1281,7 @@ mod tests {
 
     #[test]
     fn registry_publish_does_not_clobber_an_existing_destination() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let instance_id = "fedcba9876543210fedcba9876543210";
         let path = directory.path().join(format!("{instance_id}.json"));
         fs::write(&path, b"external entry").unwrap();

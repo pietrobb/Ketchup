@@ -231,6 +231,16 @@ fn remaining_egress_time(deadline: Instant) -> Result<Duration, ValidatorRuntime
         .ok_or_else(|| ValidatorRuntimeError::EgressTransport("operation timed out".to_owned()))
 }
 
+/// Applies a socket timeout. Apple kernels reject `setsockopt` with EINVAL
+/// once the peer has closed both directions; such a socket can no longer
+/// block, so the deadline is still enforced.
+fn socket_timeout(result: std::io::Result<()>) -> Result<(), ValidatorRuntimeError> {
+    match result {
+        Err(error) if cfg!(target_vendor = "apple") && error.raw_os_error() == Some(22) => Ok(()),
+        result => result.map_err(egress_io),
+    }
+}
+
 pub fn perform_host_mediated_egress(
     package: &InstalledValidatorPackage,
     grant: &EgressGrant,
@@ -276,9 +286,7 @@ pub fn perform_host_mediated_egress(
         .map_err(egress_io)?;
     let mut written = 0;
     while written < request.payload.len() {
-        stream
-            .set_write_timeout(Some(remaining_egress_time(deadline)?))
-            .map_err(egress_io)?;
+        socket_timeout(stream.set_write_timeout(Some(remaining_egress_time(deadline)?)))?;
         let count = stream
             .write(&request.payload[written..])
             .map_err(egress_io)?;
@@ -296,9 +304,7 @@ pub fn perform_host_mediated_egress(
     let mut response = Vec::new();
     let mut buffer = [0_u8; 8 * 1024];
     while response.len() < response_limit {
-        stream
-            .set_read_timeout(Some(remaining_egress_time(deadline)?))
-            .map_err(egress_io)?;
+        socket_timeout(stream.set_read_timeout(Some(remaining_egress_time(deadline)?)))?;
         let available = response_limit - response.len();
         let read_bytes = available.min(buffer.len());
         let count = stream.read(&mut buffer[..read_bytes]).map_err(egress_io)?;

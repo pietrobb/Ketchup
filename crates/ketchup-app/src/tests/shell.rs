@@ -698,7 +698,11 @@ fn every_shortcut_in_the_keymap_runs_its_command_and_prints_the_same_chord() {
     }
     assert_eq!(
         keymap::shortcut_text(&english, AppCommand::SaveAs),
-        "Ctrl+Shift+S"
+        if cfg!(target_os = "macos") {
+            "Shift+Cmd+S"
+        } else {
+            "Ctrl+Shift+S"
+        }
     );
     assert_eq!(
         keymap::shortcut_text(&slovak, AppCommand::Select),

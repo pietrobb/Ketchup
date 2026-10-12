@@ -63,7 +63,11 @@ fn desktop_shell_selects_the_wgpu_renderer() {
     };
     assert_eq!(
         setup.instance_descriptor.backends,
-        eframe::wgpu::Backends::DX12
+        if cfg!(target_os = "macos") {
+            eframe::wgpu::Backends::METAL
+        } else {
+            eframe::wgpu::Backends::DX12
+        }
     );
     assert!(setup.native_adapter_selector.is_some());
     let icon = options

@@ -228,6 +228,12 @@ impl KetchupApp {
         true
     }
 
+    /// No file command waits or runs, so a queued open would not replace one.
+    #[must_use]
+    pub fn file_activity_idle(&self) -> bool {
+        self.file_activity_label().is_none()
+    }
+
     pub(crate) fn file_activity_label(&self) -> Option<String> {
         if let Some(task) = &self.file.activity.drawing_export {
             return Some(format!(
