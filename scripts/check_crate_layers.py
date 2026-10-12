@@ -60,7 +60,6 @@ LONG_FUNCTIONS = {
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
     "crates/ketchup-application/src/validation.rs::assistant_hardware_manufacturing_report": 431,
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 634,
-    "crates/ketchup-assistant/src/intent.rs::propose_intent": 968,
     "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 702,
     "crates/ketchup-model/src/document/feature_validation.rs::validate_feature_kind": 408,
     "crates/ketchup-model/src/document/product_validation.rs::validate_features": 708,
