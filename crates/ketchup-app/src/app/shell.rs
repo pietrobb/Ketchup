@@ -65,6 +65,7 @@ impl KetchupApp {
                 consent_attached: false,
                 launch_attached: false,
                 client_export: false,
+                plugin_consents: Vec::new(),
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {

@@ -381,6 +381,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Change the operation named in the reason as its hint says.",
     ),
     entry(
+        "plugin_consent_required",
+        Validation,
+        "executable",
+        "The user has not allowed this plugin file with these permissions in the window; nothing ran and nothing was published.",
+        "Ask the user to allow the plugin in the window prompt; a changed file or more permissions need a new consent.",
+    ),
+    entry(
         "plugin_failed",
         Io,
         "executable",

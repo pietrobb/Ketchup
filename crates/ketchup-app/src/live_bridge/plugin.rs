@@ -1,7 +1,8 @@
 //! Runs a local plugin process against the window's document. The process runs
 //! off the UI thread on a snapshot; the typed program it sends is published by
 //! the `apply_and_verify` job, the window's one path for typed programs, only
-//! while the document is still at the revision the plugin read.
+//! while the document is still at the revision the plugin read. It starts only
+//! after the user allowed it in the window (`plugin_consent`).
 use super::*;
 use ketchup_assistant::extension::{PluginCapability, PluginGrant, PluginLimits};
 use ketchup_scheduler::plugin::{PluginHostError, PluginRunResult, run_plugin_process};
@@ -107,7 +108,7 @@ impl LiveBridge {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn start_plugin(
         &mut self,
-        app: &KetchupApp,
+        app: &mut KetchupApp,
         context: &egui::Context,
         id: u64,
         reply: mpsc::SyncSender<Response>,
@@ -116,8 +117,11 @@ impl LiveBridge {
         ui_busy: bool,
     ) {
         take_error_details();
+        // The user decides only on a run that could otherwise start.
         let grant = match Self::require_request_authority(&cancelled)
             .and_then(|()| self.prepare_plugin(app, &request, ui_busy))
+            .and_then(|grant| app.consent_to_plugin(&request).map(|()| grant))
+            .and_then(|grant| Self::require_request_authority(&cancelled).map(|()| grant))
         {
             Ok(grant) => grant,
             Err(error) => {

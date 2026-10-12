@@ -218,5 +218,25 @@ pub fn tools() -> Value {
                 "expected": {"type": "object", "description": EXPECTED},
             }},
         },
+        {
+            "name": "run_plugin",
+            "description": "Run a local plugin process (ketchup.plugin.v1) against the window's document. \
+    The window first asks the user to allow it, showing the files' absolute paths and SHA-256, the arguments and the permissions; \
+    without that consent the answer is plugin_consent_required and nothing ran. A changed file, other arguments or more permissions ask again. \
+    The plugin reads the document and sends one typed CAD program, published like model apply_and_verify (stamps, change, validation issues, one Undo step) \
+    only while the document is still at the revision the plugin read (stale_document otherwise). \
+    A crash, timeout or protocol break returns plugin_failed, a capability or operation outside the grant plugin_refused, each with its cause; the document stays unchanged.",
+            "inputSchema": {"type": "object", "required": ["executable", "principal_id", "capabilities"], "properties": {
+                "executable": {"type": "string", "description": "Absolute path of the plugin executable, e.g. a Python interpreter."},
+                "arguments": {"type": "array", "items": {"type": "string"}, "description": "Arguments, e.g. the absolute path of the plugin script and its inputs."},
+                "principal_id": {"type": "integer", "minimum": 0, "description": "Must equal the principal the plugin declares."},
+                "capabilities": {"type": "array", "items": {"type": "string", "enum": ["query.agent-state.v1", "edit.cad-program.v1"]}, "description": "Capabilities granted to the plugin."},
+                "allowed_operations": {"type": "array", "items": {"type": "string"}, "description": "Typed operations its program may use, by name (inspect action=operations)."},
+                "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 120000, "description": "How long the plugin process may run (default 30000); publishing has its own deadline."},
+                "validators": {"type": "array", "items": {"type": "string"}, "description": "Extra validators, e.g. [\"gravity_support\"]."},
+                "strict": {"type": "boolean"},
+                "expected": {"type": "object", "description": EXPECTED},
+            }},
+        },
     ])
 }

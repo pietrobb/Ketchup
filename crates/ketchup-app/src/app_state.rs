@@ -32,6 +32,9 @@ pub(crate) struct LiveState {
     /// An export a client asked for is running: its loss report goes back to the
     /// client instead of a lossy-conversion prompt, and it never replaces a file.
     pub(crate) client_export: bool,
+    /// Plugins the user allowed in this window, each bound to its files' hashes
+    /// and the permissions shown; nothing is kept after the window closes.
+    pub(crate) plugin_consents: Vec<live_bridge::plugin_consent::PluginConsent>,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed

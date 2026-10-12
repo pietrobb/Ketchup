@@ -75,6 +75,29 @@ fn a_section_through_the_origin_keeps_its_zero_offset() {
 }
 
 #[test]
+fn run_plugin_is_listed_and_reaches_the_window_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let schemas = crate::schema::tools();
+    assert!(
+        schemas
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "run_plugin")
+    );
+    let arguments = json!({"executable": "C:\\Python\\python.exe",
+        "arguments": ["C:\\plugins\\height.py", "2", "35"], "principal_id": 7001,
+        "capabilities": ["query.agent-state.v1", "edit.cad-program.v1"],
+        "allowed_operations": ["set_dimension"], "timeout_ms": 30000});
+    call(&mut tools, "run_plugin", arguments.clone());
+    let mut sent = arguments;
+    sent["method"] = "run_plugin".into();
+    assert_eq!(received.recv().unwrap(), sent);
+}
+
+#[test]
 fn compact_program_schema_docs_and_routes_agree() {
     let root = tempfile::tempdir().unwrap();
     let received = stand_in_window(root.path());

@@ -40,3 +40,14 @@ pub fn apply_and_verify_response_wait(timeout_ms: u64) -> std::time::Duration {
     (std::time::Duration::from_millis(timeout_ms) + std::time::Duration::from_secs(15))
         .max(DEFAULT_RESPONSE_WAIT)
 }
+
+/// How long the user may take to allow a plugin in the window.
+pub const PLUGIN_CONSENT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long the window waits for a plugin run: the user's consent, the plugin
+/// process of `timeout_ms`, then publishing its program like a verified edit
+/// of `publish_ms`.
+#[must_use]
+pub fn run_plugin_response_wait(timeout_ms: u64, publish_ms: u64) -> std::time::Duration {
+    apply_and_verify_response_wait(timeout_ms.saturating_add(publish_ms)) + PLUGIN_CONSENT_WAIT
+}

@@ -23,6 +23,7 @@ const DEFAULT_WAIT: Duration = crate::DEFAULT_RESPONSE_WAIT.saturating_add(DELIV
 const APPLY_PROGRAM_WAIT: Duration = crate::PROGRAM_RESPONSE_WAIT.saturating_add(DELIVERY_MARGIN);
 const OPEN_WAIT: Duration = crate::OPEN_RESPONSE_WAIT.saturating_add(DELIVERY_MARGIN);
 const DEFAULT_APPLY_AND_VERIFY_MS: u64 = 60_000;
+const DEFAULT_PLUGIN_MS: u64 = 30_000;
 
 /// How long the client waits for a verified edit of `timeout_ms`.
 fn apply_and_verify_wait(timeout_ms: u64) -> Duration {
@@ -199,6 +200,15 @@ impl Tools {
             }
             "view" => self.view(args),
             "batch" => self.batch(args),
+            "run_plugin" => {
+                let timeout_ms = args
+                    .get("timeout_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(DEFAULT_PLUGIN_MS);
+                let wait = crate::run_plugin_response_wait(timeout_ms, DEFAULT_APPLY_AND_VERIFY_MS)
+                    + DELIVERY_MARGIN;
+                self.send("run_plugin", args, wait)
+            }
             _ => Err(ToolError::new(
                 "unknown_tool",
                 format!("There is no tool {name}; list the tools again."),
