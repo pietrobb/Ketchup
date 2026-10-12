@@ -221,11 +221,19 @@ impl PluginRequest {
     }
 }
 
+/// A program that passed the gateway, bound to the revision the plugin read
+/// on its first request. The caller commits it only while the document is
+/// still at that revision, as MCP does with its `expected` stamp.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginProgram {
+    pub revision_id: u64,
+    pub program: AssistantCadEditProgram,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PluginResponse {
     AgentState(String),
-    /// A program that passed the gateway; the caller plans and commits it.
-    Program(AssistantCadEditProgram),
+    Program(PluginProgram),
 }
 
 pub struct PluginGateway {
@@ -233,6 +241,7 @@ pub struct PluginGateway {
     grant: PluginGrant,
     request_count: usize,
     query_bytes: usize,
+    read_revision: Option<u64>,
 }
 
 impl PluginGateway {
@@ -248,6 +257,7 @@ impl PluginGateway {
             grant,
             request_count: 0,
             query_bytes: 0,
+            read_revision: None,
         })
     }
 
@@ -273,6 +283,7 @@ impl PluginGateway {
         {
             return Err(PluginGatewayError::CapabilityDenied(required));
         }
+        let revision_id = *self.read_revision.get_or_insert(snapshot.revision_id());
 
         match request {
             PluginRequest::QueryAgentState => {
@@ -300,7 +311,10 @@ impl PluginGateway {
                         return Err(PluginGatewayError::OperationNotAllowed(name));
                     }
                 }
-                Ok(PluginResponse::Program(program))
+                Ok(PluginResponse::Program(PluginProgram {
+                    revision_id,
+                    program,
+                }))
             }
         }
     }

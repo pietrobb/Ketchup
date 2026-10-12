@@ -1,5 +1,5 @@
 use ketchup_assistant::extension::{
-    PluginCapability, PluginGatewayError, PluginGrant, PluginLimits,
+    PluginCapability, PluginGatewayError, PluginGrant, PluginLimits, PluginProgram,
 };
 use ketchup_assistant::sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
 use ketchup_model::document::{
@@ -126,8 +126,9 @@ fn run_example(
     )
 }
 
-/// The host only checks and hands back the program; planning and committing
-/// it is the caller's job, so the document is untouched here.
+/// The host only checks and hands back the program, bound to the revision the
+/// plugin read; `DocumentSession::run_plugin` commits it, so the document is
+/// untouched here.
 #[test]
 fn python_plugin_queries_bounded_state_and_hands_back_one_typed_program() {
     let _turn = crate::integration_support::file_turn();
@@ -141,12 +142,15 @@ fn python_plugin_queries_bounded_state_and_hands_back_one_typed_program() {
     assert_eq!(run.query_count, 1);
     assert_eq!(
         run.program,
-        Some(AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::SetDimension {
-                feature_id: EXTRUSION.0,
-                constraint_id: None,
-                value_mm: 35.0,
-            }],
+        Some(PluginProgram {
+            revision_id: store.current().revision_id(),
+            program: AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::SetDimension {
+                    feature_id: EXTRUSION.0,
+                    constraint_id: None,
+                    value_mm: 35.0,
+                }],
+            },
         })
     );
     assert_eq!(store.current().canonical_digest(), digest_before);

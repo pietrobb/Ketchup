@@ -16,6 +16,7 @@ pub mod model_query;
 mod part_role;
 pub mod pdm_workflow;
 mod planner;
+mod plugin;
 mod product_change;
 pub mod rejections;
 mod rule_appearance;
@@ -60,6 +61,7 @@ pub use rule_program::{
 };
 
 mod session;
+pub use plugin::PluginApplyError;
 pub use session::{DocumentSession, RecoveryState, SaveOptions, SessionError, SessionSettings};
 pub use validation::{
     AssistantValidationSelection, StructuralValidationScope, scoped_static_load_report,

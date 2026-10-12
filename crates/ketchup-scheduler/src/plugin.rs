@@ -1,8 +1,7 @@
 use ketchup_assistant::extension::{
     PLUGIN_PROTOCOL_V1, PluginCapability, PluginGateway, PluginGatewayError, PluginGrant,
-    PluginLimits, PluginManifest, PluginRequest, PluginResponse,
+    PluginLimits, PluginManifest, PluginProgram, PluginRequest, PluginResponse,
 };
-use ketchup_assistant::sidecar::AssistantCadEditProgram;
 use ketchup_model::document::DocumentStore;
 use process_wrap::std::{ChildWrapper, CommandWrap};
 #[cfg(windows)]
@@ -46,8 +45,9 @@ pub struct PluginRunResult {
     pub manifest: PluginManifest,
     pub query_count: usize,
     /// The program the plugin sent with `APPLY`, checked by the gateway but
-    /// not yet planned: the caller plans and commits it the way MCP does.
-    pub program: Option<AssistantCadEditProgram>,
+    /// not yet planned: `DocumentSession::run_plugin` commits it the way MCP
+    /// does, only while the document is at the revision the plugin read.
+    pub program: Option<PluginProgram>,
 }
 
 pub fn run_plugin_process(
@@ -118,7 +118,7 @@ pub fn run_plugin_process(
                     }
                     send_line(
                         &writer,
-                        format!("ACCEPTED\t{}", accepted.operations.len()),
+                        format!("ACCEPTED\t{}", accepted.program.operations.len()),
                         deadline,
                         cancelled,
                     )?;
