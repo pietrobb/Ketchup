@@ -94,259 +94,36 @@ pub(super) fn proposal_value(
     goal: ProposalGoal,
 ) -> ProposalValue {
     match target {
-        AuthoritativeDependency::EvaluatorNode(id) => {
-            snapshot
-                .evaluator_node(id)
-                .map_or(ProposalValue::Missing, |node| {
-                    if matches!(goal, ProposalGoal::CreateEvaluatorInput(_)) {
-                        node.dimension()
-                            .map_or(ProposalValue::Missing, |dimension| {
-                                ProposalValue::EvaluatorInputState {
-                                    name: node.name().to_owned(),
-                                    dimension: dimension.clone(),
-                                    dependencies: node.dependencies().to_vec(),
-                                }
-                            })
-                    } else if matches!(goal, ProposalGoal::CreateEvaluatorExpression(_)) {
-                        ProposalValue::EvaluatorExpressionState {
-                            name: node.name().to_owned(),
-                            expression: node.kind().source().to_owned(),
-                            dependencies: node.dependencies().to_vec(),
-                        }
-                    } else if matches!(goal, ProposalGoal::CreateEvaluatorRule(_)) {
-                        match node.kind() {
-                            EvaluatorNodeKind::Rule {
-                                outputs,
-                                allowed_parameters,
-                                ..
-                            } => ProposalValue::EvaluatorRuleState {
-                                name: node.name().to_owned(),
-                                expression: node.kind().source().to_owned(),
-                                dependencies: node.dependencies().to_vec(),
-                                input_ports: node.input_ports().to_vec(),
-                                output_ports: node.output_ports().to_vec(),
-                                outputs: outputs.clone(),
-                                override_parameters: allowed_parameters.clone(),
-                            },
-                            _ => ProposalValue::Missing,
-                        }
-                    } else if matches!(goal, ProposalGoal::RenameEvaluatorNode(_)) {
-                        ProposalValue::Text(node.name().to_owned())
-                    } else if matches!(goal, ProposalGoal::SetEvaluatorExpression(_)) {
-                        ProposalValue::Text(node.kind().source().to_owned())
-                    } else if matches!(goal, ProposalGoal::SetRuleOutputs(_)) {
-                        match node.kind() {
-                            EvaluatorNodeKind::Rule { outputs, .. } => {
-                                ProposalValue::RuleOutputs(outputs.clone())
-                            }
-                            _ => ProposalValue::Missing,
-                        }
-                    } else {
-                        node.dimension()
-                            .cloned()
-                            .map_or(ProposalValue::Missing, ProposalValue::Dimension)
-                    }
-                })
-        }
-        AuthoritativeDependency::Override(id)
-            if matches!(
-                goal,
-                ProposalGoal::CreateRuleOverride(_) | ProposalGoal::DeleteRuleOverride(_)
-            ) =>
-        {
-            snapshot
-                .override_by_id(id)
-                .map_or(ProposalValue::Missing, |value| {
-                    ProposalValue::RuleOverrideState {
-                        target: value.target.clone(),
-                        parameter: value.parameter.clone(),
-                        value: value.value(),
-                        health: value.health.clone(),
-                    }
-                })
-        }
-        AuthoritativeDependency::FeatureParameterBinding(target)
-            if matches!(
-                goal,
-                ProposalGoal::CreateFeatureParameterBinding(_)
-                    | ProposalGoal::DeleteFeatureParameterBinding(_)
-            ) =>
-        {
-            snapshot
-                .feature_parameter_binding(&target)
-                .map_or(ProposalValue::Missing, |binding| {
-                    ProposalValue::FeatureParameterBindingState {
-                        target: binding.target.clone(),
-                        derived_from: binding.derived_from.clone(),
-                    }
-                })
-        }
-        AuthoritativeDependency::Joint(id)
-            if matches!(
-                goal,
-                ProposalGoal::CreateJoint(_) | ProposalGoal::DeleteJoint(_)
-            ) =>
-        {
-            snapshot
-                .joint(id)
-                .map_or(ProposalValue::Missing, |joint| ProposalValue::JointState {
-                    participant_a: joint.participant_a().clone(),
-                    participant_b: joint.participant_b().clone(),
-                    volume_min: joint.volume().min(),
-                    volume_max: joint.volume().max(),
-                })
-        }
-        AuthoritativeDependency::Space(id)
-            if matches!(
-                goal,
-                ProposalGoal::CreateSpace(_) | ProposalGoal::DeleteSpace(_)
-            ) =>
-        {
-            snapshot
-                .space(id)
-                .map_or(ProposalValue::Missing, |space| ProposalValue::SpaceState {
-                    purpose: space.purpose().to_owned(),
-                    volume_min: space.volume().min(),
-                    volume_max: space.volume().max(),
-                    adjacent_to: space.adjacent_to().to_vec(),
-                    accessible_to: space.accessible_to().to_vec(),
-                })
-        }
-        AuthoritativeDependency::ClearanceVolume(id)
-            if matches!(
-                goal,
-                ProposalGoal::CreateClearanceVolume(_) | ProposalGoal::DeleteClearanceVolume(_)
-            ) =>
-        {
-            snapshot
-                .clearance_volume(id)
-                .map_or(ProposalValue::Missing, |clearance| {
-                    ProposalValue::ClearanceVolumeState {
-                        owner: clearance.owner().clone(),
-                        reason: clearance.reason().to_owned(),
-                        volume_min: clearance.volume().min(),
-                        volume_max: clearance.volume().max(),
-                        coordinate_frame: clearance.coordinate_frame(),
-                        tolerance_mm: clearance.tolerance().linear_mm(),
-                        severity: clearance.severity(),
-                        derived_from: clearance.derived_from().cloned(),
-                    }
-                })
-        }
-        AuthoritativeDependency::PersistentDimension(id)
-            if matches!(
-                goal,
-                ProposalGoal::CreatePersistentDimension(_)
-                    | ProposalGoal::DeletePersistentDimension(_)
-            ) =>
-        {
-            snapshot
-                .persistent_dimension(id)
-                .map_or(ProposalValue::Missing, |dimension| {
-                    ProposalValue::PersistentDimensionState {
-                        name: dimension.name.clone(),
-                        target: dimension.target.clone(),
-                        presentation: dimension.presentation,
-                    }
-                })
-        }
+        AuthoritativeDependency::EvaluatorNode(id) => snapshot
+            .evaluator_node(id)
+            .and_then(|node| node.dimension().cloned())
+            .map_or(ProposalValue::Missing, ProposalValue::Dimension),
         AuthoritativeDependency::Feature(id) => {
             snapshot
                 .feature(id)
-                .map_or(ProposalValue::Missing, |feature| {
-                    if let ProposalGoal::RecomputeFeatureParameter(ref parameter) = goal
-                        && parameter.feature_id == id
-                    {
-                        return feature_parameter_dimension(&snapshot.product, parameter)
-                            .map_or(ProposalValue::Missing, ProposalValue::Dimension);
-                    }
-                    match feature.kind() {
-                        FeatureKind::Pad(PadSpec {
-                            extent: FeatureExtent::Blind(height),
-                            ..
-                        }) => ProposalValue::Dimension(height.clone()),
-                        _ => ProposalValue::Digest(dependency_digest(
-                            snapshot,
-                            &BTreeSet::from([target]),
-                        )),
-                    }
-                })
-        }
-        AuthoritativeDependency::Tag(id) => {
-            snapshot
-                .tag(id)
-                .map_or(ProposalValue::Missing, |tag| match goal {
-                    ProposalGoal::SetTagVisibility(_) => ProposalValue::Boolean(tag.visible()),
-                    ProposalGoal::CreateTag(_) | ProposalGoal::DeleteTag(_) => {
-                        ProposalValue::TagState {
-                            name: tag.name().to_owned(),
-                            visible: tag.visible(),
-                        }
-                    }
+                .map_or(ProposalValue::Missing, |feature| match feature.kind() {
+                    FeatureKind::Pad(PadSpec {
+                        extent: FeatureExtent::Blind(height),
+                        ..
+                    }) => ProposalValue::Dimension(height.clone()),
                     _ => ProposalValue::Digest(dependency_digest(
                         snapshot,
                         &BTreeSet::from([target]),
                     )),
                 })
         }
-        AuthoritativeDependency::Collection(id) => {
-            let collection = snapshot.collection(id);
-            match goal {
-                ProposalGoal::CreateCollection(_) => collection
-                    .map_or(ProposalValue::Missing, |collection| {
-                        ProposalValue::Text(collection.name().to_owned())
-                    }),
-                ProposalGoal::SetCollectionOccurrences(_) => collection
-                    .map_or(ProposalValue::Missing, |collection| {
-                        ProposalValue::Occurrences(collection.occurrence_ids().collect())
-                    }),
-                ProposalGoal::DeleteCollection(_) => {
-                    collection.map_or(ProposalValue::Missing, |collection| {
-                        ProposalValue::CollectionState {
-                            name: collection.name().to_owned(),
-                            occurrence_ids: collection.occurrence_ids().collect(),
-                        }
-                    })
-                }
-                _ => ProposalValue::Digest(dependency_digest(snapshot, &BTreeSet::from([target]))),
-            }
-        }
-        AuthoritativeDependency::Definition(id) => {
-            snapshot
-                .definition(id)
-                .map_or(ProposalValue::Missing, |definition| {
-                    if matches!(
-                        goal,
-                        ProposalGoal::RenameDefinition(_) | ProposalGoal::CreateDefinition(_)
-                    ) {
-                        ProposalValue::Text(definition.name().to_owned())
-                    } else if matches!(
-                        goal,
-                        ProposalGoal::DeleteDefinition(_)
-                            | ProposalGoal::ConvertEmptyGroupToComponent(_)
-                    ) {
-                        ProposalValue::DefinitionState {
-                            name: definition.name().to_owned(),
-                            feature_ids: definition.feature_ids().to_vec(),
-                            local_occurrence_ids: definition.local_occurrence_ids().to_vec(),
-                            local_group_ids: definition.local_group_ids().to_vec(),
-                        }
-                    } else {
-                        ProposalValue::Digest(dependency_digest(
-                            snapshot,
-                            &BTreeSet::from([target]),
-                        ))
-                    }
-                })
+        AuthoritativeDependency::Tag(id) if snapshot.tag(id).is_none() => ProposalValue::Missing,
+        AuthoritativeDependency::Definition(id) if snapshot.definition(id).is_none() => {
+            ProposalValue::Missing
         }
         AuthoritativeDependency::Occurrence(id) => {
             snapshot
                 .occurrence(id)
                 .map_or(ProposalValue::Missing, |occurrence| match goal {
-                    ProposalGoal::SetOccurrenceTranslation(_) => {
-                        ProposalValue::Transform(occurrence.transform())
+                    ProposalGoal::SetOccurrenceParent(_) => {
+                        ProposalValue::Group(occurrence.parent())
                     }
-                    ProposalGoal::AtomicMultiCommandEdit(_) => ProposalValue::OccurrenceState {
+                    ProposalGoal::DeleteOccurrence(_) => ProposalValue::OccurrenceState {
                         definition: occurrence.definition_id(),
                         name: occurrence.name().to_owned(),
                         transform: occurrence.transform(),
@@ -354,60 +131,8 @@ pub(super) fn proposal_value(
                         tags: occurrence.tags().clone(),
                         visible: occurrence.visible(),
                     },
-                    ProposalGoal::SetOccurrenceTags(_) => {
-                        ProposalValue::Tags(occurrence.tags().clone())
-                    }
-                    ProposalGoal::RepointOccurrence(_) => {
-                        ProposalValue::Definition(occurrence.definition_id())
-                    }
-                    ProposalGoal::SetOccurrenceParent(_) => {
-                        ProposalValue::Group(occurrence.parent())
-                    }
-                    ProposalGoal::CreateOccurrence(_)
-                    | ProposalGoal::DeleteOccurrence(_)
-                    | ProposalGoal::ConvertEmptyGroupToComponent(_) => {
-                        ProposalValue::OccurrenceState {
-                            definition: occurrence.definition_id(),
-                            name: occurrence.name().to_owned(),
-                            transform: occurrence.transform(),
-                            parent: occurrence.parent(),
-                            tags: occurrence.tags().clone(),
-                            visible: occurrence.visible(),
-                        }
-                    }
                     _ => ProposalValue::Boolean(occurrence.visible()),
                 })
-        }
-        AuthoritativeDependency::GroupSubtree(id)
-            if matches!(goal, ProposalGoal::ConvertEmptyGroupToComponent(_)) =>
-        {
-            snapshot
-                .group(id)
-                .map_or(ProposalValue::Missing, |group| ProposalValue::GroupState {
-                    name: group.name().to_owned(),
-                    transform: group.transform(),
-                    parent: group.parent(),
-                })
-        }
-        AuthoritativeDependency::Group(id) => {
-            let group = snapshot.group(id);
-            match goal {
-                ProposalGoal::SetGroupTranslation(_) => group
-                    .map_or(ProposalValue::Missing, |group| {
-                        ProposalValue::Transform(group.transform())
-                    }),
-                ProposalGoal::SetGroupParent(_) => group.map_or(ProposalValue::Missing, |group| {
-                    ProposalValue::Group(group.parent())
-                }),
-                ProposalGoal::CreateGroup(_) | ProposalGoal::DeleteGroup(_) => {
-                    group.map_or(ProposalValue::Missing, |group| ProposalValue::GroupState {
-                        name: group.name().to_owned(),
-                        transform: group.transform(),
-                        parent: group.parent(),
-                    })
-                }
-                _ => ProposalValue::Digest(dependency_digest(snapshot, &BTreeSet::from([target]))),
-            }
         }
         _ => ProposalValue::Digest(dependency_digest(snapshot, &BTreeSet::from([target]))),
     }
