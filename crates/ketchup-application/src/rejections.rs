@@ -395,6 +395,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Fix the plugin as the cause says, then run it again.",
     ),
     entry(
+        "plugin_manifest_invalid",
+        Validation,
+        "plugin",
+        "The plugin folder has no valid plugin.json, its files cannot all be read, or the inputs do not match the inputs it declares; nothing ran.",
+        "Fix plugin.json or the folder as the reason says, or send only the declared inputs with their types.",
+    ),
+    entry(
         "plugin_refused",
         Validation,
         "capabilities",

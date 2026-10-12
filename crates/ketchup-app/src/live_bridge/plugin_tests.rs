@@ -53,15 +53,13 @@ fn python() -> String {
 
 fn plugin_request(arguments: Vec<String>) -> RunPluginRequest {
     RunPluginRequest {
-        expected: None,
-        executable: python(),
+        executable: Some(python()),
         arguments,
-        principal_id: 7001,
+        principal_id: Some(7001),
         capabilities: vec!["query.agent-state.v1".into(), "edit.cad-program.v1".into()],
         allowed_operations: vec!["set_dimension".into()],
         timeout_ms: 30_000,
-        validators: Vec::new(),
-        strict: false,
+        ..RunPluginRequest::default()
     }
 }
 
@@ -281,6 +279,179 @@ fn a_plugin_runs_only_with_consent_bound_to_its_file_hash_and_permissions() {
     let evidence = assert_consent_required(&mut wire, request());
     assert_eq!(probe.high_risk_prompts().len(), 4);
     assert_ne!(evidence["files"][1]["sha256"], json!(hash));
+    assert_eq!(height(&wire.app), original);
+    assert_eq!(wire.app.undo_step_count(), undo);
+}
+
+const FOLDER_PLUGIN: &str = r#"import sys
+from ketchup_sdk import Client, Manifest, EDIT_CAD_PROGRAM, QUERY_AGENT_STATE
+
+if sys.argv[1:]:
+    raise SystemExit("inputs arrive by protocol only")
+client = Client(Manifest(package="org.ketchup.height", version="1.0.0", principal_id=7001,
+                         capabilities=(QUERY_AGENT_STATE, EDIT_CAD_PROGRAM)))
+client.start()
+inputs = client.inputs()
+client.query_agent_state()
+client.apply_operations([{"operation": "set_dimension", "feature_id": inputs["feature_id"],
+                          "value_mm": inputs["height_mm"]}])
+client.finish()
+"#;
+
+fn folder_manifest(operations: &[&str]) -> String {
+    json!({
+        "name": "Height",
+        "executable": python(),
+        "arguments": ["plugin.py"],
+        "principal_id": 7001,
+        "capabilities": ["query.agent-state.v1", "edit.cad-program.v1"],
+        "allowed_operations": operations,
+        "inputs": {
+            "height_mm": {"type": "number"},
+            "feature_id": {"type": "integer", "default": EXTRUSION},
+        },
+    })
+    .to_string()
+}
+
+fn folder_request(folder: &Path, inputs: Value) -> RunPluginRequest {
+    RunPluginRequest {
+        plugin: Some(folder.to_string_lossy().into_owned()),
+        inputs: inputs.as_object().cloned(),
+        timeout_ms: 30_000,
+        ..RunPluginRequest::default()
+    }
+}
+
+/// Refused before anything was read into a prompt or ran.
+fn assert_refused_without_prompt(
+    wire: &mut Wire,
+    request: RunPluginRequest,
+    code: &str,
+    prompts: &ScriptedFileDialogs,
+) {
+    let before = wire.app.live_bridge_stamp();
+    let asked = prompts.high_risk_prompts().len();
+    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(30));
+    assert_eq!(
+        response.error.as_deref(),
+        Some(code),
+        "{:?}",
+        response.result
+    );
+    assert_eq!(prompts.high_risk_prompts().len(), asked);
+    assert_eq!(wire.app.live_bridge_stamp(), before);
+}
+
+#[test]
+fn a_plugin_folder_is_allowed_with_all_its_files_and_takes_inputs_only_by_protocol() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let folder = directory.path().join("height");
+    let sdk = folder.join("ketchup_sdk/__init__.py");
+    std::fs::create_dir_all(sdk.parent().unwrap()).unwrap();
+    let sdk_source = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sdk/python/ketchup_sdk/__init__.py"),
+    )
+    .unwrap();
+    std::fs::write(&sdk, &sdk_source).unwrap();
+    std::fs::write(folder.join("plugin.py"), FOLDER_PLUGIN).unwrap();
+    std::fs::write(
+        folder.join("plugin.json"),
+        folder_manifest(&["set_dimension"]),
+    )
+    .unwrap();
+    let python = python();
+    let python_sha256 = std::fs::File::open(&python)
+        .and_then(ketchup_model::graph::sha256_reader_hex)
+        .unwrap();
+    // Refuse, allow, then refuse every further prompt.
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(1);
+    let probe = dialogs.clone();
+    let mut wire = plugin_wire_answering(dialogs);
+    let original = height(&wire.app);
+    let undo = wire.app.undo_step_count();
+
+    // The manifest alone decides the command line and the permissions.
+    let mut extended = folder_request(&folder, json!({"height_mm": 35}));
+    extended.arguments = vec!["-c".into(), "print()".into()];
+    assert_refused_without_prompt(&mut wire, extended, "invalid_params", &probe);
+    // Only declared inputs of the declared type.
+    for inputs in [
+        json!({"height_mm": 35, "width_mm": 10}),
+        json!({"height_mm": "35"}),
+        json!({}),
+    ] {
+        let request = folder_request(&folder, inputs);
+        assert_refused_without_prompt(&mut wire, request, "plugin_manifest_invalid", &probe);
+    }
+
+    // The prompt shows the folder with one hash over all its files, and the
+    // interpreter outside it with its own hash.
+    let evidence =
+        assert_consent_required(&mut wire, folder_request(&folder, json!({"height_mm": 35})));
+    let prompt = &probe.high_risk_prompts()[0];
+    let folder_sha256 = evidence["folder"]["sha256"].as_str().unwrap().to_owned();
+    for shown in [
+        folder.display().to_string(),
+        format!("SHA-256 {folder_sha256} (3)"),
+        python.clone(),
+        format!("SHA-256 {python_sha256}"),
+        "set_dimension".to_owned(),
+    ] {
+        assert!(prompt.contains(&shown), "{shown} not in {prompt}");
+    }
+    assert_eq!(
+        evidence["folder"]["files"],
+        json!([
+            {"path": "ketchup_sdk/__init__.py", "sha256": ketchup_model::graph::sha256_hex(sdk_source.as_bytes())},
+            {"path": "plugin.json", "sha256": ketchup_model::graph::sha256_hex(folder_manifest(&["set_dimension"]).as_bytes())},
+            {"path": "plugin.py", "sha256": ketchup_model::graph::sha256_hex(FOLDER_PLUGIN.as_bytes())},
+        ])
+    );
+    assert_eq!(
+        evidence["files"],
+        json!([{"path": python, "sha256": python_sha256}])
+    );
+
+    // Allowed: the input reaches the plugin by protocol, one Undo step.
+    let response = wire.call_within(
+        Request::RunPlugin(folder_request(&folder, json!({"height_mm": 35}))),
+        Duration::from_secs(120),
+    );
+    assert_eq!(response.result.unwrap()["published"], true);
+    assert_eq!(height(&wire.app), 35.0);
+    assert_eq!(wire.app.undo_step_count(), undo + 1);
+    wire.call(Request::Undo { expected: None });
+    assert_eq!(height(&wire.app), original);
+
+    // Another input value is no new consent; the run wrote nothing into the folder.
+    wire.call_within(
+        Request::RunPlugin(folder_request(&folder, json!({"height_mm": 40.5}))),
+        Duration::from_secs(120),
+    );
+    assert_eq!(height(&wire.app), 40.5);
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    wire.call(Request::Undo { expected: None });
+
+    // A changed module inside the folder asks again.
+    std::fs::write(&sdk, format!("{sdk_source}# changed\n")).unwrap();
+    let changed =
+        assert_consent_required(&mut wire, folder_request(&folder, json!({"height_mm": 35})));
+    assert_eq!(probe.high_risk_prompts().len(), 3);
+    assert_ne!(changed["folder"]["sha256"], json!(folder_sha256));
+    std::fs::write(&sdk, &sdk_source).unwrap();
+
+    // A manifest asking for one more operation asks again.
+    std::fs::write(
+        folder.join("plugin.json"),
+        folder_manifest(&["set_dimension", "set_color"]),
+    )
+    .unwrap();
+    assert_consent_required(&mut wire, folder_request(&folder, json!({"height_mm": 35})));
+    assert_eq!(probe.high_risk_prompts().len(), 4);
     assert_eq!(height(&wire.app), original);
     assert_eq!(wire.app.undo_step_count(), undo);
 }

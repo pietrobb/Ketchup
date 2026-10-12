@@ -221,13 +221,18 @@ pub fn tools() -> Value {
         {
             "name": "run_plugin",
             "description": "Run a local plugin process (ketchup.plugin.v1) against the window's document. \
-    The window first asks the user to allow it, showing the files' absolute paths and SHA-256, the arguments and the permissions; \
-    without that consent the answer is plugin_consent_required and nothing ran. A changed file, other arguments or more permissions ask again. \
+    Prefer plugin: the absolute path of a plugin folder whose plugin.json alone decides the command line, principal, permissions and declared inputs; \
+    send input values in inputs (they reach the plugin by protocol, never as arguments; undeclared or mistyped inputs: plugin_manifest_invalid). \
+    Otherwise executable with arguments, principal_id and capabilities; plugin excludes those fields. \
+    The window first asks the user to allow it, showing absolute paths and SHA-256 (of every file in a plugin folder, and of an interpreter outside it), the command line and the permissions; \
+    without that consent the answer is plugin_consent_required and nothing ran. A changed file, another command line or more permissions ask again; other input values do not. \
     The plugin reads the document and sends one typed CAD program, published like model apply_and_verify (stamps, change, validation issues, one Undo step) \
     only while the document is still at the revision the plugin read (stale_document otherwise). \
     A crash, timeout or protocol break returns plugin_failed, a capability or operation outside the grant plugin_refused, each with its cause; the document stays unchanged.",
-            "inputSchema": {"type": "object", "required": ["executable", "principal_id", "capabilities"], "properties": {
-                "executable": {"type": "string", "description": "Absolute path of the plugin executable, e.g. a Python interpreter."},
+            "inputSchema": {"type": "object", "properties": {
+                "plugin": {"type": "string", "description": "Absolute path of a plugin folder or of its plugin.json."},
+                "inputs": {"type": "object", "description": "With plugin: values of the inputs its plugin.json declares, e.g. {\"height_mm\": 35}."},
+                "executable": {"type": "string", "description": "Without plugin: absolute path of the plugin executable, e.g. a Python interpreter."},
                 "arguments": {"type": "array", "items": {"type": "string"}, "description": "Arguments, e.g. the absolute path of the plugin script and its inputs."},
                 "principal_id": {"type": "integer", "minimum": 0, "description": "Must equal the principal the plugin declares."},
                 "capabilities": {"type": "array", "items": {"type": "string", "enum": ["query.agent-state.v1", "edit.cad-program.v1"]}, "description": "Capabilities granted to the plugin."},

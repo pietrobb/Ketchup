@@ -91,10 +91,13 @@ fn run_plugin_is_listed_and_reaches_the_window_unchanged() {
         "arguments": ["C:\\plugins\\height.py", "2", "35"], "principal_id": 7001,
         "capabilities": ["query.agent-state.v1", "edit.cad-program.v1"],
         "allowed_operations": ["set_dimension"], "timeout_ms": 30000});
-    call(&mut tools, "run_plugin", arguments.clone());
-    let mut sent = arguments;
-    sent["method"] = "run_plugin".into();
-    assert_eq!(received.recv().unwrap(), sent);
+    let folder = json!({"plugin": "C:\\plugins\\height", "inputs": {"height_mm": 35}});
+    for arguments in [arguments, folder] {
+        call(&mut tools, "run_plugin", arguments.clone());
+        let mut sent = arguments;
+        sent["method"] = "run_plugin".into();
+        assert_eq!(received.recv().unwrap(), sent);
+    }
 }
 
 #[test]

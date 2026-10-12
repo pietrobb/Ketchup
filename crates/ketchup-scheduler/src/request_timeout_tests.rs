@@ -148,7 +148,8 @@ fn parent_holding_a_busy_worker() {
 fn parent_holding_a_busy_plugin() {
     let arguments = SLEEPING_WORKER_ARGS.map(std::ffi::OsString::from);
     let child =
-        crate::plugin::spawn_plugin_process(&std::env::current_exe().unwrap(), &arguments).unwrap();
+        crate::plugin::spawn_plugin_process(&std::env::current_exe().unwrap(), &arguments, None)
+            .unwrap();
     hold_busy_child(child);
 }
 

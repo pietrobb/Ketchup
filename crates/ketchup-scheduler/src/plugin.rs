@@ -9,7 +9,7 @@ use process_wrap::std::{JobObject, KillOnDrop};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -23,11 +23,18 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub(crate) fn spawn_plugin_process(
     executable: &Path,
     arguments: &[OsString],
+    working_directory: Option<&Path>,
 ) -> Result<Box<dyn ChildWrapper>, PluginHostError> {
     let mut command = Command::new(executable);
+    if let Some(directory) = working_directory {
+        command.current_dir(directory);
+    }
     command
         .args(arguments)
         .env_clear()
+        // A Python plugin must not write bytecode into its folder: a consent
+        // bound to the folder's files would no longer cover the next run.
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -50,9 +57,35 @@ pub struct PluginRunResult {
     pub program: Option<PluginProgram>,
 }
 
+/// How the host starts a plugin process and what it hands the plugin.
+#[derive(Clone, Debug, Default)]
+pub struct PluginCommand {
+    pub executable: PathBuf,
+    pub arguments: Vec<OsString>,
+    pub working_directory: Option<PathBuf>,
+    /// The plugin's typed inputs as one JSON object, answered to
+    /// `QUERY\tINPUTS`; never passed on the command line.
+    pub inputs: serde_json::Map<String, serde_json::Value>,
+}
+
 pub fn run_plugin_process(
     executable: impl AsRef<Path>,
     arguments: &[OsString],
+    snapshot: &Snapshot,
+    grant: PluginGrant,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> Result<PluginRunResult, PluginHostError> {
+    let command = PluginCommand {
+        executable: executable.as_ref().to_owned(),
+        arguments: arguments.to_vec(),
+        ..PluginCommand::default()
+    };
+    run_plugin_command(&command, snapshot, grant, timeout, cancelled)
+}
+
+pub fn run_plugin_command(
+    command: &PluginCommand,
     snapshot: &Snapshot,
     grant: PluginGrant,
     timeout: Duration,
@@ -64,7 +97,12 @@ pub fn run_plugin_process(
     Instant::now()
         .checked_add(timeout)
         .ok_or(PluginHostError::InvalidTimeout)?;
-    let mut child = spawn_plugin_process(executable.as_ref(), arguments)?;
+    let inputs = serde_json::Value::Object(command.inputs.clone()).to_string();
+    let mut child = spawn_plugin_process(
+        &command.executable,
+        &command.arguments,
+        command.working_directory.as_deref(),
+    )?;
     let stdin = child
         .stdin()
         .take()
@@ -99,6 +137,10 @@ pub fn run_plugin_process(
             if line == "DONE" {
                 send_line(&writer, "BYE".to_owned(), deadline, cancelled)?;
                 break;
+            }
+            if line == "QUERY\tINPUTS" {
+                send_line(&writer, format!("INPUTS\t{inputs}"), deadline, cancelled)?;
+                continue;
             }
             let request = parse_request(&line)?;
             match gateway.handle(snapshot, request)? {

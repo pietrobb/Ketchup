@@ -73,6 +73,21 @@ class Client:
             raise ProtocolError("host StateView length did not match its envelope")
         return state
 
+    def inputs(self) -> dict:
+        """The typed inputs the host validated against the plugin's manifest."""
+        self._require_active()
+        self._send("QUERY\tINPUTS")
+        kind, _, payload = self._receive().partition("\t")
+        if kind != "INPUTS":
+            raise ProtocolError("host returned a malformed INPUTS response")
+        try:
+            inputs = json.loads(payload)
+        except ValueError as error:
+            raise ProtocolError("host returned invalid INPUTS JSON") from error
+        if not isinstance(inputs, dict):
+            raise ProtocolError("host INPUTS is not an object")
+        return inputs
+
     def apply_operations(self, operations: list[dict]) -> int:
         """Sends typed CAD operations, written as for MCP `apply_and_verify`;
         returns how many the host accepted. The host commits them as one Undo step."""
