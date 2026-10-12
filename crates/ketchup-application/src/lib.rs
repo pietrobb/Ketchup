@@ -16,6 +16,7 @@ pub mod model_query;
 mod part_role;
 pub mod pdm_workflow;
 mod planner;
+mod product_change;
 pub mod rejections;
 mod rule_appearance;
 mod rule_assembly_members;

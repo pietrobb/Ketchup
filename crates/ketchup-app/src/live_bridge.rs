@@ -1619,7 +1619,9 @@ impl LiveBridge {
                 | AssistantCadEditOperation::CreateDrawing { .. }
                 | AssistantCadEditOperation::UpsertCamPlan { .. }
                 | AssistantCadEditOperation::UpsertClassificationDimension { .. }
-                | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
+                | AssistantCadEditOperation::CreateEvaluatorInput { .. }
+                | AssistantCadEditOperation::UpsertSpace { .. }
+                | AssistantCadEditOperation::DeleteSpace { .. } => None,
             };
             if let Some(AssistantCadEntitySelector::Occurrences { occurrence_ids }) = selector {
                 Self::root_ids(app, occurrence_ids)?;

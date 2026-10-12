@@ -4,6 +4,7 @@ use crate::diagnostics::{
     AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection,
     assistant_planning_rejection, assistant_rejection,
 };
+use crate::product_change::plan_product_change;
 use crate::rule_operations::OperationPlanner;
 use crate::structure_change::plan_structure_change;
 use crate::transforms::{
@@ -1882,6 +1883,12 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
 
     for (operation_index, operation) in program.operations.iter().enumerate() {
         let operation_name = operation_name(operation);
+        // Product entities refer to each other (mutual adjacency), so they are
+        // staged without a preview and checked together with what follows.
+        if let Some(command) = plan_product_change(operation) {
+            staged_planning.push(command?);
+            continue;
+        }
         staged_planning.refresh(operation_name, &document_target)?;
         let normalized_operation = match operation {
             AssistantCadEditOperation::CreatePart {
@@ -1965,45 +1972,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             _ => None,
         };
         let operation = normalized_operation.as_ref().unwrap_or(operation);
-        let selector = match operation {
-            AssistantCadEditOperation::CreateSketch { .. }
-            | AssistantCadEditOperation::CreatePart { .. }
-            | AssistantCadEditOperation::CreateSpatialPath { .. }
-            | AssistantCadEditOperation::CreateConstructionPoint { .. }
-            | AssistantCadEditOperation::CreateConstructionAxis { .. }
-            | AssistantCadEditOperation::CreateConstructionPlane { .. }
-            | AssistantCadEditOperation::CreateHelix { .. }
-            | AssistantCadEditOperation::FilletEdges { .. }
-            | AssistantCadEditOperation::ChamferEdges { .. }
-            | AssistantCadEditOperation::AppendFeature { .. }
-            | AssistantCadEditOperation::BindProgramOutput { .. }
-            | AssistantCadEditOperation::SetDimension { .. }
-            | AssistantCadEditOperation::SetFeatureParameter { .. }
-            | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
-            | AssistantCadEditOperation::Structure { .. }
-            | AssistantCadEditOperation::CreateAssemblyJoint { .. }
-            | AssistantCadEditOperation::CreatePinJoint { .. }
-            | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
-            | AssistantCadEditOperation::MovePhysicalPinPair { .. }
-            | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
-            | AssistantCadEditOperation::CreateDrawing { .. }
-            | AssistantCadEditOperation::UpsertCamPlan { .. }
-            | AssistantCadEditOperation::CreateTag { .. }
-            | AssistantCadEditOperation::SetTagVisibility { .. }
-            | AssistantCadEditOperation::UpsertClassificationDimension { .. }
-            | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
-            AssistantCadEditOperation::Delete { selector, .. }
-            | AssistantCadEditOperation::Transform { selector, .. }
-            | AssistantCadEditOperation::SetColor { selector, .. }
-            | AssistantCadEditOperation::SetGrounded { selector, .. }
-            | AssistantCadEditOperation::SetOccurrenceTag { selector, .. }
-            | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
-            | AssistantCadEditOperation::Copy { selector, .. }
-            | AssistantCadEditOperation::LinearPattern { selector, .. }
-            | AssistantCadEditOperation::CircularPattern { selector, .. }
-            | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
-        };
-        let targets = selector.map_or_else(
+        let targets = operation_selector(operation).map_or_else(
             || Ok(Vec::new()),
             |selector| {
                 staged_planning.resolve_base_selector(current_selection, selector, operation_name)
@@ -3719,8 +3688,10 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             }
 
             AssistantCadEditOperation::FilletEdges { .. }
-            | AssistantCadEditOperation::ChamferEdges { .. } => {
-                unreachable!("direct edge finishes are normalized before planning")
+            | AssistantCadEditOperation::ChamferEdges { .. }
+            | AssistantCadEditOperation::UpsertSpace { .. }
+            | AssistantCadEditOperation::DeleteSpace { .. } => {
+                unreachable!("edge finishes are normalized and spaces planned before this")
             }
         }
     }
@@ -3803,6 +3774,53 @@ fn feature_parameter_command(
     })
 }
 
+/// The occurrences an operation targets, or `None` when it creates or edits
+/// something else.
+const fn operation_selector(
+    operation: &AssistantCadEditOperation,
+) -> Option<&AssistantCadEntitySelector> {
+    match operation {
+        AssistantCadEditOperation::CreateSketch { .. }
+        | AssistantCadEditOperation::CreatePart { .. }
+        | AssistantCadEditOperation::CreateSpatialPath { .. }
+        | AssistantCadEditOperation::CreateConstructionPoint { .. }
+        | AssistantCadEditOperation::CreateConstructionAxis { .. }
+        | AssistantCadEditOperation::CreateConstructionPlane { .. }
+        | AssistantCadEditOperation::CreateHelix { .. }
+        | AssistantCadEditOperation::FilletEdges { .. }
+        | AssistantCadEditOperation::ChamferEdges { .. }
+        | AssistantCadEditOperation::AppendFeature { .. }
+        | AssistantCadEditOperation::BindProgramOutput { .. }
+        | AssistantCadEditOperation::SetDimension { .. }
+        | AssistantCadEditOperation::SetFeatureParameter { .. }
+        | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
+        | AssistantCadEditOperation::Structure { .. }
+        | AssistantCadEditOperation::CreateAssemblyJoint { .. }
+        | AssistantCadEditOperation::CreatePinJoint { .. }
+        | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
+        | AssistantCadEditOperation::MovePhysicalPinPair { .. }
+        | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
+        | AssistantCadEditOperation::CreateDrawing { .. }
+        | AssistantCadEditOperation::UpsertCamPlan { .. }
+        | AssistantCadEditOperation::CreateTag { .. }
+        | AssistantCadEditOperation::SetTagVisibility { .. }
+        | AssistantCadEditOperation::UpsertClassificationDimension { .. }
+        | AssistantCadEditOperation::CreateEvaluatorInput { .. }
+        | AssistantCadEditOperation::UpsertSpace { .. }
+        | AssistantCadEditOperation::DeleteSpace { .. } => None,
+        AssistantCadEditOperation::Delete { selector, .. }
+        | AssistantCadEditOperation::Transform { selector, .. }
+        | AssistantCadEditOperation::SetColor { selector, .. }
+        | AssistantCadEditOperation::SetGrounded { selector, .. }
+        | AssistantCadEditOperation::SetOccurrenceTag { selector, .. }
+        | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
+        | AssistantCadEditOperation::Copy { selector, .. }
+        | AssistantCadEditOperation::LinearPattern { selector, .. }
+        | AssistantCadEditOperation::CircularPattern { selector, .. }
+        | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
+    }
+}
+
 /// The operation name used in rejection diagnostics.
 const fn operation_name(operation: &AssistantCadEditOperation) -> &'static str {
     match operation {
@@ -3842,6 +3860,8 @@ const fn operation_name(operation: &AssistantCadEditOperation) -> &'static str {
             "set_occurrence_classification"
         }
         AssistantCadEditOperation::CreateEvaluatorInput { .. } => "create_evaluator_input",
+        AssistantCadEditOperation::UpsertSpace { .. } => "upsert_space",
+        AssistantCadEditOperation::DeleteSpace { .. } => "delete_space",
         AssistantCadEditOperation::Copy { .. } => "copy_occurrence",
         AssistantCadEditOperation::LinearPattern { .. } => "linear_pattern_occurrence",
         AssistantCadEditOperation::CircularPattern { .. } => "circular_pattern_occurrence",

@@ -1971,6 +1971,24 @@ pub enum AssistantCadEditOperation {
         name: String,
         value: f64,
     },
+    /// Creates or replaces a room or zone of the product: a world box from
+    /// `min_mm` to `max_mm`. Adjacency is mutual, so each space in
+    /// `adjacent_to` must list this one too (set both in one program);
+    /// `accessible_to` is one-way.
+    UpsertSpace {
+        space_id: u64,
+        purpose: String,
+        min_mm: [f64; 3],
+        max_mm: [f64; 3],
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        adjacent_to: Vec<u64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        accessible_to: Vec<u64>,
+    },
+    /// Removes a space no other space and no clearance volume refers to.
+    DeleteSpace {
+        space_id: u64,
+    },
     Copy {
         selector: AssistantCadEntitySelector,
         translation_mm: [f64; 3],
@@ -2915,7 +2933,9 @@ impl AssistantCadEditProgram {
             | AssistantCadEditOperation::CreateTag { .. }
             | AssistantCadEditOperation::SetTagVisibility { .. }
             | AssistantCadEditOperation::UpsertClassificationDimension { .. }
-            | AssistantCadEditOperation::CreateEvaluatorInput { .. } => 0,
+            | AssistantCadEditOperation::CreateEvaluatorInput { .. }
+            | AssistantCadEditOperation::UpsertSpace { .. }
+            | AssistantCadEditOperation::DeleteSpace { .. } => 0,
             AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::CreateSpatialPath { .. }
             | AssistantCadEditOperation::CreateConstructionPoint { .. }
@@ -3567,6 +3587,31 @@ impl AssistantCadEditProgram {
                     || value.abs() > MAX_COORDINATE_MM
                 {
                     return Err(AssistantRequestInvalid::invalid("CAD evaluator input"));
+                }
+                0
+            }
+            AssistantCadEditOperation::UpsertSpace {
+                space_id,
+                min_mm,
+                max_mm,
+                adjacent_to,
+                accessible_to,
+                ..
+            } => {
+                // Text, volume and relations are checked by the canonical space.
+                if *space_id == 0
+                    || !assistant_cad_vector_is_bounded(*min_mm)
+                    || !assistant_cad_vector_is_bounded(*max_mm)
+                    || adjacent_to.len() > MAX_CAD_EDIT_OPERATIONS
+                    || accessible_to.len() > MAX_CAD_EDIT_OPERATIONS
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD space"));
+                }
+                0
+            }
+            AssistantCadEditOperation::DeleteSpace { space_id } => {
+                if *space_id == 0 {
+                    return Err(AssistantRequestInvalid::invalid("CAD space deletion"));
                 }
                 0
             }
