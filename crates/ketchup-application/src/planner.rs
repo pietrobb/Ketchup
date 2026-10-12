@@ -39,8 +39,8 @@ use ketchup_model::document::{
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
     CloneDefinitionPlan, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
     FeatureKind, FeatureParameterTarget, InstancePath, InstancePathStep, LocalGroupId,
-    LocalOccurrenceId, NodeId, OccurrenceId, ParameterPath, ParameterValueType, ProfileSegment,
-    Snapshot, SpatialPathSegment, TagId, Transform,
+    LocalOccurrenceId, OccurrenceId, ParameterPath, ParameterValueType, ProfileSegment, Snapshot,
+    SpatialPathSegment, TagId, Transform,
 };
 use ketchup_model::drawing::{
     DrawingBomBalloon, DrawingBomBalloonId, DrawingError, DrawingMargins, DrawingPageOrientation,
@@ -3446,22 +3446,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     });
                 }
             }
-            AssistantCadEditOperation::CreateEvaluatorInput {
-                node_id,
-                name,
-                value,
-            } => staged_planning.push(CanonicalCommand::CreateEvaluatorNode {
-                id: NodeId(*node_id),
-                name: name.clone(),
-                dimension: Dimension::new(value.to_string(), *value).map_err(|error| {
-                    assistant_canonical_rejection(
-                        error.into(),
-                        operation_name,
-                        &format!("node:{node_id}"),
-                    )
-                })?,
-                dependencies: Vec::new(),
-            }),
             AssistantCadEditOperation::Copy { translation_mm, .. } => {
                 let delta = Vec3::new(translation_mm[0], translation_mm[1], translation_mm[2]);
                 for id in targets {
@@ -3690,7 +3674,11 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             | AssistantCadEditOperation::UpsertSpace { .. }
             | AssistantCadEditOperation::DeleteSpace { .. }
             | AssistantCadEditOperation::UpsertClearanceVolume { .. }
-            | AssistantCadEditOperation::DeleteClearanceVolume { .. } => {
+            | AssistantCadEditOperation::DeleteClearanceVolume { .. }
+            | AssistantCadEditOperation::UpsertDimension { .. }
+            | AssistantCadEditOperation::DeleteDimension { .. }
+            | AssistantCadEditOperation::CreateEvaluatorInput { .. }
+            | AssistantCadEditOperation::SetEvaluatorInput { .. } => {
                 unreachable!("edge finishes are normalized and spaces planned before this")
             }
         }
@@ -3809,7 +3797,10 @@ const fn operation_selector(
         | AssistantCadEditOperation::UpsertSpace { .. }
         | AssistantCadEditOperation::DeleteSpace { .. }
         | AssistantCadEditOperation::UpsertClearanceVolume { .. }
-        | AssistantCadEditOperation::DeleteClearanceVolume { .. } => None,
+        | AssistantCadEditOperation::DeleteClearanceVolume { .. }
+        | AssistantCadEditOperation::UpsertDimension { .. }
+        | AssistantCadEditOperation::DeleteDimension { .. }
+        | AssistantCadEditOperation::SetEvaluatorInput { .. } => None,
         AssistantCadEditOperation::Delete { selector, .. }
         | AssistantCadEditOperation::Transform { selector, .. }
         | AssistantCadEditOperation::SetColor { selector, .. }
@@ -3866,6 +3857,9 @@ const fn operation_name(operation: &AssistantCadEditOperation) -> &'static str {
         AssistantCadEditOperation::DeleteSpace { .. } => "delete_space",
         AssistantCadEditOperation::UpsertClearanceVolume { .. } => "upsert_clearance_volume",
         AssistantCadEditOperation::DeleteClearanceVolume { .. } => "delete_clearance_volume",
+        AssistantCadEditOperation::UpsertDimension { .. } => "upsert_dimension",
+        AssistantCadEditOperation::DeleteDimension { .. } => "delete_dimension",
+        AssistantCadEditOperation::SetEvaluatorInput { .. } => "set_evaluator_input",
         AssistantCadEditOperation::Copy { .. } => "copy_occurrence",
         AssistantCadEditOperation::LinearPattern { .. } => "linear_pattern_occurrence",
         AssistantCadEditOperation::CircularPattern { .. } => "circular_pattern_occurrence",

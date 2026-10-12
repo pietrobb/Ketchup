@@ -2005,6 +2005,27 @@ pub enum AssistantCadEditOperation {
     DeleteClearanceVolume {
         clearance_volume_id: u64,
     },
+    /// Creates or replaces a named dimension that keeps showing the live
+    /// value of one length parameter of a feature, e.g. `extent.distance` of
+    /// an extrusion. `unit` defaults to mm, `decimal_places` (0–9) to 1.
+    UpsertDimension {
+        dimension_id: u64,
+        name: String,
+        feature_id: u64,
+        parameter_path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unit: Option<AssistantDimensionUnit>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decimal_places: Option<u8>,
+    },
+    DeleteDimension {
+        dimension_id: u64,
+    },
+    /// Sets the value of an existing evaluator input (create_evaluator_input).
+    SetEvaluatorInput {
+        node_id: u64,
+        value: f64,
+    },
     Copy {
         selector: AssistantCadEntitySelector,
         translation_mm: [f64; 3],
@@ -2044,6 +2065,14 @@ pub enum AssistantClearanceOwner {
 pub enum AssistantClearanceSeverity {
     Advisory,
     Required,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantDimensionUnit {
+    Mm,
+    Cm,
+    In,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -2972,7 +3001,10 @@ impl AssistantCadEditProgram {
             | AssistantCadEditOperation::UpsertSpace { .. }
             | AssistantCadEditOperation::DeleteSpace { .. }
             | AssistantCadEditOperation::UpsertClearanceVolume { .. }
-            | AssistantCadEditOperation::DeleteClearanceVolume { .. } => 0,
+            | AssistantCadEditOperation::DeleteClearanceVolume { .. }
+            | AssistantCadEditOperation::UpsertDimension { .. }
+            | AssistantCadEditOperation::DeleteDimension { .. }
+            | AssistantCadEditOperation::SetEvaluatorInput { .. } => 0,
             AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::CreateSpatialPath { .. }
             | AssistantCadEditOperation::CreateConstructionPoint { .. }
@@ -3676,6 +3708,29 @@ impl AssistantCadEditProgram {
             } => {
                 if *clearance_volume_id == 0 {
                     return Err(AssistantRequestInvalid::invalid("CAD clearance deletion"));
+                }
+                0
+            }
+            AssistantCadEditOperation::UpsertDimension {
+                dimension_id,
+                feature_id,
+                ..
+            } => {
+                // Name, path, presentation and the target are checked when planned.
+                if *dimension_id == 0 || *feature_id == 0 {
+                    return Err(AssistantRequestInvalid::invalid("CAD dimension"));
+                }
+                0
+            }
+            AssistantCadEditOperation::DeleteDimension { dimension_id } => {
+                if *dimension_id == 0 {
+                    return Err(AssistantRequestInvalid::invalid("CAD dimension deletion"));
+                }
+                0
+            }
+            AssistantCadEditOperation::SetEvaluatorInput { node_id, value } => {
+                if *node_id == 0 || !value.is_finite() || value.abs() > MAX_COORDINATE_MM {
+                    return Err(AssistantRequestInvalid::invalid("CAD evaluator input"));
                 }
                 0
             }

@@ -8,6 +8,7 @@ mod collision_assembly;
 mod collision_brep;
 mod collision_motion;
 mod contact_joints;
+mod dimension_operations;
 mod document_session;
 mod evaluation_deadline;
 mod group_connectivity;

@@ -1623,7 +1623,10 @@ impl LiveBridge {
                 | AssistantCadEditOperation::UpsertSpace { .. }
                 | AssistantCadEditOperation::DeleteSpace { .. }
                 | AssistantCadEditOperation::UpsertClearanceVolume { .. }
-                | AssistantCadEditOperation::DeleteClearanceVolume { .. } => None,
+                | AssistantCadEditOperation::DeleteClearanceVolume { .. }
+                | AssistantCadEditOperation::UpsertDimension { .. }
+                | AssistantCadEditOperation::DeleteDimension { .. }
+                | AssistantCadEditOperation::SetEvaluatorInput { .. } => None,
             };
             if let Some(AssistantCadEntitySelector::Occurrences { occurrence_ids }) = selector {
                 Self::root_ids(app, occurrence_ids)?;
