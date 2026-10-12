@@ -205,7 +205,8 @@ KECUP MANUAL ALPHA $Version
 ===========================
 
 Tento build je urceny iba na testovanie rucneho 2D/3D modelovania.
-AI Assistant je v tomto builde skryty a nie je potrebny ucet, API kluc ani Python.
+Ketchup nema vlastny AI chat a nie je potrebny ucet, API kluc ani Python.
+AI klienta s podporou MCP (Claude Code, Codex) pripojite v pravom paneli v casti "Pripojit AI".
 
 ODPORUCANY TEST (priblizne 30-60 minut)
 1. Spustite Ketchup Manual Alpha a vytvorte prazdny dokument.
@@ -430,10 +431,10 @@ try {
 
     $persistenceSmokePath = Join-Path $tempRoot "manual-alpha-persistence-smoke.ketchup"
     $manualAlphaVerification = (& (Join-Path $installedDir "Ketchup.exe") --verify-manual-alpha $persistenceSmokePath).Trim()
-    $expectedVerification = "Ketchup Manual Alpha $Version verified; private-oauth codex-oauth gpt-5.6-sol"
+    $expectedVerification = "Ketchup Manual Alpha $Version verified"
     if ($LASTEXITCODE -ne 0 -or $manualAlphaVerification -cne $expectedVerification -or
         -not (Test-Path $persistenceSmokePath -PathType Leaf)) {
-        throw "Installed application failed its headless Manual Alpha OAuth/startup/persistence check."
+        throw "Installed application failed its headless Manual Alpha startup/persistence check."
     }
 
     # The system opens both Viewer file types with the installed Viewer.
