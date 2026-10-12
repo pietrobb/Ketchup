@@ -12,6 +12,9 @@ mod planning_topology;
 #[path = "selection_path_tests.rs"]
 mod selection_path;
 
+#[path = "hover_republish_tests.rs"]
+mod hover_republish;
+
 fn select_initial_top_face(app: &mut KetchupApp) {
     app.selection.select_exact(
         SelectionId {

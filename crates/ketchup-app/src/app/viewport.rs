@@ -4093,27 +4093,12 @@ impl KetchupApp {
                     .unwrap_or(0)
             };
         } else if previous != current {
-            // A background recompute can republish the same stack of bodies
-            // under an unmoved pointer. Resetting blindly would throw away the
-            // choice the user just cycled to with Tab and select whatever is
-            // frontmost instead, so the choice is carried over whenever the
-            // chosen body is still under the pointer. Without such a choice
-            // the front body stays hovered: a profile just drawn on a face is
-            // in front of that face.
-            self.hover.overlap_index = if self.hover.overlap_index == 0 {
-                0
-            } else {
-                self.hover
-                    .target
-                    .as_ref()
-                    .and_then(|chosen| {
-                        current
-                            .as_ref()?
-                            .iter()
-                            .position(|candidate| candidate == chosen)
-                    })
-                    .unwrap_or(0)
-            };
+            self.hover.overlap_index = republished_overlap_index(
+                self.hover.target.as_ref(),
+                self.hover.overlap_index,
+                previous.as_deref(),
+                current.as_deref(),
+            );
             if current.is_none() {
                 self.face_workflow.set_xray_preview(false);
             }
@@ -4502,6 +4487,42 @@ pub(crate) fn exact_face_element(role: ExactFaceRole) -> Option<ElementId> {
         }),
         ExactFaceRole::LinearSide | ExactFaceRole::ArcSide | ExactFaceRole::CircleSide => None,
     }
+}
+
+/// The overlap choice after a background recompute republished the stack under an
+/// unmoved pointer. An exact result replacing a box or mesh stand-in gives a body new
+/// face references and can reorder coplanar faces, so the hovered body is kept by its
+/// instance path while it is still under the pointer: the next click must act on the
+/// highlighted solid. Only a body new to the stack in front of it (a profile just
+/// drawn on a face) takes the front when nothing was cycled to.
+fn republished_overlap_index(
+    chosen: Option<&SelectionId>,
+    overlap_index: usize,
+    previous: Option<&[SelectionId]>,
+    current: Option<&[SelectionId]>,
+) -> usize {
+    let (Some(chosen), Some(current)) = (chosen, current) else {
+        return 0;
+    };
+    let front_is_new = current.first().is_some_and(|front| {
+        previous.is_none_or(|previous| {
+            !previous
+                .iter()
+                .any(|old| old.instance_path == front.instance_path)
+        })
+    });
+    if overlap_index == 0 && front_is_new {
+        return 0;
+    }
+    current
+        .iter()
+        .position(|candidate| candidate == chosen)
+        .or_else(|| {
+            current
+                .iter()
+                .position(|candidate| candidate.instance_path == chosen.instance_path)
+        })
+        .unwrap_or(0)
 }
 
 fn overlap_signature(pick: &PickResult) -> Vec<SelectionId> {
