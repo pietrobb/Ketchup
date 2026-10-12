@@ -31,6 +31,8 @@ pub(crate) struct SpaceFields {
     position: [String; 3],
     size: [String; 3],
     required: bool,
+    /// The row was just picked and its fields are not yet in view.
+    reveal: bool,
 }
 
 fn dimensions(volume: Aabb) -> String {
@@ -132,6 +134,7 @@ impl KetchupApp {
     fn show_space_fields(&mut self, ui: &mut egui::Ui, row: SpaceRow) {
         let snapshot = self.document.current();
         let shown = Some((row, snapshot.revision_id()));
+        let newly_picked = self.space_fields.shown.map(|(shown, _)| shown) != Some(row);
         if self.space_fields.shown != shown {
             let (name, volume, required) = match row {
                 SpaceRow::Space(id) => {
@@ -154,6 +157,7 @@ impl KetchupApp {
                 position: volume.min().map(format_height),
                 size: volume.extents().map(format_height),
                 required,
+                reveal: newly_picked,
             };
         }
         let fields = &mut self.space_fields;
@@ -189,13 +193,22 @@ impl KetchupApp {
         let boxed = parsed(&fields.position)
             .zip(parsed(&fields.size))
             .map(|(min, size)| (min, std::array::from_fn(|axis| min[axis] + size[axis])));
-        let apply = ui
-            .add_enabled(
-                boxed.is_some(),
-                egui::Button::new(self.catalog.text("spaces-apply")),
-            )
-            .clicked();
-        if let (true, Some((min_mm, max_mm))) = (apply, boxed) {
+        let apply = ui.add_enabled(
+            boxed.is_some(),
+            egui::Button::new(self.catalog.text("spaces-apply")),
+        );
+        // A row picked from a finding or the list may have its fields below
+        // the fold of the dock, where a click on Apply never lands. The dock
+        // settles over a few frames, so it scrolls until Apply is in view.
+        if fields.reveal {
+            if ui.clip_rect().contains_rect(apply.rect) {
+                fields.reveal = false;
+            } else {
+                let instant = egui::style::ScrollAnimation::none();
+                ui.scroll_to_rect_animation(apply.rect, None, instant);
+            }
+        }
+        if let (true, Some((min_mm, max_mm))) = (apply.clicked(), boxed) {
             let name = fields.name.clone();
             let severity = if fields.required {
                 AssistantClearanceSeverity::Required

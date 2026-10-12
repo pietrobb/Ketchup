@@ -274,9 +274,7 @@ fn a_clearance_finding_shows_the_part_and_the_volume_in_its_way() {
         digest
     );
 
-    // The open validation panel pushes the dock's fields out of view.
-    harness.get_by_role_and_label(Role::Button, &title).click();
-    harness.run_steps(2);
+    // The validation panel stays open: the dock scrolls the fields into view.
     retype(&mut harness, "spaces-field-position", Some("Y"), "1000");
     click_button(&mut harness, "spaces-apply");
     assert_ne!(
@@ -292,6 +290,44 @@ fn a_clearance_finding_shows_the_part_and_the_volume_in_its_way() {
         digest
     );
     assert_eq!(clearance_findings(&mut harness).len(), 1);
+}
+
+/// With the board and its clearance volume both picked from the finding,
+/// Delete removes the board and keeps the volume; with no part selected the
+/// next Delete removes the volume. Two Undo steps restore the document.
+#[test]
+fn delete_takes_the_selected_part_before_the_picked_volume() {
+    let mut harness = harness();
+    let digest = harness.state().document.current().canonical_digest();
+    clearance_findings(&mut harness);
+    let title = harness.state().catalog.text("validators-title");
+    harness.get_by_role_and_label(Role::Button, &title).click();
+    harness.run_steps(2);
+    click_row(&mut harness, "clearance.occupied");
+    harness.get_by_role_and_label(Role::Button, &title).click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().selected_instance_paths().len(), 1);
+    assert!(picked_box(&harness).is_some());
+
+    harness.key_press(egui::Key::Delete);
+    harness.run_steps(2);
+    let snapshot = harness.state().document.current();
+    assert_eq!(snapshot.occurrences().count(), 0);
+    assert_eq!(snapshot.clearance_volumes().count(), 1);
+
+    click_row(&mut harness, "pred dverami");
+    harness.key_press(egui::Key::Delete);
+    harness.run_steps(2);
+    let snapshot = harness.state().document.current();
+    assert_eq!(snapshot.clearance_volumes().count(), 0);
+    assert_eq!(snapshot.spaces().count(), 1);
+
+    undo(&mut harness);
+    undo(&mut harness);
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
 }
 
 /// The picked clearance volume's reason, size and severity change by typed
