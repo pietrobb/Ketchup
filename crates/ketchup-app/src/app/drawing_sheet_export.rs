@@ -1,7 +1,8 @@
 //! A drawing sheet of the document (MCP `create_drawing`, the assembly
-//! drawing from a selection) written as DXF: the exact projection of
+//! drawing from a selection) written as DXF or DWG: the exact projection of
 //! `ketchup_model::drawing_export`, hidden edges on their own HIDDEN layer,
-//! circles the views face as exact CIRCLE and ARC entities.
+//! circles the views face as exact CIRCLE and ARC entities. The DWG is that
+//! same DXF converted by `ketchup-dwg` to AutoCAD 2018 (AC1032).
 //! The project sheet (`project_drawings.rs`) stays PDF only: it
 //! hides back edges by painting nearer faces over them, which DXF cannot carry,
 //! so its DXF would show every back edge as a visible line.
@@ -10,10 +11,38 @@ use crate::export_bundle::{
     ExportTransactionError, export_target_sha256, write_export_artifact_if_unchanged,
 };
 use crate::*;
+use ketchup_dwg::DwgError;
 use ketchup_model::drawing::{DrawingError, DrawingSheetId, project_orthographic_drawing};
 use ketchup_model::drawing_export::{DrawingExportError, DxfCurves, export_drawing};
 
-/// Why a drawing sheet could not be written as DXF.
+/// The file a drawing sheet is written as.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SheetFileFormat {
+    Dxf,
+    /// The DXF converted to an AutoCAD 2018 DWG.
+    Dwg,
+}
+
+impl SheetFileFormat {
+    pub(crate) const ALL: [Self; 2] = [Self::Dxf, Self::Dwg];
+
+    pub(crate) const fn extension(self) -> &'static str {
+        match self {
+            Self::Dxf => "dxf",
+            Self::Dwg => "dwg",
+        }
+    }
+
+    /// The format a path's extension names, in any letter case.
+    pub(crate) fn of_path(path: &Path) -> Option<Self> {
+        let extension = path.extension()?;
+        Self::ALL
+            .into_iter()
+            .find(|format| extension.eq_ignore_ascii_case(format.extension()))
+    }
+}
+
+/// Why a drawing sheet could not be written.
 #[derive(Debug)]
 pub(crate) enum DrawingSheetExportError {
     NotFound(DrawingSheetId),
@@ -21,6 +50,8 @@ pub(crate) enum DrawingSheetExportError {
     Evaluating,
     Projection(DrawingError),
     Export(DrawingExportError),
+    /// The DXF of the sheet did not convert to DWG.
+    Dwg(DwgError),
     Write(ExportTransactionError),
 }
 
@@ -31,6 +62,7 @@ impl std::fmt::Display for DrawingSheetExportError {
             Self::Evaluating => formatter.write_str("the exact evaluation is still running"),
             Self::Projection(error) => write!(formatter, "the sheet does not project: {error}"),
             Self::Export(error) => write!(formatter, "the sheet does not export: {error}"),
+            Self::Dwg(error) => write!(formatter, "the sheet does not convert to DWG: {error}"),
             Self::Write(error) => error.fmt(formatter),
         }
     }
@@ -42,19 +74,21 @@ impl std::error::Error for DrawingSheetExportError {
             Self::NotFound(_) | Self::Evaluating => None,
             Self::Projection(error) => Some(error),
             Self::Export(error) => Some(error),
+            Self::Dwg(error) => Some(error),
             Self::Write(error) => Some(error),
         }
     }
 }
 
 /// What was written: the sheet's name, its views, the projected lines, how
-/// the DXF carries curves and its size.
+/// the DXF carries curves, the file format and its size.
 pub(crate) struct ExportedDrawingSheet {
     pub(crate) name: String,
     pub(crate) views: Vec<String>,
     pub(crate) visible_lines: usize,
     pub(crate) hidden_lines: usize,
     pub(crate) curves: DxfCurves,
+    pub(crate) format: SheetFileFormat,
     pub(crate) bytes: usize,
 }
 
@@ -94,36 +128,65 @@ impl KetchupApp {
                 .map(|view| view.hidden_lines.len())
                 .sum(),
             curves: bundle.dxf_curves().clone(),
+            format: SheetFileFormat::Dxf,
             bytes: dxf.len(),
         };
         Ok((exported, dxf))
     }
 
-    /// Writes drawing sheet `id` as DXF to `path` through a temporary file, so
-    /// a failed write never leaves half a drawing.
-    pub(crate) fn write_drawing_sheet_dxf(
+    /// Drawing sheet `id` as the bytes of a `format` file.
+    pub(crate) fn drawing_sheet_file(
+        &self,
+        id: DrawingSheetId,
+        format: SheetFileFormat,
+    ) -> Result<(ExportedDrawingSheet, Vec<u8>), DrawingSheetExportError> {
+        let (mut exported, dxf) = self.drawing_sheet_dxf(id)?;
+        let bytes = match format {
+            SheetFileFormat::Dxf => dxf,
+            SheetFileFormat::Dwg => {
+                ketchup_dwg::dxf_to_dwg(&dxf).map_err(DrawingSheetExportError::Dwg)?
+            }
+        };
+        exported.format = format;
+        exported.bytes = bytes.len();
+        Ok((exported, bytes))
+    }
+
+    /// Writes drawing sheet `id` as a `format` file to `path` through a
+    /// temporary file, so a failed write never leaves half a drawing.
+    pub(crate) fn write_drawing_sheet(
         &self,
         id: DrawingSheetId,
         path: &Path,
+        format: SheetFileFormat,
     ) -> Result<ExportedDrawingSheet, DrawingSheetExportError> {
-        let (exported, dxf) = self.drawing_sheet_dxf(id)?;
+        let (exported, bytes) = self.drawing_sheet_file(id, format)?;
         let expected = export_target_sha256(path).map_err(DrawingSheetExportError::Write)?;
-        write_export_artifact_if_unchanged(path, &dxf, expected.as_deref())
+        write_export_artifact_if_unchanged(path, &bytes, expected.as_deref())
             .map_err(DrawingSheetExportError::Write)?;
         Ok(exported)
     }
 
-    /// Writes drawing sheet `id` as DXF and reports it in the digest.
-    pub(crate) fn export_drawing_sheet_dxf_to(&mut self, id: DrawingSheetId, path: &Path) -> bool {
-        let result = self.write_drawing_sheet_dxf(id, path);
+    /// Writes drawing sheet `id` as a `format` file and reports it in the digest.
+    pub(crate) fn export_drawing_sheet_to(
+        &mut self,
+        id: DrawingSheetId,
+        path: &Path,
+        format: SheetFileFormat,
+    ) -> bool {
+        let result = self.write_drawing_sheet(id, path, format);
         let path = path.display().to_string();
+        let exported_key = match format {
+            SheetFileFormat::Dxf => "digest-exported-drawing-sheet-dxf",
+            SheetFileFormat::Dwg => "digest-exported-drawing-sheet-dwg",
+        };
         self.digest = match &result {
             Ok(sheet) => self.catalog.format(
-                "digest-exported-drawing-sheet-dxf",
+                exported_key,
                 &BTreeMap::from([("name", sheet.name.clone()), ("path", path)]),
             ),
             Err(error) => self.catalog.format(
-                "error-export-drawing-sheet-dxf",
+                "error-export-drawing-sheet",
                 &BTreeMap::from([("path", path), ("reason", error.to_string())]),
             ),
         };

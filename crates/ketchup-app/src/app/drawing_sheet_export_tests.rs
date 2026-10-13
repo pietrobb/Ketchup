@@ -1,19 +1,22 @@
 //! File > Drawings in the window: a drawing sheet of the document exports as
-//! DXF from its own row, the project sheet still exports as PDF, and neither
-//! changes the document.
+//! DXF or DWG from its own row, the project sheet still exports as PDF, and
+//! none of them changes the document.
+use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
 use egui_kittest::kittest::Queryable as _;
 use ketchup_model::document::InstancePath;
 
 #[test]
-fn the_drawings_window_exports_a_document_sheet_as_dxf_and_the_project_sheet_as_pdf() {
+fn the_drawings_window_exports_a_document_sheet_as_dxf_and_dwg_and_the_project_sheet_as_pdf() {
     let directory = tempfile::tempdir().unwrap();
-    let (dxf, pdf) = (
+    let (dxf, dwg, pdf) = (
         directory.path().join("block.dxf"),
+        directory.path().join("block.dwg"),
         directory.path().join("house.pdf"),
     );
     let dialogs = dialogs::ScriptedFileDialogs::new()
         .queue_export(&dxf)
+        .queue_export(&dwg)
         .queue_export(&pdf);
     let script = dialogs.clone();
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
@@ -26,6 +29,7 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_the_project_sheet_as_
     crate::drawn_shape::tests::evaluate_exact(&mut app);
     let sheet = app.document.current().drawing_sheets().next().unwrap().id();
     let (expected, dxf_bytes) = app.drawing_sheet_dxf(sheet).unwrap();
+    let (_, dwg_bytes) = app.drawing_sheet_file(sheet, SheetFileFormat::Dwg).unwrap();
     let state = (
         app.document_revision(),
         app.canonical_digest(),
@@ -48,6 +52,20 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_the_project_sheet_as_
         harness.state().digest
     );
 
+    let label = harness.state().catalog.text("drawings-export-sheet-dwg");
+    harness.get_by_label(&label).click();
+    harness.run();
+    assert_eq!(std::fs::read(&dwg).unwrap(), dwg_bytes);
+    assert!(dwg_bytes.starts_with(ketchup_dwg::WRITTEN_VERSION.as_bytes()));
+    let exported = harness.state().catalog.format(
+        "digest-exported-drawing-sheet-dwg",
+        &BTreeMap::from([
+            ("name", expected.name.clone()),
+            ("path", dwg.display().to_string()),
+        ]),
+    );
+    assert_eq!(harness.state().digest, exported);
+
     let label = harness.state().catalog.text("drawings-export-pdf");
     harness.get_by_label(&label).click();
     harness.run();
@@ -58,7 +76,7 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_the_project_sheet_as_
             .iter()
             .map(|request| request.extension.as_str())
             .collect::<Vec<_>>(),
-        ["dxf", "pdf"]
+        ["dxf", "dwg", "pdf"]
     );
 
     let app = harness.state();

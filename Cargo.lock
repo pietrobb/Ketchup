@@ -2354,6 +2354,7 @@ dependencies = [
  "ketchup-app",
  "ketchup-application",
  "ketchup-assistant",
+ "ketchup-dwg",
  "ketchup-geometry",
  "ketchup-interaction",
  "ketchup-manufacturing",

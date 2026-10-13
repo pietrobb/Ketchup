@@ -1,7 +1,8 @@
 //! `file action=export_drawings` with `sheet_id`: a drawing sheet of the
 //! document is written as the DXF of its exact projection, the project sheet
 //! is refused as DXF by name, and no export changes the document. Exact
-//! circles the views face are CIRCLE and ARC entities, not their lines.
+//! circles the views face are CIRCLE and ARC entities, not their lines. A
+//! `.dwg` path gets that DXF as an AutoCAD 2018 DWG.
 
 use super::drill_holes::{centroid, edit, face, saved};
 use super::program_edit::evaluate_exact;
@@ -130,7 +131,7 @@ fn the_project_sheet_as_dxf_and_wrong_sheet_requests_are_refused_by_name() {
     let (stamp, undo, bytes) = (app.live_bridge_stamp(), app.undo_step_count(), saved(&app));
     let directory = tempfile::tempdir().unwrap();
     let file = |name: &str| directory.path().join(name);
-    let existing = file("existing.dxf");
+    let existing = file("existing.dwg");
     std::fs::write(&existing, b"user file").unwrap();
 
     for (path, extra, code) in [
@@ -142,7 +143,7 @@ fn the_project_sheet_as_dxf_and_wrong_sheet_requests_are_refused_by_name() {
             "drawing_sheet_not_found",
         ),
         (file("sheet.pdf"), json!({"sheet_id": id}), "invalid_path"),
-        (file("sheet.dwg"), json!({"sheet_id": id}), "invalid_path"),
+        (file("sheet.txt"), json!({"sheet_id": id}), "invalid_path"),
         (
             file("sheet.dxf"),
             json!({"sheet_id": id, "format": "A1"}),
@@ -179,13 +180,28 @@ struct Entity {
     id: String,
 }
 
+/// The entities of the ENTITIES section, read pair by pair (a code may be
+/// padded with spaces, as other writers do).
 fn entities(dxf: &str) -> Vec<Entity> {
-    let body = dxf.split_once("2\nENTITIES\n").unwrap().1;
-    let lines = body.lines().collect::<Vec<_>>();
+    let lines = dxf.lines().collect::<Vec<_>>();
+    let pairs = lines
+        .chunks(2)
+        .filter_map(|pair| match pair {
+            [code, value] => Some((code.trim(), value.trim())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let start = pairs
+        .iter()
+        .position(|pair| *pair == ("2", "ENTITIES"))
+        .unwrap()
+        + 1;
     let mut entities = Vec::<Entity>::new();
-    for pair in lines.chunks(2) {
-        let [code, value] = pair else { break };
-        match code.trim() {
+    for &(code, value) in &pairs[start..] {
+        if (code, value) == ("0", "ENDSEC") {
+            break;
+        }
+        match code {
             "0" => entities.push(Entity {
                 kind: (*value).to_owned(),
                 layer: String::new(),
@@ -389,4 +405,70 @@ fn a_drilled_hole_and_a_rounded_corner_are_an_exact_circle_and_arc_in_the_dxf() 
     // no exact curve is left as lines.
     assert_eq!(curves["curves_as_lines"], json!([]), "{curves}");
     assert_eq!(curves["curves_as_lines_count"], 0);
+
+    assert_the_dwg_carries_the_dxf(
+        &mut app,
+        &mut bridge,
+        id,
+        &written,
+        &directory.path().join("rounded.dwg"),
+    );
+}
+
+/// The geometry of every LINE, CIRCLE and ARC: type, layer, KETCHUP id and
+/// its numbers to five decimals of page millimetres, sorted.
+fn drawn(dxf: &str) -> Vec<String> {
+    let mut drawn = entities(dxf)
+        .into_iter()
+        .filter(|entity| matches!(entity.kind.as_str(), "LINE" | "CIRCLE" | "ARC"))
+        .map(|entity| {
+            let numbers = [10, 20, 11, 21, 40, 50, 51]
+                .iter()
+                .filter_map(|code| {
+                    entity
+                        .codes
+                        .get(code)
+                        .map(|value| format!("{code}={value:.5}"))
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("{} {} {} {numbers}", entity.kind, entity.layer, entity.id)
+        })
+        .collect::<Vec<_>>();
+    drawn.sort();
+    drawn
+}
+
+/// The same sheet as DWG: an AutoCAD 2018 file that reads back with every
+/// line, circle and arc of the DXF on its layer, at its place, with its id.
+fn assert_the_dwg_carries_the_dxf(
+    app: &mut KetchupApp,
+    bridge: &mut LiveBridge,
+    id: u64,
+    dxf: &str,
+    path: &Path,
+) {
+    let exported = bridge
+        .execute(app, export_drawings(path, json!({"sheet_id": id})), false)
+        .unwrap();
+    assert_eq!(exported["exported"], true, "{exported}");
+    assert_eq!(exported["file_format"], "dwg");
+    let dwg = std::fs::read(path).unwrap();
+    assert_eq!(exported["bytes"], dwg.len());
+    assert!(dwg.starts_with(ketchup_dwg::WRITTEN_VERSION.as_bytes()));
+    let read = ketchup_dwg::dwg_to_dxf(&dwg, u64::MAX, usize::MAX).unwrap();
+    assert_eq!(read.version, ketchup_dwg::WRITTEN_VERSION);
+    assert!(read.skipped.is_empty(), "{:?}", read.skipped);
+    let back = String::from_utf8(read.dxf).unwrap();
+    let expected = drawn(dxf);
+    assert!(expected.iter().any(|entity| entity.starts_with("CIRCLE ")));
+    assert!(expected.iter().any(|entity| entity.starts_with("ARC ")));
+    assert_eq!(drawn(&back), expected);
+    let texts = |dxf: &str| {
+        entities(dxf)
+            .iter()
+            .filter(|entity| entity.kind == "TEXT")
+            .count()
+    };
+    assert_eq!(texts(&back), texts(dxf));
 }

@@ -161,7 +161,14 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         Io,
         "path",
         "The drawing could not be written.",
-        "Choose a writable absolute path (.pdf for the project sheet, .dxf for a drawing sheet) and export again.",
+        "Choose a writable absolute path (.pdf for the project sheet, .dxf or .dwg for a drawing sheet) and export again.",
+    ),
+    entry(
+        "dwg_conversion_failed",
+        Io,
+        "path",
+        "The DXF of the drawing sheet did not convert to DWG; the cause names the step of the DWG writer that failed. Nothing was written.",
+        "Export the sheet as .dxf instead, or report the cause.",
     ),
     entry(
         "entity_not_found",
@@ -441,7 +448,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         Request,
         "path",
         "The project sheet (plan, sections, elevations) hides back edges by painting nearer faces over them, which DXF and DWG cannot carry, so it is written only as PDF.",
-        "Export the project sheet to a .pdf path, or export a drawing sheet of the document as .dxf with sheet_id (inspect action=summary lists them).",
+        "Export the project sheet to a .pdf path, or export a drawing sheet of the document as .dxf or .dwg with sheet_id (inspect action=summary lists them).",
     ),
     entry(
         "proposal_ids_exhausted",

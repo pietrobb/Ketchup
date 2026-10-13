@@ -1,10 +1,10 @@
 //! `file action=export_drawings`: the project drawings of the visible layers as
 //! a PDF sheet, with the title block and format kept in the document; with
-//! `sheet_id`, a drawing sheet of the document as DXF.
+//! `sheet_id`, a drawing sheet of the document as DXF or DWG.
 
 use super::{LiveBridge, Request, failed_because, failure};
 use crate::KetchupApp;
-use crate::app::drawing_sheet_export::DrawingSheetExportError;
+use crate::app::drawing_sheet_export::{DrawingSheetExportError, SheetFileFormat};
 use crate::app::project_drawings::ProjectDrawingsError;
 use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
 use ketchup_model::drawing::DrawingSheetId;
@@ -76,19 +76,20 @@ fn refuse_existing(path: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Drawing sheet `id` of the document as DXF: exact views, hidden edges on
-/// their own layer.
+/// Drawing sheet `id` of the document as DXF, or that DXF as an AutoCAD
+/// 2018 DWG: exact views, hidden edges on their own layer.
 fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Value, &'static str> {
-    if !local_absolute_path(path) || !has_extension(Path::new(path), "dxf") {
+    let format = SheetFileFormat::of_path(Path::new(path)).filter(|_| local_absolute_path(path));
+    let Some(format) = format else {
         return Err(failure(
             "invalid_path",
-            "A drawing sheet is written to a local absolute path ending in .dxf (no network share, device or stream).",
+            "A drawing sheet is written to a local absolute path ending in .dxf or .dwg (no network share, device or stream).",
             json!({"path": path}),
         ));
-    }
+    };
     refuse_existing(path)?;
     let sheet = app
-        .write_drawing_sheet_dxf(id, Path::new(path))
+        .write_drawing_sheet(id, Path::new(path), format)
         .map_err(|error| match error {
             DrawingSheetExportError::NotFound(_) => failure(
                 "drawing_sheet_not_found",
@@ -106,6 +107,7 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
             DrawingSheetExportError::Projection(_) | DrawingSheetExportError::Export(_) => {
                 failed_because("drawings_unavailable", error)
             }
+            DrawingSheetExportError::Dwg(_) => failed_because("dwg_conversion_failed", error),
             DrawingSheetExportError::Write(_) => failed_because("drawings_write_failed", error),
         })?;
     Ok(json!({
@@ -113,6 +115,7 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
         "path": path,
         "sheet_id": id.0,
         "sheet": sheet.name,
+        "file_format": format.extension(),
         "views": sheet.views,
         "visible_lines": sheet.visible_lines,
         "hidden_lines": sheet.hidden_lines,
@@ -178,7 +181,7 @@ fn export(
     if has_extension(target, "dxf") || has_extension(target, "dwg") {
         return Err(failure(
             "project_sheet_pdf_only",
-            "The project sheet hides back edges by painting nearer faces over them, which DXF and DWG cannot carry, so it is written only as PDF. A drawing sheet of the document is written as .dxf with sheet_id.",
+            "The project sheet hides back edges by painting nearer faces over them, which DXF and DWG cannot carry, so it is written only as PDF. A drawing sheet of the document is written as .dxf or .dwg with sheet_id.",
             json!({"path": path}),
         ));
     }

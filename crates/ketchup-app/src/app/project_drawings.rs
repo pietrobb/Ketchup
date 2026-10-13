@@ -4,6 +4,7 @@
 //! concept layer draws the construction. The title block and the sheet format
 //! are kept in the document.
 
+use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
 use ketchup_manufacturing::project_drawings::{
     DrawingSolid, ProjectDrawingError, ProjectSheet, ProjectSheetOptions, ProjectView, SCALES,
@@ -469,11 +470,14 @@ impl KetchupApp {
                 for sheet in sheets {
                     ui.horizontal(|ui| {
                         ui.label(sheet.name());
-                        if ui
-                            .button(self.catalog.text("drawings-export-sheet-dxf"))
-                            .clicked()
-                        {
-                            export_sheet = Some(sheet.id());
+                        for format in SheetFileFormat::ALL {
+                            let label = match format {
+                                SheetFileFormat::Dxf => "drawings-export-sheet-dxf",
+                                SheetFileFormat::Dwg => "drawings-export-sheet-dwg",
+                            };
+                            if ui.button(self.catalog.text(label)).clicked() {
+                                export_sheet = Some((sheet.id(), format));
+                            }
                         }
                     });
                 }
@@ -489,10 +493,10 @@ impl KetchupApp {
         if export && let Some(path) = self.choose_export_path("pdf") {
             self.export_project_drawings_to(&path);
         }
-        if let Some(id) = export_sheet
-            && let Some(path) = self.choose_export_path("dxf")
+        if let Some((id, format)) = export_sheet
+            && let Some(path) = self.choose_export_path(format.extension())
         {
-            self.export_drawing_sheet_dxf_to(id, &path);
+            self.export_drawing_sheet_to(id, &path, format);
         }
     }
 }
