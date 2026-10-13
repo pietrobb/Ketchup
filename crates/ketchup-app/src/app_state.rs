@@ -36,6 +36,7 @@ pub(crate) struct LiveState {
     /// and the permissions shown; nothing is kept after the window closes.
     pub(crate) plugin_consents: Vec<live_bridge::plugin_consent::PluginConsent>,
     pub(crate) plugin_menu: live_bridge::plugin_menu::PluginMenu,
+    pub(crate) variants: live_bridge::variant_window::VariantDock,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed

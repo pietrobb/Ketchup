@@ -149,6 +149,7 @@ mod planar_push_pull;
 mod program_edit;
 mod program_evaluation;
 mod program_source_ui;
+mod program_variants_ui;
 mod refusal;
 mod selection_mass_ui;
 mod selection_measures_ui;
@@ -2844,6 +2845,8 @@ mod nested_transform_tests;
 mod planar_offset_tests;
 #[cfg(test)]
 mod program_source_ui_tests;
+#[cfg(test)]
+mod program_variants_ui_tests;
 #[cfg(test)]
 mod push_pull_snapping_tests;
 #[cfg(test)]
