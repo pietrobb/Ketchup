@@ -2,7 +2,7 @@ use crate::diagnostics::{
     AssistantPlanningResult, assistant_canonical_rejection, assistant_planning_rejection,
 };
 use crate::topology::{
-    GeneralFinishKind, assistant_topology_references, plan_topology_advanced_chamfer_kind,
+    GeneralFinishKind, TopologyPick, plan_topology_advanced_chamfer_kind, plan_topology_draft_kind,
     plan_topology_finish_kind, plan_topology_shell_kind, plan_topology_variable_fillet_kind,
 };
 use ketchup_assistant::sidecar::{
@@ -508,61 +508,14 @@ pub(crate) fn plan_feature_kind(
             thickness_mm,
             direction,
         } => {
-            let target = FeatureId(*target_feature_id);
-            let source = snapshot.feature(target).ok_or_else(|| {
-                assistant_canonical_rejection(
-                    CanonicalError::FeatureNotFound(target),
-                    operation_name,
-                    &format!("feature:{}", target.0),
-                )
-            })?;
-            if source.definition_id() != definition_id {
-                return Err(assistant_planning_rejection(
-                    "planning.cad_feature_input_ownership_invalid",
-                    operation_name,
-                    &format!("feature:{}", target.0),
-                    "The requested Shell target belongs to a different definition.",
-                    "Target a supported exact body feature in the requested definition.",
-                ));
-            }
-            if snapshot.feature_is_suppressed(target)
-                || ExactBRepGraph::from_snapshot(snapshot, definition_id, target).is_err()
-            {
-                return Err(assistant_planning_rejection(
-                    "planning.cad_feature_input_unsupported",
-                    operation_name,
-                    &format!("feature:{}", target.0),
-                    "The requested Shell target is not supported by exact evaluation.",
-                    "Target an unsuppressed supported exact body feature with current host-issued face references.",
-                ));
-            }
-            let available_faces = assistant_topology_references(
-                snapshot,
-                topology_results,
+            let pick = TopologyPick::new(snapshot, topology_results, definition_id, operation_name);
+            let target = pick.target(*target_feature_id, "Shell", TopologicalElementKind::Face)?;
+            let removed_faces = pick.references(
+                target,
                 TopologicalElementKind::Face,
-            );
-            let mut removed_faces = Vec::with_capacity(removed_face_reference_ids.len());
-            for reference_id in removed_face_reference_ids {
-                let matches = available_faces
-                    .iter()
-                    .copied()
-                    .filter(|reference| {
-                        reference.definition_id == definition_id
-                            && reference.producer_feature_id == target
-                            && reference.lineage_digest == *reference_id
-                    })
-                    .collect::<Vec<_>>();
-                let [reference] = matches.as_slice() else {
-                    return Err(assistant_planning_rejection(
-                        "planning.cad_topology_reference_unavailable",
-                        operation_name,
-                        &format!("feature:{}", target.0),
-                        "A requested Shell face reference is not a unique current host-issued reference for the target.",
-                        "Refresh the document context and use only listed topology_face_references for this target.",
-                    ));
-                };
-                removed_faces.push((*reference).clone());
-            }
+                removed_face_reference_ids,
+                "Shell face",
+            )?;
             let thickness =
                 Dimension::new(thickness_mm.to_string(), *thickness_mm).map_err(|error| {
                     assistant_canonical_rejection(
@@ -597,61 +550,14 @@ pub(crate) fn plan_feature_kind(
             radius_mm,
             radius_stations,
         } => {
-            let target = FeatureId(*target_feature_id);
-            let source = snapshot.feature(target).ok_or_else(|| {
-                assistant_canonical_rejection(
-                    CanonicalError::FeatureNotFound(target),
-                    operation_name,
-                    &format!("feature:{}", target.0),
-                )
-            })?;
-            if source.definition_id() != definition_id {
-                return Err(assistant_planning_rejection(
-                    "planning.cad_feature_input_ownership_invalid",
-                    operation_name,
-                    &format!("feature:{}", target.0),
-                    "The requested Fillet target belongs to a different definition.",
-                    "Target a supported exact body feature in the requested definition.",
-                ));
-            }
-            if snapshot.feature_is_suppressed(target)
-                || ExactBRepGraph::from_snapshot(snapshot, definition_id, target).is_err()
-            {
-                return Err(assistant_planning_rejection(
-                    "planning.cad_feature_input_unsupported",
-                    operation_name,
-                    &format!("feature:{}", target.0),
-                    "The requested Fillet target is not supported by exact evaluation.",
-                    "Target an unsuppressed supported exact body feature with current host-issued edge references.",
-                ));
-            }
-            let available_edges = assistant_topology_references(
-                snapshot,
-                topology_results,
+            let pick = TopologyPick::new(snapshot, topology_results, definition_id, operation_name);
+            let target = pick.target(*target_feature_id, "Fillet", TopologicalElementKind::Edge)?;
+            let edges = pick.references(
+                target,
                 TopologicalElementKind::Edge,
-            );
-            let mut edges = Vec::with_capacity(edge_reference_ids.len());
-            for reference_id in edge_reference_ids {
-                let matches = available_edges
-                    .iter()
-                    .copied()
-                    .filter(|reference| {
-                        reference.definition_id == definition_id
-                            && reference.producer_feature_id == target
-                            && reference.lineage_digest == *reference_id
-                    })
-                    .collect::<Vec<_>>();
-                let [reference] = matches.as_slice() else {
-                    return Err(assistant_planning_rejection(
-                        "planning.cad_topology_reference_unavailable",
-                        operation_name,
-                        &format!("feature:{}", target.0),
-                        "A requested Fillet edge reference is not a unique current host-issued reference for the target.",
-                        "Refresh the document context and use only listed topology_edge_references for this target.",
-                    ));
-                };
-                edges.push((*reference).clone());
-            }
+                edge_reference_ids,
+                "Fillet edge",
+            )?;
             let radius = Dimension::new(radius_mm.to_string(), *radius_mm).map_err(|error| {
                 assistant_canonical_rejection(error.into(), operation_name, "feature.radius_mm")
             })?;
@@ -689,61 +595,15 @@ pub(crate) fn plan_feature_kind(
             mode,
             side_face_reference_ids,
         } => {
-            let target = FeatureId(*target_feature_id);
-            let source = snapshot.feature(target).ok_or_else(|| {
-                assistant_canonical_rejection(
-                    CanonicalError::FeatureNotFound(target),
-                    operation_name,
-                    &format!("feature:{}", target.0),
-                )
-            })?;
-            if source.definition_id() != definition_id {
-                return Err(assistant_planning_rejection(
-                    "planning.cad_feature_input_ownership_invalid",
-                    operation_name,
-                    &format!("feature:{}", target.0),
-                    "The requested Chamfer target belongs to a different definition.",
-                    "Target a supported exact body feature in the requested definition.",
-                ));
-            }
-            if snapshot.feature_is_suppressed(target)
-                || ExactBRepGraph::from_snapshot(snapshot, definition_id, target).is_err()
-            {
-                return Err(assistant_planning_rejection(
-                    "planning.cad_feature_input_unsupported",
-                    operation_name,
-                    &format!("feature:{}", target.0),
-                    "The requested Chamfer target is not supported by exact evaluation.",
-                    "Target an unsuppressed supported exact body feature with current host-issued edge references.",
-                ));
-            }
-            let available_edges = assistant_topology_references(
-                snapshot,
-                topology_results,
+            let pick = TopologyPick::new(snapshot, topology_results, definition_id, operation_name);
+            let target =
+                pick.target(*target_feature_id, "Chamfer", TopologicalElementKind::Edge)?;
+            let edges = pick.references(
+                target,
                 TopologicalElementKind::Edge,
-            );
-            let mut edges = Vec::with_capacity(edge_reference_ids.len());
-            for reference_id in edge_reference_ids {
-                let matches = available_edges
-                    .iter()
-                    .copied()
-                    .filter(|reference| {
-                        reference.definition_id == definition_id
-                            && reference.producer_feature_id == target
-                            && reference.lineage_digest == *reference_id
-                    })
-                    .collect::<Vec<_>>();
-                let [reference] = matches.as_slice() else {
-                    return Err(assistant_planning_rejection(
-                        "planning.cad_topology_reference_unavailable",
-                        operation_name,
-                        &format!("feature:{}", target.0),
-                        "A requested Chamfer edge reference is not a unique current host-issued reference for the target.",
-                        "Refresh the document context and use only listed topology_edge_references for this target.",
-                    ));
-                };
-                edges.push((*reference).clone());
-            }
+                edge_reference_ids,
+                "Chamfer edge",
+            )?;
             let distance =
                 Dimension::new(distance_mm.to_string(), *distance_mm).map_err(|error| {
                     assistant_canonical_rejection(
@@ -780,36 +640,17 @@ pub(crate) fn plan_feature_kind(
                     plan_topology_finish_kind(GeneralFinishKind::Chamfer, target, edges, distance)
                 }
                 Some(mode) => {
-                    let available_faces = assistant_topology_references(
-                        snapshot,
-                        topology_results,
+                    let side_faces = pick.references(
+                        target,
                         TopologicalElementKind::Face,
-                    );
-                    let mut edge_sides = Vec::with_capacity(edges.len());
-                    for (edge, reference_id) in edges.into_iter().zip(side_face_reference_ids) {
-                        let matches = available_faces
-                            .iter()
-                            .copied()
-                            .filter(|reference| {
-                                reference.definition_id == definition_id
-                                    && reference.producer_feature_id == target
-                                    && reference.lineage_digest == *reference_id
-                            })
-                            .collect::<Vec<_>>();
-                        let [side_face] = matches.as_slice() else {
-                            return Err(assistant_planning_rejection(
-                                "planning.cad_topology_reference_unavailable",
-                                operation_name,
-                                &format!("feature:{}", target.0),
-                                "A requested Chamfer side-face reference is not a unique current host-issued reference for the target.",
-                                "Refresh the document context and use only listed topology_face_references for this target.",
-                            ));
-                        };
-                        edge_sides.push(ChamferEdgeSide {
-                            edge,
-                            side_face: (*side_face).clone(),
-                        });
-                    }
+                        side_face_reference_ids,
+                        "Chamfer side-face",
+                    )?;
+                    let edge_sides = edges
+                        .into_iter()
+                        .zip(side_faces)
+                        .map(|(edge, side_face)| ChamferEdgeSide { edge, side_face })
+                        .collect();
                     plan_topology_advanced_chamfer_kind(target, edge_sides, distance, mode)
                 }
             }
@@ -820,6 +661,32 @@ pub(crate) fn plan_feature_kind(
                     &format!("feature:{}", target.0),
                     "The requested Chamfer edge/side-face set is not canonical.",
                     "Use 1 to 64 current host-issued edge references and one adjacent side-face reference per edge for advanced modes.",
+                )
+            })?
+        }
+        AssistantCadBodyFeature::TopologyDraft {
+            target_feature_id,
+            face_reference_ids,
+            neutral_face_reference_id,
+            angle_degrees,
+        } => {
+            let face = TopologicalElementKind::Face;
+            let pick = TopologyPick::new(snapshot, topology_results, definition_id, operation_name);
+            let target = pick.target(*target_feature_id, "Draft", face)?;
+            let faces = pick.references(target, face, face_reference_ids, "Draft face")?;
+            let neutral = pick.reference(
+                target,
+                face,
+                neutral_face_reference_id,
+                "Draft neutral face",
+            )?;
+            plan_topology_draft_kind(target, faces, neutral, *angle_degrees).ok_or_else(|| {
+                assistant_planning_rejection(
+                    "planning.cad_topology_reference_set_invalid",
+                    operation_name,
+                    &format!("feature:{}", target.0),
+                    "The requested Draft face set is not canonical.",
+                    "Use 1 to 64 unique current host-issued face references of one target and a neutral face not among them.",
                 )
             })?
         }

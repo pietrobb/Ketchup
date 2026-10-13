@@ -6,7 +6,7 @@
 //! splits the part. Everything else is refused by name.
 
 use crate::diagnostics::{AssistantPlanningResult, assistant_planning_rejection};
-use crate::topology::assistant_topology_references;
+use crate::topology::TopologyPick;
 use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantHoleThread, AssistantPartHole,
 };
@@ -126,21 +126,19 @@ pub(crate) fn admit_drill_holes(
                 "Target an evaluated body feature of the part and use its listed face references.",
             )
         })?;
-    let issued = assistant_topology_references(snapshot, topology, TopologicalElementKind::Face)
-        .into_iter()
-        .filter(|reference| {
-            reference.definition_id == definition_id
-                && reference.producer_feature_id == target
-                && reference.lineage_digest == face_reference_id
-        })
-        .count();
+    let face = TopologyPick::new(snapshot, topology, definition_id, OPERATION).reference(
+        target,
+        TopologicalElementKind::Face,
+        face_reference_id,
+        "drilled face",
+    )?;
     let ordinal = package
         .topological_references
         .iter()
         .filter(|reference| reference.kind == TopologicalElementKind::Face)
-        .position(|reference| reference.lineage_digest == face_reference_id)
+        .position(|reference| reference.lineage_digest == face.lineage_digest)
         .and_then(|ordinal| u32::try_from(ordinal).ok());
-    let evidence = ordinal.filter(|_| issued == 1).and_then(|ordinal| {
+    let evidence = ordinal.and_then(|ordinal| {
         package
             .face_evidence
             .iter()

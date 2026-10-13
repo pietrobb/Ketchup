@@ -805,7 +805,48 @@ fn plan_part_cuts(
     Ok(made)
 }
 
-/// Fillet and Chamfer of edges are the topology finish they append.
+/// A Revolve part or a circular pattern with its axis resolved to an origin and
+/// a direction; `None` for every other operation.
+fn axis_resolved_operation(
+    operation: &AssistantCadEditOperation,
+    snapshot: &Snapshot,
+    topology_results: &ExactResultRegistry,
+    staged_planning: &StagedPlanningContext,
+    operations: &[AssistantCadEditOperation],
+    operation_name: &str,
+) -> AssistantPlanningResult<Option<AssistantCadEditOperation>> {
+    let (AssistantCadEditOperation::CreatePart {
+        feature: AssistantCadPartFeature::Revolve { axis, .. },
+        ..
+    }
+    | AssistantCadEditOperation::CircularPattern { axis, .. }) = operation
+    else {
+        return Ok(None);
+    };
+    let (origin_mm, direction) = resolve_assistant_axis_spec(
+        axis,
+        snapshot,
+        topology_results,
+        staged_planning,
+        operations,
+        operation_name,
+    )?;
+    let mut resolved = operation.clone();
+    if let AssistantCadEditOperation::CreatePart {
+        feature: AssistantCadPartFeature::Revolve { axis, .. },
+        ..
+    }
+    | AssistantCadEditOperation::CircularPattern { axis, .. } = &mut resolved
+    {
+        *axis = AssistantAxisSpec::OriginDirection {
+            origin_mm,
+            direction,
+        };
+    }
+    Ok(Some(resolved))
+}
+
+/// Fillet and Chamfer of edges and Draft of faces are the topology finish they append.
 fn edge_finish_feature(operation: &AssistantCadEditOperation) -> Option<AssistantCadEditOperation> {
     match operation {
         AssistantCadEditOperation::FilletEdges {
@@ -839,6 +880,23 @@ fn edge_finish_feature(operation: &AssistantCadEditOperation) -> Option<Assistan
                 distance_mm: *distance_mm,
                 mode: Default::default(),
                 side_face_reference_ids: Vec::new(),
+            },
+        }),
+        AssistantCadEditOperation::DraftFaces {
+            definition_id,
+            name,
+            target_feature_id,
+            face_reference_ids,
+            neutral_face_reference_id,
+            angle_degrees,
+        } => Some(AssistantCadEditOperation::AppendFeature {
+            definition_id: (*definition_id).into(),
+            name: name.clone(),
+            feature: AssistantCadBodyFeature::TopologyDraft {
+                target_feature_id: *target_feature_id,
+                face_reference_ids: face_reference_ids.clone(),
+                neutral_face_reference_id: neutral_face_reference_id.clone(),
+                angle_degrees: *angle_degrees,
             },
         }),
         _ => None,
@@ -1992,54 +2050,15 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             continue;
         }
         staged_planning.refresh(operation_name, &document_target)?;
-        let normalized_operation = match operation {
-            AssistantCadEditOperation::CreatePart {
-                feature: AssistantCadPartFeature::Revolve { axis, .. },
-                ..
-            } => {
-                let (origin_mm, direction) = resolve_assistant_axis_spec(
-                    axis,
-                    &snapshot,
-                    topology_results,
-                    &staged_planning,
-                    &program.operations,
-                    operation_name,
-                )?;
-                let mut resolved = operation.clone();
-                let AssistantCadEditOperation::CreatePart {
-                    feature: AssistantCadPartFeature::Revolve { axis, .. },
-                    ..
-                } = &mut resolved
-                else {
-                    unreachable!("matched Revolve part")
-                };
-                *axis = AssistantAxisSpec::OriginDirection {
-                    origin_mm,
-                    direction,
-                };
-                Some(resolved)
-            }
-            AssistantCadEditOperation::CircularPattern { axis, .. } => {
-                let (origin_mm, direction) = resolve_assistant_axis_spec(
-                    axis,
-                    &snapshot,
-                    topology_results,
-                    &staged_planning,
-                    &program.operations,
-                    operation_name,
-                )?;
-                let mut resolved = operation.clone();
-                let AssistantCadEditOperation::CircularPattern { axis, .. } = &mut resolved else {
-                    unreachable!("matched circular pattern")
-                };
-                *axis = AssistantAxisSpec::OriginDirection {
-                    origin_mm,
-                    direction,
-                };
-                Some(resolved)
-            }
-            _ => edge_finish_feature(operation),
-        };
+        let normalized_operation = axis_resolved_operation(
+            operation,
+            &snapshot,
+            topology_results,
+            &staged_planning,
+            &program.operations,
+            operation_name,
+        )?
+        .or_else(|| edge_finish_feature(operation));
         let operation = normalized_operation.as_ref().unwrap_or(operation);
         let targets = operation_selector(operation).map_or_else(
             || Ok(Vec::new()),
@@ -3744,6 +3763,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
 
             AssistantCadEditOperation::FilletEdges { .. }
             | AssistantCadEditOperation::ChamferEdges { .. }
+            | AssistantCadEditOperation::DraftFaces { .. }
             | AssistantCadEditOperation::UpsertSpace { .. }
             | AssistantCadEditOperation::DeleteSpace { .. }
             | AssistantCadEditOperation::UpsertClearanceVolume { .. }
@@ -3852,6 +3872,7 @@ const fn operation_selector(
         | AssistantCadEditOperation::CreateHelix { .. }
         | AssistantCadEditOperation::FilletEdges { .. }
         | AssistantCadEditOperation::ChamferEdges { .. }
+        | AssistantCadEditOperation::DraftFaces { .. }
         | AssistantCadEditOperation::DrillHoles { .. }
         | AssistantCadEditOperation::AppendFeature { .. }
         | AssistantCadEditOperation::BindProgramOutput { .. }
@@ -3904,6 +3925,7 @@ const fn operation_name(operation: &AssistantCadEditOperation) -> &'static str {
         AssistantCadEditOperation::CreateHelix { .. } => "create_helix",
         AssistantCadEditOperation::FilletEdges { .. } => "fillet_edges",
         AssistantCadEditOperation::ChamferEdges { .. } => "chamfer_edges",
+        AssistantCadEditOperation::DraftFaces { .. } => "draft_faces",
         AssistantCadEditOperation::DrillHoles { .. } => "drill_holes",
         AssistantCadEditOperation::AppendFeature { .. } => "append_feature",
         AssistantCadEditOperation::BindProgramOutput { .. } => "bind_program_output",

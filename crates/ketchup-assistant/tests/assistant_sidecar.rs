@@ -1842,8 +1842,24 @@ fn direct_edge_finish_operations_are_strict_bounded_and_round_trip() {
         "target_feature_id":11,"edge_reference_ids":["a".repeat(64),"b".repeat(64)],
         "distance_mm":0.75
     }]});
+    let draft = |angle_degrees: f64, neutral: &str| {
+        serde_json::json!({"operations":[{
+            "operation":"draft_faces","definition_id":7,"name":"Mould draft",
+            "target_feature_id":11,"face_reference_ids":["a".repeat(64),"b".repeat(64)],
+            "neutral_face_reference_id":neutral,"angle_degrees":angle_degrees
+        }]})
+    };
+    let parsed = |value| serde_json::from_value::<AssistantCadEditProgram>(value).unwrap();
+    for (angle_degrees, neutral) in [(45.5, "c"), (0.05, "c"), (f64::MAX, "c"), (5.0, "a")] {
+        assert!(
+            parsed(draft(angle_degrees, &neutral.repeat(64)))
+                .validate()
+                .is_err(),
+            "{angle_degrees} {neutral}"
+        );
+    }
 
-    for value in [fillet, chamfer] {
+    for value in [fillet, chamfer, draft(-45.0, &"c".repeat(64))] {
         let program = serde_json::from_value::<AssistantCadEditProgram>(value).unwrap();
         assert_eq!(program.validate(), Ok(()));
         let serialized = serde_json::to_value(&program).unwrap();

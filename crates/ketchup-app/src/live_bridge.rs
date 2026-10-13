@@ -1670,6 +1670,7 @@ impl LiveBridge {
                 | AssistantCadEditOperation::CreateHelix { .. }
                 | AssistantCadEditOperation::FilletEdges { .. }
                 | AssistantCadEditOperation::ChamferEdges { .. }
+                | AssistantCadEditOperation::DraftFaces { .. }
                 | AssistantCadEditOperation::DrillHoles { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }
                 | AssistantCadEditOperation::BindProgramOutput { .. }
@@ -1825,12 +1826,42 @@ impl LiveBridge {
                 .map_err(|error| failed_because("exact_evaluation_rejected", error))?;
         // A candidate without exact geometry (e.g. a cleared document) has
         // nothing to verify; every producer it does have must be evaluated.
-        if exact_report
+        use ketchup_application::evaluation::EvidenceStatus as Status;
+        let unevaluated = exact_report
             .producers
             .iter()
-            .any(|producer| !producer.render.is_evaluated() || !producer.topology.is_evaluated())
-        {
-            return Err("exact_evaluation_incomplete");
+            .filter_map(|producer| {
+                let (reason, refused) = [&producer.render, &producer.topology]
+                    .into_iter()
+                    .find_map(|status| match status {
+                        Status::Current | Status::Evaluated => None,
+                        Status::Failed { reason } => Some((reason, true)),
+                        Status::NotEvaluated { reason } => Some((reason, false)),
+                    })?;
+                Some(json!({
+                    "definition_id": producer.key.definition_id.0,
+                    "feature_id": producer.key.feature_id.0,
+                    "reason": reason,
+                    "refused": refused,
+                }))
+            })
+            .collect::<Vec<_>>();
+        // A kernel refusal (a draft that closes a face) is named by its own reason
+        // even when another producer was also left unevaluated by the deadline.
+        let refusal = unevaluated
+            .iter()
+            .find(|producer| producer["refused"] == true);
+        if let Some(first) = refusal.or(unevaluated.first()) {
+            let reason = first["reason"].as_str().unwrap_or_default().to_owned();
+            return Err(failure(
+                if refusal.is_some() {
+                    "exact_evaluation_rejected"
+                } else {
+                    "exact_evaluation_incomplete"
+                },
+                reason,
+                json!({"producers": unevaluated}),
+            ));
         }
         let exact_at = Instant::now();
         let remaining = deadline

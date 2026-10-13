@@ -1,8 +1,8 @@
 use ketchup_geometry::helix::Helix;
 use ketchup_geometry::linalg::{CubicBezier, cross, length, sub};
 use ketchup_model::document::{
-    Dimension, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
-    is_valid_spatial_sweep_path,
+    Dimension, MAX_DRAFT_ANGLE_DEGREES, MIN_DRAFT_ANGLE_DEGREES, SpatialPathSegment,
+    WeldmentJointPolicy, WeldmentJointPrimary, is_valid_spatial_sweep_path,
 };
 use ketchup_model::graph::is_sha256_hex;
 use ketchup_model::pin_joint::PinSpec;
@@ -828,7 +828,8 @@ impl AssistantCadProgramFeatureReference {
                 AssistantCadEditOperation::CreateHelix { profile, .. } => !profile.is_empty(),
                 AssistantCadEditOperation::CreatePart { .. }
                 | AssistantCadEditOperation::FilletEdges { .. }
-                | AssistantCadEditOperation::ChamferEdges { .. } => true,
+                | AssistantCadEditOperation::ChamferEdges { .. }
+                | AssistantCadEditOperation::DraftFaces { .. } => true,
                 AssistantCadEditOperation::AppendFeature { feature, .. } => {
                     feature.produces_body_feature_output()
                 }
@@ -1136,6 +1137,14 @@ pub enum AssistantCadBodyFeature {
         mode: AssistantCadChamferMode,
         #[serde(default)]
         side_face_reference_ids: Vec<String>,
+    },
+    /// Tilts the listed plane or cylinder faces by `angle_degrees` about their
+    /// line on the flat neutral face; see `draft_faces`.
+    TopologyDraft {
+        target_feature_id: u64,
+        face_reference_ids: Vec<String>,
+        neutral_face_reference_id: String,
+        angle_degrees: f64,
     },
 }
 
@@ -1456,6 +1465,35 @@ impl AssistantCadBodyFeature {
             Self::TopologyChamfer { .. } => {
                 Err(AssistantRequestInvalid::invalid("CAD body feature"))
             }
+            Self::TopologyDraft {
+                target_feature_id,
+                face_reference_ids,
+                neutral_face_reference_id,
+                angle_degrees,
+            } if *target_feature_id != 0
+                && (1..=limits::FEATURE_REFERENCES).contains(&face_reference_ids.len())
+                && face_reference_ids
+                    .iter()
+                    .chain([neutral_face_reference_id])
+                    .all(|reference_id| is_sha256_hex(reference_id))
+                && face_reference_ids
+                    .iter()
+                    .chain([neutral_face_reference_id])
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == face_reference_ids.len() + 1
+                && angle_degrees.is_finite()
+                && (MIN_DRAFT_ANGLE_DEGREES..=MAX_DRAFT_ANGLE_DEGREES)
+                    .contains(&angle_degrees.abs()) =>
+            {
+                Ok(())
+            }
+            Self::TopologyDraft { .. } => Err(AssistantRequestInvalid::new(
+                "CAD draft",
+                AssistantRequestProblem::Violates(
+                    "it needs 1 to 64 unique face references, a neutral face not among them and an angle from 0.1 to 45 degrees either way",
+                ),
+            )),
         }
     }
 
@@ -1835,6 +1873,22 @@ pub enum AssistantCadEditOperation {
         target_feature_id: u64,
         edge_reference_ids: Vec<String>,
         distance_mm: f64,
+    },
+    /// Tilts listed plane or cylinder faces of `target_feature_id` (a mould or
+    /// casting draft) by `angle_degrees` about their line on the flat neutral face,
+    /// pulling from that face into the part: a positive angle narrows the part away
+    /// from the neutral face, a negative one widens it. References are listed face
+    /// references of the target; the neutral face is not one of the drafted faces.
+    /// The angle is 0.1 to 45 degrees either way. A face perpendicular to the pull,
+    /// another surface kind and a draft that closes a face to nothing are refused
+    /// by name.
+    DraftFaces {
+        definition_id: u64,
+        name: String,
+        target_feature_id: u64,
+        face_reference_ids: Vec<String>,
+        neutral_face_reference_id: String,
+        angle_degrees: f64,
     },
     /// Round holes drilled square into one planar face of an existing part: one
     /// hole of `diameter_mm` at every point, `depth_mm` deep or `through` the part
@@ -3057,6 +3111,7 @@ impl AssistantCadEditProgram {
             | AssistantCadEditOperation::AppendFeature { .. }
             | AssistantCadEditOperation::FilletEdges { .. }
             | AssistantCadEditOperation::ChamferEdges { .. }
+            | AssistantCadEditOperation::DraftFaces { .. }
             | AssistantCadEditOperation::DrillHoles { .. }
             | AssistantCadEditOperation::BindProgramOutput { .. }
             | AssistantCadEditOperation::SetDimension { .. }
@@ -3418,6 +3473,30 @@ impl AssistantCadEditProgram {
                     distance_mm: *distance_mm,
                     mode: AssistantCadChamferMode::Symmetric,
                     side_face_reference_ids: Vec::new(),
+                }
+                .validate()?;
+                0
+            }
+            AssistantCadEditOperation::DraftFaces {
+                definition_id,
+                name,
+                target_feature_id,
+                face_reference_ids,
+                neutral_face_reference_id,
+                angle_degrees,
+            } => {
+                if *definition_id == 0
+                    || name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD Draft"));
+                }
+                AssistantCadBodyFeature::TopologyDraft {
+                    target_feature_id: *target_feature_id,
+                    face_reference_ids: face_reference_ids.clone(),
+                    neutral_face_reference_id: neutral_face_reference_id.clone(),
+                    angle_degrees: *angle_degrees,
                 }
                 .validate()?;
                 0

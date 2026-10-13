@@ -12,7 +12,7 @@ use std::f64::consts::PI;
 const DIAMETER_MM: f64 = 6.0;
 
 /// The newest face row of `surface_kind` (with `normal`, for planes).
-fn face(
+pub(super) fn face(
     app: &mut KetchupApp,
     bridge: &mut LiveBridge,
     surface_kind: &str,
@@ -51,7 +51,7 @@ fn face(
         .unwrap_or_else(|| panic!("no {surface_kind} face along {normal:?}"))
 }
 
-fn centroid(face: &Value) -> [f64; 3] {
+pub(super) fn centroid(face: &Value) -> [f64; 3] {
     std::array::from_fn(|axis| face["geometry"]["centroid_mm"][axis].as_f64().unwrap())
 }
 
@@ -89,7 +89,7 @@ fn tap(
     })
 }
 
-fn edit(operation: AssistantCadEditOperation) -> Request {
+pub(super) fn edit(operation: AssistantCadEditOperation) -> Request {
     let program = AssistantCadEditProgram {
         operations: vec![operation],
     };
@@ -114,7 +114,7 @@ fn report(app: &mut KetchupApp, bridge: &mut LiveBridge, section: ReportSection)
     page["rows"].clone()
 }
 
-fn saved(app: &KetchupApp) -> Vec<u8> {
+pub(super) fn saved(app: &KetchupApp) -> Vec<u8> {
     ketchup_model::persistence::save(&app.document.current())
 }
 
