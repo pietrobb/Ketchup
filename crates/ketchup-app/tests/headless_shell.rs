@@ -13502,42 +13502,109 @@ fn scale_untouched_state(shell: &Shell) -> (u64, String, usize, usize) {
     )
 }
 
-/// Scale refused the placed part, said why, showed no preview and changed
+/// Scale refused the part naming `key`, showed no preview and changed
 /// neither the document nor its Undo history.
-fn assert_scale_refused(shell: &Shell, before: &(u64, String, usize, usize)) {
-    assert_eq!(
-        shell.app().action_digest(),
-        shell.catalog().text("digest-scale-refused-placement")
-    );
+fn assert_scale_refused(shell: &Shell, key: &str, before: &(u64, String, usize, usize)) {
+    assert_eq!(shell.app().action_digest(), shell.catalog().text(key));
     assert_eq!(shell.app().scale_preview_factor(), None);
     assert_eq!(&scale_untouched_state(shell), before);
 }
 
-#[test]
-fn uniform_scale_drag_of_a_placed_part_is_refused_without_preview_or_undo_step() {
+/// The box `origin` + `size` stretched by `factors` about `centre`.
+fn stretched_about(origin: Vec3, size: Vec3, centre: Vec3, factors: [f64; 3]) -> [[f64; 3]; 2] {
+    let corner = |point: Vec3| -> [f64; 3] {
+        let (point, centre) = ([point.x, point.y, point.z], [centre.x, centre.y, centre.z]);
+        std::array::from_fn(|axis| centre[axis] + (point[axis] - centre[axis]) * factors[axis])
+    };
+    [corner(origin), corner(origin + size)]
+}
+
+/// The box `origin` + `size` stretched by `factors` about its own centre.
+fn stretched(origin: Vec3, size: Vec3, factors: [f64; 3]) -> [[f64; 3]; 2] {
+    stretched_about(origin, size, origin + size * 0.5, factors)
+}
+
+/// Waits until the exact bodies on screen have exactly the `expected`
+/// bounds, in any order.
+fn assert_exact_bounds(shell: &mut Shell, expected: &[[[f64; 3]; 2]]) {
+    let matches = |actual: &[[[f64; 3]; 2]]| {
+        actual.len() == expected.len()
+            && expected.iter().all(|bounds| {
+                actual.iter().any(|candidate| {
+                    (0..2).all(|corner| {
+                        (0..3).all(|axis| {
+                            (candidate[corner][axis] - bounds[corner][axis]).abs() < 1.0e-3
+                        })
+                    })
+                })
+            })
+    };
+    let arrived = shell.wait_until(|shell| {
+        shell.step();
+        matches(&shell.app().exact_render_bounds())
+    });
+    assert!(
+        arrived,
+        "exact bounds {:?}, expected {expected:?}: {}",
+        shell.app().exact_render_bounds(),
+        shell.app().action_digest()
+    );
+}
+
+/// Types `text`, which replaces whatever the value box held, and presses
+/// Enter.
+fn enter_value(shell: &mut Shell, text: &str) {
+    shell.type_text(text);
+    assert_eq!(shell.app().value_input(), text);
+    shell.press_key(Key::Enter);
+}
+
+/// The default shell with an exact worker, so a scaled part's exact body
+/// arrives on screen.
+fn scale_shell() -> Shell {
     let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    shell
+}
+
+#[test]
+fn uniform_scale_drag_grows_the_part_about_its_centre_in_one_undo_step() {
+    let mut shell = scale_shell();
     let rect = shell.viewport_rect();
     shell.click_at(shell.top_face_centre(1));
-    let geometry = shell.app().occurrence_box_geometry(1).unwrap();
-    let (origin, size) = geometry;
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
     let centre_screen = shell.app().project_to_screen(origin + size * 0.5, rect);
     let from = shell.top_face_centre(1);
     let to = centre_screen + (from - centre_screen) * 1.5;
-    let before = scale_untouched_state(&shell);
+    let (_, digest, undo, _) = scale_untouched_state(&shell);
 
     shell.click_menu_command("menu-tools", AppCommand::Scale);
     shell.set_primary_button(from, Modifiers::NONE, true);
     shell.move_pointer(to);
-    assert_scale_refused(&shell, &before);
+    let factor = shell
+        .app()
+        .scale_preview_factor()
+        .expect("a drag away from the centre previews its factor");
+    assert!((factor - 1.5).abs() < 0.05, "{factor}");
     shell.set_primary_button(to, Modifiers::NONE, false);
     shell.settle();
 
-    assert_scale_refused(&shell, &before);
-    assert_eq!(shell.app().occurrence_box_geometry(1).unwrap(), geometry);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo + 1,
+        "{}",
+        shell.app().action_digest()
+    );
+    assert_ne!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().scale_preview_factor(), None);
+    assert_exact_bounds(&mut shell, &[stretched(origin, size, [factor; 3])]);
 }
 
 #[test]
-fn switching_tools_after_a_refused_scale_leaves_the_document_unchanged() {
+fn switching_tools_during_a_scale_drag_leaves_the_document_unchanged() {
     let mut shell = Shell::new();
     let rect = shell.viewport_rect();
     shell.click_at(shell.top_face_centre(1));
@@ -13550,7 +13617,12 @@ fn switching_tools_after_a_refused_scale_leaves_the_document_unchanged() {
     shell.click_menu_command("menu-tools", AppCommand::Scale);
     shell.set_primary_button(from, Modifiers::NONE, true);
     shell.move_pointer(to);
-    assert_scale_refused(&shell, &before);
+    assert!(shell.app().scale_preview_factor().is_some());
+    assert_eq!(
+        scale_untouched_state(&shell),
+        before,
+        "a preview is no edit"
+    );
 
     shell.click_command(AppCommand::Move);
     shell.set_primary_button(to, Modifiers::NONE, false);
@@ -13562,53 +13634,84 @@ fn switching_tools_after_a_refused_scale_leaves_the_document_unchanged() {
 }
 
 #[test]
-fn scale_arrow_locks_are_refused_on_every_axis_without_changing_the_part() {
-    let mut shell = Shell::new();
-    let rect = shell.viewport_rect();
+fn scale_arrow_locks_stretch_the_part_along_that_axis_only() {
+    let mut shell = scale_shell();
     shell.click_at(shell.top_face_centre(1));
-    let geometry = shell.app().occurrence_box_geometry(1).unwrap();
-    let (origin, size) = geometry;
-    let centre = origin + size * 0.5;
-    let before = scale_untouched_state(&shell);
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let (_, digest, undo, _) = scale_untouched_state(&shell);
 
-    for key in [Key::ArrowRight, Key::ArrowLeft, Key::ArrowUp] {
+    for (key, axis) in [(Key::ArrowRight, 0), (Key::ArrowLeft, 1), (Key::ArrowUp, 2)] {
         shell.click_menu_command("menu-tools", AppCommand::Scale);
         shell.press_key(key);
-        let from = shell.top_face_centre(1);
-        let centre_screen = shell.app().project_to_screen(centre, rect);
-        let to = centre_screen + (from - centre_screen) * 1.5;
-        shell.set_primary_button(from, Modifiers::NONE, true);
-        shell.move_pointer(to);
-        shell.set_primary_button(to, Modifiers::NONE, false);
-        shell.settle();
-
-        assert_scale_refused(&shell, &before);
+        enter_value(&mut shell, "2");
         assert_eq!(
-            shell.app().occurrence_box_geometry(1).unwrap(),
-            geometry,
-            "{key:?}"
+            shell.app().undo_step_count(),
+            undo + 1,
+            "{key:?}: {}",
+            shell.app().action_digest()
         );
+        let mut factors = [1.0; 3];
+        factors[axis] = 2.0;
+        assert_exact_bounds(&mut shell, &[stretched(origin, size, factors)]);
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), digest, "{key:?}");
+        shell.press_key(key);
     }
 }
 
 #[test]
-fn typed_scale_factor_of_a_placed_part_is_refused_without_undo_step() {
-    let mut shell = Shell::new();
+fn a_typed_scale_factor_grows_the_part_and_a_second_one_replaces_it() {
+    let mut shell = scale_shell();
     shell.click_at(shell.top_face_centre(1));
-    let geometry = shell.app().occurrence_box_geometry(1).unwrap();
-    let before = scale_untouched_state(&shell);
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let (_, digest, undo, _) = scale_untouched_state(&shell);
 
     shell.click_menu_command("menu-tools", AppCommand::Scale);
-    shell.type_text("1.5");
-    shell.press_key(Key::Enter);
+    enter_value(&mut shell, "1.5");
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo + 1,
+        "{}",
+        shell.app().action_digest()
+    );
+    assert_exact_bounds(&mut shell, &[stretched(origin, size, [1.5; 3])]);
 
-    assert_scale_refused(&shell, &before);
-    assert_eq!(shell.app().occurrence_box_geometry(1).unwrap(), geometry);
+    enter_value(&mut shell, "2");
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo + 1,
+        "a second factor replaces the first: {}",
+        shell.app().action_digest()
+    );
+    assert_exact_bounds(&mut shell, &[stretched(origin, size, [2.0; 3])]);
+    let scaled = shell.app().canonical_digest();
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_exact_bounds(&mut shell, &[stretched(origin, size, [1.0; 3])]);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), scaled);
+    assert_exact_bounds(&mut shell, &[stretched(origin, size, [2.0; 3])]);
 }
 
 #[test]
-fn multi_selected_occurrences_refuse_scale_and_keep_both_parts() {
+fn a_typed_scale_factor_of_zero_or_less_or_not_finite_is_refused() {
     let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    let before = scale_untouched_state(&shell);
+
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    // Letters would be tool shortcuts, so no infinity can be typed here.
+    for text in ["0", "-2", "0.0", "1001"] {
+        enter_value(&mut shell, text);
+        assert_scale_refused(&shell, "digest-scale-invalid-factor", &before);
+    }
+}
+
+#[test]
+fn copies_sharing_a_definition_refuse_scale_until_made_unique() {
+    let mut shell = scale_shell();
     shell.click_at(shell.top_face_centre(1));
     assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 25.0, 0.0)));
     shell.settle();
@@ -13620,13 +13723,53 @@ fn multi_selected_occurrences_refuse_scale_and_keep_both_parts() {
     let before = scale_untouched_state(&shell);
 
     shell.click_menu_command("menu-tools", AppCommand::Scale);
-    shell.type_text("1.5");
-    shell.press_key(Key::Enter);
-
-    assert_scale_refused(&shell, &before);
+    enter_value(&mut shell, "1.5");
+    assert_scale_refused(&shell, "digest-scale-refused-shared", &before);
     assert_eq!(shell.app().occurrence_box_geometry(1).unwrap(), first);
     assert_eq!(shell.app().occurrence_box_geometry(2).unwrap(), second);
     assert_eq!(shell.app().selected_occurrence_count(), 2);
+
+    assert!(shell.app_mut().headless_select_occurrence(OccurrenceId(2)));
+    assert!(
+        shell.app_mut().make_unique(),
+        "{}",
+        shell.app().action_digest()
+    );
+    shell.settle();
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell.click_command(AppCommand::Select);
+    shell.click_at(shell.top_face_centre(1));
+    shell.click_at_with(shell.top_face_centre(2), shift());
+    assert_eq!(shell.app().selected_occurrence_count(), 2);
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    let undo = shell.app().undo_step_count();
+    enter_value(&mut shell, "1.5");
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo + 1,
+        "{}",
+        shell.app().action_digest()
+    );
+    let corner = |pick: fn(f64, f64) -> f64, left: Vec3, right: Vec3| {
+        Vec3::new(
+            pick(left.x, right.x),
+            pick(left.y, right.y),
+            pick(left.z, right.z),
+        )
+    };
+    let low = corner(f64::min, first.0, second.0);
+    let high = corner(f64::max, first.0 + first.1, second.0 + second.1);
+    let centre = (low + high) * 0.5;
+    // Exact bounds are in each part's own frame, and the copy's placement
+    // moves it by `offset` from the original's.
+    let offset = second.0 - first.0;
+    assert_exact_bounds(
+        &mut shell,
+        &[
+            stretched_about(first.0, first.1, centre, [1.5; 3]),
+            stretched_about(first.0, second.1, centre - offset, [1.5; 3]),
+        ],
+    );
 }
 
 #[test]

@@ -190,6 +190,18 @@ fn validate_document_entries(
     }) {
         return Err(CanonicalError::InvalidHoleThread(id));
     }
+    // A thread names a standard size, which a Scale behind it would silently
+    // stop being; a hole tapped after a Scale is cut at its true size.
+    if let Some(id) = product.hole_threads.keys().copied().find(|id| {
+        let definition = &product.definitions[&product.features[id].definition_id];
+        definition
+            .feature_ids
+            .iter()
+            .skip_while(|candidate| *candidate != id)
+            .any(|later| matches!(product.features[later].kind, FeatureKind::Scale { .. }))
+    }) {
+        return Err(CanonicalError::ScaledHoleThread(id));
+    }
     if let Some(id) = product
         .grounded_occurrences
         .iter()
@@ -949,7 +961,7 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::RigidTransform { target, .. } => {
+            FeatureKind::RigidTransform { target, .. } | FeatureKind::Scale { target, .. } => {
                 let target_feature = product
                     .features
                     .get(&target)

@@ -141,6 +141,7 @@ pub(super) fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
             | FeatureKind::SheetMetal(_)
             | FeatureKind::ImportedExactBody(_)
             | FeatureKind::RigidTransform { .. }
+            | FeatureKind::Scale { .. }
             | FeatureKind::MeshBody(_)
     )
 }
@@ -249,7 +250,8 @@ pub(super) fn primary_solid_dependency(kind: &FeatureKind) -> Option<FeatureId> 
         | FeatureKind::Draft(DraftSpec { target, .. })
         | FeatureKind::SurfaceThicken { target, .. }
         | FeatureKind::Boolean { target, .. }
-        | FeatureKind::RigidTransform { target, .. } => Some(*target),
+        | FeatureKind::RigidTransform { target, .. }
+        | FeatureKind::Scale { target, .. } => Some(*target),
         _ => None,
     }
 }
@@ -1071,6 +1073,9 @@ pub(super) fn validate_feature_kind(
             }
             Ok(())
         }
+        FeatureKind::Scale {
+            origin_mm, factors, ..
+        } => validate_scale(origin_mm, factors),
         FeatureKind::MeshBody(spec) => validate_mesh_body(spec),
         FeatureKind::Revolve {
             axis_start_mm,
@@ -1204,6 +1209,21 @@ fn validate_face_offset(face: &FaceRef, distance: &Dimension) -> Result<(), Cano
         FaceRef::Named(face) if face.is_valid() => Ok(()),
         FaceRef::Named(_) => Err(CanonicalError::InvalidTopologicalFeatureReference),
     }
+}
+
+/// A scale stretches by finite factors greater than zero, about a point in
+/// range.
+fn validate_scale(origin_mm: &[f64; 3], factors: &[f64; 3]) -> Result<(), CanonicalError> {
+    if factors
+        .iter()
+        .any(|factor| !factor.is_finite() || *factor <= 0.0)
+        || origin_mm
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
+    {
+        return Err(CanonicalError::InvalidScale);
+    }
+    Ok(())
 }
 
 /// A draft tilts at least one recorded face, never its own neutral face, by an

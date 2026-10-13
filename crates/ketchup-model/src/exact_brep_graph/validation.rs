@@ -336,8 +336,27 @@ pub(super) fn operation_requires_v15(operation: &ExactBRepOperation) -> bool {
 pub(super) fn operation_requires_v23(operation: &ExactBRepOperation) -> bool {
     matches!(
         operation,
-        ExactBRepOperation::SurfaceThicken { .. } | ExactBRepOperation::Draft(_)
+        ExactBRepOperation::SurfaceThicken { .. }
+            | ExactBRepOperation::Draft(_)
+            | ExactBRepOperation::Scale { .. }
     )
+}
+
+/// A row-major 4x4 matrix that only stretches along x, y and z by positive
+/// factors and moves no further than the coordinate limit.
+fn valid_axis_scale(matrix_bits: &[u64; 16]) -> bool {
+    matrix_bits.iter().enumerate().all(|(index, bits)| {
+        let value = f64::from_bits(*bits);
+        let (row, column) = (index / 4, index % 4);
+        value.is_finite()
+            && match (row, column) {
+                (3, 3) => value.to_bits() == 1.0_f64.to_bits(),
+                (3, _) => value.to_bits() == 0.0_f64.to_bits(),
+                (_, 3) => value.abs() <= MAX_COORDINATE_MM,
+                _ if row == column => value > 0.0,
+                _ => value.to_bits() == 0.0_f64.to_bits(),
+            }
+    })
 }
 
 pub(super) fn operation_requires_v22(operation: &ExactBRepOperation) -> bool {
@@ -644,6 +663,7 @@ pub(super) fn valid_operation(
                     .into_iter()
                     .all(|value| value.abs() <= MAX_COORDINATE_MM)
         }
+        ExactBRepOperation::Scale { matrix_bits, .. } => valid_axis_scale(matrix_bits),
         ExactBRepOperation::Shell {
             target,
             removed_faces,

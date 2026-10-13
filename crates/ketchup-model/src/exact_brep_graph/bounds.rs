@@ -89,6 +89,10 @@ pub(super) fn operation_bounds(
         ExactBRepOperation::RigidTransform {
             target,
             matrix_bits,
+        }
+        | ExactBRepOperation::Scale {
+            target,
+            matrix_bits,
         } => node_bounds[target.0 as usize]
             .map(|bounds| transform_bounds(bounds, matrix_bits.map(f64::from_bits)))
             .transpose(),

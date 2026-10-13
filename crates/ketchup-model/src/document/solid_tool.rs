@@ -176,6 +176,17 @@ fn remapped(
         .ok_or(CanonicalError::InvalidFeatureMap)
 }
 
+/// The `RigidTransform` or `Scale` feature `kind`, applied to body `target`.
+fn retargeted(kind: &FeatureKind, target: FeatureId) -> FeatureKind {
+    let mut kind = kind.clone();
+    if let FeatureKind::RigidTransform { target: body, .. }
+    | FeatureKind::Scale { target: body, .. } = &mut kind
+    {
+        *body = target;
+    }
+    kind
+}
+
 /// Points the pin-joint pockets drilled into the occurrence at `path` to the
 /// cloned pocket features.
 fn repoint_pin_joint_pockets(
@@ -451,10 +462,8 @@ pub(super) fn clone_definition_and_repoint(
             },
             FeatureKind::SheetMetal(spec) => FeatureKind::SheetMetal(spec.clone()),
             FeatureKind::ImportedExactBody(spec) => FeatureKind::ImportedExactBody(spec.clone()),
-            FeatureKind::RigidTransform { target, transform } => FeatureKind::RigidTransform {
-                target: remapped(&mapping, target)?,
-                transform: *transform,
-            },
+            kind @ (FeatureKind::RigidTransform { target, .. }
+            | FeatureKind::Scale { target, .. }) => retargeted(kind, remapped(&mapping, target)?),
             FeatureKind::MeshBody(spec) => {
                 let mut spec = spec.clone();
                 if let MeshAuthority::ExactConversion(conversion) = &mut spec.authority {

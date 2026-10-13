@@ -1035,6 +1035,13 @@ pub enum FeatureKind {
         target: FeatureId,
         transform: Transform,
     },
+    /// Stretches body `target` about `origin_mm` by `factors` along the
+    /// definition's own x, y and z axes; equal factors keep its shape.
+    Scale {
+        target: FeatureId,
+        origin_mm: [f64; 3],
+        factors: [f64; 3],
+    },
     MeshBody(MeshBodySpec),
 }
 
@@ -1476,6 +1483,7 @@ impl FeatureKind {
             | Self::SurfaceBody(SurfaceBodySpec::Planar { .. })
             | Self::SurfaceTrim { .. }
             | Self::RigidTransform { .. }
+            | Self::Scale { .. }
             | Self::MeshBody(_)
             | Self::Workplane(_) => {}
         }
@@ -1520,7 +1528,9 @@ impl FeatureKind {
             | Self::ConstructionPlane { .. }
             | Self::ImportedExactBody(_)
             | Self::MeshBody(_) => BTreeSet::new(),
-            Self::RigidTransform { target, .. } => [*target].into_iter().collect(),
+            Self::RigidTransform { target, .. } | Self::Scale { target, .. } => {
+                [*target].into_iter().collect()
+            }
             Self::Revolve { profile, .. } | Self::PlanarOffset { profile, .. } => {
                 [*profile].into_iter().collect()
             }
@@ -1601,6 +1611,7 @@ impl FeatureKind {
             | Self::Loft { .. }
             | Self::SheetMetal(_)
             | Self::RigidTransform { .. }
+            | Self::Scale { .. }
             | Self::MeshBody(_) => Some(BodyKind::Solid),
             Self::ImportedExactBody(spec) => Some(spec.body_kind),
             _ => None,

@@ -1056,22 +1056,22 @@ fn evaluate_exact_brep_graph(
             ExactBRepOperation::RigidTransform {
                 target,
                 matrix_bits,
-            } => match face_names[target.0 as usize].as_ref() {
-                // A rigid motion keeps every face, so it keeps their names.
-                Some(names) if needs_names[node_index] => {
-                    let output = transform_named_output(
-                        backend,
-                        &outputs[target.0 as usize],
-                        &matrix_bits.map(f64::from_bits),
-                    )?;
-                    produced_face_names = Some(names.clone());
-                    output
+            }
+            | ExactBRepOperation::Scale {
+                target,
+                matrix_bits,
+            } => {
+                // A rigid motion or an axis stretch keeps every face and its name.
+                let input = &outputs[target.0 as usize];
+                let matrix = matrix_bits.map(f64::from_bits);
+                match face_names[target.0 as usize].as_ref() {
+                    Some(names) if needs_names[node_index] => {
+                        produced_face_names = Some(names.clone());
+                        transform_named_output(backend, input, &matrix)?
+                    }
+                    _ => backend.transform_body(&input.body, &matrix)?,
                 }
-                _ => backend.transform_body(
-                    &outputs[target.0 as usize].body,
-                    &matrix_bits.map(f64::from_bits),
-                )?,
-            },
+            }
             ExactBRepOperation::Boolean {
                 operation,
                 target,
@@ -1488,9 +1488,8 @@ fn evaluate_exact_brep_graph(
             | ExactBRepOperation::Draft(ExactBRepDraft { target, .. })
             | ExactBRepOperation::EdgeFinish { target, .. }
             | ExactBRepOperation::Boolean { target, .. }
-            | ExactBRepOperation::RigidTransform { target, .. } => {
-                extrusion_lineage[target.0 as usize]
-            }
+            | ExactBRepOperation::RigidTransform { target, .. }
+            | ExactBRepOperation::Scale { target, .. } => extrusion_lineage[target.0 as usize],
             _ => false,
         };
         let mut output = output;
@@ -2023,6 +2022,16 @@ fn transform_named_output(
     let same_point = |left: Point3, right: Point3| {
         close(left.x, right.x) && close(left.y, right.y) && close(left.z, right.z)
     };
+    // A motion or an even scale by `s` keeps every surface kind and scales
+    // lengths by `s`; an uneven stretch keeps only the topology.
+    let column = |index: usize| Vec3::new(matrix[index], matrix[4 + index], matrix[8 + index]);
+    let s = column(0).length();
+    let similarity = (close(column(1).length(), s)
+        && close(column(2).length(), s)
+        && [(0, 1), (0, 2), (1, 2)]
+            .into_iter()
+            .all(|(a, b)| close(column(a).dot(column(b)) / (s * s), 0.0)))
+    .then_some(s);
     let faces_match = local.body.topology.faces.len() == output.body.topology.faces.len()
         && local
             .body
@@ -2032,10 +2041,12 @@ fn transform_named_output(
             .zip(&output.body.topology.faces)
             .all(|(before, after)| {
                 before.ordinal == after.ordinal
-                    && before.surface_kind == after.surface_kind
                     && before.edge_count == after.edge_count
-                    && close(before.area_mm2, after.area_mm2)
-                    && same_point(transform_point(before.centroid_mm), after.centroid_mm)
+                    && similarity.is_none_or(|s| {
+                        before.surface_kind == after.surface_kind
+                            && close(before.area_mm2 * s * s, after.area_mm2)
+                            && same_point(transform_point(before.centroid_mm), after.centroid_mm)
+                    })
             });
     let edges_match = local.body.topology.edges.len() == output.body.topology.edges.len()
         && local
@@ -2046,9 +2057,11 @@ fn transform_named_output(
             .zip(&output.body.topology.edges)
             .all(|(before, after)| {
                 before.ordinal == after.ordinal
-                    && before.curve_kind == after.curve_kind
-                    && close(before.length_mm, after.length_mm)
-                    && same_point(transform_point(before.centroid_mm), after.centroid_mm)
+                    && similarity.is_none_or(|s| {
+                        before.curve_kind == after.curve_kind
+                            && close(before.length_mm * s, after.length_mm)
+                            && same_point(transform_point(before.centroid_mm), after.centroid_mm)
+                    })
             });
     if faces_match && edges_match {
         output.topology_history.clone_from(&local.topology_history);
@@ -2610,7 +2623,8 @@ fn exact_brep_nodes_needing_names(graph: &ExactBRepGraph) -> Vec<bool> {
                 ..
             } => (target, !profile_faces.is_empty()),
             ExactBRepOperation::ProfileCut { target, .. }
-            | ExactBRepOperation::RigidTransform { target, .. } => (target, false),
+            | ExactBRepOperation::RigidTransform { target, .. }
+            | ExactBRepOperation::Scale { target, .. } => (target, false),
             ExactBRepOperation::Boolean { target, tool, .. } => {
                 // The tool's own names become `tool_name.face` in the result.
                 if needs_names[index]

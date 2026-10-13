@@ -753,13 +753,30 @@ impl KetchupApp {
         let Ok(parent) = self.document.tip_replacement_parent() else {
             return false;
         };
-        let Ok(scale) = world_scale_transform(previous.centre_mm, factor, previous.axis) else {
-            return false;
+        let base = parent.snapshot();
+        let applies = match &selection {
+            CorrectionSelection::Occurrences { occurrence_ids, .. } => scale_applies(
+                base,
+                occurrence_ids
+                    .iter()
+                    .copied()
+                    .map(InstancePath::root)
+                    .collect(),
+                None,
+            ),
+            CorrectionSelection::Group(group_id) => {
+                scale_applies(base, BTreeSet::new(), Some(*group_id))
+            }
         };
-        let Some(plan) = self.correction_transform_plan(&parent, &selection, scale) else {
-            return false;
-        };
-        if !self.commit_transform_correction(&parent, plan) {
+        let batch =
+            match scale_feature_batch(base, &applies, previous.centre_mm, factor, previous.axis) {
+                Ok(batch) => batch,
+                Err(key) => {
+                    self.digest = self.catalog.text(key);
+                    return false;
+                }
+            };
+        if !self.commit_transform_correction(&parent, batch) {
             return false;
         }
         self.record_transform_correction(selection, CorrectionOperation::Scale(previous.clone()));
@@ -798,7 +815,7 @@ impl KetchupApp {
         let Some(plan) = self.correction_transform_plan(&parent, &selection, world_edit) else {
             return false;
         };
-        if !self.commit_transform_correction(&parent, plan) {
+        if !self.commit_transform_correction(&parent, plan.into_commit().1) {
             return false;
         }
         self.record_transform_correction(
@@ -1466,9 +1483,8 @@ impl KetchupApp {
     pub(crate) fn commit_transform_correction(
         &mut self,
         parent: &TipReplacementParent,
-        plan: TransformPlan,
+        batch: CommandBatch,
     ) -> bool {
-        let (_, batch) = plan.into_commit();
         let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
             parent,
             batch,
@@ -2362,21 +2378,10 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let group_id = self.selection.selected_group;
         let occurrence_paths = self.selected_instance_paths();
-        if self.refuse_scaling_placements(&occurrence_paths, group_id) {
+        let applies = scale_applies(&snapshot, occurrence_paths.clone(), group_id);
+        if self.refuse_unscalable(&snapshot, &applies) {
             return false;
         }
-        let applies: Box<dyn Fn(&InstancePath) -> bool> = match group_id {
-            Some(group_id) => {
-                let snapshot = snapshot.clone();
-                Box::new(move |path: &InstancePath| {
-                    Self::group_contains_occurrence(&snapshot, group_id, path.root_occurrence())
-                })
-            }
-            None => {
-                let occurrence_paths = occurrence_paths.clone();
-                Box::new(move |path: &InstancePath| occurrence_paths.contains(path))
-            }
-        };
         let Some(centre_mm) = self.rotation_centre_for(&applies) else {
             return false;
         };
@@ -2412,21 +2417,10 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let group_id = self.selection.selected_group;
         let occurrence_paths = self.selected_instance_paths();
-        if self.refuse_scaling_placements(&occurrence_paths, group_id) {
+        let applies = scale_applies(&snapshot, occurrence_paths.clone(), group_id);
+        if self.refuse_unscalable(&snapshot, &applies) {
             return false;
         }
-        let applies: Box<dyn Fn(&InstancePath) -> bool> = match group_id {
-            Some(group_id) => {
-                let snapshot = snapshot.clone();
-                Box::new(move |path: &InstancePath| {
-                    Self::group_contains_occurrence(&snapshot, group_id, path.root_occurrence())
-                })
-            }
-            None => {
-                let occurrence_paths = occurrence_paths.clone();
-                Box::new(move |path: &InstancePath| occurrence_paths.contains(path))
-            }
-        };
         let Some(centre_mm) = self.rotation_centre_for(&applies) else {
             return false;
         };
@@ -2452,19 +2446,18 @@ impl KetchupApp {
         true
     }
 
-    /// Scale would write its factor into the placement of every selected
-    /// part or group, and drawings, exchange files and volumes read a
-    /// placement as moving and turning only; so Scale refuses, naming why,
-    /// and changes nothing.
-    fn refuse_scaling_placements(
+    /// Refuses up front, naming why, a Scale no factor could commit along the
+    /// current axis lock; the commit checks again with the final factor.
+    fn refuse_unscalable(
         &mut self,
-        occurrence_paths: &BTreeSet<InstancePath>,
-        group_id: Option<GroupId>,
+        snapshot: &Snapshot,
+        applies: &dyn Fn(&InstancePath) -> bool,
     ) -> bool {
-        if occurrence_paths.is_empty() && group_id.is_none() {
+        let axis = self.gesture.transform.scale_axis_lock;
+        let Err(key) = scale_feature_batch(snapshot, applies, Vec3::ZERO, 2.0, axis) else {
             return false;
-        }
-        self.digest = self.catalog.text("digest-scale-refused-placement");
+        };
+        self.digest = self.catalog.text(key);
         true
     }
 
@@ -2483,24 +2476,40 @@ impl KetchupApp {
         if !scale_is_meaningful(drag.factor) {
             return false;
         }
-        let Some(plan) = self.scale_transform_plan(drag) else {
-            return false;
-        };
-        let Ok(target) = self.commit_transform_plan(plan) else {
-            return false;
-        };
-        let selection = match target {
-            TransformTarget::Occurrences(paths) => {
-                self.selection.select_exact(drag.selection.clone(), false);
-                self.selection.occurrences = paths.clone();
-                CorrectionSelection::Occurrences {
-                    occurrence_ids: paths.iter().map(InstancePath::root_occurrence).collect(),
-                    primary_occurrence_id: None,
-                }
+        let snapshot = self.document.current();
+        let applies = scale_applies(&snapshot, drag.occurrence_paths.clone(), drag.group_id);
+        let batch = match scale_feature_batch(
+            &snapshot,
+            &applies,
+            drag.centre_mm,
+            drag.factor,
+            drag.axis,
+        ) {
+            Ok(batch) => batch,
+            Err(key) => {
+                self.digest = self.catalog.text(key);
+                return false;
             }
-            TransformTarget::Group(group_id) => {
+        };
+        if self.apply_batch_with_work_recovery(&batch).is_err() {
+            return false;
+        }
+        let selection = match drag.group_id {
+            Some(group_id) => {
                 self.select_group(group_id);
                 CorrectionSelection::Group(group_id)
+            }
+            None => {
+                self.selection.select_exact(drag.selection.clone(), false);
+                self.selection.occurrences = drag.occurrence_paths.clone();
+                CorrectionSelection::Occurrences {
+                    occurrence_ids: drag
+                        .occurrence_paths
+                        .iter()
+                        .map(InstancePath::root_occurrence)
+                        .collect(),
+                    primary_occurrence_id: None,
+                }
             }
         };
         self.record_transform_correction(
@@ -2937,6 +2946,134 @@ fn world_scale_transform(
         0.0,
         1.0,
     ])
+}
+
+/// The Scale features that grow every visible part `applies` picks about
+/// `centre_mm` by `factor`, evenly or along world `axis`. Each part stretches
+/// its own definition along that definition's axes, so its placement still
+/// only moves and turns it. Refuses, naming why by catalog key, a part whose
+/// definition other copies share, an assembly, a part without an exact solid,
+/// a tapped thread, a stretch the part's axes cannot carry (a shear), and a
+/// placement that already scales.
+pub(crate) fn scale_feature_batch(
+    snapshot: &Snapshot,
+    applies: &dyn Fn(&InstancePath) -> bool,
+    centre_mm: Vec3,
+    factor: f64,
+    axis: Option<Axis>,
+) -> Result<CommandBatch, &'static str> {
+    use ketchup_model::exact_product::{exact_body_terminal_features, producer_exact_graph};
+    if !factor.is_finite() || factor <= 0.0 {
+        return Err("digest-scale-invalid-factor");
+    }
+    let world = match axis {
+        Some(Axis::X) => [factor, 1.0, 1.0],
+        Some(Axis::Y) => [1.0, factor, 1.0],
+        Some(Axis::Z) => [1.0, 1.0, factor],
+        None => [factor; 3],
+    };
+    let snap = |value: f64| {
+        [factor, 1.0]
+            .into_iter()
+            .find(|exact| (value - exact).abs() <= ROUNDING * exact)
+            .unwrap_or(value)
+    };
+    let mut next_id = snapshot
+        .features()
+        .map(|feature| feature.id().0)
+        .max()
+        .unwrap_or(0);
+    let mut commands = Vec::new();
+    for part in snapshot.scene_query() {
+        if !applies(&part.instance_path) {
+            continue;
+        }
+        let definition = snapshot
+            .definition(part.definition_id)
+            .ok_or("digest-scale-start-missed")?;
+        if part.shared_occurrence_count > 1 {
+            return Err("digest-scale-refused-shared");
+        }
+        if !definition.local_occurrence_ids().is_empty() {
+            return Err("digest-scale-refused-assembly");
+        }
+        if snapshot.hole_threads().any(|(id, _)| {
+            snapshot
+                .feature(id)
+                .is_some_and(|feature| feature.definition_id() == part.definition_id)
+        }) {
+            return Err("digest-scale-refused-thread");
+        }
+        if !part.transform.is_rigid() {
+            return Err("digest-scale-refused-placement");
+        }
+        // Definition coordinates y map to the world as R y + t: the world
+        // stretch S about p is R^T S R about R^T (p - t) in the definition,
+        // and only a diagonal R^T S R stretches along its own axes.
+        let m = part.transform.matrix();
+        let r = |row: usize, column: usize| m[row * 4 + column];
+        let mut factors = [1.0; 3];
+        for (i, local) in factors.iter_mut().enumerate() {
+            for j in 0..3 {
+                let value: f64 = (0..3).map(|k| r(k, i) * world[k] * r(k, j)).sum();
+                if i == j {
+                    *local = snap(value);
+                } else if value.abs() > APPROXIMATION * (factor - 1.0).abs() {
+                    return Err("digest-scale-refused-shear");
+                }
+            }
+        }
+        let offset = [
+            centre_mm.x - r(0, 3),
+            centre_mm.y - r(1, 3),
+            centre_mm.z - r(2, 3),
+        ];
+        let origin_mm = std::array::from_fn(|i| (0..3).map(|k| r(k, i) * offset[k]).sum());
+        // A definition whose features end in no solid has nothing to stretch.
+        let bodies = exact_body_terminal_features(snapshot, part.definition_id).unwrap_or_default();
+        if bodies.is_empty()
+            || bodies
+                .values()
+                .any(|target| producer_exact_graph(snapshot, part.definition_id, *target).is_err())
+        {
+            return Err("digest-scale-refused-no-solid");
+        }
+        for target in bodies.into_values() {
+            next_id += 1;
+            commands.push(CanonicalCommand::CreateFeature {
+                id: FeatureId(next_id),
+                definition_id: part.definition_id,
+                name: "Scale".to_owned(),
+                kind: FeatureKind::Scale {
+                    target,
+                    origin_mm,
+                    factors,
+                },
+            });
+        }
+    }
+    if commands.is_empty() {
+        return Err("digest-scale-start-missed");
+    }
+    Ok(CommandBatch::new(commands))
+}
+
+/// Whether a Scale of the selected `paths`, or of every part of `group_id`,
+/// reaches the part at `path`.
+pub(crate) fn scale_applies(
+    snapshot: &Snapshot,
+    paths: BTreeSet<InstancePath>,
+    group_id: Option<GroupId>,
+) -> Box<dyn Fn(&InstancePath) -> bool> {
+    match group_id {
+        Some(group_id) => {
+            let snapshot = snapshot.clone();
+            Box::new(move |path: &InstancePath| {
+                KetchupApp::group_contains_occurrence(&snapshot, group_id, path.root_occurrence())
+            })
+        }
+        None => Box::new(move |path: &InstancePath| paths.contains(path)),
+    }
 }
 
 pub(crate) fn scale_is_meaningful(factor: f64) -> bool {

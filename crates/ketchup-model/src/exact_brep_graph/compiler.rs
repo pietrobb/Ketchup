@@ -68,7 +68,8 @@ impl<'a> GraphCompiler<'a> {
                 | FeatureKind::Draft(DraftSpec { target, .. })
                 | FeatureKind::SurfaceExtend { target, .. }
                 | FeatureKind::SurfaceThicken { target, .. }
-                | FeatureKind::RigidTransform { target, .. } => pending.push((*target, false)),
+                | FeatureKind::RigidTransform { target, .. }
+                | FeatureKind::Scale { target, .. } => pending.push((*target, false)),
                 FeatureKind::Boolean { target, tool, .. }
                 | FeatureKind::SurfaceTrim {
                     target,
@@ -639,11 +640,8 @@ impl<'a> GraphCompiler<'a> {
                 source_byte_len: spec.source_byte_len,
                 result_fingerprint: spec.result_fingerprint.clone(),
             },
-            FeatureKind::RigidTransform { target, transform } => {
-                ExactBRepOperation::RigidTransform {
-                    target: self.body_id(*target)?,
-                    matrix_bits: transform.matrix().map(f64::to_bits),
-                }
+            FeatureKind::RigidTransform { target, .. } | FeatureKind::Scale { target, .. } => {
+                transform_operation(feature_id, feature.kind(), self.body_id(*target)?)?
             }
             _ => return Err(ExactBRepGraphError::UnsupportedFeature(feature_id)),
         };
@@ -1274,4 +1272,26 @@ impl<'a> GraphCompiler<'a> {
         self.profiles.push(profile);
         Ok(id)
     }
+}
+
+/// The exact operation moving (`RigidTransform`) or stretching (`Scale`) body
+/// `target` as the feature `kind` says.
+fn transform_operation(
+    feature_id: FeatureId,
+    kind: &FeatureKind,
+    target: ExactBRepNodeId,
+) -> Result<ExactBRepOperation, ExactBRepGraphError> {
+    Ok(match kind {
+        FeatureKind::RigidTransform { transform, .. } => ExactBRepOperation::RigidTransform {
+            target,
+            matrix_bits: transform.matrix().map(f64::to_bits),
+        },
+        FeatureKind::Scale {
+            origin_mm, factors, ..
+        } => ExactBRepOperation::Scale {
+            target,
+            matrix_bits: exact_brep_scale_matrix(*origin_mm, *factors).map(f64::to_bits),
+        },
+        _ => return Err(ExactBRepGraphError::UnsupportedFeature(feature_id)),
+    })
 }

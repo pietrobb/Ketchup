@@ -7,6 +7,7 @@ use super::*;
 use eframe::egui::{Pos2, Rect, Vec2};
 use ketchup_assistant::sidecar::AssistantHoleThread;
 use ketchup_interaction::Vec3;
+use ketchup_model::document::CanonicalError;
 use std::f64::consts::PI;
 
 const DIAMETER_MM: f64 = 6.0;
@@ -308,6 +309,90 @@ fn a_tapped_hole_is_listed_for_machining_and_hardware_and_only_a_thread_is_saved
         .unwrap();
     assert_eq!(app.undo_step_count(), undo);
     assert!(saved(&app) == bytes, "Undo must restore the saved bytes");
+}
+
+/// A thread names a standard size that a scaled hole no longer has (M8 grown
+/// by 1.5 is not M8): Scale refuses a tapped part by name, and the document
+/// refuses a Scale feature behind a thread however it arrives. A hole tapped
+/// after a Scale is cut into the scaled solid at its true size and stays M8.
+#[test]
+fn scale_refuses_a_tapped_part_and_a_thread_tapped_after_scale_keeps_its_size() {
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let part = app.document.current().occurrences().next().unwrap().id();
+    let tap_top = |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+        evaluate_exact(app);
+        let top = face(app, bridge, "plane", [0.0, 0.0, 1.0]);
+        let tapped = tap(
+            &top,
+            vec![centroid(&top)],
+            6.8,
+            Some(15.0),
+            false,
+            Some(("M8", 12.0)),
+        );
+        let report = bridge.execute(app, tapped, false).unwrap();
+        assert_eq!(report["published"], true, "{report}");
+    };
+    let bytes = saved(&app);
+
+    tap_top(&mut app, &mut bridge);
+    let (undo, tapped) = (app.undo_step_count(), saved(&app));
+    assert!(app.headless_select_occurrence(part));
+    assert!(!app.scale_selected(1.5));
+    assert_eq!(
+        app.action_digest(),
+        app.catalog.text("digest-scale-refused-thread")
+    );
+    assert_eq!(app.undo_step_count(), undo);
+    assert!(saved(&app) == tapped);
+
+    let snapshot = app.document.current();
+    let definition_id = snapshot.occurrence(part).unwrap().definition_id();
+    let target =
+        *ketchup_model::exact_product::exact_body_terminal_features(&snapshot, definition_id)
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+    let id = FeatureId(
+        snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap()
+            + 1,
+    );
+    let error = app
+        .document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id,
+            definition_id,
+            name: "Scale".to_owned(),
+            kind: FeatureKind::Scale {
+                target,
+                origin_mm: [0.0; 3],
+                factors: [1.5; 3],
+            },
+        }]))
+        .err();
+    assert!(
+        matches!(error, Some(CanonicalError::ScaledHoleThread(_))),
+        "{error:?}"
+    );
+    assert!(saved(&app) == tapped);
+
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert!(saved(&app) == bytes);
+    assert!(app.headless_select_occurrence(part));
+    assert!(app.scale_selected(1.5), "{}", app.action_digest());
+    tap_top(&mut app, &mut bridge);
+    assert_eq!(
+        report(&mut app, &mut bridge, ReportSection::Hardware),
+        json!([{"item": "M8×1.25 depth 12", "count": 1, "kind": "tapped_hole"}])
+    );
 }
 
 /// A component works like SketchUp's: a hole in the shared definition drills

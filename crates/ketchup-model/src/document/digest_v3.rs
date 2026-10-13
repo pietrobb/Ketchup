@@ -1627,8 +1627,8 @@ impl DigestV3 {
             }
             // Read through `OldRecords::sheet_metal`; a legacy file holds no other.
             FeatureKind::SheetMetal(_) => self.byte(29),
-            // Drafts came after the legacy format: no file this digest reads holds one.
-            FeatureKind::Draft(_) => self.byte(37),
+            // Drafts and scales came after the legacy format: no file this digest reads holds one.
+            FeatureKind::Draft(_) | FeatureKind::Scale { .. } => self.byte(37),
             FeatureKind::ImportedExactBody(spec) => {
                 self.byte(16);
                 self.bytes(spec.schema.as_bytes());

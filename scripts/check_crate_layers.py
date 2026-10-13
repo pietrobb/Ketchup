@@ -64,14 +64,14 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 676,
     "crates/ketchup-model/src/document/product_validation.rs::validate_features": 698,
     "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 793,
-    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 447,
+    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 445,
     "crates/ketchup-model/src/document/store.rs::apply_batch_with_origin_and_validation": 2067,
-    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 578,
+    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 575,
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1396,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 558,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 786,
-    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 537,
+    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 536,
 }
 
 # A test checks one behavior; a longer one is several scenarios in one, and its
@@ -346,7 +346,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-program allows": 10,
     "ketchup-program casts": 53,
     "ketchup-scheduler allows": 3,
-    "ketchup-scheduler casts": 83,
+    "ketchup-scheduler casts": 82,
 }
 
 

@@ -24,6 +24,8 @@ pub enum CanonicalError {
     ReservedProductId,
     EmptyProductName,
     InvalidTransform,
+    InvalidScale,
+    ScaledHoleThread(FeatureId),
     InvalidProfile,
     InvalidConstructionGeometry,
     Sketch(SketchError),
@@ -206,6 +208,8 @@ impl CanonicalError {
             Self::ReservedProductId => "canonical.reserved_product_id",
             Self::EmptyProductName => "canonical.empty_product_name",
             Self::InvalidTransform => "canonical.invalid_transform",
+            Self::InvalidScale => "canonical.invalid_scale",
+            Self::ScaledHoleThread(..) => "canonical.scaled_hole_thread",
             Self::InvalidProfile => "canonical.invalid_profile",
             Self::InvalidConstructionGeometry => "canonical.invalid_construction_geometry",
             Self::Sketch(..) => "canonical.sketch",
@@ -451,6 +455,13 @@ impl fmt::Display for CanonicalError {
             Self::InvalidTransform => {
                 formatter.write_str("transform is not a finite affine matrix")
             }
+            Self::InvalidScale => formatter
+                .write_str("scale factors must be finite and greater than zero, about a finite point"),
+            Self::ScaledHoleThread(id) => write!(
+                formatter,
+                "feature {} taps a thread, and a scaled thread is no longer its standard size; remove the thread before scaling",
+                id.0
+            ),
             Self::InvalidProfile => {
                 formatter.write_str("profile must contain finite non-degenerate points")
             }

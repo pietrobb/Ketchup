@@ -559,6 +559,24 @@ pub enum ExactBRepOperation {
         target: ExactBRepNodeId,
         matrix_bits: [u64; 16],
     },
+    /// See `FeatureKind::Scale`: a row-major [`exact_brep_scale_matrix`].
+    Scale {
+        target: ExactBRepNodeId,
+        matrix_bits: [u64; 16],
+    },
+}
+
+/// The row-major 4x4 matrix stretching about `origin_mm` by `factors` along
+/// x, y and z.
+#[must_use]
+pub fn exact_brep_scale_matrix(origin_mm: [f64; 3], factors: [f64; 3]) -> [f64; 16] {
+    let mut matrix = [0.0; 16];
+    for axis in 0..3 {
+        matrix[axis * 5] = factors[axis];
+        matrix[axis * 4 + 3] = origin_mm[axis] * (1.0 - factors[axis]);
+    }
+    matrix[15] = 1.0;
+    matrix
 }
 
 impl ExactBRepOperation {
@@ -571,7 +589,8 @@ impl ExactBRepOperation {
             | Self::Draft(ExactBRepDraft { target, .. })
             | Self::SurfaceExtend { target, .. }
             | Self::SurfaceThicken { target, .. }
-            | Self::RigidTransform { target, .. } => vec![*target],
+            | Self::RigidTransform { target, .. }
+            | Self::Scale { target, .. } => vec![*target],
             Self::Boolean { target, tool, .. }
             | Self::SurfaceTrim {
                 target,
@@ -616,7 +635,8 @@ impl ExactBRepOperation {
             | Self::Draft(_)
             | Self::SheetMetal { .. }
             | Self::ImportedExact { .. }
-            | Self::RigidTransform { .. } => Vec::new(),
+            | Self::RigidTransform { .. }
+            | Self::Scale { .. } => Vec::new(),
         }
     }
 }

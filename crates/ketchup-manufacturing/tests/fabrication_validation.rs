@@ -1572,6 +1572,88 @@ fn a_part_placed_scaled_is_refused_by_name_instead_of_a_generic_geometry_error()
         "{error}"
     );
 }
+/// The drilled timber of `circular_drill_document` scaled last by `factors`
+/// about the origin.
+fn scaled_drill_projection(factors: [f64; 3]) -> (Snapshot, GeneralFabricationProjection) {
+    const SCALE: FeatureId = FeatureId(48);
+    let mut document = circular_drill_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: SCALE,
+            definition_id: GRAPH_DEFINITION,
+            name: "Scale".to_owned(),
+            kind: FeatureKind::Scale {
+                target: GRAPH_BOOLEAN,
+                origin_mm: [0.0; 3],
+                factors,
+            },
+        }]))
+        .unwrap();
+    exact_graph_document_fabrication_projection(document, "scaled-drill-result", SCALE)
+}
+
+#[test]
+fn an_evenly_scaled_part_is_machined_with_the_scaled_hole_and_stock() {
+    let (snapshot, projection) = scaled_drill_projection([1.5; 3]);
+    assert!(projection.manufacturing.unresolved_sources.is_empty());
+    let [stock, drill] = projection.manufacturing.operations.as_slice() else {
+        panic!("{:?}", projection.manufacturing.operations)
+    };
+    let GeneralMachiningGeometry::TimberStock {
+        length_mm,
+        cross_section_width_mm,
+        cross_section_height_mm,
+        ..
+    } = &stock.machining
+    else {
+        panic!("expected timber stock geometry")
+    };
+    assert_eq!(
+        (
+            *length_mm,
+            *cross_section_width_mm,
+            *cross_section_height_mm
+        ),
+        (1500.0, 150.0, 75.0)
+    );
+    let GeneralMachiningGeometry::CircularDrill {
+        center_mm,
+        diameter_mm,
+        start_mm,
+        end_mm,
+        ..
+    } = &drill.machining
+    else {
+        panic!("expected circular drilling geometry")
+    };
+    // The 10 mm hole is 15 mm now, 75 mm deep from the far end at z = 1500.
+    assert_eq!(*diameter_mm, 15.0);
+    assert_eq!(*center_mm, [75.0, -37.5]);
+    assert_eq!((*start_mm, *end_mm), (-1500.0, -1425.0));
+    let export = String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
+    assert!(export.contains(":diameter(15):"), "{export}");
+    assert!(!export.contains(":diameter(10):"), "{export}");
+}
+
+#[test]
+fn an_unevenly_scaled_part_with_a_hole_claims_no_drilling_and_blocks_the_export() {
+    let (snapshot, projection) = scaled_drill_projection([1.0, 1.5, 1.0]);
+    assert!(
+        projection
+            .manufacturing
+            .operations
+            .iter()
+            .all(|operation| operation.kind != GeneralManufacturingKind::CircularDrill),
+        "{:?}",
+        projection.manufacturing.operations
+    );
+    assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
+    assert_eq!(
+        projection.manufacturing_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+}
+
 #[test]
 fn production_projection_refuses_to_leave_out_hidden_parts() {
     let mut document = circular_drill_document();

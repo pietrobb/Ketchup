@@ -3065,7 +3065,51 @@ fn graph_manufacturing_operations(
     source: &ketchup_model::exact_product::ExactResultKey,
     graph: &ExactBRepGraph,
 ) -> Option<Vec<GeneralManufacturingOperation>> {
-    let stock = graph.nodes.first()?;
+    // A part scaled last is machined as the unscaled part grown evenly: every
+    // size and position grows by the factor, so a hole keeps no stale
+    // diameter. An uneven stretch turns holes into ovals no drill makes, so
+    // its machining stays unresolved.
+    if let Some(ExactBRepOperation::Scale {
+        target,
+        matrix_bits,
+    }) = graph.nodes.last().map(|node| &node.operation)
+    {
+        let matrix = matrix_bits.map(f64::from_bits);
+        let factor = matrix[0];
+        if [matrix[5], matrix[10]]
+            .iter()
+            .any(|other| (other - factor).abs() > ROUNDING * factor)
+            || target.index() + 2 != graph.nodes.len()
+        {
+            return None;
+        }
+        let translation = [matrix[3], matrix[7], matrix[11]];
+        let mut operations = machined_nodes(row, source, graph, graph.nodes.len() - 1)?;
+        for operation in &mut operations {
+            operation.machining =
+                scaled_machining(operation.machining.clone(), translation, factor);
+            if operation.kind == GeneralManufacturingKind::Stock {
+                operation.bounds = PieceDimensions {
+                    length_mm: operation.bounds.length_mm * factor,
+                    width_mm: operation.bounds.width_mm * factor,
+                    height_mm: operation.bounds.height_mm * factor,
+                };
+            }
+        }
+        return Some(operations);
+    }
+    machined_nodes(row, source, graph, graph.nodes.len())
+}
+
+/// The machining of the first `node_count` nodes of `graph`.
+fn machined_nodes(
+    row: &GeneralBomRow,
+    source: &ketchup_model::exact_product::ExactResultKey,
+    graph: &ExactBRepGraph,
+    node_count: usize,
+) -> Option<Vec<GeneralManufacturingOperation>> {
+    let nodes = &graph.nodes[..node_count];
+    let stock = nodes.first()?;
     let ExactBRepOperation::Extrude {
         profile: stock_profile,
         interval: stock_interval,
@@ -3090,7 +3134,7 @@ fn graph_manufacturing_operations(
         )?,
         source: source.clone(),
     }];
-    if graph.nodes.len() == 1 {
+    if nodes.len() == 1 {
         return Some(operations);
     }
 
@@ -3098,7 +3142,7 @@ fn graph_manufacturing_operations(
     // or a Boolean cut by an extruded prism tool that may be rigidly placed.
     let mut previous = stock;
     let mut index = 1;
-    while let Some(node) = graph.nodes.get(index) {
+    while let Some(node) = nodes.get(index) {
         if let ExactBRepOperation::Extrude { .. } = node.operation {
             let (operation, terminal) =
                 boolean_prism_cut(row, source, graph, stock, previous, index)?;
@@ -3490,6 +3534,78 @@ fn within_stock(
     })
 }
 
+/// The same machining grown evenly by `factor` and then moved by
+/// `translation_mm`: the frame keeps its axes, its origin follows the scale,
+/// and every length measured in it grows by `factor`.
+fn scaled_machining(
+    mut machining: GeneralMachiningGeometry,
+    translation_mm: [f64; 3],
+    factor: f64,
+) -> GeneralMachiningGeometry {
+    let move_point = |p: &mut [f64; 3]| {
+        for (value, translation) in p.iter_mut().zip(translation_mm) {
+            *value = *value * factor + translation;
+        }
+    };
+    let scale_planar = |p: &mut [f64; 2]| p.iter_mut().for_each(|value| *value *= factor);
+    let scale_segments = |segments: &mut Vec<GeneralMachiningSegment>| {
+        for segment in segments {
+            match segment {
+                GeneralMachiningSegment::Line { start_mm, end_mm } => {
+                    [start_mm, end_mm].into_iter().for_each(scale_planar);
+                }
+                GeneralMachiningSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    ..
+                } => [start_mm, end_mm, center_mm]
+                    .into_iter()
+                    .for_each(scale_planar),
+            }
+        }
+    };
+    let (frame, lengths) = match &mut machining {
+        GeneralMachiningGeometry::TimberStock {
+            frame,
+            cross_section,
+            start_mm,
+            length_mm,
+            cross_section_width_mm,
+            cross_section_height_mm,
+            ..
+        } => {
+            scale_segments(cross_section);
+            move_point(start_mm);
+            let lengths = vec![length_mm, cross_section_width_mm, cross_section_height_mm];
+            (frame, lengths)
+        }
+        GeneralMachiningGeometry::ProfileCut {
+            frame,
+            segments,
+            start_mm,
+            end_mm,
+        } => {
+            scale_segments(segments);
+            (frame, vec![start_mm, end_mm])
+        }
+        GeneralMachiningGeometry::CircularDrill {
+            frame,
+            center_mm,
+            diameter_mm,
+            start_mm,
+            end_mm,
+            ..
+        } => {
+            scale_planar(center_mm);
+            (frame, vec![diameter_mm, start_mm, end_mm])
+        }
+    };
+    move_point(&mut frame.origin_mm);
+    lengths.into_iter().for_each(|length| *length *= factor);
+    machining
+}
+
 /// The same cut described from its other end: the frame turns around (normal
 /// and y axis flip, so it stays right-handed) and profile y coordinates flip.
 fn entering_from_end(machining: GeneralMachiningGeometry) -> GeneralMachiningGeometry {
@@ -3548,7 +3664,8 @@ fn entering_from_end(machining: GeneralMachiningGeometry) -> GeneralMachiningGeo
             start_mm: -end_mm,
             end_mm: -start_mm,
         },
-        other @ GeneralMachiningGeometry::TimberStock { .. } => other,
+        // Stock is no cut, so it has no end to enter from.
+        stock => stock,
     }
 }
 

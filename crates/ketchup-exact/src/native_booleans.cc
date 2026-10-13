@@ -18,30 +18,34 @@ std::unique_ptr<NativeOperationResult> transform_body_native(
           + matrix[4 + left] * matrix[4 + right]
           + matrix[8 + left] * matrix[8 + right];
     };
-    const bool rigid =
-        std::abs(dot_column(0, 0) - 1.0) <= tolerances().rounding
-        && std::abs(dot_column(1, 1) - 1.0) <= tolerances().rounding
-        && std::abs(dot_column(2, 2) - 1.0) <= tolerances().rounding
-        && std::abs(dot_column(0, 1)) <= tolerances().rounding
-        && std::abs(dot_column(0, 2)) <= tolerances().rounding
-        && std::abs(dot_column(1, 2)) <= tolerances().rounding;
+    // An even scale (orthogonal columns of one length) keeps circles and
+    // cylinders analytic through gp_Trsf; only an uneven one needs GTransform.
+    const double square = dot_column(0, 0);
+    const auto relative = [&](double value) { return std::abs(value) <= tolerances().rounding * square; };
+    const bool similarity = square > 0.0
+        && relative(dot_column(1, 1) - square)
+        && relative(dot_column(2, 2) - square)
+        && relative(dot_column(0, 1))
+        && relative(dot_column(0, 2))
+        && relative(dot_column(1, 2));
+    const bool rigid = similarity && std::abs(square - 1.0) <= tolerances().rounding;
     const std::uint32_t source_solids = count_subshapes(body.impl().shape, TopAbs_SOLID);
     const bool source_is_planar_face = source_solids == 0
         && count_subshapes(body.impl().shape, TopAbs_FACE) == 1;
     TopoDS_Shape result;
-    if (rigid) {
+    if (similarity) {
       gp_Trsf transform;
       transform.SetValues(
           matrix[0], matrix[1], matrix[2], matrix[3],
           matrix[4], matrix[5], matrix[6], matrix[7],
           matrix[8], matrix[9], matrix[10], matrix[11]);
-      if (source_is_planar_face) {
+      if (rigid && source_is_planar_face) {
         result = body.impl().shape.Moved(TopLoc_Location(transform));
       } else {
         BRepBuilderAPI_Transform operation(body.impl().shape, transform, true);
         operation.Build();
         if (!operation.IsDone()) {
-          return error_result(STATUS_INVALID_SHAPE, "OCCT rigid body transform did not complete");
+          return error_result(STATUS_INVALID_SHAPE, "OCCT similarity body transform did not complete");
         }
         result = operation.Shape();
       }
