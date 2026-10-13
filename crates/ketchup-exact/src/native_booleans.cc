@@ -1,7 +1,9 @@
 #include "native_common.hxx"
 
+#include <BOPAlgo_Alerts.hxx>
 #include <BOPTools_AlgoTools3D.hxx>
 #include <IntTools_Context.hxx>
+#include <Message_Report.hxx>
 
 #include <optional>
 
@@ -470,7 +472,15 @@ NativePairQuery query_body_pair_native(
       common.SetTools(tools);
       common.SetNonDestructive(true);
       common.Build();
-      if (!common.IsDone() || common.HasErrors() || common.HasWarnings() || common.Shape().IsNull() ||
+      // Helical faces cutting each other at a shallow angle can leave split-edge
+      // fragments in no face. That one warning is tolerated here because the
+      // result must still pass the analyzer below; every other warning rejects.
+      bool tolerated_warnings = true;
+      for (const Handle(Message_Alert)& alert : common.GetReport()->GetAlerts(Message_Warning)) {
+        tolerated_warnings = tolerated_warnings
+            && alert->IsInstance(STANDARD_TYPE(BOPAlgo_AlertFaceBuilderUnusedEdges));
+      }
+      if (!common.IsDone() || common.HasErrors() || !tolerated_warnings || common.Shape().IsNull() ||
           !BRepCheck_Analyzer(common.Shape(), true).IsValid()) {
         result.diagnostic = "OCCT pair common did not produce a verified result";
         return result;

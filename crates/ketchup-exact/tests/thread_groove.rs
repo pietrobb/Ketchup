@@ -285,24 +285,21 @@ fn a_modelled_m5_bolt_meshes_with_its_tapped_hole_at_any_depth_and_turn() {
     );
 
     // The same bolt cut with its own phase instead of the hole's interferes,
-    // so the check above does see a phase error.
+    // and the same pair query reports it, so it does see a phase error.
     let own = ThreadPhase {
         origin: tip,
         axis: Vec3::Z,
         reference: Vec3::X,
     };
     let (_, wrong) = screwed_bolt(&own);
-    let overlap = backend
-        .boolean_bodies(
-            &tapped.body,
-            &wrong.body,
-            ExactBodyBooleanOperation::Intersect,
-        )
+    let clash = backend
+        .query_body_pair(&tapped.body, &wrong.body, 0.0)
         .unwrap();
-    assert!(overlap.body.topology.volume_mm3 > 1.0, "{overlap:?}");
+    assert_eq!(clash.relation, ExactPairRelation::Penetrating, "{clash:?}");
+    assert!(clash.common_volume_mm3 > 1.0, "{clash:?}");
     println!(
         "own phase instead: {:.3} mm³ overlap",
-        overlap.body.topology.volume_mm3
+        clash.common_volume_mm3
     );
 }
 
