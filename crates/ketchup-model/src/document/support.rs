@@ -42,6 +42,9 @@ pub(super) fn add_setting_dependency(
         CanonicalCommand::SetProductionCode { .. } => {
             dependencies.insert(AuthoritativeDependency::ProductionCodes);
         }
+        CanonicalCommand::SetModeledThreads { .. } => {
+            dependencies.insert(AuthoritativeDependency::ModeledThreads);
+        }
         _ => {}
     }
 }

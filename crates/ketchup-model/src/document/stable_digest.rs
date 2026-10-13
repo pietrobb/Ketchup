@@ -82,6 +82,7 @@ impl StableDigest {
             D::GroundedInstances => self.value(&product.grounded_instances),
             D::ContactJoints => self.value(&product.contact_joints),
             D::ProductionCodes => self.value(&product.production_codes),
+            D::ModeledThreads => self.value(&product.modeled_threads),
             D::AssemblyRecipe => self.value(&product.assembly_recipe),
             D::PersistentDimension(id) => self.value(&product.persistent_dimensions.get(id)),
             D::Tag(id) => self.value(&product.tags.get(id)),

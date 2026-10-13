@@ -609,6 +609,7 @@ pub enum AuthoritativeDependency {
     GroundedInstances,
     ContactJoints,
     ProductionCodes,
+    ModeledThreads,
     AssemblyRecipe,
     PersistentDimension(PersistentDimensionId),
     Tag(TagId),

@@ -326,6 +326,7 @@ pub(super) fn authoritative_writes(
             CanonicalCommand::SetHoleThread { .. }
             | CanonicalCommand::SetModeledThreads { .. }
             | CanonicalCommand::SetShaftThread { .. } => {
+                support::add_setting_dependency(command, &mut writes);
                 threads::add_writes(snapshot, command, &mut writes);
             }
             CanonicalCommand::SetFeatureDimension { id, .. }

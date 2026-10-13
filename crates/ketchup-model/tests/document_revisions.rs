@@ -690,6 +690,21 @@ fn product_proposals_use_typed_dependencies_without_snapshot_fallback() {
 }
 
 #[test]
+fn two_thread_mode_proposals_from_one_head_conflict_without_any_threads() {
+    let mut document = DocumentStore::new();
+    let mode = |modeled| CommandBatch::new(vec![CanonicalCommand::SetModeledThreads { modeled }]);
+    let first = document.prepare_proposal(mode(true)).unwrap();
+    let second = document.prepare_proposal(mode(false)).unwrap();
+    document.commit_proposal(&first).unwrap();
+    let committed = document.current().canonical_digest();
+    assert!(matches!(
+        document.commit_proposal(&second),
+        Err(ProposalCommitError::Stale(ProposalValidity::Stale { .. }))
+    ));
+    assert_eq!(document.current().canonical_digest(), committed);
+}
+
+#[test]
 fn schema_zero_and_one_are_one_way_imports_into_schema_three_authority() {
     for schema in [0_u16, 1_u16] {
         let mut bytes = Vec::new();
