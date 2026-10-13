@@ -2148,11 +2148,7 @@ impl KetchupApp {
         self.push_pull.smart_proposal = None;
         self.status_key = "status-ready";
         if let Some(selection) = self.selection.primary.clone() {
-            self.push_pull.last = Some(LastPushPull {
-                selection: selection.clone(),
-                revision: self.document_revision(),
-                canonical_digest: self.canonical_digest(),
-            });
+            self.remember_push_pull(selection.clone(), None);
             self.digest = self.catalog.format(
                 match selection.element {
                     ElementId::Face { axis: Axis::Z, .. } => "digest-push-pull-committed-height",
@@ -2172,6 +2168,30 @@ impl KetchupApp {
             );
         }
         true
+    }
+
+    /// Remember the Push/Pull just committed so a typed value corrects it.
+    pub(crate) fn remember_push_pull(
+        &mut self,
+        selection: SelectionId,
+        face: Option<(PushPullSourcePlan, planar_push_pull::PlanarFace)>,
+    ) {
+        self.push_pull.last = Some(LastPushPull {
+            selection,
+            topological: self.selection.topological.clone(),
+            face,
+            revision: self.document_revision(),
+            canonical_digest: self.canonical_digest(),
+        });
+    }
+
+    /// The Push/Pull the document still sits on, if a typed value may correct it.
+    pub(crate) fn current_last_push_pull(&self) -> Option<&LastPushPull> {
+        let current = self.document.current();
+        self.push_pull.last.as_ref().filter(|operation| {
+            operation.revision == current.revision_id()
+                && operation.canonical_digest == current.canonical_digest()
+        })
     }
 
     #[must_use]

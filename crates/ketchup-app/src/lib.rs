@@ -379,6 +379,11 @@ struct PushPullDrag {
 #[derive(Clone)]
 struct LastPushPull {
     selection: SelectionId,
+    /// The exact face it pushed, empty for a box face. An exact-face Push/Pull
+    /// clears the selection, so a correction restores the face from here.
+    topological: Vec<(SelectionId, SnapshotBoundTopologicalSelection)>,
+    /// That exact face as planned against the Push/Pull's parent revision.
+    face: Option<(PushPullSourcePlan, planar_push_pull::PlanarFace)>,
     /// Document revision produced by that Push/Pull. A typed value is treated as
     /// a correction of this operation only while the document still sits on it.
     revision: u64,

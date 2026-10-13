@@ -1190,6 +1190,20 @@ impl KetchupApp {
             match self.selection.topological.as_slice() {
                 [] => (None, None),
                 [(_, topological)] => {
+                    // Correcting an exact-face Push/Pull plans against its parent,
+                    // as that Push/Pull was planned; the face is bound to the parent.
+                    if let Some((source, _)) = self.corrected_push_pull_face(target) {
+                        return Some(PushPullSourcePlan {
+                            source_document_id: snapshot.document_id(),
+                            source_revision: snapshot.revision_id(),
+                            source_digest: snapshot.canonical_digest(),
+                            source_primary: self.selection.primary.clone(),
+                            source_selected_group: self.selection.selected_group,
+                            edit_context: self.selection.edit_context.clone(),
+                            planning: self.push_pull_planning_plan()?,
+                            ..source.clone()
+                        });
+                    }
                     let resolved = topological
                         .resolve_current(&snapshot, &self.exact.topology_results)
                         .ok()?;

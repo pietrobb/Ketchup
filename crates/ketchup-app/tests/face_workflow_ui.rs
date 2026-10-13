@@ -222,8 +222,26 @@ fn wait_for(shell: &mut Shell, what: &str, mut done: impl FnMut(&Shell) -> bool)
     assert!(reached, "{what} timed out: {}", shell.app().action_digest());
 }
 
+/// When the top face is picked relative to the box's exact geometry arriving.
+#[derive(Clone, Copy)]
+enum ExactGeometry {
+    /// The exact body is published first, so the pick lands on an exact face.
+    BeforePick,
+    /// No exact body is ever published, so the pick lands on the box face.
+    Never,
+}
+
 #[test]
 fn localized_serial_rectangle_to_hover_bound_push_pull_uses_the_viewport_value_box() {
+    serial_rectangle_push_pull(ExactGeometry::BeforePick);
+}
+
+#[test]
+fn localized_serial_rectangle_push_pull_on_the_box_face_before_exact_geometry() {
+    serial_rectangle_push_pull(ExactGeometry::Never);
+}
+
+fn serial_rectangle_push_pull(exact: ExactGeometry) {
     let directory = tempfile::tempdir().unwrap();
     let saved = directory.path().join("face-workflow.ketchup");
     let dialogs = ScriptedFileDialogs::new()
@@ -232,6 +250,11 @@ fn localized_serial_rectangle_to_hover_bound_push_pull_uses_the_viewport_value_b
         .always_discard();
     let mut shell =
         Shell::with_catalog_and_dialogs(ketchup_interaction::LocaleCatalog::slovak(), dialogs);
+    if let ExactGeometry::Never = exact {
+        shell
+            .app_mut()
+            .headless_force_exact_worker_path(directory.path().join("missing-exact-worker.exe"));
+    }
     open_face_workflow(&mut shell);
     let initial_revision = shell.app().document_revision();
     let initial_digest = shell.app().canonical_digest();
@@ -294,6 +317,13 @@ fn localized_serial_rectangle_to_hover_bound_push_pull_uses_the_viewport_value_b
         FeatureKind::Sketch(_)
     ));
 
+    if let ExactGeometry::BeforePick = exact {
+        wait_for(&mut shell, "exact body", |shell| {
+            shell.app().exact_render_body_count() > 0
+        });
+    } else {
+        assert_eq!(shell.app().exact_render_body_count(), 0);
+    }
     let top = shell.top_face_centre(1);
     shell.click_command(AppCommand::Select);
     shell.click_at(top);
@@ -339,7 +369,18 @@ fn localized_serial_rectangle_to_hover_bound_push_pull_uses_the_viewport_value_b
 
     shell.type_text("5");
     shell.press_key(Key::Enter);
+    // On an exact face the correction commits once its exact offset is evaluated.
+    wait_for(&mut shell, "typed correction", |shell| {
+        shell.app().canonical_digest() != pointer_digest
+    });
     assert_eq!(shell.app().document_height_mm(), 25.0);
+    // The typed value replaced the pointer Push/Pull: one Undo step, back to 20.
+    assert_eq!(shell.app().undo_step_count(), initial_undo + 2);
+    let corrected_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().document_height_mm(), 20.0);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), corrected_digest);
     let persisted_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
     assert!(saved.is_file());

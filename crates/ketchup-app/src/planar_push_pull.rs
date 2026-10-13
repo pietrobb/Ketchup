@@ -396,7 +396,30 @@ impl KetchupApp {
             .or_else(|| exact_surface_element(hit.outward_normal))
     }
 
+    /// While a typed value corrects the last exact-face Push/Pull, that
+    /// Push/Pull's plan and face. The face is bound to its parent revision,
+    /// which the current exact results no longer describe.
+    pub(super) fn corrected_push_pull_face(
+        &self,
+        target: &SelectionId,
+    ) -> Option<&(PushPullSourcePlan, PlanarFace)> {
+        if !matches!(
+            self.push_pull.smart_planning,
+            Some(SmartPushPullPlanning::TipReplacement(_))
+        ) {
+            return None;
+        }
+        let last = self.current_last_push_pull()?;
+        if last.selection != *target || last.topological != self.selection.topological {
+            return None;
+        }
+        last.face.as_ref()
+    }
+
     pub(super) fn selected_planar_face(&self, target: &SelectionId) -> Option<PlanarFace> {
+        if let Some((_, face)) = self.corrected_push_pull_face(target) {
+            return Some(face.clone());
+        }
         let snapshot = self.document.current();
         let (_, bound) = self
             .selection
@@ -719,6 +742,10 @@ impl KetchupApp {
         let Some(preview) = self.tool_preview.get::<EphemeralBoxPreview>() else {
             return false;
         };
+        let target = preview.plan.source.target.clone();
+        let face = self
+            .selected_planar_face(&target)
+            .map(|face| (preview.plan.source.clone(), face));
         let rule_program = match self.rewrite_program_push_pull(
             &preview.plan.source,
             f64::from_bits(preview.plan.distance_mm_bits),
@@ -781,6 +808,7 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
+        self.remember_push_pull(target, face);
         self.selection.clear();
         self.hover.projection_cache.get_mut().take();
         self.render.plan = None;

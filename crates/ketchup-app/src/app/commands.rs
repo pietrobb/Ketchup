@@ -672,6 +672,14 @@ impl KetchupApp {
             return applied;
         }
         if self.active_tool == ActiveTool::PushPull {
+            // An exact-face Push/Pull clears the selection; a value typed right
+            // after it still corrects that face.
+            if self.selection.primary.is_none()
+                && let Some(last) = self.current_last_push_pull().cloned()
+            {
+                self.selection.primary = Some(last.selection);
+                self.selection.topological = last.topological;
+            }
             let selection = self.selection.primary.clone();
             let Some(selection) = selection else {
                 self.status_key = "error-push-pull-selection-required";
@@ -685,12 +693,9 @@ impl KetchupApp {
             // A value typed straight after a Push/Pull is planned as an absolute
             // replacement against its guarded parent. The committed tip remains
             // untouched throughout chooser and preview interaction.
-            let current = self.document.current();
-            let correction = self.push_pull.last.as_ref().filter(|operation| {
-                operation.selection == selection
-                    && operation.revision == current.revision_id()
-                    && operation.canonical_digest == current.canonical_digest()
-            });
+            let correction = self
+                .current_last_push_pull()
+                .filter(|operation| operation.selection == selection);
             let planning = correction
                 .and_then(|_| self.document.tip_replacement_parent().ok())
                 .map_or(SmartPushPullPlanning::Append, |parent| {
