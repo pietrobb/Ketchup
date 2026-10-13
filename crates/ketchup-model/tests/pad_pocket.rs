@@ -7,8 +7,8 @@ use ketchup_geometry::sketch::{
 };
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    EdgeFinishKind, EdgeRef, FaceRef, FeatureEvaluationState, FeatureId, FeatureKind, OccurrenceId,
-    ProposalCommitError, ProposalContext, TagId, Transform,
+    EdgeFinishKind, EdgeRef, FaceRef, FeatureEvaluationState, FeatureId, FeatureKind, HoleThread,
+    OccurrenceId, ProposalCommitError, ProposalContext, TagId, Transform,
 };
 use ketchup_model::exact_brep_graph::{
     ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
@@ -374,6 +374,43 @@ fn canonical_line_arc_region_flows_losslessly_into_exact_pad_graph() {
         before_pocket.canonical_digest()
     );
     assert!(cuts_pad(&document.redo().unwrap()));
+
+    // A thread on the pocket is deleted with it; Undo brings both back.
+    let untapped_bytes = persistence::save(&document.current());
+    let names_threads = |bytes: &[u8]| bytes.windows(12).any(|w| w == b"hole_threads");
+    assert!(!names_threads(&untapped_bytes));
+    let thread = HoleThread {
+        size: "M8".into(),
+        pitch_mm: 1.25,
+        depth_mm: 3.0,
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetHoleThread {
+            id: POCKET,
+            thread: Some(thread.clone()),
+        }]))
+        .unwrap();
+    let tapped = document.current();
+    assert_eq!(
+        tapped.hole_threads().collect::<Vec<_>>(),
+        vec![(POCKET, &thread)]
+    );
+    assert!(names_threads(&persistence::save(&tapped)));
+    let undo_before_delete = document.visible_undo_steps();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::DeleteFeature {
+            id: POCKET,
+        }]))
+        .unwrap();
+    assert_eq!(document.visible_undo_steps(), undo_before_delete + 1);
+    assert_eq!(document.current().hole_threads().count(), 0);
+    assert!(!names_threads(&persistence::save(&document.current())));
+    assert_eq!(
+        document.undo().unwrap().canonical_digest(),
+        tapped.canonical_digest()
+    );
+    assert_eq!(document.current().hole_threads().count(), 1);
+    assert_eq!(persistence::save(&document.undo().unwrap()), untapped_bytes);
 }
 
 #[test]
