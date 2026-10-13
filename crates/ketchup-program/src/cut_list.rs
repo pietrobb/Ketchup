@@ -11,7 +11,7 @@ const DIMENSIONS: [&str; 3] = ["length", "width", "thickness"];
 
 /// The program's own attributes. Namespaced keys (`classification:…`,
 /// `input:…`) are data for validators, not for the workshop.
-fn plain_attribute(name: &str) -> bool {
+pub(crate) fn plain_attribute(name: &str) -> bool {
     !name.contains(':')
 }
 
@@ -38,15 +38,18 @@ struct Group {
     parts: Vec<String>,
 }
 
-/// The counted parts (e.g. the visible ones) as cut-list rows: position,
+/// The counted made parts (e.g. the visible ones) as cut-list rows: position,
 /// part names, material, length, width and thickness of the blank in mm,
 /// count, then one column per program attribute any counted part carries.
+/// Parts with a designation are bought: they are in the hardware list.
 #[must_use]
 pub fn cut_list_table(model: &ProgramModel, counted: impl Fn(&str) -> bool) -> Table {
     let parts: Vec<_> = model
         .parts
         .iter()
-        .filter(|part| model.in_production(part) && counted(&part.name))
+        .filter(|part| {
+            model.in_production(part) && part.designation().is_none() && counted(&part.name)
+        })
         .collect();
     let attribute_names: BTreeSet<&str> = parts
         .iter()

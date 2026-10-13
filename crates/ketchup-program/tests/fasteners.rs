@@ -332,9 +332,10 @@ bolt(\"m10\", \"M10\", 45, norm = \"ISO 4014\", at = (90, 0, 0))
 }
 
 #[test]
-fn the_cut_list_names_the_designation_standard_and_mass_basis() {
+fn the_hardware_list_counts_designated_parts_and_the_cut_list_leaves_them_out() {
     let model = model(
-        "nut(\"n1\", \"M8\")
+        "board(\"plate\", (300, 200, 18))
+nut(\"n1\", \"M8\")
 nut(\"n2\", \"M8\", at = (40, 0, 0))
 nut(\"d1\", \"M8\", norm = \"DIN 934\", at = (80, 0, 0))
 washer(\"w1\", \"M8\", at = (120, 0, 0))
@@ -345,59 +346,62 @@ rebar(\"r1\", 12, 1000, at = (0, 100, 0), axis = (1, 0, 0))
 rebar(\"r2\", 12, 1000, at = (0, 150, 0), axis = (1, 0, 0))
 ",
     );
-    let table = cut_list_table(&model, |_| true);
-    let column = |name: &str| {
-        table
-            .header
-            .iter()
-            .position(|header| header == name)
-            .unwrap_or_else(|| panic!("{name} in {:?}", table.header))
-    };
-    let (designation, standard, basis, count, source) = (
-        column("designation"),
-        column("standard"),
-        column("mass_basis"),
-        column("count"),
-        column("source"),
-    );
-    let text = |cell: &Cell| match cell {
-        Cell::Text(text) => text.clone(),
-        Cell::Count(count) => count.to_string(),
-        Cell::Number(value) => value.to_string(),
-    };
+    let bom = ketchup_program::bom(&model);
     let row = |wanted: &str| {
-        table
-            .rows
+        bom.hardware
             .iter()
-            .find(|row| text(&row[designation]) == wanted)
-            .unwrap_or_else(|| panic!("{wanted} in {:?}", table.rows))
+            .find(|row| row.item == wanted)
+            .unwrap_or_else(|| panic!("{wanted} in {:?}", bom.hardware))
     };
     // Same designation, one row with the count; the two norms of M8 stay apart.
-    assert_eq!(text(&row("ISO 4032 M8")[count]), "2");
-    assert_eq!(text(&row("ISO 4032 M8")[standard]), "ISO 4032");
-    assert_eq!(text(&row("DIN 934 M8")[count]), "1");
-    assert_eq!(text(&row("ISO 7089 M8")[standard]), "ISO 7089");
+    assert_eq!(row("ISO 4032 M8").count, 2);
+    assert_eq!(row("ISO 4032 M8").parts, ["n1", "n2"]);
+    assert_eq!(row("ISO 4032 M8").attributes["standard"], "ISO 4032");
+    assert_eq!(row("DIN 934 M8").count, 1);
+    assert_eq!(row("ISO 7089 M8").attributes["standard"], "ISO 7089");
     // A bolt's length is part of its designation: 40 and 50 are two rows.
-    assert_eq!(text(&row("ISO 4017 M8x40")[count]), "2");
-    assert_eq!(text(&row("ISO 4017 M8x50")[count]), "1");
-    // A bar names its nominal mass per piece; the fasteners leave that column empty.
+    assert_eq!(row("ISO 4017 M8x40").count, 2);
+    assert_eq!(row("ISO 4017 M8x50").count, 1);
+    assert_eq!(row("ISO 4017 M8x40").attributes["thread"], "M8");
+    // A bar names its nominal mass per piece; the fasteners have none.
     let bar = row("B500B Ø12 L1000");
-    assert_eq!(text(&bar[count]), "2");
-    assert_eq!(text(&bar[standard]), "EN 10080");
-    let mass: f64 = text(&bar[column("mass_kg")]).parse().unwrap();
+    assert_eq!(bar.count, 2);
+    assert_eq!(bar.attributes["standard"], "EN 10080");
+    let mass: f64 = bar.attributes["mass_kg"].parse().unwrap();
     assert!((mass - 0.888).abs() <= 0.00888, "{mass}");
-    assert!(text(&bar[basis]).starts_with("nominal EN 10080"));
-    assert_eq!(text(&row("ISO 4032 M8")[column("mass_kg")]), "");
-    assert_eq!(table.rows.len(), 6, "{:?}", table.rows);
-    for row in &table.rows {
+    assert!(bar.attributes["mass_basis"].starts_with("nominal EN 10080"));
+    assert!(!row("ISO 4032 M8").attributes.contains_key("mass_kg"));
+    assert_eq!(bom.hardware.len(), 6, "{:?}", bom.hardware);
+    for row in &bom.hardware {
+        assert!(!row.attributes.contains_key("designation"), "{row:?}");
         assert!(
-            text(&row[basis]).contains("simplified solid x 7850 kg/m3")
-                || text(&row[designation]).starts_with("B500B"),
+            row.attributes["mass_basis"].contains("simplified solid x 7850 kg/m3")
+                || row.item.starts_with("B500B"),
             "{row:?}"
         );
         assert!(
-            text(&row[source]).contains("not the standard text"),
+            row.attributes["source"].contains("not the standard text"),
             "{row:?}"
+        );
+    }
+    // Only the made plate is cut; none of the bought parts' attributes is a column.
+    assert_eq!(bom.total_parts, 10);
+    assert_eq!(bom.cut_list.len(), 1);
+    assert_eq!(bom.cut_list[0].parts, ["plate"]);
+    let table = cut_list_table(&model, |_| true);
+    assert_eq!(table.rows.len(), 1, "{:?}", table.rows);
+    assert!(matches!(&table.rows[0][1], Cell::Text(parts) if parts == "plate"));
+    for column in [
+        "designation",
+        "standard",
+        "thread",
+        "thread_from_mm",
+        "thread_to_mm",
+    ] {
+        assert!(
+            !table.header.iter().any(|header| header == column),
+            "{:?}",
+            table.header
         );
     }
 }

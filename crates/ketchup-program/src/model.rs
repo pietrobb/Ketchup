@@ -751,6 +751,14 @@ pub struct Part {
 }
 
 impl Part {
+    /// The designation a bought part is ordered by (attribute `designation`,
+    /// e.g. a library fastener's "ISO 4017 M8x40"): it belongs to the hardware
+    /// list, not to the cut list of made parts.
+    #[must_use]
+    pub fn designation(&self) -> Option<&str> {
+        self.attributes.get("designation").map(String::as_str)
+    }
+
     pub fn holes(&self) -> impl Iterator<Item = &Hole> {
         self.operations
             .iter()

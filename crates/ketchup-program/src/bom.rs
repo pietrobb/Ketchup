@@ -1,5 +1,6 @@
 //! Cut list, hardware list and machining plan derived from a model.
 
+use crate::cut_list::plain_attribute;
 use crate::model::ProgramModel;
 use ketchup_model::document::HoleThread;
 use serde::Serialize;
@@ -15,10 +16,18 @@ pub struct CutListRow {
     pub parts: Vec<String>,
 }
 
+/// Bought items: a joint's named fasteners, and the parts ordered by their
+/// designation, grouped by designation and their other attributes.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct HardwareRow {
     pub item: String,
     pub count: usize,
+    /// The designated parts this row counts.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<String>,
+    /// Their program attributes besides the designation, e.g. the standard.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -61,10 +70,40 @@ pub(crate) fn key(value: f64) -> i64 {
     }
 }
 
+type Attributes = BTreeMap<String, String>;
+
+fn bought<'a>(
+    hardware: &'a mut BTreeMap<(String, Attributes), HardwareRow>,
+    item: &str,
+    attributes: Attributes,
+) -> &'a mut HardwareRow {
+    hardware
+        .entry((item.to_owned(), attributes.clone()))
+        .or_insert_with(|| HardwareRow {
+            item: item.to_owned(),
+            count: 0,
+            parts: Vec::new(),
+            attributes,
+        })
+}
+
 #[must_use]
 pub fn bom(model: &ProgramModel) -> Bom {
     let mut rows: BTreeMap<(String, [i64; 3]), CutListRow> = BTreeMap::new();
+    let mut hardware = BTreeMap::new();
     for part in model.parts.iter().filter(|part| model.in_production(part)) {
+        if let Some(designation) = part.designation() {
+            let attributes = part
+                .attributes
+                .iter()
+                .filter(|(name, _)| plain_attribute(name) && *name != "designation")
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            let row = bought(&mut hardware, designation, attributes);
+            row.count += 1;
+            row.parts.push(part.name.clone());
+            continue;
+        }
         // The blank: grown by push_pull and union, unlike the declared size.
         let (min, max) = part.local_bounds();
         let mut dimensions: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
@@ -84,7 +123,6 @@ pub fn bom(model: &ProgramModel) -> Bom {
         row.count += 1;
         row.parts.push(part.name.clone());
     }
-    let mut hardware: BTreeMap<String, usize> = BTreeMap::new();
     for joint in model
         .joints
         .iter()
@@ -92,7 +130,8 @@ pub fn bom(model: &ProgramModel) -> Bom {
     {
         if let Some(fastener) = &joint.fastener {
             // A named fastener without positions is one piece, e.g. one hanger.
-            *hardware.entry(fastener.clone()).or_default() += joint.fasteners_mm.len().max(1);
+            bought(&mut hardware, fastener, BTreeMap::new()).count +=
+                joint.fasteners_mm.len().max(1);
         }
     }
     let machining = model
@@ -132,10 +171,7 @@ pub fn bom(model: &ProgramModel) -> Bom {
         .collect();
     Bom {
         cut_list: rows.into_values().collect(),
-        hardware: hardware
-            .into_iter()
-            .map(|(item, count)| HardwareRow { item, count })
-            .collect(),
+        hardware: hardware.into_values().collect(),
         machining,
         total_parts: model
             .parts

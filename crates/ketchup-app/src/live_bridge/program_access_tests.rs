@@ -392,6 +392,57 @@ fn the_members_report_lists_the_timber_check_of_every_load_path_member() {
 }
 
 #[test]
+fn a_box_screwed_together_lists_its_screws_as_hardware_not_in_the_cut_list() {
+    let (mut app, mut bridge) = setup();
+    let source = "base = box(\"base\", (200, 200, 40))\n\
+         lid = box(\"lid\", (200, 200, 18), at = (0, 0, 40))\n\
+         for i, (x, y) in enumerate([(20, 20), (180, 20), (20, 180), (180, 180)]):\n\
+         \x20   hole(lid, \"z+\", world = (x, y, 58), diameter = 9, depth = 18, through = True)\n\
+         \x20   hole(base, \"z+\", world = (x, y, 40), depth = 25, thread = (\"M8\", 25))\n\
+         \x20   bolt(\"screw %d\" % (i + 1), \"M8\", 40, at = (x, y, 58))\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    let screws = ["screw 1", "screw 2", "screw 3", "screw 4"];
+    let (evaluated, report) = ketchup_program::run("box.star", source, &BTreeMap::new()).unwrap();
+    for screw in screws {
+        assert_eq!(
+            evaluated.model.part(screw).unwrap().designation(),
+            Some("ISO 4017 M8x40")
+        );
+    }
+    // The screws engage the tapped base; the clearance holes in the lid are
+    // settled on the exact solids, which a box-only report leaves unverified.
+    assert!(
+        report
+            .issues
+            .iter()
+            .all(|issue| issue.kind != "collision" && !issue.parts.contains(&"base".to_owned())),
+        "{:?}",
+        report.issues
+    );
+    let hardware = all_rows(&mut app, &mut bridge, ReportSection::Hardware);
+    assert_eq!(hardware.len(), 1, "{hardware:?}");
+    assert_eq!(hardware[0]["item"], "ISO 4017 M8x40");
+    assert_eq!(hardware[0]["count"], 4);
+    assert_eq!(hardware[0]["parts"], json!(screws));
+    assert_eq!(hardware[0]["attributes"]["thread"], "M8");
+    let cut = all_rows(&mut app, &mut bridge, ReportSection::CutList);
+    let mut made: Vec<_> = cut
+        .iter()
+        .map(|row| row["part"].as_str().unwrap())
+        .collect();
+    made.sort_unstable();
+    assert_eq!(made, ["base", "lid"]);
+    let machining = all_rows(&mut app, &mut bridge, ReportSection::Machining);
+    let tapped = machining
+        .iter()
+        .filter(|row| row["part"] == "base" && row["operation"]["thread"].is_string())
+        .count();
+    assert_eq!(tapped, 4, "{machining:?}");
+}
+
+#[test]
 fn report_pages_reconstruct_complete_model_bom_and_relations() {
     let (mut app, mut bridge) = setup();
     let source = "parts=[]\nfor i in range(18):\n    p=board(\"p%d\" % i, (40,100,100), at=(i*40,0,0))\n    parts.append(p)\n    hole(p, \"z+\", at=(9,50), diameter=4, depth=8)\nfor i in range(17):\n    dowels(parts[i], parts[i+1], dowel=\"8x30\", margin=25)";
@@ -804,12 +855,12 @@ fn standard_fasteners_weigh_their_simplified_steel_body() {
     assert_eq!(report["assembly"]["status"], "complete", "{report}");
 }
 
-/// #2482: a B500B bar Ø12 x 1000 is 0.888 kg ±1 % both in the cut list (the
-/// library's nominal EN 10080 mass) and in inspect mass (the exact solid x
-/// steel density). Each is checked on its own: should they ever part, this
-/// fails instead of trusting one of them.
+/// #2482: a B500B bar Ø12 x 1000 is 0.888 kg ±1 % both in the hardware list
+/// (the library's nominal EN 10080 mass; a designated part is bought, not cut)
+/// and in inspect mass (the exact solid x steel density). Each is checked on its
+/// own: should they ever part, this fails instead of trusting one of them.
 #[test]
-fn a_b500b_bar_weighs_its_nominal_mass_in_the_cut_list_and_in_inspect_mass() {
+fn a_b500b_bar_weighs_its_nominal_mass_in_the_hardware_list_and_in_inspect_mass() {
     let (mut app, mut bridge) = setup();
     let source = "rebar(\"bar\", 12, 1000, axis = (1, 0, 0))\n";
     bridge
@@ -839,18 +890,11 @@ fn a_b500b_bar_weighs_its_nominal_mass_in_the_cut_list_and_in_inspect_mass() {
     let model = ketchup_program::evaluate("bar.star", source, &BTreeMap::new())
         .unwrap()
         .model;
-    let table = ketchup_program::cut_list::cut_list_table(&model, |_| true);
-    let column = |name: &str| {
-        table
-            .header
-            .iter()
-            .position(|header| header == name)
-            .unwrap_or_else(|| panic!("{name} in {:?}", table.header))
-    };
-    assert_eq!(table.rows.len(), 1, "{:?}", table.rows);
-    let listed = match &table.rows[0][column("mass_kg")] {
-        ketchup_program::table::Cell::Text(text) => text.parse::<f64>().unwrap(),
-        cell => panic!("mass_kg {cell:?}"),
-    };
-    assert!((listed - 0.888).abs() <= 0.00888, "cut list {listed} kg");
+    let hardware = ketchup_program::bom(&model).hardware;
+    assert_eq!(hardware.len(), 1, "{hardware:?}");
+    let listed: f64 = hardware[0].attributes["mass_kg"].parse().unwrap();
+    assert!(
+        (listed - 0.888).abs() <= 0.00888,
+        "hardware list {listed} kg"
+    );
 }

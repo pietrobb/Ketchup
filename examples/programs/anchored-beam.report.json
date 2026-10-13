@@ -2226,87 +2226,6 @@
         ]
       },
       {
-        "material": "steel",
-        "dimensions_mm": [
-          20.784609690826528,
-          18.0,
-          10.8
-        ],
-        "count": 6,
-        "parts": [
-          "anchor nut -1 -1",
-          "anchor nut -1 1",
-          "anchor nut 1 -1",
-          "anchor nut 1 1",
-          "bolt nut -50",
-          "bolt nut 50"
-        ]
-      },
-      {
-        "material": "steel",
-        "dimensions_mm": [
-          24.0,
-          24.0,
-          2.5
-        ],
-        "count": 6,
-        "parts": [
-          "anchor washer -1 -1",
-          "anchor washer -1 1",
-          "anchor washer 1 -1",
-          "anchor washer 1 1",
-          "bolt washer -50",
-          "bolt washer 50"
-        ]
-      },
-      {
-        "material": "steel",
-        "dimensions_mm": [
-          127.5,
-          20.784609690826528,
-          18.0
-        ],
-        "count": 2,
-        "parts": [
-          "bolt -50",
-          "bolt 50"
-        ]
-      },
-      {
-        "material": "steel",
-        "dimensions_mm": [
-          400.0,
-          12.0,
-          12.0
-        ],
-        "count": 4,
-        "parts": [
-          "anchor -1 -1",
-          "anchor -1 1",
-          "anchor 1 -1",
-          "anchor 1 1"
-        ]
-      },
-      {
-        "material": "steel",
-        "dimensions_mm": [
-          700.0,
-          12.0,
-          12.0
-        ],
-        "count": 8,
-        "parts": [
-          "bar x1",
-          "bar y1",
-          "bar x2",
-          "bar y2",
-          "bar x3",
-          "bar y3",
-          "bar x4",
-          "bar y4"
-        ]
-      },
-      {
         "material": "steel S235",
         "dimensions_mm": [
           200.0,
@@ -2332,7 +2251,96 @@
         ]
       }
     ],
-    "hardware": [],
+    "hardware": [
+      {
+        "item": "B500B Ø12 L700",
+        "count": 8,
+        "parts": [
+          "bar x1",
+          "bar y1",
+          "bar x2",
+          "bar y2",
+          "bar x3",
+          "bar y3",
+          "bar x4",
+          "bar y4"
+        ],
+        "attributes": {
+          "mass_basis": "nominal EN 10080: pi d^2 / 4 x length x 7850 kg/m3, ribs not modelled",
+          "mass_kg": "0.621",
+          "source": "reinforcing-bar.com, ulamex.com, calcsteel.com (catalogue tables, not the standard text)",
+          "standard": "EN 10080"
+        }
+      },
+      {
+        "item": "DIN 975 M12x400",
+        "count": 4,
+        "parts": [
+          "anchor -1 -1",
+          "anchor -1 1",
+          "anchor 1 -1",
+          "anchor 1 1"
+        ],
+        "attributes": {
+          "mass_basis": "simplified solid x 7850 kg/m3 (no thread or chamfers), not a catalogue weight",
+          "source": "fasteners.eu, boltport.com (catalogue tables, not the standard text)",
+          "standard": "DIN 975",
+          "thread": "M12",
+          "thread_from_mm": "0.0",
+          "thread_to_mm": "400.0"
+        }
+      },
+      {
+        "item": "ISO 4014 M12x120",
+        "count": 2,
+        "parts": [
+          "bolt -50",
+          "bolt 50"
+        ],
+        "attributes": {
+          "mass_basis": "simplified solid x 7850 kg/m3 (no thread or chamfers), not a catalogue weight",
+          "source": "heads fasteners.eu, fullerfasteners.com, intafast.com; lengths engineersedge.com, intafast.com (catalogue tables, not the standard text)",
+          "standard": "ISO 4014",
+          "thread": "M12",
+          "thread_from_mm": "-120.0",
+          "thread_to_mm": "0.0"
+        }
+      },
+      {
+        "item": "ISO 4032 M12",
+        "count": 6,
+        "parts": [
+          "anchor nut -1 -1",
+          "anchor nut -1 1",
+          "anchor nut 1 -1",
+          "anchor nut 1 1",
+          "bolt nut -50",
+          "bolt nut 50"
+        ],
+        "attributes": {
+          "mass_basis": "simplified solid x 7850 kg/m3 (no thread or chamfers), not a catalogue weight",
+          "source": "fasteners.eu, wermac.org, engineersedge.com (catalogue tables, not the standard text)",
+          "standard": "ISO 4032"
+        }
+      },
+      {
+        "item": "ISO 7089 M12",
+        "count": 6,
+        "parts": [
+          "anchor washer -1 -1",
+          "anchor washer -1 1",
+          "anchor washer 1 -1",
+          "anchor washer 1 1",
+          "bolt washer -50",
+          "bolt washer 50"
+        ],
+        "attributes": {
+          "mass_basis": "simplified solid x 7850 kg/m3 (no thread or chamfers), not a catalogue weight",
+          "source": "itpbolt.com, engineersedge.com, fasteners.eu (catalogue tables, not the standard text)",
+          "standard": "ISO 7089"
+        }
+      }
+    ],
     "machining": [
       {
         "part": "base plate",

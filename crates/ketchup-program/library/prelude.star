@@ -1226,7 +1226,9 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   The body is simplified: a hexagon of the nominal width across flats s (or a ring, or a
 #   round head with its hexagon socket), the bore and shank the nominal thread diameter, no
 #   thread, chamfers, washer face or insert. Material "steel".
-#   Attributes (cut-list columns): designation (e.g. "ISO 4032 M8", "ISO 4017 M8x40"),
+#   Every part with a designation is bought, not made: report section hardware counts it
+#   (one row per designation with count, parts and the other attributes), the cut list
+#   leaves it out. Attributes: designation (e.g. "ISO 4032 M8", "ISO 4017 M8x40"),
 #   standard, mass_basis (the mass is the simplified body's volume x 7850 kg/m3, not a
 #   catalogue weight) and source, which names a value of this size that has only one source.
 #   Bolts and threaded rods also carry thread (their size, e.g. "M8") and thread_from_mm /
