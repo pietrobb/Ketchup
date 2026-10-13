@@ -13,4 +13,5 @@ pub mod prismatic;
 pub mod reference;
 pub mod sketch;
 pub mod slot;
+pub mod thread_profile;
 pub use ketchup_tolerance as tolerance;

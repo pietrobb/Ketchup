@@ -18,12 +18,14 @@ mod segments;
 mod solids;
 mod spec;
 mod sweep_loft;
+mod thread;
 mod validation;
 pub use evidence::*;
 pub use exchange::*;
 use output::*;
 use segments::*;
 pub use spec::*;
+pub use thread::ThreadGrooveSpec;
 pub use validation::*;
 
 const BACKEND_FINGERPRINT: &str = env!("KETCHUP_OCCT_BUILD_FINGERPRINT");
@@ -329,6 +331,20 @@ mod ffi {
             profile_segments: &[NativeSegment],
             path_segments: &[NativeSegment],
             up: &[f64],
+        ) -> UniquePtr<NativeOperationResult>;
+        /// `helix`: origin, axis and reference (3 each), pitch, start, end.
+        fn thread_groove_native(
+            helix: &[f64],
+            left_handed: bool,
+            profile: &[NativePoint],
+            approximation: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn thread_cut_native(
+            target: &NativeOperationResult,
+            helix: &[f64],
+            left_handed: bool,
+            profile: &[NativePoint],
+            approximation: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn loft_framed_profiles_native(
             sections: &[NativeLoftSection],

@@ -69,7 +69,10 @@ pub(super) fn operation_bounds(
         } => swept_profile_bounds(&profiles[profile.0 as usize], *interval).map(Some),
         ExactBRepOperation::ProfileCut { target, .. }
         | ExactBRepOperation::Shell { target, .. }
-        | ExactBRepOperation::EdgeFinish { target, .. } => Ok(node_bounds[target.0 as usize]),
+        | ExactBRepOperation::EdgeFinish { target, .. }
+        | ExactBRepOperation::ThreadGroove(ExactBRepThreadGroove { target, .. }) => {
+            Ok(node_bounds[target.0 as usize])
+        }
         ExactBRepOperation::FaceOffset {
             target,
             distance_bits,

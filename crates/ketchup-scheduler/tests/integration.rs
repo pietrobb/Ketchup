@@ -10,6 +10,7 @@ mod plugin_sandbox;
 mod scheduler_identity;
 mod scheduler_reliability;
 mod sheet_metal;
+mod thread_groove;
 mod validator_sandbox;
 mod weldment_joint;
 mod weldment_member;

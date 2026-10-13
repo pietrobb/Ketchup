@@ -20,7 +20,7 @@ use ketchup_exact::{
     ExactPairRelation, ExactVolumeMeshOptions, FramedLoftProfile, FramedLoftSection,
     FramedLoftSpec, LoftSurfaceContinuity, PlanarProfileLoop, PlanarProfileSegment, Point3,
     RectangleOffsetSpec, ShellDirection as NativeShellDirection, Size3, SpatialProfileSegment,
-    StepXdeExportNode, StepXdeExportPart,
+    StepXdeExportNode, StepXdeExportPart, ThreadGrooveSpec,
 };
 use ketchup_geometry::linalg::{self, Affine3, Vec3};
 use ketchup_model::cam::CAM_SIMULATION_SCHEMA_V1;
@@ -30,8 +30,8 @@ use ketchup_model::exact_brep_graph::{
     ExactBRepGraph, ExactBRepLinearInterval, ExactBRepLoftContinuity, ExactBRepLoftSection,
     ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
     ExactBRepProfile, ExactBRepProfileFaceReference, ExactBRepShellDirection, ExactBRepSpatialPath,
-    ExactBRepSpatialPathSegment, ExactBRepTopologyKind, ExactBRepTopologySelector,
-    ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
+    ExactBRepSpatialPathSegment, ExactBRepThreadGroove, ExactBRepTopologyKind,
+    ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
     exact_brep_planar_rectangle_bounds, exact_sheet_metal_shape,
 };
 use ketchup_model::exact_product::{
@@ -1318,6 +1318,9 @@ fn evaluate_exact_brep_graph(
                 }
             }
             ExactBRepOperation::Draft(draft) => evaluate_draft(backend, graph, &outputs, draft)?,
+            ExactBRepOperation::ThreadGroove(thread) => {
+                evaluate_thread_groove(backend, &outputs, thread)?
+            }
             ExactBRepOperation::EdgeFinish {
                 target,
                 edges,
@@ -1481,17 +1484,7 @@ fn evaluate_exact_brep_graph(
                 output
             }
         };
-        let extrusion = match &node.operation {
-            ExactBRepOperation::Extrude { .. } => true,
-            ExactBRepOperation::ProfileCut { target, .. }
-            | ExactBRepOperation::FaceOffset { target, .. }
-            | ExactBRepOperation::Draft(ExactBRepDraft { target, .. })
-            | ExactBRepOperation::EdgeFinish { target, .. }
-            | ExactBRepOperation::Boolean { target, .. }
-            | ExactBRepOperation::RigidTransform { target, .. }
-            | ExactBRepOperation::Scale { target, .. } => extrusion_lineage[target.0 as usize],
-            _ => false,
-        };
+        let extrusion = extrusion_lineage_of(&node.operation, &extrusion_lineage);
         let mut output = output;
         if let Some(names) = &produced_face_names {
             exact_brep_expose_face_names(&mut output, names, extrusion);
@@ -1503,6 +1496,48 @@ fn evaluate_exact_brep_graph(
     outputs
         .pop()
         .ok_or_else(|| exact_brep_graph_error(graph, "graph produced no exact body"))
+}
+
+/// Whether a node's body still descends from an extrusion: an extrusion
+/// itself, or an operation that reshapes the body of one.
+fn extrusion_lineage_of(operation: &ExactBRepOperation, lineage: &[bool]) -> bool {
+    match operation {
+        ExactBRepOperation::Extrude { .. } => true,
+        ExactBRepOperation::ProfileCut { target, .. }
+        | ExactBRepOperation::FaceOffset { target, .. }
+        | ExactBRepOperation::Draft(ExactBRepDraft { target, .. })
+        | ExactBRepOperation::ThreadGroove(ExactBRepThreadGroove { target, .. })
+        | ExactBRepOperation::EdgeFinish { target, .. }
+        | ExactBRepOperation::Boolean { target, .. }
+        | ExactBRepOperation::RigidTransform { target, .. }
+        | ExactBRepOperation::Scale { target, .. } => lineage[target.index()],
+        _ => false,
+    }
+}
+
+/// A modelled thread cut into its target's body.
+fn evaluate_thread_groove(
+    backend: &ExactBackend,
+    outputs: &[ExactOpOutput],
+    thread: &ExactBRepThreadGroove,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    backend.cut_thread(
+        &outputs[thread.target.index()].body,
+        &ThreadGrooveSpec {
+            origin_mm: thread.origin_bits.map(f64::from_bits),
+            axis: thread.axis_bits.map(f64::from_bits),
+            reference: thread.reference_bits.map(f64::from_bits),
+            pitch_mm: f64::from_bits(thread.pitch_bits),
+            start_mm: f64::from_bits(thread.start_bits),
+            end_mm: f64::from_bits(thread.end_bits),
+            left_handed: thread.left_handed,
+            profile_mm: thread
+                .profile_bits
+                .iter()
+                .map(|point| point.map(f64::from_bits))
+                .collect(),
+        },
+    )
 }
 
 fn exact_brep_through_all_interval(

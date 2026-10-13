@@ -47,6 +47,11 @@ pub const APPROXIMATION: f64 = 1.0e-6;
 /// normals carry rounding near 1e-12 rad, while the smallest modelled draft is 0.1 degree.
 pub const DRAFT_VERTICAL_TOLERANCE_DEGREES: f64 = 1.0e-6;
 
+/// Deviation allowed between a modelled thread's swept faces and the exact screw surface,
+/// in mm. Several hundred times below the flank clearance of the finest ISO metric fit (6g
+/// against 6H), so a modelled bolt and its tapped hole stay clear of each other.
+pub const THREAD_APPROXIMATION_MM: f64 = 1.0e-4;
+
 /// Chord error for material face boundaries used by planar contact queries, in mm.
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
 /// Smallest angular sampling step for a material boundary, in radians.

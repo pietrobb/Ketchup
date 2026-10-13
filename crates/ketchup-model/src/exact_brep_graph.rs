@@ -564,6 +564,29 @@ pub enum ExactBRepOperation {
         target: ExactBRepNodeId,
         matrix_bits: [u64; 16],
     },
+    ThreadGroove(ExactBRepThreadGroove),
+}
+
+/// Cuts a modelled thread into `target`: the closed groove section
+/// `profile_bits` (radius from the axis, offset along it) carried by the
+/// screw motion about the axis through `origin_bits` along `axis_bits`,
+/// `pitch_bits` per turn, from `start_bits` to `end_bits` along the axis.
+/// At axial position s the section lies at angle 2π·s/pitch from
+/// `reference_bits` (clockwise for a left-handed thread): origin and
+/// reference fix the thread's phase. Its faces are named `thread.side.<n>`
+/// after the section edge n that swept them.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactBRepThreadGroove {
+    pub target: ExactBRepNodeId,
+    pub origin_bits: [u64; 3],
+    pub axis_bits: [u64; 3],
+    pub reference_bits: [u64; 3],
+    pub pitch_bits: u64,
+    pub start_bits: u64,
+    pub end_bits: u64,
+    pub left_handed: bool,
+    pub profile_bits: Vec<[u64; 2]>,
 }
 
 /// The row-major 4x4 matrix stretching about `origin_mm` by `factors` along
@@ -587,6 +610,7 @@ impl ExactBRepOperation {
             | Self::EdgeFinish { target, .. }
             | Self::FaceOffset { target, .. }
             | Self::Draft(ExactBRepDraft { target, .. })
+            | Self::ThreadGroove(ExactBRepThreadGroove { target, .. })
             | Self::SurfaceExtend { target, .. }
             | Self::SurfaceThicken { target, .. }
             | Self::RigidTransform { target, .. }
@@ -633,6 +657,7 @@ impl ExactBRepOperation {
             | Self::EdgeFinish { .. }
             | Self::FaceOffset { .. }
             | Self::Draft(_)
+            | Self::ThreadGroove(_)
             | Self::SheetMetal { .. }
             | Self::ImportedExact { .. }
             | Self::RigidTransform { .. }
@@ -1540,6 +1565,15 @@ impl ExactBRepGraph {
             )
             .as_bytes(),
         )
+    }
+
+    /// Recomputes the digests of a graph a test edited by hand (an operation
+    /// no document feature compiles to yet) and validates it.
+    #[cfg(feature = "testing")]
+    pub fn reseal_for_testing(&mut self) -> Result<(), ExactBRepGraphError> {
+        self.graph_digest = self.compute_graph_digest()?;
+        self.canonical_input_digest = self.compute_canonical_input_digest();
+        self.validate()
     }
 }
 

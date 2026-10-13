@@ -331,15 +331,53 @@ pub(super) fn operation_requires_v15(operation: &ExactBRepOperation) -> bool {
     )
 }
 
-/// No build before draft wrote a draft node, so draft shares the newest schema
-/// instead of adding one.
+/// No build before draft (or a modelled thread) wrote such a node, so they
+/// share the newest schema instead of adding one.
 pub(super) fn operation_requires_v23(operation: &ExactBRepOperation) -> bool {
     matches!(
         operation,
         ExactBRepOperation::SurfaceThicken { .. }
             | ExactBRepOperation::Draft(_)
             | ExactBRepOperation::Scale { .. }
+            | ExactBRepOperation::ThreadGroove(_)
     )
+}
+
+/// Most turns one modelled thread may have.
+const MAX_THREAD_TURNS: f64 = 4096.0;
+
+/// Square unit axis and reference, a positive pitch, an increasing range of
+/// at most [`MAX_THREAD_TURNS`], and a section of 3 to 64 points off the axis
+/// narrower than the pitch, so neighbouring turns never touch.
+fn valid_thread_groove(thread: &ExactBRepThreadGroove, tolerance_mm: f64) -> bool {
+    let origin = thread.origin_bits.map(f64::from_bits);
+    let axis = thread.axis_bits.map(f64::from_bits);
+    let reference = thread.reference_bits.map(f64::from_bits);
+    let [pitch, start, end] =
+        [thread.pitch_bits, thread.start_bits, thread.end_bits].map(f64::from_bits);
+    let profile = thread
+        .profile_bits
+        .iter()
+        .map(|point| point.map(f64::from_bits))
+        .collect::<Vec<_>>();
+    let unit = |vector: [f64; 3]| (dot(vector, vector).sqrt() - 1.0).abs() <= ROUNDING;
+    let bounded = |value: f64| value.is_finite() && value.abs() <= MAX_COORDINATE_MM;
+    let offsets = profile.iter().map(|point| point[1]);
+    let width =
+        offsets.clone().fold(f64::NEG_INFINITY, f64::max) - offsets.fold(f64::INFINITY, f64::min);
+    origin.into_iter().chain([start, end]).all(bounded)
+        && unit(axis)
+        && unit(reference)
+        && dot(axis, reference).abs() <= ROUNDING
+        && pitch.is_finite()
+        && pitch > tolerance_mm
+        && end > start
+        && (end - start) / pitch <= MAX_THREAD_TURNS
+        && (3..=limits::PATH_SEGMENTS).contains(&profile.len())
+        && profile
+            .iter()
+            .all(|point| point[0] > tolerance_mm && bounded(point[0]) && bounded(point[1]))
+        && width < pitch
 }
 
 /// A row-major 4x4 matrix that only stretches along x, y and z by positive
@@ -868,6 +906,10 @@ pub(super) fn valid_operation(
                             prior_nodes,
                         )
                     })
+        }
+        ExactBRepOperation::ThreadGroove(thread) => {
+            prior_nodes.get(thread.target.index()).is_some()
+                && valid_thread_groove(thread, tolerance_mm)
         }
         ExactBRepOperation::Revolve {
             axis_start_bits,

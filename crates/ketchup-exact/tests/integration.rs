@@ -5,6 +5,7 @@ mod backend;
 mod face_measurement;
 mod naming;
 mod pair_query;
+mod thread_groove;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
