@@ -38,6 +38,8 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
+#[path = "drill_holes_tests.rs"]
+mod drill_holes;
 #[path = "product_integration_tests.rs"]
 mod product_integration;
 #[path = "program_access_tests.rs"]

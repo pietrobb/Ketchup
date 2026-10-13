@@ -1011,7 +1011,7 @@ fn a_published_change_with_a_huge_log_still_fits_one_response() {
     );
 }
 
-fn evaluate_exact(app: &mut KetchupApp) {
+pub(super) fn evaluate_exact(app: &mut KetchupApp) {
     let worker = exact_worker_candidates()
         .into_iter()
         .find(|path| path.is_file())
@@ -1492,7 +1492,7 @@ fn push_pull_drawn(app: &mut KetchupApp, distance: &str) -> bool {
     app.confirm_preview()
 }
 
-fn exact_volume(app: &KetchupApp, name: &str) -> f64 {
+pub(super) fn exact_volume(app: &KetchupApp, name: &str) -> f64 {
     let snapshot = app.document.current();
     let occurrence = snapshot
         .occurrences()

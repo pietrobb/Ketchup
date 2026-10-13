@@ -1827,6 +1827,25 @@ pub enum AssistantCadEditOperation {
         edge_reference_ids: Vec<String>,
         distance_mm: f64,
     },
+    /// Round holes drilled square into one planar face of an existing part: one
+    /// hole of `diameter_mm` at every point, `depth_mm` deep or `through` the part
+    /// (exactly one of the two). `face_reference_id` is a listed face reference of
+    /// `target_feature_id`; points are part-local and lie on that face. Each whole
+    /// circle must lie on the face and each hole wall inside the part. Faces that
+    /// are curved, oblique or inside the part's bounds, points off the face, and
+    /// holes that would break out of the part (notch or split it) or remove nothing
+    /// are refused by name.
+    DrillHoles {
+        definition_id: u64,
+        name: String,
+        target_feature_id: u64,
+        face_reference_id: String,
+        points_local_mm: Vec<[f64; 3]>,
+        diameter_mm: f64,
+        depth_mm: Option<f64>,
+        #[serde(default)]
+        through: bool,
+    },
     AppendFeature {
         definition_id: AssistantCadFeatureReference,
         name: String,
@@ -3024,6 +3043,7 @@ impl AssistantCadEditProgram {
             | AssistantCadEditOperation::AppendFeature { .. }
             | AssistantCadEditOperation::FilletEdges { .. }
             | AssistantCadEditOperation::ChamferEdges { .. }
+            | AssistantCadEditOperation::DrillHoles { .. }
             | AssistantCadEditOperation::BindProgramOutput { .. }
             | AssistantCadEditOperation::SetDimension { .. }
             | AssistantCadEditOperation::SetFeatureParameter { .. }
@@ -3180,6 +3200,50 @@ impl AssistantCadEditProgram {
                     rotation.validate()?;
                 }
                 1
+            }
+            AssistantCadEditOperation::DrillHoles {
+                definition_id,
+                name,
+                face_reference_id,
+                points_local_mm,
+                diameter_mm,
+                depth_mm,
+                through,
+                ..
+            } => {
+                if points_local_mm.len() > max_part_cuts {
+                    return Err(AssistantRequestInvalid::new(
+                        "part hole count",
+                        AssistantRequestProblem::ExceedsLimit(max_part_cuts),
+                    ));
+                }
+                if depth_mm.is_some() == *through {
+                    return Err(AssistantRequestInvalid::new(
+                        "CAD drill holes",
+                        AssistantRequestProblem::Violates(
+                            "a hole is either depth_mm deep or through the part: give exactly one of them",
+                        ),
+                    ));
+                }
+                let positive = |value: f64| value.is_finite() && value > 0.0;
+                if *definition_id == 0
+                    || !assistant_cut_id_is_valid(name)
+                    || !assistant_cut_id_is_valid(face_reference_id)
+                    || points_local_mm.is_empty()
+                    || !points_local_mm
+                        .iter()
+                        .all(|point| assistant_cad_vector_is_bounded(*point))
+                    || !positive(*diameter_mm)
+                    || depth_mm.is_some_and(|depth| !positive(depth))
+                {
+                    return Err(AssistantRequestInvalid::new(
+                        "CAD drill holes",
+                        AssistantRequestProblem::Violates(
+                            "it needs a name, a face reference, one to the hole limit of bounded points, a positive diameter and a positive depth_mm",
+                        ),
+                    ));
+                }
+                0
             }
             _ => 0,
         })

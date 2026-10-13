@@ -1992,6 +1992,59 @@ fn linear_pattern_rows_keep_the_old_shape_and_name_the_copy_limit() {
 }
 
 #[test]
+fn drill_holes_takes_a_depth_or_through_and_at_most_the_part_hole_limit() {
+    let wire = serde_json::json!({
+        "operations": [{
+            "operation": "drill_holes",
+            "definition_id": 1,
+            "name": "holes",
+            "target_feature_id": 2,
+            "face_reference_id": "face",
+            "points_local_mm": [[10.0, 10.0, 20.0]],
+            "diameter_mm": 6.0,
+            "depth_mm": 8.0
+        }]
+    });
+    let program = serde_json::from_value::<AssistantCadEditProgram>(wire.clone()).unwrap();
+    assert_eq!(program.validate(), Ok(()));
+    assert_eq!(
+        serde_json::to_value(&program).unwrap()["operations"][0]["through"],
+        false
+    );
+    let with = |change: fn(&mut serde_json::Value)| {
+        let mut wire = wire.clone();
+        change(&mut wire["operations"][0]);
+        serde_json::from_value::<AssistantCadEditProgram>(wire)
+            .unwrap()
+            .validate()
+    };
+    let one_of = Err(AssistantRequestInvalid::new(
+        "CAD drill holes",
+        AssistantRequestProblem::Violates(
+            "a hole is either depth_mm deep or through the part: give exactly one of them",
+        ),
+    ));
+    assert_eq!(with(|op| op["through"] = true.into()), one_of);
+    assert_eq!(
+        with(|op| {
+            op["through"] = true.into();
+            op["depth_mm"] = serde_json::Value::Null;
+        }),
+        Ok(())
+    );
+    assert_eq!(with(|op| op["depth_mm"] = serde_json::Value::Null), one_of);
+    assert!(with(|op| op["diameter_mm"] = 0.0.into()).is_err());
+    assert!(with(|op| op["points_local_mm"] = serde_json::json!([])).is_err());
+    assert_eq!(
+        with(|op| op["points_local_mm"] = serde_json::json!(vec![[10.0, 10.0, 20.0]; 129])),
+        Err(AssistantRequestInvalid::new(
+            "part hole count",
+            AssistantRequestProblem::ExceedsLimit(128),
+        ))
+    );
+}
+
+#[test]
 fn cad_edit_program_conservatively_budgets_current_selection_outputs() {
     let selector = AssistantCadEntitySelector::CurrentSelection {};
     let mut operations = vec![AssistantCadEditOperation::LinearPattern {

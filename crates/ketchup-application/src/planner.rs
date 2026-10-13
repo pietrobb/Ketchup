@@ -4,6 +4,7 @@ use crate::diagnostics::{
     AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection,
     assistant_planning_rejection, assistant_rejection,
 };
+use crate::drill_holes::{Drill, admit_drill_holes};
 use crate::product_change::plan_product_change;
 use crate::rule_operations::OperationPlanner;
 use crate::structure_change::plan_structure_change;
@@ -527,7 +528,7 @@ fn plan_part(
             _ => None,
         })
         .expect("CreatePart always creates a sketch");
-    let mut target_feature_id = base_commands
+    let target_feature_id = base_commands
         .iter()
         .find_map(|command| match command {
             CanonicalCommand::CreateFeature { id, kind, .. }
@@ -577,8 +578,60 @@ fn plan_part(
     } else {
         None
     };
+    let target_feature_id = plan_part_cuts(
+        &PartCuts {
+            operation_name: "create_part",
+            name,
+            definition_id,
+            holes,
+            pockets,
+            body_bounds,
+        },
+        target_feature_id,
+        staged,
+        next_definition,
+        next_feature,
+        next_occurrence,
+        document_target,
+    )?;
+    Ok((
+        definition_id,
+        occurrence_id,
+        base_sketch_id,
+        target_feature_id,
+    ))
+}
 
-    // Each cut is a sketch on its face and a pocket of the previous solid.
+/// Holes and pockets cut into one part body, in this order.
+struct PartCuts<'a> {
+    operation_name: &'a str,
+    name: &'a str,
+    definition_id: DefinitionId,
+    holes: &'a [AssistantPartHole],
+    pockets: &'a [AssistantPartPocket],
+    /// The body's bounds, which decide whether a hole goes through.
+    body_bounds: Option<[[f64; 3]; 2]>,
+}
+
+/// Plans the cuts into the body `target_feature_id`, each a sketch on its
+/// face and a pocket of the previous solid; returns the last solid.
+fn plan_part_cuts(
+    cuts: &PartCuts<'_>,
+    mut target_feature_id: FeatureId,
+    staged: &mut StagedPlanningContext,
+    next_definition: &mut Option<u64>,
+    next_feature: &mut Option<u64>,
+    next_occurrence: &mut Option<u64>,
+    document_target: &str,
+) -> AssistantPlanningResult<FeatureId> {
+    let PartCuts {
+        operation_name,
+        name,
+        definition_id,
+        holes,
+        pockets,
+        body_bounds,
+    } = *cuts;
     // The sketches only need the part's definition, so they are previewed
     // together once and every pocket is planned against that preview,
     // instead of re-validating the whole document for every hole.
@@ -662,7 +715,7 @@ fn plan_part(
         let pocket_id = next_feature.map(FeatureId).ok_or_else(|| {
             assistant_canonical_rejection(
                 CanonicalError::IdExhausted,
-                "create_part",
+                operation_name,
                 document_target,
             )
         })?;
@@ -686,7 +739,7 @@ fn plan_part(
                     .collect(),
             ))
             .map_err(|error| {
-                assistant_canonical_rejection(error, "create_part", document_target)
+                assistant_canonical_rejection(error, operation_name, document_target)
             })?;
         let topology = ExactResultRegistry::default();
         for (sketch_commands, sketch_id, pocket_id, depth_mm, pocket_name, unresolved_through) in
@@ -698,14 +751,14 @@ fn plan_part(
                 let tool = next_feature.map(FeatureId).ok_or_else(|| {
                     assistant_canonical_rejection(
                         CanonicalError::IdExhausted,
-                        "create_part",
+                        operation_name,
                         document_target,
                     )
                 })?;
                 *next_feature = tool.0.checked_add(1);
                 let depth = depth_mm.expect("unresolved through cut retains numeric depth");
                 let dimension = Dimension::new(depth.to_string(), depth).map_err(|error| {
-                    assistant_canonical_rejection(error.into(), "create_part", document_target)
+                    assistant_canonical_rejection(error.into(), operation_name, document_target)
                 })?;
                 staged.push(CanonicalCommand::CreateFeature {
                     id: tool,
@@ -724,7 +777,13 @@ fn plan_part(
                     profile_feature_id: sketch_id.0.into(),
                     depth_mm,
                 };
-                plan_feature_kind(&sketched, &topology, definition_id, &feature, "create_part")?
+                plan_feature_kind(
+                    &sketched,
+                    &topology,
+                    definition_id,
+                    &feature,
+                    operation_name,
+                )?
             } else {
                 FeatureKind::through_cut(target_feature_id, sketch_id)
             };
@@ -737,12 +796,80 @@ fn plan_part(
             target_feature_id = pocket_id;
         }
     }
-    Ok((
-        definition_id,
-        occurrence_id,
-        base_sketch_id,
-        target_feature_id,
-    ))
+    Ok(target_feature_id)
+}
+
+/// Fillet and Chamfer of edges are the topology finish they append.
+fn edge_finish_feature(operation: &AssistantCadEditOperation) -> Option<AssistantCadEditOperation> {
+    match operation {
+        AssistantCadEditOperation::FilletEdges {
+            definition_id,
+            name,
+            target_feature_id,
+            edge_reference_ids,
+            radius_mm,
+        } => Some(AssistantCadEditOperation::AppendFeature {
+            definition_id: (*definition_id).into(),
+            name: name.clone(),
+            feature: AssistantCadBodyFeature::TopologyFillet {
+                target_feature_id: *target_feature_id,
+                edge_reference_ids: edge_reference_ids.clone(),
+                radius_mm: *radius_mm,
+                radius_stations: Vec::new(),
+            },
+        }),
+        AssistantCadEditOperation::ChamferEdges {
+            definition_id,
+            name,
+            target_feature_id,
+            edge_reference_ids,
+            distance_mm,
+        } => Some(AssistantCadEditOperation::AppendFeature {
+            definition_id: (*definition_id).into(),
+            name: name.clone(),
+            feature: AssistantCadBodyFeature::TopologyChamfer {
+                target_feature_id: *target_feature_id,
+                edge_reference_ids: edge_reference_ids.clone(),
+                distance_mm: *distance_mm,
+                mode: Default::default(),
+                side_face_reference_ids: Vec::new(),
+            },
+        }),
+        _ => None,
+    }
+}
+
+/// Plans `drill_holes`: the admitted holes cut into the target body like the
+/// holes of `create_part`; returns the definition and its new last solid.
+fn plan_drill_holes(
+    drill: &Drill<'_>,
+    staged: &mut StagedPlanningContext,
+    topology_results: &ExactResultRegistry,
+    next_definition: &mut Option<u64>,
+    next_feature: &mut Option<u64>,
+    next_occurrence: &mut Option<u64>,
+    document_target: &str,
+) -> AssistantPlanningResult<(DefinitionId, FeatureId)> {
+    staged.refresh("drill_holes", document_target)?;
+    let topology = staged.topology(topology_results);
+    let (holes, bounds) = admit_drill_holes(staged.staged_snapshot(), &topology, drill)?;
+    let last = plan_part_cuts(
+        &PartCuts {
+            operation_name: "drill_holes",
+            name: drill.name,
+            definition_id: drill.definition_id,
+            holes: &holes,
+            pockets: &[],
+            body_bounds: Some(bounds),
+        },
+        drill.target,
+        staged,
+        next_definition,
+        next_feature,
+        next_occurrence,
+        document_target,
+    )?;
+    Ok((drill.definition_id, last))
 }
 
 fn sole_terminal_body_feature(
@@ -1904,40 +2031,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 };
                 Some(resolved)
             }
-            AssistantCadEditOperation::FilletEdges {
-                definition_id,
-                name,
-                target_feature_id,
-                edge_reference_ids,
-                radius_mm,
-            } => Some(AssistantCadEditOperation::AppendFeature {
-                definition_id: (*definition_id).into(),
-                name: name.clone(),
-                feature: AssistantCadBodyFeature::TopologyFillet {
-                    target_feature_id: *target_feature_id,
-                    edge_reference_ids: edge_reference_ids.clone(),
-                    radius_mm: *radius_mm,
-                    radius_stations: Vec::new(),
-                },
-            }),
-            AssistantCadEditOperation::ChamferEdges {
-                definition_id,
-                name,
-                target_feature_id,
-                edge_reference_ids,
-                distance_mm,
-            } => Some(AssistantCadEditOperation::AppendFeature {
-                definition_id: (*definition_id).into(),
-                name: name.clone(),
-                feature: AssistantCadBodyFeature::TopologyChamfer {
-                    target_feature_id: *target_feature_id,
-                    edge_reference_ids: edge_reference_ids.clone(),
-                    distance_mm: *distance_mm,
-                    mode: Default::default(),
-                    side_face_reference_ids: Vec::new(),
-                },
-            }),
-            _ => None,
+            _ => edge_finish_feature(operation),
         };
         let operation = normalized_operation.as_ref().unwrap_or(operation);
         let targets = operation_selector(operation).map_or_else(
@@ -1988,6 +2082,35 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 if !holes.is_empty() || !pockets.is_empty() {
                     appended_exact_features.push((definition_id, body_feature_id));
                 }
+            }
+            AssistantCadEditOperation::DrillHoles {
+                definition_id,
+                name,
+                target_feature_id,
+                face_reference_id,
+                points_local_mm,
+                diameter_mm,
+                depth_mm,
+                through,
+            } => {
+                appended_exact_features.push(plan_drill_holes(
+                    &Drill {
+                        definition_id: DefinitionId(*definition_id),
+                        name,
+                        target: FeatureId(*target_feature_id),
+                        face_reference_id,
+                        points_local_mm,
+                        diameter_mm: *diameter_mm,
+                        depth_mm: *depth_mm,
+                        through: *through,
+                    },
+                    &mut staged_planning,
+                    topology_results,
+                    &mut next_definition,
+                    &mut next_feature,
+                    &mut next_occurrence,
+                    &document_target,
+                )?);
             }
             AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
                 let path_segments = validated_spatial_path_segments(segments, snapshot.tolerance().linear_mm()).map_err(|error| {
@@ -3737,6 +3860,7 @@ const fn operation_selector(
         | AssistantCadEditOperation::CreateHelix { .. }
         | AssistantCadEditOperation::FilletEdges { .. }
         | AssistantCadEditOperation::ChamferEdges { .. }
+        | AssistantCadEditOperation::DrillHoles { .. }
         | AssistantCadEditOperation::AppendFeature { .. }
         | AssistantCadEditOperation::BindProgramOutput { .. }
         | AssistantCadEditOperation::SetDimension { .. }
@@ -3788,6 +3912,7 @@ const fn operation_name(operation: &AssistantCadEditOperation) -> &'static str {
         AssistantCadEditOperation::CreateHelix { .. } => "create_helix",
         AssistantCadEditOperation::FilletEdges { .. } => "fillet_edges",
         AssistantCadEditOperation::ChamferEdges { .. } => "chamfer_edges",
+        AssistantCadEditOperation::DrillHoles { .. } => "drill_holes",
         AssistantCadEditOperation::AppendFeature { .. } => "append_feature",
         AssistantCadEditOperation::BindProgramOutput { .. } => "bind_program_output",
         AssistantCadEditOperation::SetDimension { .. } => "set_dimension",

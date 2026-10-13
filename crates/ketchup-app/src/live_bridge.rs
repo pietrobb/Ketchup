@@ -1670,6 +1670,7 @@ impl LiveBridge {
                 | AssistantCadEditOperation::CreateHelix { .. }
                 | AssistantCadEditOperation::FilletEdges { .. }
                 | AssistantCadEditOperation::ChamferEdges { .. }
+                | AssistantCadEditOperation::DrillHoles { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }
                 | AssistantCadEditOperation::BindProgramOutput { .. }
                 | AssistantCadEditOperation::SetDimension { .. }

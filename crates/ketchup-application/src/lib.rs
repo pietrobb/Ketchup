@@ -7,6 +7,7 @@ mod collision;
 mod contact_joints;
 mod creation;
 pub mod diagnostics;
+mod drill_holes;
 pub mod evaluation;
 pub mod fea_workflow;
 mod group_connectivity;
