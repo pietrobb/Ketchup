@@ -43,6 +43,7 @@ mod rule_program_operations;
 mod rule_program_review;
 mod rule_program_split_union;
 mod rule_program_support;
+mod rule_program_tapped_holes;
 mod rule_program_threads;
 mod rule_program_through;
 mod space_operations;

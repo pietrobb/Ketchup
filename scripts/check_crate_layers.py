@@ -70,7 +70,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1396,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 558,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
-    "crates/ketchup-program/src/eval.rs::builtins": 786,
+    "crates/ketchup-program/src/eval.rs::builtins": 716,
     "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 536,
 }
 
@@ -343,7 +343,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-model allows": 16,
     "ketchup-model casts": 330,
     "ketchup-pdm casts": 5,
-    "ketchup-program allows": 10,
+    "ketchup-program allows": 9,
     "ketchup-program casts": 53,
     "ketchup-scheduler allows": 3,
     "ketchup-scheduler casts": 82,

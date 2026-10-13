@@ -79,6 +79,9 @@ pub struct Hole {
     pub depth_mm: f64,
     /// Explicit drilling intent; depth alone never turns a blind bore into a through bore.
     pub through: bool,
+    /// The ISO metric thread tapped into the hole, at most as deep as the hole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread: Option<ketchup_model::document::HoleThread>,
 }
 
 /// A rectangular pocket milled into a flat face (grooves, rabbets, notches):

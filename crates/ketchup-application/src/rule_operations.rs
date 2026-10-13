@@ -232,7 +232,14 @@ impl<'a> OperationPlanner<'a> {
         for operation in part.operations.iter().skip(drilled) {
             target = match operation {
                 ProgramOperation::Hole(hole) => {
-                    self.boolean(part, &part.hole_tool(hole), target, body)?
+                    let cut = self.boolean(part, &part.hole_tool(hole), target, body)?;
+                    if let Some(thread) = &hole.thread {
+                        self.commands.push(CanonicalCommand::SetHoleThread {
+                            id: cut,
+                            thread: Some(thread.clone()),
+                        });
+                    }
+                    cut
                 }
                 ProgramOperation::Pocket(pocket) => {
                     self.boolean(part, &part.pocket_tool(pocket), target, body)?

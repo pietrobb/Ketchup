@@ -4,7 +4,7 @@ use crate::diagnostics::{
     AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection,
     assistant_planning_rejection, assistant_rejection,
 };
-use crate::drill_holes::{Drill, admit_drill_holes, thread_commands};
+use crate::drill_holes::{Drill, admit_drill_holes, admit_hole_thread};
 use crate::product_change::plan_product_change;
 use crate::rule_operations::OperationPlanner;
 use crate::structure_change::plan_structure_change;
@@ -636,6 +636,14 @@ fn plan_part_cuts(
         pockets,
         body_bounds,
     } = *cuts;
+    let tolerance = staged.staged_snapshot().tolerance().linear_mm();
+    let threads = holes
+        .iter()
+        .map(|hole| admit_hole_thread(hole, tolerance))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|(code, invariant, hint)| {
+            assistant_planning_rejection(code, operation_name, document_target, invariant, hint)
+        })?;
     // The sketches only need the part's definition, so they are previewed
     // together once and every pocket is planned against that preview,
     // instead of re-validating the whole document for every hole.
@@ -802,6 +810,13 @@ fn plan_part_cuts(
             made.push(pocket_id);
         }
     }
+    // The holes are cut first, in order, so the first cuts are theirs.
+    staged.extend(threads.into_iter().zip(&made).filter_map(|(thread, id)| {
+        thread.map(|thread| CanonicalCommand::SetHoleThread {
+            id: *id,
+            thread: Some(thread),
+        })
+    }));
     Ok(made)
 }
 
@@ -933,7 +948,6 @@ fn plan_drill_holes(
         next_occurrence,
         document_target,
     )?;
-    staged.extend(thread_commands(admitted.thread, &cuts));
     Ok((drill.definition_id, *cuts.last().unwrap_or(&drill.target)))
 }
 

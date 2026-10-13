@@ -2118,76 +2118,6 @@ fn builtins(builder: &mut GlobalsBuilder) {
         })
     }
 
-    /// Drills a hole into `face` (a face name or a face() value) along its
-    /// inward normal. Give either face coordinates `at=(u, v)` (on a curved
-    /// face `at=(angle, v)`, see face()) or a world point `world=(x, y, z)`
-    /// on the face.
-    fn hole<'v>(
-        #[starlark(require = pos)] part: Value<'v>,
-        #[starlark(require = pos)] face: Value<'v>,
-        #[starlark(require = named)] at: Option<Value<'v>>,
-        #[starlark(require = named)] world: Option<Value<'v>>,
-        #[starlark(require = named)] diameter: Value<'v>,
-        #[starlark(require = named)] depth: Value<'v>,
-        #[starlark(require = named, default = false)] through: bool,
-        #[starlark(require = named)] id: Option<Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        machining::drill(part, face, at, world, diameter, depth, through, id, eval)
-    }
-
-    /// Mills a rectangular pocket into the flat `face` (a name or a face()
-    /// value). `rect=(u_min, v_min, u_max, v_max)` in face coordinates; it may
-    /// extend past the face edges (grooves, rabbets).
-    fn pocket<'v>(
-        #[starlark(require = pos)] part: Value<'v>,
-        #[starlark(require = pos)] face: Value<'v>,
-        #[starlark(require = named)] rect: Value<'v>,
-        #[starlark(require = named)] depth: Value<'v>,
-        #[starlark(require = named)] id: Option<Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let heap = eval.heap();
-        let name = part_name(part, heap)?;
-        let face = face_name(face, heap, Some(&name))?;
-        let rect_mm = numbers::<4>(rect, heap, "rect")?;
-        let [u_min, v_min, u_max, v_max] = rect_mm;
-        let depth = number(depth, "depth")?;
-        let id = text(id, "id")?;
-        if u_max - u_min <= TOLERANCE_MM || v_max - v_min <= TOLERANCE_MM || depth <= 0.0 {
-            anyhow::bail!(
-                "pocket in {name:?}: rect must have positive width and height and depth must be positive"
-            );
-        }
-        let state = state(eval)?;
-        record_source(eval, &state, &[&name]);
-        with_part(&state, &name, |part| {
-            let frame = part
-                .machining_frame(&face)
-                .map_err(|error| anyhow::anyhow!("pocket in {name:?}: {error}"))?;
-            if frame.kind != FaceKind::Planar {
-                anyhow::bail!(
-                    "pocket in {name:?}: face {face:?} is curved; a pocket is milled into a flat face"
-                );
-            }
-            let id = id.unwrap_or_else(|| format!("p{}", part.pockets().count() + 1));
-            add_operation(
-                part,
-                ProgramOperation::Pocket(Pocket {
-                    id,
-                    face,
-                    rect_mm,
-                    corner_mm: frame.point([u_min, v_min]),
-                    u: frame.u,
-                    v: frame.v,
-                    inward: frame.normal.map(|value| -value),
-                    depth_mm: depth,
-                }),
-            )?;
-            Ok(NoneType)
-        })
-    }
-
     /// Where a flat face of part `a` lies against a flat face of part `b`
     /// (any bodies, frames and operations): a struct with `axis` (a's local
     /// "x"/"y"/"z" nearest the normal), the face names `face_a`/`face_b`
@@ -2354,6 +2284,7 @@ fn globals() -> Globals {
         LibraryExtension::Partial,
     ])
     .with(builtins)
+    .with(machining::builtins)
     .with(assemblies::builtins)
     .with(conditions::builtins)
     .with(continuity::builtins)
@@ -2451,6 +2382,19 @@ pub fn library_material_weights()
 pub struct MetricThread {
     pub pitch_mm: f64,
     pub tap_drill_mm: f64,
+}
+
+/// How far a tapped hole may sit from D − P: drills come in 0.1 mm steps, so
+/// the drill nearest to D − P (M8: 6.8 for 6.75) is at most half a step away.
+pub const TAP_DRILL_STEP_TOLERANCE_MM: f64 = 0.05;
+
+impl MetricThread {
+    /// Whether a `diameter_mm` hole takes this thread: its tap drill D − P or
+    /// the 0.1 mm drill nearest to it, within the model `tolerance_mm`.
+    #[must_use]
+    pub fn fits_drill(&self, diameter_mm: f64, tolerance_mm: f64) -> bool {
+        (diameter_mm - self.tap_drill_mm).abs() <= TAP_DRILL_STEP_TOLERANCE_MM + tolerance_mm
+    }
 }
 
 /// `METRIC_COARSE_PITCH` of the prelude in use, size ("M8") → pitch and the
@@ -2691,6 +2635,7 @@ mod tests {
         let mut missing = Vec::new();
         for name in GlobalsBuilder::new()
             .with(builtins)
+            .with(machining::builtins)
             .with(assemblies::builtins)
             .with(conditions::builtins)
             .with(continuity::builtins)

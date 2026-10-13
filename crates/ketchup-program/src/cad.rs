@@ -5,8 +5,9 @@
 
 use crate::model::{Part, ProgramModel, ProgramOperation, ProgramPartBody, ProgramProfileSegment};
 use ketchup_assistant::sidecar::{
-    AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantPartHole,
-    AssistantPartPocket, AssistantPrincipalPlane, AssistantSketchEntity, AssistantWorkplaneSpec,
+    AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantHoleThread,
+    AssistantPartHole, AssistantPartPocket, AssistantPrincipalPlane, AssistantSketchEntity,
+    AssistantWorkplaneSpec,
 };
 
 /// Sketch entities of a closed program profile, numbered from 1.
@@ -59,6 +60,10 @@ pub fn part(part: &Part) -> AssistantCadEditOperation {
                 diameter_mm: hole.diameter_mm,
                 depth_mm: hole.depth_mm,
                 through: hole.through,
+                thread: hole.thread.as_ref().map(|thread| AssistantHoleThread {
+                    size: thread.size.clone(),
+                    depth_mm: thread.depth_mm,
+                }),
             }),
             _ => None,
         })

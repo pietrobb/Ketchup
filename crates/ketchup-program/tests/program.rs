@@ -611,6 +611,66 @@ fn errors_name_the_line_and_the_cause() {
 }
 
 #[test]
+fn a_tapped_hole_drills_the_tap_drill_and_the_machining_report_names_the_thread() {
+    let (evaluated, report) = run(
+        "tapped.star",
+        "p = box(\"p\", (60, 40, 20))\n\
+         hole(p, \"z+\", at = (10, 10), depth = 15, thread = (\"M5\", 10))\n\
+         hole(p, \"z+\", at = (30, 10), diameter = 6.8, depth = 15, thread = (\"M8\", 12))\n\
+         hole(p, \"z+\", at = (50, 30), diameter = 5, depth = 15)\n",
+        &BTreeMap::new(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let holes: Vec<_> = evaluated.model.part("p").unwrap().holes().collect();
+    assert!((holes[0].diameter_mm - 4.2).abs() < 1e-9, "{holes:?}");
+    assert_eq!(holes[1].diameter_mm, 6.8);
+    let thread = holes[1].thread.as_ref().unwrap();
+    assert_eq!((thread.size.as_str(), thread.pitch_mm), ("M8", 1.25));
+    assert_eq!(holes[2].thread, None);
+    let labels: Vec<_> = report.bom.machining[0]
+        .operations
+        .iter()
+        .map(|operation| operation.thread.as_deref())
+        .collect();
+    assert_eq!(
+        labels,
+        [Some("M5×0.8 depth 10"), Some("M8×1.25 depth 12"), None]
+    );
+}
+
+#[test]
+fn a_thread_that_does_not_fit_its_hole_is_refused_by_name() {
+    for (arguments, expected) in [
+        (
+            "diameter = 7, depth = 15, thread = (\"M8\", 12)",
+            "D - P = 6.75 mm hole",
+        ),
+        ("depth = 15, thread = (\"M7\", 5)", "no thread \"M7\""),
+        (
+            "depth = 15, thread = (\"M5\", 20)",
+            "deeper than the 15 mm hole",
+        ),
+        ("depth = 15", "give diameter="),
+        (
+            "depth = 15, thread = \"M5\"",
+            "thread must be (size, depth)",
+        ),
+    ] {
+        let error = run(
+            "tapped.star",
+            &format!("p = box(\"p\", (60, 40, 20))\nhole(p, \"z+\", at = (10, 10), {arguments})\n"),
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains(expected),
+            "{arguments}: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
 fn a_value_that_is_not_a_list_names_the_expected_shape_and_the_starlark_reason() {
     let error = run("size.star", "a = box(\"a\", 18)\n", &BTreeMap::new()).unwrap_err();
     assert_eq!(error.code, "evaluation_error");

@@ -682,6 +682,24 @@ pub(crate) fn program_feature_commands(
     {
         return None;
     }
+    // A thread is recorded on the hole's cut, not in its parameters: a part
+    // whose threads change is rebuilt with them.
+    let threads = |part: &ketchup_program::model::Part| {
+        let mut threads = part
+            .holes()
+            .map(|hole| {
+                (
+                    hole.id.clone(),
+                    hole.thread.as_ref().map(|thread| thread.label()),
+                )
+            })
+            .collect::<Vec<_>>();
+        threads.sort_unstable();
+        threads
+    };
+    if threads(before) != threads(after) {
+        return None;
+    }
     let definition = snapshot.definition(definition_id)?;
     let before_features = before
         .features

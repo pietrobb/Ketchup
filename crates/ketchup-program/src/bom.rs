@@ -1,6 +1,7 @@
 //! Cut list, hardware list and machining plan derived from a model.
 
 use crate::model::ProgramModel;
+use ketchup_model::document::HoleThread;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -33,6 +34,9 @@ pub struct Operation {
     /// Drilling intent; omitted for pockets.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub through: Option<bool>,
+    /// The thread tapped into a hole, e.g. "M8×1.25 depth 12".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -111,6 +115,7 @@ pub fn bom(model: &ProgramModel) -> Bom {
                     diameter_mm: Some(hole.diameter_mm),
                     depth_mm: hole.depth_mm,
                     through: Some(hole.through),
+                    thread: hole.thread.as_ref().map(HoleThread::label),
                 })
                 .chain(part.pockets().map(|pocket| Operation {
                     id: pocket.id.clone(),
@@ -120,6 +125,7 @@ pub fn bom(model: &ProgramModel) -> Bom {
                     diameter_mm: None,
                     depth_mm: pocket.depth_mm,
                     through: None,
+                    thread: None,
                 }))
                 .collect(),
         })

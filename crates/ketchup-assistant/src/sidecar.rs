@@ -503,6 +503,9 @@ pub struct AssistantPartHole {
     /// Explicit through intent; a shallow request still keeps its numeric depth.
     #[serde(default)]
     pub through: bool,
+    /// The thread tapped into the hole; the hole is then its tap drill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<AssistantHoleThread>,
 }
 
 /// An ISO metric coarse thread tapped into drilled holes: `size` "M3" to "M24",

@@ -2577,6 +2577,7 @@ fn one_part_operation_creates_named_physical_holes_and_one_local_edit_moves_one_
             diameter_mm: 8.0,
             depth_mm: 16.0,
             through: false,
+            thread: None,
         }],
         Vec::new(),
         [0.0, 0.0, 0.0],
@@ -2661,6 +2662,7 @@ fn create_part_drills_into_the_bounding_faces_of_any_extruded_profile() {
         diameter_mm: 6.0,
         depth_mm: 10.0,
         through: false,
+        thread: None,
     };
     let mut document = DocumentStore::new();
     let baseline = document.current();
@@ -3306,6 +3308,7 @@ fn physical_pin_joint_geometry_regressions_fail_closed_without_mutation() {
         diameter_mm: 10.0,
         depth_mm: 10.0,
         through: false,
+        thread: None,
     };
     let obstructed = seed(vec![hardware], 18.0);
     assert_rejected_without_mutation(
@@ -3506,6 +3509,7 @@ fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() 
         diameter_mm: 6.0,
         depth_mm: 10.0,
         through: false,
+        thread: None,
     };
     let panels = plan(
         &document,
@@ -3731,6 +3735,7 @@ fn named_program_outputs_create_parts_physical_holes_and_joint_in_one_atomic_bat
                 diameter_mm: 8.0,
                 depth_mm: 16.0,
                 through: false,
+                thread: None,
             }],
             Vec::new(),
             translation_mm,
@@ -4001,6 +4006,7 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
                 diameter_mm: 8.0,
                 depth_mm: 16.0,
                 through: false,
+                thread: None,
             })
             .collect()
     };

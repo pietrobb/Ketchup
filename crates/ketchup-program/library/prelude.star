@@ -561,8 +561,11 @@ def round_thread(radius, name = "thread"):
 # a face name or a face() value of any part: a hole goes into any flat or
 # round face along its inward normal, a pocket into any flat face, before or
 # after a mirror or boolean.
-#   hole(part, face, at=(u, v) | world=(x, y, z), diameter=, depth=, through=False, id=)
+#   hole(part, face, at=(u, v) | world=(x, y, z), diameter=, depth=, through=False, thread=, id=)
 #     Returns struct(part=part_name, id=operation_id), usable in joint_link(); callers may ignore it.
+#     thread=("M5", 10) taps an ISO metric coarse thread 10 mm deep (size from METRIC_COARSE_PITCH).
+#     The hole is then the tap drill D - P or the 0.1 mm drill nearest to it (M8: 6.75 or 6.8);
+#     omit diameter to drill D - P. The thread is listed in the machining report and the document.
 #     depth is always explicit; through=True declares an intentional through bore, not a blind bore accidentally breaking out.
 #     Set depth to at least the part span along the drilling direction; a shorter through bore reports an error.
 #     Intent is retained in source, machining reports and canonical through cuts. Shallow through requests keep numeric geometry and report an error, not a silently deeper cut.
@@ -1232,7 +1235,7 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   Holes are not made for them: drill the parts (hole(..., through=True)) a little wider than
 #   the shank, and subtract() a bar or rod cast into concrete from the concrete.
 #   METRIC_COARSE_PITCH[size] is the ISO metric coarse pitch P, e.g. METRIC_COARSE_PITCH["M8"]
-#   = 1.25; a tapped hole is drilled D - P (M8: 6.75, the 6.8 drill).
+#   = 1.25; a tapped hole is drilled D - P (M8: 6.75, the 6.8 drill): hole(..., thread=("M8", 12)).
 #   Example (an M12 bolt through two 10 mm plates; the full program with anchor rods and a
 #   rebar mesh in a footing is the example file anchored-beam.star):
 #     a = box("a", (100, 100, 10))

@@ -11,15 +11,12 @@ use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantHoleThread, AssistantPartHole,
 };
 use ketchup_geometry::linalg::{point_segment_distance2, signed_outline_distance};
-use ketchup_model::document::{CanonicalCommand, DefinitionId, FeatureId, HoleThread, Snapshot};
+use ketchup_model::document::{DefinitionId, FeatureId, HoleThread, Snapshot};
 use ketchup_model::exact_product::{ExactBRepGraphPackage, ExactBodyPackage, ExactResultRegistry};
 use ketchup_model::tolerance::ROUNDING;
 use ketchup_model::topology::TopologicalElementKind;
 
 const OPERATION: &str = "drill_holes";
-/// How far a tapped hole may sit from D − P: drills come in 0.1 mm steps, so
-/// the drill nearest to D − P (M8: 6.8 for 6.75) is at most half a step away.
-const TAP_DRILL_STEP_TOLERANCE_MM: f64 = 0.05;
 
 type Point2 = [f64; 2];
 
@@ -69,12 +66,11 @@ impl<'a> Drill<'a> {
 }
 
 /// What `drill` admits: its holes, entering at its points along the inward
-/// face normal, the body bounds they are planned against and the thread
-/// every hole is tapped with.
+/// face normal and each tapped with the drill's thread, and the body bounds
+/// they are planned against.
 pub(crate) struct AdmittedHoles {
     pub holes: Vec<AssistantPartHole>,
     pub bounds: [[f64; 3]; 2],
-    pub thread: Option<HoleThread>,
 }
 
 /// # Errors
@@ -286,13 +282,10 @@ pub(crate) fn admit_drill_holes(
             diameter_mm,
             depth_mm: depth_mm.unwrap_or(extent),
             through,
+            thread: drill.thread.cloned(),
         });
     }
-    Ok(AdmittedHoles {
-        holes,
-        bounds,
-        thread,
-    })
+    Ok(AdmittedHoles { holes, bounds })
 }
 
 /// The library thread `thread` names, refused when the size is not in the
@@ -321,7 +314,7 @@ fn admit_thread(
             "Use one of the listed thread sizes.",
         ));
     };
-    if (diameter_mm - metric.tap_drill_mm).abs() > TAP_DRILL_STEP_TOLERANCE_MM + tolerance {
+    if !metric.fits_drill(diameter_mm, tolerance) {
         return Err((
             "planning.cad_hole_thread_diameter_mismatch",
             format!(
@@ -339,17 +332,28 @@ fn admit_thread(
     })
 }
 
-/// The commands recording `thread` on every hole cut `cuts` made.
-pub(crate) fn thread_commands(
-    thread: Option<HoleThread>,
-    cuts: &[FeatureId],
-) -> impl Iterator<Item = CanonicalCommand> + '_ {
-    thread.into_iter().flat_map(move |thread| {
-        cuts.iter().map(move |id| CanonicalCommand::SetHoleThread {
-            id: *id,
-            thread: Some(thread.clone()),
-        })
-    })
+/// The library thread tapped into `hole`, refused like a `drill_holes`
+/// thread: an unknown size, a hole that is not its tap drill, or a thread
+/// deeper than the hole.
+pub(crate) fn admit_hole_thread(
+    hole: &AssistantPartHole,
+    tolerance: f64,
+) -> Result<Option<HoleThread>, (&'static str, String, &'static str)> {
+    let Some(thread) = &hole.thread else {
+        return Ok(None);
+    };
+    let thread = admit_thread(thread, hole.diameter_mm, tolerance)?;
+    if thread.depth_mm > hole.depth_mm + tolerance {
+        return Err((
+            "planning.cad_hole_thread_too_deep",
+            format!(
+                "Hole {}: the thread is {} mm deep, deeper than the {} mm hole.",
+                hole.id, thread.depth_mm, hole.depth_mm
+            ),
+            "Thread at most as deep as the hole.",
+        ));
+    }
+    Ok(Some(thread))
 }
 
 /// The tessellated body in hole coordinates: depth `t` along the inward axis
