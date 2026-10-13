@@ -56,10 +56,7 @@ pub fn main(requests: OpenRequests) -> ExitCode {
     }
     let result = eframe::run_native(
         "Kečup Viewer",
-        eframe::NativeOptions {
-            renderer: eframe::Renderer::Wgpu,
-            ..Default::default()
-        },
+        native_options(),
         Box::new(move |cc| {
             requests.attach(&cc.egui_ctx);
             let app = ViewerApp::new(cc.wgpu_render_state.clone());
@@ -72,6 +69,26 @@ pub fn main(requests: OpenRequests) -> ExitCode {
             eprintln!("{error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn native_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        viewport: egui::ViewportBuilder::default().with_icon(window_icon()),
+        ..Default::default()
+    }
+}
+
+/// The Viewer icon on the title bar and taskbar: the editor's ketchup artwork
+/// with an eye badge (from `scripts/make_app_icon.py`).
+#[must_use]
+pub fn window_icon() -> egui::IconData {
+    const SIDE: u32 = 128;
+    egui::IconData {
+        rgba: include_bytes!("../assets/ketchup-viewer-128.rgba").to_vec(),
+        width: SIDE,
+        height: SIDE,
     }
 }
 
@@ -115,4 +132,41 @@ fn verify_open(path: Option<PathBuf>) -> ExitCode {
         env!("CARGO_PKG_VERSION")
     );
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_window_carries_the_viewer_icon() {
+        let icon = native_options()
+            .viewport
+            .icon
+            .expect("the Viewer window must carry its icon");
+        assert_eq!(*icon, window_icon());
+    }
+
+    #[test]
+    fn viewer_icon_is_transparent_in_the_corners_and_differs_from_the_editor() {
+        let icon = window_icon();
+        let side = icon.width as usize;
+        assert_eq!((icon.width, icon.height), (128, 128));
+        assert_eq!(icon.rgba.len(), side * side * 4);
+        let pixel = |x: usize, y: usize| &icon.rgba[(y * side + x) * 4..(y * side + x) * 4 + 4];
+        for (x, y) in [(0, 0), (side - 1, 0), (0, side - 1), (side - 1, side - 1)] {
+            assert_eq!(pixel(x, y)[3], 0, "corner ({x}, {y}) must be transparent");
+        }
+        assert_eq!(pixel(side / 2, side / 2)[3], 255);
+        // The eye badge in the lower right corner: white disk, dark pupil in its middle.
+        let badge = side * 46 / 100;
+        let center = side - badge / 2;
+        assert_eq!(
+            pixel(center, side - badge + badge * 15 / 100),
+            [255, 255, 255, 255]
+        );
+        assert_eq!(pixel(center, center), [10, 20, 40, 255]);
+        let editor = include_bytes!("../../ketchup-app/assets/ketchup-128.rgba");
+        assert_ne!(icon.rgba.as_slice(), editor.as_slice());
+    }
 }

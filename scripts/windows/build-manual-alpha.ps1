@@ -167,8 +167,10 @@ Add-Type -Namespace KetchupBuild -Name Shell -MemberDefinition @'
 [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
 public static extern uint ExtractIconEx(string file, int index, IntPtr[] large, IntPtr[] small, uint count);
 '@
-if ([KetchupBuild.Shell]::ExtractIconEx($appSource, -1, $null, $null, 0) -lt 1) {
-    throw "Manual Alpha application has no embedded icon: $appSource"
+foreach ($iconSource in @($appSource, $viewerSource)) {
+    if ([KetchupBuild.Shell]::ExtractIconEx($iconSource, -1, $null, $null, 0) -lt 1) {
+        throw "Manual Alpha executable has no embedded icon: $iconSource"
+    }
 }
 Copy-Item $appSource (Join-Path $payloadDir "Ketchup.exe")
 Copy-Item $workerSource (Join-Path $payloadDir "ketchup-exact-worker.exe")
