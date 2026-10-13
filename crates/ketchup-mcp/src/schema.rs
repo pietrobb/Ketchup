@@ -19,7 +19,7 @@ when program read returns a source, change the model through program apply inste
 Undo and redo: edit action=undo / action=redo, one Undo step per call.
 Files: file action=import brings STEP/STP, IGES, STL, DXF, GLB and SketchUp scene files into the document; \
 file action=export writes STEP, IGES, STL, 3MF, GLB, DXF, Viewer, cut-list CSV, HOMAG MPR or BTLx; \
-export_drawings writes the project drawings as PDF; save/save_as/open handle .ketchup documents.
+export_drawings writes the project drawings as PDF, or a drawing sheet of the document (sheet_id) as DXF; save/save_as/open handle .ketchup documents.
 To look at the model use view action=image only when asked or when the result is unclear; \
 the validation report of an edit is the check, not a picture.
 Every result carries a stamp; pass it back as expected only to guard against concurrent edits \
@@ -171,10 +171,13 @@ pub fn tools() -> Value {
     import adds a file to the open document as one Undo step: STEP (.step/.stp) and IGES (.iges/.igs) as exact solids, STL as a mesh, DXF as 2D profiles, GLB meshes, SketchUp scenes (.kscene); the result reviews what came in (solids and volume, triangles, profiles and layers) and its diagnostics name what was lost (long lists give the first 20 and a *_total count; the import has happened, do not repeat it). \
     export writes the visible parts as export_format to path (STEP, IGES, STL, 3MF, GLB, DXF profiles, sheet-metal flat pattern DXF, Kečup Viewer file, fabrication or structural member cut-list CSV, HOMAG MPR, BTLx) plus a .loss.txt report where the format loses information. STEP, IGES, STL, 3MF, GLB, DXF and Viewer files are written only to new paths (an existing file or report is never replaced); manufacturing releases (sheet_metal_dxf, the CSVs, homag_mpr, btlx) wait for the user to confirm in the window. \
     export_drawings writes the project drawings of the visible layers (floor plan cut, longitudinal and cross section, four elevations with overall dimensions) as one vector PDF sheet with a frame and a title block; \
-    title_block fields and format given here are kept in the document (an empty string clears a field), scale and format cells are filled in by the sheet. Hidden layers are left out.",
+    title_block fields and format given here are kept in the document (an empty string clears a field), scale and format cells are filled in by the sheet. Hidden layers are left out. \
+    That sheet is PDF only: it hides back edges by painting over them, which DXF cannot carry. \
+    With sheet_id, export_drawings writes that drawing sheet of the document (create_drawing; inspect action=summary lists drawing_sheets) as DXF: exact views, hidden edges on their own HIDDEN layer.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
                 "action": {"type": "string", "enum": ["save", "save_as", "open", "import", "export", "export_drawings"]},
-                "path": {"type": "string", "description": "Local absolute path. For save_as, open and import (an existing file; its extension picks the format); for export ending in an extension of export_format; for export_drawings a new path ending in .pdf (an existing file is never replaced)."},
+                "path": {"type": "string", "description": "Local absolute path. For save_as, open and import (an existing file; its extension picks the format); for export ending in an extension of export_format; for export_drawings a new path ending in .pdf, or .dxf with sheet_id (an existing file is never replaced)."},
+                "sheet_id": {"type": "integer", "minimum": 1, "description": "For export_drawings: a drawing sheet of the document (inspect action=summary lists drawing_sheets), written as DXF; format and title_block do not apply."},
                 "unit": {"type": "string", "enum": ["mm", "cm", "m", "in", "ft"], "description": "For import: length unit of an STL file (default mm) or of a DXF file that declares none (required then); a unit the DXF declares wins. STEP and IGES carry their own units."},
                 "export_format": {"type": "string", "enum": ["step", "iges", "stl", "3mf", "glb", "dxf", "sheet_metal_dxf", "viewer", "fabrication_csv", "member_cut_list_csv", "homag_mpr", "btlx"], "description": "For export. Extensions: step .step/.stp, iges .iges/.igs, stl, 3mf, glb, dxf and sheet_metal_dxf .dxf (the one sheet-metal part's flat pattern), viewer .ketchup-view, fabrication_csv and member_cut_list_csv .csv, homag_mpr .mpr (file name of exactly 12 letters, digits, - or _), btlx."},
                 "format": {"type": "string", "enum": ["auto", "A3", "A2", "A1", "A0"], "description": "For export_drawings: sheet format; auto picks the smallest sheet that holds the views at 1:50 or finer. Omit to keep the document's format."},

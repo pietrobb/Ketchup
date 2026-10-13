@@ -333,8 +333,16 @@ impl ModelQuery {
             .take(MAX_PAGE)
             .map(|tag| json!({"id":tag.id().0,"name":bounded_text(tag.name()),"visible":tag.visible()}))
             .collect::<Vec<_>>();
+        // The drawing sheets file action=export_drawings writes by sheet_id.
+        let drawing_sheets = snapshot
+            .drawing_sheets()
+            .take(MAX_PAGE)
+            .map(|sheet| json!({"id":sheet.id().0,"name":bounded_text(sheet.name())}))
+            .collect::<Vec<_>>();
         json!({"identity":identity(snapshot),"coverage":coverage(None),
             "tags":tags,"tags_complete":snapshot.tags().count() <= MAX_PAGE,
+            "drawing_sheets":drawing_sheets,
+            "drawing_sheets_complete":snapshot.drawing_sheets().count() <= MAX_PAGE,
             "counts":{"root_occurrences":snapshot.occurrences().count(),
                 "tags":snapshot.tags().count(),
                 "instances":instance_count,
@@ -343,7 +351,8 @@ impl ModelQuery {
                 "spaces":snapshot.spaces().count(),
                 "clearance_volumes":snapshot.clearance_volumes().count(),
                 "joints":snapshot.joints().count(),
-                "dimensions":snapshot.persistent_dimensions().count()},
+                "dimensions":snapshot.persistent_dimensions().count(),
+                "drawing_sheets":snapshot.drawing_sheets().count()},
             "complete":complete,"resource_budget":resource_budget,
             "limits":{"max_page":MAX_PAGE,"max_output_bytes":MAX_OUTPUT_BYTES,
                 "max_name_bytes":limits::NAME_BYTES,"max_search_bytes":limits::NAME_BYTES,

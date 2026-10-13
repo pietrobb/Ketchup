@@ -1,10 +1,13 @@
 //! `file action=export_drawings`: the project drawings of the visible layers as
-//! a PDF sheet, with the title block and format kept in the document.
+//! a PDF sheet, with the title block and format kept in the document; with
+//! `sheet_id`, a drawing sheet of the document as DXF.
 
 use super::{LiveBridge, Request, failed_because, failure};
 use crate::KetchupApp;
+use crate::app::drawing_sheet_export::DrawingSheetExportError;
 use crate::app::project_drawings::ProjectDrawingsError;
 use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
+use ketchup_model::drawing::DrawingSheetId;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -29,6 +32,7 @@ impl LiveBridge {
         let Request::ExportDrawings {
             expected,
             path,
+            sheet_id,
             format,
             title_block,
         } = request
@@ -37,8 +41,84 @@ impl LiveBridge {
         };
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
-        export(app, &path, format.as_deref(), title_block)
+        match sheet_id {
+            Some(id) => {
+                if format.is_some() || !title_block.is_empty() {
+                    return Err(failure(
+                        "invalid_params",
+                        "format and title_block belong to the project sheet; a drawing sheet keeps its own page and title block.",
+                        json!({"sheet_id": id}),
+                    ));
+                }
+                export_sheet(app, &path, DrawingSheetId(id))
+            }
+            None => export(app, &path, format.as_deref(), title_block),
+        }
     }
+}
+
+fn has_extension(path: &Path, wanted: &str) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(wanted))
+}
+
+/// Never replaces a file: no one confirms an overwrite on this path; the
+/// window's own export asks before replacing.
+fn refuse_existing(path: &str) -> Result<(), &'static str> {
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Err(failure(
+            "drawings_target_exists",
+            "A file already exists at this path; export the drawings to a new file name.",
+            json!({"path": path}),
+        ));
+    }
+    Ok(())
+}
+
+/// Drawing sheet `id` of the document as DXF: exact views, hidden edges on
+/// their own layer.
+fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Value, &'static str> {
+    if !local_absolute_path(path) || !has_extension(Path::new(path), "dxf") {
+        return Err(failure(
+            "invalid_path",
+            "A drawing sheet is written to a local absolute path ending in .dxf (no network share, device or stream).",
+            json!({"path": path}),
+        ));
+    }
+    refuse_existing(path)?;
+    let sheet = app
+        .write_drawing_sheet_dxf(id, Path::new(path))
+        .map_err(|error| match error {
+            DrawingSheetExportError::NotFound(_) => failure(
+                "drawing_sheet_not_found",
+                format!(
+                    "The document has no drawing sheet {}; inspect action=summary lists its drawing_sheets.",
+                    id.0
+                ),
+                json!({"sheet_id": id.0}),
+            ),
+            DrawingSheetExportError::Evaluating => failure(
+                "drawings_unavailable",
+                "The exact evaluation is still running; the sheet would draw old solids.",
+                json!({"sheet_id": id.0}),
+            ),
+            DrawingSheetExportError::Projection(_) | DrawingSheetExportError::Export(_) => {
+                failed_because("drawings_unavailable", error)
+            }
+            DrawingSheetExportError::Write(_) => failed_because("drawings_write_failed", error),
+        })?;
+    Ok(json!({
+        "exported": true,
+        "path": path,
+        "sheet_id": id.0,
+        "sheet": sheet.name,
+        "views": sheet.views,
+        "visible_lines": sheet.visible_lines,
+        "hidden_lines": sheet.hidden_lines,
+        "bytes": sheet.bytes,
+        "basis": "drawing_sheet_exact_projection",
+        "dirty": app.is_dirty(),
+    }))
 }
 
 /// Longest drawing target path, in bytes.
@@ -74,26 +154,21 @@ fn export(
     title_block: BTreeMap<TitleField, String>,
 ) -> Result<Value, &'static str> {
     let target = Path::new(path);
-    if !local_absolute_path(path)
-        || !target
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
-    {
+    if has_extension(target, "dxf") || has_extension(target, "dwg") {
+        return Err(failure(
+            "project_sheet_pdf_only",
+            "The project sheet hides back edges by painting nearer faces over them, which DXF and DWG cannot carry, so it is written only as PDF. A drawing sheet of the document is written as .dxf with sheet_id.",
+            json!({"path": path}),
+        ));
+    }
+    if !local_absolute_path(path) || !has_extension(target, "pdf") {
         return Err(failure(
             "invalid_path",
             "The drawings are written to a local absolute path ending in .pdf (no network share, device or stream).",
             json!({"path": path}),
         ));
     }
-    // No one confirms an overwrite on this path, so an existing file (or link)
-    // is never replaced; the window's own export asks before replacing.
-    if std::fs::symlink_metadata(target).is_ok() {
-        return Err(failure(
-            "drawings_target_exists",
-            "A file already exists at this path; export the drawings to a new file name.",
-            json!({"path": path}),
-        ));
-    }
+    refuse_existing(path)?;
     let format = format.map(sheet_format).transpose()?;
     if app.exact.task.is_some() {
         return Err(failure(

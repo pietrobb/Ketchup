@@ -370,6 +370,7 @@ impl KetchupApp {
         }
         let mut open = true;
         let mut export = false;
+        let mut export_sheet = None;
         let mut editing = std::mem::take(&mut self.drawings.editing);
         egui::Window::new(self.catalog.text("window-project-drawings"))
             .open(&mut open)
@@ -457,6 +458,25 @@ impl KetchupApp {
                 {
                     export = true;
                 }
+                ui.separator();
+                ui.strong(self.catalog.text("drawings-document-sheets"));
+                ui.label(self.catalog.text("drawings-document-sheets-hint"));
+                let snapshot = self.document.current();
+                let mut sheets = snapshot.drawing_sheets().peekable();
+                if sheets.peek().is_none() {
+                    ui.label(self.catalog.text("drawings-document-sheets-none"));
+                }
+                for sheet in sheets {
+                    ui.horizontal(|ui| {
+                        ui.label(sheet.name());
+                        if ui
+                            .button(self.catalog.text("drawings-export-sheet-dxf"))
+                            .clicked()
+                        {
+                            export_sheet = Some(sheet.id());
+                        }
+                    });
+                }
             });
         // Merely opening the window with the filled-in defaults changes nothing.
         if editing != self.sheet_settings() {
@@ -468,6 +488,11 @@ impl KetchupApp {
         }
         if export && let Some(path) = self.choose_export_path("pdf") {
             self.export_project_drawings_to(&path);
+        }
+        if let Some(id) = export_sheet
+            && let Some(path) = self.choose_export_path("dxf")
+        {
+            self.export_drawing_sheet_dxf_to(id, &path);
         }
     }
 }

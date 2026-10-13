@@ -12,6 +12,10 @@ mod dimensions_ui_tests;
 mod document;
 pub(crate) mod draft;
 mod drawing;
+pub(crate) mod drawing_sheet_export;
+#[cfg(test)]
+#[path = "app/drawing_sheet_export_tests.rs"]
+mod drawing_sheet_export_tests;
 mod exact;
 mod export;
 mod fea_review;

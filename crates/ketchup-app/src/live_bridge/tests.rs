@@ -42,6 +42,8 @@ use std::{
 mod draft_analysis;
 #[path = "draft_faces_tests.rs"]
 mod draft_faces;
+#[path = "drawing_sheet_tests.rs"]
+mod drawing_sheet;
 #[path = "drill_holes_tests.rs"]
 mod drill_holes;
 #[path = "product_integration_tests.rs"]

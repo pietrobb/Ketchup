@@ -136,6 +136,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Save the document first, or ask the user to discard the changes.",
     ),
     entry(
+        "drawing_sheet_not_found",
+        Validation,
+        "sheet_id",
+        "The document has no drawing sheet with that id.",
+        "Read inspect action=summary for the drawing_sheets of the document, or make one with create_drawing, then export again.",
+    ),
+    entry(
         "drawings_target_exists",
         Request,
         "path",
@@ -153,8 +160,8 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "drawings_write_failed",
         Io,
         "path",
-        "The PDF could not be written.",
-        "Choose a writable absolute path ending in .pdf and export again.",
+        "The drawing could not be written.",
+        "Choose a writable absolute path (.pdf for the project sheet, .dxf for a drawing sheet) and export again.",
     ),
     entry(
         "entity_not_found",
@@ -428,6 +435,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "program",
         "The program planner stopped before returning a result; nothing was published.",
         "Send the request again; simplify the program if the planner keeps stopping.",
+    ),
+    entry(
+        "project_sheet_pdf_only",
+        Request,
+        "path",
+        "The project sheet (plan, sections, elevations) hides back edges by painting nearer faces over them, which DXF and DWG cannot carry, so it is written only as PDF.",
+        "Export the project sheet to a .pdf path, or export a drawing sheet of the document as .dxf with sheet_id (inspect action=summary lists them).",
     ),
     entry(
         "proposal_ids_exhausted",

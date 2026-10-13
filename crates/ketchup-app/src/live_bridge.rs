@@ -371,11 +371,14 @@ pub enum Request {
         path: String,
     },
     /// Writes the project drawings of the visible layers as PDF; `title_block`
-    /// fields and `format` given here are first kept in the document.
+    /// fields and `format` given here are first kept in the document. With
+    /// `sheet_id` it writes that drawing sheet of the document as DXF instead.
     ExportDrawings {
         #[serde(default)]
         expected: Option<Stamp>,
         path: String,
+        #[serde(default)]
+        sheet_id: Option<u64>,
         #[serde(default)]
         format: Option<String>,
         #[serde(default)]

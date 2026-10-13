@@ -58,8 +58,9 @@ impl KetchupApp {
             "mpr" => ("file-filter-homag-mpr", "mpr"),
             "btlx" => ("file-filter-btlx", "btlx"),
             "svg" => ("file-filter-svg", "svg"),
+            "pdf" => ("file-filter-pdf", "pdf"),
             _ => unreachable!(
-                "the File menu and the takeoff window export only DXF, STEP, IGES, STL, 3MF, GLB, KETCHUP-VIEW, CSV, XLSX, NC, MPR, BTLx and SVG"
+                "the File menu and the takeoff and drawings windows export only DXF, STEP, IGES, STL, 3MF, GLB, KETCHUP-VIEW, CSV, XLSX, NC, MPR, BTLx, SVG and PDF"
             ),
         };
         let filter_label = self.catalog.text(filter_key);
