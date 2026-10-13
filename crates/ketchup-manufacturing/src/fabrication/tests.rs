@@ -7,7 +7,7 @@ fn test_stock_geometry(dimensions: PieceDimensions) -> GeneralMachiningGeometry 
         [dimensions.length_mm, dimensions.width_mm],
         [0.0, dimensions.width_mm],
     ];
-    GeneralMachiningGeometry::TimberStock {
+    GeneralMachiningGeometry::PrismaticStock {
         frame: identity_machining_frame(),
         cross_section: (0..4)
             .map(|i| GeneralMachiningSegment::Line {
@@ -61,44 +61,44 @@ fn btlx_stock_dimensions_require_a_closed_axis_aligned_rectangle() {
         height_mm: 1000.0,
     });
     assert_eq!(
-        rectangular_timber_stock(&valid),
+        rectangular_stock(&valid),
         Some(blank_at_origin([100.0, 50.0, 1000.0]))
     );
 
     let mut translated = valid.clone();
-    let GeneralMachiningGeometry::TimberStock { start_mm, .. } = &mut translated else {
+    let GeneralMachiningGeometry::PrismaticStock { start_mm, .. } = &mut translated else {
         unreachable!()
     };
     *start_mm = [10.0, 0.0, 0.0];
-    assert_eq!(rectangular_timber_stock(&translated), None);
+    assert_eq!(rectangular_stock(&translated), None);
 
     let mut rotated = valid.clone();
-    let GeneralMachiningGeometry::TimberStock { frame, .. } = &mut rotated else {
+    let GeneralMachiningGeometry::PrismaticStock { frame, .. } = &mut rotated else {
         unreachable!()
     };
     frame.x_axis = [0.0, 1.0, 0.0];
     frame.y_axis = [-1.0, 0.0, 0.0];
-    assert_eq!(rectangular_timber_stock(&rotated), None);
+    assert_eq!(rectangular_stock(&rotated), None);
 
     let mut open = valid.clone();
-    let GeneralMachiningGeometry::TimberStock { cross_section, .. } = &mut open else {
+    let GeneralMachiningGeometry::PrismaticStock { cross_section, .. } = &mut open else {
         unreachable!()
     };
     let GeneralMachiningSegment::Line { end_mm, .. } = &mut cross_section[3] else {
         unreachable!()
     };
     *end_mm = [1.0, 0.0];
-    assert_eq!(rectangular_timber_stock(&open), None);
+    assert_eq!(rectangular_stock(&open), None);
 
     let mut diagonal = valid;
-    let GeneralMachiningGeometry::TimberStock { cross_section, .. } = &mut diagonal else {
+    let GeneralMachiningGeometry::PrismaticStock { cross_section, .. } = &mut diagonal else {
         unreachable!()
     };
     let GeneralMachiningSegment::Line { end_mm, .. } = &mut cross_section[0] else {
         unreachable!()
     };
     *end_mm = [100.0, 1.0];
-    assert_eq!(rectangular_timber_stock(&diagonal), None);
+    assert_eq!(rectangular_stock(&diagonal), None);
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn a_profile_centred_on_its_axis_is_machined_from_its_minimum_corner() {
     // (-30, -70) .. (30, 70). Holes 30 mm deep into the top face (y = 70) and
     // into the bottom face (y = -70), both 1000 mm along the member.
     let points = [[-30.0, -70.0], [30.0, -70.0], [30.0, 70.0], [-30.0, 70.0]];
-    let stock = GeneralMachiningGeometry::TimberStock {
+    let stock = GeneralMachiningGeometry::PrismaticStock {
         frame: identity_machining_frame(),
         cross_section: (0..4)
             .map(|i| GeneralMachiningSegment::Line {
@@ -121,7 +121,7 @@ fn a_profile_centred_on_its_axis_is_machined_from_its_minimum_corner() {
         cross_section_width_mm: 60.0,
         cross_section_height_mm: 140.0,
     };
-    let blank = rectangular_timber_stock(&stock).unwrap();
+    let blank = rectangular_stock(&stock).unwrap();
     let drill = |y: f64, normal_y: f64| GeneralMachiningGeometry::CircularDrill {
         frame: GeneralMachiningFrame {
             origin_mm: [0.0, y, 1000.0],

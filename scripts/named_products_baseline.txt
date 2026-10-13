@@ -32,7 +32,7 @@ crates/ketchup-application/src/part_role.rs:panel 5
 crates/ketchup-application/src/planner.rs:weldment 3
 crates/ketchup-application/src/rule_operations.rs:panel 3
 crates/ketchup-application/src/rule_program.rs:panel 7
-crates/ketchup-application/src/validation.rs:beam 24
+crates/ketchup-application/src/validation.rs:beam 15
 crates/ketchup-application/src/validation.rs:board 5
 crates/ketchup-application/src/validation.rs:cup_bore 2
 crates/ketchup-application/src/validation.rs:panel 40
@@ -40,16 +40,14 @@ crates/ketchup-application/src/validation_rules.rs:beam 3
 crates/ketchup-application/src/validation_rules.rs:panel 1
 crates/ketchup-assistant/src/sidecar.rs:weldment 13
 crates/ketchup-manufacturing/src/fabrication.rs:beam 3
-crates/ketchup-manufacturing/src/fabrication.rs:timber 35
+crates/ketchup-manufacturing/src/fabrication.rs:timber 23
 crates/ketchup-manufacturing/src/fabrication.rs:weldment 80
-crates/ketchup-manufacturing/src/fabrication/production.rs:timber 1
 crates/ketchup-manufacturing/src/project_drawings.rs:roof 1
 crates/ketchup-model/src/document/entities.rs:weldment 16
 crates/ketchup-model/src/document/error.rs:weldment 4
 crates/ketchup-model/src/document/feature_validation.rs:weldment 4
 crates/ketchup-model/src/document/parameters.rs:weldment 2
 crates/ketchup-model/src/document/product_validation.rs:weldment 3
-crates/ketchup-model/src/document/proposal_analysis.rs:weldment 4
 crates/ketchup-model/src/document/solid_tool.rs:weldment 6
 crates/ketchup-model/src/exact_brep_graph.rs:weldment 5
 crates/ketchup-model/src/exact_brep_graph/bounds.rs:weldment 1

@@ -120,7 +120,7 @@ impl GeneralFabricationProjection {
             if stock.kind != GeneralManufacturingKind::Stock || !stock.semantic_inputs.is_empty() {
                 return Err(GeneralFabricationError::ExportBlocked);
             }
-            let GeneralMachiningGeometry::TimberStock {
+            let GeneralMachiningGeometry::PrismaticStock {
                 frame,
                 cross_section,
                 start_mm,

@@ -466,7 +466,9 @@ pub enum GeneralMachiningSegment {
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GeneralMachiningGeometry {
-    TimberStock {
+    /// The prismatic blank the operations cut; the wire name stays as published.
+    #[serde(rename = "timber_stock")]
+    PrismaticStock {
         frame: GeneralMachiningFrame,
         cross_section: Vec<GeneralMachiningSegment>,
         start_mm: [f64; 3],
@@ -1240,7 +1242,7 @@ impl GeneralFabricationProjection {
                 else {
                     return Err(GeneralFabricationError::ExportBlocked);
                 };
-                let Some(blank) = rectangular_timber_stock(&stock.machining) else {
+                let Some(blank) = rectangular_stock(&stock.machining) else {
                     return Err(GeneralFabricationError::ExportBlocked);
                 };
                 let [width_mm, height_mm, length_mm] = blank.extents_mm;
@@ -1930,7 +1932,7 @@ struct WoodwopStockFrame {
 }
 
 fn woodwop_stock_frame(geometry: &GeneralMachiningGeometry) -> Option<WoodwopStockFrame> {
-    let blank = rectangular_timber_stock(geometry)?;
+    let blank = rectangular_stock(geometry)?;
     let definition_dimensions = blank.extents_mm;
     let mut definition_axes = [0, 1, 2];
     definition_axes.sort_by(|left, right| {
@@ -2367,8 +2369,8 @@ fn profile_minimum(cross_section: &[GeneralMachiningSegment]) -> Option<[f64; 2]
     Some(minimum)
 }
 
-fn rectangular_timber_stock(geometry: &GeneralMachiningGeometry) -> Option<StockBlank> {
-    let GeneralMachiningGeometry::TimberStock {
+fn rectangular_stock(geometry: &GeneralMachiningGeometry) -> Option<StockBlank> {
+    let GeneralMachiningGeometry::PrismaticStock {
         frame,
         cross_section,
         start_mm,
@@ -3128,7 +3130,7 @@ fn machined_nodes(
         semantic_inputs: Vec::new(),
         frame: "definition-local",
         bounds: stock_bounds,
-        machining: timber_stock_geometry(
+        machining: prismatic_stock_geometry(
             graph.profiles.get(stock_profile.0 as usize)?,
             stock_interval,
         )?,
@@ -3328,7 +3330,7 @@ fn placed_profile_cut(
     })
 }
 
-fn timber_stock_geometry(
+fn prismatic_stock_geometry(
     profile: &ExactBRepProfile,
     interval: ExactBRepLinearInterval,
 ) -> Option<GeneralMachiningGeometry> {
@@ -3389,7 +3391,7 @@ fn timber_stock_geometry(
     {
         return None;
     }
-    Some(GeneralMachiningGeometry::TimberStock {
+    Some(GeneralMachiningGeometry::PrismaticStock {
         frame,
         cross_section,
         start_mm: std::array::from_fn(|axis| {
@@ -3566,7 +3568,7 @@ fn scaled_machining(
         }
     };
     let (frame, lengths) = match &mut machining {
-        GeneralMachiningGeometry::TimberStock {
+        GeneralMachiningGeometry::PrismaticStock {
             frame,
             cross_section,
             start_mm,
@@ -3801,7 +3803,7 @@ fn machining_detail_bounds(geometry: &GeneralMachiningGeometry) -> Option<([f64;
         }
     };
     match geometry {
-        GeneralMachiningGeometry::TimberStock { .. } => return None,
+        GeneralMachiningGeometry::PrismaticStock { .. } => return None,
         GeneralMachiningGeometry::ProfileCut { segments, .. } => {
             for segment in segments {
                 match segment {
@@ -3971,14 +3973,14 @@ fn append_machining_detail(
             ));
         }
         // Stock is the blank the operations cut, not a machining: it has no detail.
-        GeneralMachiningGeometry::TimberStock { .. } => {}
+        GeneralMachiningGeometry::PrismaticStock { .. } => {}
     }
     svg.push_str("</g>\n");
 }
 
 fn machining_token(geometry: &GeneralMachiningGeometry) -> String {
     match geometry {
-        GeneralMachiningGeometry::TimberStock {
+        GeneralMachiningGeometry::PrismaticStock {
             frame,
             cross_section,
             start_mm,
@@ -4083,7 +4085,7 @@ fn machining_segment_token(segment: &GeneralMachiningSegment) -> String {
 
 fn push_machining_geometry(bytes: &mut Vec<u8>, geometry: &GeneralMachiningGeometry) {
     match geometry {
-        GeneralMachiningGeometry::TimberStock {
+        GeneralMachiningGeometry::PrismaticStock {
             frame,
             cross_section,
             start_mm,

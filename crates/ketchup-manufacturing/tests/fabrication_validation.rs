@@ -1599,7 +1599,7 @@ fn an_evenly_scaled_part_is_machined_with_the_scaled_hole_and_stock() {
     let [stock, drill] = projection.manufacturing.operations.as_slice() else {
         panic!("{:?}", projection.manufacturing.operations)
     };
-    let GeneralMachiningGeometry::TimberStock {
+    let GeneralMachiningGeometry::PrismaticStock {
         length_mm,
         cross_section_width_mm,
         cross_section_height_mm,
@@ -1800,7 +1800,7 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
 
     let stock = &projection.manufacturing.operations[0];
     assert_eq!(stock.kind, GeneralManufacturingKind::Stock);
-    let GeneralMachiningGeometry::TimberStock {
+    let GeneralMachiningGeometry::PrismaticStock {
         frame,
         cross_section,
         start_mm,
