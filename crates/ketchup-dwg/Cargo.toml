@@ -1,0 +1,15 @@
+[package]
+name = "ketchup-dwg"
+description = "DWG files for Ketchup through a DXF bridge: the acadrust reader and writer behind a byte-level API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# MPL-2.0 (https://github.com/hakanaktt/acadrust), used unmodified from crates.io.
+acadrust = "=0.6.4"
+
+[lints]
+workspace = true

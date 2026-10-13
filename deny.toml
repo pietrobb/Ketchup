@@ -19,6 +19,8 @@ allow = [
     "CC0-1.0",
     "OFL-1.1",
     "Ubuntu-font-1.0",
+    # acadrust (DWG read/write in ketchup-dwg), used unmodified from crates.io.
+    "MPL-2.0",
 ]
 
 [bans]
