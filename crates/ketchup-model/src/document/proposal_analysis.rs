@@ -323,6 +323,9 @@ pub(super) fn authoritative_writes(
             CanonicalCommand::SetFeatureParameter { target, .. } => {
                 writes.insert(AuthoritativeDependency::Feature(target.feature_id));
             }
+            CanonicalCommand::SetHoleThread { id, .. } => {
+                writes.insert(AuthoritativeDependency::Feature(*id));
+            }
             CanonicalCommand::SetFeatureDimension { id, .. }
             | CanonicalCommand::CreateSketchConstraint { id, .. }
             | CanonicalCommand::ReplaceSketchConstraint { id, .. }
@@ -770,15 +773,13 @@ pub(super) fn authoritative_dependencies(
                     });
                 }
             }
-            CanonicalCommand::CreateDefinition { id, .. } => {
+            CanonicalCommand::CreateDefinition { id, .. }
+            | CanonicalCommand::RenameDefinition { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Definition(*id));
             }
             CanonicalCommand::DeleteDefinition { id } => {
                 dependencies.insert(AuthoritativeDependency::Definition(*id));
                 dependencies.insert(AuthoritativeDependency::DefinitionUsers(*id));
-            }
-            CanonicalCommand::RenameDefinition { id, .. } => {
-                dependencies.insert(AuthoritativeDependency::Definition(*id));
             }
             CanonicalCommand::CreateBody { definition_id, .. }
             | CanonicalCommand::DeleteBody { definition_id, .. }
@@ -950,6 +951,7 @@ pub(super) fn authoritative_dependencies(
                 add_feature_dependency_closure(snapshot, target.feature_id, &mut dependencies);
             }
             CanonicalCommand::SetFeatureDimension { id, .. }
+            | CanonicalCommand::SetHoleThread { id, .. }
             | CanonicalCommand::CreateSketchConstraint { id, .. }
             | CanonicalCommand::ReplaceSketchConstraint { id, .. }
             | CanonicalCommand::DeleteSketchConstraint { id, .. }

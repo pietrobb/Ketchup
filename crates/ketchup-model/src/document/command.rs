@@ -209,6 +209,11 @@ pub enum CanonicalCommand {
         target: FeatureParameterTarget,
         dimension: Dimension,
     },
+    /// Records (or with `None` clears) the thread tapped into the hole feature `id` cuts.
+    SetHoleThread {
+        id: FeatureId,
+        thread: Option<HoleThread>,
+    },
     CreateSketchConstraint {
         id: FeatureId,
         constraint: SketchConstraint,

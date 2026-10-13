@@ -2426,13 +2426,7 @@ pub fn library_material_weights()
     WEIGHTS
         .get_or_init(|| {
             let invalid = |error: String| evaluation_error("prelude_invalid", error);
-            let (_, prelude) = library()?;
-            let table = prelude
-                .get("MATERIAL_WEIGHTS")
-                .and_then(|table| table.value().to_json())
-                .map_err(|error| invalid(format!("MATERIAL_WEIGHTS: {error}")))?;
-            let table: BTreeMap<String, serde_json::Value> = serde_json::from_str(&table)
-                .map_err(|error| invalid(format!("MATERIAL_WEIGHTS: {error}")))?;
+            let table: BTreeMap<String, serde_json::Value> = prelude_table("MATERIAL_WEIGHTS")?;
             table
                 .into_iter()
                 .map(|(material, weight)| {
@@ -2450,6 +2444,63 @@ pub fn library_material_weights()
         })
         .as_ref()
         .map_err(Clone::clone)
+}
+
+/// The coarse pitch P of an ISO metric thread and its tap drill D − P, in mm.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MetricThread {
+    pub pitch_mm: f64,
+    pub tap_drill_mm: f64,
+}
+
+/// `METRIC_COARSE_PITCH` of the prelude in use, size ("M8") → pitch and the
+/// tap drill D − P, read from the frozen library like [`library_material_weights`].
+///
+/// # Errors
+/// `prelude_invalid` when the prelude does not evaluate or the table is not a
+/// dict of "M<D>" sizes to pitches.
+pub fn library_metric_threads() -> Result<&'static BTreeMap<String, MetricThread>, ProgramError> {
+    static THREADS: std::sync::OnceLock<Result<BTreeMap<String, MetricThread>, ProgramError>> =
+        std::sync::OnceLock::new();
+    THREADS
+        .get_or_init(|| {
+            let table: BTreeMap<String, f64> = prelude_table("METRIC_COARSE_PITCH")?;
+            table
+                .into_iter()
+                .map(|(size, pitch_mm)| {
+                    let nominal_mm = size
+                        .strip_prefix('M')
+                        .and_then(|nominal| nominal.parse::<f64>().ok())
+                        .ok_or_else(|| {
+                            evaluation_error(
+                                "prelude_invalid",
+                                format!("METRIC_COARSE_PITCH: {size:?} is not M<diameter>"),
+                            )
+                        })?;
+                    let tap_drill_mm = nominal_mm - pitch_mm;
+                    Ok((
+                        size,
+                        MetricThread {
+                            pitch_mm,
+                            tap_drill_mm,
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+/// The prelude global `name`, read through its JSON form.
+fn prelude_table<T: serde::de::DeserializeOwned>(name: &str) -> Result<T, ProgramError> {
+    let invalid = |error: String| evaluation_error("prelude_invalid", format!("{name}: {error}"));
+    let (_, prelude) = library()?;
+    let table = prelude
+        .get(name)
+        .and_then(|table| table.value().to_json())
+        .map_err(|error| invalid(error.to_string()))?;
+    serde_json::from_str(&table).map_err(|error| invalid(error.to_string()))
 }
 
 fn prelude(globals: &Globals) -> Result<FrozenModule, ProgramError> {

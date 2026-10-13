@@ -401,3 +401,23 @@ rebar(\"r2\", 12, 1000, at = (0, 150, 0), axis = (1, 0, 0))
         );
     }
 }
+
+#[test]
+fn metric_threads_give_the_coarse_pitch_and_the_tap_drill_d_minus_p() {
+    let threads = ketchup_program::library_metric_threads().unwrap();
+    for (size, pitch_mm, tap_drill_mm) in [("M3", 0.5, 2.5), ("M8", 1.25, 6.75), ("M24", 3.0, 21.0)]
+    {
+        let thread = threads[size];
+        assert!(close(thread.pitch_mm, pitch_mm), "{size}: {thread:?}");
+        assert!(
+            close(thread.tap_drill_mm, tap_drill_mm),
+            "{size}: {thread:?}"
+        );
+    }
+    assert!(!threads.contains_key("M7"));
+    // The library's metric sizes, as DIN 975 rods offer them.
+    let sizes = [
+        "M10", "M12", "M14", "M16", "M18", "M20", "M22", "M24", "M3", "M4", "M5", "M6", "M8",
+    ];
+    assert!(threads.keys().eq(sizes.iter()), "{threads:?}");
+}

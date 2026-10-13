@@ -165,6 +165,14 @@ impl Snapshot {
             .map(Arc::as_ref)
     }
 
+    /// Every hole feature with the thread tapped into it, by feature id.
+    pub fn hole_threads(&self) -> impl Iterator<Item = (FeatureId, &HoleThread)> {
+        self.product
+            .hole_threads
+            .iter()
+            .map(|(id, thread)| (*id, thread))
+    }
+
     pub fn audit_feature_parameter_freshness(
         &self,
         identity: &EvaluationIdentity,

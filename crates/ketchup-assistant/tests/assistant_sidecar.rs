@@ -2011,6 +2011,12 @@ fn drill_holes_takes_a_depth_or_through_and_at_most_the_part_hole_limit() {
         serde_json::to_value(&program).unwrap()["operations"][0]["through"],
         false
     );
+    // An untapped request writes no thread at all.
+    assert!(
+        serde_json::to_value(&program).unwrap()["operations"][0]
+            .get("thread")
+            .is_none()
+    );
     let with = |change: fn(&mut serde_json::Value)| {
         let mut wire = wire.clone();
         change(&mut wire["operations"][0]);
@@ -2035,6 +2041,24 @@ fn drill_holes_takes_a_depth_or_through_and_at_most_the_part_hole_limit() {
     assert_eq!(with(|op| op["depth_mm"] = serde_json::Value::Null), one_of);
     assert!(with(|op| op["diameter_mm"] = 0.0.into()).is_err());
     assert!(with(|op| op["points_local_mm"] = serde_json::json!([])).is_err());
+    assert_eq!(
+        with(|op| op["thread"] = serde_json::json!({"size": "M8", "depth_mm": 8.0})),
+        Ok(())
+    );
+    let thread = Err(AssistantRequestInvalid::new(
+        "CAD drill holes thread",
+        AssistantRequestProblem::Violates(
+            "a thread needs a size and a positive depth_mm no deeper than the hole",
+        ),
+    ));
+    assert_eq!(
+        with(|op| op["thread"] = serde_json::json!({"size": "M8", "depth_mm": 9.0})),
+        thread
+    );
+    assert_eq!(
+        with(|op| op["thread"] = serde_json::json!({"size": "", "depth_mm": 4.0})),
+        thread
+    );
     assert_eq!(
         with(|op| op["points_local_mm"] = serde_json::json!(vec![[10.0, 10.0, 20.0]; 129])),
         Err(AssistantRequestInvalid::new(

@@ -38,9 +38,9 @@ pub mod validate;
 
 pub use bom::{Bom, bom};
 pub use eval::{
-    CallFrame, CancelToken, ErrorLocation, Evaluated, NumberedLine, PRELUDE, Position,
-    ProgramError, SourceLines, evaluate, evaluate_cancellable, library_material_weights,
-    use_prelude,
+    CallFrame, CancelToken, ErrorLocation, Evaluated, MetricThread, NumberedLine, PRELUDE,
+    Position, ProgramError, SourceLines, evaluate, evaluate_cancellable, library_material_weights,
+    library_metric_threads, use_prelude,
 };
 pub use exact::{ExactPair, ExactShapes, exact_candidates};
 pub use model::{

@@ -81,6 +81,35 @@ fn keep_exact_caches(
     }
 }
 
+/// Drops what the product keeps about the deleted feature `id` besides the
+/// feature: its parameter bindings and provenance and its hole thread.
+fn forget_feature_annotations(product: &mut ProductModel, id: FeatureId) {
+    product
+        .feature_parameter_bindings
+        .retain(|target, _| target.feature_id != id);
+    product
+        .feature_parameter_provenance
+        .retain(|target, _| target.feature_id != id);
+    product.hole_threads.remove(&id);
+}
+
+/// Records `thread` on the hole feature `id`, or clears it with `None`.
+fn set_hole_thread(
+    product: &mut ProductModel,
+    id: FeatureId,
+    thread: Option<&HoleThread>,
+) -> Result<(), CanonicalError> {
+    if !product.features.contains_key(&id) {
+        return Err(CanonicalError::FeatureNotFound(id));
+    }
+    match thread {
+        Some(thread) if !thread.is_valid() => return Err(CanonicalError::InvalidHoleThread(id)),
+        Some(thread) => product.hole_threads.insert(id, thread.clone()),
+        None => product.hole_threads.remove(&id),
+    };
+    Ok(())
+}
+
 pub struct DocumentStore {
     pub(super) revisions: Vec<Arc<Revision>>,
     pub(super) cursor: usize,
@@ -1650,12 +1679,7 @@ impl DocumentStore {
                         .retain(|(definition_id, _), _| definition_id != id);
                     for feature_id in &definition.feature_ids {
                         product.features.remove(feature_id);
-                        product
-                            .feature_parameter_bindings
-                            .retain(|target, _| target.feature_id != *feature_id);
-                        product
-                            .feature_parameter_provenance
-                            .retain(|target, _| target.feature_id != *feature_id);
+                        forget_feature_annotations(&mut product, *feature_id);
                     }
                 }
                 CanonicalCommand::RenameDefinition { id, name } => {
@@ -1966,12 +1990,6 @@ impl DocumentStore {
                     product
                         .body_feature_suppression
                         .retain(|_, suppressed| !suppressed.is_empty());
-                    product
-                        .feature_parameter_bindings
-                        .retain(|target, _| target.feature_id != *id);
-                    product
-                        .feature_parameter_provenance
-                        .retain(|target, _| target.feature_id != *id);
                     product.definitions.insert(
                         feature.definition_id,
                         Arc::new(Definition {
@@ -1980,6 +1998,7 @@ impl DocumentStore {
                             ..definition.as_ref().clone()
                         }),
                     );
+                    forget_feature_annotations(&mut product, *id);
                 }
                 CanonicalCommand::SetFeatureDimension { id, dimension } => {
                     let feature = product
@@ -2068,6 +2087,9 @@ impl DocumentStore {
                 }
                 CanonicalCommand::SetFeatureParameter { target, dimension } => {
                     set_feature_parameter(&mut product, target, dimension.clone())?;
+                }
+                CanonicalCommand::SetHoleThread { id, thread } => {
+                    set_hole_thread(&mut product, *id, thread.as_ref())?;
                 }
                 CanonicalCommand::CreateSketchConstraint { id, constraint } => {
                     let feature = product

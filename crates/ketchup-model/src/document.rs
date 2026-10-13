@@ -196,6 +196,10 @@ pub(crate) struct ProductModel {
     pub(crate) import_receipts: BTreeMap<ImportId, Arc<ImportReceipt>>,
     pub(crate) definitions: BTreeMap<DefinitionId, Arc<Definition>>,
     pub(crate) features: BTreeMap<FeatureId, Arc<Feature>>,
+    /// Threads tapped into the holes features cut. A document without any does
+    /// not encode the field, so it saves and digests exactly as before threads.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) hole_threads: BTreeMap<FeatureId, HoleThread>,
     pub(crate) body_feature_suppression: BTreeMap<(DefinitionId, BodyId), BTreeSet<FeatureId>>,
     pub(crate) occurrences: BTreeMap<OccurrenceId, Arc<Occurrence>>,
     pub(crate) grounded_occurrences: BTreeSet<OccurrenceId>,
@@ -328,6 +332,7 @@ impl Default for ProductModel {
             import_receipts: BTreeMap::new(),
             definitions: BTreeMap::new(),
             features: BTreeMap::new(),
+            hole_threads: BTreeMap::new(),
             body_feature_suppression: BTreeMap::new(),
             occurrences: BTreeMap::new(),
             grounded_occurrences: BTreeSet::new(),

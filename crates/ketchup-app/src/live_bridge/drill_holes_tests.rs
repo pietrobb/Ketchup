@@ -4,6 +4,7 @@
 
 use super::program_edit::{evaluate_exact, exact_volume};
 use super::*;
+use ketchup_assistant::sidecar::AssistantHoleThread;
 use std::f64::consts::PI;
 
 const DIAMETER_MM: f64 = 6.0;
@@ -58,6 +59,18 @@ fn drill(
     depth_mm: Option<f64>,
     through: bool,
 ) -> Request {
+    tap(face, points_local_mm, DIAMETER_MM, depth_mm, through, None)
+}
+
+/// `drill` with any diameter and an optional (size, depth) thread.
+fn tap(
+    face: &Value,
+    points_local_mm: Vec<[f64; 3]>,
+    diameter_mm: f64,
+    depth_mm: Option<f64>,
+    through: bool,
+    thread: Option<(&str, f64)>,
+) -> Request {
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::DrillHoles {
             definition_id: face["definition_id"].as_u64().unwrap(),
@@ -65,12 +78,34 @@ fn drill(
             target_feature_id: face["producer_feature_id"].as_u64().unwrap(),
             face_reference_id: face["reference_id"].as_str().unwrap().to_owned(),
             points_local_mm,
-            diameter_mm: DIAMETER_MM,
+            diameter_mm,
             depth_mm,
             through,
+            thread: thread.map(|(size, depth_mm)| AssistantHoleThread {
+                size: size.to_owned(),
+                depth_mm,
+            }),
         }],
     };
     serde_json::from_value(json!({"method": "apply_and_verify", "program": program})).unwrap()
+}
+
+fn report(app: &mut KetchupApp, bridge: &mut LiveBridge, section: ReportSection) -> Value {
+    let expected = app.live_bridge_stamp();
+    let page = bridge
+        .execute(
+            app,
+            Request::ProgramReport {
+                expected,
+                section,
+                offset: 0,
+                limit: 100,
+            },
+            false,
+        )
+        .unwrap();
+    assert!(page["next_offset"].is_null(), "{page}");
+    page["rows"].clone()
 }
 
 fn saved(app: &KetchupApp) -> Vec<u8> {
@@ -165,6 +200,30 @@ fn refused_holes_name_their_case_and_leave_the_document_untouched() {
             "invalid_program",
             "either depth_mm deep or through",
         ),
+        (
+            tap(
+                &top,
+                vec![[x + 20.0, y, z]],
+                6.0,
+                Some(8.0),
+                false,
+                Some(("M8", 6.0)),
+            ),
+            "planning_rejected",
+            "planning.cad_hole_thread_diameter_mismatch",
+        ),
+        (
+            tap(
+                &top,
+                vec![[x + 20.0, y, z]],
+                6.0,
+                Some(8.0),
+                false,
+                Some(("M7", 6.0)),
+            ),
+            "planning_rejected",
+            "planning.cad_hole_thread_unknown",
+        ),
     ] {
         assert_eq!(
             bridge.execute(&mut app, request, false),
@@ -181,4 +240,66 @@ fn refused_holes_name_their_case_and_leave_the_document_untouched() {
         );
         assert!(after == before, "{case}: the refusal changed the document");
     }
+}
+
+#[test]
+fn a_tapped_hole_is_listed_for_machining_and_hardware_and_only_a_thread_is_saved() {
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let top = face(&mut app, &mut bridge, "plane", [0.0, 0.0, 1.0]);
+    let [x, y, z] = centroid(&top);
+    let points = || vec![[x - 20.0, y, z], [x + 20.0, y, z]];
+    let (undo, bytes) = (app.undo_step_count(), saved(&app));
+
+    // Untapped: the saved document has no thread field at all.
+    let plain = tap(&top, points(), 6.8, Some(15.0), false, None);
+    assert_eq!(
+        bridge.execute(&mut app, plain, false).unwrap()["published"],
+        true
+    );
+    let untapped = saved(&app);
+    assert!(!untapped.windows(12).any(|window| window == b"hole_threads"));
+    assert_eq!(
+        report(&mut app, &mut bridge, ReportSection::Hardware),
+        json!([])
+    );
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert!(saved(&app) == bytes);
+
+    let tapped = tap(&top, points(), 6.8, Some(15.0), false, Some(("M8", 12.0)));
+    let applied = bridge.execute(&mut app, tapped, false).unwrap();
+    assert_eq!(applied["published"], true, "{applied}");
+    assert_eq!(app.undo_step_count(), undo + 1);
+    let machining = report(&mut app, &mut bridge, ReportSection::Machining);
+    let labels: Vec<_> = machining
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["operation"]["label"].clone())
+        .collect();
+    assert_eq!(
+        labels,
+        [json!("M8×1.25 depth 12"), json!("M8×1.25 depth 12")]
+    );
+    assert_eq!(
+        report(&mut app, &mut bridge, ReportSection::Hardware),
+        json!([{"item": "M8×1.25 depth 12", "count": 2, "kind": "tapped_hole"}])
+    );
+
+    // The thread survives save and open, and Undo removes it with the holes.
+    let threaded = saved(&app);
+    let ketchup_model::persistence::LoadOutcome::Editable { document, .. } =
+        ketchup_model::persistence::load(&threaded).unwrap()
+    else {
+        panic!("the saved document opens editable")
+    };
+    assert_eq!(document.current().hole_threads().count(), 2);
+    assert!(ketchup_model::persistence::save(&document.current()) == threaded);
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert_eq!(app.undo_step_count(), undo);
+    assert!(saved(&app) == bytes, "Undo must restore the saved bytes");
 }

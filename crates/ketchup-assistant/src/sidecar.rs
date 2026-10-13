@@ -505,6 +505,15 @@ pub struct AssistantPartHole {
     pub through: bool,
 }
 
+/// An ISO metric coarse thread tapped into drilled holes: `size` "M3" to "M24",
+/// threaded `depth_mm` deep from the face, at most as deep as the hole.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantHoleThread {
+    pub size: String,
+    pub depth_mm: f64,
+}
+
 impl AssistantPartHole {
     /// Axis index of the hole direction, if `inward_unit_local` is a unit axis.
     #[must_use]
@@ -1845,6 +1854,11 @@ pub enum AssistantCadEditOperation {
         depth_mm: Option<f64>,
         #[serde(default)]
         through: bool,
+        /// Taps every hole: the thread's pitch comes from the fastener library
+        /// (METRIC_COARSE_PITCH), diameter_mm must be its tap drill D − P, and the
+        /// thread is listed in the machining and hardware reports.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread: Option<AssistantHoleThread>,
     },
     AppendFeature {
         definition_id: AssistantCadFeatureReference,
@@ -3209,6 +3223,7 @@ impl AssistantCadEditProgram {
                 diameter_mm,
                 depth_mm,
                 through,
+                thread,
                 ..
             } => {
                 if points_local_mm.len() > max_part_cuts {
@@ -3240,6 +3255,18 @@ impl AssistantCadEditProgram {
                         "CAD drill holes",
                         AssistantRequestProblem::Violates(
                             "it needs a name, a face reference, one to the hole limit of bounded points, a positive diameter and a positive depth_mm",
+                        ),
+                    ));
+                }
+                if thread.as_ref().is_some_and(|thread| {
+                    !assistant_cut_id_is_valid(&thread.size)
+                        || !positive(thread.depth_mm)
+                        || depth_mm.is_some_and(|depth| thread.depth_mm > depth)
+                }) {
+                    return Err(AssistantRequestInvalid::new(
+                        "CAD drill holes thread",
+                        AssistantRequestProblem::Violates(
+                            "a thread needs a size and a positive depth_mm no deeper than the hole",
                         ),
                     ));
                 }

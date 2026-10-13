@@ -1231,6 +1231,8 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   say 0.725 kg/m.
 #   Holes are not made for them: drill the parts (hole(..., through=True)) a little wider than
 #   the shank, and subtract() a bar or rod cast into concrete from the concrete.
+#   METRIC_COARSE_PITCH[size] is the ISO metric coarse pitch P, e.g. METRIC_COARSE_PITCH["M8"]
+#   = 1.25; a tapped hole is drilled D - P (M8: 6.75, the 6.8 drill).
 #   Example (an M12 bolt through two 10 mm plates; the full program with anchor rods and a
 #   rebar mesh in a footing is the example file anchored-beam.star):
 #     a = box("a", (100, 100, 10))
@@ -1272,6 +1274,8 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   Bolt lengths: every nominal length of the series (fasteners.eu length tolerance tables)
 #     from the size's shortest to its longest; engineersedge leaves out 55 for ISO 4014 M6.
 #   DIN 975: fasteners.eu/standards/din/975 and boltport.com/standards/din-975; M3-M24.
+#   METRIC_COARSE_PITCH: fullerfasteners.com (ISO metric coarse, recommended tapping drill
+#     size) and jcfasteners.com (metric thread drill & tap chart); their pitches agree M3-M24.
 #   B500B kg/m: reinforcing-bar.com (rebar sizes, metric table d6-d50), ulamex.com (ribbed bars
 #     B500B EN 10080, d6-d32: the formula d^2 x 0.006165 and d8/10/12/16/20/25/32),
 #     calcsteel.com (rebar weight calculator, EN 10080 d6-d40: the formula, d10/16/25). They
@@ -1360,6 +1364,13 @@ _BOLT_LENGTH_SERIES = [5, 6, 8, 10, 12, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 
 # norm: {size: nominal diameter}
 THREADED_RODS = {
     "DIN 975": {size: int(size[1:]) for size in _METRIC_SIZES},
+}
+
+# size: coarse pitch P of the ISO metric thread. The drill_holes operation takes a hole's
+# thread from here; its tap drill is D - P.
+METRIC_COARSE_PITCH = {
+    "M3": 0.5, "M4": 0.7, "M5": 0.8, "M6": 1, "M8": 1.25, "M10": 1.5, "M12": 1.75, "M14": 2,
+    "M16": 2, "M18": 2.5, "M20": 2.5, "M22": 2.5, "M24": 3,
 }
 
 _FASTENER_SOURCES = {

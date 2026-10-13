@@ -4,7 +4,7 @@ use crate::diagnostics::{
     AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection,
     assistant_planning_rejection, assistant_rejection,
 };
-use crate::drill_holes::{Drill, admit_drill_holes};
+use crate::drill_holes::{Drill, admit_drill_holes, thread_commands};
 use crate::product_change::plan_product_change;
 use crate::rule_operations::OperationPlanner;
 use crate::structure_change::plan_structure_change;
@@ -593,7 +593,10 @@ fn plan_part(
         next_feature,
         next_occurrence,
         document_target,
-    )?;
+    )?
+    .last()
+    .copied()
+    .unwrap_or(target_feature_id);
     Ok((
         definition_id,
         occurrence_id,
@@ -614,7 +617,8 @@ struct PartCuts<'a> {
 }
 
 /// Plans the cuts into the body `target_feature_id`, each a sketch on its
-/// face and a pocket of the previous solid; returns the last solid.
+/// face and a pocket of the previous solid; returns the cuts' solids in order,
+/// the last one last.
 fn plan_part_cuts(
     cuts: &PartCuts<'_>,
     mut target_feature_id: FeatureId,
@@ -623,7 +627,7 @@ fn plan_part_cuts(
     next_feature: &mut Option<u64>,
     next_occurrence: &mut Option<u64>,
     document_target: &str,
-) -> AssistantPlanningResult<FeatureId> {
+) -> AssistantPlanningResult<Vec<FeatureId>> {
     let PartCuts {
         operation_name,
         name,
@@ -692,6 +696,7 @@ fn plan_part_cuts(
         ));
     }
     let mut planned = Vec::with_capacity(cuts.len());
+    let mut made = Vec::with_capacity(cuts.len());
     for (sketch, depth_mm, pocket_name, unresolved_through) in cuts {
         let sketch_commands = plan_creation(
             staged.staged_snapshot(),
@@ -794,9 +799,10 @@ fn plan_part_cuts(
                 kind,
             });
             target_feature_id = pocket_id;
+            made.push(pocket_id);
         }
     }
-    Ok(target_feature_id)
+    Ok(made)
 }
 
 /// Fillet and Chamfer of edges are the topology finish they append.
@@ -852,15 +858,15 @@ fn plan_drill_holes(
 ) -> AssistantPlanningResult<(DefinitionId, FeatureId)> {
     staged.refresh("drill_holes", document_target)?;
     let topology = staged.topology(topology_results);
-    let (holes, bounds) = admit_drill_holes(staged.staged_snapshot(), &topology, drill)?;
-    let last = plan_part_cuts(
+    let admitted = admit_drill_holes(staged.staged_snapshot(), &topology, drill)?;
+    let cuts = plan_part_cuts(
         &PartCuts {
             operation_name: "drill_holes",
             name: drill.name,
             definition_id: drill.definition_id,
-            holes: &holes,
+            holes: &admitted.holes,
             pockets: &[],
-            body_bounds: Some(bounds),
+            body_bounds: Some(admitted.bounds),
         },
         drill.target,
         staged,
@@ -869,7 +875,8 @@ fn plan_drill_holes(
         next_occurrence,
         document_target,
     )?;
-    Ok((drill.definition_id, last))
+    staged.extend(thread_commands(admitted.thread, &cuts));
+    Ok((drill.definition_id, *cuts.last().unwrap_or(&drill.target)))
 }
 
 fn sole_terminal_body_feature(
@@ -2083,34 +2090,19 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     appended_exact_features.push((definition_id, body_feature_id));
                 }
             }
-            AssistantCadEditOperation::DrillHoles {
-                definition_id,
-                name,
-                target_feature_id,
-                face_reference_id,
-                points_local_mm,
-                diameter_mm,
-                depth_mm,
-                through,
-            } => {
-                appended_exact_features.push(plan_drill_holes(
-                    &Drill {
-                        definition_id: DefinitionId(*definition_id),
-                        name,
-                        target: FeatureId(*target_feature_id),
-                        face_reference_id,
-                        points_local_mm,
-                        diameter_mm: *diameter_mm,
-                        depth_mm: *depth_mm,
-                        through: *through,
-                    },
-                    &mut staged_planning,
-                    topology_results,
-                    &mut next_definition,
-                    &mut next_feature,
-                    &mut next_occurrence,
-                    &document_target,
-                )?);
+            AssistantCadEditOperation::DrillHoles { .. } => {
+                let drill = Drill::of(operation).map(|drill| {
+                    plan_drill_holes(
+                        &drill,
+                        &mut staged_planning,
+                        topology_results,
+                        &mut next_definition,
+                        &mut next_feature,
+                        &mut next_occurrence,
+                        &document_target,
+                    )
+                });
+                appended_exact_features.extend(drill.transpose()?);
             }
             AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
                 let path_segments = validated_spatial_path_segments(segments, snapshot.tolerance().linear_mm()).map_err(|error| {

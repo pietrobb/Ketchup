@@ -49,6 +49,7 @@ pub enum CanonicalError {
     FeatureAlreadyExists(FeatureId),
     FeatureNotFound(FeatureId),
     FeatureHasNoDimension(FeatureId),
+    InvalidHoleThread(FeatureId),
     FeatureIsNotProfile(FeatureId),
     FeatureDependencyCycle(FeatureId),
     InvalidFeatureSuppression(DefinitionId, BodyId),
@@ -233,6 +234,7 @@ impl CanonicalError {
             Self::FeatureAlreadyExists(..) => "canonical.feature_already_exists",
             Self::FeatureNotFound(..) => "canonical.feature_not_found",
             Self::FeatureHasNoDimension(..) => "canonical.feature_has_no_dimension",
+            Self::InvalidHoleThread(..) => "canonical.invalid_hole_thread",
             Self::FeatureIsNotProfile(..) => "canonical.feature_is_not_profile",
             Self::FeatureDependencyCycle(..) => "canonical.feature_dependency_cycle",
             Self::InvalidFeatureSuppression(..) => "canonical.invalid_feature_suppression",
@@ -516,6 +518,11 @@ impl fmt::Display for CanonicalError {
             Self::FeatureHasNoDimension(id) => {
                 write!(formatter, "feature {} has no editable dimension", id.0)
             }
+            Self::InvalidHoleThread(id) => write!(
+                formatter,
+                "the thread of feature {} needs a size and a positive finite pitch and depth",
+                id.0
+            ),
             Self::FeatureIsNotProfile(id) => {
                 write!(formatter, "feature {} is not a profile", id.0)
             }

@@ -1655,6 +1655,28 @@ pub struct Feature {
     pub(crate) kind: FeatureKind,
 }
 
+/// The thread tapped into the hole a feature cuts: an ISO metric `size`
+/// ("M8"), its `pitch_mm` and how deep from the face it is threaded.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HoleThread {
+    pub size: String,
+    pub pitch_mm: f64,
+    pub depth_mm: f64,
+}
+
+impl HoleThread {
+    pub(crate) fn is_valid(&self) -> bool {
+        let positive = |value: f64| value.is_finite() && value > 0.0;
+        !self.size.trim().is_empty() && positive(self.pitch_mm) && positive(self.depth_mm)
+    }
+
+    /// The machining text, e.g. "M8×1.25 depth 12".
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{}×{} depth {}", self.size, self.pitch_mm, self.depth_mm)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FeatureDependencyGraph {
     pub(super) dependencies: BTreeMap<FeatureId, BTreeSet<FeatureId>>,

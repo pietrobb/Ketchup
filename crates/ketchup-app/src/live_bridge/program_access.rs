@@ -329,6 +329,18 @@ impl LiveBridge {
             ));
         }
         check_page_limit(limit)?;
+        if app.document.current_rule_program().is_none()
+            && let ReportSection::Machining | ReportSection::Hardware = section
+        {
+            return page(
+                section,
+                &hole_thread_rows(&app.document.current(), section),
+                offset,
+                limit,
+                json!({"basis": "document_hole_threads",
+                    "hint": "No program owns this document: the rows are the threads tapped into its drilled holes."}),
+            );
+        }
         if self
             .program_report
             .as_ref()
@@ -391,6 +403,36 @@ fn report_rows(report: &ketchup_program::Report, section: ReportSection) -> Vec<
         ReportSection::Loads => report.loads.members.iter().map(|row| json!(row)).collect(),
         ReportSection::Members => report.design.members.iter().map(|row| json!(row)).collect(),
     }
+}
+
+/// The tapped holes of a document: one machining row per hole, one hardware
+/// row per thread with its count.
+fn hole_thread_rows(
+    snapshot: &ketchup_model::document::Snapshot,
+    section: ReportSection,
+) -> Vec<Value> {
+    let holes = snapshot.hole_threads().filter_map(|(id, thread)| {
+        let feature = snapshot.feature(id)?;
+        let part = snapshot.definition(feature.definition_id())?.name();
+        Some((part, feature.name(), thread))
+    });
+    if let ReportSection::Hardware = section {
+        let mut counts = BTreeMap::<String, usize>::new();
+        for (_, _, thread) in holes {
+            *counts.entry(thread.label()).or_default() += 1;
+        }
+        return counts
+            .into_iter()
+            .map(|(item, count)| json!({"item": item, "count": count, "kind": "tapped_hole"}))
+            .collect();
+    }
+    holes
+        .map(|(part, feature, thread)| {
+            json!({"part": part, "feature": feature, "operation": {"kind": "tapped_hole",
+                "label": thread.label(), "size": thread.size, "pitch_mm": thread.pitch_mm,
+                "depth_mm": thread.depth_mm}})
+        })
+        .collect()
 }
 
 fn check_page_limit(limit: usize) -> Result<(), &'static str> {

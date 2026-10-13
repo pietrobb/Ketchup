@@ -185,6 +185,11 @@ fn validate_document_entries(
     support::validate_floor(product.floor_z_mm)?;
     support::validate_grounded_instances(product, &product.grounded_instances)?;
     contact_joint::validate(product, &product.contact_joints)?;
+    if let Some(id) = product.hole_threads.iter().find_map(|(id, thread)| {
+        (!product.features.contains_key(id) || !thread.is_valid()).then_some(*id)
+    }) {
+        return Err(CanonicalError::InvalidHoleThread(id));
+    }
     if let Some(id) = product
         .grounded_occurrences
         .iter()

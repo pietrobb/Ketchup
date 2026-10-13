@@ -7,9 +7,11 @@
 
 use crate::diagnostics::{AssistantPlanningResult, assistant_planning_rejection};
 use crate::topology::assistant_topology_references;
-use ketchup_assistant::sidecar::AssistantPartHole;
+use ketchup_assistant::sidecar::{
+    AssistantCadEditOperation, AssistantHoleThread, AssistantPartHole,
+};
 use ketchup_geometry::linalg::{point_segment_distance2, signed_outline_distance};
-use ketchup_model::document::{DefinitionId, FeatureId, Snapshot};
+use ketchup_model::document::{CanonicalCommand, DefinitionId, FeatureId, HoleThread, Snapshot};
 use ketchup_model::exact_product::{ExactBRepGraphPackage, ExactBodyPackage, ExactResultRegistry};
 use ketchup_model::tolerance::ROUNDING;
 use ketchup_model::topology::TopologicalElementKind;
@@ -29,20 +31,59 @@ pub(crate) struct Drill<'a> {
     pub diameter_mm: f64,
     pub depth_mm: Option<f64>,
     pub through: bool,
+    pub thread: Option<&'a AssistantHoleThread>,
 }
 
-/// The holes `drill` makes, entering at its points along the inward face
-/// normal, and the body bounds they are planned against.
-///
+impl<'a> Drill<'a> {
+    /// The drill of a `drill_holes` operation; `None` for any other operation.
+    pub(crate) fn of(operation: &'a AssistantCadEditOperation) -> Option<Self> {
+        let AssistantCadEditOperation::DrillHoles {
+            definition_id,
+            name,
+            target_feature_id,
+            face_reference_id,
+            points_local_mm,
+            diameter_mm,
+            depth_mm,
+            through,
+            thread,
+        } = operation
+        else {
+            return None;
+        };
+        Some(Self {
+            definition_id: DefinitionId(*definition_id),
+            name,
+            target: FeatureId(*target_feature_id),
+            face_reference_id,
+            points_local_mm,
+            diameter_mm: *diameter_mm,
+            depth_mm: *depth_mm,
+            through: *through,
+            thread: thread.as_ref(),
+        })
+    }
+}
+
+/// What `drill` admits: its holes, entering at its points along the inward
+/// face normal, the body bounds they are planned against and the thread
+/// every hole is tapped with.
+pub(crate) struct AdmittedHoles {
+    pub holes: Vec<AssistantPartHole>,
+    pub bounds: [[f64; 3]; 2],
+    pub thread: Option<HoleThread>,
+}
+
 /// # Errors
-/// The target or face is not current exact evidence, the face is curved,
-/// oblique or inside the body's bounds, or a hole is off the face, would break
-/// out of the part, or would remove nothing.
+/// The thread is not a library size or does not fit the hole, the target or
+/// face is not current exact evidence, the face is curved, oblique or inside
+/// the body's bounds, or a hole is off the face, would break out of the part,
+/// or would remove nothing.
 pub(crate) fn admit_drill_holes(
     snapshot: &Snapshot,
     topology: &ExactResultRegistry,
     drill: &Drill<'_>,
-) -> AssistantPlanningResult<(Vec<AssistantPartHole>, [[f64; 3]; 2])> {
+) -> AssistantPlanningResult<AdmittedHoles> {
     let Drill {
         definition_id,
         target,
@@ -51,12 +92,18 @@ pub(crate) fn admit_drill_holes(
         diameter_mm,
         depth_mm,
         through,
+        thread,
         ..
     } = *drill;
     let target_name = format!("feature:{}", target.0);
     let reject = |code, invariant: String, hint| {
         assistant_planning_rejection(code, OPERATION, &target_name, invariant, hint)
     };
+    let tolerance = snapshot.tolerance().linear_mm();
+    let thread = thread
+        .map(|thread| admit_thread(thread, diameter_mm, tolerance))
+        .transpose()
+        .map_err(|(code, invariant, hint)| reject(code, invariant, hint))?;
     let packages = topology.body_values(snapshot).unwrap_or_default();
     let package = packages
         .values()
@@ -129,7 +176,6 @@ pub(crate) fn admit_drill_holes(
     inward[axis] = -normal[axis].signum();
     let bounds = vertex_bounds(package);
     let plane = evidence.centroid_mm[axis];
-    let tolerance = snapshot.tolerance().linear_mm();
     let outer = if inward[axis] > 0.0 {
         bounds[0][axis]
     } else {
@@ -143,6 +189,19 @@ pub(crate) fn admit_drill_holes(
         ));
     }
     let extent = bounds[1][axis] - bounds[0][axis];
+    if let Some(thread) = &thread
+        && thread.depth_mm > depth_mm.unwrap_or(extent) + tolerance
+    {
+        return Err(reject(
+            "planning.cad_hole_thread_too_deep",
+            format!(
+                "The thread is {} mm deep, deeper than the {} mm hole.",
+                thread.depth_mm,
+                depth_mm.unwrap_or(extent)
+            ),
+            "Thread at most as deep as the hole.",
+        ));
+    }
     let body = Body {
         package,
         axis,
@@ -228,7 +287,69 @@ pub(crate) fn admit_drill_holes(
             through,
         });
     }
-    Ok((holes, bounds))
+    Ok(AdmittedHoles {
+        holes,
+        bounds,
+        thread,
+    })
+}
+
+/// The library thread `thread` names, refused when the size is not in the
+/// fastener library or the hole is not its tap drill.
+fn admit_thread(
+    thread: &AssistantHoleThread,
+    diameter_mm: f64,
+    tolerance: f64,
+) -> Result<HoleThread, (&'static str, String, &'static str)> {
+    let library = ketchup_program::library_metric_threads().map_err(|error| {
+        (
+            "planning.cad_hole_thread_unknown",
+            format!("The fastener library's thread table is unavailable: {error}"),
+            "Use the built-in prelude.",
+        )
+    })?;
+    let Some(metric) = library.get(&thread.size) else {
+        let sizes: Vec<&str> = library.keys().map(String::as_str).collect();
+        return Err((
+            "planning.cad_hole_thread_unknown",
+            format!(
+                "The fastener library has no thread {:?}; its threads are {}.",
+                thread.size,
+                sizes.join(", ")
+            ),
+            "Use one of the listed thread sizes.",
+        ));
+    };
+    // D − P, or the 0.1 mm drill nearest to it (M8: 6.75 or 6.8).
+    if (diameter_mm - metric.tap_drill_mm).abs() > 0.05 + tolerance {
+        return Err((
+            "planning.cad_hole_thread_diameter_mismatch",
+            format!(
+                "An {} thread (pitch {}) is tapped into a D - P = {} mm hole, or the 0.1 mm drill \
+                 nearest to it; this hole is {} mm.",
+                thread.size, metric.pitch_mm, metric.tap_drill_mm, diameter_mm
+            ),
+            "Drill the thread's tap drill diameter, or choose the thread that fits the hole.",
+        ));
+    }
+    Ok(HoleThread {
+        size: thread.size.clone(),
+        pitch_mm: metric.pitch_mm,
+        depth_mm: thread.depth_mm,
+    })
+}
+
+/// The commands recording `thread` on every hole cut `cuts` made.
+pub(crate) fn thread_commands(
+    thread: Option<HoleThread>,
+    cuts: &[FeatureId],
+) -> impl Iterator<Item = CanonicalCommand> + '_ {
+    thread.into_iter().flat_map(move |thread| {
+        cuts.iter().map(move |id| CanonicalCommand::SetHoleThread {
+            id: *id,
+            thread: Some(thread.clone()),
+        })
+    })
 }
 
 /// The tessellated body in hole coordinates: depth `t` along the inward axis

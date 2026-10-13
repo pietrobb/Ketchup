@@ -49,6 +49,7 @@ const KEPT: &[&str] = &[
     "import_receipts",
     "definitions",
     "features",
+    "hole_threads",
     "body_feature_suppression",
     "occurrences",
     "assembly_mates",
