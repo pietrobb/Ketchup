@@ -32,6 +32,7 @@ mod rectangle_context_ui;
 mod rectangle_spatial_ui;
 mod scene_snapping_ui;
 mod timber_frame_house;
+mod transform_tool_contract_ui;
 mod validation_context;
 mod validator_panel_ui;
 mod viewer_export_house;

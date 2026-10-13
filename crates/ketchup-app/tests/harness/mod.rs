@@ -15,6 +15,8 @@
 
 #![allow(dead_code)]
 
+pub mod contract;
+
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_app::dialogs::ScriptedFileDialogs;
