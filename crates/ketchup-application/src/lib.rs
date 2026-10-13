@@ -36,6 +36,7 @@ mod rule_operations;
 mod rule_program;
 mod rule_support;
 mod rule_tags;
+mod rule_threads;
 mod sketch;
 mod structure_change;
 pub mod threads;

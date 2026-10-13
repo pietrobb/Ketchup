@@ -52,6 +52,7 @@ pub(super) fn add_support_dependencies(
     dependencies: &mut BTreeSet<AuthoritativeDependency>,
 ) {
     add_setting_dependency(command, dependencies);
+    threads::add_dependencies(snapshot, command, dependencies);
     if let CanonicalCommand::SetProductionCode { instance_path, .. } = command {
         add_path_dependencies(snapshot, instance_path, dependencies);
     }

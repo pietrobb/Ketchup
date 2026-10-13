@@ -51,10 +51,12 @@ fn feature_changes(
     product: &ProductModel,
 ) -> Result<(BTreeSet<FeatureId>, Arc<FeatureDependencyGraph>), CanonicalError> {
     let (before, after) = (&current.product.features, &product.features);
+    // A thread that turns modelled or cosmetic rebuilds the body it is cut into.
+    let threads = threads::thread_changed_features(&current.product, product);
     if super::product_validation::same_entries(before, after) {
-        return Ok((BTreeSet::new(), current.feature_dependency_graph()?));
+        return Ok((threads, current.feature_dependency_graph()?));
     }
-    let changed = before
+    let mut changed: BTreeSet<_> = before
         .keys()
         .chain(after.keys())
         .filter(|id| match (before.get(id), after.get(id)) {
@@ -63,6 +65,7 @@ fn feature_changes(
         })
         .copied()
         .collect();
+    changed.extend(threads);
     Ok((
         changed,
         Arc::new(FeatureDependencyGraph::from_product(product)?),
@@ -91,23 +94,7 @@ fn forget_feature_annotations(product: &mut ProductModel, id: FeatureId) {
         .feature_parameter_provenance
         .retain(|target, _| target.feature_id != id);
     product.hole_threads.remove(&id);
-}
-
-/// Records `thread` on the hole feature `id`, or clears it with `None`.
-fn set_hole_thread(
-    product: &mut ProductModel,
-    id: FeatureId,
-    thread: Option<&HoleThread>,
-) -> Result<(), CanonicalError> {
-    if !product.features.contains_key(&id) {
-        return Err(CanonicalError::FeatureNotFound(id));
-    }
-    match thread {
-        Some(thread) if !thread.is_valid() => return Err(CanonicalError::InvalidHoleThread(id)),
-        Some(thread) => product.hole_threads.insert(id, thread.clone()),
-        None => product.hole_threads.remove(&id),
-    };
-    Ok(())
+    product.shaft_threads.remove(&id);
 }
 
 pub struct DocumentStore {
@@ -1109,13 +1096,19 @@ impl DocumentStore {
         self.apply_batch_with_origin_and_validation(batch, origin, true)
     }
 
-    /// Showing or hiding a tag or a part or keeping a saved view only changes what is viewed, so the
-    /// program keeps owning the model; any other edit detaches it.
+    /// Showing or hiding a tag or a part, keeping a saved view or switching
+    /// the document's threads between modelled and cosmetic keeps the program
+    /// owning the model; any other edit detaches it. A program's own bolts
+    /// following its mode are its own edit, which binds its source anew.
     fn rule_program_kept_by(&self, batch: &CommandBatch) -> Option<RuleProgramSource> {
+        let switches_mode = batch
+            .commands
+            .iter()
+            .any(|command| matches!(command, CanonicalCommand::SetModeledThreads { .. }));
         batch
             .commands
             .iter()
-            .all(CanonicalCommand::is_view_only)
+            .all(|command| command.is_view_only() || (switches_mode && command.switches_threads()))
             .then(|| self.revisions[self.cursor].rule_program.clone())
             .flatten()
     }
@@ -2088,9 +2081,9 @@ impl DocumentStore {
                 CanonicalCommand::SetFeatureParameter { target, dimension } => {
                     set_feature_parameter(&mut product, target, dimension.clone())?;
                 }
-                CanonicalCommand::SetHoleThread { id, thread } => {
-                    set_hole_thread(&mut product, *id, thread.as_ref())?;
-                }
+                CanonicalCommand::SetHoleThread { .. }
+                | CanonicalCommand::SetModeledThreads { .. }
+                | CanonicalCommand::SetShaftThread { .. } => threads::apply(&mut product, command)?,
                 CanonicalCommand::CreateSketchConstraint { id, constraint } => {
                     let feature = product
                         .features

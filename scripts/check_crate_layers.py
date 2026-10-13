@@ -63,7 +63,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 606,
     "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 676,
     "crates/ketchup-model/src/document/product_validation.rs::validate_features": 698,
-    "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 793,
+    "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 787,
     "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 445,
     "crates/ketchup-model/src/document/store.rs::apply_batch_with_origin_and_validation": 2067,
     "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 575,

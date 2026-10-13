@@ -510,11 +510,15 @@ pub struct AssistantPartHole {
 
 /// An ISO metric coarse thread tapped into drilled holes: `size` "M3" to "M24",
 /// threaded `depth_mm` deep from the face, at most as deep as the hole.
+/// `modeled_thread` models it as helical geometry (`true`) or keeps it
+/// cosmetic (`false`) whatever the document's thread mode.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantHoleThread {
     pub size: String,
     pub depth_mm: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modeled_thread: Option<bool>,
 }
 
 impl AssistantPartHole {

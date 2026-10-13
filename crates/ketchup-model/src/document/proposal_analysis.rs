@@ -323,8 +323,10 @@ pub(super) fn authoritative_writes(
             CanonicalCommand::SetFeatureParameter { target, .. } => {
                 writes.insert(AuthoritativeDependency::Feature(target.feature_id));
             }
-            CanonicalCommand::SetHoleThread { id, .. } => {
-                writes.insert(AuthoritativeDependency::Feature(*id));
+            CanonicalCommand::SetHoleThread { .. }
+            | CanonicalCommand::SetModeledThreads { .. }
+            | CanonicalCommand::SetShaftThread { .. } => {
+                threads::add_writes(snapshot, command, &mut writes);
             }
             CanonicalCommand::SetFeatureDimension { id, .. }
             | CanonicalCommand::CreateSketchConstraint { id, .. }
@@ -736,6 +738,22 @@ fn add_group_conversion_dependencies(
     );
 }
 
+/// What recording an import reads: the receipt and every output it names.
+fn add_import_dependencies(
+    receipt: &ImportReceipt,
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    dependencies.insert(AuthoritativeDependency::Import(receipt.id()));
+    for output in receipt.outputs() {
+        dependencies.insert(match output {
+            ImportOutputRef::Definition(id) => AuthoritativeDependency::Definition(*id),
+            ImportOutputRef::Feature(id) => AuthoritativeDependency::Feature(*id),
+            ImportOutputRef::Occurrence(id) => AuthoritativeDependency::Occurrence(*id),
+            ImportOutputRef::Group(id) => AuthoritativeDependency::Group(*id),
+        });
+    }
+}
+
 pub(super) fn authoritative_dependencies(
     snapshot: &Snapshot,
     batch: &CommandBatch,
@@ -747,7 +765,10 @@ pub(super) fn authoritative_dependencies(
             | CanonicalCommand::SetTolerance { .. }
             | CanonicalCommand::SetContactJoints { .. }
             | CanonicalCommand::SetProductionCode { .. }
-            | CanonicalCommand::SetGroundedInstances { .. } => {
+            | CanonicalCommand::SetGroundedInstances { .. }
+            | CanonicalCommand::SetHoleThread { .. }
+            | CanonicalCommand::SetModeledThreads { .. }
+            | CanonicalCommand::SetShaftThread { .. } => {
                 support::add_support_dependencies(snapshot, command, &mut dependencies);
             }
             CanonicalCommand::CreateEvaluatorNode {
@@ -763,15 +784,7 @@ pub(super) fn authoritative_dependencies(
                 add_evaluator_dependency_closure(snapshot, *id, &mut dependencies);
             }
             CanonicalCommand::RecordImport(receipt) => {
-                dependencies.insert(AuthoritativeDependency::Import(receipt.id()));
-                for output in receipt.outputs() {
-                    dependencies.insert(match output {
-                        ImportOutputRef::Definition(id) => AuthoritativeDependency::Definition(*id),
-                        ImportOutputRef::Feature(id) => AuthoritativeDependency::Feature(*id),
-                        ImportOutputRef::Occurrence(id) => AuthoritativeDependency::Occurrence(*id),
-                        ImportOutputRef::Group(id) => AuthoritativeDependency::Group(*id),
-                    });
-                }
+                add_import_dependencies(receipt, &mut dependencies);
             }
             CanonicalCommand::CreateDefinition { id, .. }
             | CanonicalCommand::RenameDefinition { id, .. } => {
@@ -850,7 +863,6 @@ pub(super) fn authoritative_dependencies(
                 add_feature_dependency_closure(snapshot, target.feature_id, &mut dependencies);
             }
             CanonicalCommand::SetFeatureDimension { id, .. }
-            | CanonicalCommand::SetHoleThread { id, .. }
             | CanonicalCommand::CreateSketchConstraint { id, .. }
             | CanonicalCommand::ReplaceSketchConstraint { id, .. }
             | CanonicalCommand::DeleteSketchConstraint { id, .. }

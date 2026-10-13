@@ -172,6 +172,72 @@ std::string side_role(std::size_t index) {
   return "thread.side." + std::to_string(index);
 }
 
+// The solid cylinder of `radius` about the axis of `helix`, from `from` to
+// `to` along it.
+TopoDS_Shape axial_cylinder(
+    rust::Slice<const double> helix, double radius, double from, double to) {
+  const gp_Dir axis(helix[3], helix[4], helix[5]);
+  const gp_Dir reference(helix[6], helix[7], helix[8]);
+  const gp_Pnt base =
+      gp_Pnt(helix[0], helix[1], helix[2]).Translated(gp_Vec(axis).Multiplied(from));
+  return BRepPrimAPI_MakeCylinder(gp_Ax2(base, axis, reference), radius, to - from).Shape();
+}
+
+// `faces` of `shape` as `operation` left them in its result.
+template <typename Operation>
+std::vector<TopoDS_Shape> kept_faces(Operation& operation, const std::vector<TopoDS_Shape>& faces) {
+  std::vector<TopoDS_Shape> kept;
+  for (const TopoDS_Shape& face : faces) {
+    if (operation.IsDeleted(face)) continue;
+    const NCollection_List<TopoDS_Shape>& modified = operation.Modified(face);
+    if (modified.IsEmpty()) {
+      kept.push_back(face);
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified); iterator.More();
+         iterator.Next()) {
+      kept.push_back(iterator.Value());
+    }
+  }
+  return kept;
+}
+
+// The faces of `shape` on a surface of `kind`.
+std::vector<TopoDS_Shape> faces_of_kind(const TopoDS_Shape& shape, GeomAbs_SurfaceType kind) {
+  std::vector<TopoDS_Shape> faces;
+  for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+    if (BRepAdaptor_Surface(TopoDS::Face(explorer.Current())).GetType() == kind) {
+      faces.push_back(explorer.Current());
+    }
+  }
+  return faces;
+}
+
+// Ends the groove at `from` and `to` along the axis: flat, square to it.
+// Null on success, the error otherwise; `ends` are the flat faces.
+std::unique_ptr<NativeOperationResult> trim_groove(
+    rust::Slice<const double> helix,
+    double from,
+    double to,
+    double reach,
+    Groove& groove,
+    std::vector<TopoDS_Shape>& ends) {
+  const TopoDS_Shape slab = axial_cylinder(helix, 2.0 * reach, from, to);
+  BRepAlgoAPI_Common operation;
+  configure_boolean(operation, groove.solid, slab);
+  operation.SetRunParallel(true);
+  operation.Build();
+  if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()
+      || count_subshapes(operation.Shape(), TopAbs_SOLID) != 1) {
+    return error_result(STATUS_INVALID_SHAPE, "OCCT thread groove trim did not complete");
+  }
+  for (std::vector<TopoDS_Shape>& side : groove.sides) {
+    side = kept_faces(operation, side);
+  }
+  ends = kept_faces(operation, faces_of_kind(slab, GeomAbs_Plane));
+  groove.solid = operation.Shape();
+  return nullptr;
+}
+
 }  // namespace
 
 std::unique_ptr<NativeOperationResult> thread_groove_native(
@@ -196,12 +262,17 @@ std::unique_ptr<NativeOperationResult> thread_groove_native(
 }
 
 // `target` with the groove of `thread_groove_native` cut out of it. The
-// thread's faces are named `thread.side.<section edge>`.
+// thread's faces are named `thread.side.<section edge>`. A `trim` of two
+// values ends the thread flat at those offsets along the axis
+// (`thread.end`); two more first turn the stretch between them down to the
+// crest radius from the outer one (`thread.crest`), as a bolt's thread is
+// turned down from its shank.
 std::unique_ptr<NativeOperationResult> thread_cut_native(
     const NativeOperationResult& target,
     rust::Slice<const double> helix,
     bool left_handed,
     rust::Slice<const NativePoint> profile,
+    rust::Slice<const double> trim,
     double approximation) noexcept {
   return guarded([&] {
     if (!target.valid() || target.impl().shape.IsNull()) {
@@ -211,8 +282,69 @@ std::unique_ptr<NativeOperationResult> thread_cut_native(
     if (auto error = make_groove(helix, left_handed, profile, approximation, groove)) {
       return error;
     }
+    if (trim.size() != 0 && trim.size() != 2 && trim.size() != 4) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT thread trim payload is malformed");
+    }
+    for (double value : trim) {
+      if (!std::isfinite(value)) {
+        return error_result(STATUS_NON_FINITE_PARAMETER, "OCCT thread trim is not finite");
+      }
+    }
+    double reach = 0.0;
+    for (const NativePoint& point : profile) reach = std::max(reach, point.x);
+    std::vector<TopoDS_Shape> ends;
+    const NativeOperationResult::Impl* source = &target.impl();
+    NativeOperationResult::Impl turned;
+    std::vector<TopoDS_Shape> crest;
+    if (trim.size() >= 2) {
+      const double from = trim[0];
+      const double to = trim[1];
+      if (!(helix[10] < from && from < to && to < helix[11])) {
+        return error_result(
+            STATUS_INVALID_PARAMETER, "OCCT thread trim lies outside the thread's helix");
+      }
+      if (trim.size() == 4) {
+        const double crest_radius = trim[2];
+        const double outer_radius = trim[3];
+        if (!(crest_radius > tolerances().linear_mm && crest_radius < outer_radius)) {
+          return error_result(STATUS_INVALID_PARAMETER, "OCCT thread crest radii are invalid");
+        }
+        reach = std::max(reach, outer_radius);
+        const double margin = helix[9];
+        BRepAlgoAPI_Cut ring;
+        configure_boolean(
+            ring,
+            axial_cylinder(helix, outer_radius, from, to),
+            axial_cylinder(helix, crest_radius, from - margin, to + margin));
+        ring.Build();
+        if (!ring.IsDone() || ring.HasErrors() || ring.Shape().IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT thread crest ring did not complete");
+        }
+        BRepAlgoAPI_Cut turn;
+        configure_boolean(turn, target.impl().shape, ring.Shape());
+        turn.Build();
+        if (!turn.IsDone() || turn.HasErrors() || turn.Shape().IsNull()
+            || count_subshapes(turn.Shape(), TopAbs_SOLID) != 1) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT thread crest turning did not complete");
+        }
+        std::vector<TopoDS_Shape> crest_faces;
+        for (const TopoDS_Shape& face : faces_of_kind(ring.Shape(), GeomAbs_Cylinder)) {
+          if (std::abs(BRepAdaptor_Surface(TopoDS::Face(face)).Cylinder().Radius() - crest_radius)
+              <= tolerances().linear_mm) {
+            crest_faces.push_back(face);
+          }
+        }
+        crest = kept_faces(turn, crest_faces);
+        turned.shape = turn.Shape();
+        append_propagated_history(turned.history, turn, turned.shape, target.impl());
+        source = &turned;
+      }
+      if (auto error = trim_groove(helix, from, to, reach, groove, ends)) {
+        return error;
+      }
+    }
     BRepAlgoAPI_Cut operation;
-    configure_boolean(operation, target.impl().shape, groove.solid);
+    configure_boolean(operation, source->shape, groove.solid);
     // A thread meets its body once per turn and section edge; those
     // intersections are independent, and in parallel the cut takes a third
     // of the time.
@@ -226,23 +358,19 @@ std::unique_ptr<NativeOperationResult> thread_cut_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT thread cut is not one solid");
     }
     std::vector<HistoryRecord> history;
-    append_propagated_history(history, operation, result, target.impl());
-    for (std::size_t index = 0; index < groove.sides.size(); ++index) {
-      for (const TopoDS_Shape& face : groove.sides[index]) {
-        if (operation.IsDeleted(face)) continue;
-        const NCollection_List<TopoDS_Shape>& modified = operation.Modified(face);
-        for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified); iterator.More();
-             iterator.Next()) {
-          history.push_back(history_record(
-              side_role(index), "generated", side_role(index), result, iterator.Value()));
-        }
-        if (modified.IsEmpty()) {
-          // Wholly inside the body, the face is kept as it is.
-          history.push_back(
-              history_record(side_role(index), "generated", side_role(index), result, face));
-        }
+    append_propagated_history(history, operation, result, *source);
+    // A face wholly inside the body is kept as it is.
+    const auto name = [&](const std::string& role, const std::vector<TopoDS_Shape>& faces) {
+      for (const TopoDS_Shape& face : kept_faces(operation, faces)) {
+        HistoryRecord record = history_record(role, "generated", role, result, face);
+        if (record.output_present) history.push_back(std::move(record));
       }
+    };
+    for (std::size_t index = 0; index < groove.sides.size(); ++index) {
+      name(side_role(index), groove.sides[index]);
     }
+    name("thread.end", ends);
+    name("thread.crest", crest);
     return success_result(result, std::move(history));
   });
 }

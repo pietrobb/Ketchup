@@ -1236,6 +1236,10 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   In a hole tapped with that thread (hole(..., thread=)) on their axis they engage it, not
 #   collide, as deep as the thread; a different size, an offset axis, a tip past the thread or
 #   a head sunk into the tapped part is still a collision.
+#   The thread is drawn on the plain cylinder (cosmetic) unless the document models threads;
+#   modeled_thread=True on bolt(), threaded_rod() or hole() models that one thread as a helical
+#   groove whatever the document says, modeled_thread=False keeps it cosmetic. A modelled bolt
+#   in a modelled tapped hole of its size on its axis takes the hole's phase, so the two mesh.
 #   inspect action=mass and the takeoff weigh the simplified body. A full-diameter shank or
 #   rod weighs more than the threaded one: DIN 975 M12 is 0.888 kg/m here, the catalogues
 #   say 0.725 kg/m.
@@ -1440,10 +1444,11 @@ def _circle(radius, name):
     return [[name, (radius, 0), (-radius, 0), {"center": (0, 0)}],
             [name + "_back", (-radius, 0), (radius, 0), {"center": (0, 0)}]]
 
-def _fastener_part(name, outline, height, at, norm, size, designation, tags, thread = None):
+def _fastener_part(name, outline, height, at, norm, size, designation, tags, thread = None, modeled_thread = None):
     """A steel prism of `outline`, `height` along local +z from `at`, with the cut-list
     attributes of a standard part; `thread` = (size, from_z, to_z) names the outside thread
-    of a bolt or rod and where it runs along the part's local z."""
+    of a bolt or rod and where it runs along the part's local z, `modeled_thread` whether
+    it is modelled whatever the document says."""
     attributes = {
         "designation": designation,
         "standard": norm,
@@ -1454,6 +1459,10 @@ def _fastener_part(name, outline, height, at, norm, size, designation, tags, thr
         attributes["thread"] = thread[0]
         attributes["thread_from_mm"] = "%g" % thread[1]
         attributes["thread_to_mm"] = "%g" % thread[2]
+    if modeled_thread != None:
+        if type(modeled_thread) != "bool":
+            fail("modeled_thread= must be True or False, got %r" % (modeled_thread,))
+        attributes["modeled_thread"] = "true" if modeled_thread else "false"
     return extrude(name, profile = outline, distance = height, at = at, material = "steel", tags = tags,
                    attributes = attributes)
 
@@ -1492,7 +1501,7 @@ def bolt_lengths(size, norm = "ISO 4017"):
     shortest, longest = BOLT_LENGTH_RANGES[norm][size]
     return [length for length in _BOLT_LENGTH_SERIES if length >= shortest and length <= longest]
 
-def bolt(name, size, length, norm = "ISO 4017", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+def bolt(name, size, length, norm = "ISO 4017", at = (0, 0, 0), axis = (0, 0, 1), tags = None, modeled_thread = None):
     """A standard bolt (simplified body): head seated at `at` and rising along `axis`, the
     shank `length` long running the other way."""
     head = _fastener_row("bolt", BOLT_HEADS, norm, size)
@@ -1504,23 +1513,23 @@ def bolt(name, size, length, norm = "ISO 4017", at = (0, 0, 0), axis = (0, 0, 1)
     designation = "%s %sx%s" % (norm, size, length)
     if norm == "ISO 4762":
         dk, k, s, t = head
-        part = _fastener_part(name, _circle(dk / 2.0, "head"), k, at, norm, size, designation, tags, (size, -length, 0))
+        part = _fastener_part(name, _circle(dk / 2.0, "head"), k, at, norm, size, designation, tags, (size, -length, 0), modeled_thread)
         cut(part, profile = _hexagon(s), depth = t, name = "socket")
     else:
         s, k = head
-        part = _fastener_part(name, _hexagon(s), k, at, norm, size, designation, tags, (size, -length, 0))
+        part = _fastener_part(name, _hexagon(s), k, at, norm, size, designation, tags, (size, -length, 0), modeled_thread)
     shank = extrude("%s/shank" % name, profile = _circle(int(size[1:]) / 2.0, "shank"), distance = length,
                     at = (at[0], at[1], at[2] - length), tool = True)
     union(part, shank, name = "shank")
     return _turn_onto(part, at, axis)
 
-def threaded_rod(name, size, length, norm = "DIN 975", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+def threaded_rod(name, size, length, norm = "DIN 975", at = (0, 0, 0), axis = (0, 0, 1), tags = None, modeled_thread = None):
     """A threaded rod (simplified: a full-diameter cylinder) `length` long from `at` along `axis`."""
     d = _fastener_row("threaded_rod", THREADED_RODS, norm, size)
     if length <= 0:
         fail("threaded_rod(): length must be positive, got %r" % length)
     designation = "%s %sx%s" % (norm, size, length)
-    part = _fastener_part(name, _circle(d / 2.0, "rod"), length, at, norm, size, designation, tags, (size, 0, length))
+    part = _fastener_part(name, _circle(d / 2.0, "rod"), length, at, norm, size, designation, tags, (size, 0, length), modeled_thread)
     return _turn_onto(part, at, axis)
 
 # Reinforcing bars B500B (EN 10080): nominal diameter: catalogue mass in kg/m. The library

@@ -214,6 +214,15 @@ pub enum CanonicalCommand {
         id: FeatureId,
         thread: Option<HoleThread>,
     },
+    /// Models threads (or draws them cosmetic) where a thread does not say.
+    SetModeledThreads {
+        modeled: bool,
+    },
+    /// Records (or with `None` clears) the modelled outside thread on the body feature `id` makes.
+    SetShaftThread {
+        id: FeatureId,
+        thread: Option<ShaftThread>,
+    },
     CreateSketchConstraint {
         id: FeatureId,
         constraint: SketchConstraint,
@@ -558,6 +567,16 @@ impl CanonicalCommand {
                 | Self::SetOccurrenceVisibility { .. }
                 | Self::UpsertSavedView(_)
                 | Self::DeleteSavedView { .. }
+        )
+    }
+
+    /// Whether the command switches threads between modelled and cosmetic:
+    /// the document's mode, or the modelled thread of a bolt that follows it.
+    #[must_use]
+    pub const fn switches_threads(&self) -> bool {
+        matches!(
+            self,
+            Self::SetModeledThreads { .. } | Self::SetShaftThread { .. }
         )
     }
 }

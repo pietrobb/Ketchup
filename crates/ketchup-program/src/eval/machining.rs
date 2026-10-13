@@ -10,6 +10,8 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
     /// face `at=(angle, v)`, see face()) or a world point `world=(x, y, z)`
     /// on the face. `thread=("M5", 10)` taps an ISO metric coarse thread that
     /// deep; the diameter is then the tap drill D − P and may be omitted.
+    /// `modeled_thread=True` models that thread as helical geometry, `False`
+    /// keeps it cosmetic, whatever the document's thread mode.
     fn hole<'v>(
         #[starlark(require = pos)] part: Value<'v>,
         #[starlark(require = pos)] face: Value<'v>,
@@ -19,11 +21,15 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] depth: Value<'v>,
         #[starlark(require = named, default = false)] through: bool,
         #[starlark(require = named)] thread: Option<Value<'v>>,
+        #[starlark(require = named)] modeled_thread: Option<bool>,
         #[starlark(require = named)] id: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
         let name = part_name(part, heap)?;
+        if modeled_thread.is_some() && given(thread).is_none() {
+            anyhow::bail!("hole in {name:?}: modeled_thread= needs thread=");
+        }
         let face = face_name(face, heap, Some(&name))?;
         let depth = number(depth, "depth")?;
         let diameter = given(diameter)
@@ -33,7 +39,13 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             Some(thread) => {
                 let (diameter, thread) = tapped(thread, diameter, depth, heap)
                     .map_err(|error| anyhow::anyhow!("hole in {name:?}: {error}"))?;
-                (diameter, Some(thread))
+                (
+                    diameter,
+                    Some(HoleThread {
+                        modeled: modeled_thread,
+                        ..thread
+                    }),
+                )
             }
             None => (
                 diameter.ok_or_else(|| {
@@ -194,6 +206,7 @@ fn tapped<'v>(
             size,
             pitch_mm: metric.pitch_mm,
             depth_mm: thread_depth,
+            modeled: None,
         },
     ))
 }

@@ -1536,6 +1536,8 @@ fn evaluate_thread_groove(
                 .iter()
                 .map(|point| point.map(f64::from_bits))
                 .collect(),
+            trim_mm: thread.trim_bits.map(|trim| trim.map(f64::from_bits)),
+            crest_mm: thread.crest_bits.map(|crest| crest.map(f64::from_bits)),
         },
     )
 }

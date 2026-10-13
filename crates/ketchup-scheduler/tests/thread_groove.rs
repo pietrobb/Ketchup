@@ -99,6 +99,8 @@ fn threaded(
                 .iter()
                 .map(|point| point.map(f64::to_bits))
                 .collect(),
+            trim_bits: None,
+            crest_bits: None,
         }),
     });
     graph.producer_feature_id = source_feature_id;

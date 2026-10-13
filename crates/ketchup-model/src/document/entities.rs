@@ -1753,11 +1753,14 @@ pub struct Feature {
 
 /// The thread tapped into the hole a feature cuts: an ISO metric `size`
 /// ("M8"), its `pitch_mm` and how deep from the face it is threaded.
+/// `modeled` overrides the document's thread mode for this hole.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HoleThread {
     pub size: String,
     pub pitch_mm: f64,
     pub depth_mm: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modeled: Option<bool>,
 }
 
 impl HoleThread {
@@ -1770,6 +1773,41 @@ impl HoleThread {
     #[must_use]
     pub fn label(&self) -> String {
         format!("{}×{} depth {}", self.size, self.pitch_mm, self.depth_mm)
+    }
+}
+
+/// The modelled outside thread on the body a feature makes, in its
+/// definition's frame: an ISO metric `size` of `pitch_mm` on a cylinder of
+/// `surface_diameter_mm`, from `start_mm` `length_mm` along the unit
+/// `direction`. Its helix crosses the half-line from `phase_origin_mm` along
+/// `phase_reference` (see `ThreadPhase`). Recorded only while the thread is
+/// modelled; a cosmetic thread has no record.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ShaftThread {
+    pub size: String,
+    pub pitch_mm: f64,
+    pub surface_diameter_mm: f64,
+    pub start_mm: [f64; 3],
+    pub direction: [f64; 3],
+    pub length_mm: f64,
+    pub phase_origin_mm: [f64; 3],
+    pub phase_reference: [f64; 3],
+}
+
+impl ShaftThread {
+    pub(crate) fn is_valid(&self) -> bool {
+        let positive = |value: f64| value.is_finite() && value > 0.0;
+        let unit = |v: [f64; 3]| (ketchup_geometry::linalg::length(v) - 1.0).abs() <= ROUNDING;
+        let finite = |v: [f64; 3]| v.iter().all(|value| value.is_finite());
+        !self.size.trim().is_empty()
+            && positive(self.pitch_mm)
+            && positive(self.surface_diameter_mm)
+            && positive(self.length_mm)
+            && finite(self.start_mm)
+            && finite(self.phase_origin_mm)
+            && unit(self.direction)
+            && unit(self.phase_reference)
+            && ketchup_geometry::linalg::dot(self.direction, self.phase_reference).abs() <= ROUNDING
     }
 }
 

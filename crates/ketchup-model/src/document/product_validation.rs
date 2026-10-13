@@ -190,6 +190,11 @@ fn validate_document_entries(
     }) {
         return Err(CanonicalError::InvalidHoleThread(id));
     }
+    if let Some(id) = product.shaft_threads.iter().find_map(|(id, thread)| {
+        (!product.features.contains_key(id) || !thread.is_valid()).then_some(*id)
+    }) {
+        return Err(CanonicalError::InvalidShaftThread(id));
+    }
     // A thread names a standard size, which a Scale behind it would silently
     // stop being; a hole tapped after a Scale is cut at its true size.
     if let Some(id) = product.hole_threads.keys().copied().find(|id| {

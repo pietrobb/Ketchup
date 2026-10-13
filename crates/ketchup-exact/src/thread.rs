@@ -19,6 +19,13 @@ pub struct ThreadGrooveSpec {
     /// The closed groove section in the axial half-plane: radius from the
     /// axis and offset along it from the helix, in order around the section.
     pub profile_mm: Vec<[f64; 2]>,
+    /// Where [`ExactBackend::cut_thread`] ends the thread flat, along the
+    /// axis from `origin_mm`, inside the helix's range; `None` leaves the
+    /// helix's own ends.
+    pub trim_mm: Option<[f64; 2]>,
+    /// The crest and outer radius between which the cut first turns a shank
+    /// down over the trimmed stretch; only with `trim_mm`.
+    pub crest_mm: Option<[f64; 2]>,
 }
 
 impl ThreadGrooveSpec {
@@ -34,6 +41,7 @@ impl ThreadGrooveSpec {
         values.extend([self.pitch_mm, self.start_mm, self.end_mm]);
         values.push(if self.left_handed { 1.0 } else { 0.0 });
         values.extend(self.profile_mm.iter().flatten());
+        values.extend(self.trim());
         let input = format!("{operation}:{:?}", digest_bits(&values));
         for (index, value) in values.iter().enumerate() {
             validate_coordinate(*value, &format!("value_{index}"), operation, &input)?;
@@ -57,13 +65,20 @@ impl ThreadGrooveSpec {
             || self.profile_mm.iter().any(|point| point[0] <= 0.0)
             || max_offset - min_offset >= self.pitch_mm
             || self.end_mm <= self.start_mm
+            || self
+                .trim_mm
+                .is_some_and(|[from, to]| !(self.start_mm < from && from < to && to < self.end_mm))
+            || self.crest_mm.is_some_and(|[crest, outer]| {
+                self.trim_mm.is_none() || !(crest > 0.0 && crest < outer)
+            })
         {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidParameter,
                 operation,
                 &input,
                 "A thread groove needs square unit axis and reference, a section of 3 to 64 \
-                 points off the axis narrower than the pitch, and an increasing range"
+                 points off the axis narrower than the pitch, an increasing range, a trim \
+                 inside it and crest radii only with a trim"
                     .to_owned(),
             ));
         }
@@ -81,6 +96,15 @@ impl ThreadGrooveSpec {
         let mut helix = [self.origin_mm, self.axis, self.reference].concat();
         helix.extend([self.pitch_mm, self.start_mm, self.end_mm]);
         helix
+    }
+
+    /// The trim, then the crest radii, as native code reads them.
+    fn trim(&self) -> Vec<f64> {
+        self.trim_mm
+            .into_iter()
+            .chain(self.crest_mm)
+            .flatten()
+            .collect()
     }
 }
 
@@ -124,6 +148,7 @@ impl ExactBackend {
                 &spec.helix(),
                 spec.left_handed,
                 &profile,
+                &spec.trim(),
                 THREAD_APPROXIMATION_MM,
             ),
             operation,

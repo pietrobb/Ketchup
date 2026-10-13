@@ -365,7 +365,15 @@ fn valid_thread_groove(thread: &ExactBRepThreadGroove, tolerance_mm: f64) -> boo
     let offsets = profile.iter().map(|point| point[1]);
     let width =
         offsets.clone().fold(f64::NEG_INFINITY, f64::max) - offsets.fold(f64::INFINITY, f64::min);
-    origin.into_iter().chain([start, end]).all(bounded)
+    let trim = thread.trim_bits.map(|trim| trim.map(f64::from_bits));
+    let trimmed = trim.is_none_or(|[from, to]| start < from && from < to && to < end);
+    let crest = thread.crest_bits.map(|crest| crest.map(f64::from_bits));
+    let turned = crest.is_none_or(|[crest, outer]| {
+        trim.is_some() && crest > tolerance_mm && crest < outer && bounded(outer)
+    });
+    trimmed
+        && turned
+        && origin.into_iter().chain([start, end]).all(bounded)
         && unit(axis)
         && unit(reference)
         && dot(axis, reference).abs() <= ROUNDING

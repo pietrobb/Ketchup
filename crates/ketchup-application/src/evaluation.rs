@@ -304,10 +304,11 @@ pub fn plan_incremental_exact_scope(
         .chain(after_features.keys())
         .copied()
         .collect::<BTreeSet<_>>();
-    let changed_features = feature_ids
+    let mut changed_features = feature_ids
         .into_iter()
         .filter(|id| before_features.get(id) != after_features.get(id))
         .collect::<BTreeSet<_>>();
+    changed_features.extend(after.thread_changed_features_since(before));
 
     let definition_ids = before
         .definitions()

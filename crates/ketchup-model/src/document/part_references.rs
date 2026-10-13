@@ -50,6 +50,8 @@ const KEPT: &[&str] = &[
     "definitions",
     "features",
     "hole_threads",
+    "modeled_threads",
+    "shaft_threads",
     "body_feature_suppression",
     "occurrences",
     "assembly_mates",

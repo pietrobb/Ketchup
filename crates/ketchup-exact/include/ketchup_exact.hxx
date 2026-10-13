@@ -106,6 +106,7 @@ std::unique_ptr<NativeOperationResult> thread_cut_native(
     rust::Slice<const double> helix,
     bool left_handed,
     rust::Slice<const NativePoint> profile,
+    rust::Slice<const double> trim,
     double approximation) noexcept;
 std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
     rust::Slice<const NativeLoftSection> sections,

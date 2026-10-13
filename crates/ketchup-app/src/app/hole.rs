@@ -35,7 +35,11 @@ pub(crate) fn hole_spec(input: &str) -> Option<HoleSpec> {
         return Some(HoleSpec {
             diameter_mm,
             depth_mm: Some(depth_mm),
-            thread: Some(AssistantHoleThread { size, depth_mm }),
+            thread: Some(AssistantHoleThread {
+                size,
+                depth_mm,
+                modeled_thread: None,
+            }),
         });
     }
     Some(HoleSpec {

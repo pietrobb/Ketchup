@@ -26,10 +26,12 @@ use std::fmt;
 mod bounds;
 mod compiler;
 mod geometry;
+mod threads;
 mod validation;
 pub use bounds::*;
 use compiler::*;
 use geometry::*;
+use threads::threads_previous_node;
 use validation::*;
 
 pub const EXACT_BREP_GRAPH_SCHEMA_V6: &str = "ketchup.exact-brep-graph.v6";
@@ -574,7 +576,10 @@ pub enum ExactBRepOperation {
 /// At axial position s the section lies at angle 2π·s/pitch from
 /// `reference_bits` (clockwise for a left-handed thread): origin and
 /// reference fix the thread's phase. Its faces are named `thread.side.<n>`
-/// after the section edge n that swept them.
+/// after the section edge n that swept them. `trim_bits` ends the thread
+/// flat at those offsets along the axis (`thread.end`); `crest_bits` first
+/// turns that stretch down from the outer to the crest radius
+/// (`thread.crest`), as a bolt's shank is.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExactBRepThreadGroove {
@@ -587,6 +592,10 @@ pub struct ExactBRepThreadGroove {
     pub end_bits: u64,
     pub left_handed: bool,
     pub profile_bits: Vec<[u64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trim_bits: Option<[u64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crest_bits: Option<[u64; 2]>,
 }
 
 /// The row-major 4x4 matrix stretching about `origin_mm` by `factors` along
@@ -1347,7 +1356,8 @@ impl ExactBRepGraph {
             }
             if node.id != id
                 || node.source_feature_id == 0
-                || !source_features.insert(node.source_feature_id)
+                || !(source_features.insert(node.source_feature_id)
+                    || threads_previous_node(node, &self.nodes[..index]))
                 || node
                     .operation
                     .dependencies()

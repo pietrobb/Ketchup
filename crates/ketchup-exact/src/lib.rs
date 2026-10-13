@@ -339,11 +339,14 @@ mod ffi {
             profile: &[NativePoint],
             approximation: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        /// `trim`: empty, or where the thread starts and ends along the axis,
+        /// or those plus the crest and outer radius of the turned-down shank.
         fn thread_cut_native(
             target: &NativeOperationResult,
             helix: &[f64],
             left_handed: bool,
             profile: &[NativePoint],
+            trim: &[f64],
             approximation: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn loft_framed_profiles_native(

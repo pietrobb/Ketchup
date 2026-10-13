@@ -133,8 +133,10 @@ mod solid_tool;
 mod stable_digest;
 mod store;
 mod support;
+mod threads;
 pub(crate) use ketchup_geometry::derived::{derived, identity_form};
 pub(crate) use stable_digest::digest_product;
+pub use threads::{ThreadCylinder, metric_nominal_diameter};
 
 pub(crate) use assembly_validation::*;
 pub use command::*;
@@ -200,6 +202,17 @@ pub(crate) struct ProductModel {
     /// not encode the field, so it saves and digests exactly as before threads.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) hole_threads: BTreeMap<FeatureId, HoleThread>,
+    /// Whether threads are modelled rather than cosmetic where a thread does
+    /// not say; absent while [`DEFAULT_MODELED_THREADS`], as before modelled
+    /// threads.
+    #[serde(
+        default = "default_modeled_threads",
+        skip_serializing_if = "is_default_modeled_threads"
+    )]
+    pub(crate) modeled_threads: bool,
+    /// The modelled outside threads on the bodies features make.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) shaft_threads: BTreeMap<FeatureId, ShaftThread>,
     pub(crate) body_feature_suppression: BTreeMap<(DefinitionId, BodyId), BTreeSet<FeatureId>>,
     pub(crate) occurrences: BTreeMap<OccurrenceId, Arc<Occurrence>>,
     pub(crate) grounded_occurrences: BTreeSet<OccurrenceId>,
@@ -220,6 +233,18 @@ pub(crate) struct ProductModel {
     pub(crate) canonical_digest: DigestCache,
     #[serde(skip)]
     pub(crate) exact_graphs: ExactGraphCache,
+}
+
+/// The thread mode of a document that does not choose: cosmetic. A thread is
+/// then drawn on its plain cylinder, not modelled.
+pub const DEFAULT_MODELED_THREADS: bool = false;
+
+const fn default_modeled_threads() -> bool {
+    DEFAULT_MODELED_THREADS
+}
+
+const fn is_default_modeled_threads(modeled: &bool) -> bool {
+    *modeled == DEFAULT_MODELED_THREADS
 }
 
 /// Exact B-Rep graphs, the feature dependency graph and the persisted encoding of
@@ -333,6 +358,8 @@ impl Default for ProductModel {
             definitions: BTreeMap::new(),
             features: BTreeMap::new(),
             hole_threads: BTreeMap::new(),
+            modeled_threads: DEFAULT_MODELED_THREADS,
+            shaft_threads: BTreeMap::new(),
             body_feature_suppression: BTreeMap::new(),
             occurrences: BTreeMap::new(),
             grounded_occurrences: BTreeSet::new(),

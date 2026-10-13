@@ -121,6 +121,18 @@ impl MetricThread {
         self.groove(center, [root, width(root)], [outside, width(outside)])
     }
 
+    /// A bolt's thread on a shank of `surface_diameter_mm`: the crest and
+    /// outer radius between which the shank is first turned down to its 6g
+    /// major diameter, and the groove then cut into that. `None` when the
+    /// shank is not wider than the 6g major diameter.
+    #[must_use]
+    pub fn turned_shank(&self, surface_diameter_mm: f64) -> Option<([f64; 2], Vec<[f64; 2]>)> {
+        let crest = self.external_6g()?.major_mm / 2.0;
+        let outer = surface_diameter_mm / 2.0 + OVERCUT_PER_PITCH * self.pitch_mm;
+        (surface_diameter_mm / 2.0 > crest).then_some(())?;
+        Some(([crest, outer], self.external_groove(2.0 * crest)?))
+    }
+
     /// The groove of a nut's or tapped hole's thread cut out of a bore of
     /// `bore_diameter_mm`, from inside the bore out to its 6H root. `None`
     /// when the bore reaches the root or the groove would be as wide as the
@@ -171,6 +183,25 @@ pub struct ThreadPhase {
 }
 
 impl ThreadPhase {
+    /// The phase a thread takes from where it starts in its part: `origin`
+    /// on its axis, the unit `axis` it runs along, and the part's x
+    /// direction square to it (its y direction for a thread along x).
+    /// `None` for an axis that is not a unit vector.
+    #[must_use]
+    pub fn in_own_part(origin: Vec3, axis: Vec3) -> Option<Self> {
+        ((axis.length() - 1.0).abs() <= ROUNDING).then_some(())?;
+        let square = |direction: Vec3| direction - axis * direction.dot(axis);
+        let reference = [Vec3::X, Vec3::Y]
+            .into_iter()
+            .map(square)
+            .find(|direction| direction.length() > 0.5)?;
+        Some(Self {
+            origin,
+            axis,
+            reference: reference / reference.length(),
+        })
+    }
+
     /// The same helix in the coordinates of a part whose `placement` maps
     /// its coordinates to these. `None` for a placement that is not a
     /// rotation and a move: a mirror would turn the thread the other way.

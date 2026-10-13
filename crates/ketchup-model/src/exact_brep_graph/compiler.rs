@@ -676,7 +676,7 @@ impl<'a> GraphCompiler<'a> {
         self.node_bounds.push(bounds);
         self.visiting.remove(&feature_id);
         self.compiled_bodies.insert(feature_id, id);
-        Ok(id)
+        self.threaded(feature_id, id)
     }
 
     fn face_offset(

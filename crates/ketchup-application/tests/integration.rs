@@ -36,6 +36,7 @@ mod rule_program_instances;
 mod rule_program_local_groups;
 mod rule_program_members;
 mod rule_program_metadata;
+mod rule_program_modeled_threads;
 mod rule_program_motion;
 mod rule_program_named_topology;
 mod rule_program_nested;

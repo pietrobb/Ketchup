@@ -63,6 +63,7 @@ pub fn part(part: &Part) -> AssistantCadEditOperation {
                 thread: hole.thread.as_ref().map(|thread| AssistantHoleThread {
                     size: thread.size.clone(),
                     depth_mm: thread.depth_mm,
+                    modeled_thread: thread.modeled,
                 }),
             }),
             _ => None,

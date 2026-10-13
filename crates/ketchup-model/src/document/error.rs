@@ -52,6 +52,7 @@ pub enum CanonicalError {
     FeatureNotFound(FeatureId),
     FeatureHasNoDimension(FeatureId),
     InvalidHoleThread(FeatureId),
+    InvalidShaftThread(FeatureId),
     DraftAngleOutOfRange,
     FeatureIsNotProfile(FeatureId),
     FeatureDependencyCycle(FeatureId),
@@ -240,6 +241,7 @@ impl CanonicalError {
             Self::FeatureNotFound(..) => "canonical.feature_not_found",
             Self::FeatureHasNoDimension(..) => "canonical.feature_has_no_dimension",
             Self::InvalidHoleThread(..) => "canonical.invalid_hole_thread",
+            Self::InvalidShaftThread(..) => "canonical.invalid_shaft_thread",
             Self::DraftAngleOutOfRange => "canonical.draft_angle_out_of_range",
             Self::FeatureIsNotProfile(..) => "canonical.feature_is_not_profile",
             Self::FeatureDependencyCycle(..) => "canonical.feature_dependency_cycle",
@@ -531,11 +533,9 @@ impl fmt::Display for CanonicalError {
             Self::FeatureHasNoDimension(id) => {
                 write!(formatter, "feature {} has no editable dimension", id.0)
             }
-            Self::InvalidHoleThread(id) => write!(
-                formatter,
-                "the thread of feature {} needs a size and a positive finite pitch and depth",
-                id.0
-            ),
+            Self::InvalidHoleThread(id) | Self::InvalidShaftThread(id) => {
+                write_invalid_thread(formatter, self, *id)
+            }
             Self::DraftAngleOutOfRange => write!(
                 formatter,
                 "a draft angle must be between {MIN_DRAFT_ANGLE_DEGREES} and \
@@ -814,6 +814,28 @@ impl fmt::Display for CanonicalError {
             Self::Space(error) => error.fmt(formatter),
             Self::Caused { error, cause } => write!(formatter, "{error}: {cause}"),
         }
+    }
+}
+
+/// What a hole's or a shaft's thread `error` on feature `id` lacks.
+fn write_invalid_thread(
+    formatter: &mut fmt::Formatter<'_>,
+    error: &CanonicalError,
+    id: FeatureId,
+) -> fmt::Result {
+    if matches!(error, CanonicalError::InvalidShaftThread(_)) {
+        write!(
+            formatter,
+            "the modelled thread on feature {} needs a size, a positive finite pitch, \
+             diameter and length, and a unit direction square to its phase reference",
+            id.0
+        )
+    } else {
+        write!(
+            formatter,
+            "the thread of feature {} needs a size and a positive finite pitch and depth",
+            id.0
+        )
     }
 }
 

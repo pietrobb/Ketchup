@@ -86,6 +86,7 @@ fn tap(
         thread: thread.map(|(size, depth_mm)| AssistantHoleThread {
             size: size.to_owned(),
             depth_mm,
+            modeled_thread: None,
         }),
     })
 }

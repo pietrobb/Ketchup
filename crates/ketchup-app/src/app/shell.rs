@@ -1005,6 +1005,7 @@ impl KetchupApp {
                     self.menu_command(ui, AppCommand::View(ViewFlag::Halos));
                 });
                 self.menu_command(ui, AppCommand::View(ViewFlag::DraftAnalysis));
+                self.modeled_threads_checkbox(ui);
                 ui.separator();
                 self.menu_command(ui, AppCommand::Hide);
                 self.menu_command(ui, AppCommand::Unhide);

@@ -118,6 +118,74 @@ fn tapped_holes_and_bolts_draw_their_thread_and_plain_bores_do_not() {
     assert!(helix_about(&plan, &snapshot, "n", [0.0; 3], [0.0, 0.0, 1.0], 4.0).is_none());
 }
 
+/// The display mesh vertices of `definition` in `plan`.
+fn vertices(plan: &InstancedRenderPlan, snapshot: &Snapshot, definition: &str) -> usize {
+    plan.batches()
+        .iter()
+        .filter(|batch| {
+            snapshot
+                .definition(batch.definition_id)
+                .is_some_and(|found| found.name() == definition)
+        })
+        .map(|batch| batch.geometry.vertex_count())
+        .sum()
+}
+
+#[test]
+fn the_window_switch_models_threads_keeps_the_program_and_undo_restores_cosmetic() {
+    let mut app = KetchupApp::new();
+    app.apply_program_source(program(), true).unwrap();
+    app.program_evaluations.get_blocking(&program()).unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let cosmetic = app.document.current();
+    let cosmetic_plan = app.rebuild_render_plan(&cosmetic);
+    let hole = |plan: &InstancedRenderPlan, snapshot: &Snapshot| {
+        let in_hole =
+            3.4 * (ketchup_scheduler::exact_worker::STEP_MESH_ANGULAR_DEFLECTION / 2.0).cos();
+        helix_about(
+            plan,
+            snapshot,
+            "plate",
+            [10.0, 10.0, 20.0],
+            [0.0, 0.0, -1.0],
+            in_hole,
+        )
+    };
+    let bolt = |plan: &InstancedRenderPlan, snapshot: &Snapshot| {
+        helix_about(plan, snapshot, "s", [0.0; 3], [0.0, 0.0, 1.0], 4.0)
+    };
+    assert!(hole(&cosmetic_plan, &cosmetic).is_some());
+    assert!(bolt(&cosmetic_plan, &cosmetic).is_some());
+
+    assert!(app.set_modeled_threads(true));
+    assert!(
+        app.document.current_rule_program().is_some(),
+        "the program keeps the document"
+    );
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let modeled = app.document.current();
+    assert!(modeled.modeled_threads());
+    let modeled_plan = app.rebuild_render_plan(&modeled);
+    // The grooves are in the geometry: no drawn helix, many more vertices.
+    assert!(hole(&modeled_plan, &modeled).is_none());
+    assert!(bolt(&modeled_plan, &modeled).is_none());
+    for part in ["plate", "s"] {
+        assert!(
+            vertices(&modeled_plan, &modeled, part) > 2 * vertices(&cosmetic_plan, &cosmetic, part),
+            "{part}"
+        );
+    }
+    assert!(!app.set_modeled_threads(true), "already modelled");
+
+    app.dispatch_command(AppCommand::Undo);
+    let undone = app.document.current();
+    assert_eq!(undone.canonical_digest(), cosmetic.canonical_digest());
+    assert!(app.document.current_rule_program().is_some());
+    let undone_plan = app.rebuild_render_plan(&undone);
+    assert!(hole(&undone_plan, &undone).is_some());
+    assert!(bolt(&undone_plan, &undone).is_some());
+}
+
 #[test]
 fn a_plan_built_before_the_program_is_evaluated_gains_the_bolt_thread_after() {
     let mut app = KetchupApp::new();

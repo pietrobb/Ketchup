@@ -383,6 +383,7 @@ fn canonical_line_arc_region_flows_losslessly_into_exact_pad_graph() {
         size: "M8".into(),
         pitch_mm: 1.25,
         depth_mm: 3.0,
+        modeled: None,
     };
     document
         .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetHoleThread {

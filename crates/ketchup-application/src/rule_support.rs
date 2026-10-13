@@ -27,6 +27,7 @@ pub(crate) fn append(
         || old.is_some_and(crate::rule_metadata::needed)
         || crate::rule_tags::needed(model)
         || old.is_some_and(crate::rule_tags::needed)
+        || crate::rule_threads::needed(&snapshot, model)
     {
         let mut staged = document.fork_for_planning();
         if !batch.commands().is_empty() {
@@ -53,6 +54,12 @@ pub(crate) fn append(
             &mut commands,
         )?;
         crate::rule_tags::append(&snapshot, old, model, &by_name, &mut commands)?;
+        crate::rule_threads::append(
+            &snapshot,
+            Some(model),
+            snapshot.modeled_threads(),
+            &mut commands,
+        );
         let paths = names
             .iter()
             .map(|name| {

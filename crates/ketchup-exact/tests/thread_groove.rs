@@ -26,6 +26,8 @@ fn groove(profile: Vec<[f64; 2]>) -> ThreadGrooveSpec {
         end_mm: LENGTH_MM + M5.pitch_mm,
         left_handed: false,
         profile_mm: profile,
+        trim_mm: None,
+        crest_mm: None,
     }
 }
 
@@ -132,6 +134,85 @@ fn a_modelled_m5_bolt_thread_is_one_solid_with_the_volume_of_its_profile() {
 }
 
 #[test]
+fn a_bolt_thread_turns_its_full_shank_down_and_ends_flat_at_the_head() {
+    let backend = ExactBackend::new();
+    // The library's bolt: a shank of the nominal diameter up to a head.
+    let (head_mm, nominal) = (3.5, M5.nominal_diameter_mm / 2.0);
+    let shank = backend
+        .extrude_circle(CircleExtrudeSpec {
+            center_mm: [0.0, 0.0],
+            radius_mm: nominal,
+            height_mm: LENGTH_MM,
+        })
+        .unwrap();
+    let head = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3 {
+                x: -4.0,
+                y: -4.0,
+                z: LENGTH_MM,
+            },
+            size_mm: Size3 {
+                x: 8.0,
+                y: 8.0,
+                z: head_mm,
+            },
+        })
+        .unwrap();
+    let bolt = backend
+        .boolean_bodies(&shank.body, &head.body, ExactBodyBooleanOperation::Union)
+        .unwrap();
+    let crest = M5.external_6g().unwrap().major_mm / 2.0;
+    let profile = M5.external_groove(2.0 * crest).unwrap();
+    let pitch = M5.pitch_mm;
+    let spec = ThreadGrooveSpec {
+        start_mm: -2.0 * pitch,
+        end_mm: LENGTH_MM + pitch,
+        // Past the tip, flat at the head.
+        trim_mm: Some([-pitch, LENGTH_MM]),
+        crest_mm: Some([crest, nominal + pitch / 16.0]),
+        ..groove(profile.clone())
+    };
+    let (threaded, time) = timed(|| backend.cut_thread(&bolt.body, &spec));
+    let threaded = threaded.unwrap();
+    assert_one_valid_solid(&threaded);
+    let removed = groove_area_per_length(&profile, pitch, 0.0, crest);
+    assert_volume(
+        threaded.body.topology.volume_mm3,
+        64.0 * head_mm + LENGTH_MM * (PI * crest * crest - removed),
+    );
+    let roles = threaded
+        .topology_history
+        .iter()
+        .filter(|record| record.output_face_ordinal.is_some())
+        .filter_map(|record| record.semantic_role.clone())
+        .collect::<BTreeSet<_>>();
+    for role in ["thread.crest", "thread.end"] {
+        assert!(roles.contains(role), "{roles:?}");
+    }
+    println!(
+        "M5x20 bolt with head, turned down and trimmed: {time:?}, {} faces",
+        threaded.body.topology.face_count
+    );
+
+    // Trim and crest stay inside the helix, and crest needs a trim.
+    let outside = ThreadGrooveSpec {
+        trim_mm: Some([-3.0 * pitch, LENGTH_MM]),
+        ..spec.clone()
+    };
+    let crest_alone = ThreadGrooveSpec {
+        trim_mm: None,
+        ..spec
+    };
+    for invalid in [outside, crest_alone] {
+        assert_eq!(
+            backend.cut_thread(&bolt.body, &invalid).unwrap_err().code,
+            GeometryErrorCode::InvalidParameter
+        );
+    }
+}
+
+#[test]
 fn a_modelled_m5_tapped_hole_is_one_solid_with_the_volume_of_its_profile() {
     let backend = ExactBackend::new();
     let bore = 4.2;
@@ -191,6 +272,8 @@ fn phased(phase: &ThreadPhase, from: Vec3, to: Vec3, profile: Vec<[f64; 2]>) -> 
         end_mm: a.max(b) + M5.pitch_mm,
         left_handed: false,
         profile_mm: profile,
+        trim_mm: None,
+        crest_mm: None,
     }
 }
 

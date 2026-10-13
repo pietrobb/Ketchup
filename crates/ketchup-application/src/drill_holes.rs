@@ -329,6 +329,7 @@ fn admit_thread(
         size: thread.size.clone(),
         pitch_mm: metric.pitch_mm,
         depth_mm: thread.depth_mm,
+        modeled: thread.modeled_thread,
     })
 }
 
