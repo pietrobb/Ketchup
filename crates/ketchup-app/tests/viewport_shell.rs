@@ -66,4 +66,22 @@ fn desktop_shell_selects_the_wgpu_renderer() {
         eframe::wgpu::Backends::DX12
     );
     assert!(setup.native_adapter_selector.is_some());
+    let icon = options
+        .viewport
+        .icon
+        .expect("the desktop shell must carry the ketchup window icon");
+    assert_eq!(*icon, KetchupApp::window_icon());
+}
+
+#[test]
+fn window_icon_is_opaque_inside_and_transparent_in_the_corners() {
+    let icon = KetchupApp::window_icon();
+    let side = icon.width as usize;
+    assert_eq!((icon.width, icon.height), (128, 128));
+    assert_eq!(icon.rgba.len(), side * side * 4);
+    let alpha = |x: usize, y: usize| icon.rgba[(y * side + x) * 4 + 3];
+    for (x, y) in [(0, 0), (side - 1, 0), (0, side - 1), (side - 1, side - 1)] {
+        assert_eq!(alpha(x, y), 0, "corner ({x}, {y}) must be transparent");
+    }
+    assert_eq!(alpha(side / 2, side / 2), 255);
 }

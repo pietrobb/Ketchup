@@ -177,8 +177,20 @@ impl KetchupApp {
             },
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([1_100.0, 720.0])
-                .with_min_inner_size([1_100.0, 600.0]),
+                .with_min_inner_size([1_100.0, 600.0])
+                .with_icon(Self::window_icon()),
             ..Default::default()
+        }
+    }
+
+    /// The application icon on the title bar and taskbar (from `scripts/make_app_icon.py`).
+    #[must_use]
+    pub fn window_icon() -> egui::IconData {
+        const SIDE: u32 = 128;
+        egui::IconData {
+            rgba: include_bytes!("../../assets/ketchup-128.rgba").to_vec(),
+            width: SIDE,
+            height: SIDE,
         }
     }
 

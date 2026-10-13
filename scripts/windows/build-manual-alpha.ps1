@@ -163,6 +163,13 @@ Assert-Leaf $appSource "Manual Alpha application"
 Assert-Leaf $workerSource "exact worker"
 $viewerSource = Join-Path $BinaryDir "ketchup-viewer.exe"
 Assert-Leaf $viewerSource "Viewer"
+Add-Type -Namespace KetchupBuild -Name Shell -MemberDefinition @'
+[DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+public static extern uint ExtractIconEx(string file, int index, IntPtr[] large, IntPtr[] small, uint count);
+'@
+if ([KetchupBuild.Shell]::ExtractIconEx($appSource, -1, $null, $null, 0) -lt 1) {
+    throw "Manual Alpha application has no embedded icon: $appSource"
+}
 Copy-Item $appSource (Join-Path $payloadDir "Ketchup.exe")
 Copy-Item $workerSource (Join-Path $payloadDir "ketchup-exact-worker.exe")
 Copy-Item $viewerSource (Join-Path $payloadDir "KetchupViewer.exe")
@@ -227,6 +234,11 @@ ODPORUCANY TEST (priblizne 30-60 minut)
 10. Subor > Exportovat pre Viewer vytvori .ketchup-view. Dvojklik nanho ho otvori v programe
     Ketchup Viewer, kde mozno pridat pripomienky a ulozit .ketchup-comments. Dvojklik na
     .ketchup-comments ho otvori vo Vieweri spolu s balikom .ketchup-view v tom istom priecinku.
+11. DWG: Subor > Importovat ohranicenu 2D podmnozinu DXF/DWG nacita aj vykres .dwg (prevedie
+    ho do DXF a ukaze, co sa nedalo precitat). Subor > Vykresy (PDF, DXF, DWG) zapise vykresovy
+    list dokumentu ako DXF alebo DWG (AutoCAD 2018); kruhy a obluky idu ako skutocne kruznice
+    a obluky, skryte hrany vo vlastnej hladine. Vykresovy list vytvorite cez Nahlad vykresu
+    z vyberu v sekcii ZOSTAVA.
 
 Nesnazte sa prisposobit aplikacii. Postupujte tak, ako by ste ocakavali od bezneho CAD
 programu. Najcennejsie su miesta, kde ste nevedeli, co urobit dalej, alebo kde funkcia,
@@ -333,6 +345,9 @@ Write-Utf8 $packageManifestPath (($packageManifest | ConvertTo-Json -Depth 8) + 
 $issPath = Join-Path $OutputDir "manual-alpha.iss"
 $escapedPayload = $payloadDir.Replace('"', '""')
 $escapedOutput = $OutputDir.Replace('"', '""')
+$setupIcon = Join-Path $repoRoot "crates\ketchup-app\assets\ketchup.ico"
+Assert-Leaf $setupIcon "application icon"
+$escapedSetupIcon = $setupIcon.Replace('"', '""')
 $iss = @"
 [Setup]
 AppId=KetchupManualAlpha
@@ -342,6 +357,7 @@ AppPublisher=$publisher
 DefaultDirName={localappdata}\Programs\Ketchup Manual Alpha
 DefaultGroupName=Ketchup Manual Alpha
 UninstallDisplayIcon={app}\Ketchup.exe
+SetupIconFile=$escapedSetupIcon
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
