@@ -40,6 +40,8 @@ pub enum OverlapStatus {
     Pocket,
     /// The shared volume lies inside a declared joint volume.
     Joint,
+    /// A threaded fastener engages a hole tapped with its thread.
+    Thread,
     /// The solids overlap: a collision error.
     Collision,
     /// Only the exact solids can decide.
@@ -206,6 +208,9 @@ fn overlap_status(model: &ProgramModel, a: &Part, b: &Part) -> (OverlapStatus, O
     });
     if declared {
         return (OverlapStatus::Joint, None);
+    }
+    if validate::threaded_into(a, b, region) {
+        return (OverlapStatus::Thread, None);
     }
     // Collision or unverified; `sync_with_issues` settles which.
     (OverlapStatus::Collision, None)

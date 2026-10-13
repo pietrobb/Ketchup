@@ -670,6 +670,84 @@ fn a_thread_that_does_not_fit_its_hole_is_refused_by_name() {
     }
 }
 
+/// The collision issues of a M5 cap screw seated on top of a plate, over a
+/// hole tapped `hole_thread` `thread_depth` mm deep at `hole_at`.
+fn screw_collisions(hole_thread: &str, thread_depth: &str, hole_at: &str) -> Vec<String> {
+    let source = format!(
+        "L = bolt_lengths(\"M5\", norm = \"ISO 4762\")[0]\n\
+         p = box(\"p\", (40, 40, 30))\n\
+         hole(p, \"z+\", world = ({hole_at}, 30), depth = L + 3, thread = (\"{hole_thread}\", {thread_depth}))\n\
+         bolt(\"s\", \"M5\", L, norm = \"ISO 4762\", at = (20, 20, 30))\n"
+    );
+    let (_, report) =
+        run("screw.star", &source, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
+    report
+        .issues
+        .iter()
+        .filter(|issue| issue.kind.starts_with("collision"))
+        .map(|issue| format!("{}: {}", issue.kind, issue.message))
+        .collect()
+}
+
+#[test]
+fn a_screw_in_a_hole_tapped_with_its_thread_engages_it_instead_of_colliding() {
+    assert_eq!(screw_collisions("M5", "L", "20, 20"), Vec::<String>::new());
+    let (_, report) = run(
+        "screw.star",
+        "L = bolt_lengths(\"M5\", norm = \"ISO 4762\")[0]\n\
+         p = box(\"p\", (40, 40, 30))\n\
+         hole(p, \"z+\", world = (20, 20, 30), depth = L, thread = (\"M5\", L))\n\
+         bolt(\"s\", \"M5\", L, norm = \"ISO 4762\", at = (20, 20, 30))\n",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let relation = report
+        .relations
+        .iter()
+        .find(|relation| relation.parts.contains(&"s".to_owned()))
+        .unwrap();
+    assert_eq!(
+        relation.status,
+        Some(ketchup_program::OverlapStatus::Thread)
+    );
+}
+
+#[test]
+fn a_screw_past_the_thread_of_another_size_or_off_its_axis_still_collides() {
+    for (thread, depth, at) in [
+        ("M5", "L - 2", "20, 20"),
+        ("M4", "L", "20, 20"),
+        ("M5", "L", "21, 20"),
+    ] {
+        assert!(
+            !screw_collisions(thread, depth, at).is_empty(),
+            "{thread} {depth} at {at}"
+        );
+    }
+}
+
+#[test]
+fn a_screw_head_sunk_into_the_tapped_part_still_collides() {
+    // The tapped thread reaches past the shank, so only the head decides.
+    let (_, report) = run(
+        "screw.star",
+        "L = bolt_lengths(\"M5\", norm = \"ISO 4762\")[0]\n\
+         p = box(\"p\", (40, 40, 30))\n\
+         hole(p, \"z+\", world = (20, 20, 30), depth = L + 3, thread = (\"M5\", L + 3))\n\
+         bolt(\"s\", \"M5\", L, norm = \"ISO 4762\", at = (20, 20, 27))\n",
+        &BTreeMap::new(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.kind.starts_with("collision")),
+        "{:?}",
+        report.issues
+    );
+}
+
 #[test]
 fn a_value_that_is_not_a_list_names_the_expected_shape_and_the_starlark_reason() {
     let error = run("size.star", "a = box(\"a\", 18)\n", &BTreeMap::new()).unwrap_err();

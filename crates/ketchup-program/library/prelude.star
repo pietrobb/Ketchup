@@ -1229,6 +1229,11 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   Attributes (cut-list columns): designation (e.g. "ISO 4032 M8", "ISO 4017 M8x40"),
 #   standard, mass_basis (the mass is the simplified body's volume x 7850 kg/m3, not a
 #   catalogue weight) and source, which names a value of this size that has only one source.
+#   Bolts and threaded rods also carry thread (their size, e.g. "M8") and thread_from_mm /
+#   thread_to_mm (where it runs along the part's local z: the shank of a bolt, the whole rod).
+#   In a hole tapped with that thread (hole(..., thread=)) on their axis they engage it, not
+#   collide, as deep as the thread; a different size, an offset axis, a tip past the thread or
+#   a head sunk into the tapped part is still a collision.
 #   inspect action=mass and the takeoff weigh the simplified body. A full-diameter shank or
 #   rod weighs more than the threaded one: DIN 975 M12 is 0.888 kg/m here, the catalogues
 #   say 0.725 kg/m.
@@ -1433,16 +1438,22 @@ def _circle(radius, name):
     return [[name, (radius, 0), (-radius, 0), {"center": (0, 0)}],
             [name + "_back", (-radius, 0), (radius, 0), {"center": (0, 0)}]]
 
-def _fastener_part(name, outline, height, at, norm, size, designation, tags):
+def _fastener_part(name, outline, height, at, norm, size, designation, tags, thread = None):
     """A steel prism of `outline`, `height` along local +z from `at`, with the cut-list
-    attributes of a standard part."""
+    attributes of a standard part; `thread` = (size, from_z, to_z) names the outside thread
+    of a bolt or rod and where it runs along the part's local z."""
+    attributes = {
+        "designation": designation,
+        "standard": norm,
+        "mass_basis": _SIMPLIFIED_MASS,
+        "source": _fastener_source(norm, size),
+    }
+    if thread != None:
+        attributes["thread"] = thread[0]
+        attributes["thread_from_mm"] = "%g" % thread[1]
+        attributes["thread_to_mm"] = "%g" % thread[2]
     return extrude(name, profile = outline, distance = height, at = at, material = "steel", tags = tags,
-                   attributes = {
-                       "designation": designation,
-                       "standard": norm,
-                       "mass_basis": _SIMPLIFIED_MASS,
-                       "source": _fastener_source(norm, size),
-                   })
+                   attributes = attributes)
 
 def _turn_onto(part, at, axis):
     """Turns `part` about `at` so that its local z runs along `axis`."""
@@ -1491,11 +1502,11 @@ def bolt(name, size, length, norm = "ISO 4017", at = (0, 0, 0), axis = (0, 0, 1)
     designation = "%s %sx%s" % (norm, size, length)
     if norm == "ISO 4762":
         dk, k, s, t = head
-        part = _fastener_part(name, _circle(dk / 2.0, "head"), k, at, norm, size, designation, tags)
+        part = _fastener_part(name, _circle(dk / 2.0, "head"), k, at, norm, size, designation, tags, (size, -length, 0))
         cut(part, profile = _hexagon(s), depth = t, name = "socket")
     else:
         s, k = head
-        part = _fastener_part(name, _hexagon(s), k, at, norm, size, designation, tags)
+        part = _fastener_part(name, _hexagon(s), k, at, norm, size, designation, tags, (size, -length, 0))
     shank = extrude("%s/shank" % name, profile = _circle(int(size[1:]) / 2.0, "shank"), distance = length,
                     at = (at[0], at[1], at[2] - length), tool = True)
     union(part, shank, name = "shank")
@@ -1507,7 +1518,7 @@ def threaded_rod(name, size, length, norm = "DIN 975", at = (0, 0, 0), axis = (0
     if length <= 0:
         fail("threaded_rod(): length must be positive, got %r" % length)
     designation = "%s %sx%s" % (norm, size, length)
-    part = _fastener_part(name, _circle(d / 2.0, "rod"), length, at, norm, size, designation, tags)
+    part = _fastener_part(name, _circle(d / 2.0, "rod"), length, at, norm, size, designation, tags, (size, 0, length))
     return _turn_onto(part, at, axis)
 
 # Reinforcing bars B500B (EN 10080): nominal diameter: catalogue mass in kg/m. The library

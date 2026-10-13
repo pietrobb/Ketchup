@@ -92,6 +92,73 @@ pub(crate) fn contains(outer: ([f64; 3], [f64; 3]), inner: ([f64; 3], [f64; 3]))
     })
 }
 
+/// Whether the overlap `region` of `a` and `b` is a threaded fastener
+/// screwed into a hole tapped with its own thread: one part has the `thread`
+/// attribute (library bolts and threaded rods, the axis their local z) and
+/// `thread_from_mm`/`thread_to_mm` (where the thread runs along that z), the
+/// other a hole tapped with that size on that axis, and the region runs
+/// along the axis from the hole's entry no deeper than the tapped thread and
+/// within the fastener's own thread. A fastener of another size, off the
+/// axis, reaching past the thread or with its head sunk into the tapped part
+/// still collides.
+pub(crate) fn threaded_into(a: &Part, b: &Part, region: ([f64; 3], [f64; 3])) -> bool {
+    engages(a, b, region) || engages(b, a, region)
+}
+
+fn engages(fastener: &Part, tapped: &Part, (min, max): ([f64; 3], [f64; 3])) -> bool {
+    let Some(size) = fastener.attributes.get("thread") else {
+        return false;
+    };
+    let bound = |key: &str| {
+        fastener
+            .attributes
+            .get(key)
+            .and_then(|value| value.parse::<f64>().ok())
+    };
+    let (Some(thread_from), Some(thread_to)) = (bound("thread_from_mm"), bound("thread_to_mm"))
+    else {
+        return false;
+    };
+    let axis = frame::apply(&fastener.rotation, [0.0, 0.0, 1.0]);
+    let corners: Vec<[f64; 3]> = (0..8)
+        .map(|corner| std::array::from_fn(|i| if corner >> i & 1 == 0 { min[i] } else { max[i] }))
+        .collect();
+    let span = |origin: [f64; 3], direction: [f64; 3]| {
+        corners
+            .iter()
+            .map(|point| dot(*point, direction) - dot(origin, direction))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), depth| {
+                (low.min(depth), high.max(depth))
+            })
+    };
+    let (own_low, own_high) = span(fastener.at_mm, axis);
+    if own_low < thread_from - TOLERANCE_MM || own_high > thread_to + TOLERANCE_MM {
+        return false;
+    }
+    tapped
+        .finished_holes()
+        .any(|(hole, (local_entry, local_inward))| {
+            let Some(thread) = hole.thread.as_ref().filter(|thread| &thread.size == size) else {
+                return false;
+            };
+            let entry = tapped.to_world(local_entry);
+            let inward = frame::apply(&tapped.rotation, local_inward);
+            let offset: [f64; 3] = std::array::from_fn(|i| entry[i] - fastener.at_mm[i]);
+            let along = dot(offset, axis);
+            let off_axis = (0..3)
+                .map(|i| (offset[i] - along * axis[i]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            if (dot(axis, inward).abs() - 1.0).abs() > ketchup_model::tolerance::ROUNDING
+                || off_axis > TOLERANCE_MM
+            {
+                return false;
+            }
+            let (low, high) = span(entry, inward);
+            low >= -TOLERANCE_MM && high <= thread.depth_mm + TOLERANCE_MM
+        })
+}
+
 pub(crate) fn world_pockets(part: &Part) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_ {
     part.finished_pockets().map(|(_, corners)| {
         corners.iter().fold(
@@ -283,7 +350,7 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
                         .volume_mm
                         .is_some_and(|volume| contains(volume, region))
             });
-            if seated || declared {
+            if seated || declared || threaded_into(a, b, region) {
                 continue;
             }
             let (min, max) = region;
