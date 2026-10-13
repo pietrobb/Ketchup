@@ -306,21 +306,18 @@ impl<'a> GraphCompiler<'a> {
                 chamfer_edge_sides: chamfer_edge_sides
                     .iter()
                     .map(|selection| {
-                        let edge = topology_selectors(
-                            std::slice::from_ref(&selection.edge),
-                            TopologicalElementKind::Edge,
-                            *target,
-                        )?
-                        .pop()
-                        .ok_or(ExactBRepGraphError::InvalidTopologySelector)?;
-                        let side_face = topology_selectors(
-                            std::slice::from_ref(&selection.side_face),
-                            TopologicalElementKind::Face,
-                            *target,
-                        )?
-                        .pop()
-                        .ok_or(ExactBRepGraphError::InvalidTopologySelector)?;
-                        Ok(ExactBRepChamferEdgeSide { edge, side_face })
+                        Ok(ExactBRepChamferEdgeSide {
+                            edge: topology_selector(
+                                &selection.edge,
+                                TopologicalElementKind::Edge,
+                                *target,
+                            )?,
+                            side_face: topology_selector(
+                                &selection.side_face,
+                                TopologicalElementKind::Face,
+                                *target,
+                            )?,
+                        })
                     })
                     .collect::<Result<Vec<_>, ExactBRepGraphError>>()?,
             },
@@ -328,26 +325,7 @@ impl<'a> GraphCompiler<'a> {
                 target,
                 face,
                 distance,
-            } => ExactBRepOperation::FaceOffset {
-                target: self.body_id(*target)?,
-                face: face
-                    .topological()
-                    .map(|face| {
-                        topology_selectors(
-                            std::slice::from_ref(face),
-                            TopologicalElementKind::Face,
-                            *target,
-                        )?
-                        .pop()
-                        .ok_or(ExactBRepGraphError::InvalidTopologySelector)
-                    })
-                    .transpose()?,
-                profile_face: face.named().map(exact_profile_face_reference),
-                distance_bits: signed_distance(
-                    distance.millimetres(),
-                    self.snapshot.tolerance().linear_mm(),
-                )?,
-            },
+            } => self.face_offset(*target, face, distance)?,
             FeatureKind::Revolve {
                 profile,
                 axis_start_mm,
@@ -715,6 +693,26 @@ impl<'a> GraphCompiler<'a> {
         self.visiting.remove(&feature_id);
         self.compiled_bodies.insert(feature_id, id);
         Ok(id)
+    }
+
+    fn face_offset(
+        &self,
+        target: FeatureId,
+        face: &FaceRef,
+        distance: &Dimension,
+    ) -> Result<ExactBRepOperation, ExactBRepGraphError> {
+        Ok(ExactBRepOperation::FaceOffset {
+            target: self.body_id(target)?,
+            face: face
+                .topological()
+                .map(|face| topology_selector(face, TopologicalElementKind::Face, target))
+                .transpose()?,
+            profile_face: face.named().map(exact_profile_face_reference),
+            distance_bits: signed_distance(
+                distance.millimetres(),
+                self.snapshot.tolerance().linear_mm(),
+            )?,
+        })
     }
 
     pub(super) fn compile_loft_sections(

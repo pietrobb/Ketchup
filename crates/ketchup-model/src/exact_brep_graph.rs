@@ -1,8 +1,8 @@
 use crate::document::{
-    BodyKind, BooleanOperation, CanonicalError, ChamferMode, DefinitionId, EdgeFinishKind, EdgeRef,
-    FaceRef, FeatureDependencyGraph, FeatureId, FeatureKind, LoftContinuity, LoftSection,
-    ProfileFaceReference, ProfileSegment, ShellDirection, Snapshot, SpatialPathSegment,
-    SurfaceBodySpec, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
+    BodyKind, BooleanOperation, CanonicalError, ChamferMode, DefinitionId, Dimension,
+    EdgeFinishKind, EdgeRef, FaceRef, FeatureDependencyGraph, FeatureId, FeatureKind,
+    LoftContinuity, LoftSection, ProfileFaceReference, ProfileSegment, ShellDirection, Snapshot,
+    SpatialPathSegment, SurfaceBodySpec, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
     solved_sketch_sweep_path,
 };
 use crate::exact_product::{
@@ -62,6 +62,14 @@ pub struct ExactBRepProfileId(pub u32);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ExactBRepNodeId(pub u32);
+
+impl ExactBRepNodeId {
+    /// The node's position in the graph and in every per-node list.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

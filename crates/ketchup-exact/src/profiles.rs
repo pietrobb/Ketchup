@@ -127,20 +127,8 @@ impl ExactBackend {
                 "Surface trim requires non-solid target and cutter surfaces".to_owned(),
             ));
         }
-        let native_target = target.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Surface trim target lost its owned native shape".to_owned(),
-            operation,
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
-        let native_cutter = cutter.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Surface trim cutter lost its owned native shape".to_owned(),
-            operation,
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native_target = target.owned_native("Surface trim target", operation, &input)?;
+        let native_cutter = cutter.owned_native("Surface trim cutter", operation, &input)?;
         collect_output(
             ffi::trim_surface_native(native_target, native_cutter),
             operation,
@@ -172,13 +160,7 @@ impl ExactBackend {
                 "Surface extend requires one simply bounded non-solid face".to_owned(),
             ));
         }
-        let native_target = target.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Surface extend target lost its owned native shape".to_owned(),
-            operation,
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native_target = target.owned_native("Surface extend target", operation, &input)?;
         collect_output(
             ffi::extend_planar_surface_native(native_target, distance_mm),
             operation,
@@ -224,15 +206,8 @@ impl ExactBackend {
                 ),
             ));
         }
-        let missing_native = || GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Surface knit input lost its owned native shape".to_owned(),
-            operation,
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        };
-        let first = surfaces[0].native.as_ref().ok_or_else(missing_native)?;
-        let second = surfaces[1].native.as_ref().ok_or_else(missing_native)?;
+        let first = surfaces[0].owned_native("Surface knit input", operation, &input)?;
+        let second = surfaces[1].owned_native("Surface knit input", operation, &input)?;
         let mut compound = collect_output(
             ffi::combine_surfaces_native(first, second),
             operation,
@@ -240,9 +215,11 @@ impl ExactBackend {
             HistoryConfidence::None,
         )?;
         for surface in &surfaces[2..] {
-            let added = surface.native.as_ref().ok_or_else(missing_native)?;
+            let added = surface.owned_native("Surface knit input", operation, &input)?;
             let next = {
-                let base = compound.body.native.as_ref().ok_or_else(missing_native)?;
+                let base = compound
+                    .body
+                    .owned_native("Surface knit input", operation, &input)?;
                 collect_output(
                     ffi::combine_surfaces_native(base, added),
                     operation,
@@ -252,7 +229,10 @@ impl ExactBackend {
             };
             compound = next;
         }
-        let native_compound = compound.body.native.as_ref().ok_or_else(missing_native)?;
+        let native_compound =
+            compound
+                .body
+                .owned_native("Surface knit input", operation, &input)?;
         collect_output(
             ffi::knit_surface_compound_native(native_compound, tolerance_mm, make_solid),
             operation,
@@ -285,13 +265,7 @@ impl ExactBackend {
                 "Surface thicken requires a valid non-solid face-bearing body".to_owned(),
             ));
         }
-        let native_surface = surface.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Surface thicken target lost its owned native shape".to_owned(),
-            operation,
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native_surface = surface.owned_native("Surface thicken target", operation, &input)?;
         collect_output(
             ffi::thicken_surface_native(
                 native_surface,

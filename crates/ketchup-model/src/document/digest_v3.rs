@@ -99,48 +99,48 @@ fn document_digest(product: &ProductModel, old: &OldRecords) -> String {
     digest.byte(match product.units {
         UnitSystem::Millimetres => 1,
     });
-    digest.u64(product.evaluator_nodes.len() as u64);
+    digest.length(product.evaluator_nodes.len());
     for node in product.evaluator_nodes.values() {
         digest.node(node);
     }
-    digest.u64(product.overrides.len() as u64);
+    digest.length(product.overrides.len());
     for value in product.overrides.values() {
         digest.canonical_override(value);
     }
-    digest.u64(product.feature_parameter_bindings.len() as u64);
+    digest.length(product.feature_parameter_bindings.len());
     for binding in product.feature_parameter_bindings.values() {
         digest.feature_parameter_binding(binding);
     }
     if !product.feature_parameter_provenance.is_empty() {
         digest.bytes(b"feature-parameter-provenance.v1");
-        digest.u64(product.feature_parameter_provenance.len() as u64);
+        digest.length(product.feature_parameter_provenance.len());
         for (target, provenance) in &product.feature_parameter_provenance {
             digest.feature_parameter_target(target);
             digest.feature_parameter_provenance(provenance);
         }
     }
-    digest.u64(product.joints.len() as u64);
+    digest.length(product.joints.len());
     for joint in product.joints.values() {
         digest.joint(joint);
     }
-    digest.u64(product.spaces.len() as u64);
+    digest.length(product.spaces.len());
     for space in product.spaces.values() {
         digest.space(space);
     }
-    digest.u64(product.clearance_volumes.len() as u64);
+    digest.length(product.clearance_volumes.len());
     for clearance in product.clearance_volumes.values() {
         digest.clearance_volume(clearance);
     }
     if !product.cam_plans.is_empty() {
         digest.bytes(b"canonical-cam-plans.v1");
-        digest.u64(product.cam_plans.len() as u64);
+        digest.length(product.cam_plans.len());
         for plan in product.cam_plans.values() {
             digest.cam_plan(plan);
         }
     }
     if !product.pin_joints.is_empty() {
         digest.bytes(b"canonical-dowel-joints.v1");
-        digest.u64(product.pin_joints.len() as u64);
+        digest.length(product.pin_joints.len());
         for joint in product.pin_joints.values() {
             digest.dowel_joint(joint);
         }
@@ -149,56 +149,56 @@ fn document_digest(product: &ProductModel, old: &OldRecords) -> String {
         digest.bytes(b"canonical-assembly-recipe.v1");
         digest.assembly_recipe(recipe, &product.features);
     }
-    digest.u64(product.persistent_dimensions.len() as u64);
+    digest.length(product.persistent_dimensions.len());
     for dimension in product.persistent_dimensions.values() {
         digest.persistent_dimension(dimension);
     }
-    digest.u64(product.tags.len() as u64);
+    digest.length(product.tags.len());
     for tag in product.tags.values() {
         digest.tag(tag);
     }
-    digest.u64(product.classification_dimensions.len() as u64);
+    digest.length(product.classification_dimensions.len());
     for dimension in product.classification_dimensions.values() {
         digest.u64(dimension.id.0);
         digest.bytes(dimension.name.as_bytes());
-        digest.u64(dimension.categories.len() as u64);
+        digest.length(dimension.categories.len());
         for category in dimension.categories.values() {
             digest.u64(category.id.0);
             digest.bytes(category.name.as_bytes());
         }
     }
-    digest.u64(product.classification_assignments.len() as u64);
+    digest.length(product.classification_assignments.len());
     for ((occurrence_id, dimension_id), category_id) in &product.classification_assignments {
         digest.u64(occurrence_id.0);
         digest.u64(dimension_id.0);
         digest.u64(category_id.0);
     }
-    digest.u64(product.collections.len() as u64);
+    digest.length(product.collections.len());
     for collection in product.collections.values() {
         digest.collection(collection);
     }
-    digest.u64(product.import_receipts.len() as u64);
+    digest.length(product.import_receipts.len());
     for receipt in product.import_receipts.values() {
         digest.import_receipt(receipt);
     }
-    digest.u64(product.definitions.len() as u64);
+    digest.length(product.definitions.len());
     for definition in product.definitions.values() {
         digest.definition(definition);
     }
-    digest.u64(product.features.len() as u64);
+    digest.length(product.features.len());
     for feature in product.features.values() {
         digest.feature(feature, old);
     }
-    digest.u64(product.body_feature_suppression.len() as u64);
+    digest.length(product.body_feature_suppression.len());
     for ((definition_id, body_id), suppressed) in &product.body_feature_suppression {
         digest.u64(definition_id.0);
         digest.u64(body_id.0);
-        digest.u64(suppressed.len() as u64);
+        digest.length(suppressed.len());
         for feature_id in suppressed {
             digest.u64(feature_id.0);
         }
     }
-    digest.u64(product.occurrences.len() as u64);
+    digest.length(product.occurrences.len());
     for occurrence in product.occurrences.values() {
         digest.occurrence(occurrence);
     }
@@ -208,14 +208,14 @@ fn document_digest(product: &ProductModel, old: &OldRecords) -> String {
     }
     if !product.grounded_instances.is_empty() {
         digest.bytes(b"canonical-grounded-instances.v1");
-        digest.u64(product.grounded_instances.len() as u64);
+        digest.length(product.grounded_instances.len());
         for path in &product.grounded_instances {
             digest.instance_path(path);
         }
     }
     if !product.contact_joints.is_empty() {
         digest.bytes(b"canonical-contact-joints.v1");
-        digest.u64(product.contact_joints.len() as u64);
+        digest.length(product.contact_joints.len());
         for joint in &product.contact_joints {
             digest.bytes(joint.name.as_bytes());
             for path in &joint.parts {
@@ -224,71 +224,71 @@ fn document_digest(product: &ProductModel, old: &OldRecords) -> String {
             digest.u64(joint.max_gap_mm.to_bits());
         }
     }
-    digest.u64(product.grounded_occurrences.len() as u64);
+    digest.length(product.grounded_occurrences.len());
     for occurrence_id in &product.grounded_occurrences {
         digest.u64(occurrence_id.0);
     }
-    digest.u64(product.assembly_mates.len() as u64);
+    digest.length(product.assembly_mates.len());
     for mate in product.assembly_mates.values() {
         digest.assembly_mate(mate);
     }
     if !product.assembly_joints.is_empty() {
         digest.bytes(b"canonical-assembly-joints.v1");
-        digest.u64(product.assembly_joints.len() as u64);
+        digest.length(product.assembly_joints.len());
         for joint in product.assembly_joints.values() {
             digest.assembly_joint(joint);
         }
     }
     if !product.assembly_motion_couplings.is_empty() {
         digest.bytes(b"canonical-assembly-motion-couplings.v1");
-        digest.u64(product.assembly_motion_couplings.len() as u64);
+        digest.length(product.assembly_motion_couplings.len());
         for coupling in product.assembly_motion_couplings.values() {
             digest.assembly_motion_coupling(coupling);
         }
     }
     if !product.mechanical_interfaces.is_empty() {
         digest.bytes(b"canonical-mechanical-interfaces.v1");
-        digest.u64(product.mechanical_interfaces.len() as u64);
+        digest.length(product.mechanical_interfaces.len());
         for interface in product.mechanical_interfaces.values() {
             digest.mechanical_interface(interface);
         }
     }
     if !product.mechanical_conditions.is_empty() {
         digest.bytes(b"canonical-mechanical-conditions.v1");
-        digest.u64(product.mechanical_conditions.len() as u64);
+        digest.length(product.mechanical_conditions.len());
         for condition in product.mechanical_conditions.values() {
             digest.mechanical_condition(condition);
         }
     }
     if !product.assembly_motion_studies.is_empty() {
         digest.bytes(b"canonical-assembly-motion-studies.v1");
-        digest.u64(product.assembly_motion_studies.len() as u64);
+        digest.length(product.assembly_motion_studies.len());
         for study in product.assembly_motion_studies.values() {
             digest.assembly_motion_study(study);
         }
     }
     if !product.drawing_sheets.is_empty() {
         digest.bytes(b"canonical-drawing-sheets.v1");
-        digest.u64(product.drawing_sheets.len() as u64);
+        digest.length(product.drawing_sheets.len());
         for sheet in product.drawing_sheets.values() {
             digest.drawing_sheet(sheet);
         }
     }
-    digest.u64(product.groups.len() as u64);
+    digest.length(product.groups.len());
     for group in product.groups.values() {
         digest.group(group);
     }
-    digest.u64(product.local_groups.len() as u64);
+    digest.length(product.local_groups.len());
     for group in product.local_groups.values() {
         digest.local_group(group);
     }
-    digest.u64(product.local_occurrences.len() as u64);
+    digest.length(product.local_occurrences.len());
     for occurrence in product.local_occurrences.values() {
         digest.local_occurrence(occurrence);
     }
     if !product.instance_transform_overrides.is_empty() {
         digest.bytes(b"canonical-instance-transform-overrides.v1");
-        digest.u64(product.instance_transform_overrides.len() as u64);
+        digest.length(product.instance_transform_overrides.len());
         for (path, transform) in &product.instance_transform_overrides {
             digest.instance_path(path);
             digest.transform(*transform);
@@ -296,7 +296,7 @@ fn document_digest(product: &ProductModel, old: &OldRecords) -> String {
     }
     if !product.production_codes.is_empty() {
         digest.bytes(b"canonical-production-codes.v1");
-        digest.u64(product.production_codes.len() as u64);
+        digest.length(product.production_codes.len());
         for (path, code) in &product.production_codes {
             digest.instance_path(path);
             digest.bytes(code.as_bytes());
@@ -328,10 +328,15 @@ impl DigestV3 {
     }
 
     fn bytes(&mut self, bytes: &[u8]) {
-        self.u64(bytes.len() as u64);
+        self.length(bytes.len());
         for byte in bytes {
             self.byte(*byte);
         }
+    }
+
+    /// A count or length, hashed as the u64 it always fits.
+    fn length(&mut self, value: usize) {
+        self.u64(value as u64);
     }
 
     fn u64(&mut self, value: u64) {
@@ -345,7 +350,7 @@ impl DigestV3 {
     }
 
     fn slot_path(&mut self, path: &SlotPath) {
-        self.u64(path.segments().len() as u64);
+        self.length(path.segments().len());
         for segment in path.segments() {
             self.u64(segment.producer_rule_id.0);
             self.bytes(segment.output_port.as_bytes());
@@ -429,11 +434,11 @@ impl DigestV3 {
         for value in space.volume().min().into_iter().chain(space.volume().max()) {
             self.u64(value.to_bits());
         }
-        self.u64(space.adjacent_to().len() as u64);
+        self.length(space.adjacent_to().len());
         for id in space.adjacent_to() {
             self.u64(id.0);
         }
-        self.u64(space.accessible_to().len() as u64);
+        self.length(space.accessible_to().len());
         for id in space.accessible_to() {
             self.u64(id.0);
         }
@@ -445,7 +450,7 @@ impl DigestV3 {
             ClearanceOwner::Occurrence(path) => {
                 self.byte(1);
                 self.u64(path.root_occurrence().0);
-                self.u64(path.steps().len() as u64);
+                self.length(path.steps().len());
                 for step in path.steps() {
                     match step {
                         InstancePathStep::Group(id) => {
@@ -585,7 +590,7 @@ impl DigestV3 {
         }
         self.u64(u64::from(joint.count));
         if !joint.pair_offsets_first_local_mm.is_empty() {
-            self.u64(joint.pair_offsets_first_local_mm.len() as u64);
+            self.length(joint.pair_offsets_first_local_mm.len());
             for offset in &joint.pair_offsets_first_local_mm {
                 for value in offset {
                     self.u64(value.to_bits());
@@ -596,7 +601,7 @@ impl DigestV3 {
             None => self.byte(0),
             Some(pairs) => {
                 self.byte(1);
-                self.u64(pairs.len() as u64);
+                self.length(pairs.len());
                 for pair in pairs {
                     self.u64(pair.first_pocket_feature_id.0);
                     self.u64(pair.second_pocket_feature_id.0);
@@ -617,7 +622,7 @@ impl DigestV3 {
 
         self.bytes(recipe.schema.as_bytes());
         self.bytes(recipe.key.as_str().as_bytes());
-        self.u64(recipe.parts.len() as u64);
+        self.length(recipe.parts.len());
         for part in recipe.parts.values() {
             self.bytes(part.key.as_str().as_bytes());
             self.instance_path(&part.instance_path);
@@ -637,7 +642,7 @@ impl DigestV3 {
                     self.u64(id.0);
                 }
             }
-            self.u64(part.parameters.len() as u64);
+            self.length(part.parameters.len());
             for (key, parameter) in &part.parameters {
                 self.bytes(key.as_str().as_bytes());
                 self.u64(parameter.value.to_bits());
@@ -655,7 +660,7 @@ impl DigestV3 {
                 }
             }
         }
-        self.u64(recipe.relations.len() as u64);
+        self.length(recipe.relations.len());
         for relation in recipe.relations.values() {
             self.bytes(relation.key.as_str().as_bytes());
             self.byte(match relation.kind {
@@ -667,14 +672,14 @@ impl DigestV3 {
                 self.bytes(face.role.as_bytes());
             }
         }
-        self.u64(recipe.joinery.len() as u64);
+        self.length(recipe.joinery.len());
         for joinery in recipe.joinery.values() {
             self.bytes(joinery.key.as_str().as_bytes());
             self.bytes(joinery.first_part.as_str().as_bytes());
             self.bytes(joinery.second_part.as_str().as_bytes());
             self.u64(joinery.pin_joint_id.0);
         }
-        self.u64(recipe.owned_features.len() as u64);
+        self.length(recipe.owned_features.len());
         for owned in recipe.owned_features.values() {
             self.bytes(owned.key.as_str().as_bytes());
             self.bytes(owned.part.as_str().as_bytes());
@@ -750,7 +755,7 @@ impl DigestV3 {
     fn collection(&mut self, collection: &Collection) {
         self.u64(collection.id.0);
         self.bytes(collection.name.as_bytes());
-        self.u64(collection.occurrence_ids.len() as u64);
+        self.length(collection.occurrence_ids.len());
         for occurrence_id in &collection.occurrence_ids {
             self.u64(occurrence_id.0);
         }
@@ -783,7 +788,7 @@ impl DigestV3 {
         });
         self.bytes(receipt.parser_id().as_bytes());
         self.bytes(receipt.parser_version().as_bytes());
-        self.u64(receipt.diagnostics().len() as u64);
+        self.length(receipt.diagnostics().len());
         for diagnostic in receipt.diagnostics() {
             self.byte(match diagnostic.severity() {
                 ImportDiagnosticSeverity::Info => 1,
@@ -799,7 +804,7 @@ impl DigestV3 {
             }
             self.u64(u64::from(diagnostic.count()));
         }
-        self.u64(receipt.outputs().len() as u64);
+        self.length(receipt.outputs().len());
         for output in receipt.outputs() {
             match output {
                 ImportOutputRef::Definition(id) => {
@@ -830,7 +835,7 @@ impl DigestV3 {
 
     fn instance_path(&mut self, path: &InstancePath) {
         self.u64(path.root_occurrence().0);
-        self.u64(path.steps().len() as u64);
+        self.length(path.steps().len());
         for step in path.steps() {
             match step {
                 InstancePathStep::Group(id) => {
@@ -848,11 +853,11 @@ impl DigestV3 {
     fn definition(&mut self, definition: &Definition) {
         self.u64(definition.id.0);
         self.bytes(definition.name.as_bytes());
-        self.u64(definition.feature_ids.len() as u64);
+        self.length(definition.feature_ids.len());
         for feature_id in &definition.feature_ids {
             self.u64(feature_id.0);
         }
-        self.u64(definition.bodies.len() as u64);
+        self.length(definition.bodies.len());
         for body in definition.bodies.values() {
             self.u64(body.id.0);
             self.bytes(body.name.as_bytes());
@@ -860,20 +865,20 @@ impl DigestV3 {
             self.optional_id(body.consumed_by.map(|id| id.0));
         }
         self.u64(definition.active_body_id.0);
-        self.u64(definition.feature_body_ownership.len() as u64);
+        self.length(definition.feature_body_ownership.len());
         for (feature_id, ownership) in &definition.feature_body_ownership {
             self.u64(feature_id.0);
-            self.u64(ownership.input_body_ids.len() as u64);
+            self.length(ownership.input_body_ids.len());
             for body_id in &ownership.input_body_ids {
                 self.u64(body_id.0);
             }
             self.optional_id(ownership.output_body_id.map(|body_id| body_id.0));
         }
-        self.u64(definition.local_group_ids.len() as u64);
+        self.length(definition.local_group_ids.len());
         for id in &definition.local_group_ids {
             self.u64(id.0);
         }
-        self.u64(definition.local_occurrence_ids.len() as u64);
+        self.length(definition.local_occurrence_ids.len());
         for id in &definition.local_occurrence_ids {
             self.u64(id.0);
         }
@@ -1086,7 +1091,7 @@ impl DigestV3 {
             FeatureKind::Sketch(spec) => {
                 self.byte(18);
                 self.u64(spec.workplane.0);
-                self.u64(spec.entities.len() as u64);
+                self.length(spec.entities.len());
                 for entity in &spec.entities {
                     match entity {
                         SketchEntity::Line {
@@ -1143,7 +1148,7 @@ impl DigestV3 {
                         }
                     }
                 }
-                self.u64(spec.constraints.len() as u64);
+                self.length(spec.constraints.len());
                 for constraint in &spec.constraints {
                     self.u64(constraint.id.0);
                     match &constraint.kind {
@@ -1255,7 +1260,7 @@ impl DigestV3 {
             }
             FeatureKind::Profile { segments, .. } if point_profile => {
                 self.byte(1);
-                self.u64(segments.len() as u64);
+                self.length(segments.len());
                 for segment in segments {
                     let point = segment.start_mm();
                     self.u64(point[0].to_bits());
@@ -1265,7 +1270,7 @@ impl DigestV3 {
             // Old records stored a closed spline as its own feature kind.
             FeatureKind::Profile { .. } if let Some(points) = kind.closed_spline_points() => {
                 self.byte(14);
-                self.u64(points.len() as u64);
+                self.length(points.len());
                 for point in points {
                     self.u64(point[0].to_bits());
                     self.u64(point[1].to_bits());
@@ -1274,7 +1279,7 @@ impl DigestV3 {
             FeatureKind::Profile { segments, closed } => {
                 self.byte(11);
                 self.byte(u8::from(*closed));
-                self.u64(segments.len() as u64);
+                self.length(segments.len());
                 for segment in segments {
                     match segment {
                         ProfileSegment::Line { start_mm, end_mm } => {
@@ -1312,7 +1317,7 @@ impl DigestV3 {
                         // Never in an old record; hashed for completeness only.
                         ProfileSegment::Spline { points_mm } => {
                             self.byte(4);
-                            self.u64(points_mm.len() as u64);
+                            self.length(points_mm.len());
                             for point in points_mm {
                                 self.u64(point[0].to_bits());
                                 self.u64(point[1].to_bits());
@@ -1348,7 +1353,7 @@ impl DigestV3 {
             }
             FeatureKind::SpatialPath { segments } => {
                 self.byte(25);
-                self.u64(segments.len() as u64);
+                self.length(segments.len());
                 for segment in segments {
                     match segment {
                         SpatialPathSegment::Line { start_mm, end_mm } => {
@@ -1445,7 +1450,7 @@ impl DigestV3 {
                         continuity,
                     } => {
                         self.byte(2);
-                        self.u64(sections.len() as u64);
+                        self.length(sections.len());
                         for section in sections {
                             self.u64(section.profile.0);
                             self.u64(section.elevation_mm.to_bits());
@@ -1476,7 +1481,7 @@ impl DigestV3 {
                 make_solid,
             } => {
                 self.byte(35);
-                self.u64(surfaces.len() as u64);
+                self.length(surfaces.len());
                 for surface in surfaces {
                     self.u64(surface.0);
                 }
@@ -1505,7 +1510,7 @@ impl DigestV3 {
                 continuity,
             } => {
                 self.byte(15);
-                self.u64(sections.len() as u64);
+                self.length(sections.len());
                 for section in sections {
                     self.u64(section.profile.0);
                     self.u64(section.elevation_mm.to_bits());
@@ -1547,7 +1552,7 @@ impl DigestV3 {
                     .collect::<Vec<_>>();
                 self.byte(21);
                 self.u64(target.0);
-                self.u64(recorded.len() as u64);
+                self.length(recorded.len());
                 for reference in recorded {
                     self.topological_reference(reference);
                 }
@@ -1560,7 +1565,7 @@ impl DigestV3 {
                 });
                 // Absent for shells opened by topology, so their digests stay.
                 if !profile_faces.is_empty() {
-                    self.u64(profile_faces.len() as u64);
+                    self.length(profile_faces.len());
                     for face in profile_faces {
                         self.profile_face(face);
                     }
@@ -1582,11 +1587,11 @@ impl DigestV3 {
                 let profile_edges = edges.iter().filter_map(EdgeRef::named).collect::<Vec<_>>();
                 self.byte(22);
                 self.u64(target.0);
-                self.u64(recorded.len() as u64);
+                self.length(recorded.len());
                 for reference in recorded {
                     self.topological_reference(reference);
                 }
-                self.u64(profile_edges.len() as u64);
+                self.length(profile_edges.len());
                 for edge in profile_edges {
                     self.profile_face(&edge.first);
                     self.profile_face(&edge.second);
@@ -1597,7 +1602,7 @@ impl DigestV3 {
                 });
                 self.bytes(amount.source_token().as_bytes());
                 self.u64(amount.millimetres().to_bits());
-                self.u64(fillet_radius_stations.len() as u64);
+                self.length(fillet_radius_stations.len());
                 for station in fillet_radius_stations {
                     self.u64(station.position.to_bits());
                     self.bytes(station.radius.source_token().as_bytes());
@@ -1615,7 +1620,7 @@ impl DigestV3 {
                         self.u64(angle_degrees.to_bits());
                     }
                 }
-                self.u64(chamfer_edge_sides.len() as u64);
+                self.length(chamfer_edge_sides.len());
                 for selection in chamfer_edge_sides {
                     self.topological_reference(&selection.edge);
                     self.topological_reference(&selection.side_face);
@@ -1625,22 +1630,7 @@ impl DigestV3 {
                 target,
                 face,
                 distance,
-            } => {
-                self.byte(23);
-                self.u64(target.0);
-                match face {
-                    FaceRef::Topological(face) => {
-                        self.byte(1);
-                        self.topological_reference(face);
-                    }
-                    FaceRef::Named(face) => {
-                        self.byte(2);
-                        self.profile_face(face);
-                    }
-                }
-                self.bytes(distance.source_token().as_bytes());
-                self.u64(distance.millimetres().to_bits());
-            }
+            } => self.face_offset(*target, face, distance),
             FeatureKind::RigidTransform { target, transform } => {
                 self.byte(24);
                 self.u64(target.0);
@@ -1688,13 +1678,13 @@ impl DigestV3 {
             FeatureKind::MeshBody(spec) => {
                 self.byte(9);
                 self.bytes(spec.schema.as_bytes());
-                self.u64(spec.vertices_mm.len() as u64);
+                self.length(spec.vertices_mm.len());
                 for vertex in &spec.vertices_mm {
                     for coordinate in vertex {
                         self.u64(coordinate.to_bits());
                     }
                 }
-                self.u64(spec.triangles.len() as u64);
+                self.length(spec.triangles.len());
                 for triangle in &spec.triangles {
                     for index in triangle {
                         self.u64(u64::from(*index));
@@ -1731,7 +1721,7 @@ impl DigestV3 {
                         self.bytes(conversion.tessellation_tolerance.as_bytes());
                         self.u64(conversion.destination_definition_id.0);
                         self.u64(conversion.destination_feature_id.0);
-                        self.u64(conversion.unsupported_semantics.len() as u64);
+                        self.length(conversion.unsupported_semantics.len());
                         for semantic in &conversion.unsupported_semantics {
                             self.bytes(semantic.as_bytes());
                         }
@@ -1744,6 +1734,23 @@ impl DigestV3 {
         }
     }
 
+    fn face_offset(&mut self, target: FeatureId, face: &FaceRef, distance: &Dimension) {
+        self.byte(23);
+        self.u64(target.0);
+        match face {
+            FaceRef::Topological(face) => {
+                self.byte(1);
+                self.topological_reference(face);
+            }
+            FaceRef::Named(face) => {
+                self.byte(2);
+                self.profile_face(face);
+            }
+        }
+        self.bytes(distance.source_token().as_bytes());
+        self.u64(distance.millimetres().to_bits());
+    }
+
     fn sheet_metal(&mut self, record: &SheetMetalV1) {
         self.byte(29);
         for dimension in [&record.width, &record.depth, &record.thickness] {
@@ -1751,7 +1758,7 @@ impl DigestV3 {
             self.u64(dimension.millimetres().to_bits());
         }
         self.u64(record.k_factor.to_bits());
-        self.u64(record.flanges.len() as u64);
+        self.length(record.flanges.len());
         for flange in &record.flanges {
             self.byte(flange.side().map_or(0, |side| side as u8 + 1));
             self.bytes(flange.length.source_token().as_bytes());
@@ -2059,7 +2066,7 @@ impl DigestV3 {
         self.bytes(study.schema().as_bytes());
         self.u64(study.id().0);
         self.bytes(study.name().as_bytes());
-        self.u64(study.drivers().len() as u64);
+        self.length(study.drivers().len());
         for driver in study.drivers() {
             self.u64(driver.joint_id().0);
             self.u64(driver.position().to_bits());
@@ -2077,14 +2084,14 @@ impl DigestV3 {
             }
             DrawingSource::RigidAssembly { occurrence_ids } => {
                 self.byte(2);
-                self.u64(occurrence_ids.len() as u64);
+                self.length(occurrence_ids.len());
                 for id in occurrence_ids {
                     self.u64(id.0);
                 }
             }
             DrawingSource::RigidAssemblyInstances { instance_paths } => {
                 self.byte(3);
-                self.u64(instance_paths.len() as u64);
+                self.length(instance_paths.len());
                 for path in instance_paths {
                     self.instance_path(path);
                 }
@@ -2104,11 +2111,11 @@ impl DigestV3 {
         self.bytes(title_block.revision().as_bytes());
         self.bytes(title_block.author().as_bytes());
         self.byte(u8::from(title_block.is_parametric()));
-        self.u64(sheet.views().len() as u64);
+        self.length(sheet.views().len());
         for view in sheet.views() {
             self.bytes(view.stable_name().as_bytes());
         }
-        self.u64(sheet.linear_dimensions().len() as u64);
+        self.length(sheet.linear_dimensions().len());
         for dimension in sheet.linear_dimensions() {
             self.u64(dimension.id().0);
             self.bytes(dimension.view_stable_name().as_bytes());
@@ -2130,7 +2137,7 @@ impl DigestV3 {
                 }
             }
         }
-        self.u64(sheet.angular_dimensions().len() as u64);
+        self.length(sheet.angular_dimensions().len());
         for dimension in sheet.angular_dimensions() {
             self.u64(dimension.id().0);
             self.bytes(dimension.view_stable_name().as_bytes());
@@ -2154,7 +2161,7 @@ impl DigestV3 {
                 }
             }
         }
-        self.u64(sheet.circular_dimensions().len() as u64);
+        self.length(sheet.circular_dimensions().len());
         for dimension in sheet.circular_dimensions() {
             self.u64(dimension.id().0);
             self.bytes(dimension.view_stable_name().as_bytes());
@@ -2181,7 +2188,7 @@ impl DigestV3 {
                 }
             }
         }
-        self.u64(sheet.datum_symbols().len() as u64);
+        self.length(sheet.datum_symbols().len());
         for datum in sheet.datum_symbols() {
             self.u64(datum.id().0);
             self.bytes(datum.view_stable_name().as_bytes());
@@ -2191,7 +2198,7 @@ impl DigestV3 {
                 self.u64(coordinate.to_bits());
             }
         }
-        self.u64(sheet.feature_control_frames().len() as u64);
+        self.length(sheet.feature_control_frames().len());
         for frame in sheet.feature_control_frames() {
             self.u64(frame.id().0);
             self.bytes(frame.view_stable_name().as_bytes());
@@ -2220,7 +2227,7 @@ impl DigestV3 {
                 DrawingMaterialCondition::LeastMaterial => 2,
                 DrawingMaterialCondition::RegardlessOfFeatureSize => 3,
             });
-            self.u64(frame.datum_references().len() as u64);
+            self.length(frame.datum_references().len());
             for reference in frame.datum_references() {
                 self.bytes(reference.label().as_bytes());
                 self.byte(match reference.material_condition() {
@@ -2234,7 +2241,7 @@ impl DigestV3 {
                 self.u64(coordinate.to_bits());
             }
         }
-        self.u64(sheet.bom_balloons().len() as u64);
+        self.length(sheet.bom_balloons().len());
         for balloon in sheet.bom_balloons() {
             self.u64(balloon.id().0);
             self.bytes(balloon.view_stable_name().as_bytes());
@@ -2244,7 +2251,7 @@ impl DigestV3 {
                 self.u64(coordinate.to_bits());
             }
         }
-        self.u64(sheet.notes().len() as u64);
+        self.length(sheet.notes().len());
         for note in sheet.notes() {
             self.u64(note.id().0);
             for coordinate in note.position_page_mm() {

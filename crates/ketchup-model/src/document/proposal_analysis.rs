@@ -830,109 +830,8 @@ pub(super) fn authoritative_dependencies(
             } => {
                 dependencies.insert(AuthoritativeDependency::Feature(*id));
                 dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
-                match kind {
-                    FeatureKind::Workplane(spec) => match &spec.support {
-                        WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
-                        WorkplaneSupport::Offset { base, .. }
-                        | WorkplaneSupport::ConstructionPlane { feature: base } => {
-                            add_feature_dependency_closure(snapshot, *base, &mut dependencies);
-                        }
-                        WorkplaneSupport::PlanarFace { reference, .. } => {
-                            add_feature_dependency_closure(
-                                snapshot,
-                                reference.producer_feature_id,
-                                &mut dependencies,
-                            );
-                        }
-                    },
-                    FeatureKind::Sketch(spec) => {
-                        add_feature_dependency_closure(snapshot, spec.workplane, &mut dependencies);
-                        for constraint in &spec.constraints {
-                            if let SketchConstraintKind::Projection { source_feature, .. } =
-                                constraint.kind
-                            {
-                                add_feature_dependency_closure(
-                                    snapshot,
-                                    source_feature,
-                                    &mut dependencies,
-                                );
-                            }
-                        }
-                    }
-                    FeatureKind::Pad(spec) => {
-                        if let Some(target) = spec.operation.target() {
-                            add_feature_dependency_closure(snapshot, target, &mut dependencies);
-                        }
-                        add_feature_dependency_closure(
-                            snapshot,
-                            spec.profile.feature_id(),
-                            &mut dependencies,
-                        );
-                    }
-                    FeatureKind::Revolve { profile, .. }
-                    | FeatureKind::PlanarOffset { profile, .. }
-                    | FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
-                        add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
-                    }
-                    FeatureKind::Sweep { profile, path, .. } => {
-                        add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
-                        add_feature_dependency_closure(snapshot, *path, &mut dependencies);
-                    }
-                    FeatureKind::WeldmentMember(spec) => {
-                        add_feature_dependency_closure(snapshot, spec.profile, &mut dependencies);
-                        add_feature_dependency_closure(snapshot, spec.path, &mut dependencies);
-                    }
-                    FeatureKind::WeldmentJoint(spec) => {
-                        add_feature_dependency_closure(
-                            snapshot,
-                            spec.first_member,
-                            &mut dependencies,
-                        );
-                        add_feature_dependency_closure(
-                            snapshot,
-                            spec.second_member,
-                            &mut dependencies,
-                        );
-                    }
-                    FeatureKind::Loft {
-                        sections, guide, ..
-                    }
-                    | FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
-                        sections, guide, ..
-                    }) => {
-                        for source in sections.iter().map(|section| section.profile).chain(*guide) {
-                            add_feature_dependency_closure(snapshot, source, &mut dependencies);
-                        }
-                    }
-                    FeatureKind::Boolean { target, tool, .. }
-                    | FeatureKind::SurfaceTrim {
-                        target,
-                        cutter: tool,
-                    } => {
-                        add_feature_dependency_closure(snapshot, *target, &mut dependencies);
-                        add_feature_dependency_closure(snapshot, *tool, &mut dependencies);
-                    }
-                    FeatureKind::Shell { target, .. }
-                    | FeatureKind::EdgeFinish { target, .. }
-                    | FeatureKind::FaceOffset { target, .. }
-                    | FeatureKind::SurfaceExtend { target, .. }
-                    | FeatureKind::SurfaceThicken { target, .. }
-                    | FeatureKind::RigidTransform { target, .. } => {
-                        add_feature_dependency_closure(snapshot, *target, &mut dependencies);
-                    }
-                    FeatureKind::SurfaceKnit { surfaces, .. } => {
-                        for surface in surfaces {
-                            add_feature_dependency_closure(snapshot, *surface, &mut dependencies);
-                        }
-                    }
-                    FeatureKind::Profile { .. }
-                    | FeatureKind::SheetMetal(_)
-                    | FeatureKind::SpatialPath { .. }
-                    | FeatureKind::ConstructionPoint { .. }
-                    | FeatureKind::ConstructionAxis { .. }
-                    | FeatureKind::ConstructionPlane { .. }
-                    | FeatureKind::ImportedExactBody(_)
-                    | FeatureKind::MeshBody(_) => {}
+                for source in closure_sources(kind, true) {
+                    add_feature_dependency_closure(snapshot, source, &mut dependencies);
                 }
             }
             CanonicalCommand::DeleteFeature { id } => {
@@ -1656,87 +1555,25 @@ pub(super) fn add_feature_dependency_closure(
     }
     if let Some(feature) = snapshot.feature(id) {
         dependencies.insert(AuthoritativeDependency::Definition(feature.definition_id()));
-        match feature.kind() {
-            FeatureKind::Workplane(spec) => match &spec.support {
-                WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
-                WorkplaneSupport::Offset { base, .. }
-                | WorkplaneSupport::ConstructionPlane { feature: base } => {
-                    add_feature_dependency_closure(snapshot, *base, dependencies);
-                }
-                WorkplaneSupport::PlanarFace { reference, .. } => {
-                    add_feature_dependency_closure(
-                        snapshot,
-                        reference.producer_feature_id,
-                        dependencies,
-                    );
-                }
-            },
-            FeatureKind::Sketch(spec) => {
-                add_feature_dependency_closure(snapshot, spec.workplane, dependencies);
-            }
-            FeatureKind::Pad(spec) => {
-                if let Some(target) = spec.operation.target() {
-                    add_feature_dependency_closure(snapshot, target, dependencies);
-                }
-                add_feature_dependency_closure(snapshot, spec.profile.feature_id(), dependencies);
-            }
-            FeatureKind::Revolve { profile, .. }
-            | FeatureKind::PlanarOffset { profile, .. }
-            | FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
-                add_feature_dependency_closure(snapshot, *profile, dependencies);
-            }
-            FeatureKind::Sweep { profile, path, .. } => {
-                add_feature_dependency_closure(snapshot, *profile, dependencies);
-                add_feature_dependency_closure(snapshot, *path, dependencies);
-            }
-            FeatureKind::WeldmentMember(spec) => {
-                add_feature_dependency_closure(snapshot, spec.profile, dependencies);
-                add_feature_dependency_closure(snapshot, spec.path, dependencies);
-            }
-            FeatureKind::WeldmentJoint(spec) => {
-                add_feature_dependency_closure(snapshot, spec.first_member, dependencies);
-                add_feature_dependency_closure(snapshot, spec.second_member, dependencies);
-            }
-            FeatureKind::Loft {
-                sections, guide, ..
-            }
-            | FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
-                sections, guide, ..
-            }) => {
-                for source in sections.iter().map(|section| section.profile).chain(*guide) {
-                    add_feature_dependency_closure(snapshot, source, dependencies);
-                }
-            }
-            FeatureKind::Boolean { target, tool, .. }
-            | FeatureKind::SurfaceTrim {
-                target,
-                cutter: tool,
-            } => {
-                add_feature_dependency_closure(snapshot, *target, dependencies);
-                add_feature_dependency_closure(snapshot, *tool, dependencies);
-            }
-            FeatureKind::Shell { target, .. }
-            | FeatureKind::EdgeFinish { target, .. }
-            | FeatureKind::FaceOffset { target, .. }
-            | FeatureKind::SurfaceExtend { target, .. }
-            | FeatureKind::SurfaceThicken { target, .. }
-            | FeatureKind::RigidTransform { target, .. } => {
-                add_feature_dependency_closure(snapshot, *target, dependencies);
-            }
-            FeatureKind::SurfaceKnit { surfaces, .. } => {
-                for surface in surfaces {
-                    add_feature_dependency_closure(snapshot, *surface, dependencies);
-                }
-            }
-            FeatureKind::Profile { .. }
-            | FeatureKind::SheetMetal(_)
-            | FeatureKind::SpatialPath { .. }
-            | FeatureKind::ConstructionPoint { .. }
-            | FeatureKind::ConstructionAxis { .. }
-            | FeatureKind::ConstructionPlane { .. }
-            | FeatureKind::ImportedExactBody(_)
-            | FeatureKind::MeshBody(_) => {}
+        for source in closure_sources(feature.kind(), false) {
+            add_feature_dependency_closure(snapshot, source, dependencies);
         }
+    }
+}
+
+/// The features the dependency closure follows from `kind`: its dependencies,
+/// except that a face workplane follows only the body that issued the face and
+/// a sketch follows its projection sources only while it is being created.
+fn closure_sources(kind: &FeatureKind, created: bool) -> BTreeSet<FeatureId> {
+    match kind {
+        FeatureKind::Workplane(spec) => match &spec.support {
+            WorkplaneSupport::PlanarFace { reference, .. } => {
+                BTreeSet::from([reference.producer_feature_id])
+            }
+            _ => kind.dependencies(),
+        },
+        FeatureKind::Sketch(spec) if !created => BTreeSet::from([spec.workplane]),
+        _ => kind.dependencies(),
     }
 }
 

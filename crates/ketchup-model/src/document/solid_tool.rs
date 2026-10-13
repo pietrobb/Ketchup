@@ -61,6 +61,17 @@ pub(super) fn remap_face_ref(
     })
 }
 
+fn remap_face_refs(
+    faces: &[FaceRef],
+    new_definition_id: DefinitionId,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<Vec<FaceRef>, CanonicalError> {
+    faces
+        .iter()
+        .map(|face| remap_face_ref(face, new_definition_id, mapping))
+        .collect()
+}
+
 pub(super) fn remap_edge_ref(
     edge: &EdgeRef,
     new_definition_id: DefinitionId,
@@ -248,32 +259,11 @@ pub(super) fn clone_definition_and_repoint(
                 cloned.workplane = remapped(&mapping, &spec.workplane)?;
                 FeatureKind::Sketch(cloned)
             }
-            FeatureKind::Profile { segments, closed } => FeatureKind::Profile {
-                segments: segments.clone(),
-                closed: *closed,
-            },
-            FeatureKind::SpatialPath { segments } => FeatureKind::SpatialPath {
-                segments: segments.clone(),
-            },
-            FeatureKind::ConstructionPoint { position_mm } => FeatureKind::ConstructionPoint {
-                position_mm: *position_mm,
-            },
-            FeatureKind::ConstructionAxis {
-                origin_mm,
-                direction,
-            } => FeatureKind::ConstructionAxis {
-                origin_mm: *origin_mm,
-                direction: *direction,
-            },
-            FeatureKind::ConstructionPlane {
-                origin_mm,
-                normal,
-                x_direction,
-            } => FeatureKind::ConstructionPlane {
-                origin_mm: *origin_mm,
-                normal: *normal,
-                x_direction: *x_direction,
-            },
+            kind @ (FeatureKind::Profile { .. }
+            | FeatureKind::SpatialPath { .. }
+            | FeatureKind::ConstructionPoint { .. }
+            | FeatureKind::ConstructionAxis { .. }
+            | FeatureKind::ConstructionPlane { .. }) => kind.clone(),
             FeatureKind::Pad(spec) => {
                 let mut cloned = spec.with_features(|id| {
                     mapping
@@ -310,10 +300,7 @@ pub(super) fn clone_definition_and_repoint(
                 direction,
             } => FeatureKind::Shell {
                 target: remapped(&mapping, target)?,
-                removed_faces: removed_faces
-                    .iter()
-                    .map(|face| remap_face_ref(face, new_definition_id, &mapping))
-                    .collect::<Result<Vec<_>, _>>()?,
+                removed_faces: remap_face_refs(removed_faces, new_definition_id, &mapping)?,
                 thickness: thickness.clone(),
                 direction: *direction,
             },

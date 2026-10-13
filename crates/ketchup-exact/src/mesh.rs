@@ -23,13 +23,7 @@ impl ExactBackend {
             angular_deflection.to_bits()
         );
         let input_digest = stable_digest(&input);
-        let native = body.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Exact body lost its owned native shape".to_owned(),
-            operation: "tessellate_body",
-            input_digest: input_digest.clone(),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native = body.owned_native("Exact body", "tessellate_body", &input)?;
         let mesh =
             ffi::tessellate_body_native(native, deflection, angular_deflection, max_triangles);
         let mesh = mesh.as_ref().ok_or_else(|| GeometryError {
@@ -137,13 +131,7 @@ impl ExactBackend {
                 "Volume meshing requires exactly one closed exact solid".to_owned(),
             ));
         }
-        let native = body.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Exact body lost its owned native shape".to_owned(),
-            operation: "volume_mesh_body",
-            input_digest: input_digest.clone(),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native = body.owned_native("Exact body", "volume_mesh_body", &input)?;
         let mesh = ffi::volume_mesh_body_native(
             native,
             options.surface_deflection_mm,

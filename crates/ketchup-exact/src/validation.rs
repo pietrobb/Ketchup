@@ -494,6 +494,33 @@ pub(super) fn parameter_error(
     }
 }
 
+/// A selection of sub-shapes is canonical when it is bounded, strictly ascending
+/// and every ordinal names one of `count` sub-shapes.
+pub(super) fn canonical_ordinals(ordinals: &[u32], count: u32) -> bool {
+    ordinals.len() <= ketchup_tolerance::limits::FEATURE_REFERENCES
+        && ordinals.windows(2).all(|pair| pair[0] < pair[1])
+        && ordinals.iter().all(|ordinal| *ordinal < count)
+}
+
+impl ExactBody {
+    /// The owned native shape; `role` names the body in the error when it is gone.
+    pub(super) fn owned_native(
+        &self,
+        role: &str,
+        operation: &'static str,
+        input: &str,
+    ) -> Result<&ffi::NativeOperationResult, GeometryError> {
+        self.native.as_ref().ok_or_else(|| {
+            parameter_error(
+                GeometryErrorCode::NullResult,
+                operation,
+                input,
+                format!("{role} lost its owned native shape"),
+            )
+        })
+    }
+}
+
 pub(super) fn box_input(label: &str, spec: BoxSpec) -> String {
     format!(
         "{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}",

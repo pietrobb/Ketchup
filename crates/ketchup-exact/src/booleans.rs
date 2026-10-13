@@ -20,13 +20,7 @@ impl ExactBackend {
                 "body transform must be a finite affine 4x4 matrix".to_owned(),
             ));
         }
-        let native = body.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Exact body lost its owned native shape".to_owned(),
-            operation: "transform_body",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native = body.owned_native("Exact body", "transform_body", &input)?;
         collect_output(
             ffi::transform_body_native(native, matrix),
             "transform_body",
@@ -44,20 +38,8 @@ impl ExactBackend {
             "combine_bodies:{}:{}",
             base.result_fingerprint, added.result_fingerprint
         );
-        let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Base exact body lost its owned native shape".to_owned(),
-            operation: "combine_bodies",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
-        let native_added = added.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Added exact body lost its owned native shape".to_owned(),
-            operation: "combine_bodies",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native_base = base.owned_native("Base exact body", "combine_bodies", &input)?;
+        let native_added = added.owned_native("Added exact body", "combine_bodies", &input)?;
         collect_output(
             ffi::combine_bodies_native(native_base, native_added),
             "combine_bodies",
@@ -91,13 +73,7 @@ impl ExactBackend {
                 "Plane trim requires finite points and a non-degenerate normal".to_owned(),
             ));
         }
-        let native = body.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Plane trim body lost its owned native shape".to_owned(),
-            operation: "trim_body_by_plane",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native = body.owned_native("Plane trim body", "trim_body_by_plane", &input)?;
         collect_output(
             ffi::trim_body_by_plane_native(
                 native,
@@ -248,20 +224,8 @@ impl ExactBackend {
             "boolean_bodies:{operation:?}:{}:{}",
             target.result_fingerprint, tool.result_fingerprint
         );
-        let native_target = target.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Target exact body lost its owned native shape".to_owned(),
-            operation: "boolean_bodies",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
-        let native_tool = tool.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Tool exact body lost its owned native shape".to_owned(),
-            operation: "boolean_bodies",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native_target = target.owned_native("Target exact body", "boolean_bodies", &input)?;
+        let native_tool = tool.owned_native("Tool exact body", "boolean_bodies", &input)?;
         let operation_code = match operation {
             ExactBodyBooleanOperation::Cut => 0,
             ExactBodyBooleanOperation::Union => 1,

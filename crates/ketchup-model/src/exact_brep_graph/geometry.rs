@@ -134,6 +134,21 @@ pub(super) fn exact_profile_face_reference(
     }
 }
 
+/// The selector of one recorded reference; see `topology_selectors`.
+pub(super) fn topology_selector(
+    reference: &TopologicalElementRef,
+    expected_kind: TopologicalElementKind,
+    target_feature_id: FeatureId,
+) -> Result<ExactBRepTopologySelector, ExactBRepGraphError> {
+    topology_selectors(
+        std::slice::from_ref(reference),
+        expected_kind,
+        target_feature_id,
+    )?
+    .pop()
+    .ok_or(ExactBRepGraphError::InvalidTopologySelector)
+}
+
 pub(super) fn topology_selectors(
     references: &[TopologicalElementRef],
     expected_kind: TopologicalElementKind,

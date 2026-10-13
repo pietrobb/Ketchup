@@ -34,6 +34,29 @@ pub(super) fn projected_bounds(
     Ok([minimum, maximum])
 }
 
+/// The bounds of node `target` grown by `growth` of them on every side; a
+/// negative growth keeps them.
+fn grown_bounds(
+    node_bounds: &[Option<[[f64; 3]; 2]>],
+    target: ExactBRepNodeId,
+    growth: impl FnOnce([[f64; 3]; 2]) -> f64,
+) -> Result<Option<[[f64; 3]; 2]>, ExactBRepGraphError> {
+    let Some(bounds) = node_bounds[target.index()] else {
+        return Ok(None);
+    };
+    let distance = growth(bounds);
+    if distance < 0.0 {
+        return Ok(Some(bounds));
+    }
+    let grown = [
+        [0, 1, 2].map(|axis| bounds[0][axis] - distance),
+        [0, 1, 2].map(|axis| bounds[1][axis] + distance),
+    ];
+    valid_bounds(grown)
+        .then_some(Some(grown))
+        .ok_or(ExactBRepGraphError::ResourceLimit)
+}
+
 pub(super) fn operation_bounds(
     operation: &ExactBRepOperation,
     profiles: &[ExactBRepProfile],
@@ -51,22 +74,7 @@ pub(super) fn operation_bounds(
             target,
             distance_bits,
             ..
-        } => {
-            let Some(target_bounds) = node_bounds[target.0 as usize] else {
-                return Ok(None);
-            };
-            let distance = f64::from_bits(*distance_bits);
-            if distance < 0.0 {
-                return Ok(Some(target_bounds));
-            }
-            let expanded = [
-                [0, 1, 2].map(|axis| target_bounds[0][axis] - distance),
-                [0, 1, 2].map(|axis| target_bounds[1][axis] + distance),
-            ];
-            valid_bounds(expanded)
-                .then_some(Some(expanded))
-                .ok_or(ExactBRepGraphError::ResourceLimit)
-        }
+        } => grown_bounds(node_bounds, *target, |_| f64::from_bits(*distance_bits)),
         ExactBRepOperation::RigidTransform {
             target,
             matrix_bits,

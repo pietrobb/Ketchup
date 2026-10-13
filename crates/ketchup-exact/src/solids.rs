@@ -201,12 +201,7 @@ impl ExactBackend {
             thickness_mm.to_bits()
         );
         validate_length(thickness_mm, "thickness_mm", "shell_body", &input)?;
-        if face_ordinals.len() > 64
-            || face_ordinals.windows(2).any(|pair| pair[0] >= pair[1])
-            || face_ordinals
-                .iter()
-                .any(|ordinal| *ordinal >= body.topology.face_count)
-        {
+        if !canonical_ordinals(face_ordinals, body.topology.face_count) {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidParameter,
                 "shell_body",
@@ -214,13 +209,7 @@ impl ExactBackend {
                 "Shell faces must be a canonical in-range selection".to_owned(),
             ));
         }
-        let native = body.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Exact body lost its owned native shape".to_owned(),
-            operation: "shell_body",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native = body.owned_native("Exact body", "shell_body", &input)?;
         collect_output(
             ffi::shell_body_native(
                 native,
@@ -258,13 +247,7 @@ impl ExactBackend {
                 "Face offset requires one in-range face and a non-zero distance".to_owned(),
             ));
         }
-        let native = body.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Exact body lost its owned native shape".to_owned(),
-            operation: "offset_body_face",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native = body.owned_native("Exact body", "offset_body_face", &input)?;
         collect_output(
             ffi::offset_body_face_native(native, face_ordinal, distance_mm),
             "offset_body_face",
@@ -322,12 +305,7 @@ impl ExactBackend {
                 "Variable fillet stations are invalid or non-canonical".to_owned(),
             ));
         }
-        if edge_ordinals.is_empty()
-            || edge_ordinals.len() > 64
-            || edge_ordinals.windows(2).any(|pair| pair[0] >= pair[1])
-            || edge_ordinals
-                .iter()
-                .any(|ordinal| *ordinal >= body.topology.edge_count)
+        if edge_ordinals.is_empty() || !canonical_ordinals(edge_ordinals, body.topology.edge_count)
         {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidParameter,
@@ -336,13 +314,7 @@ impl ExactBackend {
                 "Finish edges must be a non-empty canonical in-range selection".to_owned(),
             ));
         }
-        let native = body.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Exact body lost its owned native shape".to_owned(),
-            operation: "finish_body",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native = body.owned_native("Exact body", "finish_body", &input)?;
         let flattened_stations = fillet_radius_stations
             .iter()
             .flat_map(|station| *station)
@@ -401,12 +373,8 @@ impl ExactBackend {
             }
         };
         if edge_ordinals.is_empty()
-            || edge_ordinals.len() > 64
             || edge_ordinals.len() != face_ordinals.len()
-            || edge_ordinals.windows(2).any(|pair| pair[0] >= pair[1])
-            || edge_ordinals
-                .iter()
-                .any(|ordinal| *ordinal >= body.topology.edge_count)
+            || !canonical_ordinals(edge_ordinals, body.topology.edge_count)
             || face_ordinals
                 .iter()
                 .any(|ordinal| *ordinal >= body.topology.face_count)
@@ -428,13 +396,7 @@ impl ExactBackend {
                 "Advanced chamfer edge/face pairs or parameters are invalid".to_owned(),
             ));
         }
-        let native = body.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Exact body lost its owned native shape".to_owned(),
-            operation: "finish_body_advanced_chamfer",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native = body.owned_native("Exact body", "finish_body_advanced_chamfer", &input)?;
         collect_output(
             ffi::finish_body_native(
                 native,

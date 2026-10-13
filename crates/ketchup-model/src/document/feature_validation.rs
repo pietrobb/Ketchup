@@ -69,13 +69,23 @@ pub(super) fn validate_topological_feature_context(
     Ok(())
 }
 
+/// A feature that picks faces or edges of a body picks them in this document and
+/// definition, from an earlier solid of the definition.
 pub(super) fn validate_topological_target(
     product: &ProductModel,
     definition: &Definition,
-    feature_id: FeatureId,
-    target_id: FeatureId,
-    references: &[&TopologicalElementRef],
+    feature: &Feature,
 ) -> Result<(), CanonicalError> {
+    validate_topological_feature_context(
+        product.document_id,
+        feature.definition_id,
+        &feature.kind,
+    )?;
+    let feature_id = feature.id;
+    let (target_id, references) = feature
+        .kind
+        .topological_picks()
+        .ok_or(CanonicalError::InvalidFeatureOwnership(feature_id))?;
     let target = product
         .features
         .get(&target_id)
@@ -1044,20 +1054,7 @@ pub(super) fn validate_feature_kind(
             }
             Ok(())
         }
-        FeatureKind::FaceOffset { face, distance, .. } => {
-            Dimension::new(distance.source_token(), distance.millimetres()).map(|_| ())?;
-            if distance.millimetres().abs() <= PROFILE_EPSILON_MM {
-                return Err(CanonicalError::DimensionOutsideEnvelope);
-            }
-            match face {
-                FaceRef::Topological(face) => validate_topological_feature_references(
-                    std::slice::from_ref(face.as_ref()),
-                    TopologicalElementKind::Face,
-                ),
-                FaceRef::Named(face) if face.is_valid() => Ok(()),
-                FaceRef::Named(_) => Err(CanonicalError::InvalidTopologicalFeatureReference),
-            }
-        }
+        FeatureKind::FaceOffset { face, distance, .. } => validate_face_offset(face, distance),
         FeatureKind::ImportedExactBody(spec) => validate_imported_exact_body(spec),
         FeatureKind::RigidTransform { transform, .. } => {
             transform
@@ -1188,6 +1185,21 @@ pub(super) fn validate_feature_kind(
             Ok(())
         }
         FeatureKind::Boolean { .. } => Ok(()),
+    }
+}
+
+fn validate_face_offset(face: &FaceRef, distance: &Dimension) -> Result<(), CanonicalError> {
+    Dimension::new(distance.source_token(), distance.millimetres()).map(|_| ())?;
+    if distance.millimetres().abs() <= PROFILE_EPSILON_MM {
+        return Err(CanonicalError::DimensionOutsideEnvelope);
+    }
+    match face {
+        FaceRef::Topological(face) => validate_topological_feature_references(
+            std::slice::from_ref(face.as_ref()),
+            TopologicalElementKind::Face,
+        ),
+        FaceRef::Named(face) if face.is_valid() => Ok(()),
+        FaceRef::Named(_) => Err(CanonicalError::InvalidTopologicalFeatureReference),
     }
 }
 

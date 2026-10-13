@@ -528,13 +528,7 @@ impl ExactBackend {
                 "STEP path must not be empty".to_owned(),
             ));
         }
-        let native = body.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Exact body lost its owned native shape".to_owned(),
-            operation: "export_step",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native = body.owned_native("Exact body", "export_step", &input)?;
         let diagnostic = ffi::export_step_native(native, path);
         if diagnostic.is_empty() {
             Ok(())
@@ -559,13 +553,7 @@ impl ExactBackend {
                 "IGES path must not be empty".to_owned(),
             ));
         }
-        let native = body.native.as_ref().ok_or_else(|| GeometryError {
-            code: GeometryErrorCode::NullResult,
-            diagnostic: "Exact body lost its owned native shape".to_owned(),
-            operation: "export_iges",
-            input_digest: stable_digest(&input),
-            backend_fingerprint: BACKEND_FINGERPRINT,
-        })?;
+        let native = body.owned_native("Exact body", "export_iges", &input)?;
         let diagnostic = ffi::export_iges_native(native, path);
         if diagnostic.is_empty() {
             Ok(())

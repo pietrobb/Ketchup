@@ -1283,9 +1283,9 @@ fn evaluate_exact_brep_graph(
                 profile_face,
                 distance_bits,
             } => {
-                let target_output = &outputs[target.0 as usize];
+                let target_output = &outputs[target.index()];
                 if let Some(profile_face) = profile_face {
-                    let names = face_names[target.0 as usize].as_ref().ok_or_else(|| {
+                    let names = face_names[target.index()].as_ref().ok_or_else(|| {
                         exact_brep_graph_error(
                             graph,
                             "named face offset target has no program face names",
@@ -1307,23 +1307,7 @@ fn evaluate_exact_brep_graph(
                     let face = face.as_ref().ok_or_else(|| {
                         exact_brep_graph_error(graph, "face offset selector is missing")
                     })?;
-                    let [ordinal] = exact_brep_topology_ordinals(
-                        graph,
-                        *target,
-                        target_output,
-                        std::slice::from_ref(face),
-                        ExactBRepTopologyKind::Face,
-                    )?
-                    .try_into()
-                    .map_err(|ordinals: Vec<_>| {
-                        exact_brep_graph_error(
-                            graph,
-                            &format!(
-                                "face offset selector resolved to {} faces instead of one",
-                                ordinals.len()
-                            ),
-                        )
-                    })?;
+                    let ordinal = exact_brep_face_ordinal(graph, *target, target_output, face)?;
                     backend.offset_body_face(
                         &target_output.body,
                         ordinal,
@@ -1732,6 +1716,32 @@ fn exact_brep_topology_ordinals(
         ));
     }
     Ok(ordinals)
+}
+
+/// The ordinal of the one face `selector` names on `target_output`.
+fn exact_brep_face_ordinal(
+    graph: &ExactBRepGraph,
+    target: ketchup_model::exact_brep_graph::ExactBRepNodeId,
+    target_output: &ExactOpOutput,
+    selector: &ExactBRepTopologySelector,
+) -> Result<u32, ketchup_exact::GeometryError> {
+    let ordinals = exact_brep_topology_ordinals(
+        graph,
+        target,
+        target_output,
+        std::slice::from_ref(selector),
+        ExactBRepTopologyKind::Face,
+    )?;
+    let [ordinal] = ordinals[..] else {
+        return Err(exact_brep_graph_error(
+            graph,
+            &format!(
+                "face selector resolved to {} faces instead of one",
+                ordinals.len()
+            ),
+        ));
+    };
+    Ok(ordinal)
 }
 
 fn exact_brep_chamfer_ordinal_pairs(

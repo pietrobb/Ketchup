@@ -494,16 +494,7 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
             FeatureKind::Shell { .. }
             | FeatureKind::EdgeFinish { .. }
             | FeatureKind::FaceOffset { .. } => {
-                validate_topological_feature_context(
-                    product.document_id,
-                    feature.definition_id,
-                    &feature.kind,
-                )?;
-                let (target, references) = feature
-                    .kind
-                    .topological_picks()
-                    .expect("topology features pick a target");
-                validate_topological_target(product, definition, feature.id, target, &references)?;
+                validate_topological_target(product, definition, feature)?
             }
             FeatureKind::PlanarOffset { profile, distance } => {
                 let source = product
