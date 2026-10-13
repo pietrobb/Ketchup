@@ -958,3 +958,40 @@ group("all", [a,i,p])
         .unwrap();
     assert_eq!(redone["source"], moved_source);
 }
+
+/// #2482: the fasteners example file (anchored-beam.star) and the example in
+/// the fasteners topic are clean on the exact solids, not only on the
+/// program's box check: bolts and anchor rods pass through their holes,
+/// washers and nuts seat on the plates, and the bars and rods cast into the
+/// footing were subtracted from it.
+#[test]
+fn the_fasteners_examples_have_no_collision_on_the_exact_solids() {
+    let topic = ketchup_program::PRELUDE
+        .lines()
+        .skip_while(|line| !line.starts_with("#   Example (an M12 bolt"))
+        .skip_while(|line| !line.starts_with("#     "))
+        .take_while(|line| line.starts_with("#     "))
+        .map(|line| &line["#     ".len()..])
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(topic.contains("bolt(\"bolt\", \"M12\""), "{topic}");
+    for source in [
+        include_str!("../../../../examples/programs/anchored-beam.star"),
+        topic.as_str(),
+    ] {
+        let mut wire = Wire::new();
+        let response = wire.call_within(apply(source, true), Duration::from_secs(120));
+        assert!(response.ok, "{response:?}");
+        let result = response.result.unwrap();
+        assert_eq!(result["geometry_evaluated"], true, "{result}");
+        assert_eq!(result["exact_collisions"]["state"], "verified", "{result}");
+        assert_eq!(result["exact_collisions"]["collisions"], 0, "{result}");
+        let issues = result["report"]["issues"].as_array().unwrap();
+        assert!(
+            !issues.iter().any(|issue| issue["kind"] == "collision"
+                || issue["kind"] == ketchup_program::COLLISION_UNVERIFIED),
+            "{issues:#?}"
+        );
+        assert_eq!(result["report"]["errors"], 0, "{issues:#?}");
+    }
+}

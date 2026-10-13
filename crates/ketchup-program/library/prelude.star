@@ -1229,6 +1229,17 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   inspect action=mass and the takeoff weigh the simplified body. A full-diameter shank or
 #   rod weighs more than the threaded one: DIN 975 M12 is 0.888 kg/m here, the catalogues
 #   say 0.725 kg/m.
+#   Holes are not made for them: drill the parts (hole(..., through=True)) a little wider than
+#   the shank, and subtract() a bar or rod cast into concrete from the concrete.
+#   Example (an M12 bolt through two 10 mm plates; the full program with anchor rods and a
+#   rebar mesh in a footing is the example file anchored-beam.star):
+#     a = box("a", (100, 100, 10))
+#     b = box("b", (100, 100, 10), at=(0, 0, 10))
+#     for part, top in [(a, 10), (b, 20)]:
+#         hole(part, "z+", world=(50, 50, top), diameter=13, depth=10, through=True)
+#     bolt("bolt", "M12", 35, at=(50, 50, 20))
+#     washer("washer", "M12", at=(50, 50, 0), axis=(0, 0, -1))
+#     nut("nut", "M12", at=(50, 50, -2.5), axis=(0, 0, -1))
 #
 # Dimensions in mm: nominal s and the largest height the norm allows (m max, h max), washers
 # d1 nominal (min), d2 nominal (max), h nominal, bolt heads k nominal (ISO 4762: dk max, k max,
