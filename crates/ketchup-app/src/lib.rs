@@ -150,6 +150,7 @@ mod program_edit;
 mod program_evaluation;
 mod program_source_ui;
 mod refusal;
+mod selection_mass_ui;
 mod selection_measures_ui;
 use ketchup_rejection::{Rejection, RejectionPhase};
 use refusal::{Refuse, failed, invalid_field};
@@ -2539,6 +2540,9 @@ pub struct KetchupApp {
     /// The section plane cutting the viewport open; display only, never the model.
     section: Option<SectionPlane>,
     selection: SelectionState,
+    /// The mass the dock last showed for the selection, until it or the
+    /// document changes.
+    selection_mass: RefCell<selection_mass_ui::SelectionMassCache>,
     /// The space or clearance volume picked in the dock or by a validator
     /// finding, with the part selection it was picked together with.
     picked_space: Option<(app::spaces_ui::SpaceRow, BTreeSet<InstancePath>)>,
@@ -2846,6 +2850,8 @@ mod push_pull_snapping_tests;
 mod rotation_input_tests;
 #[cfg(test)]
 mod scene_snapping_tests;
+#[cfg(test)]
+mod selection_mass_ui_tests;
 #[cfg(test)]
 mod selection_measures_ui_tests;
 #[cfg(test)]

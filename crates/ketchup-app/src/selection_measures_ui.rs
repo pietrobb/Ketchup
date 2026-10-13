@@ -156,11 +156,16 @@ impl KetchupApp {
         let Some(measures) = self.selection_measures() else {
             return;
         };
+        let mass = self.selection_mass(&measures);
         egui::CollapsingHeader::new(self.catalog.text("selection-measures-title"))
             .id_salt("selection-measures")
             .default_open(true)
             .show(ui, |ui| {
-                for line in self.selection_measure_lines(&measures) {
+                for line in self
+                    .selection_measure_lines(&measures)
+                    .into_iter()
+                    .chain(self.selection_mass_lines(&mass))
+                {
                     ui.label(line);
                 }
             });

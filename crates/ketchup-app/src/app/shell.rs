@@ -149,6 +149,7 @@ impl KetchupApp {
             },
             view: ViewSettings::default(),
             selection: SelectionState::default(),
+            selection_mass: RefCell::default(),
             picked_space: None,
             space_fields: Default::default(),
             picked_dimension: None,
