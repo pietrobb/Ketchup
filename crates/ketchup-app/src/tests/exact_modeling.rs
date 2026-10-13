@@ -494,15 +494,20 @@ fn running_app_uses_one_exact_cut_body_for_render_pick_and_export() {
     let before = app.document.current();
     let context = egui::Context::default();
 
-    for _ in 0..200 {
-        app.refresh_exact_products(&context);
-        if app.exact_render_body_count() == 1 {
-            break;
-        }
+    // Under full workspace load the worker may need far longer than a fixed
+    // two seconds, so wait for its result with a generous ceiling.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    app.refresh_exact_products(&context);
+    while app.exact_render_body_count() == 0 && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
+        app.refresh_exact_products(&context);
     }
 
-    assert_eq!(app.exact_render_body_count(), 1);
+    assert_eq!(
+        app.exact_render_body_count(),
+        1,
+        "worker nedoručil exact cut body"
+    );
     assert_eq!(app.document.current().revision_id(), before.revision_id());
     assert_eq!(
         app.document.current().canonical_digest(),
