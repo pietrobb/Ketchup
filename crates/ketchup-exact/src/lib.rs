@@ -179,6 +179,13 @@ mod ffi {
         max_y: f64,
         max_z: f64,
         edge_count: u32,
+        has_cone: bool,
+        cone_axis_x: f64,
+        cone_axis_y: f64,
+        cone_axis_z: f64,
+        cone_normal_x: f64,
+        cone_normal_y: f64,
+        cone_normal_z: f64,
     }
 
     struct NativeFaceEdgeEvidence {

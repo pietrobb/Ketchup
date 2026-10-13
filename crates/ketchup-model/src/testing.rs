@@ -102,6 +102,7 @@ pub fn box_package(
                 unit_normal,
                 axis_origin_mm: None,
                 unit_axis_direction: None,
+                cone: None,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;

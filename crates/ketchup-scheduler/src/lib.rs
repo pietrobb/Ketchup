@@ -29,7 +29,7 @@ use ketchup_model::document::{
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation};
 use ketchup_model::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence, ExactBRepGraphPackage,
-    ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactProductError,
+    ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactConeFaceEvidence, ExactProductError,
 };
 use ketchup_model::graph::sha256_hex;
 use ketchup_model::import::{
@@ -425,6 +425,7 @@ pub struct WorkerExactBRepGraphFaceEvidence {
     pub unit_normal: [f64; 3],
     pub axis_origin_mm: Option<[f64; 3]>,
     pub unit_axis_direction: Option<[f64; 3]>,
+    pub cone: Option<ExactConeFaceEvidence>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -2144,6 +2145,7 @@ impl ExactWorkerSupervisor {
                         unit_normal: face.unit_normal,
                         axis_origin_mm: face.axis_origin_mm,
                         unit_axis_direction: face.unit_axis_direction,
+                        cone: face.cone,
                     })
                     .collect(),
                 edges: result

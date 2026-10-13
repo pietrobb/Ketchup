@@ -142,6 +142,13 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
   double axis_direction_x = 0.0;
   double axis_direction_y = 0.0;
   double axis_direction_z = 0.0;
+  bool has_cone = false;
+  double cone_axis_x = 0.0;
+  double cone_axis_y = 0.0;
+  double cone_axis_z = 0.0;
+  double cone_normal_x = 0.0;
+  double cone_normal_y = 0.0;
+  double cone_normal_z = 0.0;
   gp_Dir normal;
   if (oriented_planar_face_normal(face, normal)) {
     surface_kind = "plane";
@@ -162,6 +169,31 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
       axis_direction_x = direction.X();
       axis_direction_y = direction.Y();
       axis_direction_z = direction.Z();
+    } else if (surface.GetType() == GeomAbs_Cone) {
+      // The angle of a cone's normal to its axis is the same everywhere, so the
+      // oriented normal at one interior point gives it exactly. Kept out of the
+      // face fingerprint so existing face references do not change.
+      double u0, u1, v0, v1;
+      BRepTools::UVBounds(face, u0, u1, v0, v1);
+      gp_Pnt point;
+      gp_Vec du, dv;
+      surface.D1((u0 + u1) * 0.5, (v0 + v1) * 0.5, point, du, dv);
+      const gp_Vec cross = du.Crossed(dv);
+      if (std::isfinite(u0) && std::isfinite(u1) && std::isfinite(v0) && std::isfinite(v1)
+          && cross.SquareMagnitude() > tolerances().negligible * tolerances().negligible) {
+        gp_Dir cone_normal(cross);
+        if (face.Orientation() == TopAbs_REVERSED) {
+          cone_normal.Reverse();
+        }
+        const gp_Dir axis = surface.Cone().Axis().Direction();
+        has_cone = true;
+        cone_axis_x = axis.X();
+        cone_axis_y = axis.Y();
+        cone_axis_z = axis.Z();
+        cone_normal_x = cone_normal.X();
+        cone_normal_y = cone_normal.Y();
+        cone_normal_z = cone_normal.Z();
+      }
     }
   }
 
@@ -192,7 +224,14 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
         TopTools_IndexedMapOfShape edges;
         TopExp::MapShapes(face, TopAbs_EDGE, edges);
         return static_cast<std::uint32_t>(edges.Extent());
-      }()};
+      }(),
+      has_cone,
+      cone_axis_x,
+      cone_axis_y,
+      cone_axis_z,
+      cone_normal_x,
+      cone_normal_y,
+      cone_normal_z};
 }
 
 NativeEdgeEvidence inspect_edge(const TopoDS_Edge& edge, std::uint32_t ordinal) {

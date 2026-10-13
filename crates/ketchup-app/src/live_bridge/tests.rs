@@ -38,6 +38,8 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
+#[path = "draft_analysis_tests.rs"]
+mod draft_analysis;
 #[path = "draft_faces_tests.rs"]
 mod draft_faces;
 #[path = "drill_holes_tests.rs"]
@@ -1934,6 +1936,8 @@ fn topology_query_detail_and_multi_edge_fillet_share_the_live_host_stamp() {
                     world_bounds_mm: None,
                     cursor: None,
                     compact: false,
+                    direction: None,
+                    min_draft_degrees: None,
                 },
             },
             false,

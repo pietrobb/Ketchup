@@ -54,6 +54,8 @@ const QUERY_FIELDS: &[&str] = &[
     "world_bounds_mm",
     "cursor",
     "compact",
+    "direction",
+    "min_draft_degrees",
 ];
 /// Rejections after which this connection is no longer usable.
 const CONNECTION_ENDING_CODES: &[&str] = &[

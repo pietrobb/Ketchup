@@ -64,6 +64,15 @@ pub struct FaceEvidence {
     pub edge_count: u32,
     pub edge_ordinals: Vec<u32>,
     pub geometric_fingerprint: String,
+    /// A cone's axis and its oriented normal at one point of the face; the
+    /// normal makes the same angle with the axis everywhere on the cone.
+    pub cone: Option<ConeEvidence>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConeEvidence {
+    pub axis_direction: Point3,
+    pub normal: Point3,
 }
 
 #[derive(Clone, Debug, PartialEq)]

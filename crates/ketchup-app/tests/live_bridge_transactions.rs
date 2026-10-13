@@ -310,6 +310,8 @@ fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
                     world_bounds_mm: None,
                     cursor: None,
                     compact: false,
+                    direction: None,
+                    min_draft_degrees: None,
                 },
             },
         );
@@ -413,6 +415,8 @@ fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
         world_bounds_mm: None,
         cursor: None,
         compact: false,
+        direction: None,
+        min_draft_degrees: None,
     };
     let workset = client.call(
         &mut shell,
@@ -551,6 +555,8 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
         world_bounds_mm: None,
         cursor: None,
         compact: false,
+        direction: None,
+        min_draft_degrees: None,
     };
     let page = client.call(
         &mut shell,
@@ -709,6 +715,8 @@ fn auth_bounds_disconnect_and_default_disabled() {
                 world_bounds_mm: None,
                 cursor: None,
                 compact: false,
+                direction: None,
+                min_draft_degrees: None,
             },
         },
     );

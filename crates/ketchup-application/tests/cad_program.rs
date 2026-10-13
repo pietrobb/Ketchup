@@ -4121,6 +4121,8 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
                 world_bounds_mm: None,
                 cursor: None,
                 compact: false,
+                direction: None,
+                min_draft_degrees: None,
             },
         )
         .unwrap();

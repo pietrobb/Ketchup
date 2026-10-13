@@ -117,6 +117,18 @@ pub(super) fn collect_output(
                     ordinals
                 },
                 geometric_fingerprint: stable_digest(&signature),
+                cone: face.has_cone.then_some(ConeEvidence {
+                    axis_direction: Point3 {
+                        x: face.cone_axis_x,
+                        y: face.cone_axis_y,
+                        z: face.cone_axis_z,
+                    },
+                    normal: Point3 {
+                        x: face.cone_normal_x,
+                        y: face.cone_normal_y,
+                        z: face.cone_normal_z,
+                    },
+                }),
             }
         })
         .collect::<Vec<_>>();

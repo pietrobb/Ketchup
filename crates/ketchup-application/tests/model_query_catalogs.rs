@@ -20,6 +20,8 @@ fn request(kind: EntityKind) -> PageRequest {
         world_bounds_mm: None,
         cursor: None,
         compact: false,
+        direction: None,
+        min_draft_degrees: None,
     }
 }
 

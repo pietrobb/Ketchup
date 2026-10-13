@@ -42,6 +42,11 @@ pub const ACCUMULATED_ROUNDING: f64 = 1.0e-8;
 /// Absolute (mm, mm², mm³) for magnitudes up to 1; scale it by larger magnitudes.
 pub const APPROXIMATION: f64 = 1.0e-6;
 
+/// Draft analysis calls a face vertical when its draft angle is at most this, in degrees;
+/// the same bound decides that a cylinder or cone axis runs along the pull. Exact face
+/// normals carry rounding near 1e-12 rad, while the smallest modelled draft is 0.1 degree.
+pub const DRAFT_VERTICAL_TOLERANCE_DEGREES: f64 = 1.0e-6;
+
 /// Chord error for material face boundaries used by planar contact queries, in mm.
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
 /// Smallest angular sampling step for a material boundary, in radians.

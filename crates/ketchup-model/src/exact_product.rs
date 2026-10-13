@@ -200,6 +200,15 @@ pub struct ExactBRepGraphFaceEvidence {
     pub unit_normal: [f64; 3],
     pub axis_origin_mm: Option<[f64; 3]>,
     pub unit_axis_direction: Option<[f64; 3]>,
+    pub cone: Option<ExactConeFaceEvidence>,
+}
+
+/// A cone face's axis and its oriented normal at one point; the normal makes
+/// the same angle with the axis everywhere on the cone.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ExactConeFaceEvidence {
+    pub unit_axis_direction: [f64; 3],
+    pub unit_normal: [f64; 3],
 }
 
 #[derive(Clone, Debug, PartialEq)]

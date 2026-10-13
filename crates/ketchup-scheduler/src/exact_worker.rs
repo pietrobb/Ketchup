@@ -34,7 +34,9 @@ use ketchup_model::exact_brep_graph::{
     ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
     exact_brep_planar_rectangle_bounds, exact_sheet_metal_shape,
 };
-use ketchup_model::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactFaceRole};
+use ketchup_model::exact_product::{
+    EXACT_BREP_GRAPH_EVALUATOR_V1, ExactConeFaceEvidence, ExactFaceRole,
+};
 use ketchup_model::graph::{is_sha256_hex, sha256_hex};
 use ketchup_model::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
@@ -473,6 +475,14 @@ fn exact_brep_graph_face_evidence(output: &ExactOpOutput) -> Vec<WorkerExactBRep
                 unit_axis_direction: face
                     .axis_direction
                     .map(|direction| [direction.x, direction.y, direction.z]),
+                cone: face.cone.map(|cone| ExactConeFaceEvidence {
+                    unit_axis_direction: [
+                        cone.axis_direction.x,
+                        cone.axis_direction.y,
+                        cone.axis_direction.z,
+                    ],
+                    unit_normal: [cone.normal.x, cone.normal.y, cone.normal.z],
+                }),
             })
         })
         .collect()

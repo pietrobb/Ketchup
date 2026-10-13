@@ -1,6 +1,7 @@
 //! Bounded projections of canonical snapshots; no geometry evaluation or parallel model.
 //! Occurrences are document/root records (including group members), not expanded
 //! definition-local instances. Definitions/features are the full canonical catalogs.
+use crate::draft_analysis::DraftQuery;
 use ketchup_assistant::sidecar::{AssistantInstancePath, AssistantInstancePathStep};
 use ketchup_interaction::Vec3;
 use ketchup_interaction::projection::{
@@ -95,6 +96,19 @@ pub struct PageRequest {
     /// of a large model.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub compact: bool,
+    /// Face rows only: the pull direction (definition coordinates) of a draft
+    /// analysis; every face row then carries its `draft`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<[f64; 3]>,
+    /// With `direction`: the smallest positive draft, in degrees (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_draft_degrees: Option<f64>,
+}
+
+impl PageRequest {
+    fn draft(&self) -> Option<DraftQuery> {
+        DraftQuery::new(self.direction?, self.min_draft_degrees)
+    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -127,6 +141,9 @@ fn valid_page_request(request: &PageRequest) -> bool {
             .world_bounds_mm
             .as_ref()
             .is_some_and(|bounds| !valid_world_bounds(bounds))
+        && !(request.min_draft_degrees.is_some() && request.direction.is_none())
+        && (request.direction.is_none()
+            || (request.kind == EntityKind::Faces && request.draft().is_some()))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -487,7 +504,10 @@ impl ModelQuery {
             world_bounds_mm: None,
             cursor: None,
             compact: false,
+            direction: request.direction,
+            min_draft_degrees: request.min_draft_degrees,
         };
+        let draft = request.draft();
         let after = if let Some(token) = &request.cursor {
             let cursor = self.decode(token)?;
             if cursor.identity != identity || cursor.generation != self.generation {
@@ -591,6 +611,9 @@ impl ModelQuery {
                         }
                         let mut item = face_value(reference, evidence);
                         item["id"] = json!(entity_id);
+                        if let Some(draft) = &draft {
+                            item["draft"] = draft.face(evidence);
+                        }
                         let size = instance_item_size(&item)?;
                         if bytes + size > PAGE_ITEM_BYTES {
                             more = true;
@@ -613,11 +636,13 @@ impl ModelQuery {
                 after: last,
             })
         });
-        Ok(
-            json!({"identity":identity,"coverage":coverage(Some(request.kind)),
+        let mut page = json!({"identity":identity,"coverage":coverage(Some(request.kind)),
             "items":items,"total_matches":total,"total_matches_complete":true,
-            "complete":!more,"next_cursor":next,"byte_limited":byte_limited}),
-        )
+            "complete":!more,"next_cursor":next,"byte_limited":byte_limited});
+        if let Some(draft) = draft {
+            page["draft_analysis"] = draft.summary();
+        }
+        Ok(page)
     }
 
     fn checked_topology_id(
@@ -662,6 +687,8 @@ impl ModelQuery {
             world_bounds_mm: request.world_bounds_mm,
             cursor: None,
             compact: request.compact,
+            direction: None,
+            min_draft_degrees: None,
         };
         let after = if let Some(token) = &request.cursor {
             let cursor = self.decode(token)?;
