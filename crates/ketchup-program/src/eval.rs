@@ -2412,6 +2412,46 @@ fn library() -> Result<(Globals, FrozenModule), ProgramError> {
         .clone()
 }
 
+/// `MATERIAL_WEIGHTS` of the prelude in use, material → weight with its source
+/// verbatim, read from the frozen library: the table has no copy in Rust.
+///
+/// # Errors
+/// `prelude_invalid` when the prelude does not evaluate or the table is not a
+/// dict of `{"kg_m3" or "kg_m2", "source"}`.
+pub fn library_material_weights()
+-> Result<&'static BTreeMap<String, crate::loads::MaterialWeight>, ProgramError> {
+    static WEIGHTS: std::sync::OnceLock<
+        Result<BTreeMap<String, crate::loads::MaterialWeight>, ProgramError>,
+    > = std::sync::OnceLock::new();
+    WEIGHTS
+        .get_or_init(|| {
+            let invalid = |error: String| evaluation_error("prelude_invalid", error);
+            let (_, prelude) = library()?;
+            let table = prelude
+                .get("MATERIAL_WEIGHTS")
+                .and_then(|table| table.value().to_json())
+                .map_err(|error| invalid(format!("MATERIAL_WEIGHTS: {error}")))?;
+            let table: BTreeMap<String, serde_json::Value> = serde_json::from_str(&table)
+                .map_err(|error| invalid(format!("MATERIAL_WEIGHTS: {error}")))?;
+            table
+                .into_iter()
+                .map(|(material, weight)| {
+                    let source = weight["source"].as_str().ok_or_else(|| {
+                        invalid(format!("MATERIAL_WEIGHTS[{material:?}] has no source"))
+                    })?;
+                    let weight = crate::loads::MaterialWeight {
+                        kg_m3: weight["kg_m3"].as_f64(),
+                        kg_m2: weight["kg_m2"].as_f64(),
+                        source: source.to_owned(),
+                    };
+                    Ok((material, weight))
+                })
+                .collect()
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
 fn prelude(globals: &Globals) -> Result<FrozenModule, ProgramError> {
     let (name, source) = PRELUDE_OVERRIDE
         .get()

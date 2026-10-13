@@ -674,3 +674,77 @@ fn mass_weighs_parts_with_a_cited_density_and_marks_the_sum_partial() {
     );
     assert_eq!(app.undo_step_count(), undo, "weighing changes nothing");
 }
+
+/// #2476 step 4: without material_weight in the program the density comes
+/// from the prelude's MATERIAL_WEIGHTS with its citation verbatim; an
+/// `estimate:` entry, a weight per area and a material the table lacks stay
+/// not verified.
+#[test]
+fn mass_takes_a_density_from_the_prelude_table_but_not_its_estimates() {
+    let (mut app, mut bridge) = setup();
+    let source = "box(\"trám\", (100, 50, 20), material = \"C24\")\n\
+        box(\"doska\", (100, 50, 20), at = (200, 0, 0), material = \"sadrokartón\")\n\
+        box(\"krytina\", (10, 10, 10), at = (400, 0, 0), material = \"plechová krytina\")\n\
+        box(\"skriňa\", (10, 10, 10), at = (600, 0, 0), material = \"DTD\")\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let expected = Some(app.live_bridge_stamp());
+    let report = bridge
+        .execute(
+            &mut app,
+            Request::Mass {
+                expected,
+                occurrence_ids: None,
+            },
+            false,
+        )
+        .unwrap();
+    let part = |name: &str| {
+        report["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|part| part["name"] == name)
+            .unwrap_or_else(|| panic!("{name} in {report}"))
+            .clone()
+    };
+    let beam = part("trám");
+    assert_eq!(beam["status"], "ok", "{beam}");
+    assert!(
+        (beam["mass_kg"].as_f64().unwrap() - 0.042).abs() <= 1.0e-12,
+        "{beam}"
+    );
+    assert_eq!(beam["density"]["kg_m3"], 420.0);
+    let cited = &beam["density"]["sources"][0];
+    assert_eq!(cited["from"], "library prelude MATERIAL_WEIGHTS");
+    assert_eq!(cited["citation"], "EN 338: C24, mean density 420 kg/m3");
+
+    let board = part("doska");
+    assert_eq!(board["status"], "not_verified", "{board}");
+    assert!(board["reason"].as_str().unwrap().starts_with("estimate:"));
+    assert!(board.get("mass_kg").is_none());
+    assert!(
+        board["density"]["sources"][0]["citation"]
+            .as_str()
+            .unwrap()
+            .starts_with("estimate: 12.5 mm gypsum board")
+    );
+    assert!(
+        part("krytina")["reason"]
+            .as_str()
+            .unwrap()
+            .contains("kg/m²")
+    );
+    let cabinet = part("skriňa");
+    assert_eq!(cabinet["status"], "not_verified");
+    assert!(
+        cabinet["reason"]
+            .as_str()
+            .unwrap()
+            .contains("material_weight(\"DTD\", kg_m3=…")
+    );
+    assert_eq!(report["assembly"]["status"], "partial");
+    assert_eq!(report["assembly"]["parts_counted"], 1);
+}

@@ -1,9 +1,10 @@
 //! Mass, centre of mass and moments of inertia of parts and of their assembly,
 //! from the exact solids the worker measured and each part's material density.
 //!
-//! A density comes from the rules (`validation_rules.json`) or from the evaluated
-//! program (`material_weight(…, kg_m3=…)`), read at query time; it is never a
-//! default. A part without one, without measured mass properties or with a
+//! A density comes from the rules (`validation_rules.json`), from the evaluated
+//! program (`material_weight(…, kg_m3=…)`), read at query time, or from the
+//! prelude's `MATERIAL_WEIGHTS`; it is never a default. Sources that disagree,
+//! a weight per area or an `estimate:` source leave the part not verified. A part without one, without measured mass properties or with a
 //! placement that scales it is listed with the reason and left out of the sum,
 //! and the assembly then says it is partial.
 
@@ -36,25 +37,45 @@ fn density(
             json!({"from": "validation_rules.json", "kg_m3": density.kg_m3, "citation": density.source}),
         ));
     }
-    let weight = program.and_then(|model| model.material_weights.get(material));
-    if let Some(weight) = weight
-        && let Some(kg_m3) = weight.kg_m3
-    {
-        sources.push((
-            kg_m3,
-            json!({"from": "program material_weight", "kg_m3": kg_m3, "citation": weight.source}),
-        ));
+    let library = ketchup_program::library_material_weights()
+        .ok()
+        .and_then(|weights| weights.get(material));
+    let weights = [
+        (
+            "program material_weight",
+            program.and_then(|model| model.material_weights.get(material)),
+        ),
+        ("library prelude MATERIAL_WEIGHTS", library),
+    ];
+    for (from, weight) in weights {
+        if let Some(weight) = weight
+            && let Some(kg_m3) = weight.kg_m3
+        {
+            sources.push((
+                kg_m3,
+                json!({"from": from, "kg_m3": kg_m3, "citation": weight.source}),
+            ));
+        }
     }
     let listed = Value::Array(sources.iter().map(|(_, source)| source.clone()).collect());
+    let per_area = weights
+        .iter()
+        .find_map(|(from, weight)| weight.filter(|weight| weight.kg_m2.is_some()).map(|_| from));
+    let estimate = sources.iter().any(|(_, source)| {
+        source["citation"]
+            .as_str()
+            .is_some_and(|citation| citation.starts_with("estimate:"))
+    });
     match sources.as_slice() {
-        [] if weight.is_some_and(|weight| weight.kg_m2.is_some()) => Err((
-            format!("material_weight({material:?}) gives kg/m², a weight per area, not a density"),
-            listed,
-        )),
         [] => Err((
-            format!(
-                "no density for material {material:?}: give material_weight({material:?}, kg_m3=…, source=…) in the program"
-            ),
+            match per_area {
+                Some(from) => format!(
+                    "{from} gives material {material:?} in kg/m², a weight per area, not a density"
+                ),
+                None => format!(
+                    "no density for material {material:?}: give material_weight({material:?}, kg_m3=…, source=…) in the program"
+                ),
+            },
             listed,
         )),
         [(first, _), rest @ ..]
@@ -67,6 +88,12 @@ fn density(
                 listed,
             ))
         }
+        _ if estimate => Err((
+            format!(
+                "estimate: the density of material {material:?} is an upper bound for loads, not a mean density"
+            ),
+            listed,
+        )),
         [(first, _), ..] => Ok((
             *first,
             sources.into_iter().map(|(_, source)| source).collect(),
