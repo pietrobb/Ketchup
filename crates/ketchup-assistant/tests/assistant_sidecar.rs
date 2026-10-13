@@ -1925,7 +1925,7 @@ fn cad_edit_program_contract_fails_closed_on_targets_geometry_and_resources() {
 }
 
 #[test]
-fn linear_pattern_rows_keep_the_old_shape_and_name_the_place_limit() {
+fn linear_pattern_rows_keep_the_old_shape_and_name_the_copy_limit() {
     let old_shape = serde_json::json!({
         "operations": [{
             "operation": "linear_pattern",
@@ -1957,33 +1957,37 @@ fn linear_pattern_rows_keep_the_old_shape_and_name_the_place_limit() {
         "rows parallel to the first direction would put copies on one line"
     );
 
-    let place_error = AssistantRequestInvalid::new(
-        "CAD pattern place count",
-        AssistantRequestProblem::ExceedsLimit(1000),
+    // 513 places are the source and 512 new copies, the most one program creates.
+    let copy_error = AssistantRequestInvalid::new(
+        "CAD pattern copy count",
+        AssistantRequestProblem::ExceedsLimit(512),
     );
-    let place_limit = Err(place_error.clone());
-    assert_eq!(pattern(1001, None).validate(), place_limit);
+    let copy_limit = Err(copy_error.clone());
+    assert_eq!(pattern(513, None).validate(), Ok(()));
+    assert_eq!(pattern(514, None).validate(), copy_limit);
+    assert_eq!(pattern(27, rows(19, [0.0, 40.0, 0.0])).validate(), Ok(()));
     assert_eq!(
-        pattern(2, rows(501, [0.0, 40.0, 0.0])).validate(),
-        place_limit
+        pattern(2, rows(257, [0.0, 40.0, 0.0])).validate(),
+        copy_limit
     );
-    let circular = AssistantCadEditProgram {
+    let circular = |instances| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CircularPattern {
             selector: AssistantCadEntitySelector::Occurrences {
                 occurrence_ids: vec![1],
             },
-            instances: 1001,
+            instances,
             axis: AssistantAxisSpec::OriginDirection {
                 origin_mm: [0.0; 3],
                 direction: [0.0, 0.0, 1.0],
             },
-            angle_step_degrees: 0.3,
+            angle_step_degrees: 0.5,
         }],
     };
-    assert_eq!(circular.validate(), place_limit);
+    assert_eq!(circular(513).validate(), Ok(()));
+    assert_eq!(circular(514).validate(), copy_limit);
     assert_eq!(
-        place_error.to_string(),
-        "assistant CAD pattern place count exceeds its limit of 1000"
+        copy_error.to_string(),
+        "assistant CAD pattern copy count exceeds its limit of 512"
     );
 }
 

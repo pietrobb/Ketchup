@@ -27,7 +27,6 @@ const MAX_CAD_GENERATED_OCCURRENCES: usize = 512;
 const MAX_ASSISTANT_PART_CUTS: usize = 128;
 /// Most holes, and most pockets, one part of a rule program may carry.
 const MAX_RULE_PART_CUTS: usize = 4_096;
-const MAX_ASSISTANT_ARRAY_INSTANCES: u32 = 1_000;
 const MAX_ASSISTANT_REJECTION_CODE_BYTES: usize = 128;
 const MAX_ASSISTANT_REJECTION_OPERATION_BYTES: usize = 128;
 const MAX_ASSISTANT_REJECTION_TARGET_BYTES: usize = 256;
@@ -2226,13 +2225,16 @@ fn assistant_cad_vectors_are_perpendicular(left: [f64; 3], right: [f64; 3]) -> b
     dot.is_finite() && dot.abs() <= ROUNDING * (left_length_squared * right_length_squared).sqrt()
 }
 
-/// A pattern holds at most this many places, the source included.
-fn pattern_places_exceed_limit() -> AssistantRequestInvalid {
+/// New copies of one pattern of `places` places, the source being one of them.
+fn pattern_copies(places: u32) -> usize {
+    usize::try_from(places.saturating_sub(1)).unwrap_or(usize::MAX)
+}
+
+/// A pattern makes at most as many copies as one whole program may create.
+fn pattern_copies_exceed_limit() -> AssistantRequestInvalid {
     AssistantRequestInvalid::new(
-        "CAD pattern place count",
-        AssistantRequestProblem::ExceedsLimit(
-            usize::try_from(MAX_ASSISTANT_ARRAY_INSTANCES).unwrap_or(usize::MAX),
-        ),
+        "CAD pattern copy count",
+        AssistantRequestProblem::ExceedsLimit(MAX_CAD_GENERATED_OCCURRENCES),
     )
 }
 
@@ -3865,7 +3867,7 @@ impl AssistantCadEditProgram {
                 ..
             } => {
                 let direction_is_valid = |instances: &u32, step_mm: &[f64; 3]| {
-                    (2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances)
+                    *instances >= 2
                         && assistant_cad_vector_is_bounded(*step_mm)
                         && assistant_cad_vector_is_nonzero(*step_mm)
                         && step_mm.iter().all(|value| {
@@ -3874,19 +3876,19 @@ impl AssistantCadEditProgram {
                         })
                 };
                 let rows = secondary.as_ref().map_or(1, |row| row.instances);
-                if instances.saturating_mul(rows) > MAX_ASSISTANT_ARRAY_INSTANCES {
-                    return Err(pattern_places_exceed_limit());
+                let copies = pattern_copies(instances.saturating_mul(rows));
+                if copies > MAX_CAD_GENERATED_OCCURRENCES {
+                    return Err(pattern_copies_exceed_limit());
                 }
                 // A row parallel to the first direction would put copies on one line.
                 let secondary_is_valid = secondary.as_ref().is_none_or(|row| {
                     direction_is_valid(&row.instances, &row.step_mm)
                         && !assistant_cad_vectors_are_parallel(*step_mm, row.step_mm)
-                        && instances.saturating_mul(row.instances) <= MAX_ASSISTANT_ARRAY_INSTANCES
                 });
                 if !direction_is_valid(instances, step_mm) || !secondary_is_valid {
                     return Err(AssistantRequestInvalid::invalid("CAD linear pattern"));
                 }
-                instances.saturating_mul(rows).saturating_sub(1) as usize
+                copies
             }
             AssistantCadEditOperation::CircularPattern {
                 instances,
@@ -3894,10 +3896,11 @@ impl AssistantCadEditProgram {
                 angle_step_degrees,
                 ..
             } => {
-                if *instances > MAX_ASSISTANT_ARRAY_INSTANCES {
-                    return Err(pattern_places_exceed_limit());
+                let copies = pattern_copies(*instances);
+                if copies > MAX_CAD_GENERATED_OCCURRENCES {
+                    return Err(pattern_copies_exceed_limit());
                 }
-                let valid_count = (2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances);
+                let valid_count = *instances >= 2;
                 let duplicate_angle = valid_count
                     && (1..*instances).any(|instance| {
                         let normalized =
@@ -3913,7 +3916,7 @@ impl AssistantCadEditProgram {
                     return Err(AssistantRequestInvalid::invalid("CAD circular pattern"));
                 }
                 axis.validate_reference_for_operation(operation_index, &self.operations)?;
-                instances.saturating_sub(1) as usize
+                copies
             }
             AssistantCadEditOperation::Mirror {
                 plane_origin_mm,

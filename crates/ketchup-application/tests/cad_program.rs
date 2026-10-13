@@ -4536,6 +4536,46 @@ fn rectangular_pattern_places_numbered_copies_row_by_row_in_one_step() {
 }
 
 #[test]
+fn a_pattern_makes_at_most_512_new_parts() {
+    let mut document = seeded();
+    let baseline = document.current();
+    let undo = document.visible_undo_steps();
+    let registry = ExactResultRegistry::default();
+    let row = |instances| {
+        program(vec![AssistantCadEditOperation::LinearPattern {
+            selector: explicit(1),
+            instances,
+            step_mm: [30.0, 0.0, 0.0],
+            secondary: None,
+        }])
+    };
+
+    let rejection = plan(&document, &BTreeSet::new(), &registry, &row(514)).unwrap_err();
+    assert_eq!(rejection.code, "intent.cad_edit_program_invalid");
+    assert!(
+        rejection.failed_invariant.contains("limit of 512"),
+        "{rejection:?}"
+    );
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(document.visible_undo_steps(), undo);
+
+    let batch = plan(&document, &BTreeSet::new(), &registry, &row(513)).unwrap();
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    assert_eq!(
+        committed.occurrences().count(),
+        baseline.occurrences().count() + 512
+    );
+    let last = committed.occurrence(OccurrenceId(513)).unwrap();
+    assert_eq!(last.name(), "Editable part 513");
+    assert!((last.transform().matrix()[3] - (5.0 + 512.0 * 30.0)).abs() < 1e-9);
+    assert_eq!(document.visible_undo_steps(), undo + 1);
+}
+
+#[test]
 fn circular_pattern_uses_the_shared_arbitrary_axis_atomically() {
     let direct = program(vec![AssistantCadEditOperation::CircularPattern {
         selector: explicit(1),

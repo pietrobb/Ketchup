@@ -329,7 +329,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
     "ketchup-assistant allows": 3,
-    "ketchup-assistant casts": 7,
+    "ketchup-assistant casts": 5,
     "ketchup-exact allows": 4,
     "ketchup-exact casts": 43,
     "ketchup-geometry allows": 1,
