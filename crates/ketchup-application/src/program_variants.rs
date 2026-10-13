@@ -4,7 +4,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use ketchup_model::document::{MAX_RULE_PROGRAM_VARIANTS, RuleProgramSource};
+use ketchup_program::cut_list::cut_list_table;
 use ketchup_program::model::Param;
+use ketchup_program::table::{Cell, Table};
+use ketchup_program::takeoff::{Takeoff, material_takeoff_of_all};
+use ketchup_program::{CancelToken, ProgramError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VariantError {
@@ -134,6 +138,174 @@ pub fn active_variant<'a>(program: &'a RuleProgramSource, params: &[Param]) -> O
             })
         })
         .map(|(name, _)| name.as_str())
+}
+
+/// Why one variant has no cut list.
+#[derive(Debug)]
+pub enum VariantEvaluationError {
+    Program(ProgramError),
+    Variant(VariantError),
+}
+
+impl fmt::Display for VariantEvaluationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Program(error) => error.fmt(formatter),
+            Self::Variant(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for VariantEvaluationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Program(error) => Some(error),
+            Self::Variant(error) => Some(error),
+        }
+    }
+}
+
+/// One variant evaluated apart from the window's document: its cut list and
+/// the takeoff of all its parts, or why it does not evaluate.
+#[derive(Debug)]
+pub struct VariantExport {
+    pub name: String,
+    pub params: BTreeMap<String, f64>,
+    pub result: Result<(Table, Takeoff), VariantEvaluationError>,
+}
+
+/// Every variant of `program` in name order, each evaluated with its own
+/// values; `None` once `cancel` is set.
+#[must_use]
+pub fn evaluate_variants(
+    program: &RuleProgramSource,
+    cancel: &CancelToken,
+) -> Option<Vec<VariantExport>> {
+    program
+        .variants
+        .iter()
+        .map(|(name, values)| {
+            let evaluated = ketchup_program::evaluate_cancellable(
+                &program.file_name,
+                &program.source,
+                values,
+                cancel,
+            );
+            if cancel.is_cancelled() {
+                return None;
+            }
+            let result = evaluated
+                .map_err(VariantEvaluationError::Program)
+                .and_then(|evaluated| {
+                    let model = evaluated.model;
+                    let missing = values
+                        .keys()
+                        .filter(|parameter| {
+                            !model.params.iter().any(|param| &&param.name == parameter)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !missing.is_empty() {
+                        return Err(VariantEvaluationError::Variant(
+                            VariantError::MissingParameters {
+                                name: name.clone(),
+                                missing,
+                            },
+                        ));
+                    }
+                    Ok((
+                        cut_list_table(&model, |_| true),
+                        material_takeoff_of_all(&model),
+                    ))
+                });
+            Some(VariantExport {
+                name: name.clone(),
+                params: values.clone(),
+                result,
+            })
+        })
+        .collect()
+}
+
+/// A takeoff as a table: its rows, then one `TOTAL` row per material.
+#[must_use]
+pub fn takeoff_table(takeoff: &Takeoff) -> Table {
+    let header = [
+        "category",
+        "material",
+        "width_mm",
+        "thickness_mm",
+        "count",
+        "length_m",
+        "area_m2",
+        "volume_m3",
+        "volume_basis",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let rows = takeoff.rows.iter().map(|row| {
+        vec![
+            Cell::Text(row.category.clone()),
+            Cell::Text(row.material.clone()),
+            Cell::Number(row.section_mm[0]),
+            Cell::Number(row.section_mm[1]),
+            Cell::Count(row.count),
+            Cell::Number(row.length_m),
+            Cell::Number(row.area_m2),
+            Cell::Number(row.volume_m3),
+            Cell::Text(row.volume_basis.as_str().to_owned()),
+        ]
+    });
+    let totals = takeoff.materials.iter().map(|total| {
+        vec![
+            Cell::Text("TOTAL".to_owned()),
+            Cell::Text(total.material.clone()),
+            Cell::Text(String::new()),
+            Cell::Text(String::new()),
+            Cell::Count(total.count),
+            Cell::Number(total.length_m),
+            Cell::Number(total.area_m2),
+            Cell::Number(total.volume_m3),
+            Cell::Text(total.volume_basis.as_str().to_owned()),
+        ]
+    });
+    Table {
+        header,
+        rows: rows.chain(totals).collect(),
+    }
+}
+
+/// The tables of several variants as one, the variant's name in the first
+/// column; a column only some variants have stays empty in the others.
+#[must_use]
+pub fn combined_table(tables: &[(&str, &Table)]) -> Table {
+    let mut header = vec!["variant".to_owned()];
+    for (_, table) in tables {
+        for name in &table.header {
+            if !header.contains(name) {
+                header.push(name.clone());
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    for (variant, table) in tables {
+        let columns = table
+            .header
+            .iter()
+            .map(|name| header.iter().position(|column| column == name))
+            .collect::<Vec<_>>();
+        for row in &table.rows {
+            let mut cells = vec![Cell::Text(String::new()); header.len()];
+            cells[0] = Cell::Text((*variant).to_owned());
+            for (column, cell) in columns.iter().zip(row) {
+                if let Some(column) = column {
+                    cells[*column] = cell.clone();
+                }
+            }
+            rows.push(cells);
+        }
+    }
+    Table { header, rows }
 }
 
 fn unknown(program: &RuleProgramSource, name: &str) -> VariantError {

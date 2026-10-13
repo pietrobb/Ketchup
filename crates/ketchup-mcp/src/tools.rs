@@ -228,6 +228,7 @@ impl Tools {
                 "save_variant",
                 "use_variant",
                 "delete_variant",
+                "export_variants",
                 "report",
                 "docs",
                 "validate",
@@ -266,6 +267,7 @@ impl Tools {
             "use_variant" => self.send("use_program_variant", args, APPLY_PROGRAM_WAIT),
             "save_variant" => self.send("save_program_variant", args, APPLY_PROGRAM_WAIT),
             "delete_variant" => self.send("delete_program_variant", args, DEFAULT_WAIT),
+            "export_variants" => self.send("export_program_variants", args, APPLY_PROGRAM_WAIT),
             "report" => {
                 args.entry("limit").or_insert(json!(50));
                 self.send("program_report", args, DEFAULT_WAIT)

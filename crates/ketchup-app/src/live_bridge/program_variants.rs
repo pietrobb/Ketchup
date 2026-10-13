@@ -24,7 +24,7 @@ fn refused(error: &VariantError) -> &'static str {
     invalid("name", error.to_string(), hint)
 }
 
-fn owned_program(app: &KetchupApp) -> Result<RuleProgramSource, &'static str> {
+pub(super) fn owned_program(app: &KetchupApp) -> Result<RuleProgramSource, &'static str> {
     app.document.current_rule_program().cloned().ok_or_else(|| {
         invalid(
             "name",
@@ -68,6 +68,9 @@ impl LiveBridge {
         let (expected, name, save) = match request {
             Request::SaveProgramVariant { expected, name } => (expected, name, true),
             Request::DeleteProgramVariant { expected, name } => (expected, name, false),
+            request @ Request::ExportProgramVariants { .. } => {
+                return Self::export_variants_now(app, request);
+            }
             _ => return Err("invalid_request"),
         };
         Self::guard(app, &Some(expected))?;

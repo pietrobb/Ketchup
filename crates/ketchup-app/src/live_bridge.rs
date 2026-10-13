@@ -82,6 +82,7 @@ pub use plugin::RunPluginRequest;
 pub(crate) mod program_pick;
 mod program_validate;
 mod program_validation_summary;
+mod program_variant_export;
 mod program_variants;
 #[cfg(test)]
 mod tests;
@@ -286,6 +287,12 @@ pub enum Request {
     DeleteProgramVariant {
         expected: Stamp,
         name: String,
+    },
+    /// Writes the cut list and the takeoff of every variant to new files,
+    /// evaluated apart from the document.
+    ExportProgramVariants {
+        expected: Stamp,
+        path: String,
     },
     ProgramReport {
         expected: Stamp,
@@ -1273,6 +1280,15 @@ impl KetchupApp {
                         cancelled,
                     };
                     bridge.start_queued_check_program(self, context, queued, request, ui_busy);
+                    continue;
+                }
+                request @ Request::ExportProgramVariants { .. } => {
+                    let queued = program_dry_run::QueuedReply {
+                        id,
+                        reply,
+                        cancelled,
+                    };
+                    bridge.start_queued_variant_export(self, context, queued, request);
                     continue;
                 }
                 request => request,
@@ -2464,7 +2480,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -2696,7 +2712,8 @@ impl LiveBridge {
                 .apply_program(app, request, ui_busy, cancelled)
                 .map(|applied| applied.result(None)),
             request @ (Request::SaveProgramVariant { .. }
-            | Request::DeleteProgramVariant { .. }) => {
+            | Request::DeleteProgramVariant { .. }
+            | Request::ExportProgramVariants { .. }) => {
                 self.program_variant_request(app, request, ui_busy, cancelled)
             }
             request @ Request::CheckProgram { .. } => {

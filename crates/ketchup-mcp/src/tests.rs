@@ -330,6 +330,10 @@ fn program_pieces_and_set_params_reach_their_window_methods() {
             json!({"action":"delete_variant", "expected":stamp, "name":"800"}),
             json!({"method":"delete_program_variant", "expected":stamp, "name":"800"}),
         ),
+        (
+            json!({"action":"export_variants", "expected":stamp, "path":"C:\\out\\cabinet.csv"}),
+            json!({"method":"export_program_variants", "expected":stamp, "path":"C:\\out\\cabinet.csv"}),
+        ),
     ] {
         let result = call(&mut tools, "program", arguments);
         assert_eq!(result["isError"], false, "{result}");

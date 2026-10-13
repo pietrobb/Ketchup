@@ -202,6 +202,7 @@ fn response_wait(request: &Request) -> Duration {
         | Request::UseProgramVariant { .. }
         | Request::SaveProgramVariant { .. }
         | Request::DeleteProgramVariant { .. }
+        | Request::ExportProgramVariants { .. }
         | Request::CheckProgram { .. }
         | Request::ValidateProgram { .. }
         | Request::MeasureFaces { .. }
@@ -252,6 +253,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::UseProgramVariant { .. }
         | Request::SaveProgramVariant { .. }
         | Request::DeleteProgramVariant { .. }
+        | Request::ExportProgramVariants { .. }
         | Request::ApplyProgram { .. }
         | Request::Undo { .. }
         | Request::Redo { .. }

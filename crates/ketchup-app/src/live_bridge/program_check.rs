@@ -63,6 +63,7 @@ pub(super) enum ProgramCheckJob {
     Measuring(super::measurement::MeasurementJob),
     DryRun(super::program_dry_run::DryRunJob),
     Plugin(super::plugin::PluginJob),
+    VariantExport(super::program_variant_export::VariantExportJob),
 }
 
 pub(super) struct ProgramPlanJob {
@@ -398,6 +399,10 @@ impl LiveBridge {
             }
             ProgramCheckJob::Plugin(job) => {
                 self.poll_plugin(app, context, job);
+                return;
+            }
+            ProgramCheckJob::VariantExport(job) => {
+                self.poll_variant_export(app, context, job);
                 return;
             }
         };
