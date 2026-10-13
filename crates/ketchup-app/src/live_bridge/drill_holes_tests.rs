@@ -346,10 +346,12 @@ fn a_hole_drills_every_copy_of_a_component_until_one_is_made_unique() {
 
     // Through, so the top stays the newest upward face (no hole floor).
     let shared_hole = drill(&top, vec![[x, y, z]], None, true);
+    let undo = app.undo_step_count();
     assert_eq!(
         bridge.execute(&mut app, shared_hole, false).unwrap()["published"],
         true
     );
+    assert_eq!(app.undo_step_count(), undo + 1, "one Undo step");
     evaluate_exact(&mut app);
     let [a, b] = volumes(&app);
     assert!(
@@ -360,10 +362,12 @@ fn a_hole_drills_every_copy_of_a_component_until_one_is_made_unique() {
     let unique = edit(AssistantCadEditOperation::MakeOccurrenceUnique {
         occurrence_id: copy.0.0,
     });
+    let undo = app.undo_step_count();
     assert_eq!(
         bridge.execute(&mut app, unique, false).unwrap()["published"],
         true
     );
+    assert_eq!(app.undo_step_count(), undo + 1, "one Undo step");
     let own = app
         .document
         .current()
@@ -380,8 +384,11 @@ fn a_hole_drills_every_copy_of_a_component_until_one_is_made_unique() {
     };
     let before = shared_definition(&app);
     let own_hole = drill(&top, vec![[x + 20.0, y, z]], Some(8.0), false);
+    let undo = app.undo_step_count();
     let drilled = bridge.execute(&mut app, own_hole, false);
     assert!(drilled.is_ok(), "{:?}", take_error_details());
+    assert_eq!(drilled.unwrap()["published"], true);
+    assert_eq!(app.undo_step_count(), undo + 1, "one Undo step");
     evaluate_exact(&mut app);
     let [a, b] = volumes(&app);
     assert!(close(a, solid - through), "the original changed: {a}");
