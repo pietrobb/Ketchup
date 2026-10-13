@@ -609,6 +609,7 @@ impl KetchupApp {
             ActiveTool::Fillet | ActiveTool::Chamfer => "value-label-radius-distance",
             ActiveTool::Rotate => "value-label-angle",
             ActiveTool::Mirror => "value-label-mirror-offset",
+            ActiveTool::Hole => "value-label-hole",
             ActiveTool::Scale => "value-label-scale-factor",
             ActiveTool::PushPull | ActiveTool::Move | ActiveTool::Measure => "value-label-distance",
             _ => "value-label-dimensions",
@@ -1035,6 +1036,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Shell);
                 self.menu_command(ui, AppCommand::Fillet);
                 self.menu_command(ui, AppCommand::Chamfer);
+                self.menu_command(ui, AppCommand::Hole);
                 ui.separator();
                 self.menu_command(ui, AppCommand::LinearPattern);
                 self.menu_command(ui, AppCommand::RectangularPattern);

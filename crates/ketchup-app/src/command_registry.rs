@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 131] = [
+    pub(crate) const COMMANDS: [CommandSpec; 132] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -302,6 +302,12 @@ impl CommandRegistry {
             id: AppCommand::Chamfer,
             label_key: "feature-chamfer",
             tool: Some(ActiveTool::Chamfer),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Hole,
+            label_key: "tool-hole",
+            tool: Some(ActiveTool::Hole),
             implemented: true,
         },
         CommandSpec {

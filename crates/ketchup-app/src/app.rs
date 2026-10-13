@@ -18,6 +18,7 @@ pub(crate) mod file_activity;
 #[cfg(test)]
 #[path = "app/hidden_selection_tests.rs"]
 mod hidden_selection_tests;
+mod hole;
 #[cfg(test)]
 #[path = "app/icon_button_tests.rs"]
 mod icon_button_tests;

@@ -260,6 +260,9 @@ impl KetchupApp {
                 }
             } else if tool == ActiveTool::Mirror {
                 self.status_key = "status-mirror-face";
+            } else if tool == ActiveTool::Hole {
+                self.value_box.input = "6".to_owned();
+                self.status_key = "status-hole-face";
             } else if tool == ActiveTool::Measure {
                 self.status_key = "status-measure-first-point";
             } else if matches!(
@@ -489,6 +492,7 @@ impl KetchupApp {
             | AppCommand::Shell
             | AppCommand::Fillet
             | AppCommand::Chamfer
+            | AppCommand::Hole
             | AppCommand::PushPull
             | AppCommand::Move
             | AppCommand::Rotate
@@ -637,6 +641,11 @@ impl KetchupApp {
         }
         if self.active_tool == ActiveTool::Mirror {
             return self.commit_mirror();
+        }
+        if self.active_tool == ActiveTool::Hole {
+            // The size is typed first; the hole lands where the face is clicked.
+            self.digest = self.catalog.text("status-hole-face");
+            return false;
         }
         if self.active_tool == ActiveTool::PlanarOffset {
             return self.refresh_planar_offset_preview() && self.confirm_planar_offset_preview();

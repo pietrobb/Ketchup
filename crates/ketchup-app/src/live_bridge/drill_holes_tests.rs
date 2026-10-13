@@ -4,7 +4,9 @@
 
 use super::program_edit::{evaluate_exact, exact_volume};
 use super::*;
+use eframe::egui::{Pos2, Rect, Vec2};
 use ketchup_assistant::sidecar::AssistantHoleThread;
+use ketchup_interaction::Vec3;
 use std::f64::consts::PI;
 
 const DIAMETER_MM: f64 = 6.0;
@@ -302,4 +304,98 @@ fn a_tapped_hole_is_listed_for_machining_and_hardware_and_only_a_thread_is_saved
         .unwrap();
     assert_eq!(app.undo_step_count(), undo);
     assert!(saved(&app) == bytes, "Undo must restore the saved bytes");
+}
+
+#[test]
+fn the_hole_tool_drills_where_the_face_is_clicked_in_one_undo_step() {
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let snapshot = app.document.current();
+    let occurrence = snapshot.occurrences().next().unwrap();
+    let part = occurrence.name().to_owned();
+    let world = snapshot
+        .world_transform_for_occurrence(occurrence.id())
+        .unwrap();
+    let solid = exact_volume(&app, &part);
+    let top = face(&mut app, &mut bridge, "plane", [0.0, 0.0, 1.0]);
+    let bottom = face(&mut app, &mut bridge, "plane", [0.0, 0.0, -1.0]);
+    let [x, y, z] = centroid(&top);
+    let height = z - centroid(&bottom)[2];
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0));
+    let [wx, wy, wz] = world.transform_point([x + 10.0, y, z]);
+    let click = app.project(Vec3::new(wx, wy, wz), rect);
+    let (stamp, undo, bytes) = (app.live_bridge_stamp(), app.undo_step_count(), saved(&app));
+    app.dispatch_command(AppCommand::Hole);
+    assert_eq!(app.active_tool, ActiveTool::Hole);
+
+    // "6" drills through, "6 8" 8 deep: the part loses exactly the cylinder.
+    for (input, removed) in [("6", height), ("6 8", 8.0)] {
+        app.value_box.input = input.to_owned();
+        assert!(
+            app.drill_hole_at_screen(click, rect),
+            "{input}: {}",
+            app.digest
+        );
+        app.finish_window_edit();
+        assert_eq!(app.digest, app.catalog.text("digest-hole-created"));
+        assert_eq!(app.undo_step_count(), undo + 1);
+        evaluate_exact(&mut app);
+        let expected = solid - PI * 9.0 * removed;
+        let volume = exact_volume(&app, &part);
+        assert!(
+            (volume - expected).abs() <= 1e-6 * solid,
+            "{input}: {volume} != {expected}"
+        );
+        bridge
+            .execute(&mut app, Request::Undo { expected: None }, false)
+            .unwrap();
+        assert_eq!(
+            app.live_bridge_stamp().canonical_digest,
+            stamp.canonical_digest
+        );
+        assert!(
+            saved(&app) == bytes,
+            "{input}: Undo must restore the saved bytes"
+        );
+    }
+
+    // "M8 12" drills the library's tap drill and lists the thread.
+    app.value_box.input = "M8 12".to_owned();
+    assert!(app.drill_hole_at_screen(click, rect));
+    app.finish_window_edit();
+    assert_eq!(app.digest, app.catalog.text("digest-hole-created"));
+    let threads: Vec<_> = app
+        .document
+        .current()
+        .hole_threads()
+        .map(|(_, thread)| thread.label())
+        .collect();
+    assert_eq!(threads, ["M8×1.25 depth 12"]);
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert!(saved(&app) == bytes);
+
+    // A hole wider than the part is refused by name; an unknown size never
+    // reaches the bridge. Neither changes the document or Undo.
+    let unchanged = |app: &KetchupApp| {
+        app.live_bridge_stamp().canonical_digest == stamp.canonical_digest
+            && app.undo_step_count() == undo
+            && saved(app) == bytes
+    };
+    app.value_box.input = "500".to_owned();
+    assert!(app.drill_hole_at_screen(click, rect));
+    app.finish_window_edit();
+    assert!(
+        app.digest
+            .starts_with("planning_rejected: Hole 1: its wall would leave the part"),
+        "{}",
+        app.digest
+    );
+    assert!(unchanged(&app));
+    app.value_box.input = "M7 12".to_owned();
+    assert!(!app.drill_hole_at_screen(click, rect));
+    assert_eq!(app.digest, app.catalog.text("digest-hole-invalid-size"));
+    assert!(!app.live.edits.is_running());
+    assert!(unchanged(&app));
 }

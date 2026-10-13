@@ -2014,6 +2014,8 @@ impl KetchupApp {
         } else if self.active_tool == ActiveTool::Mirror {
             self.gesture.mirror = self.mirror_plane_at_screen(pointer, response.rect);
             self.commit_mirror();
+        } else if self.active_tool == ActiveTool::Hole {
+            self.drill_hole_at_screen(pointer, response.rect);
         } else if self.active_tool == ActiveTool::PlanarOffset {
             if self.value_box.input.trim().is_empty() {
                 self.gesture.planar_offset_mm =

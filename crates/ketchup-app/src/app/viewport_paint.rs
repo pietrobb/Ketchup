@@ -591,7 +591,7 @@ const fn command_icon(id: AppCommand) -> Icon {
     match id {
         AppCommand::Line => Icon::Line,
         AppCommand::Rectangle => Icon::Rectangle,
-        AppCommand::Circle => Icon::Circle,
+        AppCommand::Circle | AppCommand::Hole => Icon::Circle,
         AppCommand::Arc => Icon::Arc,
         AppCommand::Polygon => Icon::Polygon,
         AppCommand::Ellipse => Icon::Ellipse,
