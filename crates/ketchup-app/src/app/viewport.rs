@@ -2016,6 +2016,8 @@ impl KetchupApp {
             self.commit_mirror();
         } else if self.active_tool == ActiveTool::Hole {
             self.drill_hole_at_screen(pointer, response.rect);
+        } else if self.active_tool == ActiveTool::Draft {
+            self.draft_at_screen(pointer, response.rect);
         } else if self.active_tool == ActiveTool::PlanarOffset {
             if self.value_box.input.trim().is_empty() {
                 self.gesture.planar_offset_mm =
@@ -2926,7 +2928,10 @@ impl KetchupApp {
                             hovered.instance_path == occurrence.instance_path
                         })
                         || out_of_context);
-            let needs_cpu_fill = !use_wgpu_scene || copy_transform.is_some();
+            // Draft analysis colors faces one by one, which only the CPU fill can.
+            let needs_cpu_fill = !use_wgpu_scene
+                || copy_transform.is_some()
+                || self.view.contains(ViewFlag::DraftAnalysis);
             if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
                 continue;
             }
@@ -3018,6 +3023,7 @@ impl KetchupApp {
                 }
             }
             let face_ordinals = planar_push_pull::canonical_face_ordinals(&package);
+            let draft_colors = self.draft_face_colors(&package);
             for (triangle_index, triangle) in package.triangles().iter().enumerate() {
                 let points_mm = triangle.vertex_indices.map(|index| {
                     let position = package.vertices()[index as usize].position_mm;
@@ -3061,7 +3067,11 @@ impl KetchupApp {
                         polygon,
                         color: self.section_face_color(
                             front,
-                            occurrence_color.unwrap_or_else(|| face_color_from_normal(normal)),
+                            package
+                                .triangle_face_ordinal(triangle_index)
+                                .and_then(|ordinal| draft_colors.get(&ordinal).copied())
+                                .or(occurrence_color)
+                                .unwrap_or_else(|| face_color_from_normal(normal)),
                         ),
                         depth: points_mm
                             .into_iter()

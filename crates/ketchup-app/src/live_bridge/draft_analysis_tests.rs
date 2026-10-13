@@ -2,7 +2,7 @@
 //! before; with one, planes, cylinders and cones get their exact draft and
 //! class, and any other face is `not_analyzed` with its reason.
 
-use super::drill_holes::{centroid, edit, face};
+use super::drill_holes::{centroid, edit, face, saved};
 use super::program_edit::evaluate_exact;
 use super::*;
 
@@ -281,4 +281,84 @@ fn a_draft_query_refuses_a_zero_pull_a_bad_minimum_and_rows_other_than_faces() {
         );
         assert!(result.is_err(), "{query}: {result:?}");
     }
+}
+
+#[test]
+fn the_draft_analysis_view_colors_each_face_by_its_class_without_touching_the_document() {
+    use crate::ViewFlag;
+    use crate::app::draft::draft_color;
+    use ketchup_application::draft_analysis::DraftClass;
+
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let colors = |app: &KetchupApp| {
+        let snapshot = app.document.current();
+        let definition = snapshot.occurrences().next().unwrap().definition_id();
+        let package = app.exact.results.get_render(&snapshot, definition).unwrap();
+        app.draft_face_colors(package)
+    };
+    assert!(
+        colors(&app).is_empty(),
+        "the view starts without draft colors"
+    );
+    let (stamp, undo, bytes) = (app.live_bridge_stamp(), app.undo_step_count(), saved(&app));
+    app.dispatch_command(AppCommand::View(ViewFlag::DraftAnalysis));
+    assert!(app.view_visible(ViewFlag::DraftAnalysis));
+    assert_eq!(app.digest, app.catalog.text("digest-draft-analysis-shown"));
+    assert_eq!(
+        app.live_bridge_stamp().canonical_digest,
+        stamp.canonical_digest
+    );
+    assert_eq!(app.undo_step_count(), undo);
+    assert!(saved(&app) == bytes);
+
+    let ordinal = |face: &Value| u32::try_from(face["ordinal"].as_u64().unwrap()).unwrap();
+    let top = face(&mut app, &mut bridge, "plane", [0.0, 0.0, 1.0]);
+    let bottom = face(&mut app, &mut bridge, "plane", [0.0, 0.0, -1.0]);
+    let sides = [
+        [-1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ]
+    .map(|normal| face(&mut app, &mut bridge, "plane", normal));
+    let plain = colors(&app);
+    assert_eq!(plain.len(), 6, "{plain:?}");
+    assert_eq!(plain[&ordinal(&top)], draft_color(DraftClass::Positive));
+    assert_eq!(plain[&ordinal(&bottom)], draft_color(DraftClass::Negative));
+    for side in &sides {
+        assert_eq!(plain[&ordinal(side)], draft_color(DraftClass::Vertical));
+    }
+
+    // Sides drafted by 5 and by 0.5 degrees: enough draft, and too little.
+    for (angle, class) in [(5.0, DraftClass::Positive), (0.5, DraftClass::Insufficient)] {
+        let sides = sides.iter().collect::<Vec<_>>();
+        let applied = bridge
+            .execute(&mut app, draft_faces(&sides, &bottom, angle), false)
+            .unwrap();
+        assert_eq!(applied["published"], true, "{applied}");
+        evaluate_exact(&mut app);
+        let (rows, _) = faces(&mut app, &mut bridge, json!({"limit": 100}));
+        let drafted = colors(&app);
+        let walls = newest(&rows)
+            .into_iter()
+            .filter(|row| row["geometry"]["unit_normal"][2].as_f64().unwrap().abs() < 0.5)
+            .collect::<Vec<_>>();
+        assert_eq!(walls.len(), 4);
+        for wall in walls {
+            assert_eq!(
+                drafted[&ordinal(wall)],
+                draft_color(class),
+                "{angle}: {wall}"
+            );
+        }
+        bridge
+            .execute(&mut app, Request::Undo { expected: None }, false)
+            .unwrap();
+        evaluate_exact(&mut app);
+    }
+
+    app.dispatch_command(AppCommand::View(ViewFlag::DraftAnalysis));
+    assert!(colors(&app).is_empty());
+    assert!(saved(&app) == bytes);
 }

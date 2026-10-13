@@ -53,7 +53,7 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-hole-invalid-size");
             return false;
         };
-        let Some((reference, point_local_mm)) = self.hole_face_at_screen(pointer, rect) else {
+        let Some((reference, point_local_mm)) = self.face_at_screen(pointer, rect) else {
             self.digest = self.catalog.text("digest-hole-face-required");
             return false;
         };
@@ -73,7 +73,7 @@ impl KetchupApp {
 
     /// The exact face nearest along the view ray and the hit point in its
     /// part's coordinates.
-    fn hole_face_at_screen(
+    pub(super) fn face_at_screen(
         &self,
         pointer: Pos2,
         rect: Rect,

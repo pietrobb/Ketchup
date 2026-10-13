@@ -607,7 +607,7 @@ impl KetchupApp {
             ActiveTool::Revolve => "value-label-angle",
             ActiveTool::Shell => "value-label-thickness",
             ActiveTool::Fillet | ActiveTool::Chamfer => "value-label-radius-distance",
-            ActiveTool::Rotate => "value-label-angle",
+            ActiveTool::Rotate | ActiveTool::Draft => "value-label-angle",
             ActiveTool::Mirror => "value-label-mirror-offset",
             ActiveTool::Hole => "value-label-hole",
             ActiveTool::Scale => "value-label-scale-factor",
@@ -1003,6 +1003,7 @@ impl KetchupApp {
                     self.menu_command(ui, AppCommand::View(ViewFlag::ColorByAxis));
                     self.menu_command(ui, AppCommand::View(ViewFlag::Halos));
                 });
+                self.menu_command(ui, AppCommand::View(ViewFlag::DraftAnalysis));
                 ui.separator();
                 self.menu_command(ui, AppCommand::Hide);
                 self.menu_command(ui, AppCommand::Unhide);
@@ -1037,6 +1038,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Fillet);
                 self.menu_command(ui, AppCommand::Chamfer);
                 self.menu_command(ui, AppCommand::Hole);
+                self.menu_command(ui, AppCommand::Draft);
                 ui.separator();
                 self.menu_command(ui, AppCommand::LinearPattern);
                 self.menu_command(ui, AppCommand::RectangularPattern);

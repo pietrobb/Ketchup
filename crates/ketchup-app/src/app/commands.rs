@@ -263,6 +263,9 @@ impl KetchupApp {
             } else if tool == ActiveTool::Hole {
                 self.value_box.input = "6".to_owned();
                 self.status_key = "status-hole-face";
+            } else if tool == ActiveTool::Draft {
+                self.value_box.input = "5".to_owned();
+                self.status_key = "status-draft-neutral";
             } else if tool == ActiveTool::Measure {
                 self.status_key = "status-measure-first-point";
             } else if matches!(
@@ -493,6 +496,7 @@ impl KetchupApp {
             | AppCommand::Fillet
             | AppCommand::Chamfer
             | AppCommand::Hole
+            | AppCommand::Draft
             | AppCommand::PushPull
             | AppCommand::Move
             | AppCommand::Rotate
@@ -645,6 +649,11 @@ impl KetchupApp {
         if self.active_tool == ActiveTool::Hole {
             // The size is typed first; the hole lands where the face is clicked.
             self.digest = self.catalog.text("status-hole-face");
+            return false;
+        }
+        if self.active_tool == ActiveTool::Draft {
+            // The angle is typed first; the draft is sent when the neutral face is clicked.
+            self.digest = self.catalog.text("status-draft-neutral");
             return false;
         }
         if self.active_tool == ActiveTool::PlanarOffset {
@@ -1470,7 +1479,7 @@ pub(crate) fn format_vector_mm(vector: Vec3) -> String {
     )
 }
 
-fn parse_angle_degrees(input: &str) -> Option<f64> {
+pub(super) fn parse_angle_degrees(input: &str) -> Option<f64> {
     let trimmed = input.trim();
     let numeric = trimmed
         .strip_suffix('\u{b0}')

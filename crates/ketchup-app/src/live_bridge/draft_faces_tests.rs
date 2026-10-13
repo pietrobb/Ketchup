@@ -270,3 +270,96 @@ fn a_draft_tilts_every_copy_of_a_component_until_one_is_made_unique() {
         "the shared definition changed"
     );
 }
+
+#[test]
+fn the_draft_tool_drafts_the_selected_faces_about_the_clicked_one_in_one_undo_step() {
+    use eframe::egui::{Pos2, Rect, Vec2};
+    use ketchup_interaction::Vec3;
+    use ketchup_interaction::exact_projection::TopologicalPickLocator;
+    use ketchup_model::topology::TopologicalElementKind;
+
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let part = part_name(&app, 0);
+    let snapshot = app.document.current();
+    let root = snapshot.occurrences().next().unwrap().id();
+    let world = snapshot.world_transform_for_occurrence(root).unwrap();
+    drop(snapshot);
+    let block = Block::new(&mut app, &mut bridge);
+    let (stamp, undo, bytes) = (app.live_bridge_stamp(), app.undo_step_count(), saved(&app));
+
+    // The same draft sent as MCP gives the volume the tool must give.
+    let sent = bridge
+        .execute(&mut app, draft(&block.sides(), &block.top, 5.0), false)
+        .unwrap();
+    assert_eq!(sent["published"], true, "{sent}");
+    evaluate_exact(&mut app);
+    let expected = exact_volume(&app, &part);
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert!(saved(&app) == bytes);
+
+    let select_sides = |app: &mut KetchupApp| {
+        for (index, side) in block.sides().into_iter().enumerate() {
+            assert!(app.select_topological_locator_additive(
+                TopologicalPickLocator {
+                    instance_path: InstancePath::root(root),
+                    producer_feature_id: FeatureId(side["producer_feature_id"].as_u64().unwrap()),
+                    kind: TopologicalElementKind::Face,
+                    ordinal: u32::try_from(side["ordinal"].as_u64().unwrap()).unwrap(),
+                },
+                index > 0,
+            ));
+        }
+    };
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0));
+    let [x, y, z] = centroid(&block.top);
+    let [wx, wy, wz] = world.transform_point([x + 10.0, y, z]);
+    let click = app.project(Vec3::new(wx, wy, wz), rect);
+    select_sides(&mut app);
+    app.dispatch_command(AppCommand::Draft);
+    assert_eq!(app.active_tool, ActiveTool::Draft);
+    assert_eq!(app.value_box.input, "5");
+    assert!(app.draft_at_screen(click, rect), "{}", app.digest);
+    app.finish_window_edit();
+    assert_eq!(app.digest, app.catalog.text("digest-draft-created"));
+    assert_eq!(app.undo_step_count(), undo + 1, "one Undo step");
+    evaluate_exact(&mut app);
+    let volume = exact_volume(&app, &part);
+    assert!(
+        (volume - expected).abs() <= 1e-9 * expected,
+        "{volume} != {expected}"
+    );
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert!(saved(&app) == bytes, "Undo must restore the saved bytes");
+
+    // A refused angle, a typo and no selected face change nothing.
+    let unchanged = |app: &KetchupApp| {
+        app.live_bridge_stamp().canonical_digest == stamp.canonical_digest
+            && app.undo_step_count() == undo
+            && saved(app) == bytes
+    };
+    select_sides(&mut app);
+    app.value_box.input = "60".to_owned();
+    assert!(app.draft_at_screen(click, rect));
+    app.finish_window_edit();
+    assert!(
+        app.digest
+            .starts_with("invalid_program: assistant CAD draft is invalid"),
+        "{}",
+        app.digest
+    );
+    assert!(unchanged(&app), "{}", app.digest);
+    app.value_box.input = "five".to_owned();
+    assert!(!app.draft_at_screen(click, rect));
+    assert_eq!(app.digest, app.catalog.text("digest-draft-invalid-angle"));
+    app.value_box.input = "5".to_owned();
+    app.selection.topological.clear();
+    assert!(!app.draft_at_screen(click, rect));
+    assert_eq!(app.digest, app.catalog.text("digest-draft-faces-required"));
+    assert!(!app.live.edits.is_running());
+    assert!(unchanged(&app));
+}

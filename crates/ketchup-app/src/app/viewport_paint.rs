@@ -600,7 +600,7 @@ const fn command_icon(id: AppCommand) -> Icon {
         AppCommand::Mirror => Icon::Mirror,
         AppCommand::Revolve => Icon::Orbit,
         AppCommand::Shell => Icon::PushPull,
-        AppCommand::Fillet | AppCommand::Chamfer => Icon::Tape,
+        AppCommand::Fillet | AppCommand::Chamfer | AppCommand::Draft => Icon::Tape,
         AppCommand::PushPull => Icon::PushPull,
         AppCommand::Move => Icon::Move,
         AppCommand::Rotate => Icon::Orbit,

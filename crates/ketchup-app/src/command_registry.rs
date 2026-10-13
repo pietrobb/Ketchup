@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 132] = [
+    pub(crate) const COMMANDS: [CommandSpec; 134] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -308,6 +308,12 @@ impl CommandRegistry {
             id: AppCommand::Hole,
             label_key: "tool-hole",
             tool: Some(ActiveTool::Hole),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Draft,
+            label_key: "tool-draft",
+            tool: Some(ActiveTool::Draft),
             implemented: true,
         },
         CommandSpec {
@@ -727,6 +733,12 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::View(ViewFlag::ColorByAxis),
             label_key: "view-color-by-axis",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::View(ViewFlag::DraftAnalysis),
+            label_key: "view-draft-analysis",
             tool: None,
             implemented: true,
         },

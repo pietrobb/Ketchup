@@ -10,6 +10,7 @@ pub(crate) mod dimensions_ui;
 #[path = "app/dimensions_ui_tests.rs"]
 mod dimensions_ui_tests;
 mod document;
+pub(crate) mod draft;
 mod drawing;
 mod exact;
 mod export;

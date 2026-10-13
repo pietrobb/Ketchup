@@ -50,11 +50,13 @@ pub enum ViewFlag {
     Dashes,
     /// Edges in their dominant world-axis color.
     ColorByAxis,
+    /// Exact faces colored by their draft along the part's +Z.
+    DraftAnalysis,
 }
 
 impl ViewFlag {
     /// Every switch, in menu order.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::GridAxes,
         Self::WhiteBackground,
         Self::Shadows,
@@ -77,6 +79,7 @@ impl ViewFlag {
         Self::Jitter,
         Self::Dashes,
         Self::ColorByAxis,
+        Self::DraftAnalysis,
     ];
 
     const fn bit(self) -> u32 {
