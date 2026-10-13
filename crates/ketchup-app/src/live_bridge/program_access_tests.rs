@@ -803,3 +803,54 @@ fn standard_fasteners_weigh_their_simplified_steel_body() {
     assert!((kg(circle(12.0) * 1000.0) - 0.888).abs() < 0.0005);
     assert_eq!(report["assembly"]["status"], "complete", "{report}");
 }
+
+/// #2482: a B500B bar Ø12 x 1000 is 0.888 kg ±1 % both in the cut list (the
+/// library's nominal EN 10080 mass) and in inspect mass (the exact solid x
+/// steel density). Each is checked on its own: should they ever part, this
+/// fails instead of trusting one of them.
+#[test]
+fn a_b500b_bar_weighs_its_nominal_mass_in_the_cut_list_and_in_inspect_mass() {
+    let (mut app, mut bridge) = setup();
+    let source = "rebar(\"bar\", 12, 1000, axis = (1, 0, 0))\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let expected = Some(app.live_bridge_stamp());
+    let report = bridge
+        .execute(
+            &mut app,
+            Request::Mass {
+                expected,
+                occurrence_ids: None,
+            },
+            false,
+        )
+        .unwrap();
+    let part = &report["parts"][0];
+    assert_eq!(part["name"], "bar", "{report}");
+    assert_eq!(part["status"], "ok", "{part}");
+    let weighed = part["mass_kg"].as_f64().unwrap();
+    assert!(
+        (weighed - 0.888).abs() <= 0.00888,
+        "inspect mass {weighed} kg"
+    );
+
+    let model = ketchup_program::evaluate("bar.star", source, &BTreeMap::new())
+        .unwrap()
+        .model;
+    let table = ketchup_program::cut_list::cut_list_table(&model, |_| true);
+    let column = |name: &str| {
+        table
+            .header
+            .iter()
+            .position(|header| header == name)
+            .unwrap_or_else(|| panic!("{name} in {:?}", table.header))
+    };
+    assert_eq!(table.rows.len(), 1, "{:?}", table.rows);
+    let listed = match &table.rows[0][column("mass_kg")] {
+        ketchup_program::table::Cell::Text(text) => text.parse::<f64>().unwrap(),
+        cell => panic!("mass_kg {cell:?}"),
+    };
+    assert!((listed - 0.888).abs() <= 0.00888, "cut list {listed} kg");
+}

@@ -1191,7 +1191,7 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
     joint(door, side, kind = "hinge", fasteners = cups, fastener = "hinge %s mm with plate" % cup, links = links, max_gap = max(gap, 0) + 0.5, name = label)
     return cups
 
-#@topic fasteners: Standard nuts, washers, bolts and threaded rods (ISO 4032, DIN 934, ISO 7040, DIN 6334, ISO 7089, ISO 4017, ISO 4014, ISO 4762, DIN 975)
+#@topic fasteners: Standard nuts, washers, bolts, threaded rods and reinforcing bars (ISO 4032, DIN 934, ISO 7040, DIN 6334, ISO 7089, ISO 4017, ISO 4014, ISO 4762, DIN 975, B500B EN 10080)
 #
 #   nut(name, size, norm="ISO 4032", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
 #     norm "ISO 4032" (hexagon nut), "DIN 934" (the older hexagon nut: other heights, and
@@ -1206,6 +1206,13 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   bolt_lengths(size, norm="ISO 4017")  -> those lengths, e.g. bolt_lengths("M8") = [16, 20, 25, ... 80]
 #   threaded_rod(name, size, length, norm="DIN 975", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
 #     any length > 0 (sold by the metre and cut to length).
+#   rebar(name, diameter, length, grade="B500B", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
+#     a straight reinforcing bar, diameter in mm (6, 8, 10, 12, 14, 16, 20, 25, 28, 32, 40),
+#     any length > 0, from `at` along `axis`. Its body is a plain cylinder of the nominal
+#     diameter (no ribs), so the window weighs exactly the nominal mass; designation
+#     "B500B Ø12 L1000", standard "EN 10080", mass_kg the nominal mass of the piece
+#     (rebar_mass_kg(diameter, length) = pi d^2 / 4 x length x 7850 kg/m3; Ø12 x 1000 = 0.888).
+#     REBAR_MASS_KG_M holds the catalogues' kg/m, which this formula matches within 0.1 %.
 #   A size or length the norm (or this library) does not have is refused with the valid ones
 #   listed; the model is then unchanged, like any refused program.
 #   The part's origin lies on the bolt axis in the seating face (the face that bears on the
@@ -1254,6 +1261,12 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   Bolt lengths: every nominal length of the series (fasteners.eu length tolerance tables)
 #     from the size's shortest to its longest; engineersedge leaves out 55 for ISO 4014 M6.
 #   DIN 975: fasteners.eu/standards/din/975 and boltport.com/standards/din-975; M3-M24.
+#   B500B kg/m: reinforcing-bar.com (rebar sizes, metric table d6-d50), ulamex.com (ribbed bars
+#     B500B EN 10080, d6-d32: the formula d^2 x 0.006165 and d8/10/12/16/20/25/32),
+#     calcsteel.com (rebar weight calculator, EN 10080 d6-d40: the formula, d10/16/25). They
+#     differ in the third decimal only (d16 1.578 / 1.579, d20 2.466 / 2.467, d25 3.853 / 3.855,
+#     d32 6.313 / 6.316; ulamex.com / reinforcing-bar.com; the table keeps ulamex.com).
+#     d6, d14, d28 and d40 are in one table only, which their `source` says.
 
 # The sizes this library offers; a norm may have fewer.
 _METRIC_SIZES = ["M3", "M4", "M5", "M6", "M8", "M10", "M12", "M14", "M16", "M18", "M20", "M22", "M24"]
@@ -1358,7 +1371,8 @@ _SIZE_SOURCE_NOTES = {
     "ISO 4017": {size: "%s lengths from engineersedge.com only" % size for size in BOLT_HEADS["ISO 4017"]},
     "ISO 4014": {
         "M3": "M3 lengths from engineersedge.com only", "M4": "M4 lengths from engineersedge.com only",
-        "M5": "M5 lengths from engineersedge.com only", "M6": "M6 lengths from engineersedge.com only",
+        "M5": "M5 lengths from engineersedge.com only",
+        "M6": "M6 lengths from engineersedge.com only; it leaves out 55, which the length series keeps",
         "M8": "M8 lengths from engineersedge.com only",
         "M10": "M10 shortest length 45 from engineersedge.com; intafast.com starts at 50",
         "M14": "M14 lengths from intafast.com only", "M18": "M18 lengths from intafast.com only",
@@ -1469,6 +1483,51 @@ def threaded_rod(name, size, length, norm = "DIN 975", at = (0, 0, 0), axis = (0
         fail("threaded_rod(): length must be positive, got %r" % length)
     designation = "%s %sx%s" % (norm, size, length)
     part = _fastener_part(name, _circle(d / 2.0, "rod"), length, at, norm, size, designation, tags)
+    return _turn_onto(part, at, axis)
+
+# Reinforcing bars B500B (EN 10080): nominal diameter: catalogue mass in kg/m. The library
+# weighs a bar by the nominal formula (below); the table is the catalogues' cross-check.
+REBAR_MASS_KG_M = {
+    6: 0.222, 8: 0.395, 10: 0.617, 12: 0.888, 14: 1.21, 16: 1.578, 20: 2.466, 25: 3.853,
+    28: 4.83, 32: 6.313, 40: 9.868,
+}
+
+_REBAR_SOURCE = "reinforcing-bar.com, ulamex.com, calcsteel.com (catalogue tables, not the standard text)"
+
+# What of one diameter has a single source: diameter: note.
+_REBAR_SOURCE_NOTES = {
+    6: "Ø6 kg/m in a table at reinforcing-bar.com only (ulamex.com gives the formula)",
+    14: "Ø14 kg/m in a table at reinforcing-bar.com only (ulamex.com gives the formula)",
+    28: "Ø28 kg/m in a table at reinforcing-bar.com only (ulamex.com gives the formula)",
+    40: "Ø40 kg/m in a table at reinforcing-bar.com only (ulamex.com stocks up to Ø32)",
+}
+
+_REBAR_MASS_BASIS = "nominal EN 10080: pi d^2 / 4 x length x 7850 kg/m3, ribs not modelled"
+
+def rebar_mass_kg(diameter, length):
+    """The nominal mass of a straight bar: the plain round section of the nominal diameter."""
+    return math.pi * diameter * diameter / 4.0 * length * 7850 * 1e-9
+
+def rebar(name, diameter, length, grade = "B500B", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+    """A straight reinforcing bar (simplified: a plain cylinder of the nominal diameter)
+    `length` long from `at` along `axis`."""
+    if grade != "B500B":
+        fail("rebar(): unknown grade %r; use \"B500B\"" % (grade,))
+    if diameter not in REBAR_MASS_KG_M:
+        fail("rebar(): B500B has no diameter %r here; valid diameters: %s" %
+             (diameter, ", ".join([str(d) for d in sorted(REBAR_MASS_KG_M.keys())])))
+    if length <= 0:
+        fail("rebar(): length must be positive, got %r" % length)
+    d = [d for d in REBAR_MASS_KG_M if d == diameter][0]
+    note = _REBAR_SOURCE_NOTES.get(d)
+    part = extrude(name, profile = _circle(d / 2.0, "bar"), distance = length, at = at, material = "steel",
+                   tags = tags, attributes = {
+                       "designation": "%s Ø%s L%s" % (grade, d, length),
+                       "standard": "EN 10080",
+                       "mass_basis": _REBAR_MASS_BASIS,
+                       "mass_kg": str(int(rebar_mass_kg(d, length) * 1000 + 0.5) / 1000.0),
+                       "source": _REBAR_SOURCE + ("; " + note if note else ""),
+                   })
     return _turn_onto(part, at, axis)
 
 #@topic intent: Stating intent that the check measures (expect_*)

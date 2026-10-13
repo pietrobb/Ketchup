@@ -156,7 +156,10 @@ place a simplified steel body, seated at `at` along `axis`, with `designation`
 A size or bolt length the norm does not have is refused with the valid ones;
 `bolt_lengths(size, norm)` lists the lengths. The dimensions come from public
 catalogues, not from the text of the standards; a value of one size that only
-one catalogue gives is named in that part's `source`.
+one catalogue gives is named in that part's `source`. `rebar(name, diameter,
+length)` places a straight B500B bar (EN 10080, Ø6–Ø40) as a plain cylinder of
+the nominal diameter; its `mass_kg` in the cut list is the nominal mass
+(Ø12 × 1000 mm = 0.888 kg), which the window's mass of the solid equals.
 
 The file is split into topics by `#@topic id: title` lines (`basics`,
 `placement`, `profiles`, `machining`, `joinery`, `fasteners`, `intent`, `space`, `buildup`,

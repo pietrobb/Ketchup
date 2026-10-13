@@ -240,6 +240,58 @@ threaded_rod(\"along\", \"M12\", 333.5, at = (0, 50, 0), axis = (1, 0, 0))
 }
 
 #[test]
+fn a_b500b_bar_is_a_cylinder_of_its_nominal_diameter_and_names_its_nominal_mass() {
+    let model = model(
+        "rebar(\"up\", 12, 1000)
+rebar(\"along\", 40, 2500, at = (0, 100, 0), axis = (1, 0, 0))
+",
+    );
+    let up = model.part("up").unwrap();
+    let (min, max) = up.world_bounds();
+    assert!(
+        close(min[2], 0.0) && close(max[2], 1000.0) && close(max[0] - min[0], 12.0),
+        "{min:?} {max:?}"
+    );
+    assert_eq!(up.material.as_deref(), Some("steel"));
+    assert_eq!(up.attributes["designation"], "B500B Ø12 L1000");
+    assert_eq!(up.attributes["standard"], "EN 10080");
+    let mass: f64 = up.attributes["mass_kg"].parse().unwrap();
+    assert!((mass - 0.888).abs() <= 0.00888, "{mass}");
+    assert!(up.attributes["mass_basis"].starts_with("nominal EN 10080"));
+    assert!(!up.attributes["source"].contains("only"));
+    let along = model.part("along").unwrap();
+    let (min, max) = along.world_bounds();
+    assert!(
+        close(min[0], 0.0) && close(max[0], 2500.0),
+        "{min:?} {max:?}"
+    );
+    assert!(
+        along.attributes["source"].contains("Ø40 kg/m in a table at reinforcing-bar.com only"),
+        "{}",
+        along.attributes["source"]
+    );
+    assert!(refused("rebar(\"r\", 11, 1000)\n").contains(
+        "B500B has no diameter 11 here; valid diameters: 6, 8, 10, 12, 14, 16, 20, 25, 28, 32, 40"
+    ));
+    assert!(refused("rebar(\"r\", 12, 0)\n").contains("length must be positive"));
+    assert!(refused("rebar(\"r\", 12, 1000, grade = \"B420\")\n").contains("unknown grade"));
+}
+
+#[test]
+fn the_nominal_rebar_formula_matches_every_catalogue_mass_per_metre() {
+    // Each diameter's catalogue kg/m against the formula; one beyond 1 % fails.
+    let model = model(
+        "for d, kg_m in REBAR_MASS_KG_M.items():
+    formula = rebar_mass_kg(d, 1000)
+    if abs(formula - kg_m) > 0.01 * kg_m:
+        fail(\"d%s: catalogue %s kg/m, formula %s kg/m\" % (d, kg_m, formula))
+    rebar(\"d%s\" % d, d, 1000, at = (d * 100, 0, 0))
+",
+    );
+    assert_eq!(model.parts.len(), 11);
+}
+
+#[test]
 fn a_value_with_one_source_is_named_at_its_size() {
     let model = model(
         "nut(\"nyloc3\", \"M3\", norm = \"ISO 7040\")
@@ -267,6 +319,13 @@ bolt(\"m10\", \"M10\", 45, norm = \"ISO 4014\", at = (90, 0, 0))
         source("m10")
             .contains("M10 shortest length 45 from engineersedge.com; intafast.com starts at 50")
     );
+    // engineersedge leaves out 55 for ISO 4014 M6; the length series keeps it.
+    let m6 = self::model("bolt(\"m6\", \"M6\", 55, norm = \"ISO 4014\")\n");
+    let m6 = m6.part("m6").unwrap().attributes["source"].clone();
+    assert!(
+        m6.contains("M6 lengths from engineersedge.com only; it leaves out 55"),
+        "{m6}"
+    );
     for name in ["nyloc3", "cap", "long"] {
         assert!(source(name).contains("(catalogue tables, not the standard text)"));
     }
@@ -282,6 +341,8 @@ washer(\"w1\", \"M8\", at = (120, 0, 0))
 bolt(\"b1\", \"M8\", 40, at = (160, 0, 0))
 bolt(\"b2\", \"M8\", 40, at = (200, 0, 0))
 bolt(\"b3\", \"M8\", 50, at = (240, 0, 0))
+rebar(\"r1\", 12, 1000, at = (0, 100, 0), axis = (1, 0, 0))
+rebar(\"r2\", 12, 1000, at = (0, 150, 0), axis = (1, 0, 0))
 ",
     );
     let table = cut_list_table(&model, |_| true);
@@ -319,10 +380,19 @@ bolt(\"b3\", \"M8\", 50, at = (240, 0, 0))
     // A bolt's length is part of its designation: 40 and 50 are two rows.
     assert_eq!(text(&row("ISO 4017 M8x40")[count]), "2");
     assert_eq!(text(&row("ISO 4017 M8x50")[count]), "1");
-    assert_eq!(table.rows.len(), 5, "{:?}", table.rows);
+    // A bar names its nominal mass per piece; the fasteners leave that column empty.
+    let bar = row("B500B Ø12 L1000");
+    assert_eq!(text(&bar[count]), "2");
+    assert_eq!(text(&bar[standard]), "EN 10080");
+    let mass: f64 = text(&bar[column("mass_kg")]).parse().unwrap();
+    assert!((mass - 0.888).abs() <= 0.00888, "{mass}");
+    assert!(text(&bar[basis]).starts_with("nominal EN 10080"));
+    assert_eq!(text(&row("ISO 4032 M8")[column("mass_kg")]), "");
+    assert_eq!(table.rows.len(), 6, "{:?}", table.rows);
     for row in &table.rows {
         assert!(
-            text(&row[basis]).contains("simplified solid x 7850 kg/m3"),
+            text(&row[basis]).contains("simplified solid x 7850 kg/m3")
+                || text(&row[designation]).starts_with("B500B"),
             "{row:?}"
         );
         assert!(
