@@ -148,11 +148,15 @@ reveal, so the door is carried and not floating. The count follows the door
 height (2 up to 900 mm, 3 to 1600, 4 to 2000, then 5); a door further than
 `max_gap` (4 mm) from the side is refused with the distance. Each cup and its two plate holes are explicitly linked to their hinge; `dowels()` likewise links both mating holes. Generic `joint(..., links=[joint_link([operation_refs], hardware=[parts])])` records ownership without inventing it from proximity. Delete or replace the generating helper through a source patch to regenerate only its holes; deleting a metadata-only declaration does not erase independent machining. Pick context distinguishes linked solid hardware from catalog metadata. A surface not matched to supported drilling reports `machining_provenance.state=not_identified`, not an inferred owner or a claim that no cut exists.
 
-`nut(name, size, norm="ISO 4032")` (also `DIN 934`, `ISO 7040`, `DIN 6334`) and
-`washer(name, size)` (ISO 7089) place a simplified steel body, seated at `at`
-along `axis`, with `designation`, `standard`, `mass_basis` and `source` in the
-cut list. A size the norm does not have is refused with the valid sizes. The
-dimensions come from public catalogues, not from the text of the standards.
+`nut(name, size, norm="ISO 4032")` (also `DIN 934`, `ISO 7040`, `DIN 6334`),
+`washer(name, size)` (ISO 7089), `bolt(name, size, length, norm="ISO 4017")`
+(also `ISO 4014`, `ISO 4762`) and `threaded_rod(name, size, length)` (DIN 975)
+place a simplified steel body, seated at `at` along `axis`, with `designation`
+(e.g. `ISO 4017 M8x40`), `standard`, `mass_basis` and `source` in the cut list.
+A size or bolt length the norm does not have is refused with the valid ones;
+`bolt_lengths(size, norm)` lists the lengths. The dimensions come from public
+catalogues, not from the text of the standards; a value of one size that only
+one catalogue gives is named in that part's `source`.
 
 The file is split into topics by `#@topic id: title` lines (`basics`,
 `placement`, `profiles`, `machining`, `joinery`, `fasteners`, `intent`, `space`, `buildup`,

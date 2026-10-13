@@ -1191,7 +1191,7 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
     joint(door, side, kind = "hinge", fasteners = cups, fastener = "hinge %s mm with plate" % cup, links = links, max_gap = max(gap, 0) + 0.5, name = label)
     return cups
 
-#@topic fasteners: Standard nuts and washers (ISO 4032, DIN 934, ISO 7040, DIN 6334, ISO 7089)
+#@topic fasteners: Standard nuts, washers, bolts and threaded rods (ISO 4032, DIN 934, ISO 7040, DIN 6334, ISO 7089, ISO 4017, ISO 4014, ISO 4762, DIN 975)
 #
 #   nut(name, size, norm="ISO 4032", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
 #     norm "ISO 4032" (hexagon nut), "DIN 934" (the older hexagon nut: other heights, and
@@ -1199,32 +1199,61 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #     or "DIN 6334" (coupling nut, length 3d). size "M3" ... "M24" where the norm has it.
 #   washer(name, size, norm="ISO 7089", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
 #     a plain washer, normal series.
-#   A size the norm (or this library) does not have is refused with the valid sizes listed;
-#   the model is then unchanged, like any refused program.
+#   bolt(name, size, length, norm="ISO 4017", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
+#     norm "ISO 4017" (hexagon head, thread to the head), "ISO 4014" (hexagon head with a
+#     plain shank part; same head, longer lengths) or "ISO 4762" (socket head cap screw).
+#     length is the nominal length under the head and must be one of the size's lengths.
+#   bolt_lengths(size, norm="ISO 4017")  -> those lengths, e.g. bolt_lengths("M8") = [16, 20, 25, ... 80]
+#   threaded_rod(name, size, length, norm="DIN 975", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
+#     any length > 0 (sold by the metre and cut to length).
+#   A size or length the norm (or this library) does not have is refused with the valid ones
+#   listed; the model is then unchanged, like any refused program.
 #   The part's origin lies on the bolt axis in the seating face (the face that bears on the
-#   joined part), the part rises along `axis` from `at`: a nut under a 20 mm plate is
-#   nut("n", "M8", at=(0, 0, -20), axis=(0, 0, -1)).
-#   The body is simplified: a hexagon of the nominal width across flats s (or a ring), the
-#   bore the nominal thread diameter, no thread, chamfers or insert. Material "steel".
-#   Attributes (cut-list columns): designation (e.g. "ISO 4032 M8"), standard, mass_basis
-#   (the mass is the simplified body's volume x 7850 kg/m3, not a catalogue weight) and
-#   source. inspect action=mass and the takeoff weigh the simplified body.
+#   joined part), the nut, washer or bolt head rises along `axis` from `at` and a bolt's
+#   shank runs the other way: through a 20 mm plate lying on z=0,
+#   bolt("b", "M8", 40, at=(0, 0, 20)) and nut("n", "M8", axis=(0, 0, -1)). A threaded rod
+#   starts at `at` and runs along `axis`.
+#   The body is simplified: a hexagon of the nominal width across flats s (or a ring, or a
+#   round head with its hexagon socket), the bore and shank the nominal thread diameter, no
+#   thread, chamfers, washer face or insert. Material "steel".
+#   Attributes (cut-list columns): designation (e.g. "ISO 4032 M8", "ISO 4017 M8x40"),
+#   standard, mass_basis (the mass is the simplified body's volume x 7850 kg/m3, not a
+#   catalogue weight) and source, which names a value of this size that has only one source.
+#   inspect action=mass and the takeoff weigh the simplified body. A full-diameter shank or
+#   rod weighs more than the threaded one: DIN 975 M12 is 0.888 kg/m here, the catalogues
+#   say 0.725 kg/m.
 #
 # Dimensions in mm: nominal s and the largest height the norm allows (m max, h max), washers
-# d1 nominal (min), d2 nominal (max), h nominal. The values are NOT copied from the text of
-# the standards: they come from public catalogues, each cross-checked with at least two:
+# d1 nominal (min), d2 nominal (max), h nominal, bolt heads k nominal (ISO 4762: dk max, k max,
+# socket s nominal, t min). The values are NOT copied from the text of the standards: they
+# come from public catalogues, each cross-checked with at least two where they exist; a value
+# with only one source says so in the part's `source` for its size:
 #   ISO 4032: fasteners.eu/standards/iso/4032, wermac.org (hex nuts ISO 4032), engineersedge.com
 #     (BS EN ISO 4032); all agree for M3-M24.
 #   DIN 934: boltport.com/standards/din-934, boltingspecialist.com (DIN 934 hex nuts); agree.
 #     fasteners.eu/standards/din/934 shows the ISO 4032 table instead (m 6.8 for M8): not used.
 #   ISO 7040: nfgab.com (Nordic Fastening Group, ISO 7040 M4-M24) and IS 7002:2005 (identical to
-#     ISO 7040:1997, law.resource.org) for M3-M24; ISO 7040 has no M18 or M22.
+#     ISO 7040:1997, law.resource.org) for M3-M24, so M3 has one source; no M18 or M22.
 #     fasteners.eu/standards/iso/7040 shows the DIN 982 table instead (h 11.5, s 17 for M10): not used.
 #   DIN 6334: aspenfasteners.com (Metric DIN 6334 spec) and globalfastener.com (DIN 6334); both
 #     start at M6, so M3-M5 are refused though shops sell "DIN 6334" M4/M5. The widths across
 #     flats are DIN ones (M10 17, M12 19, M14 22, M22 32), as in DIN 934, not ISO 4032.
 #   ISO 7089: itpbolt.com (standard flat washers ISO 7089), engineersedge.com (ISO flat washer)
 #     and fasteners.eu/standards/iso/7089 for M18/M22; agree with the iTeh preview of ISO 7089:2000.
+#   ISO 4017 heads: fasteners.eu/standards/iso/4017, fullerfasteners.com (ISO 4017 specifications),
+#     itafasteners.com (hex bolts); agree. Lengths: engineersedge.com (ISO 4017 table) only.
+#     (M14), (M18), (M22): no catalogue gives their lengths, so they are refused.
+#   ISO 4014 heads: as ISO 4017, from fasteners.eu/standards/iso/4014, fullerfasteners.com
+#     (ISO 4014 specifications), intafast.com (EN ISO 4014 data sheet); agree. Lengths:
+#     engineersedge.com (ISO 4014 table) M3-M24 without M14/M18/M22, intafast.com M10-M24;
+#     they agree except M10, which engineersedge starts at 45 and intafast at 50 (45 kept).
+#   ISO 4762: fasteners.eu/standards/iso/4762, eitasarim.com (DIN 912 / ISO 4762),
+#     roymech.co.uk (cap screws) agree on dk, k and s. Socket depth t is fasteners.eu's t min
+#     (itafasteners.com copies that table); roymech gives deeper sockets for M5-M24 (M8 4.3
+#     instead of 4). Lengths: eitasarim.com only. ISO 4762 has no M18 or M22.
+#   Bolt lengths: every nominal length of the series (fasteners.eu length tolerance tables)
+#     from the size's shortest to its longest; engineersedge leaves out 55 for ISO 4014 M6.
+#   DIN 975: fasteners.eu/standards/din/975 and boltport.com/standards/din-975; M3-M24.
 
 # The sizes this library offers; a norm may have fewer.
 _METRIC_SIZES = ["M3", "M4", "M5", "M6", "M8", "M10", "M12", "M14", "M16", "M18", "M20", "M22", "M24"]
@@ -1264,13 +1293,89 @@ WASHERS = {
     },
 }
 
+# norm: {size: (width across flats s, head height k)}, or for ISO 4762
+# {size: (head diameter dk, head height k, socket s, socket depth t)}
+BOLT_HEADS = {
+    "ISO 4017": {
+        "M3": (5.5, 2), "M4": (7, 2.8), "M5": (8, 3.5), "M6": (10, 4), "M8": (13, 5.3),
+        "M10": (16, 6.4), "M12": (18, 7.5), "M16": (24, 10), "M20": (30, 12.5), "M24": (36, 15),
+    },
+    "ISO 4014": {
+        "M3": (5.5, 2), "M4": (7, 2.8), "M5": (8, 3.5), "M6": (10, 4), "M8": (13, 5.3),
+        "M10": (16, 6.4), "M12": (18, 7.5), "M14": (21, 8.8), "M16": (24, 10), "M18": (27, 11.5),
+        "M20": (30, 12.5), "M22": (34, 14), "M24": (36, 15),
+    },
+    "ISO 4762": {
+        "M3": (5.5, 3, 2.5, 1.3), "M4": (7, 4, 3, 2), "M5": (8.5, 5, 4, 2.5), "M6": (10, 6, 5, 3),
+        "M8": (13, 8, 6, 4), "M10": (16, 10, 8, 5), "M12": (18, 12, 10, 6), "M14": (21, 14, 12, 7),
+        "M16": (24, 16, 14, 8), "M20": (30, 20, 17, 10), "M24": (36, 24, 19, 12),
+    },
+}
+
+# norm: {size: (shortest, longest nominal length)}
+BOLT_LENGTH_RANGES = {
+    "ISO 4017": {
+        "M3": (6, 30), "M4": (8, 40), "M5": (10, 50), "M6": (12, 60), "M8": (16, 80),
+        "M10": (20, 100), "M12": (25, 120), "M16": (30, 200), "M20": (40, 200), "M24": (50, 200),
+    },
+    "ISO 4014": {
+        "M3": (20, 30), "M4": (25, 40), "M5": (25, 50), "M6": (30, 60), "M8": (40, 80),
+        "M10": (45, 100), "M12": (50, 120), "M14": (60, 140), "M16": (65, 160), "M18": (70, 180),
+        "M20": (80, 200), "M22": (90, 220), "M24": (90, 240),
+    },
+    "ISO 4762": {
+        "M3": (5, 30), "M4": (6, 40), "M5": (8, 50), "M6": (10, 60), "M8": (12, 80),
+        "M10": (16, 100), "M12": (20, 120), "M14": (25, 140), "M16": (25, 160), "M20": (30, 200),
+        "M24": (40, 200),
+    },
+}
+
+_BOLT_LENGTH_SERIES = [5, 6, 8, 10, 12, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90,
+                       100, 110, 120, 130, 140, 150, 160, 180, 200, 220, 240]
+
+# norm: {size: nominal diameter}
+THREADED_RODS = {
+    "DIN 975": {size: int(size[1:]) for size in _METRIC_SIZES},
+}
+
 _FASTENER_SOURCES = {
     "ISO 4032": "fasteners.eu, wermac.org, engineersedge.com (catalogue tables, not the standard text)",
     "DIN 934": "boltport.com, boltingspecialist.com (catalogue tables, not the standard text)",
     "ISO 7040": "nfgab.com, IS 7002:2005 (catalogue tables, not the standard text)",
     "DIN 6334": "aspenfasteners.com, globalfastener.com (catalogue tables, not the standard text)",
     "ISO 7089": "itpbolt.com, engineersedge.com, fasteners.eu (catalogue tables, not the standard text)",
+    "ISO 4017": "heads fasteners.eu, fullerfasteners.com, itafasteners.com; lengths engineersedge.com (catalogue tables, not the standard text)",
+    "ISO 4014": "heads fasteners.eu, fullerfasteners.com, intafast.com; lengths engineersedge.com, intafast.com (catalogue tables, not the standard text)",
+    "ISO 4762": "head fasteners.eu, eitasarim.com, roymech.co.uk; lengths eitasarim.com (catalogue tables, not the standard text)",
+    "DIN 975": "fasteners.eu, boltport.com (catalogue tables, not the standard text)",
 }
+
+_ISO_4762_T = "socket depth t fasteners.eu; roymech.co.uk gives a deeper socket"
+
+# What of one size has a single source (or sources that disagree): norm: {size: note}.
+_SIZE_SOURCE_NOTES = {
+    "ISO 7040": {"M3": "M3 h from IS 7002:2005 only (nfgab.com starts at M4)"},
+    "ISO 4017": {size: "%s lengths from engineersedge.com only" % size for size in BOLT_HEADS["ISO 4017"]},
+    "ISO 4014": {
+        "M3": "M3 lengths from engineersedge.com only", "M4": "M4 lengths from engineersedge.com only",
+        "M5": "M5 lengths from engineersedge.com only", "M6": "M6 lengths from engineersedge.com only",
+        "M8": "M8 lengths from engineersedge.com only",
+        "M10": "M10 shortest length 45 from engineersedge.com; intafast.com starts at 50",
+        "M14": "M14 lengths from intafast.com only", "M18": "M18 lengths from intafast.com only",
+        "M22": "M22 lengths from intafast.com only",
+    },
+    "ISO 4762": {
+        size: "%s lengths from eitasarim.com only%s" % (
+            size, "" if size in ("M3", "M4") else
+            "; socket depth t from fasteners.eu only" if size == "M14" else "; " + _ISO_4762_T)
+        for size in BOLT_HEADS["ISO 4762"]
+    },
+}
+
+def _fastener_source(norm, size):
+    """The catalogues of `norm`, plus what has a single source for `size`."""
+    note = _SIZE_SOURCE_NOTES.get(norm, {}).get(size)
+    return _FASTENER_SOURCES[norm] + ("; " + note if note else "")
 
 _SIMPLIFIED_MASS = "simplified solid x 7850 kg/m3 (no thread or chamfers), not a catalogue weight"
 
@@ -1289,33 +1394,82 @@ def _circle(radius, name):
     return [[name, (radius, 0), (-radius, 0), {"center": (0, 0)}],
             [name + "_back", (-radius, 0), (radius, 0), {"center": (0, 0)}]]
 
-def _fastener_body(name, outline, bore, height, at, axis, norm, size, tags):
-    """A steel ring of `outline` with a through bore `bore` wide, `height` along local +z,
-    its seating face in local z=0 at `at`, turned so that local z runs along `axis`."""
-    part = extrude(name, profile = outline, distance = height, at = at, material = "steel", tags = tags,
+def _fastener_part(name, outline, height, at, norm, size, designation, tags):
+    """A steel prism of `outline`, `height` along local +z from `at`, with the cut-list
+    attributes of a standard part."""
+    return extrude(name, profile = outline, distance = height, at = at, material = "steel", tags = tags,
                    attributes = {
-                       "designation": "%s %s" % (norm, size),
+                       "designation": designation,
                        "standard": norm,
                        "mass_basis": _SIMPLIFIED_MASS,
-                       "source": _FASTENER_SOURCES[norm],
+                       "source": _fastener_source(norm, size),
                    })
-    cut(part, profile = _circle(bore / 2.0, "bore"), through = True, name = "bore")
+
+def _turn_onto(part, at, axis):
+    """Turns `part` about `at` so that its local z runs along `axis`."""
     if tuple(axis) != (0, 0, 1):
         across = (0, 0, 1) if abs(axis[2]) < 0.9 * vec_length(axis) else (1, 0, 0)
         place(part, origin = at, z = axis, x = across)
     return part
 
+def _hexagon(s):
+    """A hexagon `s` across flats, flats square to local x."""
+    return polygon(6, s / math.sqrt(3), angle = 30)
+
+def _fastener_body(name, outline, bore, height, at, axis, norm, size, tags):
+    """A steel ring of `outline` with a through bore `bore` wide, `height` along local +z,
+    its seating face in local z=0 at `at`, turned so that local z runs along `axis`."""
+    part = _fastener_part(name, outline, height, at, norm, size, "%s %s" % (norm, size), tags)
+    cut(part, profile = _circle(bore / 2.0, "bore"), through = True, name = "bore")
+    return _turn_onto(part, at, axis)
+
 def nut(name, size, norm = "ISO 4032", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
     """A standard hexagon nut (simplified body) on the axis through `at`, seated at `at`."""
     s, height = _fastener_row("nut", NUTS, norm, size)
-    corner = s / math.sqrt(3)
     # Flats square to local x: the part is s wide along x, 2 s / sqrt(3) along y.
-    return _fastener_body(name, polygon(6, corner, angle = 30), int(size[1:]), height, at, axis, norm, size, tags)
+    return _fastener_body(name, _hexagon(s), int(size[1:]), height, at, axis, norm, size, tags)
 
 def washer(name, size, norm = "ISO 7089", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
     """A standard plain washer (simplified body) on the axis through `at`, seated at `at`."""
     d1, d2, h = _fastener_row("washer", WASHERS, norm, size)
     return _fastener_body(name, _circle(d2 / 2.0, "outside"), d1, h, at, axis, norm, size, tags)
+
+def bolt_lengths(size, norm = "ISO 4017"):
+    """The nominal lengths this library offers for a bolt of `size` and `norm`."""
+    _fastener_row("bolt", BOLT_HEADS, norm, size)
+    shortest, longest = BOLT_LENGTH_RANGES[norm][size]
+    return [length for length in _BOLT_LENGTH_SERIES if length >= shortest and length <= longest]
+
+def bolt(name, size, length, norm = "ISO 4017", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+    """A standard bolt (simplified body): head seated at `at` and rising along `axis`, the
+    shank `length` long running the other way."""
+    head = _fastener_row("bolt", BOLT_HEADS, norm, size)
+    lengths = bolt_lengths(size, norm)
+    if length not in lengths:
+        fail("bolt(): %s %s has no length %r here; valid lengths: %s" %
+             (norm, size, length, ", ".join([str(l) for l in lengths])))
+    length = [l for l in lengths if l == length][0]
+    designation = "%s %sx%s" % (norm, size, length)
+    if norm == "ISO 4762":
+        dk, k, s, t = head
+        part = _fastener_part(name, _circle(dk / 2.0, "head"), k, at, norm, size, designation, tags)
+        cut(part, profile = _hexagon(s), depth = t, name = "socket")
+    else:
+        s, k = head
+        part = _fastener_part(name, _hexagon(s), k, at, norm, size, designation, tags)
+    shank = extrude("%s/shank" % name, profile = _circle(int(size[1:]) / 2.0, "shank"), distance = length,
+                    at = (at[0], at[1], at[2] - length), tool = True)
+    union(part, shank, name = "shank")
+    return _turn_onto(part, at, axis)
+
+def threaded_rod(name, size, length, norm = "DIN 975", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+    """A threaded rod (simplified: a full-diameter cylinder) `length` long from `at` along `axis`."""
+    d = _fastener_row("threaded_rod", THREADED_RODS, norm, size)
+    if length <= 0:
+        fail("threaded_rod(): length must be positive, got %r" % length)
+    designation = "%s %sx%s" % (norm, size, length)
+    part = _fastener_part(name, _circle(d / 2.0, "rod"), length, at, norm, size, designation, tags)
+    return _turn_onto(part, at, axis)
 
 #@topic intent: Stating intent that the check measures (expect_*)
 #

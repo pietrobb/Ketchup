@@ -1,5 +1,6 @@
-//! Standard nuts and washers from the library (topic fasteners): catalogue
-//! dimensions, refused sizes and what the cut list says about them.
+//! Standard nuts, washers, bolts and threaded rods from the library (topic
+//! fasteners): catalogue dimensions, refused sizes and lengths and what the cut
+//! list says about them.
 
 use ketchup_program::cut_list::cut_list_table;
 use ketchup_program::model::{Part, ProgramModel};
@@ -135,12 +136,152 @@ fn a_nut_turned_onto_another_axis_keeps_its_seating_face_at_the_given_point() {
 }
 
 #[test]
+fn bolts_take_their_head_from_the_norm_and_hang_their_shank_below_the_seat() {
+    let model = model(
+        "bolt(\"hex\", \"M8\", 40)
+bolt(\"cap\", \"M8\", 40, norm = \"ISO 4762\", at = (100, 0, 0))
+bolt(\"shank\", \"M10\", 45, norm = \"ISO 4014\", at = (200, 0, 0))
+",
+    );
+    // (width along x, head height above the seat, shank length below it, shank diameter)
+    let expected = [
+        ("hex", 13.0, 5.3, 40.0, 8.0, "ISO 4017 M8x40"),
+        ("cap", 13.0, 8.0, 40.0, 8.0, "ISO 4762 M8x40"),
+        ("shank", 16.0, 6.4, 45.0, 10.0, "ISO 4014 M10x45"),
+    ];
+    for (name, width, head, length, diameter, designation) in expected {
+        let part = model.part(name).expect(name);
+        let (min, max) = part.world_bounds();
+        assert!(
+            close(max[0] - min[0], width) && close(max[2], head) && close(min[2], -length),
+            "{name}: {min:?} {max:?}"
+        );
+        assert_eq!(part.attributes["designation"], designation);
+        assert_eq!(part.material.as_deref(), Some("steel"));
+        // One solid: the shank is joined to the head, not a separate part.
+        let shank = part.booleans().next().expect("the shank");
+        assert_eq!(shank.name, "shank");
+        let (tool_min, tool_max) = shank.tool.world_bounds();
+        assert!(
+            close(tool_max[1] - tool_min[1], diameter),
+            "{name}: shank {tool_min:?} {tool_max:?}"
+        );
+    }
+    assert_eq!(model.parts.len(), 3, "the shanks are no parts of their own");
+    // The socket of the cap screw: s 6 across flats, t 4 deep from the top.
+    let socket = model.part("cap").unwrap().cuts().next().expect("a socket");
+    assert_eq!(socket.name, "socket");
+    assert_eq!(socket.depth_mm, Some(4.0));
+    let xs: Vec<f64> = socket.segments.iter().map(|s| s.start_mm[0]).collect();
+    let across =
+        xs.iter().cloned().fold(f64::MIN, f64::max) - xs.iter().cloned().fold(f64::MAX, f64::min);
+    assert!(close(across, 6.0), "{xs:?}");
+    // Turned upside down under a plate: the head hangs below z = -20.
+    let hanging = self::model("bolt(\"b\", \"M8\", 40, at = (0, 0, -20), axis = (0, 0, -1))\n");
+    let (min, max) = hanging.part("b").unwrap().world_bounds();
+    assert!(
+        close(min[2], -25.3) && close(max[2], 20.0),
+        "{min:?} {max:?}"
+    );
+}
+
+#[test]
+fn a_bolt_length_the_size_lacks_is_refused_with_the_valid_lengths() {
+    let error = refused("bolt(\"b\", \"M8\", 42)\n");
+    assert!(
+        error.contains("ISO 4017 M8 has no length 42 here; valid lengths: 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80"),
+        "{error}"
+    );
+    let error = refused("bolt(\"b\", \"M3\", 35, norm = \"ISO 4014\")\n");
+    assert!(error.contains("valid lengths: 20, 25, 30"), "{error}");
+    // ISO 4017 (M14) has no catalogue lengths here, ISO 4762 has no M18.
+    let error = refused("bolt(\"b\", \"M14\", 50)\n");
+    assert!(
+        error.contains("valid sizes: M3, M4, M5, M6, M8, M10, M12, M16, M20, M24"),
+        "{error}"
+    );
+    let error = refused("bolt(\"b\", \"M18\", 50, norm = \"ISO 4762\")\n");
+    assert!(error.contains("ISO 4762 has no size \"M18\""), "{error}");
+    let error = refused("bolt(\"b\", \"M8\", 40, norm = \"DIN 931\")\n");
+    assert!(error.contains("unknown norm \"DIN 931\""), "{error}");
+    // The lengths are there to ask for.
+    let model = model(
+        "lengths = bolt_lengths(\"M12\", norm = \"ISO 4762\")
+box(\"first\", (lengths[0], 1, 1))
+box(\"last\", (lengths[-1], 1, 1), at = (0, 10, 0))
+",
+    );
+    assert!(close(model.part("first").unwrap().size_mm[0], 20.0));
+    assert!(close(model.part("last").unwrap().size_mm[0], 120.0));
+}
+
+#[test]
+fn a_threaded_rod_takes_any_positive_length_along_its_axis() {
+    let model = model(
+        "threaded_rod(\"up\", \"M12\", 1000)
+threaded_rod(\"along\", \"M12\", 333.5, at = (0, 50, 0), axis = (1, 0, 0))
+",
+    );
+    let up = model.part("up").unwrap();
+    let (min, max) = up.world_bounds();
+    assert!(
+        close(min[2], 0.0) && close(max[2], 1000.0) && close(max[0] - min[0], 12.0),
+        "{min:?} {max:?}"
+    );
+    assert_eq!(up.attributes["designation"], "DIN 975 M12x1000");
+    assert_eq!(up.attributes["standard"], "DIN 975");
+    let (min, max) = model.part("along").unwrap().world_bounds();
+    assert!(
+        close(min[0], 0.0) && close(max[0], 333.5),
+        "{min:?} {max:?}"
+    );
+    assert!(refused("threaded_rod(\"r\", \"M12\", 0)\n").contains("length must be positive"),);
+    assert!(refused("threaded_rod(\"r\", \"M7\", 100)\n").contains("DIN 975 has no size \"M7\""));
+}
+
+#[test]
+fn a_value_with_one_source_is_named_at_its_size() {
+    let model = model(
+        "nut(\"nyloc3\", \"M3\", norm = \"ISO 7040\")
+nut(\"nyloc8\", \"M8\", norm = \"ISO 7040\", at = (20, 0, 0))
+bolt(\"cap\", \"M8\", 40, norm = \"ISO 4762\", at = (40, 0, 0))
+bolt(\"long\", \"M12\", 80, norm = \"ISO 4014\", at = (60, 0, 0))
+bolt(\"m10\", \"M10\", 45, norm = \"ISO 4014\", at = (90, 0, 0))
+",
+    );
+    let source = |name: &str| model.part(name).unwrap().attributes["source"].clone();
+    assert!(
+        source("nyloc3").ends_with("; M3 h from IS 7002:2005 only (nfgab.com starts at M4)"),
+        "{}",
+        source("nyloc3")
+    );
+    // Two catalogues for M8 nylon insert nuts and for ISO 4014 M12 lengths.
+    assert!(!source("nyloc8").contains("only"), "{}", source("nyloc8"));
+    assert!(!source("long").contains("only"), "{}", source("long"));
+    let cap = source("cap");
+    assert!(
+        cap.contains("M8 lengths from eitasarim.com only") && cap.contains("roymech.co.uk"),
+        "{cap}"
+    );
+    assert!(
+        source("m10")
+            .contains("M10 shortest length 45 from engineersedge.com; intafast.com starts at 50")
+    );
+    for name in ["nyloc3", "cap", "long"] {
+        assert!(source(name).contains("(catalogue tables, not the standard text)"));
+    }
+}
+
+#[test]
 fn the_cut_list_names_the_designation_standard_and_mass_basis() {
     let model = model(
         "nut(\"n1\", \"M8\")
 nut(\"n2\", \"M8\", at = (40, 0, 0))
 nut(\"d1\", \"M8\", norm = \"DIN 934\", at = (80, 0, 0))
 washer(\"w1\", \"M8\", at = (120, 0, 0))
+bolt(\"b1\", \"M8\", 40, at = (160, 0, 0))
+bolt(\"b2\", \"M8\", 40, at = (200, 0, 0))
+bolt(\"b3\", \"M8\", 50, at = (240, 0, 0))
 ",
     );
     let table = cut_list_table(&model, |_| true);
@@ -175,7 +316,10 @@ washer(\"w1\", \"M8\", at = (120, 0, 0))
     assert_eq!(text(&row("ISO 4032 M8")[standard]), "ISO 4032");
     assert_eq!(text(&row("DIN 934 M8")[count]), "1");
     assert_eq!(text(&row("ISO 7089 M8")[standard]), "ISO 7089");
-    assert_eq!(table.rows.len(), 3, "{:?}", table.rows);
+    // A bolt's length is part of its designation: 40 and 50 are two rows.
+    assert_eq!(text(&row("ISO 4017 M8x40")[count]), "2");
+    assert_eq!(text(&row("ISO 4017 M8x50")[count]), "1");
+    assert_eq!(table.rows.len(), 5, "{:?}", table.rows);
     for row in &table.rows {
         assert!(
             text(&row[basis]).contains("simplified solid x 7850 kg/m3"),

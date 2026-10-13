@@ -748,3 +748,58 @@ fn mass_takes_a_density_from_the_prelude_table_but_not_its_estimates() {
     assert_eq!(report["assembly"]["status"], "partial");
     assert_eq!(report["assembly"]["parts_counted"], 1);
 }
+
+/// #2482: the library's standard parts are exact solids the window weighs:
+/// the simplified body (head and shank joined, socket and bore cut) x 7850.
+#[test]
+fn standard_fasteners_weigh_their_simplified_steel_body() {
+    let (mut app, mut bridge) = setup();
+    let source = "bolt(\"hex\", \"M8\", 40)\n\
+        bolt(\"cap\", \"M8\", 40, norm = \"ISO 4762\", at = (50, 0, 0))\n\
+        nut(\"nut\", \"M8\", at = (100, 0, 0))\n\
+        threaded_rod(\"rod\", \"M12\", 1000, at = (150, 0, 0))\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let expected = Some(app.live_bridge_stamp());
+    let report = bridge
+        .execute(
+            &mut app,
+            Request::Mass {
+                expected,
+                occurrence_ids: None,
+            },
+            false,
+        )
+        .unwrap();
+    let hexagon = |s: f64| 3f64.sqrt() / 2.0 * s * s;
+    let circle = |d: f64| std::f64::consts::PI * d * d / 4.0;
+    let kg = |volume_mm3: f64| volume_mm3 * 1.0e-9 * 7850.0;
+    let expected = [
+        ("hex", kg(hexagon(13.0) * 5.3 + circle(8.0) * 40.0)),
+        (
+            "cap",
+            kg(circle(13.0) * 8.0 - hexagon(6.0) * 4.0 + circle(8.0) * 40.0),
+        ),
+        ("nut", kg((hexagon(13.0) - circle(8.0)) * 6.8)),
+        ("rod", kg(circle(12.0) * 1000.0)),
+    ];
+    for (name, mass) in expected {
+        let part = report["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|part| part["name"] == name)
+            .unwrap_or_else(|| panic!("{name} in {report}"));
+        assert_eq!(part["status"], "ok", "{part}");
+        let weighed = part["mass_kg"].as_f64().unwrap();
+        assert!(
+            (weighed - mass).abs() <= 1.0e-6 * mass,
+            "{name}: {weighed} kg, expected {mass} kg"
+        );
+    }
+    // Ø12 x 1000 mm of full-diameter steel is 0.888 kg.
+    assert!((kg(circle(12.0) * 1000.0) - 0.888).abs() < 0.0005);
+    assert_eq!(report["assembly"]["status"], "complete", "{report}");
+}
