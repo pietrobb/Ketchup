@@ -73,21 +73,25 @@ fn tap(
     through: bool,
     thread: Option<(&str, f64)>,
 ) -> Request {
-    let program = AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::DrillHoles {
-            definition_id: face["definition_id"].as_u64().unwrap(),
-            name: "holes".to_owned(),
-            target_feature_id: face["producer_feature_id"].as_u64().unwrap(),
-            face_reference_id: face["reference_id"].as_str().unwrap().to_owned(),
-            points_local_mm,
-            diameter_mm,
+    edit(AssistantCadEditOperation::DrillHoles {
+        definition_id: face["definition_id"].as_u64().unwrap(),
+        name: "holes".to_owned(),
+        target_feature_id: face["producer_feature_id"].as_u64().unwrap(),
+        face_reference_id: face["reference_id"].as_str().unwrap().to_owned(),
+        points_local_mm,
+        diameter_mm,
+        depth_mm,
+        through,
+        thread: thread.map(|(size, depth_mm)| AssistantHoleThread {
+            size: size.to_owned(),
             depth_mm,
-            through,
-            thread: thread.map(|(size, depth_mm)| AssistantHoleThread {
-                size: size.to_owned(),
-                depth_mm,
-            }),
-        }],
+        }),
+    })
+}
+
+fn edit(operation: AssistantCadEditOperation) -> Request {
+    let program = AssistantCadEditProgram {
+        operations: vec![operation],
     };
     serde_json::from_value(json!({"method": "apply_and_verify", "program": program})).unwrap()
 }
@@ -304,6 +308,89 @@ fn a_tapped_hole_is_listed_for_machining_and_hardware_and_only_a_thread_is_saved
         .unwrap();
     assert_eq!(app.undo_step_count(), undo);
     assert!(saved(&app) == bytes, "Undo must restore the saved bytes");
+}
+
+/// A component works like SketchUp's: a hole in the shared definition drills
+/// every copy; after Make Unique a hole drills only that copy.
+#[test]
+fn a_hole_drills_every_copy_of_a_component_until_one_is_made_unique() {
+    let (mut app, mut bridge) = setup();
+    let source = app.document.current().occurrences().next().unwrap().id();
+    let copied = edit(AssistantCadEditOperation::Copy {
+        selector: ketchup_assistant::sidecar::AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: vec![source.0],
+        },
+        translation_mm: [5000.0, 0.0, 0.0],
+    });
+    assert_eq!(
+        bridge.execute(&mut app, copied, false).unwrap()["published"],
+        true
+    );
+    let snapshot = app.document.current();
+    let [original, copy] = [0, 1].map(|index| {
+        let occurrence = snapshot.occurrences().nth(index).unwrap();
+        (occurrence.id(), occurrence.name().to_owned())
+    });
+    let shared = snapshot.occurrence(source).unwrap().definition_id();
+    assert_eq!(snapshot.occurrence(copy.0).unwrap().definition_id(), shared);
+    evaluate_exact(&mut app);
+    let solid = exact_volume(&app, &original.1);
+    let top = face(&mut app, &mut bridge, "plane", [0.0, 0.0, 1.0]);
+    let bottom = face(&mut app, &mut bridge, "plane", [0.0, 0.0, -1.0]);
+    let [x, y, z] = centroid(&top);
+    let area = PI * (DIAMETER_MM * 0.5).powi(2);
+    let through = area * (z - centroid(&bottom)[2]);
+    let hole = area * 8.0;
+    let volumes = |app: &KetchupApp| [exact_volume(app, &original.1), exact_volume(app, &copy.1)];
+    let close = |volume: f64, expected: f64| (volume - expected).abs() <= 1e-6 * solid;
+
+    // Through, so the top stays the newest upward face (no hole floor).
+    let shared_hole = drill(&top, vec![[x, y, z]], None, true);
+    assert_eq!(
+        bridge.execute(&mut app, shared_hole, false).unwrap()["published"],
+        true
+    );
+    evaluate_exact(&mut app);
+    let [a, b] = volumes(&app);
+    assert!(
+        close(a, solid - through) && close(b, solid - through),
+        "{a} {b}"
+    );
+
+    let unique = edit(AssistantCadEditOperation::MakeOccurrenceUnique {
+        occurrence_id: copy.0.0,
+    });
+    assert_eq!(
+        bridge.execute(&mut app, unique, false).unwrap()["published"],
+        true
+    );
+    let own = app
+        .document
+        .current()
+        .occurrence(copy.0)
+        .unwrap()
+        .definition_id();
+    assert_ne!(own, shared);
+    evaluate_exact(&mut app);
+    let top = face(&mut app, &mut bridge, "plane", [0.0, 0.0, 1.0]);
+    assert_eq!(top["definition_id"].as_u64(), Some(own.0));
+    let shared_definition = |app: &KetchupApp| {
+        let snapshot = app.document.current();
+        format!("{:?}", snapshot.definition(shared).unwrap())
+    };
+    let before = shared_definition(&app);
+    let own_hole = drill(&top, vec![[x + 20.0, y, z]], Some(8.0), false);
+    let drilled = bridge.execute(&mut app, own_hole, false);
+    assert!(drilled.is_ok(), "{:?}", take_error_details());
+    evaluate_exact(&mut app);
+    let [a, b] = volumes(&app);
+    assert!(close(a, solid - through), "the original changed: {a}");
+    assert!(close(b, solid - through - hole), "the unique copy: {b}");
+    assert_eq!(
+        shared_definition(&app),
+        before,
+        "the shared definition changed"
+    );
 }
 
 #[test]
