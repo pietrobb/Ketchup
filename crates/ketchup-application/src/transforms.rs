@@ -1,8 +1,43 @@
 use ketchup_geometry::linalg::length;
 use ketchup_interaction::Vec3;
 use ketchup_model::document::{
-    CanonicalCommand, CanonicalError, GroupId, OccurrenceId, Snapshot, Transform,
+    CanonicalCommand, CanonicalError, DefinitionId, GroupId, Occurrence, OccurrenceId, Snapshot,
+    Transform,
 };
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Names of new copies: the part's name and the next number not yet used,
+/// "Leg 2", "Leg 3", so no copy has the name of its source or of another part.
+pub(crate) struct CopyNames {
+    taken: BTreeSet<String>,
+    numbers: BTreeMap<DefinitionId, usize>,
+}
+
+impl CopyNames {
+    pub(crate) fn new(snapshot: &Snapshot) -> Self {
+        let mut taken = BTreeSet::new();
+        let mut numbers = BTreeMap::new();
+        for occurrence in snapshot.occurrences() {
+            taken.insert(occurrence.name().to_owned());
+            *numbers.entry(occurrence.definition_id()).or_insert(0) += 1;
+        }
+        Self { taken, numbers }
+    }
+
+    pub(crate) fn next(&mut self, snapshot: &Snapshot, definition_id: DefinitionId) -> String {
+        let base = snapshot
+            .definition(definition_id)
+            .map_or("", |definition| definition.name());
+        let number = self.numbers.entry(definition_id).or_insert(0);
+        loop {
+            *number += 1;
+            let name = format!("{base} {number}");
+            if self.taken.insert(name.clone()) {
+                return name;
+            }
+        }
+    }
+}
 
 pub fn translated_transform(
     transform: Transform,
@@ -83,13 +118,14 @@ pub enum MirrorCopyError {
     Transform,
 }
 
-/// Commands that add occurrence `id`: a copy of `source` mirrored by
-/// `world_mirror` in the same parent, with its name, tag, visibility and colour.
+/// Commands that add occurrence `id` named `name`: a copy of `source` mirrored
+/// by `world_mirror` in the same parent, with its tag, visibility and colour.
 pub fn mirrored_copy_commands(
     snapshot: &Snapshot,
     source: OccurrenceId,
     world_mirror: Transform,
     id: OccurrenceId,
+    name: String,
 ) -> Result<Vec<CanonicalCommand>, MirrorCopyError> {
     let source = snapshot
         .occurrence(source)
@@ -102,10 +138,21 @@ pub fn mirrored_copy_commands(
         .ok_or(MirrorCopyError::ParentTransform)?;
     let transform = rotation_in_parent_space(world_mirror, parent_transform, source.transform())
         .ok_or(MirrorCopyError::Transform)?;
+    Ok(copy_commands(source, id, name, transform))
+}
+
+/// Commands that add occurrence `id` named `name`: a copy of `source` placed
+/// by `transform` in the same parent, with its tag, visibility and colour.
+pub(crate) fn copy_commands(
+    source: &Occurrence,
+    id: OccurrenceId,
+    name: String,
+    transform: Transform,
+) -> Vec<CanonicalCommand> {
     let mut commands = vec![CanonicalCommand::CreateOccurrence {
         id,
         definition_id: source.definition_id(),
-        name: source.name().to_owned(),
+        name,
         transform,
         parent: source.parent(),
         tags: source.tags().clone(),
@@ -117,7 +164,7 @@ pub fn mirrored_copy_commands(
             color: source.color(),
         });
     }
-    Ok(commands)
+    commands
 }
 
 pub fn world_axis_rotation_transform(

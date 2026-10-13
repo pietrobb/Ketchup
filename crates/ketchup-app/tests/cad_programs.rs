@@ -298,6 +298,7 @@ fn cad_edit_program_reviews_selection_transform_copy_pattern_mirror_delete_and_o
                 selector: selector.clone(),
                 instances: 3,
                 step_mm: [30.0, 0.0, 0.0],
+                secondary: None,
             },
             AssistantCadEditOperation::Mirror {
                 selector: selector.clone(),

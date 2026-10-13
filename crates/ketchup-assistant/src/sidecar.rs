@@ -1,5 +1,5 @@
 use ketchup_geometry::helix::Helix;
-use ketchup_geometry::linalg::{CubicBezier, sub};
+use ketchup_geometry::linalg::{CubicBezier, cross, length, sub};
 use ketchup_model::document::{
     Dimension, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
     is_valid_spatial_sweep_path,
@@ -2048,6 +2048,9 @@ pub enum AssistantCadEditOperation {
         selector: AssistantCadEntitySelector,
         instances: u32,
         step_mm: [f64; 3],
+        /// A second direction that repeats every row: a rectangular pattern.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secondary: Option<AssistantPatternDirection>,
     },
     CircularPattern {
         selector: AssistantCadEntitySelector,
@@ -2060,6 +2063,14 @@ pub enum AssistantCadEditOperation {
         plane_origin_mm: [f64; 3],
         plane_normal: [f64; 3],
     },
+}
+
+/// One more direction of a linear pattern: `instances` rows `step_mm` apart.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantPatternDirection {
+    pub instances: u32,
+    pub step_mm: [f64; 3],
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -2213,6 +2224,20 @@ fn assistant_cad_vectors_are_perpendicular(left: [f64; 3], right: [f64; 3]) -> b
         .map(|(left, right)| left * right)
         .sum::<f64>();
     dot.is_finite() && dot.abs() <= ROUNDING * (left_length_squared * right_length_squared).sqrt()
+}
+
+/// A pattern holds at most this many places, the source included.
+fn pattern_places_exceed_limit() -> AssistantRequestInvalid {
+    AssistantRequestInvalid::new(
+        "CAD pattern place count",
+        AssistantRequestProblem::ExceedsLimit(
+            usize::try_from(MAX_ASSISTANT_ARRAY_INSTANCES).unwrap_or(usize::MAX),
+        ),
+    )
+}
+
+fn assistant_cad_vectors_are_parallel(left: [f64; 3], right: [f64; 3]) -> bool {
+    length(cross(left, right)) <= ROUNDING * length(left) * length(right)
 }
 
 impl AssistantInstancePath {
@@ -3834,18 +3859,34 @@ impl AssistantCadEditProgram {
                 1
             }
             AssistantCadEditOperation::LinearPattern {
-                instances, step_mm, ..
+                instances,
+                step_mm,
+                secondary,
+                ..
             } => {
-                if !(2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances)
-                    || !assistant_cad_vector_is_bounded(*step_mm)
-                    || !assistant_cad_vector_is_nonzero(*step_mm)
-                    || step_mm.iter().any(|value| {
-                        (*value * f64::from(instances.saturating_sub(1))).abs() > MAX_COORDINATE_MM
-                    })
-                {
+                let direction_is_valid = |instances: &u32, step_mm: &[f64; 3]| {
+                    (2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances)
+                        && assistant_cad_vector_is_bounded(*step_mm)
+                        && assistant_cad_vector_is_nonzero(*step_mm)
+                        && step_mm.iter().all(|value| {
+                            (*value * f64::from(instances.saturating_sub(1))).abs()
+                                <= MAX_COORDINATE_MM
+                        })
+                };
+                let rows = secondary.as_ref().map_or(1, |row| row.instances);
+                if instances.saturating_mul(rows) > MAX_ASSISTANT_ARRAY_INSTANCES {
+                    return Err(pattern_places_exceed_limit());
+                }
+                // A row parallel to the first direction would put copies on one line.
+                let secondary_is_valid = secondary.as_ref().is_none_or(|row| {
+                    direction_is_valid(&row.instances, &row.step_mm)
+                        && !assistant_cad_vectors_are_parallel(*step_mm, row.step_mm)
+                        && instances.saturating_mul(row.instances) <= MAX_ASSISTANT_ARRAY_INSTANCES
+                });
+                if !direction_is_valid(instances, step_mm) || !secondary_is_valid {
                     return Err(AssistantRequestInvalid::invalid("CAD linear pattern"));
                 }
-                instances.saturating_sub(1) as usize
+                instances.saturating_mul(rows).saturating_sub(1) as usize
             }
             AssistantCadEditOperation::CircularPattern {
                 instances,
@@ -3853,6 +3894,9 @@ impl AssistantCadEditProgram {
                 angle_step_degrees,
                 ..
             } => {
+                if *instances > MAX_ASSISTANT_ARRAY_INSTANCES {
+                    return Err(pattern_places_exceed_limit());
+                }
                 let valid_count = (2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances);
                 let duplicate_angle = valid_count
                     && (1..*instances).any(|instance| {

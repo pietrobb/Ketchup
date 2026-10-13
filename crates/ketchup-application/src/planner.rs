@@ -8,8 +8,8 @@ use crate::product_change::plan_product_change;
 use crate::rule_operations::OperationPlanner;
 use crate::structure_change::plan_structure_change;
 use crate::transforms::{
-    MirrorCopyError, mirrored_copy_commands, rotation_in_parent_space, translated_transform,
-    world_axis_rotation_transform, world_plane_mirror_transform,
+    CopyNames, MirrorCopyError, copy_commands, mirrored_copy_commands, rotation_in_parent_space,
+    translated_transform, world_axis_rotation_transform, world_plane_mirror_transform,
 };
 use ketchup_assistant::sidecar::{
     AssistantAssemblyJointAxis, AssistantAssemblyJointKind, AssistantAssemblyJointLimits,
@@ -3418,6 +3418,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             }
             AssistantCadEditOperation::Copy { translation_mm, .. } => {
                 let delta = Vec3::new(translation_mm[0], translation_mm[1], translation_mm[2]);
+                let mut names = CopyNames::new(staged_planning.staged_snapshot());
                 for id in targets {
                     let source = staged_planning
                         .staged_snapshot()
@@ -3443,29 +3444,33 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         )
                     })?;
                     next_occurrence = occurrence_id.0.checked_add(1);
-                    staged_planning.push(CanonicalCommand::CreateOccurrence {
-                        id: occurrence_id,
-                        definition_id: source.definition_id(),
-                        name: source.name().to_owned(),
-                        transform,
-                        parent: source.parent(),
-                        tags: source.tags().clone(),
-                        visible: source.visible(),
-                    });
-                    if source.color().is_some() {
-                        staged_planning.push(CanonicalCommand::SetOccurrenceColor {
-                            id: occurrence_id,
-                            color: source.color(),
-                        });
+                    let name =
+                        names.next(staged_planning.staged_snapshot(), source.definition_id());
+                    for command in copy_commands(&source, occurrence_id, name, transform) {
+                        staged_planning.push(command);
                     }
                 }
             }
             AssistantCadEditOperation::LinearPattern {
-                instances, step_mm, ..
+                instances,
+                step_mm,
+                secondary,
+                ..
             } => {
                 let step = Vec3::new(step_mm[0], step_mm[1], step_mm[2]);
-                for instance in 1..*instances {
-                    let delta = step * f64::from(instance);
+                let (rows, row_step) = secondary.as_ref().map_or((1, Vec3::ZERO), |row| {
+                    (
+                        row.instances,
+                        Vec3::new(row.step_mm[0], row.step_mm[1], row.step_mm[2]),
+                    )
+                });
+                let mut names = CopyNames::new(staged_planning.staged_snapshot());
+                // Row by row; the source itself is the first place of the first row.
+                let places = (0..rows)
+                    .flat_map(|row| (0..*instances).map(move |instance| (row, instance)))
+                    .skip(1);
+                for (row, instance) in places {
+                    let delta = step * f64::from(instance) + row_step * f64::from(row);
                     for id in &targets {
                         let source = staged_planning
                             .staged_snapshot()
@@ -3491,20 +3496,10 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             )
                         })?;
                         next_occurrence = occurrence_id.0.checked_add(1);
-                        staged_planning.push(CanonicalCommand::CreateOccurrence {
-                            id: occurrence_id,
-                            definition_id: source.definition_id(),
-                            name: source.name().to_owned(),
-                            transform,
-                            parent: source.parent(),
-                            tags: source.tags().clone(),
-                            visible: source.visible(),
-                        });
-                        if source.color().is_some() {
-                            staged_planning.push(CanonicalCommand::SetOccurrenceColor {
-                                id: occurrence_id,
-                                color: source.color(),
-                            });
+                        let name =
+                            names.next(staged_planning.staged_snapshot(), source.definition_id());
+                        for command in copy_commands(&source, occurrence_id, name, transform) {
+                            staged_planning.push(command);
                         }
                     }
                 }
@@ -3520,6 +3515,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     .expect("referenced circular pattern axis was normalized before planning");
                 let centre = Vec3::new(origin_mm[0], origin_mm[1], origin_mm[2]);
                 let direction = Vec3::new(direction[0], direction[1], direction[2]);
+                let mut names = CopyNames::new(staged_planning.staged_snapshot());
                 for instance in 1..*instances {
                     let world_rotation = world_axis_rotation_transform(
                         centre,
@@ -3580,20 +3576,10 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             )
                         })?;
                         next_occurrence = occurrence_id.0.checked_add(1);
-                        staged_planning.push(CanonicalCommand::CreateOccurrence {
-                            id: occurrence_id,
-                            definition_id: source.definition_id(),
-                            name: source.name().to_owned(),
-                            transform,
-                            parent: source.parent(),
-                            tags: source.tags().clone(),
-                            visible: source.visible(),
-                        });
-                        if source.color().is_some() {
-                            staged_planning.push(CanonicalCommand::SetOccurrenceColor {
-                                id: occurrence_id,
-                                color: source.color(),
-                            });
+                        let name =
+                            names.next(staged_planning.staged_snapshot(), source.definition_id());
+                        for command in copy_commands(&source, occurrence_id, name, transform) {
+                            staged_planning.push(command);
                         }
                     }
                 }
@@ -3617,6 +3603,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     )
                     .caused_by(&error)
                 })?;
+                let mut names = CopyNames::new(staged_planning.staged_snapshot());
                 for id in targets {
                     let occurrence_id = next_occurrence.map(OccurrenceId).ok_or_else(|| {
                         assistant_canonical_rejection(
@@ -3626,13 +3613,14 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         )
                     })?;
                     next_occurrence = occurrence_id.0.checked_add(1);
-                    let commands = mirrored_copy_commands(
-                        staged_planning.staged_snapshot(),
-                        id,
-                        world_mirror,
-                        occurrence_id,
-                    )
-                    .map_err(|error| mirror_copy_rejection(error, operation_name, id))?;
+                    let snapshot = staged_planning.staged_snapshot();
+                    let name = snapshot
+                        .occurrence(id)
+                        .map(|source| names.next(snapshot, source.definition_id()))
+                        .unwrap_or_default();
+                    let commands =
+                        mirrored_copy_commands(snapshot, id, world_mirror, occurrence_id, name)
+                            .map_err(|error| mirror_copy_rejection(error, operation_name, id))?;
                     for command in commands {
                         staged_planning.push(command);
                     }

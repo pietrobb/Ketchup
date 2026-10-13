@@ -4427,6 +4427,7 @@ fn transform_copy_pattern_and_mirror_use_accumulated_transforms_atomically() {
             selector: explicit(1),
             instances: 3,
             step_mm: [25.0, 0.0, 0.0],
+            secondary: None,
         },
         AssistantCadEditOperation::Mirror {
             selector: explicit(1),
@@ -4473,6 +4474,64 @@ fn transform_copy_pattern_and_mirror_use_accumulated_transforms_atomically() {
     assert_eq!(
         document.current().canonical_digest(),
         committed.canonical_digest()
+    );
+}
+
+#[test]
+fn rectangular_pattern_places_numbered_copies_row_by_row_in_one_step() {
+    let mut document = seeded();
+    let baseline = document.current();
+    let undo = document.visible_undo_steps();
+    let registry = ExactResultRegistry::default();
+    let rows = |secondary| {
+        program(vec![AssistantCadEditOperation::LinearPattern {
+            selector: explicit(1),
+            instances: 3,
+            step_mm: [25.0, 0.0, 0.0],
+            secondary,
+        }])
+    };
+
+    // The old request shape plans exactly the first row of the rectangular one.
+    let single = plan(&document, &BTreeSet::new(), &registry, &rows(None)).unwrap();
+    let rectangular = rows(Some(AssistantPatternDirection {
+        instances: 2,
+        step_mm: [0.0, 40.0, 0.0],
+    }));
+    let batch = plan(&document, &BTreeSet::new(), &registry, &rectangular).unwrap();
+    assert_eq!(single.commands().len(), 2);
+    assert_eq!(batch.commands().len(), 5);
+    assert_eq!(single.commands(), &batch.commands()[..2]);
+
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    let source = committed.occurrence(OccurrenceId(1)).unwrap();
+    assert_eq!(source.name(), "Editable part");
+    for (id, name, expected) in [
+        (2, "Editable part 2", [30.0, 6.0, 7.0]),
+        (3, "Editable part 3", [55.0, 6.0, 7.0]),
+        (4, "Editable part 4", [5.0, 46.0, 7.0]),
+        (5, "Editable part 5", [30.0, 46.0, 7.0]),
+        (6, "Editable part 6", [55.0, 46.0, 7.0]),
+    ] {
+        let copy = committed.occurrence(OccurrenceId(id)).unwrap();
+        assert_eq!(copy.definition_id(), source.definition_id());
+        assert_eq!(copy.name(), name);
+        let transform = copy.transform();
+        let matrix = transform.matrix();
+        for (index, value) in [3, 7, 11].into_iter().zip(expected) {
+            assert!(
+                (matrix[index] - value).abs() < 1e-9,
+                "copy {id}: {matrix:?}"
+            );
+        }
+    }
+    assert_eq!(committed.occurrences().count(), 6);
+    assert_eq!(document.visible_undo_steps(), undo + 1);
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
     );
 }
 
@@ -4805,6 +4864,7 @@ fn color_program_is_atomic_and_copy_pattern_mirror_preserve_accumulated_color() 
             selector: explicit(1),
             instances: 3,
             step_mm: [0.0, 30.0, 0.0],
+            secondary: None,
         },
         AssistantCadEditOperation::Mirror {
             selector: explicit(1),

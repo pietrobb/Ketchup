@@ -75,6 +75,7 @@ fn gui_and_application_plan_identical_creation_and_selected_transforms() {
                     selector: AssistantCadEntitySelector::CurrentSelection {},
                     instances: 3,
                     step_mm: [30.0, 0.0, 0.0],
+                    secondary: None,
                 },
             ],
         },

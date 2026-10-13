@@ -114,7 +114,8 @@ impl KetchupApp {
         for source in &sources {
             let copy = next_id.checked_add(1).and_then(|id| {
                 next_id = id;
-                mirrored_copy_commands(&snapshot, *source, mirror, OccurrenceId(id)).ok()
+                let name = snapshot.occurrence(*source)?.name().to_owned();
+                mirrored_copy_commands(&snapshot, *source, mirror, OccurrenceId(id), name).ok()
             });
             let Some(copy) = copy else {
                 self.digest = self.catalog.text("digest-mirror-unavailable");

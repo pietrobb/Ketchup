@@ -50,6 +50,7 @@ fn cad_edit_program_compiles_selection_to_one_host_id_canonical_batch() {
                 selector: selector.clone(),
                 instances: 3,
                 step_mm: [25.0, 0.0, 0.0],
+                secondary: None,
             },
             AssistantCadEditOperation::Mirror {
                 selector,

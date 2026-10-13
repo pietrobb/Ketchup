@@ -289,6 +289,7 @@ fn build_timber_frame_house() -> (Shell, u64, String) {
                     },
                     instances: STUD_INSTANCES,
                     step_mm: [STUD_SPACING_MM, 0.0, 0.0],
+                    secondary: None,
                 },
                 timber(
                     "Top plate front",

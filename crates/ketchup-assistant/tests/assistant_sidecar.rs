@@ -6,10 +6,10 @@ use ketchup_assistant::sidecar::{
     AssistantCadLoftContinuity, AssistantCadLoftSection, AssistantCadPartFeature,
     AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference, AssistantCadRotation,
     AssistantCadShellDirection, AssistantCadSurfaceBodySource, AssistantHelixHandedness,
-    AssistantHelixParameters, AssistantPrincipalPlane, AssistantRejectionDiagnostic,
-    AssistantRejectionPhase, AssistantSketchConstraint, AssistantSketchEntity,
-    AssistantSketchPointKind, AssistantSketchPointRef, AssistantSketchProfileCopy,
-    AssistantWorkplaneSpec,
+    AssistantHelixParameters, AssistantPatternDirection, AssistantPrincipalPlane,
+    AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchConstraint,
+    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
+    AssistantSketchProfileCopy, AssistantWorkplaneSpec,
 };
 
 #[test]
@@ -117,6 +117,7 @@ fn cad_edit_program_contract_is_typed_strict_and_round_trips() {
                 selector: explicit.clone(),
                 instances: 4,
                 step_mm: [0.0, 20.0, 0.0],
+                secondary: None,
             },
             AssistantCadEditOperation::Mirror {
                 selector: explicit,
@@ -1901,6 +1902,7 @@ fn cad_edit_program_contract_fails_closed_on_targets_geometry_and_resources() {
             },
             instances: 7,
             step_mm: [10.0, 0.0, 0.0],
+            secondary: None,
         }],
     };
     assert_eq!(
@@ -1923,12 +1925,76 @@ fn cad_edit_program_contract_fails_closed_on_targets_geometry_and_resources() {
 }
 
 #[test]
+fn linear_pattern_rows_keep_the_old_shape_and_name_the_place_limit() {
+    let old_shape = serde_json::json!({
+        "operations": [{
+            "operation": "linear_pattern",
+            "selector": {"type": "occurrences", "occurrence_ids": [1]},
+            "instances": 3,
+            "step_mm": [25.0, 0.0, 0.0]
+        }]
+    });
+    let old = serde_json::from_value::<AssistantCadEditProgram>(old_shape.clone()).unwrap();
+    let pattern =
+        |instances: u32, secondary: Option<AssistantPatternDirection>| AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::LinearPattern {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: vec![1],
+                },
+                instances,
+                step_mm: [25.0, 0.0, 0.0],
+                secondary,
+            }],
+        };
+    assert_eq!(old, pattern(3, None));
+    assert_eq!(serde_json::to_value(&old).unwrap(), old_shape);
+
+    let rows = |instances, step_mm| Some(AssistantPatternDirection { instances, step_mm });
+    assert_eq!(pattern(3, rows(2, [0.0, 40.0, 0.0])).validate(), Ok(()));
+    assert_eq!(
+        pattern(3, rows(2, [50.0, 0.0, 0.0])).validate(),
+        Err(AssistantRequestInvalid::invalid("CAD linear pattern")),
+        "rows parallel to the first direction would put copies on one line"
+    );
+
+    let place_error = AssistantRequestInvalid::new(
+        "CAD pattern place count",
+        AssistantRequestProblem::ExceedsLimit(1000),
+    );
+    let place_limit = Err(place_error.clone());
+    assert_eq!(pattern(1001, None).validate(), place_limit);
+    assert_eq!(
+        pattern(2, rows(501, [0.0, 40.0, 0.0])).validate(),
+        place_limit
+    );
+    let circular = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CircularPattern {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: vec![1],
+            },
+            instances: 1001,
+            axis: AssistantAxisSpec::OriginDirection {
+                origin_mm: [0.0; 3],
+                direction: [0.0, 0.0, 1.0],
+            },
+            angle_step_degrees: 0.3,
+        }],
+    };
+    assert_eq!(circular.validate(), place_limit);
+    assert_eq!(
+        place_error.to_string(),
+        "assistant CAD pattern place count exceeds its limit of 1000"
+    );
+}
+
+#[test]
 fn cad_edit_program_conservatively_budgets_current_selection_outputs() {
     let selector = AssistantCadEntitySelector::CurrentSelection {};
     let mut operations = vec![AssistantCadEditOperation::LinearPattern {
         selector: selector.clone(),
         instances: 4,
         step_mm: [1.0, 0.0, 0.0],
+        secondary: None,
     }];
     operations.push(AssistantCadEditOperation::Copy {
         selector: selector.clone(),
@@ -1984,6 +2050,7 @@ fn cad_edit_selector_and_generated_output_boundaries_fail_closed() {
         selector: explicit_limit,
         instances: 6,
         step_mm: [1.0, 0.0, 0.0],
+        secondary: None,
     }];
     boundary_operations.push(AssistantCadEditOperation::Copy {
         selector: AssistantCadEntitySelector::Occurrences {

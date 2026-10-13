@@ -2318,6 +2318,7 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
                 selector: selector.clone(),
                 instances: 2,
                 step_mm: [1.0, 0.0, 0.0],
+                secondary: None,
             },
             AssistantCadEditOperation::Mirror {
                 selector,
