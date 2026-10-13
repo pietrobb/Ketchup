@@ -121,7 +121,7 @@ load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB"], name =
 # údržba strechy a sneh na krytine (na pôdorys). Sneh na zemi sk pre miesto stavby treba
 # odčítať z mapy STN EN 1991-1-3/NA; kým nie je zadaný (0), prvky pod strechou sú neúplné.
 SNOW_SK = param("snow_sk", 0, min = 0, max = 10, doc = "sneh na zemi sk v kN/m² podľa miesta stavby (0 = nezadané)")
-self_weight(["konštrukcia"])
+# Vlastnú tiaž zapína self_weight(...) na konci programu.
 area_load("úžitkové podkrovie", kind = "imposed", kn_m2 = IMPOSED_LOADS["A"][0], on = ["podlaha"],
           source = IMPOSED_LOADS["A"][1])
 area_load("údržba strechy", kind = "roof", kn_m2 = IMPOSED_LOADS["H"][0], on = ["krytina"],
@@ -573,3 +573,15 @@ no_window_over(bed, tag = "okno")
 
 print("stena %s mm, strop %s mm, strecha %s mm; podkrovie: podlaha %d, hrebeň (spodok strechy) %d mm" %
       (fmt_mm(WALL), fmt_mm(FLOOR), fmt_mm(ROOF_T), attic, ridge))
+
+# Vlastná tiaž konštrukcie: mená materiálov sú slovenské, knižnica vedie ich váhy
+# pod anglickými menami.
+self_weight(["konštrukcia"], weights = {
+    "KVH C24": MATERIAL_WEIGHTS["KVH C24"],
+    "BSH GL24h": MATERIAL_WEIGHTS["BSH GL24h"],
+    "OSB 3": MATERIAL_WEIGHTS["OSB 3"],
+    "sadrokartón": MATERIAL_WEIGHTS["gypsum board"],
+    "minerálna vlna": MATERIAL_WEIGHTS["mineral wool"],
+    "drevovláknitá doska": MATERIAL_WEIGHTS["wood fibre board"],
+    "plechová krytina": MATERIAL_WEIGHTS["sheet metal roofing"],
+})

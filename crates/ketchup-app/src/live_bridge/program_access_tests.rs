@@ -683,8 +683,8 @@ fn mass_weighs_parts_with_a_cited_density_and_marks_the_sum_partial() {
 fn mass_takes_a_density_from_the_prelude_table_but_not_its_estimates() {
     let (mut app, mut bridge) = setup();
     let source = "box(\"trám\", (100, 50, 20), material = \"C24\")\n\
-        box(\"doska\", (100, 50, 20), at = (200, 0, 0), material = \"sadrokartón\")\n\
-        box(\"krytina\", (10, 10, 10), at = (400, 0, 0), material = \"plechová krytina\")\n\
+        box(\"doska\", (100, 50, 20), at = (200, 0, 0), material = \"gypsum board\")\n\
+        box(\"krytina\", (10, 10, 10), at = (400, 0, 0), material = \"sheet metal roofing\")\n\
         box(\"skriňa\", (10, 10, 10), at = (600, 0, 0), material = \"DTD\")\n";
     bridge
         .execute(&mut app, apply_source(source), false)

@@ -888,7 +888,7 @@ def connector_rating(load_n, basis, source, note = ""):
     """A published load rating of a bearing connection; see joint(rating=)."""
     return struct(load_n = load_n, basis = basis, source = source, note = note)
 
-_ARUNDA_SOURCE = "Arunda záťažová tabuľka (HYBOX Slovakia), https://arunda.sk/assets/docs/zatezova-tabulka.pdf"
+_ARUNDA_SOURCE = "Arunda load table (HYBOX Slovakia), https://arunda.sk/assets/docs/zatezova-tabulka.pdf"
 
 # template: (smallest and largest width of the carried timber, smallest height, allowable load in kg
 # at the lowest joint height). The table gives a range by joint height without the dependence,
@@ -2167,10 +2167,10 @@ MATERIAL_WEIGHTS = {
     "BSH GL24h": {"kg_m3": 420, "source": "EN 14080: GL24h, mean density 420 kg/m3"},
     "GL24h": {"kg_m3": 420, "source": "EN 14080: GL24h, mean density 420 kg/m3"},
     "OSB 3": {"kg_m3": 700, "source": "EN 1991-1-1 table A.3: OSB 7.0 kN/m3"},
-    "sadrokartón": {"kg_m3": 800, "source": "estimate: 12.5 mm gypsum board up to 10 kg/m2 (makers state 8.5-10)"},
-    "minerálna vlna": {"kg_m3": 50, "source": "estimate: upper end of frame insulation (glass wool 15-30, stone wool 30-50 kg/m3)"},
-    "drevovláknitá doska": {"kg_m3": 270, "source": "estimate: upper end of wood fibre facade boards (about 230-270 kg/m3)"},
-    "plechová krytina": {"kg_m2": 25, "source": "estimate: sheet metal roofing with battens and counter battens, at most 25 kg/m2"},
+    "gypsum board": {"kg_m3": 800, "source": "estimate: 12.5 mm gypsum board up to 10 kg/m2 (makers state 8.5-10)"},
+    "mineral wool": {"kg_m3": 50, "source": "estimate: upper end of frame insulation (glass wool 15-30, stone wool 30-50 kg/m3)"},
+    "wood fibre board": {"kg_m3": 270, "source": "estimate: upper end of wood fibre facade boards (about 230-270 kg/m3)"},
+    "sheet metal roofing": {"kg_m2": 25, "source": "estimate: sheet metal roofing with battens and counter battens, at most 25 kg/m2"},
 }
 
 def self_weight(scope, weights = None):
