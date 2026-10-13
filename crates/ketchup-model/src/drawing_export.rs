@@ -5,11 +5,14 @@ use crate::drawing::{
     DRAWING_SHEET_LAYOUT_SCHEMA_V2, DrawingAngularDimensionLayout, DrawingBomBalloonLayout,
     DrawingCircularDimensionLayout, DrawingDatumSymbolLayout, DrawingFeatureControlFrameLayout,
     DrawingLinearDimensionLayout, DrawingSheetLayout, DrawingViewPlacement,
-    ORTHOGRAPHIC_LINEWORK_SCHEMA_V2, OrthographicDrawing, OrthographicView, drawing_layout_digest,
-    drawing_result_digest,
+    ORTHOGRAPHIC_LINEWORK_SCHEMA_V2, OrthographicDrawing, OrthographicView, ProjectedPolylineCurve,
+    drawing_layout_digest, drawing_result_digest,
 };
 use crate::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
+use std::collections::BTreeSet;
 use std::fmt;
+
+mod arcs;
 
 pub const DRAWING_EXPORT_SCHEMA_V1: &str = "ketchup.drawing-export.v1";
 const MAX_EXPORT_LINES: usize = 100_000;
@@ -77,6 +80,18 @@ pub struct DrawingExportBundle {
     svg: Vec<u8>,
     dxf: Vec<u8>,
     pdf: Vec<u8>,
+    dxf_curves: DxfCurves,
+}
+
+/// How the DXF carries the curves of the drawing: exact circles of the views
+/// as CIRCLE and ARC entities in place of their tessellated lines, and the
+/// exact curves it keeps as lines, by name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DxfCurves {
+    pub circles: usize,
+    pub arcs: usize,
+    pub replaced_lines: usize,
+    pub polyline_curves: Vec<ProjectedPolylineCurve>,
 }
 
 impl DrawingExportBundle {
@@ -93,6 +108,11 @@ impl DrawingExportBundle {
     #[must_use]
     pub fn pdf(&self) -> &[u8] {
         &self.pdf
+    }
+
+    #[must_use]
+    pub fn dxf_curves(&self) -> &DxfCurves {
+        &self.dxf_curves
     }
 }
 
@@ -150,6 +170,16 @@ struct PageLine {
     style: LineStyle,
 }
 
+struct PageArc {
+    id: String,
+    center: [f64; 2],
+    radius: f64,
+    start_degrees: f64,
+    end_degrees: f64,
+    full: bool,
+    style: LineStyle,
+}
+
 struct PageText {
     id: String,
     position: [f64; 2],
@@ -163,8 +193,9 @@ pub fn export_drawing(
 ) -> Result<DrawingExportBundle, DrawingExportError> {
     let sheet = validate_contract(snapshot, drawing)?;
     let (lines, texts) = collect_page_content(drawing)?;
+    let (page_arcs, replaced_lines) = collect_page_arcs(drawing)?;
     let svg = export_svg(drawing, &lines, &texts);
-    let dxf = export_dxf(drawing, &lines, &texts);
+    let dxf = export_dxf(drawing, &lines, &texts, &page_arcs, &replaced_lines);
     let pdf = export_pdf(drawing, &lines, &texts)?;
     if [svg.len(), dxf.len(), pdf.len()]
         .into_iter()
@@ -173,7 +204,22 @@ pub fn export_drawing(
         return Err(DrawingExportError::ResourceLimit);
     }
     debug_assert_eq!(sheet.id(), drawing.sheet_id);
-    Ok(DrawingExportBundle { svg, dxf, pdf })
+    let dxf_curves = DxfCurves {
+        circles: page_arcs.iter().filter(|arc| arc.full).count(),
+        arcs: page_arcs.iter().filter(|arc| !arc.full).count(),
+        replaced_lines: replaced_lines.len(),
+        polyline_curves: drawing
+            .views
+            .iter()
+            .flat_map(|view| view.polyline_curves.iter().cloned())
+            .collect(),
+    };
+    Ok(DrawingExportBundle {
+        svg,
+        dxf,
+        pdf,
+        dxf_curves,
+    })
 }
 
 fn validate_contract<'a>(
@@ -493,9 +539,7 @@ fn collect_page_content(
         LineStyle::Border,
     );
     for (view, placement) in drawing.views.iter().zip(&drawing.layout.view_placements) {
-        let model_width = view.bounds_mm[1][0] - view.bounds_mm[0][0];
-        let page_width = placement.page_bounds_mm[1][0] - placement.page_bounds_mm[0][0];
-        let scale = page_width / model_width;
+        let scale = view_scale(view, placement);
         for (style, source_lines) in [
             (LineStyle::Visible, view.visible_lines.as_slice()),
             (LineStyle::Hidden, view.hidden_lines.as_slice()),
@@ -565,6 +609,43 @@ fn collect_page_content(
         return Err(DrawingExportError::InvalidDrawing);
     }
     Ok((lines, texts))
+}
+
+fn view_scale(view: &OrthographicView, placement: &DrawingViewPlacement) -> f64 {
+    let model_width = view.bounds_mm[1][0] - view.bounds_mm[0][0];
+    let page_width = placement.page_bounds_mm[1][0] - placement.page_bounds_mm[0][0];
+    page_width / model_width
+}
+
+/// The exact circles and arcs of the views on the page, and the ids of the
+/// lines they replace in the DXF.
+fn collect_page_arcs(
+    drawing: &OrthographicDrawing,
+) -> Result<(Vec<PageArc>, BTreeSet<String>), DrawingExportError> {
+    let mut page_arcs = Vec::new();
+    let mut replaced = BTreeSet::new();
+    for (view, placement) in drawing.views.iter().zip(&drawing.layout.view_placements) {
+        let scale = view_scale(view, placement);
+        let view_arcs = arcs::view_arcs(view);
+        for arc in view_arcs.arcs {
+            let center = page_point(arc.center, placement.origin_mm, scale);
+            let radius = arc.radius * scale;
+            if !valid_point(center) || !radius.is_finite() || radius <= 0.0 {
+                return Err(DrawingExportError::InvalidDrawing);
+            }
+            page_arcs.push(PageArc {
+                id: arc.id,
+                center,
+                radius,
+                start_degrees: arc.start_rad.to_degrees(),
+                end_degrees: (arc.start_rad + arc.span_rad).to_degrees() % 360.0,
+                full: arc.span_rad >= std::f64::consts::TAU,
+                style: arc.style,
+            });
+        }
+        replaced.extend(view_arcs.replaced_lines);
+    }
+    Ok((page_arcs, replaced))
 }
 
 fn push_rectangle(lines: &mut Vec<PageLine>, id: &str, bounds: [[f64; 2]; 2], style: LineStyle) {
@@ -822,12 +903,21 @@ fn export_svg(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
     svg.into_bytes()
 }
 
-fn export_dxf(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageText]) -> Vec<u8> {
+fn export_dxf(
+    drawing: &OrthographicDrawing,
+    lines: &[PageLine],
+    texts: &[PageText],
+    arcs: &[PageArc],
+    replaced_lines: &BTreeSet<String>,
+) -> Vec<u8> {
     let mut dxf = format!(
         "999\n{DRAWING_EXPORT_SCHEMA_V1}\n999\nresult={} layout={}\n0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1027\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n2\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0\n0\nLTYPE\n2\nHIDDEN\n70\n0\n3\nHidden line\n72\n65\n73\n2\n40\n3\n49\n2\n74\n0\n49\n-1\n74\n0\n0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n5\n0\nLAYER\n2\nBORDER\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nVISIBLE\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nHIDDEN\n70\n0\n62\n8\n6\nHIDDEN\n0\nLAYER\n2\nDIMENSION\n70\n0\n62\n3\n6\nCONTINUOUS\n0\nLAYER\n2\nANNOTATION\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nENDTAB\n0\nTABLE\n2\nAPPID\n70\n1\n0\nAPPID\n2\nKETCHUP\n70\n0\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n",
         drawing.result_digest, drawing.layout.digest
     );
-    for line in lines {
+    for line in lines
+        .iter()
+        .filter(|line| !replaced_lines.contains(&line.id))
+    {
         dxf.push_str(&format!(
             "0\nLINE\n8\n{}\n6\n{}\n1001\nKETCHUP\n1000\n{}\n10\n{}\n20\n{}\n30\n0\n11\n{}\n21\n{}\n31\n0\n",
             line.style.name(),
@@ -837,6 +927,27 @@ fn export_dxf(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
             number(line.start[1]),
             number(line.end[0]),
             number(line.end[1]),
+        ));
+    }
+    for arc in arcs {
+        let angles = if arc.full {
+            String::new()
+        } else {
+            format!(
+                "50\n{}\n51\n{}\n",
+                number(arc.start_degrees),
+                number(arc.end_degrees)
+            )
+        };
+        dxf.push_str(&format!(
+            "0\n{}\n8\n{}\n6\n{}\n10\n{}\n20\n{}\n30\n0\n40\n{}\n{angles}1001\nKETCHUP\n1000\n{}\n",
+            if arc.full { "CIRCLE" } else { "ARC" },
+            arc.style.name(),
+            arc.style.dxf_linetype(),
+            number(arc.center[0]),
+            number(arc.center[1]),
+            number(arc.radius),
+            dxf_text(&arc.id),
         ));
     }
     for text in texts {

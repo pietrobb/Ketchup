@@ -18,6 +18,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
+mod polyline_curves;
+pub use polyline_curves::ProjectedPolylineCurve;
+
 pub const ORTHOGRAPHIC_DRAWING_SCHEMA_V1: &str = "ketchup.orthographic-drawing.v1";
 pub const ORTHOGRAPHIC_DRAWING_SCHEMA_V2: &str = "ketchup.orthographic-drawing.v2";
 pub const ORTHOGRAPHIC_LINEWORK_SCHEMA_V2: &str = "ketchup.orthographic-linework.v2";
@@ -2027,6 +2030,9 @@ pub struct OrthographicView {
     pub visible_lines: Vec<ProjectedVisibleLine>,
     pub hidden_lines: Vec<ProjectedVisibleLine>,
     pub circles: Vec<ProjectedCircle>,
+    /// Derived from the same exact edges as `circles` and kept out of the
+    /// result digest, so drawings keep their digest.
+    pub polyline_curves: Vec<ProjectedPolylineCurve>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3000,6 +3006,7 @@ fn project_view(
         visible_lines,
         hidden_lines,
         circles,
+        polyline_curves: polyline_curves::project_polyline_curves(sheet_id, kind, instances),
     })
 }
 
@@ -4642,6 +4649,7 @@ mod tests {
                 center_mm: [0.0, 0.0],
                 radius_mm: 5.0,
             }],
+            polyline_curves: Vec::new(),
         }];
         let mut parallel_views = views.clone();
         parallel_views[0].visible_lines[1].end_mm = [10.0, -10.0];
@@ -4801,6 +4809,7 @@ mod tests {
             ],
             hidden_lines: Vec::new(),
             circles: Vec::new(),
+            polyline_curves: Vec::new(),
         }];
         let layout = layout_drawing_sheet(&snapshot, sheet, &views).unwrap();
         assert_eq!(layout.datum_symbols[0].label, "A");
@@ -4901,6 +4910,7 @@ mod tests {
             }],
             hidden_lines: Vec::new(),
             circles: Vec::new(),
+            polyline_curves: Vec::new(),
         }];
 
         let layout = layout_drawing_sheet(&snapshot, &sheet, &views).unwrap();

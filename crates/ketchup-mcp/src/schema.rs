@@ -173,7 +173,7 @@ pub fn tools() -> Value {
     export_drawings writes the project drawings of the visible layers (floor plan cut, longitudinal and cross section, four elevations with overall dimensions) as one vector PDF sheet with a frame and a title block; \
     title_block fields and format given here are kept in the document (an empty string clears a field), scale and format cells are filled in by the sheet. Hidden layers are left out. \
     That sheet is PDF only: it hides back edges by painting over them, which DXF cannot carry. \
-    With sheet_id, export_drawings writes that drawing sheet of the document (create_drawing; inspect action=summary lists drawing_sheets) as DXF: exact views, hidden edges on their own HIDDEN layer.",
+    With sheet_id, export_drawings writes that drawing sheet of the document (create_drawing; inspect action=summary lists drawing_sheets) as DXF: exact views, hidden edges on their own HIDDEN layer, circles the views face as CIRCLE/ARC from the exact circle; dxf_curves counts them and names every exact curve kept as lines, with the reason.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
                 "action": {"type": "string", "enum": ["save", "save_as", "open", "import", "export", "export_drawings"]},
                 "path": {"type": "string", "description": "Local absolute path. For save_as, open and import (an existing file; its extension picks the format); for export ending in an extension of export_format; for export_drawings a new path ending in .pdf, or .dxf with sheet_id (an existing file is never replaced)."},

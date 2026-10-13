@@ -8,6 +8,7 @@ use crate::app::drawing_sheet_export::DrawingSheetExportError;
 use crate::app::project_drawings::ProjectDrawingsError;
 use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
 use ketchup_model::drawing::DrawingSheetId;
+use ketchup_model::drawing_export::DxfCurves;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -115,10 +116,30 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
         "views": sheet.views,
         "visible_lines": sheet.visible_lines,
         "hidden_lines": sheet.hidden_lines,
+        "dxf_curves": dxf_curves(&sheet.curves),
         "bytes": sheet.bytes,
         "basis": "drawing_sheet_exact_projection",
         "dirty": app.is_dirty(),
     }))
+}
+
+/// Most exact curves named one by one in an export result; the count is complete.
+const NAMED_CURVES: usize = 100;
+
+/// Exact circles written as CIRCLE/ARC, the projected lines they replace, and
+/// every exact curve the DXF keeps as lines, named with the reason.
+fn dxf_curves(curves: &DxfCurves) -> Value {
+    json!({
+        "circles": curves.circles,
+        "arcs": curves.arcs,
+        "replaced_lines": curves.replaced_lines,
+        "curves_as_lines": curves.polyline_curves.iter().take(NAMED_CURVES).map(|curve| json!({
+            "id": curve.stable_curve_id,
+            "curve": curve.curve_kind,
+            "reason": curve.reason,
+        })).collect::<Vec<_>>(),
+        "curves_as_lines_count": curves.polyline_curves.len(),
+    })
 }
 
 /// Longest drawing target path, in bytes.

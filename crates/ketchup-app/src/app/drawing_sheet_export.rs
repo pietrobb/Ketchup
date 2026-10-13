@@ -1,6 +1,7 @@
 //! A drawing sheet of the document (MCP `create_drawing`, the assembly
 //! drawing from a selection) written as DXF: the exact projection of
-//! `ketchup_model::drawing_export`, hidden edges on their own HIDDEN layer.
+//! `ketchup_model::drawing_export`, hidden edges on their own HIDDEN layer,
+//! circles the views face as exact CIRCLE and ARC entities.
 //! The project sheet (`project_drawings.rs`) stays PDF only: it
 //! hides back edges by painting nearer faces over them, which DXF cannot carry,
 //! so its DXF would show every back edge as a visible line.
@@ -10,7 +11,7 @@ use crate::export_bundle::{
 };
 use crate::*;
 use ketchup_model::drawing::{DrawingError, DrawingSheetId, project_orthographic_drawing};
-use ketchup_model::drawing_export::{DrawingExportError, export_drawing};
+use ketchup_model::drawing_export::{DrawingExportError, DxfCurves, export_drawing};
 
 /// Why a drawing sheet could not be written as DXF.
 #[derive(Debug)]
@@ -46,12 +47,14 @@ impl std::error::Error for DrawingSheetExportError {
     }
 }
 
-/// What was written: the sheet's name, its views and the DXF size.
+/// What was written: the sheet's name, its views, the projected lines, how
+/// the DXF carries curves and its size.
 pub(crate) struct ExportedDrawingSheet {
     pub(crate) name: String,
     pub(crate) views: Vec<String>,
     pub(crate) visible_lines: usize,
     pub(crate) hidden_lines: usize,
+    pub(crate) curves: DxfCurves,
     pub(crate) bytes: usize,
 }
 
@@ -90,6 +93,7 @@ impl KetchupApp {
                 .iter()
                 .map(|view| view.hidden_lines.len())
                 .sum(),
+            curves: bundle.dxf_curves().clone(),
             bytes: dxf.len(),
         };
         Ok((exported, dxf))
