@@ -1,5 +1,6 @@
-//! Imports with review previews (STL, DXF, STEP, IGES, SketchUp scenes).
+//! Imports with review previews (STL, DXF and DWG, STEP, IGES, SketchUp scenes).
 
+use crate::app::dwg_import::drawing_dxf;
 use crate::*;
 
 impl KetchupApp {
@@ -84,23 +85,26 @@ impl KetchupApp {
     }
 
     pub(crate) fn choose_dxf_import_path(&mut self) -> Option<PathBuf> {
-        let filter_label = self.catalog.text("file-filter-dxf");
+        let filter_label = self.catalog.text("file-filter-dxf-dwg");
         self.dialogs.pick_import_path(ImportDialogRequest {
             format: ImportFormat::Dxf,
             filter_label: &filter_label,
-            extensions: &["dxf"],
+            extensions: &["dxf", "dwg"],
         })
     }
 
+    /// The bytes of a `.dxf` or `.dwg` drawing, bounded like a DXF file.
     pub(crate) fn read_dxf_source(path: &Path) -> Result<Vec<u8>, ImportError> {
         if !path
             .extension()
             .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("dxf"))
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("dxf") || extension.eq_ignore_ascii_case("dwg")
+            })
         {
             return Err(ImportError::failed(
                 ImportFormat::Dxf,
-                "native DWG import is unavailable; convert through an audited DXF workflow",
+                "a drawing import reads a .dxf or .dwg file",
             ));
         }
         read_import_source(ImportFormat::Dxf, path)
@@ -143,14 +147,14 @@ impl KetchupApp {
     ) -> Result<DxfImportPreviewPlan, ImportError> {
         let snapshot = self.document.current();
         let source_name = source.verify_seal(&snapshot)?;
+        let (dxf, dwg) = drawing_dxf(&source.path, &source.source)?;
         let options = DxfImportOptions::new(Some(source.unit));
-        let review = bounded_parser::run_bounded_parser(source.format, || {
-            inspect_dxf(&source.source, options)
-        })
-        .map_err(|error| source.failed(error))?
-        .map_err(|error| source.failed(error))?;
+        let review =
+            bounded_parser::run_bounded_parser(source.format, || inspect_dxf(&dxf, options))
+                .map_err(|error| source.failed(error))?
+                .map_err(|error| source.failed(error))?;
         let batch = bounded_parser::run_bounded_parser(source.format, || {
-            plan_dxf_import(&snapshot, &source.source, source_name, options)
+            plan_dxf_import(&snapshot, &dxf, source_name, options)
         })
         .map_err(|error| source.failed(error))?
         .map_err(|error| source.failed(error))?;
@@ -162,6 +166,7 @@ impl KetchupApp {
             source,
             review,
             proposal,
+            dwg,
         })
     }
 
@@ -528,6 +533,7 @@ impl KetchupApp {
         };
         let path = pending.plan.source.path.clone();
         let review = pending.plan.review.clone();
+        let dwg = pending.plan.dwg.clone();
         let review_error = pending.review_error.clone();
         let mut unit = pending.plan.source.unit;
         let mut unit_confirmed = pending.unit_confirmed;
@@ -542,6 +548,24 @@ impl KetchupApp {
                     "dialog-import-dxf-source",
                     &BTreeMap::from([("path", path.display().to_string())]),
                 ));
+                if let Some(dwg) = &dwg {
+                    ui.label(self.catalog.format(
+                        "dialog-import-dxf-dwg",
+                        &BTreeMap::from([("version", dwg.version.clone())]),
+                    ));
+                    for skipped in &dwg.skipped {
+                        ui.colored_label(
+                            Color32::LIGHT_RED,
+                            self.catalog.format(
+                                "dialog-import-dxf-dwg-skipped",
+                                &BTreeMap::from([
+                                    ("count", skipped.count.to_string()),
+                                    ("record", skipped.record_type.clone()),
+                                ]),
+                            ),
+                        );
+                    }
+                }
                 ui.label(self.catalog.format(
                     "dialog-import-dxf-summary",
                     &BTreeMap::from([

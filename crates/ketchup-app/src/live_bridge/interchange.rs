@@ -91,7 +91,7 @@ impl LiveBridge {
         let format = import_format(Path::new(&path)).ok_or_else(|| {
             failure(
                 "unsupported_format",
-                "Import reads .step/.stp, .iges/.igs, .stl, .dxf, .glb and .kscene files.",
+                "Import reads .step/.stp, .iges/.igs, .stl, .dxf, .dwg, .glb and .kscene files.",
                 json!({"path": path}),
             )
         })?;

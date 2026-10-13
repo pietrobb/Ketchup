@@ -3300,8 +3300,8 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
         script.import_requests(),
         vec![ketchup_app::dialogs::ImportDialogRequestRecord {
             format: ImportFormat::Dxf,
-            filter_label: shell.catalog().text("file-filter-dxf"),
-            extensions: vec!["dxf".to_owned()],
+            filter_label: shell.catalog().text("file-filter-dxf-dwg"),
+            extensions: vec!["dxf".to_owned(), "dwg".to_owned()],
         }]
     );
 
@@ -3786,7 +3786,8 @@ fn file_menu_dxf_export_is_layered_authorized_atomic_and_non_mutating_offscreen(
 }
 
 #[test]
-fn file_menu_refuses_native_dwg_without_preview_authorization_or_side_effects() {
+fn file_menu_refuses_a_dxf_named_dwg_and_profiles_as_dwg_without_preview_authorization_or_side_effects()
+ {
     let directory = tempfile::tempdir().unwrap();
     let renamed_source = directory.path().join("renamed.dwg");
     let destination = directory.path().join("misleading.dwg");
@@ -3798,9 +3799,12 @@ fn file_menu_refuses_native_dwg_without_preview_authorization_or_side_effects() 
     let mut shell = Shell::with_dialogs(script.clone());
     let before = canonical_state(&shell);
 
+    // A .dwg file is read as DWG; a DXF under that name is no DWG.
     shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
     assert_eq!(canonical_state(&shell), before);
     assert!(digest_starts_like(&shell, "error-import-dxf"));
+    let digest = shell.app().action_digest();
+    assert!(digest.contains("DWG file"), "{digest}");
 
     shell.click_menu_command("menu-file", AppCommand::ExportDrawingDxf);
     assert_eq!(canonical_state(&shell), before);

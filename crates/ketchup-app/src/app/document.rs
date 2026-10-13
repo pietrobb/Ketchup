@@ -935,7 +935,8 @@ impl KetchupApp {
             AppCommand::ImportDrawingDxf => {
                 if let Some(path) = self.choose_dxf_import_path() {
                     let result = Self::read_dxf_source(&path).and_then(|source| {
-                        let initial_review = Self::inspect_dxf_for_review(&source)?;
+                        let (dxf, _) = crate::app::dwg_import::drawing_dxf(&path, &source)?;
+                        let initial_review = Self::inspect_dxf_for_review(&dxf)?;
                         let unit = initial_review.units().source_unit();
                         let unit_confirmed =
                             initial_review.units().authority() == ImportUnitAuthority::FileDeclared;

@@ -2373,6 +2373,8 @@ struct DxfImportPreviewPlan {
     source: ImportSourcePlan<ImportLengthUnit>,
     review: ParsedDxf,
     proposal: Proposal,
+    /// Set when the source is a DWG file read through its DXF conversion.
+    dwg: Option<app::dwg_import::DwgConversion>,
 }
 
 #[derive(Clone, Debug)]

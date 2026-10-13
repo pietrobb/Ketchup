@@ -16,6 +16,10 @@ pub(crate) mod drawing_sheet_export;
 #[cfg(test)]
 #[path = "app/drawing_sheet_export_tests.rs"]
 mod drawing_sheet_export_tests;
+pub(crate) mod dwg_import;
+#[cfg(test)]
+#[path = "app/dwg_import_tests.rs"]
+mod dwg_import_tests;
 mod exact;
 mod export;
 mod fea_review;

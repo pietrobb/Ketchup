@@ -99,7 +99,7 @@ impl KetchupApp {
             export_visible_profiles_dxf(&snapshot).map_err(ExportError::failed)
         } else {
             Err(ExportError::Destination {
-                requirement: "an explicit .dxf destination; native DWG export is unavailable",
+                requirement: "an explicit .dxf destination; profiles are not written as DWG (a drawing sheet is, from File > Drawings)",
             })
         }
         .and_then(|bundle| {

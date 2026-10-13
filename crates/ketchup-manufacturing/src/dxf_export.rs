@@ -88,8 +88,8 @@ struct ExportProfile {
 /// The file is AutoCAD R12 (AC1009), which needs no handles or subclass markers
 /// and is read by AutoCAD and CAM software alike. Each profile is one POLYLINE,
 /// so two profiles on the same layer cannot be joined by a receiving importer.
-/// Native DWG is deliberately outside this open, deterministic workflow and is
-/// called out in the report.
+/// Profiles are not written as DWG, which the report calls out; a drawing
+/// sheet of the document is (`ketchup-dwg`).
 pub fn export_visible_profiles_dxf(
     snapshot: &Snapshot,
 ) -> Result<DxfProfileExport, DxfProfileExportError> {
@@ -181,7 +181,7 @@ pub fn export_visible_profiles_dxf(
         })
         .count();
     let loss_report = format!(
-        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=unsupported; native DWG import/export is refused because no open deterministic DWG codec is present\nomitted_non_profile_feature_count={omitted_feature_count}\n",
+        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=unsupported for profiles; a drawing sheet exports as DWG and a DWG drawing imports through its DXF conversion\nomitted_non_profile_feature_count={omitted_feature_count}\n",
         renamed_layers.len(),
         profiles.len(),
         layers.len(),

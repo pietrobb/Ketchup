@@ -46,6 +46,8 @@ mod draft_faces;
 mod drawing_sheet;
 #[path = "drill_holes_tests.rs"]
 mod drill_holes;
+#[path = "dwg_import_tests.rs"]
+mod dwg_import;
 #[path = "product_integration_tests.rs"]
 mod product_integration;
 #[path = "program_access_tests.rs"]

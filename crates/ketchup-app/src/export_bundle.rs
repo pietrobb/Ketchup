@@ -1083,7 +1083,7 @@ mod tests {
         );
         assert!(
             app.digest
-                .contains("an explicit .dxf destination; native DWG export is unavailable"),
+                .contains("an explicit .dxf destination; profiles are not written as DWG (a drawing sheet is, from File > Drawings)"),
             "{}",
             app.digest
         );

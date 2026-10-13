@@ -13,7 +13,7 @@ pub(crate) fn import_format(path: &Path) -> Option<ImportFormat> {
         "step" | "stp" => ImportFormat::Step,
         "iges" | "igs" => ImportFormat::Iges,
         "stl" => ImportFormat::Stl,
-        "dxf" => ImportFormat::Dxf,
+        "dxf" | "dwg" => ImportFormat::Dxf,
         "glb" => ImportFormat::Glb,
         "kscene" => ImportFormat::SketchupScene,
         _ => return None,
@@ -138,7 +138,10 @@ impl KetchupApp {
             }
             ImportFormat::Dxf => {
                 let bytes = Self::read_dxf_source(path)?;
-                let units = Self::inspect_dxf_for_review(&bytes)?.units();
+                let units = {
+                    let (dxf, _) = crate::app::dwg_import::drawing_dxf(path, &bytes)?;
+                    Self::inspect_dxf_for_review(&dxf)?.units()
+                };
                 let unit = if units.authority() == ImportUnitAuthority::FileDeclared {
                     units.source_unit()
                 } else {
@@ -166,6 +169,13 @@ impl KetchupApp {
                     "unit_from_file": units.authority() == ImportUnitAuthority::FileDeclared,
                     "diagnostics": diagnostics,
                     "diagnostics_total": diagnostics_total,
+                    "dwg": plan.dwg.as_ref().map(|dwg| json!({
+                        "version": dwg.version,
+                        "skipped_records": dwg.skipped.iter().map(|skipped| json!({
+                            "record_type": skipped.record_type,
+                            "count": skipped.count,
+                        })).collect::<Vec<_>>(),
+                    })),
                 });
                 self.import_dxf_from(&PendingDxfImport {
                     plan,
