@@ -3667,7 +3667,7 @@ fn entering_from_end(machining: GeneralMachiningGeometry) -> GeneralMachiningGeo
             end_mm: -start_mm,
         },
         // Stock is no cut, so it has no end to enter from.
-        stock => stock,
+        stock @ GeneralMachiningGeometry::PrismaticStock { .. } => stock,
     }
 }
 
