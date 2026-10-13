@@ -4771,15 +4771,14 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), imported_digest);
-    for _ in 0..100 {
+    // Under the full workspace run the worker can take longer than 2 s to
+    // republish after Open; wait on its state, the asserts below decide.
+    let _ = shell.wait_until(|shell| {
         shell.settle();
         let mut producers = shell.app().exact_current_producer_ids();
         producers.sort_unstable();
-        if producers == imported_feature_ids && shell.app().instanced_scene_triangle_count() > 0 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        producers == imported_feature_ids && shell.app().instanced_scene_triangle_count() > 0
+    });
     let mut producers = shell.app().exact_current_producer_ids();
     producers.sort_unstable();
     assert_eq!(producers, imported_feature_ids);
