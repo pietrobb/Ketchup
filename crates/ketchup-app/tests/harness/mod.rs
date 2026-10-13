@@ -460,6 +460,13 @@ impl Shell {
             .any(|node| node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True))
     }
 
+    /// Whether a button with `label` exists and takes a click.
+    pub fn button_is_enabled(&self, label: &str) -> bool {
+        self.harness
+            .query_all_by_role_and_label(Role::Button, label)
+            .any(|node| !node.accesskit_node().is_disabled())
+    }
+
     pub fn has_role_and_label(&self, role: Role, label: &str) -> bool {
         self.harness
             .query_all_by_role_and_label(role, label)

@@ -1426,7 +1426,7 @@ fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
         (MoveCopyArrayMode::Divide, trimmed.strip_prefix('/')?)
     };
     let count = count.trim().parse::<usize>().ok()?;
-    (1..=MAX_PATTERN_COUNT)
+    (1..=MAX_CAD_GENERATED_OCCURRENCES)
         .contains(&count)
         .then_some((mode, count))
 }

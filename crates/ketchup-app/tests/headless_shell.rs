@@ -8149,6 +8149,123 @@ fn linear_pattern_is_localized_previewed_shared_and_one_undo_step() {
     }
 }
 
+/// Types `value` into the dialog text field named by `key`.
+fn set_dialog_field(shell: &mut Shell, key: &str, value: &str) {
+    let label = shell.catalog().text(key);
+    shell.focus_text_input(&label);
+    shell.key(Key::A, ctrl());
+    shell.type_text(value);
+}
+
+/// The dialog's refusal of `copies` new copies, naming the one copy limit.
+fn copy_limit_exceeded(shell: &Shell, copies: usize) -> String {
+    shell.catalog().format(
+        "dialog-pattern-copy-limit-exceeded",
+        &BTreeMap::from([("copies", copies.to_string()), ("limit", "512".to_owned())]),
+    )
+}
+
+#[test]
+fn every_pattern_dialog_refuses_513_new_copies_and_makes_512() {
+    let mut shell = Shell::with_catalog(LocaleCatalog::english());
+    shell.click_at(shell.top_face_centre(1));
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    let limit = shell.catalog().format(
+        "dialog-pattern-copy-limit",
+        &BTreeMap::from([("limit", "512".to_owned())]),
+    );
+    let refused = copy_limit_exceeded(&shell, 513);
+    assert!(
+        refused.contains("513") && refused.contains("512"),
+        "{refused}"
+    );
+
+    // Each dialog shows the limit, names it when 513 new copies are typed and
+    // offers no preview of them; nothing in the document changes.
+    for (command, count_fields, preview, cancel) in [
+        (
+            AppCommand::LinearPattern,
+            &[("dialog-linear-pattern-count", "514")][..],
+            "dialog-linear-pattern-preview",
+            "dialog-linear-pattern-cancel",
+        ),
+        (
+            AppCommand::RectangularPattern,
+            &[
+                ("dialog-rectangular-pattern-primary-count", "2"),
+                ("dialog-rectangular-pattern-secondary-count", "257"),
+            ][..],
+            "dialog-rectangular-pattern-preview",
+            "dialog-rectangular-pattern-cancel",
+        ),
+        (
+            AppCommand::CircularPattern,
+            &[("dialog-circular-pattern-count", "514")][..],
+            "dialog-circular-pattern-preview",
+            "dialog-circular-pattern-cancel",
+        ),
+    ] {
+        shell.click_menu_command("menu-model", command);
+        assert!(
+            shell.has_visible_label(&limit),
+            "{command:?} shows the limit"
+        );
+        for (key, value) in count_fields {
+            set_dialog_field(&mut shell, key, value);
+        }
+        assert!(shell.has_visible_label(&refused), "{command:?} names 512");
+        let preview = shell.catalog().text(preview);
+        assert!(
+            !shell.button_is_enabled(&preview),
+            "{command:?} previews 513 copies"
+        );
+        assert!(!shell.app().has_occurrence_operation_preview());
+        let cancel = shell.catalog().text(cancel);
+        shell.click_role_and_label(Role::Button, &cancel);
+    }
+    shell.click_menu_command("menu-model", AppCommand::LinearPattern);
+    set_dialog_field(&mut shell, "dialog-linear-pattern-count", "514");
+    assert!(!shell.app_mut().preview_pending_linear_pattern());
+    assert!(!shell.app_mut().confirm_linear_pattern());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+    // 512 new copies is within the limit: exactly 512 new parts, one Undo step.
+    set_dialog_field(&mut shell, "dialog-linear-pattern-spacing", "120");
+    set_dialog_field(&mut shell, "dialog-linear-pattern-count", "513");
+    assert!(!shell.has_visible_label(&refused));
+    let preview = shell.catalog().text("dialog-linear-pattern-preview");
+    shell.click_role_and_label(Role::Button, &preview);
+    assert!(shell.app().has_occurrence_operation_preview());
+    let confirm = shell.catalog().text("dialog-linear-pattern-confirm");
+    shell.click_role_and_label(Role::Button, &confirm);
+    let committed = shell.catalog().text("digest-linear-pattern-committed");
+    let delivered = shell.wait_until(|shell| {
+        shell.step();
+        shell.app().action_digest() == committed
+    });
+    assert!(
+        delivered,
+        "the window did not deliver the pattern: {}",
+        shell.app().action_digest()
+    );
+    assert_eq!(shell.app().occurrence_count(), 513);
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+    assert_eq!(
+        shell.app().occurrence_box_geometry(513),
+        Some((
+            Vec3::new(120.0 * 512.0, 0.0, 0.0),
+            Vec3::new(100.0, 60.0, 20.0)
+        ))
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().occurrence_count(), 1);
+}
+
 #[test]
 fn rectangular_pattern_is_localized_previewed_shared_and_one_undo_step() {
     for catalog in [

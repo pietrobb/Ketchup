@@ -59,7 +59,10 @@ impl KetchupApp {
         mode: MoveCopyArrayMode,
         count: usize,
     ) -> bool {
-        if !(1..=MAX_PATTERN_COUNT).contains(&count) || previous.source_occurrence_ids.is_empty() {
+        let copies = count.checked_mul(previous.source_occurrence_ids.len());
+        if count == 0
+            || !copies.is_some_and(|copies| (1..=MAX_CAD_GENERATED_OCCURRENCES).contains(&copies))
+        {
             return false;
         }
         let Ok(parent) = self.document.tip_replacement_parent() else {
@@ -227,7 +230,7 @@ impl KetchupApp {
             .linear_pattern_source_plan_for_occurrence(source.occurrence_id)
             .as_ref()
             != Some(source)
-            || !(2..=MAX_PATTERN_COUNT).contains(&count)
+            || !pattern_places_fit(count)
             || !spacing_mm.is_finite()
             || spacing_mm.abs() <= f64::EPSILON
         {
@@ -517,9 +520,9 @@ impl KetchupApp {
         } = spec;
         let total_count = primary_count.checked_mul(secondary_count)?;
         if primary_axis == secondary_axis
-            || !(2..=MAX_PATTERN_COUNT).contains(&primary_count)
-            || !(2..=MAX_PATTERN_COUNT).contains(&secondary_count)
-            || total_count > MAX_PATTERN_COUNT
+            || primary_count < 2
+            || secondary_count < 2
+            || !pattern_places_fit(total_count)
             || !primary_spacing_mm.is_finite()
             || primary_spacing_mm.abs() <= f64::EPSILON
             || !secondary_spacing_mm.is_finite()
@@ -898,7 +901,7 @@ impl KetchupApp {
             .circular_pattern_source_plan_for_occurrence(source.occurrence_id)
             .as_ref()
             != Some(source)
-            || !(2..=MAX_PATTERN_COUNT).contains(&count)
+            || !pattern_places_fit(count)
             || !centre_mm.x.is_finite()
             || !centre_mm.y.is_finite()
             || !centre_mm.z.is_finite()
@@ -1258,10 +1261,8 @@ impl KetchupApp {
         let parse = |axis: Axis, spacing: &str, count: &str| {
             let spacing = spacing.trim().parse::<f64>().ok()?;
             let count = count.trim().parse::<usize>().ok()?;
-            (spacing.is_finite()
-                && spacing.abs() > f64::EPSILON
-                && (2..=MAX_PATTERN_COUNT).contains(&count))
-            .then_some((axis, spacing, count))
+            (spacing.is_finite() && spacing.abs() > f64::EPSILON && pattern_places_fit(count))
+                .then_some((axis, spacing, count))
         };
         let mut current = parse(axis, &spacing, &count);
         let binding_is_current = self.linear_pattern_binding_is_current(pending);
@@ -1306,6 +1307,7 @@ impl KetchupApp {
                 count_input.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &count_label)
                 });
+                self.show_pattern_copy_limit(ui, typed_places(&count));
                 current = parse(axis, &spacing, &count);
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -1383,17 +1385,17 @@ impl KetchupApp {
                 && primary_spacing.abs() > f64::EPSILON
                 && secondary_spacing.is_finite()
                 && secondary_spacing.abs() > f64::EPSILON
-                && (2..=MAX_PATTERN_COUNT).contains(&primary_count)
-                && (2..=MAX_PATTERN_COUNT).contains(&secondary_count)
-                && total_count <= MAX_PATTERN_COUNT)
-                .then_some((
-                    primary_axis,
-                    primary_spacing,
-                    primary_count,
-                    secondary_axis,
-                    secondary_spacing,
-                    secondary_count,
-                ))
+                && primary_count >= 2
+                && secondary_count >= 2
+                && pattern_places_fit(total_count))
+            .then_some((
+                primary_axis,
+                primary_spacing,
+                primary_count,
+                secondary_axis,
+                secondary_spacing,
+                secondary_count,
+            ))
         };
         let mut current = parse(
             primary_axis,
@@ -1457,6 +1459,10 @@ impl KetchupApp {
                         egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &label)
                     });
                 }
+                let places = typed_places(&primary_count)
+                    .zip(typed_places(&secondary_count))
+                    .map(|(primary, secondary)| primary.saturating_mul(secondary));
+                self.show_pattern_copy_limit(ui, places);
                 current = parse(
                     primary_axis,
                     &primary_spacing,
@@ -1549,7 +1555,7 @@ impl KetchupApp {
                 && centre.z.is_finite()
                 && angle.is_finite()
                 && (0.01..=360.0).contains(&angle.abs())
-                && (2..=MAX_PATTERN_COUNT).contains(&count))
+                && pattern_places_fit(count))
             .then_some((axis, centre, angle, count))
         };
         let mut current = parse(axis, &centre_x, &centre_y, &centre_z, &angle, &count);
@@ -1598,6 +1604,7 @@ impl KetchupApp {
                 count_input.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &count_label)
                 });
+                self.show_pattern_copy_limit(ui, typed_places(&count));
                 current = parse(axis, &centre_x, &centre_y, &centre_z, &angle, &count);
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -1648,4 +1655,37 @@ impl KetchupApp {
             self.confirm_circular_pattern();
         }
     }
+
+    /// The copy limit under a pattern dialog's counts; it says so in the error
+    /// colour once the typed `places` would make more copies than that.
+    fn show_pattern_copy_limit(&self, ui: &mut egui::Ui, places: Option<usize>) {
+        let limit = ("limit", MAX_CAD_GENERATED_OCCURRENCES.to_string());
+        match places.filter(|places| !pattern_places_fit(*places) && *places >= 2) {
+            Some(places) => {
+                let copies = ("copies", (places - 1).to_string());
+                let text = self.catalog.format(
+                    "dialog-pattern-copy-limit-exceeded",
+                    &BTreeMap::from([copies, limit]),
+                );
+                ui.colored_label(ui.visuals().error_fg_color, text);
+            }
+            None => {
+                let text = self
+                    .catalog
+                    .format("dialog-pattern-copy-limit", &BTreeMap::from([limit]));
+                ui.label(text);
+            }
+        }
+    }
+}
+
+/// Whether a pattern of `places` (its source included) stays within the one
+/// copy limit that an MCP edit has too.
+const fn pattern_places_fit(places: usize) -> bool {
+    places >= 2 && places - 1 <= MAX_CAD_GENERATED_OCCURRENCES
+}
+
+/// The typed places of a dialog count field, when it is a number at all.
+fn typed_places(count: &str) -> Option<usize> {
+    count.trim().parse::<usize>().ok()
 }

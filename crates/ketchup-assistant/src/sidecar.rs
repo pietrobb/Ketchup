@@ -21,8 +21,9 @@ use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 const MAX_CAD_EDIT_OPERATIONS: usize = 64;
 /// Most occurrences one selector may name.
 const MAX_CAD_SELECTOR_TARGETS: usize = 100;
-/// Most occurrences one CAD edit program may create.
-const MAX_CAD_GENERATED_OCCURRENCES: usize = 512;
+/// Most occurrences one CAD edit program may create, so also the most new
+/// copies one pattern may make, from MCP and from the window alike.
+pub const MAX_CAD_GENERATED_OCCURRENCES: usize = 512;
 /// Most holes, and most pockets, one created part may carry.
 const MAX_ASSISTANT_PART_CUTS: usize = 128;
 /// Most holes, and most pockets, one part of a rule program may carry.

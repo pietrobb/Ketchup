@@ -32,6 +32,7 @@ use ketchup_assistant::sidecar::{
 };
 use ketchup_assistant::sidecar::{
     AssistantCadEditProgram, AssistantRejectionDiagnostic, AssistantRejectionPhase,
+    MAX_CAD_GENERATED_OCCURRENCES,
 };
 use ketchup_geometry::linalg::{circumcenter, cross, dot, length, signed_outline_distance};
 use ketchup_geometry::sketch::{
@@ -820,8 +821,6 @@ pub struct RectangularPatternSpec {
     pub secondary_spacing_mm: f64,
     pub secondary_count: usize,
 }
-
-const MAX_PATTERN_COUNT: usize = 10_000;
 
 #[derive(Clone, Debug, PartialEq)]
 struct SolidToolSourcePlan {
