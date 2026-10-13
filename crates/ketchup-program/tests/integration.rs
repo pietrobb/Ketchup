@@ -11,6 +11,7 @@ mod example_programs;
 mod expect;
 mod face_at;
 mod faces;
+mod fasteners;
 mod free_space;
 mod joint_links;
 mod joint_ratings;

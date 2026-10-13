@@ -148,8 +148,14 @@ reveal, so the door is carried and not floating. The count follows the door
 height (2 up to 900 mm, 3 to 1600, 4 to 2000, then 5); a door further than
 `max_gap` (4 mm) from the side is refused with the distance. Each cup and its two plate holes are explicitly linked to their hinge; `dowels()` likewise links both mating holes. Generic `joint(..., links=[joint_link([operation_refs], hardware=[parts])])` records ownership without inventing it from proximity. Delete or replace the generating helper through a source patch to regenerate only its holes; deleting a metadata-only declaration does not erase independent machining. Pick context distinguishes linked solid hardware from catalog metadata. A surface not matched to supported drilling reports `machining_provenance.state=not_identified`, not an inferred owner or a claim that no cut exists.
 
+`nut(name, size, norm="ISO 4032")` (also `DIN 934`, `ISO 7040`, `DIN 6334`) and
+`washer(name, size)` (ISO 7089) place a simplified steel body, seated at `at`
+along `axis`, with `designation`, `standard`, `mass_basis` and `source` in the
+cut list. A size the norm does not have is refused with the valid sizes. The
+dimensions come from public catalogues, not from the text of the standards.
+
 The file is split into topics by `#@topic id: title` lines (`basics`,
-`placement`, `profiles`, `machining`, `joinery`, `intent`, `space`, `buildup`,
+`placement`, `profiles`, `machining`, `joinery`, `fasteners`, `intent`, `space`, `buildup`,
 `loads`, `member_check`, `validation`, `report`). Each
 topic holds the comments that document its builtins and the helpers that
 belong to it, so an AI reads the index and then only the topics it needs;

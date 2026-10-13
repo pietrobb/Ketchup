@@ -1191,6 +1191,132 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
     joint(door, side, kind = "hinge", fasteners = cups, fastener = "hinge %s mm with plate" % cup, links = links, max_gap = max(gap, 0) + 0.5, name = label)
     return cups
 
+#@topic fasteners: Standard nuts and washers (ISO 4032, DIN 934, ISO 7040, DIN 6334, ISO 7089)
+#
+#   nut(name, size, norm="ISO 4032", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
+#     norm "ISO 4032" (hexagon nut), "DIN 934" (the older hexagon nut: other heights, and
+#     M10/M12/M14/M22 take a larger spanner), "ISO 7040" (with nylon insert, full height h)
+#     or "DIN 6334" (coupling nut, length 3d). size "M3" ... "M24" where the norm has it.
+#   washer(name, size, norm="ISO 7089", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
+#     a plain washer, normal series.
+#   A size the norm (or this library) does not have is refused with the valid sizes listed;
+#   the model is then unchanged, like any refused program.
+#   The part's origin lies on the bolt axis in the seating face (the face that bears on the
+#   joined part), the part rises along `axis` from `at`: a nut under a 20 mm plate is
+#   nut("n", "M8", at=(0, 0, -20), axis=(0, 0, -1)).
+#   The body is simplified: a hexagon of the nominal width across flats s (or a ring), the
+#   bore the nominal thread diameter, no thread, chamfers or insert. Material "steel".
+#   Attributes (cut-list columns): designation (e.g. "ISO 4032 M8"), standard, mass_basis
+#   (the mass is the simplified body's volume x 7850 kg/m3, not a catalogue weight) and
+#   source. inspect action=mass and the takeoff weigh the simplified body.
+#
+# Dimensions in mm: nominal s and the largest height the norm allows (m max, h max), washers
+# d1 nominal (min), d2 nominal (max), h nominal. The values are NOT copied from the text of
+# the standards: they come from public catalogues, each cross-checked with at least two:
+#   ISO 4032: fasteners.eu/standards/iso/4032, wermac.org (hex nuts ISO 4032), engineersedge.com
+#     (BS EN ISO 4032); all agree for M3-M24.
+#   DIN 934: boltport.com/standards/din-934, boltingspecialist.com (DIN 934 hex nuts); agree.
+#     fasteners.eu/standards/din/934 shows the ISO 4032 table instead (m 6.8 for M8): not used.
+#   ISO 7040: nfgab.com (Nordic Fastening Group, ISO 7040 M4-M24) and IS 7002:2005 (identical to
+#     ISO 7040:1997, law.resource.org) for M3-M24; ISO 7040 has no M18 or M22.
+#     fasteners.eu/standards/iso/7040 shows the DIN 982 table instead (h 11.5, s 17 for M10): not used.
+#   DIN 6334: aspenfasteners.com (Metric DIN 6334 spec) and globalfastener.com (DIN 6334); both
+#     start at M6, so M3-M5 are refused though shops sell "DIN 6334" M4/M5. The widths across
+#     flats are DIN ones (M10 17, M12 19, M14 22, M22 32), as in DIN 934, not ISO 4032.
+#   ISO 7089: itpbolt.com (standard flat washers ISO 7089), engineersedge.com (ISO flat washer)
+#     and fasteners.eu/standards/iso/7089 for M18/M22; agree with the iTeh preview of ISO 7089:2000.
+
+# The sizes this library offers; a norm may have fewer.
+_METRIC_SIZES = ["M3", "M4", "M5", "M6", "M8", "M10", "M12", "M14", "M16", "M18", "M20", "M22", "M24"]
+
+# norm: {size: (width across flats s, height)}
+NUTS = {
+    "ISO 4032": {
+        "M3": (5.5, 2.4), "M4": (7, 3.2), "M5": (8, 4.7), "M6": (10, 5.2), "M8": (13, 6.8),
+        "M10": (16, 8.4), "M12": (18, 10.8), "M14": (21, 12.8), "M16": (24, 14.8), "M18": (27, 15.8),
+        "M20": (30, 18), "M22": (34, 19.4), "M24": (36, 21.5),
+    },
+    "DIN 934": {
+        "M3": (5.5, 2.4), "M4": (7, 3.2), "M5": (8, 4), "M6": (10, 5), "M8": (13, 6.5),
+        "M10": (17, 8), "M12": (19, 10), "M14": (22, 11), "M16": (24, 13), "M18": (27, 15),
+        "M20": (30, 16), "M22": (32, 18), "M24": (36, 19),
+    },
+    # h is the full height with the insert; s as ISO 4032.
+    "ISO 7040": {
+        "M3": (5.5, 4.5), "M4": (7, 6), "M5": (8, 6.8), "M6": (10, 8), "M8": (13, 9.5),
+        "M10": (16, 11.9), "M12": (18, 14.9), "M14": (21, 17), "M16": (24, 19.1),
+        "M20": (30, 22.8), "M24": (36, 27.1),
+    },
+    # Spanner widths as DIN 934 (not ISO 4032), length 3d.
+    "DIN 6334": {
+        "M6": (10, 18), "M8": (13, 24), "M10": (17, 30), "M12": (19, 36), "M14": (22, 42),
+        "M16": (24, 48), "M18": (27, 54), "M20": (30, 60), "M22": (32, 66), "M24": (36, 72),
+    },
+}
+
+# norm: {size: (hole d1, outside d2, thickness h)}
+WASHERS = {
+    "ISO 7089": {
+        "M3": (3.2, 7, 0.5), "M4": (4.3, 9, 0.8), "M5": (5.3, 10, 1), "M6": (6.4, 12, 1.6),
+        "M8": (8.4, 16, 1.6), "M10": (10.5, 20, 2), "M12": (13, 24, 2.5), "M14": (15, 28, 2.5),
+        "M16": (17, 30, 3), "M18": (19, 34, 3), "M20": (21, 37, 3), "M22": (23, 39, 3),
+        "M24": (25, 44, 4),
+    },
+}
+
+_FASTENER_SOURCES = {
+    "ISO 4032": "fasteners.eu, wermac.org, engineersedge.com (catalogue tables, not the standard text)",
+    "DIN 934": "boltport.com, boltingspecialist.com (catalogue tables, not the standard text)",
+    "ISO 7040": "nfgab.com, IS 7002:2005 (catalogue tables, not the standard text)",
+    "DIN 6334": "aspenfasteners.com, globalfastener.com (catalogue tables, not the standard text)",
+    "ISO 7089": "itpbolt.com, engineersedge.com, fasteners.eu (catalogue tables, not the standard text)",
+}
+
+_SIMPLIFIED_MASS = "simplified solid x 7850 kg/m3 (no thread or chamfers), not a catalogue weight"
+
+def _fastener_row(kind, tables, norm, size):
+    """The table row of `size` in `tables[norm]`, refusing what the norm or library lacks."""
+    if norm not in tables:
+        fail("%s(): unknown norm %r; use one of %s" % (kind, norm, sorted(tables.keys())))
+    rows = tables[norm]
+    if size not in rows:
+        fail("%s(): %s has no size %r here; valid sizes: %s" %
+             (kind, norm, size, ", ".join([s for s in _METRIC_SIZES if s in rows])))
+    return rows[size]
+
+def _circle(radius, name):
+    """A full circle in the local XY plane as two named half arcs."""
+    return [[name, (radius, 0), (-radius, 0), {"center": (0, 0)}],
+            [name + "_back", (-radius, 0), (radius, 0), {"center": (0, 0)}]]
+
+def _fastener_body(name, outline, bore, height, at, axis, norm, size, tags):
+    """A steel ring of `outline` with a through bore `bore` wide, `height` along local +z,
+    its seating face in local z=0 at `at`, turned so that local z runs along `axis`."""
+    part = extrude(name, profile = outline, distance = height, at = at, material = "steel", tags = tags,
+                   attributes = {
+                       "designation": "%s %s" % (norm, size),
+                       "standard": norm,
+                       "mass_basis": _SIMPLIFIED_MASS,
+                       "source": _FASTENER_SOURCES[norm],
+                   })
+    cut(part, profile = _circle(bore / 2.0, "bore"), through = True, name = "bore")
+    if tuple(axis) != (0, 0, 1):
+        across = (0, 0, 1) if abs(axis[2]) < 0.9 * vec_length(axis) else (1, 0, 0)
+        place(part, origin = at, z = axis, x = across)
+    return part
+
+def nut(name, size, norm = "ISO 4032", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+    """A standard hexagon nut (simplified body) on the axis through `at`, seated at `at`."""
+    s, height = _fastener_row("nut", NUTS, norm, size)
+    corner = s / math.sqrt(3)
+    # Flats square to local x: the part is s wide along x, 2 s / sqrt(3) along y.
+    return _fastener_body(name, polygon(6, corner, angle = 30), int(size[1:]), height, at, axis, norm, size, tags)
+
+def washer(name, size, norm = "ISO 7089", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+    """A standard plain washer (simplified body) on the axis through `at`, seated at `at`."""
+    d1, d2, h = _fastener_row("washer", WASHERS, norm, size)
+    return _fastener_body(name, _circle(d2 / 2.0, "outside"), d1, h, at, axis, norm, size, tags)
+
 #@topic intent: Stating intent that the check measures (expect_*)
 #
 #   check(condition, message, parts=[...], hint=, severity="error") returns the boolean condition.
