@@ -29,9 +29,9 @@ impl KetchupApp {
             .map(|(point_mm, normal)| MirrorPlane { point_mm, normal })
     }
 
-    /// The reflection across the picked face, moved along its outward normal
-    /// by the distance in the value box (none typed = the face itself).
-    fn mirror_world_transform(&self) -> Option<Transform> {
+    /// The picked face's plane, moved along its outward normal by the distance
+    /// in the value box (none typed = the face itself).
+    fn mirror_plane(&self) -> Option<MirrorPlane> {
         let plane = self.gesture.mirror?;
         let input = self.value_box.input.trim();
         let offset_mm = if input.is_empty() {
@@ -40,7 +40,10 @@ impl KetchupApp {
             parse_distance_mm(input)?
         };
         let unit = plane.normal * (1.0 / length(plane.normal));
-        world_plane_mirror_transform(plane.point_mm + unit * offset_mm, plane.normal).ok()
+        Some(MirrorPlane {
+            point_mm: plane.point_mm + unit * offset_mm,
+            normal: plane.normal,
+        })
     }
 
     /// Corners of the selected parts' boxes as they land after mirroring; empty
@@ -48,7 +51,8 @@ impl KetchupApp {
     #[must_use]
     pub fn mirror_preview_corners(&self) -> Vec<[Vec3; 8]> {
         let Some(mirror) = self
-            .mirror_world_transform()
+            .mirror_plane()
+            .and_then(|plane| world_plane_mirror_transform(plane.point_mm, plane.normal).ok())
             .filter(|_| self.active_tool == ActiveTool::Mirror && self.mirror_sources().is_some())
         else {
             return Vec::new();
@@ -89,8 +93,8 @@ impl KetchupApp {
         }
     }
 
-    /// Adds a mirrored copy of every selected part across the picked plane as
-    /// one Undo step.
+    /// Hands a mirrored copy of every selected part across the picked plane to
+    /// the bridge as the MCP `mirror` edit: one Undo step or a named refusal.
     pub(crate) fn commit_mirror(&mut self) -> bool {
         let Some(sources) = self.mirror_sources() else {
             self.digest = self.catalog.text("digest-mirror-selection-required");
@@ -100,41 +104,21 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-mirror-face-required");
             return false;
         }
-        let Some(mirror) = self.mirror_world_transform() else {
+        let Some(MirrorPlane { point_mm, normal }) = self.mirror_plane() else {
             self.digest = self.catalog.text("digest-mirror-invalid-offset");
             return false;
         };
-        let snapshot = self.document.current();
-        let mut next_id = snapshot
-            .occurrences()
-            .map(|occurrence| occurrence.id().0)
-            .max()
-            .unwrap_or(0);
-        let mut commands = Vec::new();
-        for source in &sources {
-            let copy = next_id.checked_add(1).and_then(|id| {
-                next_id = id;
-                let name = snapshot.occurrence(*source)?.name().to_owned();
-                mirrored_copy_commands(&snapshot, *source, mirror, OccurrenceId(id), name).ok()
-            });
-            let Some(copy) = copy else {
-                self.digest = self.catalog.text("digest-mirror-unavailable");
-                return false;
-            };
-            commands.extend(copy);
-        }
-        if self
-            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
-            .is_err()
-        {
+        let operation = AssistantCadEditOperation::Mirror {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: sources.iter().map(|id| id.0).collect(),
+            },
+            plane_origin_mm: [point_mm.x, point_mm.y, point_mm.z],
+            plane_normal: [normal.x, normal.y, normal.z],
+        };
+        if !self.queue_window_edit(operation, "digest-mirror-created") {
             return false;
         }
         self.value_box.input.clear();
-        self.status_key = "status-mirror-created";
-        self.digest = self.catalog.format(
-            "digest-mirror-created",
-            &BTreeMap::from([("count", sources.len().to_string())]),
-        );
         true
     }
 }

@@ -389,10 +389,27 @@ fn mirror_copies_the_selection_across_the_clicked_face_or_a_typed_offset_in_one_
     );
     assert_eq!(shell.app().document_revision(), before_revision);
 
-    // A click adds the mirrored copy as one Undo step.
+    // A click hands the MCP mirror edit to the bridge: one Undo step, the
+    // planner's copy name.
+    let undo_steps = shell.app().undo_step_count();
     shell.click_at(top);
+    shell.wait_for_digest("digest-mirror-created");
     assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
     assert_eq!(shell.app().occurrence_count(), 2);
+    let definition = shell
+        .app()
+        .occurrence_definition_id(ketchup_model::document::OccurrenceId(1))
+        .unwrap();
+    assert_eq!(
+        shell
+            .app()
+            .occurrence_name(ketchup_model::document::OccurrenceId(2)),
+        Some(format!(
+            "{} 2",
+            shell.app().definition_name(definition).unwrap()
+        ))
+    );
     let (copy_origin, copy_size) = occurrence_box(&shell, 2);
     assert_near(
         copy_origin,
@@ -420,6 +437,7 @@ fn mirror_copies_the_selection_across_the_clicked_face_or_a_typed_offset_in_one_
     shell.move_pointer(top);
     shell.type_text("10");
     shell.press_key(Key::Enter);
+    shell.wait_for_digest("digest-mirror-created");
     assert_eq!(shell.app().occurrence_count(), 2);
     let (offset_origin, _) = occurrence_box(&shell, 2);
     assert_near(
@@ -428,8 +446,26 @@ fn mirror_copies_the_selection_across_the_clicked_face_or_a_typed_offset_in_one_
         "offset copy origin",
     );
 
-    // Escape leaves the tool without touching the document.
+    // A plane the edit cannot take is refused by name; the document and its
+    // Undo history stay as they were.
     let second_digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    let created = shell.app().action_digest().to_owned();
+    shell.move_pointer(top);
+    shell.type_text("2000000");
+    shell.press_key(Key::Enter);
+    let answered = shell.wait_until(|shell| {
+        shell.step();
+        shell.app().action_digest() != created
+    });
+    assert!(answered, "the window did not deliver the refusal");
+    let refusal = shell.app().action_digest().to_owned();
+    assert!(refusal.contains("CAD mirror"), "{refusal}");
+    assert_eq!(shell.app().canonical_digest(), second_digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+    assert_eq!(shell.app().occurrence_count(), 2);
+
+    // Escape leaves the tool without touching the document.
     shell.move_pointer(top);
     assert!(!shell.app().mirror_preview_corners().is_empty());
     shell.press_key(Key::Escape);
