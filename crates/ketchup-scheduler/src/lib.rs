@@ -24,7 +24,8 @@ use ketchup_model::cam::{
 };
 use ketchup_model::document::{
     BodyKind, DerivedIdentity, GroupId, InstancePath, InstancePathStep, LocalGroupKey,
-    LocalOccurrenceKey, NodeId, SceneOccurrence, SlotPath, SlotSegment, Snapshot, Transform,
+    LocalOccurrenceKey, NodeId, ScaledPlacement, SceneOccurrence, SlotPath, SlotSegment, Snapshot,
+    Transform,
 };
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation};
 use ketchup_model::exact_product::{
@@ -2308,7 +2309,9 @@ impl ExactWorkerSupervisor {
         if occurrences.is_empty() {
             return Err(ExactProductError::EmptyModelExport.into());
         }
-        for (package, _) in occurrences {
+        for (package, occurrence) in occurrences {
+            ScaledPlacement::check(occurrence.occurrence_id, occurrence.transform)
+                .map_err(ExactProductError::ScaledPlacement)?;
             if !package.is_current(snapshot) {
                 return Err(ExactProductError::StaleResult.into());
             }

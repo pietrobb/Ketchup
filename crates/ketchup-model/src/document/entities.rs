@@ -83,10 +83,10 @@ impl Transform {
     /// part is not orthonormal within [`ROUNDING`].
     #[must_use]
     pub fn rigid_inverse(self) -> Option<Self> {
-        let affine = self.affine();
-        if !affine.linear.is_orthonormal(ROUNDING) {
+        if !self.is_rigid() {
             return None;
         }
+        let affine = self.affine();
         let linear = affine.linear.transpose();
         Self::from_affine(Affine3 {
             linear,
@@ -94,7 +94,47 @@ impl Transform {
         })
         .ok()
     }
+
+    /// Whether the transform only moves, turns or mirrors, so lengths and
+    /// angles stay those of what it places.
+    #[must_use]
+    pub fn is_rigid(self) -> bool {
+        self.affine().linear.is_orthonormal(ROUNDING)
+    }
 }
+
+/// A part whose world placement scales or shears it. Its definition's
+/// geometry then no longer has the placed size, so drawings, exchange
+/// files, volumes and cut lists that read the definition refuse the part
+/// instead of reporting the unscaled one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScaledPlacement {
+    pub occurrence_id: OccurrenceId,
+}
+
+impl ScaledPlacement {
+    /// Refuses `world_transform` of the part under `occurrence_id` unless it
+    /// only moves, turns or mirrors the part.
+    pub fn check(occurrence_id: OccurrenceId, world_transform: Transform) -> Result<(), Self> {
+        if world_transform.is_rigid() {
+            Ok(())
+        } else {
+            Err(Self { occurrence_id })
+        }
+    }
+}
+
+impl fmt::Display for ScaledPlacement {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "the placement of occurrence {} scales or shears the part; placements may only move and rotate",
+            self.occurrence_id.0
+        )
+    }
+}
+
+impl std::error::Error for ScaledPlacement {}
 
 impl Default for Transform {
     fn default() -> Self {

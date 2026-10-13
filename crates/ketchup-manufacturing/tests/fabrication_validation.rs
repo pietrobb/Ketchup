@@ -15,7 +15,7 @@ use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
     ClassificationError, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
     FeatureKind, GroupId, InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
-    OccurrenceId, ProfileSegment, Snapshot, Transform,
+    OccurrenceId, ProfileSegment, ScaledPlacement, Snapshot, Transform,
 };
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::exact_product::{
@@ -583,7 +583,9 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
             &scaled_report,
             tolerance,
         ),
-        Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry)
+        Err(GeneralFabricationError::ScaledPlacement(ScaledPlacement {
+            occurrence_id: EXACT_LEFT,
+        }))
     );
 }
 
@@ -1527,6 +1529,48 @@ fn btlx_rejects_a_mirrored_copy_that_would_reuse_its_original_machining() {
         transformed_production_fixture([0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0], false);
     let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
     assert!(btlx.contains("Count=\"2\""), "{btlx}");
+}
+#[test]
+fn a_part_placed_scaled_is_refused_by_name_instead_of_a_generic_geometry_error() {
+    let mut document = circular_drill_document_at([20.0, 15.0]);
+    let stretched = Transform::from_matrix([
+        2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: GRAPH_LEFT,
+                transform: stretched,
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let registry = ExactResultRegistry::accept(
+        &snapshot,
+        [Arc::new(ExactBodyPackage::from(graph_package_for(
+            &snapshot,
+            "scaled-result",
+            GRAPH_BOOLEAN,
+        )))],
+    )
+    .unwrap();
+    let tolerance = TolerancePolicy::default();
+    let report = general_report(&snapshot, &[], tolerance);
+    let error =
+        project_general_fabrication(&snapshot, &registry, &[], &report, tolerance).unwrap_err();
+    assert_eq!(
+        error,
+        GeneralFabricationError::ScaledPlacement(ScaledPlacement {
+            occurrence_id: GRAPH_LEFT
+        })
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("scales or shears the part; placements may only move and rotate"),
+        "{error}"
+    );
 }
 #[test]
 fn production_projection_refuses_to_leave_out_hidden_parts() {

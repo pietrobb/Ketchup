@@ -6,8 +6,8 @@ use crate::assembly::{
 };
 use crate::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, DocumentId, DocumentStore,
-    InstancePath, InstancePathStep, OccurrenceId, Proposal, ProposalPrepareError, Snapshot,
-    Transform,
+    InstancePath, InstancePathStep, OccurrenceId, Proposal, ProposalPrepareError, ScaledPlacement,
+    Snapshot, Transform,
 };
 use crate::exact_product::{ExactBRepGraphEdgeEvidence, ExactBodyPackage, ExactResultRegistry};
 use crate::tolerance::{MAX_COORDINATE_MM, ROUNDING};
@@ -2194,6 +2194,7 @@ pub enum DrawingError {
     SourceFailed,
     SourceAmbiguous,
     SourceNotRigid,
+    ScaledPlacement(ScaledPlacement),
     AssemblyNotSolved(Box<AssemblySolveError>),
     InvalidGeometry,
     ResourceLimit,
@@ -2211,6 +2212,9 @@ impl fmt::Display for DrawingError {
             }
             Self::AssemblyNotSolved(error) => {
                 return write!(formatter, "drawing assembly source does not solve: {error}");
+            }
+            Self::ScaledPlacement(error) => {
+                return write!(formatter, "drawing source cannot be projected: {error}");
             }
             Self::InvalidSheet => "drawing sheet identity or source is invalid",
             Self::InvalidPageTemplate => "drawing page template or border is invalid",
@@ -2244,6 +2248,7 @@ impl std::error::Error for DrawingError {
         match self {
             Self::UnresolvedInstance(_, error) => Some(error.as_ref()),
             Self::AssemblyNotSolved(error) => Some(error.as_ref()),
+            Self::ScaledPlacement(error) => Some(error),
             _ => None,
         }
     }
@@ -2447,11 +2452,24 @@ fn source_instances(
     source: &DrawingSource,
 ) -> Result<Vec<DrawingInstance>, DrawingError> {
     match source {
-        DrawingSource::Definition(id) => Ok(vec![DrawingInstance {
-            token: format!("definition-{}", id.0),
-            transform: Transform::identity(),
-            package: unique_current_package(snapshot, results, *id)?,
-        }]),
+        DrawingSource::Definition(id) => {
+            // The sheet draws the definition itself; a placement that scales
+            // it would make every placed copy differ from the drawing.
+            for occurrence in snapshot.occurrences() {
+                if occurrence.definition_id() == *id {
+                    let world = snapshot
+                        .world_transform_for_occurrence(occurrence.id())
+                        .ok_or(DrawingError::SourceLost)?;
+                    ScaledPlacement::check(occurrence.id(), world)
+                        .map_err(DrawingError::ScaledPlacement)?;
+                }
+            }
+            Ok(vec![DrawingInstance {
+                token: format!("definition-{}", id.0),
+                transform: Transform::identity(),
+                package: unique_current_package(snapshot, results, *id)?,
+            }])
+        }
         DrawingSource::RigidAssembly { occurrence_ids } => {
             let instance_paths = occurrence_ids
                 .iter()
@@ -2477,6 +2495,8 @@ fn drawing_instances_for_paths(
             let resolved = snapshot
                 .resolve_instance_path(path)
                 .map_err(|error| unresolved_instance(path, error))?;
+            ScaledPlacement::check(path.root_occurrence(), resolved.world_transform)
+                .map_err(DrawingError::ScaledPlacement)?;
             Ok(DrawingInstance {
                 token: format!("instance-{}", stable_instance_path(path)),
                 transform: resolved.world_transform,

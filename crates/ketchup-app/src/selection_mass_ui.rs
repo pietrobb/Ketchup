@@ -37,7 +37,9 @@ impl KetchupApp {
     /// The mass of the parts `measures` describe; `Pending` while their exact
     /// solids or the program giving their densities are being computed.
     pub(crate) fn selection_mass(&self, measures: &SelectionMeasures) -> SelectionMass {
-        if measures.volume_mm3.is_none() {
+        // A scaled part is never pending: the mass report names why it has
+        // no mass.
+        if measures.volume_mm3.is_none() && measures.scaled_placement.is_none() {
             return SelectionMass::Pending;
         }
         let evaluation = match self.document.current_rule_program() {

@@ -3,8 +3,8 @@
 use crate::assembly::{AxialAttachment, AxialAttachmentKind, PlanarFaceAttachment};
 use crate::document::{
     BodyId, BooleanOperation, DefinitionId, DocumentId, FeatureDependencyGraph, FeatureId,
-    FeatureKind, ImportedExactBodySpec, InstancePath, MeshBodySpec, ProfileSegment, Snapshot,
-    Transform,
+    FeatureKind, ImportedExactBodySpec, InstancePath, MeshBodySpec, ProfileSegment,
+    ScaledPlacement, Snapshot, Transform,
 };
 use crate::exact_brep_graph::{
     ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarLoop,
@@ -3771,6 +3771,7 @@ pub enum ExactProductError {
     UnsupportedBoolean(BooleanOperation),
     UnsupportedShell,
     EmptyModelExport,
+    ScaledPlacement(ScaledPlacement),
     InvalidMeshExport,
     ExportResourceLimit,
     InvalidWorkerEvidence,
@@ -3831,6 +3832,9 @@ impl fmt::Display for ExactProductError {
                 formatter.write_str("exact shell thickness is outside the supported envelope")
             }
             Self::EmptyModelExport => formatter.write_str("the visible exact model is empty"),
+            Self::ScaledPlacement(error) => {
+                write!(formatter, "the exact model cannot be exported: {error}")
+            }
             Self::InvalidMeshExport => {
                 formatter.write_str("the accepted exact tessellation contains an invalid facet")
             }

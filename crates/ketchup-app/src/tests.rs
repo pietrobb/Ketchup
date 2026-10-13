@@ -367,6 +367,7 @@ mod drawing;
 mod exact_modeling;
 mod interchange;
 mod organization;
+mod scaled_placement;
 pub(crate) mod shell;
 mod transform;
 mod viewer_comments;

@@ -125,17 +125,26 @@ fn large_house_moving_a_box_beside_the_house_stays_interactive() {
 
 #[test]
 #[ignore = "large-house: runs in full suite"]
-fn large_house_scaling_a_box_beside_the_house_stays_interactive() {
+fn large_house_refusing_to_scale_a_box_beside_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = house_with_box();
     let corner = Vec3::new(END.x, END.y, TOP);
     click(&mut harness, centre() + Vec3::new(0.0, 0.0, TOP));
     tool(&mut harness, AppCommand::Scale);
-    drag(
-        &mut harness,
-        corner,
-        corner + (corner - centre()) * 0.5,
-        "Scale",
+    let revision = harness.state().document_revision();
+    let (screen, hover) = move_to(&mut harness, corner);
+    let press = button(&mut harness, screen, true);
+    let (last, mut frames) = sweep(&mut harness, corner, corner + (corner - centre()) * 0.5);
+    frames.extend([hover, press]);
+    assert_frames("Scale refusal", &frames);
+    assert_release("Scale refusal", button(&mut harness, last, false));
+    assert_eq!(harness.state().document_revision(), revision);
+    assert_eq!(
+        harness.state().action_digest(),
+        harness
+            .state()
+            .catalog
+            .text("digest-scale-refused-placement")
     );
 }
 

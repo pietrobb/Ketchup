@@ -2,6 +2,7 @@
 //! the user sees how big the picked part is without measuring it.
 
 use super::*;
+use ketchup_model::document::ScaledPlacement;
 
 /// What the dock reports about the selected parts.
 #[derive(Clone, Debug, PartialEq)]
@@ -13,8 +14,12 @@ pub(crate) struct SelectionMeasures {
     /// Lowest corner of the world box around the selection.
     pub world_min_mm: [f64; 3],
     pub world_size_mm: [f64; 3],
-    /// Exact solid volume; `None` while any selected part has none yet.
+    /// Exact solid volume; `None` while any selected part has none yet, or
+    /// when one is placed scaled.
     pub volume_mm3: Option<f64>,
+    /// A selected part whose placement scales it: its exact solid has the
+    /// unscaled volume, so no volume is shown.
+    pub scaled_placement: Option<ScaledPlacement>,
 }
 
 fn turned(transform: Transform) -> bool {
@@ -66,6 +71,7 @@ impl KetchupApp {
         let mut corners = Vec::new();
         let mut own_size = None;
         let mut volume = Some(0.0);
+        let mut scaled_placement = None;
         for occurrence in projection.occurrences().iter().filter(|occurrence| {
             selected.iter().any(|path| {
                 *path == occurrence.instance_path
@@ -93,6 +99,15 @@ impl KetchupApp {
                     ExactBodyPackage::Imported(imported) => imported.volume_mm3,
                 });
             volume = volume.zip(part_volume).map(|(sum, part)| sum + part);
+            if let Err(scaled) = ScaledPlacement::check(
+                occurrence.instance_path.root_occurrence(),
+                occurrence.canonical_world_transform,
+            ) {
+                scaled_placement.get_or_insert(scaled);
+            }
+        }
+        if scaled_placement.is_some() {
+            volume = None;
         }
         let [minimum, maximum] = bounds_of(corners.into_iter())?;
         let size = maximum - minimum;
@@ -102,6 +117,7 @@ impl KetchupApp {
             world_min_mm: [minimum.x, minimum.y, minimum.z],
             world_size_mm: [size.x, size.y, size.z],
             volume_mm3: volume,
+            scaled_placement,
         })
     }
 
@@ -137,15 +153,19 @@ impl KetchupApp {
             "selection-measures-position",
             &[("x", x), ("y", y), ("z", z)],
         ));
-        lines.push(match measures.volume_mm3 {
-            Some(volume) => format(
+        lines.push(match (measures.volume_mm3, measures.scaled_placement) {
+            (_, Some(scaled)) => format(
+                "selection-measures-volume-refused",
+                &[("reason", scaled.to_string())],
+            ),
+            (Some(volume), None) => format(
                 "selection-measures-volume",
                 &[
                     ("litres", format!("{:.3}", volume / 1.0e6)),
                     ("cubic", format!("{:.4}", volume / 1.0e9)),
                 ],
             ),
-            None => self.catalog.text("selection-measures-volume-pending"),
+            (None, None) => self.catalog.text("selection-measures-volume-pending"),
         });
         lines
     }

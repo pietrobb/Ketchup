@@ -2,8 +2,8 @@ use ketchup_geometry::linalg::{cross, dot};
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use ketchup_model::document::{
     CanonicalError, ClassificationError, DefinitionId, DocumentId, FeatureId, FeatureKind,
-    InstancePath, InstancePathStep, OccurrenceId, Snapshot, SpatialPathSegment, Transform,
-    WeldmentJointPolicy, WeldmentJointPrimary,
+    InstancePath, InstancePathStep, OccurrenceId, ScaledPlacement, Snapshot, SpatialPathSegment,
+    Transform, WeldmentJointPolicy, WeldmentJointPrimary,
 };
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepGraphError, ExactBRepLinearInterval,
@@ -236,6 +236,7 @@ pub enum GeneralFabricationError {
     },
     /// A mirrored instance cannot share the machining of its definition.
     MirroredInstance,
+    ScaledPlacement(ScaledPlacement),
     /// The machine file cannot describe this part's stock or machining.
     PartExportBlocked {
         part: String,
@@ -300,6 +301,7 @@ impl fmt::Display for GeneralFabricationError {
                 formatter,
                 "{count} production part(s) are hidden; show every layer and part before a production export so none is left out",
             ),
+            Self::ScaledPlacement(error) => write!(formatter, "a part cannot be fabricated: {error}"),
             Self::MirroredInstance => formatter.write_str(
                 "a mirrored copy cannot reuse the machining of its original; make the mirrored part its own definition",
             ),
@@ -1225,11 +1227,12 @@ impl GeneralFabricationProjection {
                         return Err(GeneralFabricationError::ExportBlocked);
                     }
                     if !is_production_transform(resolved.world_transform) {
-                        return Err(if is_rigid_transform(resolved.world_transform) {
-                            GeneralFabricationError::MirroredInstance
-                        } else {
-                            GeneralFabricationError::ExportBlocked
-                        });
+                        ScaledPlacement::check(
+                            instance_path.root_occurrence(),
+                            resolved.world_transform,
+                        )
+                        .map_err(GeneralFabricationError::ScaledPlacement)?;
+                        return Err(GeneralFabricationError::MirroredInstance);
                     }
                 }
                 let Some((count, single_member_number)) =
@@ -2858,9 +2861,8 @@ pub fn project_general_fabrication(
         if definition.feature_ids().is_empty() {
             continue;
         }
-        if !is_rigid_transform(occurrence.transform) {
-            return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
-        }
+        ScaledPlacement::check(occurrence.occurrence_id, occurrence.transform)
+            .map_err(GeneralFabricationError::ScaledPlacement)?;
         let participant = GeneralBodyParticipant::accept(
             snapshot,
             registry,
@@ -4102,31 +4104,7 @@ fn general_envelope_is_current(
 }
 
 fn is_production_transform(transform: Transform) -> bool {
-    is_rigid_transform(transform) && (transform.affine().determinant() - 1.0).abs() <= ROUNDING
-}
-fn is_rigid_transform(transform: Transform) -> bool {
-    let matrix = transform.matrix();
-    if matrix[12] != 0.0 || matrix[13] != 0.0 || matrix[14] != 0.0 || matrix[15] != 1.0 {
-        return false;
-    }
-    let columns = [
-        [matrix[0], matrix[4], matrix[8]],
-        [matrix[1], matrix[5], matrix[9]],
-        [matrix[2], matrix[6], matrix[10]],
-    ];
-    let dot = |left: [f64; 3], right: [f64; 3]| {
-        left.into_iter()
-            .zip(right)
-            .map(|(left, right)| left * right)
-            .sum::<f64>()
-    };
-    let epsilon = ROUNDING;
-    columns
-        .iter()
-        .all(|column| (dot(*column, *column) - 1.0).abs() <= epsilon)
-        && (dot(columns[0], columns[1])).abs() <= epsilon
-        && (dot(columns[0], columns[2])).abs() <= epsilon
-        && (dot(columns[1], columns[2])).abs() <= epsilon
+    transform.is_rigid() && (transform.affine().determinant() - 1.0).abs() <= ROUNDING
 }
 
 fn local_dimensions(

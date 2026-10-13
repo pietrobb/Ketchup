@@ -2348,6 +2348,9 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let group_id = self.selection.selected_group;
         let occurrence_paths = self.selected_instance_paths();
+        if self.refuse_scaling_placements(&occurrence_paths, group_id) {
+            return false;
+        }
         let applies: Box<dyn Fn(&InstancePath) -> bool> = match group_id {
             Some(group_id) => {
                 let snapshot = snapshot.clone();
@@ -2395,6 +2398,9 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let group_id = self.selection.selected_group;
         let occurrence_paths = self.selected_instance_paths();
+        if self.refuse_scaling_placements(&occurrence_paths, group_id) {
+            return false;
+        }
         let applies: Box<dyn Fn(&InstancePath) -> bool> = match group_id {
             Some(group_id) => {
                 let snapshot = snapshot.clone();
@@ -2429,6 +2435,22 @@ impl KetchupApp {
             axis: self.gesture.transform.scale_axis_lock,
             factor: 1.0,
         });
+        true
+    }
+
+    /// Scale would write its factor into the placement of every selected
+    /// part or group, and drawings, exchange files and volumes read a
+    /// placement as moving and turning only; so Scale refuses, naming why,
+    /// and changes nothing.
+    fn refuse_scaling_placements(
+        &mut self,
+        occurrence_paths: &BTreeSet<InstancePath>,
+        group_id: Option<GroupId>,
+    ) -> bool {
+        if occurrence_paths.is_empty() && group_id.is_none() {
+            return false;
+        }
+        self.digest = self.catalog.text("digest-scale-refused-placement");
         true
     }
 

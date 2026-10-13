@@ -13492,56 +13492,52 @@ fn rounded_extents(size: Vec3) -> (f64, f64, f64) {
     (round(size.x), round(size.y), round(size.z))
 }
 
-#[test]
-fn uniform_scale_previews_cancels_and_commits_in_one_undo_step() {
-    let mut shell = Shell::new();
-    let rect = shell.viewport_rect();
-    shell.click_at(shell.top_face_centre(1));
-    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
-    let centre = origin + size * 0.5;
-    let centre_screen = shell.app().project_to_screen(centre, rect);
-    let from = shell.top_face_centre(1);
-    let to = centre_screen + (from - centre_screen) * 1.5;
-    let before_revision = shell.app().document_revision();
-    let before_digest = shell.app().canonical_digest();
-    let before_steps = shell.app().undo_step_count();
+/// Revision, digest and both Undo stacks: what a refused Scale leaves alone.
+fn scale_untouched_state(shell: &Shell) -> (u64, String, usize, usize) {
+    (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+        shell.app().redo_step_count(),
+    )
+}
 
-    shell.click_menu_command("menu-tools", AppCommand::Scale);
-    shell.set_primary_button(from, Modifiers::NONE, true);
-    shell.move_pointer(to);
-    assert!(shell.app().scale_preview_factor().unwrap() > 1.1);
-    assert_eq!(shell.app().document_revision(), before_revision);
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    shell.press_key(Key::Escape);
-    shell.set_primary_button(to, Modifiers::NONE, false);
-    shell.settle();
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    assert_eq!(shell.app().undo_step_count(), before_steps);
-
-    shell.click_menu_command("menu-tools", AppCommand::Scale);
-    shell.set_primary_button(from, Modifiers::NONE, true);
-    shell.move_pointer(to);
-    let factor = shell.app().scale_preview_factor().unwrap();
-    shell.set_primary_button(to, Modifiers::NONE, false);
-    shell.settle();
-
-    let (scaled_origin, scaled_size) = shell.app().occurrence_box_geometry(1).unwrap();
-    assert_eq!(shell.app().document_revision(), before_revision + 1);
-    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
-    assert!((scaled_size.x - size.x * factor).abs() < 1.0e-6);
-    assert!((scaled_size.y - size.y * factor).abs() < 1.0e-6);
-    assert!((scaled_size.z - size.z * factor).abs() < 1.0e-6);
-    assert!(((scaled_origin + scaled_size * 0.5) - centre).length() < 1.0e-6);
-
-    let scaled_digest = shell.app().canonical_digest();
-    shell.key(Key::Z, ctrl());
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    shell.key(Key::Y, ctrl());
-    assert_eq!(shell.app().canonical_digest(), scaled_digest);
+/// Scale refused the placed part, said why, showed no preview and changed
+/// neither the document nor its Undo history.
+fn assert_scale_refused(shell: &Shell, before: &(u64, String, usize, usize)) {
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("digest-scale-refused-placement")
+    );
+    assert_eq!(shell.app().scale_preview_factor(), None);
+    assert_eq!(&scale_untouched_state(shell), before);
 }
 
 #[test]
-fn switching_tools_cancels_an_uncommitted_scale_preview() {
+fn uniform_scale_drag_of_a_placed_part_is_refused_without_preview_or_undo_step() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    shell.click_at(shell.top_face_centre(1));
+    let geometry = shell.app().occurrence_box_geometry(1).unwrap();
+    let (origin, size) = geometry;
+    let centre_screen = shell.app().project_to_screen(origin + size * 0.5, rect);
+    let from = shell.top_face_centre(1);
+    let to = centre_screen + (from - centre_screen) * 1.5;
+    let before = scale_untouched_state(&shell);
+
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    shell.set_primary_button(from, Modifiers::NONE, true);
+    shell.move_pointer(to);
+    assert_scale_refused(&shell, &before);
+    shell.set_primary_button(to, Modifiers::NONE, false);
+    shell.settle();
+
+    assert_scale_refused(&shell, &before);
+    assert_eq!(shell.app().occurrence_box_geometry(1).unwrap(), geometry);
+}
+
+#[test]
+fn switching_tools_after_a_refused_scale_leaves_the_document_unchanged() {
     let mut shell = Shell::new();
     let rect = shell.viewport_rect();
     shell.click_at(shell.top_face_centre(1));
@@ -13549,14 +13545,12 @@ fn switching_tools_cancels_an_uncommitted_scale_preview() {
     let centre_screen = shell.app().project_to_screen(origin + size * 0.5, rect);
     let from = shell.top_face_centre(1);
     let to = centre_screen + (from - centre_screen) * 1.5;
-    let before_digest = shell.app().canonical_digest();
-    let before_revision = shell.app().document_revision();
-    let before_steps = shell.app().undo_step_count();
+    let before = scale_untouched_state(&shell);
 
     shell.click_menu_command("menu-tools", AppCommand::Scale);
     shell.set_primary_button(from, Modifiers::NONE, true);
     shell.move_pointer(to);
-    assert!(shell.app().scale_preview_factor().unwrap() > 1.1);
+    assert_scale_refused(&shell, &before);
 
     shell.click_command(AppCommand::Move);
     shell.set_primary_button(to, Modifiers::NONE, false);
@@ -13564,21 +13558,20 @@ fn switching_tools_cancels_an_uncommitted_scale_preview() {
 
     assert_eq!(shell.app().scale_preview_factor(), None);
     assert!(!shell.app().transform_gesture_active());
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    assert_eq!(shell.app().document_revision(), before_revision);
-    assert_eq!(shell.app().undo_step_count(), before_steps);
+    assert_eq!(scale_untouched_state(&shell), before);
 }
 
 #[test]
-fn scale_arrow_locks_change_only_the_requested_world_axis() {
+fn scale_arrow_locks_are_refused_on_every_axis_without_changing_the_part() {
     let mut shell = Shell::new();
     let rect = shell.viewport_rect();
     shell.click_at(shell.top_face_centre(1));
-    let baseline_digest = shell.app().canonical_digest();
-    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let geometry = shell.app().occurrence_box_geometry(1).unwrap();
+    let (origin, size) = geometry;
     let centre = origin + size * 0.5;
+    let before = scale_untouched_state(&shell);
 
-    for (key, changed_axis) in [(Key::ArrowRight, 0), (Key::ArrowLeft, 1), (Key::ArrowUp, 2)] {
+    for key in [Key::ArrowRight, Key::ArrowLeft, Key::ArrowUp] {
         shell.click_menu_command("menu-tools", AppCommand::Scale);
         shell.press_key(key);
         let from = shell.top_face_centre(1);
@@ -13586,58 +13579,35 @@ fn scale_arrow_locks_change_only_the_requested_world_axis() {
         let to = centre_screen + (from - centre_screen) * 1.5;
         shell.set_primary_button(from, Modifiers::NONE, true);
         shell.move_pointer(to);
-        let factor = shell.app().scale_preview_factor().unwrap();
         shell.set_primary_button(to, Modifiers::NONE, false);
         shell.settle();
 
-        let (scaled_origin, scaled_size) = shell.app().occurrence_box_geometry(1).unwrap();
-        let actual = [scaled_size.x, scaled_size.y, scaled_size.z];
-        let expected = [size.x, size.y, size.z];
-        for axis in 0..3 {
-            let target = if axis == changed_axis {
-                expected[axis] * factor
-            } else {
-                expected[axis]
-            };
-            assert!(
-                (actual[axis] - target).abs() < 1.0e-6,
-                "axis {changed_axis} Scale changed extent {axis} from {} to {} at factor {factor}",
-                expected[axis],
-                actual[axis]
-            );
-        }
-        assert!(((scaled_origin + scaled_size * 0.5) - centre).length() < 1.0e-6);
-
-        shell.key(Key::Z, ctrl());
-        assert_eq!(shell.app().canonical_digest(), baseline_digest);
+        assert_scale_refused(&shell, &before);
+        assert_eq!(
+            shell.app().occurrence_box_geometry(1).unwrap(),
+            geometry,
+            "{key:?}"
+        );
     }
 }
 
 #[test]
-fn typed_scale_factor_commits_exactly_in_one_undo_step() {
+fn typed_scale_factor_of_a_placed_part_is_refused_without_undo_step() {
     let mut shell = Shell::new();
     shell.click_at(shell.top_face_centre(1));
-    let before_digest = shell.app().canonical_digest();
-    let before_steps = shell.app().undo_step_count();
-    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
-    let centre = origin + size * 0.5;
+    let geometry = shell.app().occurrence_box_geometry(1).unwrap();
+    let before = scale_untouched_state(&shell);
 
     shell.click_menu_command("menu-tools", AppCommand::Scale);
     shell.type_text("1.5");
     shell.press_key(Key::Enter);
 
-    let (scaled_origin, scaled_size) = shell.app().occurrence_box_geometry(1).unwrap();
-    assert!((scaled_size.x - size.x * 1.5).abs() < 1.0e-6);
-    assert!((scaled_size.y - size.y * 1.5).abs() < 1.0e-6);
-    assert!((scaled_size.z - size.z * 1.5).abs() < 1.0e-6);
-    assert!(((scaled_origin + scaled_size * 0.5) - centre).length() < 1.0e-6);
-    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
-    shell.key(Key::Z, ctrl());
-    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_scale_refused(&shell, &before);
+    assert_eq!(shell.app().occurrence_box_geometry(1).unwrap(), geometry);
 }
 
 #[test]
-fn multi_selected_occurrences_scale_about_one_shared_pivot_in_one_undo_step() {
+fn multi_selected_occurrences_refuse_scale_and_keep_both_parts() {
     let mut shell = Shell::new();
     shell.click_at(shell.top_face_centre(1));
     assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 25.0, 0.0)));
@@ -13645,43 +13615,18 @@ fn multi_selected_occurrences_scale_about_one_shared_pivot_in_one_undo_step() {
     shell.click_menu_command("menu-view", AppCommand::ZoomFit);
     shell.click_at_with(shell.top_face_centre(1), shift());
     assert_eq!(shell.app().selected_occurrence_count(), 2);
-
     let first = shell.app().occurrence_box_geometry(1).unwrap();
     let second = shell.app().occurrence_box_geometry(2).unwrap();
-    let minimum = Vec3::new(
-        first.0.x.min(second.0.x),
-        first.0.y.min(second.0.y),
-        first.0.z.min(second.0.z),
-    );
-    let maximum = Vec3::new(
-        (first.0.x + first.1.x).max(second.0.x + second.1.x),
-        (first.0.y + first.1.y).max(second.0.y + second.1.y),
-        (first.0.z + first.1.z).max(second.0.z + second.1.z),
-    );
-    let shared_pivot = (minimum + maximum) * 0.5;
-    let before_digest = shell.app().canonical_digest();
-    let before_revision = shell.app().document_revision();
-    let before_steps = shell.app().undo_step_count();
+    let before = scale_untouched_state(&shell);
 
     shell.click_menu_command("menu-tools", AppCommand::Scale);
     shell.type_text("1.5");
     shell.press_key(Key::Enter);
 
-    for (id, (origin, size)) in [(1, first), (2, second)] {
-        let (scaled_origin, scaled_size) = shell.app().occurrence_box_geometry(id).unwrap();
-        let expected_origin = shared_pivot + (origin - shared_pivot) * 1.5;
-        assert!((scaled_origin - expected_origin).length() < 1.0e-6);
-        assert!((scaled_size - size * 1.5).length() < 1.0e-6);
-    }
+    assert_scale_refused(&shell, &before);
+    assert_eq!(shell.app().occurrence_box_geometry(1).unwrap(), first);
+    assert_eq!(shell.app().occurrence_box_geometry(2).unwrap(), second);
     assert_eq!(shell.app().selected_occurrence_count(), 2);
-    assert_eq!(shell.app().document_revision(), before_revision + 1);
-    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
-
-    let scaled_digest = shell.app().canonical_digest();
-    shell.key(Key::Z, ctrl());
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    shell.key(Key::Y, ctrl());
-    assert_eq!(shell.app().canonical_digest(), scaled_digest);
 }
 
 #[test]

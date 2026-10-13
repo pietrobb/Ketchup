@@ -11,7 +11,7 @@
 use crate::validation_rules::{ValidationRules, occurrence_materials};
 use ketchup_geometry::linalg::Affine3;
 use ketchup_geometry::mass::Mass;
-use ketchup_model::document::{InstancePath, Snapshot};
+use ketchup_model::document::{InstancePath, ScaledPlacement, Snapshot};
 use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use ketchup_model::tolerance::ROUNDING;
 use ketchup_program::ProgramModel;
@@ -164,7 +164,11 @@ pub fn mass_report(
             Ok((kg_m3, sources)) => json!({"kg_m3": kg_m3, "sources": sources}),
             Err((_, sources)) => json!({"sources": sources}),
         };
-        let result = solid.and_then(|(volume_mm3, unit)| {
+        // The solid's volume is of the unplaced definition; a scaling
+        // placement would make it wrong, so no volume is reported then.
+        let placed = ScaledPlacement::check(occurrence.occurrence_id, occurrence.transform)
+            .map_err(|error| ("not_verified", error.to_string()));
+        let result = placed.and(solid).and_then(|(volume_mm3, unit)| {
             row["volume_mm3"] = json!(volume_mm3);
             let (kg_m3, _) = density
                 .as_ref()
