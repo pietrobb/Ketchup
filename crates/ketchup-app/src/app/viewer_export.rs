@@ -330,7 +330,7 @@ mod tests {
     }
 
     fn source() -> RuleProgramSource {
-        RuleProgramSource {
+        RuleProgramSource { variants: Default::default(),
             file_name: "viewer.star".into(),
             source: "a=box(\"a\", (20,30,40), material=\"HPL\", attributes={\"texture_axis\":\"x\",\"note\":\"inert attribute\"})\ng=group(\"inner\",[a])\nc=component(\"assembly\",[g])\ninstance(\"second\",c,at=(10000,0,0))".into(),
             overrides: BTreeMap::new(),

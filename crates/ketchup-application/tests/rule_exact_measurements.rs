@@ -10,6 +10,7 @@ fn checked(source: String) -> (ketchup_program::Report, serde_json::Value) {
     let applied = session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "clearance.star".into(),
                 source,
                 overrides: Default::default(),

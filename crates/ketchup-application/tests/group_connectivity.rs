@@ -18,6 +18,7 @@ fn session(source: &str) -> DocumentSession {
     session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "connectivity.star".into(),
                 source: source.into(),
                 overrides: Default::default(),

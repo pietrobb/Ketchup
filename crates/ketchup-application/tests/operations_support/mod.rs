@@ -31,6 +31,7 @@ pub fn session(program: &str) -> Result<DocumentSession, String> {
     session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "operations.star".to_owned(),
                 source: program.to_owned(),
                 overrides: BTreeMap::new(),

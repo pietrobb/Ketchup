@@ -7,6 +7,7 @@ fn app() -> KetchupApp {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "groups.star".into(),
             source: SOURCE.into(),
             overrides: BTreeMap::new(),
@@ -107,6 +108,7 @@ fn grounding_a_local_group_preserves_headless_selection_and_sibling_geometry() {
     let mut app = app();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "groups.star".into(),
             source: SOURCE.replace("group(\"inner\",[a])", "group(\"inner\",[a],grounded=True)"),
             overrides: BTreeMap::new(),
@@ -143,6 +145,7 @@ fn posed_component_still_selects_its_member_in_headless_outliner() {
     );
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "groups.star".into(),
             source,
             overrides: BTreeMap::new(),
@@ -193,6 +196,7 @@ fn internal_shared_motion_keeps_local_group_selection_and_world_placement() {
     );
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "groups.star".into(),
             source,
             overrides: BTreeMap::new(),
@@ -254,6 +258,7 @@ fn continued_shared_member_is_named_and_selected_in_the_outliner() {
     );
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "groups.star".into(),
             source,
             overrides: BTreeMap::new(),
@@ -291,6 +296,7 @@ fn nested_component_context_selects_only_leaves_of_the_chosen_inner_copy() {
     let source = "a=box(\"a\",(20,30,40))\nc=component(\"child\",[group(\"inside\",[a])])\ni=instance(\"inner\",c,at=(200,0,0))\np=component(\"parent\",[group(\"pair\",[c,i])])\ninstance(\"outer\",p,at=(800,500,0),x=(0,1,0))\n";
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "nested.star".into(),
             source: source.into(),
             overrides: BTreeMap::new(),

@@ -22,6 +22,7 @@ fn program_session() -> DocumentSession {
     session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "frame.star".into(),
                 source: SOURCE.into(),
                 overrides: Default::default(),

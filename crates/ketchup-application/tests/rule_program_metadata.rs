@@ -12,6 +12,7 @@ fn apply(session: &mut DocumentSession, source: &str) {
     session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "metadata.star".into(),
                 source: source.into(),
                 overrides: BTreeMap::new(),
@@ -321,6 +322,7 @@ fn conflicting_or_nonfinite_program_inputs_leave_the_previous_model_unchanged() 
             session
                 .apply_rule_program(
                     RuleProgramSource {
+                        variants: Default::default(),
                         file_name: "invalid.star".into(),
                         source: invalid,
                         overrides: BTreeMap::new(),
@@ -375,6 +377,7 @@ fn removing_a_program_input_cannot_break_an_existing_graph_dependency() {
     let before = session.snapshot();
     let result = session.apply_rule_program(
         RuleProgramSource {
+            variants: Default::default(),
             file_name: "metadata.star".into(),
             source: "box('part',(10,10,10))".into(),
             overrides: BTreeMap::new(),

@@ -284,12 +284,7 @@ impl DocumentStore {
     }
 
     fn validate_rule_program_source(source: &RuleProgramSource) -> Result<(), RuleProgramError> {
-        if source.source.is_empty() {
-            return Err(RuleProgramError::EmptySource);
-        }
-        if !source.overrides.values().all(|value| value.is_finite()) {
-            return Err(RuleProgramError::NonFiniteOverride);
-        }
+        source.validate()?;
         let bytes = serde_json::to_vec(source)
             .expect("strings and finite numbers always encode")
             .len();

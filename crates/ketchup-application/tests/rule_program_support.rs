@@ -27,6 +27,7 @@ fn floor_is_persistent_after_detachment_and_removal_resets_to_default() {
     use ketchup_model::document::{CanonicalCommand, CommandBatch};
     let _turn = crate::integration_support::file_turn();
     let mut source = RuleProgramSource {
+        variants: Default::default(),
         file_name: "floor.star".into(),
         source:
             "floor(-35)\nbox('base',(20,20,10),at=(0,0,-35))\nbox('air',(10,10,10),at=(50,0,0))"
@@ -73,7 +74,7 @@ fn floor_is_persistent_after_detachment_and_removal_resets_to_default() {
 fn nested_grounding_changes_support_without_geometry_and_survives_reopen() {
     use ketchup_application::rule_program_part_name;
     let _turn = crate::integration_support::file_turn();
-    let mut source = RuleProgramSource {
+    let mut source = RuleProgramSource { variants: Default::default(),
         file_name: "ground.star".into(),
         source: "floor(0)\nlocked=param('locked',1)\na=box('anchor',(20,20,10),at=(0,0,100),grounded=locked>0)\nb=box('touching',(20,20,10),at=(0,0,110))\nc=box('air',(5,5,5),at=(100,0,100))\ng=group('g',[a,b,c])\nk=component('k',[g])\ni=instance('inner',k,at=(200,0,0))\no=component('outer',[k,i])\ninstance('copy',o,at=(0,300,0))".into(),
         overrides: BTreeMap::new(),
@@ -141,7 +142,7 @@ fn nested_grounding_changes_support_without_geometry_and_survives_reopen() {
 fn group_anchors_survive_detachment_and_deleted_leaves_leave_no_stale_anchor() {
     use ketchup_model::document::{CanonicalCommand, CommandBatch, InstancePath, OccurrenceId};
     let _turn = crate::integration_support::file_turn();
-    let mut source = RuleProgramSource {
+    let mut source = RuleProgramSource { variants: Default::default(),
         file_name:"ground.star".into(), overrides:BTreeMap::new(),
         source:"floor(0)\na=box('a',(10,10,10),at=(0,0,100))\nb=box('b',(10,10,10),at=(100,0,100))\ngroup('g',[a,b],grounded=True)".into(),
     };
@@ -227,7 +228,7 @@ fn invalid_floor_commands_leave_the_document_unchanged() {
 #[test]
 fn floor_override_changes_support_not_geometry_and_survives_undo_and_reopen() {
     let _turn = crate::integration_support::file_turn();
-    let mut program = RuleProgramSource {
+    let mut program = RuleProgramSource { variants: Default::default(),
         file_name: "support.star".into(),
         source: "floor(param('floor-z',100))\nbox('base',(20,20,10),at=(0,0,100))\nbox('top',(20,20,10),at=(0,0,110))\nbox('detached',(5,5,5),at=(100,0,130))".into(),
         overrides: BTreeMap::new(),

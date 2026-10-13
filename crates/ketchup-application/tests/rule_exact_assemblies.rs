@@ -17,6 +17,7 @@ fn checked(source: String, cancelled: bool) -> (Report, serde_json::Value) {
     let applied = session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "exact-assemblies.star".into(),
                 source,
                 overrides: Default::default(),
@@ -131,6 +132,7 @@ fn disconnected_shared_groups_use_native_solids_and_cancellation_stays_unverifie
 fn shared_boolean_rebuild_tracks_member_and_tool_placement_in_every_instance() {
     let _turn = crate::integration_support::file_turn();
     let source = |offset: f64, cut: f64| RuleProgramSource {
+        variants: Default::default(),
         file_name: "shared-boolean.star".into(),
         source: format!(
             "p=box(\"p\",(100,60,40),at=({offset},0,0))\nt=box(\"tool\",(20,60,10),at=({},0,30),tool=True)\nsubtract(p,t)\na=box(\"left\",(1,1,1),at=({},5,35))\nb=box(\"middle\",(1,1,1),at=({},5,35))\nc=component(\"assembly\",[p,a,b])\ninstance(\"copy\",c,at=(400,500,0),x=(0,1,0))\n",

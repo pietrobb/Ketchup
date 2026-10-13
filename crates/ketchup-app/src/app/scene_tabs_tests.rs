@@ -147,6 +147,7 @@ fn undoing_a_scene_switch_leaves_no_tab_active() {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "house.star".into(),
             source: "box(\"krokva\", (60, 200, 4000), tags = [\"strecha\"])\n".into(),
             overrides: BTreeMap::new(),

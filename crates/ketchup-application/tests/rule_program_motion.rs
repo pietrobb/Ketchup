@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 fn source(target: &str, position: f64) -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "motion.star".into(),
         source: format!(
             r#"
@@ -47,6 +48,7 @@ fn internal_shared_group_part_and_nested_instance_poses_keep_geometry_and_identi
     let _turn = crate::integration_support::file_turn();
     for target in ["g", "b"] {
         let mut program = RuleProgramSource {
+            variants: Default::default(),
             file_name: "internal.star".into(),
             source: INTERNAL.replace("joint(a,g,", &format!("joint(a,{target},")),
             overrides: BTreeMap::new(),
@@ -173,6 +175,7 @@ fn invalid_shared_motion_or_driver_cycle_leaves_document_and_source_untouched() 
     let _turn = crate::integration_support::file_turn();
     let mut session = DocumentSession::new(SessionSettings::default());
     let original = RuleProgramSource {
+        variants: Default::default(),
         file_name: "safe.star".into(),
         source: INTERNAL.into(),
         overrides: BTreeMap::new(),
@@ -200,6 +203,7 @@ fn invalid_shared_motion_or_driver_cycle_leaves_document_and_source_untouched() 
 fn nested_internal_motion_rotates_real_drilled_void_in_each_shared_copy() {
     let _turn = crate::integration_support::file_turn();
     let program = RuleProgramSource {
+        variants: Default::default(),
         file_name: "internal-exact.star".into(),
         source: format!(
             "{INTERNAL}\nbox('void-one',(1,1,1),at=(59.5,-10.5,46))\nbox('material-one',(1,1,1),at=(53.5,-10.5,46))\nbox('void-two',(1,1,1),at=(-60.5,309.5,16))\nbox('material-two',(1,1,1),at=(-54.5,309.5,16))"
@@ -232,7 +236,7 @@ fn nested_internal_motion_rotates_real_drilled_void_in_each_shared_copy() {
 fn ordinary_nested_group_and_root_part_use_absolute_poses() {
     let _turn = crate::integration_support::file_turn();
     let mut session = DocumentSession::new(SessionSettings::default());
-    let mut program = RuleProgramSource { file_name: "groups.star".into(), source: "p=param('p',10)\na=box('a',(5,5,5))\nb=box('b',(5,5,5),at=(20,0,0))\ng=group('g',[b])\nf=box('f',(5,5,5),at=(100,0,0))\nouter=group('outer',[a,g])\njoint(a,g,kind='motion',motion=slide((1,0,0),0,100),position=p)\njoint(f,outer,kind='motion',motion=rotate_motion((0,0,1),0,90),position=90)\nr=box('root',(5,5,5),at=(200,0,0))\njoint(f,r,kind='motion',motion=slide((0,0,1),0,100),position=p)".into(), overrides: BTreeMap::new() };
+    let mut program = RuleProgramSource { variants: Default::default(), file_name: "groups.star".into(), source: "p=param('p',10)\na=box('a',(5,5,5))\nb=box('b',(5,5,5),at=(20,0,0))\ng=group('g',[b])\nf=box('f',(5,5,5),at=(100,0,0))\nouter=group('outer',[a,g])\njoint(a,g,kind='motion',motion=slide((1,0,0),0,100),position=p)\njoint(f,outer,kind='motion',motion=rotate_motion((0,0,1),0,90),position=90)\nr=box('root',(5,5,5),at=(200,0,0))\njoint(f,r,kind='motion',motion=slide((0,0,1),0,100),position=p)".into(), overrides: BTreeMap::new() };
     for position in [10., 30., 0.] {
         program.overrides.insert("p".into(), position);
         let applied = session.apply_rule_program(program.clone(), false).unwrap();
@@ -361,7 +365,7 @@ fn whole_nested_group_pose_preserves_definitions_paths_and_reference_edits() {
 #[test]
 fn rotating_shared_assembly_moves_real_drilled_void_and_not_its_copy() {
     let _turn = crate::integration_support::file_turn();
-    let mut program = RuleProgramSource {
+    let mut program = RuleProgramSource { variants: Default::default(),
         file_name: "rotation.star".into(),
         source: "angle=param(\"angle\",0)\na=box(\"anchor\",(5,5,5))\nb=box(\"drilled\",(20,20,20),at=(100,20,30))\nhole(b,\"z+\",at=(10,10),diameter=4,depth=8)\nc=component(\"moving\",[b])\ninstance(\"copy\",c,at=(400,0,0))\nbox(\"void-probe\",(1,1,1),at=(89.5,29.5,46))\nbox(\"material-probe\",(1,1,1),at=(83.5,29.5,46))\njoint(a,c,kind=\"motion\",motion=rotate_motion((0,0,1),0,90,pivot=(100,20,0)),position=angle)".into(),
         overrides: BTreeMap::new(),

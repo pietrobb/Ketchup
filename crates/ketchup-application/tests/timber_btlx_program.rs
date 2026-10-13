@@ -13,6 +13,7 @@ fn apply(source: &str) -> Snapshot {
     session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "member.star".into(),
                 source: source.into(),
                 overrides: Default::default(),

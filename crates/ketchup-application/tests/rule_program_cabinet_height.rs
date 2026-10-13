@@ -24,6 +24,7 @@ group("base",[bottom,front,rear,brace])
     let mut session = DocumentSession::default();
     for angle in [0.0, 31.0] {
         let source = RuleProgramSource {
+            variants: Default::default(),
             file_name: "plinth-brace.star".into(),
             source: text.into(),
             overrides: BTreeMap::from([("angle".into(), angle)]),
@@ -107,6 +108,7 @@ fn equal_width_modules_keep_the_lower_right_650_mm_height_after_motion_and_reope
     let _turn = crate::integration_support::file_turn();
     let mut session = DocumentSession::new(SessionSettings::default());
     let mut source = RuleProgramSource {
+        variants: Default::default(),
         file_name: "cabinet-height.star".into(),
         source: r#"
 t=18

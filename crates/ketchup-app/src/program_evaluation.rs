@@ -235,6 +235,7 @@ mod tests {
 
     fn program(text: &str) -> RuleProgramSource {
         RuleProgramSource {
+            variants: Default::default(),
             file_name: "model.star".into(),
             source: text.into(),
             overrides: Default::default(),
@@ -260,6 +261,7 @@ mod tests {
     #[test]
     fn asking_for_a_house_being_evaluated_does_not_wait_for_it() {
         let house = RuleProgramSource {
+            variants: Default::default(),
             file_name: "tiny-house.star".into(),
             source: include_str!("../../../examples/programs/tiny-house.star").into(),
             overrides: Default::default(),

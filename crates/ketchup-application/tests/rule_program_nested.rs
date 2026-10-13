@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn program() -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "nested.star".into(),
         source: r#"
 a=box("a",(10,20,30),at=(1,2,3))

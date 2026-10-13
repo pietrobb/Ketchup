@@ -26,6 +26,7 @@ fn apply(session: &mut DocumentSession, red: f64) {
     session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "colors.star".into(),
                 source: SOURCE.into(),
                 overrides: BTreeMap::from([("red".into(), red)]),
@@ -91,7 +92,7 @@ fn initially_colored_shared_parts_keep_colors_when_rebuilt_or_new_members_are_ad
     let mut session = DocumentSession::default();
     let original = "a=box('a',(20,20,20),color=(40,128,220))\nc=component('c',[a])\ninstance('copy',c,at=(100,0,0))";
     for source in [original.to_owned(), original.replace("(20,20,20)", "(30,20,20)"), "a=box('a',(30,20,20),color=(90,128,220))\nfillet(a,edges=[['x+','y+']],radius=2)\nb=box('b',(10,10,10),at=(0,40,0),color=(200,90,50))\nc=component('c',[a,b])\ninstance('copy',c,at=(100,0,0))".into()] {
-        session.apply_rule_program(RuleProgramSource { file_name: "colors.star".into(), source, overrides: BTreeMap::new() }, false).unwrap();
+        session.apply_rule_program(RuleProgramSource { variants: Default::default(), file_name: "colors.star".into(), source, overrides: BTreeMap::new() }, false).unwrap();
         let current = colors(&session.snapshot());
         let red = if current.len()==4 { 90 } else { 40 };
         assert_eq!(current["a"], Some([red,128,220]));

@@ -26,6 +26,7 @@ fn pair(
     let applied = session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "motion.star".into(),
                 source: source.into(),
                 overrides: BTreeMap::new(),
@@ -122,7 +123,7 @@ fn unsupported_envelope_stays_incomplete_despite_clear_native_samples() {
 fn a_driven_parent_never_silently_uses_the_untransformed_child_axis() {
     let _turn = crate::integration_support::file_turn();
     let mut session = DocumentSession::new(SessionSettings::default());
-    let applied = session.apply_rule_program(RuleProgramSource {
+    let applied = session.apply_rule_program(RuleProgramSource { variants: Default::default(),
         file_name: "parent-motion.star".into(), overrides: BTreeMap::new(),
         source: "a=box('a',(2,2,2),at=(-100,0,0))\nb=box('b',(2,2,2))\njoint(a,b,kind='motion',name='inner',motion=slide((1,0,0),0,20))\nc=component('base',[a,b])\ni=instance('copy',c,at=(100,0,0))\nr=box('root',(2,2,2),at=(-200,0,0))\njoint(r,i,kind='motion',name='outer',motion=slide((0,1,0),0,20),position=5)".into(),
     }, false).unwrap();
@@ -318,7 +319,7 @@ fn cancellation_deadline_invalid_input_and_missing_worker_never_pass() {
 fn declared_motion_reports_transformed_nested_obstacle_and_removes_current_pose() {
     let _turn = crate::integration_support::file_turn();
     let mut session = DocumentSession::new(SessionSettings::default());
-    let applied = session.apply_rule_program(RuleProgramSource {
+    let applied = session.apply_rule_program(RuleProgramSource { variants: Default::default(),
         file_name: "nested-motion.star".into(), overrides: BTreeMap::new(),
         source: "a=box('a',(2,2,2),at=(-100,0,0))\nb=box('b',(2,2,2))\nc=component('base',[a,b])\ni=instance('copy',c,at=(100,0,0),x=(0,1,0))\njoint(a,i,kind='motion',motion=slide((1,0,0),0,20),position=3)\nbox('obstacle',(2,2,2),at=(108,0,0))".into(),
     }, false).unwrap();

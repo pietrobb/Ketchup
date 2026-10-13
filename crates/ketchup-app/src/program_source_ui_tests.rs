@@ -12,6 +12,7 @@ fn open_table(directory: &std::path::Path) -> KetchupApp {
     session
         .apply_rule_program(
             ketchup_model::document::RuleProgramSource {
+                variants: Default::default(),
                 file_name: "table.star".to_owned(),
                 source: TABLE.to_owned(),
                 overrides: BTreeMap::new(),
@@ -133,6 +134,7 @@ fn nested_component_selection_highlights_shared_and_instance_lines() {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "components.star".into(),
             source: source.into(),
             overrides: BTreeMap::new(),

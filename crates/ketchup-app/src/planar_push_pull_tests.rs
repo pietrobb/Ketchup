@@ -132,7 +132,7 @@ fn select(app: &mut KetchupApp, ordinal: u32) {
 fn program_push_pull_updates_source_and_survives_save_open_with_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("program-push-pull.ketchup");
-    let source = ketchup_model::document::RuleProgramSource {
+    let source = ketchup_model::document::RuleProgramSource { variants: Default::default(),
         file_name: "program-push-pull.star".to_owned(),
         source: "H = param(\"height\", 18)\npart = extrude(\"board\", profile=[[\"front\", [0, 0], [100, 0]], [\"right\", [100, 0], [100, 50]], [\"back\", [100, 50], [0, 50]], [\"left\", [0, 50], [0, 0]]], distance=H)".to_owned(),
         overrides: BTreeMap::new(),

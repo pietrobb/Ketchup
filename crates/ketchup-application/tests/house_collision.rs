@@ -16,6 +16,7 @@ fn the_whole_house_is_checked_for_collisions_exactly_and_in_time() {
     let applied = session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "tiny-house.star".to_owned(),
                 source: HOUSE.to_owned(),
                 overrides: Default::default(),

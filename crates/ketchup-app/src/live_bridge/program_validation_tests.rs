@@ -50,6 +50,7 @@ fn validator_catalog_uses_existing_document_checks_without_running_or_editing() 
 
 fn source(drilled: bool) -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "validation.star".into(),
         source: format!(
             "p=box('bottom',(100,100,18))\n{}\nq=box('shelf',(100,100,18),at=(0,0,668))\nexpect_gap(p,q,650)\n",
@@ -108,7 +109,7 @@ fn requested_motion_finds_hidden_path_collision_without_editing() {
     let _turn = integration_support::file_turn();
     let (mut app, mut bridge) = setup();
     app.new_document();
-    let source = RuleProgramSource { file_name: "motion.star".into(), source: "a=box('a',(2,2,2),at=(-100,0,0))\nb=box('b',(2,2,2))\nbox('obstacle',(2,2,2),at=(10,0,0))\njoint(a,b,kind='motion',name='travel',motion=slide((1,0,0),0,20))".into(), overrides: BTreeMap::new() };
+    let source = RuleProgramSource { variants: Default::default(), file_name: "motion.star".into(), source: "a=box('a',(2,2,2),at=(-100,0,0))\nb=box('b',(2,2,2))\nbox('obstacle',(2,2,2),at=(10,0,0))\njoint(a,b,kind='motion',name='travel',motion=slide((1,0,0),0,20))".into(), overrides: BTreeMap::new() };
     app.apply_program_source(source.clone(), false).unwrap();
     let before = app.document.current().scene_query();
     let history = (app.undo_step_count(), app.redo_step_count());
@@ -173,6 +174,7 @@ fn requested_document_checks_use_program_metadata_and_never_mutate_or_detach() {
         ("unknown", "incomplete"),
     ] {
         let source = RuleProgramSource {
+            variants: Default::default(),
             file_name: "structural.star".into(),
             source: format!(
                 "box('shelf',(1000,300,20),material='{material}',attributes={{'classification:ketchup.validator-role.v1':'physics.beam.xy'}})"

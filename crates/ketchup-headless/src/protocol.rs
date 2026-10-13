@@ -1253,6 +1253,7 @@ fn parse_program_source(
         }
     }
     Ok(ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
         file_name: file_name.to_owned(),
         source: source.to_owned(),
         overrides,

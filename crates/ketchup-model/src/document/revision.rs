@@ -83,9 +83,68 @@ pub struct RuleProgramSource {
     pub file_name: String,
     pub source: String,
     pub overrides: BTreeMap<String, f64>,
+    /// Named variants of the program: each holds the value of every parameter.
+    /// Files written before variants have none; an empty map is not encoded, so
+    /// a program without variants encodes and digests exactly as before.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "variant_values"
+    )]
+    pub variants: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
 pub const MAX_RULE_PROGRAM_BYTES: usize = 1024 * 1024;
+pub const MAX_RULE_PROGRAM_VARIANTS: usize = 64;
+
+impl RuleProgramSource {
+    /// Checks the content a revision may hold; the encoded size is checked by
+    /// whoever encodes it.
+    pub fn validate(&self) -> Result<(), RuleProgramError> {
+        if self.source.is_empty() {
+            return Err(RuleProgramError::EmptySource);
+        }
+        if !self.overrides.values().all(|value| value.is_finite()) {
+            return Err(RuleProgramError::NonFiniteOverride);
+        }
+        if self.variants.len() > MAX_RULE_PROGRAM_VARIANTS {
+            return Err(RuleProgramError::TooManyVariants {
+                count: self.variants.len(),
+            });
+        }
+        for (name, values) in &self.variants {
+            if name.trim().is_empty() {
+                return Err(RuleProgramError::EmptyVariantName);
+            }
+            if let Some((parameter, _)) = values.iter().find(|(_, value)| !value.is_finite()) {
+                return Err(RuleProgramError::NonFiniteVariantValue {
+                    variant: name.clone(),
+                    parameter: parameter.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// JSON has no NaN or infinity and serde_json writes them as `null`; reading
+/// that back as NaN lets [`RuleProgramSource::validate`] name the variant.
+fn variant_values<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, BTreeMap<String, f64>>, D::Error> {
+    let variants: BTreeMap<String, BTreeMap<String, Option<f64>>> =
+        serde::Deserialize::deserialize(deserializer)?;
+    Ok(variants
+        .into_iter()
+        .map(|(name, values)| {
+            let values = values
+                .into_iter()
+                .map(|(parameter, value)| (parameter, value.unwrap_or(f64::NAN)))
+                .collect();
+            (name, values)
+        })
+        .collect())
+}
 
 #[derive(Clone)]
 pub struct Revision {

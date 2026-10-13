@@ -7,6 +7,7 @@ use std::f64::consts::PI;
 
 fn source(face: &str, through: bool, depth: f64, thickness: f64) -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "through.star".into(),
         source: format!(
             "p=box('stock',(100,100,{thickness}))\nhole(p,'{face}',at=(50,50),diameter=8,depth={depth},id='bore',through={})\n",

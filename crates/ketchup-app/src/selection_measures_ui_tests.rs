@@ -10,6 +10,7 @@ fn app() -> KetchupApp {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "measures.star".into(),
             source: PARTS.into(),
             overrides: BTreeMap::new(),

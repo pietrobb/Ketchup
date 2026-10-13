@@ -20,6 +20,7 @@ fn the_panel_checks_every_visible_part_of_the_house_for_collision_and_gravity() 
     let applied = session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "tiny-house.star".to_owned(),
                 source: HOUSE.to_owned(),
                 overrides: Default::default(),

@@ -96,6 +96,7 @@ fn program(file_name: &str, source: &str) -> KetchupApp {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: file_name.into(),
             source: source.into(),
             overrides: BTreeMap::new(),

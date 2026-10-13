@@ -121,6 +121,7 @@ fn adjacent_source_helpers_replace_and_delete_in_either_order_without_residual_h
             file_name: "adjacent.star".into(),
             source: text,
             overrides: BTreeMap::new(),
+            variants: BTreeMap::new(),
         };
         let mut document = ProgramDocument::new(source(format!("{parts}{first}{second}"))).unwrap();
         let before = document.evaluated().model.clone();

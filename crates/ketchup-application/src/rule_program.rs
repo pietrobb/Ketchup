@@ -801,6 +801,7 @@ mod tests {
 
     fn source(width: f64) -> RuleProgramSource {
         RuleProgramSource {
+            variants: Default::default(),
             file_name: "program.star".to_owned(),
             source: "W = param(\"width\", 100)\nbox(\"part\", [W, 20, 10])".to_owned(),
             overrides: BTreeMap::from([("width".to_owned(), width)]),
@@ -809,6 +810,7 @@ mod tests {
 
     fn profile_source(source: &str, parameter: &str, value: f64) -> RuleProgramSource {
         RuleProgramSource {
+            variants: Default::default(),
             file_name: "profile.star".to_owned(),
             source: source.to_owned(),
             overrides: BTreeMap::from([(parameter.to_owned(), value)]),
@@ -870,6 +872,7 @@ mod tests {
         const TABLE: &str = include_str!("../../../examples/programs/table.star");
         const APRON: &str = "\nAPRON = param(\"apron_height\", 80, min = 40, max = 150)\napron = board(\"table/apron-front\", (WIDTH - 2 * (INSET + LEG), 20, APRON), at = (INSET + LEG, INSET + 25, HEIGHT - APRON - 20))\ndowels(legs[0], apron, dowel = \"8x30\", margin = 15)\n";
         let program = |text: String, overrides: &[(&str, f64)]| RuleProgramSource {
+            variants: Default::default(),
             file_name: "table.star".to_owned(),
             source: text,
             overrides: overrides
@@ -1135,6 +1138,7 @@ mod tests {
     fn named_cut_and_split_face_push_pull_graph_survives_parameter_changes() {
         let program = "L = param(\"length\", 500)\nG = param(\"groove\", 150)\nP = param(\"pull\", 10)\npart = extrude(\"board\", profile=[[\"front\", [0, 0], [L, 0]], [\"right\", [L, 0], [L, 300]], [\"back\", [L, 300], [0, 300]], [\"left\", [0, 300], [0, 0]]], distance=18)\ncut(part, profile=[[\"entry\", [G, -1], [G + 8, -1]], [\"wall_right\", [G + 8, -1], [G + 8, 301]], [\"exit\", [G + 8, 301], [G, 301]], [\"wall_left\", [G, 301], [G, -1]]], depth=6, name=\"groove\")\npush_pull(part, face=\"end#2\", distance=P, name=\"raise right half\")";
         let source = |length, groove, pull| RuleProgramSource {
+            variants: Default::default(),
             file_name: "split.star".to_owned(),
             source: program.to_owned(),
             overrides: BTreeMap::from([
@@ -1166,7 +1170,7 @@ mod tests {
 
     #[test]
     fn push_pull_rewrites_driver_or_appends_named_operation() {
-        let driven = RuleProgramSource {
+        let driven = RuleProgramSource { variants: Default::default(),
             file_name: "driven.star".to_owned(),
             source: "H = param(\"height\", 18)\npart = extrude(\"board\", profile=[[\"a\", [0, 0], [100, 0]], [\"b\", [100, 0], [100, 50]], [\"c\", [100, 50], [0, 50]], [\"d\", [0, 50], [0, 0]]], distance=H)".to_owned(),
             overrides: BTreeMap::new(),
@@ -1188,6 +1192,7 @@ mod tests {
         assert_eq!(session.rule_program(), Some(&driven));
 
         let fixed = RuleProgramSource {
+            variants: Default::default(),
             file_name: "fixed.star".to_owned(),
             source: driven
                 .source

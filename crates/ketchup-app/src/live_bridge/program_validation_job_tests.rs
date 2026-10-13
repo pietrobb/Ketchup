@@ -5,7 +5,7 @@ use super::*;
 fn queued_validation_returns_native_distance_without_changing_the_document() {
     let (mut app, mut bridge) = setup();
     app.new_document();
-    let source = RuleProgramSource { file_name: "readonly.star".into(), source: "a=box('a',(100,100,18))\nhole(a,'z+',at=(50,50),diameter=8,depth=12)\nb=box('b',(100,100,18),at=(0,0,668))\nexpect_gap(a,b,650)".into(), overrides: BTreeMap::new() };
+    let source = RuleProgramSource { variants: Default::default(), file_name: "readonly.star".into(), source: "a=box('a',(100,100,18))\nhole(a,'z+',at=(50,50),diameter=8,depth=12)\nb=box('b',(100,100,18),at=(0,0,668))\nexpect_gap(a,b,650)".into(), overrides: BTreeMap::new() };
     app.apply_program_source(source.clone(), false).unwrap();
     let before = app.document.current();
     let history = (app.undo_step_count(), app.redo_step_count());
@@ -55,6 +55,7 @@ fn cancelled_expired_and_disconnected_validation_leave_the_model_and_history_unt
         app.new_document();
         app.apply_program_source(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "part.star".into(),
                 source: "box('part',(10,20,30))".into(),
                 overrides: BTreeMap::new(),

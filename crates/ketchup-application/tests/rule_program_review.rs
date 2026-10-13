@@ -10,6 +10,7 @@ use std::{
 
 fn source(expression: &str, bounds: &str) -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "review.star".to_owned(),
         source: format!(
             "H = param(\"H\", 10.0{bounds})\np = extrude(\"part\", profile=[(0,0),(20,0),(0,20)], distance={expression})\nother = box(\"other\", (20,20,H), at=(100,0,0))\n"
@@ -86,7 +87,7 @@ fn revolve_lower_wall_collision_is_confirmed_by_exact_solids_after_placement() {
         "rotate(p, axis=(1,2,3), angle=37, pivot=(0,0,0))\nrotate(b, axis=(1,2,3), angle=37, pivot=(0,0,0))\nmove(p, by=(100,200,30))\nmove(b, by=(100,200,30))\n",
     ] {
         let mut session = DocumentSession::new(SessionSettings::default());
-        let applied = session.apply_rule_program(RuleProgramSource {
+        let applied = session.apply_rule_program(RuleProgramSource { variants: Default::default(),
             file_name: "review.star".to_owned(),
             source: format!("p = revolve(\"tube\", profile=[(0,10),(100,10),(100,20),(0,20)], axis=[(0,0),(1,0)])\nb = box(\"inside_wall\", (5,2,2), at=(40,-19,-1))\n{placement}"),
             overrides: Default::default(),

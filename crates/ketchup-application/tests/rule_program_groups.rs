@@ -7,6 +7,7 @@ const PARTS: &str =
 
 fn source(groups: &str) -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "groups.star".to_owned(),
         source: format!("{PARTS}{groups}"),
         overrides: BTreeMap::new(),

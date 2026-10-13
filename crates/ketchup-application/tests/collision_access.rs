@@ -13,6 +13,7 @@ fn apply(session: &mut DocumentSession, text: &str) {
     session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "access.star".into(),
                 source: text.into(),
                 overrides: BTreeMap::new(),

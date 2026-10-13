@@ -126,8 +126,14 @@ impl LiveBridge {
         let file_name = file_name
             .or_else(|| current.map(|program| program.file_name.clone()))
             .unwrap_or_else(|| "model.star".to_owned());
+        // Saved variants belong to the program of this file, not to one source text.
+        let variants = current
+            .filter(|program| program.file_name == file_name)
+            .map(|program| program.variants.clone())
+            .unwrap_or_default();
         Ok((
             RuleProgramSource {
+                variants,
                 file_name,
                 source,
                 overrides,

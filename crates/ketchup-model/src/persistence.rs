@@ -1573,6 +1573,9 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             &history_container_data,
         );
         match (&mut outcome, restored) {
+            // A program the file holds but that breaks its rules is refused by
+            // name; dropping the history would silently drop the program too.
+            (_, Err(error @ PersistenceError::InvalidRuleProgram(_))) => return Err(error),
             (LoadOutcome::Editable { document, .. }, Ok(restored)) => *document = restored,
             (LoadOutcome::Editable { audit, .. }, Err(error)) => {
                 audit.history_discarded = Some(error.to_string());
@@ -1703,11 +1706,9 @@ fn decode_revision_history(
                                 "revision rule program: {error}"
                             ))
                         })?;
-                    if source.source.is_empty()
-                        || source.overrides.values().any(|value| !value.is_finite())
-                    {
-                        return Err(PersistenceError::InvalidRevisionHistory);
-                    }
+                    source
+                        .validate()
+                        .map_err(PersistenceError::InvalidRuleProgram)?;
                     Some(source)
                 }
                 HISTORY_RULE_PROGRAM_AS_PREVIOUS if schema >= 4 => Some(
@@ -2255,6 +2256,7 @@ pub enum PersistenceError {
     InvalidExactReference,
     ChecksumMismatch,
     InvalidPayload(String),
+    InvalidRuleProgram(crate::document::RuleProgramError),
     ResourceLimit,
     /// A container entry, or the whole file, is larger than a document may be.
     TooLarge {
@@ -2329,6 +2331,9 @@ impl fmt::Display for PersistenceError {
             Self::ChecksumMismatch => formatter.write_str("document checksum does not match"),
             Self::InvalidPayload(reason) => {
                 write!(formatter, "document payload is invalid: {reason}")
+            }
+            Self::InvalidRuleProgram(error) => {
+                write!(formatter, "the document's program is invalid: {error}")
             }
             Self::ResourceLimit => formatter.write_str("document exceeds a resource limit"),
             Self::TooLarge {

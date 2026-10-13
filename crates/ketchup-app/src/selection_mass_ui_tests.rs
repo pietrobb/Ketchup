@@ -9,6 +9,7 @@ const PARTS: &str = "material_weight(\"C24\", kg_m3 = 420, source = \"EN 338: C2
 
 fn program() -> ketchup_model::document::RuleProgramSource {
     ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
         file_name: "mass.star".into(),
         source: PARTS.into(),
         overrides: BTreeMap::new(),

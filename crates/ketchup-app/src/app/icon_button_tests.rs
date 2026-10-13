@@ -9,6 +9,7 @@ fn harness() -> egui_kittest::Harness<'static, KetchupApp> {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "house.star".into(),
             source: SOURCE.into(),
             overrides: BTreeMap::new(),

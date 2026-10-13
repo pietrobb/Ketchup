@@ -8,7 +8,7 @@ fn viewport() -> Rect {
 
 /// Two root instances of one assembly, each with a nested HPL board.
 fn program() -> RuleProgramSource {
-    RuleProgramSource {
+    RuleProgramSource { variants: Default::default(),
         file_name: "viewer.star".into(),
         source: "a=box(\"board\", (600,18,400), material=\"HPL\")\ng=group(\"inner\",[a])\nc=component(\"cabinet\",[g])\ninstance(\"second\",c,at=(1000,0,0))".into(),
         overrides: BTreeMap::new(),

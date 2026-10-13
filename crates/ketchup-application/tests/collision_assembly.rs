@@ -16,6 +16,7 @@ fn apply(session: &mut DocumentSession, source: &str) {
     session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "assembly.star".into(),
                 source: source.into(),
                 overrides: BTreeMap::new(),

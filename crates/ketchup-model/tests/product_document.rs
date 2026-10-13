@@ -2541,6 +2541,7 @@ fn saved_views_persist_follow_tag_deletion_and_keep_the_program() {
         .unwrap();
     document
         .bind_rule_program(RuleProgramSource {
+            variants: Default::default(),
             file_name: "house.star".to_owned(),
             source: "box('roof', (1, 1, 1))".to_owned(),
             overrides: Default::default(),

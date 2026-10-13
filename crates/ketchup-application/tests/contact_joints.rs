@@ -17,6 +17,7 @@ fn apply(session: &mut DocumentSession, source: &str) {
     session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "contact.star".into(),
                 source: source.into(),
                 overrides: Default::default(),

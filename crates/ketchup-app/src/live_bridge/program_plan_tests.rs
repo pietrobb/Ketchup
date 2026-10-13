@@ -3,6 +3,7 @@ use super::*;
 
 fn source() -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "queued.star".into(),
         source: "box(\"part\", (10, 20, 30))\n".into(),
         overrides: BTreeMap::new(),

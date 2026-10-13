@@ -877,7 +877,7 @@ impl From<crate::tolerance::InvalidTolerance> for CanonicalError {
 }
 
 /// Why a rule program source cannot be bound to or published as a revision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuleProgramError {
     /// Binding attaches a source to the revision just committed at the head of history.
     NoNewHeadRevision,
@@ -888,6 +888,14 @@ pub enum RuleProgramError {
     NonFiniteOverride,
     TooLarge {
         bytes: usize,
+    },
+    EmptyVariantName,
+    NonFiniteVariantValue {
+        variant: String,
+        parameter: String,
+    },
+    TooManyVariants {
+        count: usize,
     },
 }
 
@@ -904,6 +912,15 @@ impl fmt::Display for RuleProgramError {
             Self::TooLarge { bytes } => write!(
                 formatter,
                 "the encoded program is {bytes} bytes, more than {MAX_RULE_PROGRAM_BYTES}"
+            ),
+            Self::EmptyVariantName => formatter.write_str("a program variant has an empty name"),
+            Self::NonFiniteVariantValue { variant, parameter } => write!(
+                formatter,
+                "program variant {variant:?} gives parameter {parameter:?} a value that is not a finite number"
+            ),
+            Self::TooManyVariants { count } => write!(
+                formatter,
+                "the program has {count} variants, more than {MAX_RULE_PROGRAM_VARIANTS}"
             ),
         }
     }

@@ -19,6 +19,7 @@ fn source(width: f64) -> ProgramSource {
         file_name: "history.star".to_owned(),
         source: SOURCE.to_owned(),
         overrides: BTreeMap::from([("width".to_owned(), width)]),
+        variants: BTreeMap::new(),
     }
 }
 
@@ -150,6 +151,7 @@ fn changing_joinery_marks_both_machined_parts_and_undo_restores_holes() {
         file_name: "cabinet.star".to_owned(),
         source: cabinet.to_owned(),
         overrides: BTreeMap::new(),
+        variants: BTreeMap::new(),
     };
     let mut document = ProgramDocument::new(original.clone()).unwrap();
     let before = document.evaluated().clone();

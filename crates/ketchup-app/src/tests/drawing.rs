@@ -25,6 +25,7 @@ fn a_new_document_lets_go_of_the_old_program_evaluation() {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "dom.star".into(),
             source: "box(\"stena\", (3000, 160, 2500))\n".into(),
             overrides: BTreeMap::new(),

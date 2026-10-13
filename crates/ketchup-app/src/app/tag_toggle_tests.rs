@@ -17,6 +17,7 @@ fn toggling_a_house_layer_repaints_without_exact_reevaluation() {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "small-house.star".into(),
             source: HOUSE.into(),
             overrides: BTreeMap::new(),

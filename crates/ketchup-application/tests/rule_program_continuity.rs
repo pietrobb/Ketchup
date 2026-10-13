@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 fn source(text: &str) -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "continuity.star".into(),
         source: text.into(),
         overrides: BTreeMap::new(),

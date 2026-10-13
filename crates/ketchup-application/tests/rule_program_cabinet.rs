@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 fn program() -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "cabinet-4x2.star".into(),
         source: r#"
 t = param("board",18)

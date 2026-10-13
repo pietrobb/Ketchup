@@ -154,6 +154,7 @@ fn large_house_the_house_sheet_has_plan_sections_and_elevations_of_the_visible_l
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "tiny-house.star".into(),
             source: HOUSE.into(),
             overrides: BTreeMap::new(),

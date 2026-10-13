@@ -22,6 +22,7 @@ fn takeoff_window_follows_layer_visibility() {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "house.star".into(),
             source: SOURCE.into(),
             overrides: BTreeMap::new(),
@@ -78,6 +79,7 @@ fn takeoff_window_follows_layer_visibility() {
 fn hiding_a_program_part_keeps_the_program_and_drops_the_part_from_the_takeoff() {
     let mut app = KetchupApp::new();
     let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
         file_name: "house.star".into(),
         source: SOURCE.into(),
         overrides: BTreeMap::new(),
@@ -119,6 +121,7 @@ fn hiding_a_program_part_keeps_the_program_and_drops_the_part_from_the_takeoff()
 fn the_first_detaching_edit_says_so_and_undo_keeps_the_program() {
     let mut app = KetchupApp::new();
     let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
         file_name: "house.star".into(),
         source: SOURCE.into(),
         overrides: BTreeMap::new(),
@@ -183,6 +186,7 @@ fn the_first_detaching_edit_says_so_and_undo_keeps_the_program() {
 fn a_later_edit_closes_the_detach_notice_and_both_edits_stay() {
     let mut app = KetchupApp::new();
     let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
         file_name: "house.star".into(),
         source: SOURCE.into(),
         overrides: BTreeMap::new(),
@@ -231,6 +235,7 @@ fn a_later_edit_closes_the_detach_notice_and_both_edits_stay() {
 fn a_production_scope_counts_hidden_production_parts_and_never_the_concept() {
     let mut app = KetchupApp::new();
     let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
         file_name: "house.star".into(),
         source: format!("{SOURCE}production(tags = [\"konštrukcia\"])\n"),
         overrides: BTreeMap::new(),
@@ -270,6 +275,7 @@ fn takeoff_csv_export_writes_the_visible_parts() {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "house.star".into(),
             source: SOURCE.into(),
             overrides: BTreeMap::new(),
@@ -300,6 +306,7 @@ fn cut_list_export_is_a_table_of_the_visible_parts_in_csv_or_xlsx() {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
             file_name: "house.star".into(),
             source: SOURCE.into(),
             overrides: BTreeMap::new(),

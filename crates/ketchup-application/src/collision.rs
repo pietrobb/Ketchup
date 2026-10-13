@@ -1682,7 +1682,7 @@ mod tests {
             .expect("native exact worker required");
         let mut session = crate::DocumentSession::new(crate::SessionSettings::default());
         let applied = session.apply_rule_program(
-            ketchup_model::document::RuleProgramSource {
+            ketchup_model::document::RuleProgramSource { variants: Default::default(),
                 file_name: "cancel.star".into(),
                 source: "for i in range(20):\n    p=box('part '+str(i),(100,100,18),at=(i*200,0,0))\n    for j in range(32):\n        hole(p,'z+',at=(10+(j%8)*10,10+(j//8)*20),diameter=4,depth=8)\n".into(),
                 overrides: BTreeMap::new(),

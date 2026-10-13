@@ -18,6 +18,7 @@ fn worker() -> ExactWorkerSupervisor {
 
 fn source(program: &str, overrides: &[(&str, f64)]) -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "named-topology.star".to_owned(),
         source: program.to_owned(),
         overrides: overrides

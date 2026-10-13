@@ -40,6 +40,7 @@ fn source_only_rollback_restores_source_and_overrides_through_save_open() {
     use ketchup_model::document::RuleProgramSource;
     let mut document = graph_document();
     let source = RuleProgramSource {
+        variants: Default::default(),
         file_name: "model.star".into(),
         source: "# A\n".into(),
         overrides: std::collections::BTreeMap::from([("H".into(), 10.0)]),
@@ -97,6 +98,197 @@ fn source_only_rollback_restores_source_and_overrides_through_save_open() {
         )
         .unwrap();
     assert_eq!(document.current_rule_program(), Some(&source));
+}
+
+fn variants(
+    entries: &[(&str, &[(&str, f64)])],
+) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, f64>> {
+    entries
+        .iter()
+        .map(|(name, values)| {
+            let values = values
+                .iter()
+                .map(|(parameter, value)| ((*parameter).to_owned(), *value))
+                .collect();
+            ((*name).to_owned(), values)
+        })
+        .collect()
+}
+
+fn program_with_variants() -> ketchup_model::document::RuleProgramSource {
+    ketchup_model::document::RuleProgramSource {
+        file_name: "cabinet.star".into(),
+        source: "w = param('width', 600)\n".into(),
+        overrides: std::collections::BTreeMap::from([("width".into(), 800.0)]),
+        variants: variants(&[
+            ("600", &[("width", 600.0), ("depth", 400.0)]),
+            ("800", &[("width", 800.0), ("depth", 400.0)]),
+            ("1000", &[("width", 1000.0), ("depth", 560.0)]),
+        ]),
+    }
+}
+
+#[test]
+fn program_variants_survive_save_open_and_a_variant_change_is_its_own_revision() {
+    let mut document = graph_document();
+    let program = program_with_variants();
+    document.bind_rule_program(program.clone()).unwrap();
+    let bound = document.current();
+
+    let mut fewer = program.clone();
+    fewer.variants.remove("1000");
+    document.replace_rule_program_source(fewer.clone()).unwrap();
+    assert_ne!(document.current().revision_id(), bound.revision_id());
+    // Same source and overrides, only the variants differ: the existing source
+    // digest of the revision tells them apart.
+    document
+        .replace_rule_program_source(program.clone())
+        .unwrap();
+    document.replace_rule_program_source(fewer.clone()).unwrap();
+    let digests = document
+        .revision_history()
+        .skip(2)
+        .map(|revision| revision.batch_digest().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(digests.len(), 3);
+    assert_ne!(digests[0], digests[1]);
+    assert_eq!(digests[0], digests[2]);
+
+    let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
+        .unwrap();
+    let (mut reopened, _) = persistence::load(&bytes)
+        .unwrap()
+        .into_editable_with_container()
+        .unwrap_or_else(|_| panic!("expected editable roundtrip"));
+    assert_eq!(reopened.current_rule_program(), Some(&fewer));
+    reopened.undo().unwrap();
+    assert_eq!(reopened.current_rule_program(), Some(&program));
+    assert_eq!(program.variants.len(), 3);
+}
+
+#[test]
+fn a_program_without_variants_encodes_as_before_and_an_older_program_opens_without_them() {
+    let mut program = program_with_variants();
+    program.variants.clear();
+    let encoded = String::from_utf8(serde_json::to_vec(&program).unwrap()).unwrap();
+    assert_eq!(
+        encoded,
+        r#"{"file_name":"cabinet.star","source":"w = param('width', 600)\n","overrides":{"width":800.0}}"#,
+        "no variants key, so the source digest of every older revision is unchanged"
+    );
+    let older: ketchup_model::document::RuleProgramSource = serde_json::from_str(&encoded).unwrap();
+    assert!(older.variants.is_empty());
+
+    let mut document = graph_document();
+    document.bind_rule_program(program.clone()).unwrap();
+    let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
+        .unwrap();
+    let (reopened, _) = persistence::load(&bytes)
+        .unwrap()
+        .into_editable_with_container()
+        .unwrap_or_else(|_| panic!("expected editable roundtrip"));
+    assert_eq!(reopened.current_rule_program(), Some(&program));
+}
+
+/// `bytes` with the program JSON of its only programmed revision replaced by `json`.
+fn with_program_json(document: &DocumentStore, bytes: &[u8], json: &str) -> Vec<u8> {
+    let (_, offset, len) = container_entry_offsets(bytes, "history.bin");
+    let history = &bytes[offset..offset + len];
+    let start = history
+        .windows(br#"{"file_name""#.len())
+        .position(|window| window == br#"{"file_name""#)
+        .expect("the history holds the program");
+    let old_len = u32::from_le_bytes(history[start - 4..start].try_into().unwrap()) as usize;
+    let mut patched = history[..start - 4].to_vec();
+    patched.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    patched.extend_from_slice(json.as_bytes());
+    patched.extend_from_slice(&history[start + old_len..]);
+    ketchup_model::testing::save_with_history_entry(document, patched)
+}
+
+#[test]
+fn a_file_with_an_invalid_variant_is_refused_by_name_and_never_opened_without_it() {
+    use ketchup_model::document::{MAX_RULE_PROGRAM_VARIANTS, RuleProgramError};
+    let mut document = graph_document();
+    let program = program_with_variants();
+    document.bind_rule_program(program.clone()).unwrap();
+    let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
+        .unwrap();
+    // The untouched splice opens, so each refusal below is the variant's.
+    let valid = with_program_json(
+        &document,
+        &bytes,
+        &String::from_utf8(serde_json::to_vec(&program).unwrap()).unwrap(),
+    );
+    assert!(persistence::load(&valid).is_ok());
+
+    let program_json = |variants: &str| {
+        format!(
+            r#"{{"file_name":"cabinet.star","source":"w = 1\n","overrides":{{}},"variants":{variants}}}"#
+        )
+    };
+    let too_many = (0..=MAX_RULE_PROGRAM_VARIANTS)
+        .map(|index| format!(r#""v{index}":{{"width":{index}}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    for (variants, expected) in [
+        (
+            r#"{"":{"width":600}}"#.to_owned(),
+            RuleProgramError::EmptyVariantName,
+        ),
+        (
+            r#"{"  ":{"width":600}}"#.to_owned(),
+            RuleProgramError::EmptyVariantName,
+        ),
+        // serde_json writes NaN as null.
+        (
+            r#"{"800":{"depth":400,"width":null}}"#.to_owned(),
+            RuleProgramError::NonFiniteVariantValue {
+                variant: "800".into(),
+                parameter: "width".into(),
+            },
+        ),
+        (
+            format!("{{{too_many}}}"),
+            RuleProgramError::TooManyVariants {
+                count: MAX_RULE_PROGRAM_VARIANTS + 1,
+            },
+        ),
+    ] {
+        let damaged = with_program_json(&document, &bytes, &program_json(&variants));
+        let error = load_error(&damaged);
+        assert_eq!(
+            error,
+            PersistenceError::InvalidRuleProgram(expected.clone()),
+            "{variants}"
+        );
+        assert!(error.to_string().contains(&expected.to_string()), "{error}");
+    }
+
+    // The window cannot store such a program either, and nothing changes.
+    let before = document.current();
+    for (name, value) in [("", 600.0), ("800", f64::NAN), ("800", f64::INFINITY)] {
+        let mut invalid = program.clone();
+        invalid.variants = variants(&[(name, &[("width", value)])]);
+        assert!(matches!(
+            document.replace_rule_program_source(invalid),
+            Err(CanonicalError::RuleProgram(
+                RuleProgramError::EmptyVariantName | RuleProgramError::NonFiniteVariantValue { .. }
+            ))
+        ));
+    }
+    let mut crowded = program.clone();
+    crowded.variants = (0..=MAX_RULE_PROGRAM_VARIANTS)
+        .map(|index| (format!("v{index}"), Default::default()))
+        .collect();
+    assert_eq!(
+        document.replace_rule_program_source(crowded).unwrap_err(),
+        CanonicalError::RuleProgram(RuleProgramError::TooManyVariants {
+            count: MAX_RULE_PROGRAM_VARIANTS + 1
+        })
+    );
+    assert_eq!(document.current().revision_id(), before.revision_id());
+    assert_eq!(document.current_rule_program(), Some(&program));
 }
 
 fn load_error(bytes: &[u8]) -> PersistenceError {

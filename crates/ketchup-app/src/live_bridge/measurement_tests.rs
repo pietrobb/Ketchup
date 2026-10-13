@@ -188,6 +188,7 @@ fn fixture(source: &str) -> (KetchupApp, LiveBridge) {
     let (mut app, mut bridge) = setup();
     app.new_document();
     let program = RuleProgramSource {
+        variants: Default::default(),
         file_name: "faces.star".into(),
         source: source.into(),
         overrides: BTreeMap::new(),

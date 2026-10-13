@@ -21,6 +21,7 @@ fn apply(app: &mut KetchupApp, operations: Vec<AssistantCadEditOperation>) {
 fn harness() -> egui_kittest::Harness<'static, KetchupApp> {
     let mut app = KetchupApp::new();
     let source = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
         file_name: "board.star".into(),
         source: "box(\"doska\", (600, 18, 400))\n".into(),
         overrides: BTreeMap::new(),

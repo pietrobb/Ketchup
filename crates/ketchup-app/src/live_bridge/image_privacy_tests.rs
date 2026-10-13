@@ -475,7 +475,7 @@ fn image_requested_during_a_pending_zoom_fit_shows_the_framed_camera() {
 fn z6_native_scene_callback_preserves_explicit_srgb_colors() {
     let _gpu = gpu_test_guard();
     let mut h = native_harness(1.0);
-    h.state_mut().apply_program_source(ketchup_model::document::RuleProgramSource {
+    h.state_mut().apply_program_source(ketchup_model::document::RuleProgramSource { variants: Default::default(),
         file_name: "colors.star".into(),
         source: "box('blue',(80,80,20),color=(40,128,220))\nbox('orange',(80,80,20),at=(120,0,0),color=(200,90,50))".into(),
         overrides: Default::default(),

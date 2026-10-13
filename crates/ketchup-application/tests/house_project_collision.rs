@@ -18,6 +18,7 @@ fn the_demo_house_has_no_collisions_in_the_exact_check() {
     let applied = session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "house-project.star".to_owned(),
                 source: HOUSE.to_owned(),
                 overrides: Default::default(),
@@ -59,6 +60,7 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
     let snapshot = session
         .apply_rule_program(
             RuleProgramSource {
+                variants: Default::default(),
                 file_name: "house-project.star".to_owned(),
                 source: HOUSE.to_owned(),
                 overrides: Default::default(),

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 pub(super) fn program() -> RuleProgramSource {
     RuleProgramSource {
+        variants: Default::default(),
         file_name: "components.star".into(),
         source: r#"
 w=param("width",20)

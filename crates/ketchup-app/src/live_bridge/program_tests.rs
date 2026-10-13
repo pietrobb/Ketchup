@@ -952,6 +952,44 @@ fn a_whole_program_sent_again_keeps_the_stored_overrides_unless_it_gives_its_own
     assert!(stored(&app).is_empty());
 }
 
+/// #2477: saved variants belong to the program of the file, so a new source
+/// for the same file keeps them and another file does not inherit them.
+#[test]
+fn a_new_source_for_the_same_file_keeps_its_saved_variants() {
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(TABLE, true), false).unwrap();
+    let mut program = app.document.current_rule_program().unwrap().clone();
+    program.variants = BTreeMap::from([(
+        "wide".to_owned(),
+        BTreeMap::from([("width".to_owned(), 900.0)]),
+    )]);
+    app.document
+        .replace_rule_program_source(program.clone())
+        .unwrap();
+    let with = |file_name: Option<&str>| Request::ApplyProgram {
+        expected: None,
+        source: format!("{TABLE}{APRON}"),
+        overrides: Some(BTreeMap::new()),
+        file_name: file_name.map(str::to_owned),
+        replace_document: false,
+    };
+    bridge.execute(&mut app, with(None), false).unwrap();
+    let current = app.document.current_rule_program().unwrap();
+    assert_eq!(current.source, format!("{TABLE}{APRON}"));
+    assert_eq!(current.variants, program.variants);
+
+    bridge
+        .execute(&mut app, with(Some("other.star")), false)
+        .unwrap();
+    assert!(
+        app.document
+            .current_rule_program()
+            .unwrap()
+            .variants
+            .is_empty()
+    );
+}
+
 /// Review 2026-10-09 (AI-3): one long printed line made the answer of a
 /// published change too big, so the agent read `response_limit` and sent the
 /// change again.

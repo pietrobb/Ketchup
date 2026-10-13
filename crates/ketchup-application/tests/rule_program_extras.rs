@@ -417,6 +417,7 @@ fn degenerate_profiles_are_refused() {
 
 fn program_source(source: String) -> ketchup_model::document::RuleProgramSource {
     ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
         file_name: "size.star".to_owned(),
         source,
         overrides: BTreeMap::new(),
