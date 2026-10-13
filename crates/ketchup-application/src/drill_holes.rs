@@ -17,6 +17,9 @@ use ketchup_model::tolerance::ROUNDING;
 use ketchup_model::topology::TopologicalElementKind;
 
 const OPERATION: &str = "drill_holes";
+/// How far a tapped hole may sit from D − P: drills come in 0.1 mm steps, so
+/// the drill nearest to D − P (M8: 6.8 for 6.75) is at most half a step away.
+const TAP_DRILL_STEP_TOLERANCE_MM: f64 = 0.05;
 
 type Point2 = [f64; 2];
 
@@ -320,8 +323,7 @@ fn admit_thread(
             "Use one of the listed thread sizes.",
         ));
     };
-    // D − P, or the 0.1 mm drill nearest to it (M8: 6.75 or 6.8).
-    if (diameter_mm - metric.tap_drill_mm).abs() > 0.05 + tolerance {
+    if (diameter_mm - metric.tap_drill_mm).abs() > TAP_DRILL_STEP_TOLERANCE_MM + tolerance {
         return Err((
             "planning.cad_hole_thread_diameter_mismatch",
             format!(
