@@ -225,6 +225,9 @@ impl Tools {
                 "patch",
                 "check",
                 "set_params",
+                "save_variant",
+                "use_variant",
+                "delete_variant",
                 "report",
                 "docs",
                 "validate",
@@ -260,6 +263,9 @@ impl Tools {
             }
             "patch" => self.send("patch_program", args, APPLY_PROGRAM_WAIT),
             "set_params" => self.send("set_program_params", args, APPLY_PROGRAM_WAIT),
+            "use_variant" => self.send("use_program_variant", args, APPLY_PROGRAM_WAIT),
+            "save_variant" => self.send("save_program_variant", args, APPLY_PROGRAM_WAIT),
+            "delete_variant" => self.send("delete_program_variant", args, DEFAULT_WAIT),
             "report" => {
                 args.entry("limit").or_insert(json!(50));
                 self.send("program_report", args, DEFAULT_WAIT)

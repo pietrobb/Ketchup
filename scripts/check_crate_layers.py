@@ -466,6 +466,7 @@ MAY_WAIT_FOR_EVALUATION = {
     "crates/ketchup-app/src/live_bridge/program_access.rs",
     "crates/ketchup-app/src/live_bridge/program_navigation.rs",
     "crates/ketchup-app/src/live_bridge/program_pick.rs",
+    "crates/ketchup-app/src/live_bridge/program_variants.rs",
 }
 
 

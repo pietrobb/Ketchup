@@ -199,6 +199,9 @@ fn response_wait(request: &Request) -> Duration {
         Request::ApplyProgram { .. }
         | Request::PatchProgram { .. }
         | Request::SetProgramParams { .. }
+        | Request::UseProgramVariant { .. }
+        | Request::SaveProgramVariant { .. }
+        | Request::DeleteProgramVariant { .. }
         | Request::CheckProgram { .. }
         | Request::ValidateProgram { .. }
         | Request::MeasureFaces { .. }
@@ -246,6 +249,9 @@ fn has_effect(request: &Request) -> bool {
         | Request::RunPlugin(_)
         | Request::PatchProgram { .. }
         | Request::SetProgramParams { .. }
+        | Request::UseProgramVariant { .. }
+        | Request::SaveProgramVariant { .. }
+        | Request::DeleteProgramVariant { .. }
         | Request::ApplyProgram { .. }
         | Request::Undo { .. }
         | Request::Redo { .. }

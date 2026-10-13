@@ -318,6 +318,18 @@ fn program_pieces_and_set_params_reach_their_window_methods() {
             json!({"action":"set_params", "expected":stamp, "params":{"width":900}}),
             json!({"method":"set_program_params", "expected":stamp, "params":{"width":900}}),
         ),
+        (
+            json!({"action":"save_variant", "expected":stamp, "name":"800"}),
+            json!({"method":"save_program_variant", "expected":stamp, "name":"800"}),
+        ),
+        (
+            json!({"action":"use_variant", "expected":stamp, "name":"800"}),
+            json!({"method":"use_program_variant", "expected":stamp, "name":"800"}),
+        ),
+        (
+            json!({"action":"delete_variant", "expected":stamp, "name":"800"}),
+            json!({"method":"delete_program_variant", "expected":stamp, "name":"800"}),
+        ),
     ] {
         let result = call(&mut tools, "program", arguments);
         assert_eq!(result["isError"], false, "{result}");

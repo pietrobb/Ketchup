@@ -140,6 +140,22 @@ impl KetchupApp {
         Ok((edit, plan.evaluated))
     }
 
+    /// Publishes the document's program with only its variants changed, as one
+    /// Undo step; the model and its evaluation stay as they are.
+    pub(crate) fn publish_program_variants(
+        &mut self,
+        program: RuleProgramSource,
+    ) -> Result<(), RuleProgramApplyError> {
+        self.complete_mutation_with_work_recovery(|document| {
+            document
+                .replace_rule_program_source(program)
+                .map_err(SessionError::Canonical)
+        })
+        .map_err(session_error)?;
+        self.finish_program_edit();
+        Ok(())
+    }
+
     /// A fillet or chamfer on edges picked on a program-owned part is written
     /// into the program as `fillet(part, edges=[[a, b], ...], radius=r)` (or
     /// `chamfer(..., distance=d)`) and published like any program edit, so the
@@ -249,6 +265,23 @@ impl KetchupApp {
         self.status_key = "status-ready";
     }
 
+    /// What `program read` shows of the variants: each with its values, and
+    /// the one the parameters have now, when the program evaluates.
+    pub(crate) fn program_variants_view(&self, program: &RuleProgramSource) -> serde_json::Value {
+        let active = self
+            .program_evaluations
+            .get_blocking(program)
+            .ok()
+            .and_then(|evaluated| {
+                ketchup_application::program_variants::active_variant(
+                    program,
+                    &evaluated.model.params,
+                )
+                .map(str::to_owned)
+            });
+        serde_json::json!({"saved": program.variants, "active": active})
+    }
+
     /// The program that owns the document with each part's occurrence and
     /// defining lines, or `None` when no program owns it.
     pub(crate) fn program_source_view(&self) -> Option<serde_json::Value> {
@@ -287,6 +320,7 @@ impl KetchupApp {
             "file_name": program.file_name,
             "source": program.source,
             "overrides": program.overrides,
+            "variants": self.program_variants_view(program),
             "parts": parts,
             "groups": snapshot.groups().map(|group| serde_json::json!({
                 "name": group.name(), "group_id": group.id().0,

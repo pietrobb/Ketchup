@@ -57,13 +57,19 @@ fn evaluate(source: &RuleProgramSource, cancel: &CancelToken) -> Evaluation {
     .map(Arc::new)
 }
 
+/// Whether `a` and `b` evaluate to the same model: saved variants do not
+/// take part, so saving one does not evaluate a large model again.
+fn alike(a: &RuleProgramSource, b: &RuleProgramSource) -> bool {
+    a.file_name == b.file_name && a.source == b.source && a.overrides == b.overrides
+}
+
 impl ProgramEvaluations {
     /// Keeps an evaluation the caller already made of `source`.
     pub(crate) fn seed(&self, source: &RuleProgramSource, evaluated: &Evaluated) {
         *self.ready.borrow_mut() = Some((source.clone(), Ok(Arc::new(evaluated.clone()))));
         self.pending
             .borrow_mut()
-            .take_if(|pending| &pending.source == source);
+            .take_if(|pending| alike(&pending.source, source));
     }
 
     /// Starts evaluating `source` on a background thread unless it is ready or
@@ -80,7 +86,7 @@ impl ProgramEvaluations {
             return Lookup::Pending;
         }
         match self.ready.borrow().as_ref() {
-            Some((ready, evaluation)) if ready == source => Lookup::Ready(evaluation.clone()),
+            Some((ready, evaluation)) if alike(ready, source) => Lookup::Ready(evaluation.clone()),
             _ => Lookup::Pending,
         }
     }
@@ -92,14 +98,14 @@ impl ProgramEvaluations {
     pub(crate) fn get_blocking(&self, source: &RuleProgramSource) -> Evaluation {
         self.poll();
         if let Some((ready, evaluation)) = self.ready.borrow().as_ref()
-            && ready == source
+            && alike(ready, source)
         {
             return evaluation.clone();
         }
         let waited = self
             .pending
             .borrow_mut()
-            .take_if(|pending| &pending.source == source)
+            .take_if(|pending| alike(&pending.source, source))
             .and_then(|pending| pending.receiver.recv().ok());
         let evaluation = waited.unwrap_or_else(|| {
             self.on_ui_thread.set(self.on_ui_thread.get() + 1);
@@ -170,7 +176,7 @@ impl ProgramEvaluations {
             .pending
             .borrow()
             .as_ref()
-            .is_some_and(|pending| &pending.source == source)
+            .is_some_and(|pending| alike(&pending.source, source))
         {
             return true;
         }
@@ -207,7 +213,7 @@ impl ProgramEvaluations {
         self.ready
             .borrow()
             .as_ref()
-            .is_some_and(|(ready, _)| ready == source)
+            .is_some_and(|(ready, _)| alike(ready, source))
     }
 
     fn poll(&self) {

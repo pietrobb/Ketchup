@@ -82,6 +82,7 @@ pub use plugin::RunPluginRequest;
 pub(crate) mod program_pick;
 mod program_validate;
 mod program_validation_summary;
+mod program_variants;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -271,6 +272,20 @@ pub enum Request {
     SetProgramParams {
         expected: Stamp,
         params: std::collections::BTreeMap<String, f64>,
+    },
+    /// Keeps the current value of every program parameter as variant `name`.
+    SaveProgramVariant {
+        expected: Stamp,
+        name: String,
+    },
+    /// Applies variant `name` like `SetProgramParams`: one Undo step.
+    UseProgramVariant {
+        expected: Stamp,
+        name: String,
+    },
+    DeleteProgramVariant {
+        expected: Stamp,
+        name: String,
     },
     ProgramReport {
         expected: Stamp,
@@ -1244,7 +1259,8 @@ impl KetchupApp {
                 }
                 request @ (Request::ApplyProgram { .. }
                 | Request::PatchProgram { .. }
-                | Request::SetProgramParams { .. }) => {
+                | Request::SetProgramParams { .. }
+                | Request::UseProgramVariant { .. }) => {
                     bridge.start_queued_apply_program(
                         self, context, id, reply, cancelled, request, ui_busy,
                     );
@@ -2397,6 +2413,29 @@ impl LiveBridge {
         }
     }
 
+    /// `command` is `AppCommand::Undo` or `AppCommand::Redo`.
+    fn undo_or_redo(
+        app: &mut KetchupApp,
+        expected: &Option<Stamp>,
+        command: AppCommand,
+        ui_busy: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Value, &'static str> {
+        let undo = command == AppCommand::Undo;
+        Self::guard(app, expected)?;
+        Self::available(app, ui_busy)?;
+        if !app.command_enabled(command) {
+            return Err(if undo {
+                "undo_unavailable"
+            } else {
+                "redo_unavailable"
+            });
+        }
+        Self::require_request_authority(cancelled)?;
+        let changed = if undo { app.undo() } else { app.redo() };
+        Ok(json!({"changed":changed,"program_owned":program_owned(app)}))
+    }
+
     fn execute_authorized(
         &mut self,
         app: &mut KetchupApp,
@@ -2425,7 +2464,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -2652,31 +2691,22 @@ impl LiveBridge {
             | Request::ProgramReport { .. }) => self.read_program_request(app, request, cancelled),
             request @ (Request::ApplyProgram { .. }
             | Request::PatchProgram { .. }
-            | Request::SetProgramParams { .. }) => self
+            | Request::SetProgramParams { .. }
+            | Request::UseProgramVariant { .. }) => self
                 .apply_program(app, request, ui_busy, cancelled)
                 .map(|applied| applied.result(None)),
+            request @ (Request::SaveProgramVariant { .. }
+            | Request::DeleteProgramVariant { .. }) => {
+                self.program_variant_request(app, request, ui_busy, cancelled)
+            }
             request @ Request::CheckProgram { .. } => {
                 Self::check_program_now(app, request, ui_busy, cancelled)
             }
             Request::Undo { expected } => {
-                Self::guard(app, &expected)?;
-                Self::available(app, ui_busy)?;
-                if !app.command_enabled(AppCommand::Undo) {
-                    return Err("undo_unavailable");
-                }
-                Self::require_request_authority(cancelled)?;
-                let changed = app.undo();
-                Ok(json!({"changed":changed,"program_owned":program_owned(app)}))
+                Self::undo_or_redo(app, &expected, AppCommand::Undo, ui_busy, cancelled)
             }
             Request::Redo { expected } => {
-                Self::guard(app, &expected)?;
-                Self::available(app, ui_busy)?;
-                if !app.command_enabled(AppCommand::Redo) {
-                    return Err("redo_unavailable");
-                }
-                Self::require_request_authority(cancelled)?;
-                let changed = app.redo();
-                Ok(json!({"changed":changed,"program_owned":program_owned(app)}))
+                Self::undo_or_redo(app, &expected, AppCommand::Redo, ui_busy, cancelled)
             }
             Request::Save { expected } => {
                 Self::guard(app, &expected)?;

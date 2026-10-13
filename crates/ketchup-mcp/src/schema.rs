@@ -70,6 +70,7 @@ pub fn tools() -> Value {
     read defaults to source-only; mode=selection returns selected part lines and pick context, mode=full returns the full part map (source null without an owner). \
     In a large program read pieces instead: mode=outline lists top-level defs, params and comment sections with their lines; lines=[first,last], search=<text> (case-insensitive) or part=<name> return just those numbered lines. \
     set_params with expected and params={name: value} re-applies the current source with those parameter values (others keep their stored values), without sending the source. \
+    save_variant with expected and name keeps every current parameter value as a named variant of the program; use_variant re-applies one like set_params (one Undo step; refused, naming them, when the program no longer declares some of its parameters); delete_variant removes one; read lists them under variants with the active one. \
     apply sends the WHOLE edited program: the window re-evaluates it, rebuilds only the changed parts (unchanged parts keep their IDs) and publishes one Undo step; \
     patch requires expected and unique non-overlapping old/new edits, retains overrides and program ownership, and uses the same atomic apply/validation path. Results give source diff, counts and bounded issue/relation previews; report pages return complete model cut_list, hardware, machining, relations, issues or material_takeoff (BIM quantities of the visible parts). \
     check takes the same source/source_path or expected+edits as apply/patch and answers the same way (change, added/removed, report, exact collisions) without publishing anything: check_only=true, canonical_mutation=false. \
@@ -77,7 +78,7 @@ pub fn tools() -> Value {
     docs returns the library index; with name, concise signatures/rules/example; detail=implementation returns helper code explicitly. Named example files return runnable source. \
     \"This face\"/\"this edge\": inspect action=status -> selected_context.program names the user's pick in program terms.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
-                "action": {"type": "string", "enum": ["read", "apply", "patch", "check", "set_params", "report", "docs", "validate"]},
+                "action": {"type": "string", "enum": ["read", "apply", "patch", "check", "set_params", "save_variant", "use_variant", "delete_variant", "report", "docs", "validate"]},
                 "mode": {"type": "string", "enum": ["source", "selection", "outline", "full"], "description": "For read: default source. Selection lines are context, not a dependency closure. outline lists defs, params and comment sections with line numbers."},
                 "lines": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2, "description": "For read: inclusive 1-based line range [first, last] of the source (at most 400 lines per answer)."},
                 "search": {"type": "string", "minLength": 1, "description": "For read: the source lines containing this text, ignoring case."},
@@ -95,12 +96,13 @@ pub fn tools() -> Value {
                 "overrides": {"type": "object", "additionalProperties": {"type": "number"}, "description": "For apply and check: parameter values by name, e.g. {\"width\": 900}. Omitted keeps the values the window stored for this program (e.g. after Push/Pull); {} clears them."},
                 "file_name": {"type": "string", "description": "For apply: program file name for a new program."},
                 "replace_document": {"type": "boolean", "description": "For apply: replace a saved document that no program owns."},
-                "name": {"type": "string", "description": "For docs: topic id or example file."},
+                "name": {"type": "string", "description": "For docs: topic id or example file. For save_variant, use_variant and delete_variant: the variant name."},
                 "expected": {"type": "object", "description": "Required for patch/report: existing stamp from the read/apply result. Optional guard for other actions."},
             }, "allOf": [
                 {"if": {"properties": {"action": {"const": "patch"}}}, "then": {"required": ["expected", "edits"]}},
                 {"if": {"properties": {"action": {"const": "set_params"}}}, "then": {"required": ["expected", "params"]}},
-                {"if": {"properties": {"action": {"const": "report"}}}, "then": {"required": ["expected", "section"]}}
+                {"if": {"properties": {"action": {"const": "report"}}}, "then": {"required": ["expected", "section"]}},
+                {"if": {"properties": {"action": {"enum": ["save_variant", "use_variant", "delete_variant"]}}}, "then": {"required": ["expected", "name"]}}
             ]},
         },
         {

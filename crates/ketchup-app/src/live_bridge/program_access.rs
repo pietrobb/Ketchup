@@ -194,6 +194,9 @@ impl LiveBridge {
             Request::SetProgramParams { expected, params } => {
                 return Self::expand_set_params(app, expected, params);
             }
+            Request::UseProgramVariant { expected, name } => {
+                return Self::expand_use_variant(app, expected, &name);
+            }
             request => return Ok(request),
         };
         Self::guard(app, &Some(expected.clone()))?;
@@ -223,9 +226,11 @@ impl LiveBridge {
             );
         };
         if !selection_context {
-            return Ok(
-                json!({"file_name": program.file_name, "source": program.source, "overrides": program.overrides}),
-            );
+            let mut read = json!({"file_name": program.file_name, "source": program.source, "overrides": program.overrides});
+            if !program.variants.is_empty() {
+                read["variants"] = app.program_variants_view(program);
+            }
+            return Ok(read);
         }
         let snapshot = app.document.current();
         let selected: BTreeSet<_> = app

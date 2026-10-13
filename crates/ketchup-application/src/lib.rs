@@ -19,6 +19,7 @@ pub mod pdm_workflow;
 mod planner;
 mod plugin;
 mod product_change;
+pub mod program_variants;
 pub mod rejections;
 mod rule_appearance;
 mod rule_assembly_members;
