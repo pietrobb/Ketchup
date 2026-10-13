@@ -288,16 +288,22 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let topology = self.topology_results_for_snapshot(&snapshot)?;
         let projection = ExactInteractionProjection::from_snapshot(&snapshot, topology);
-        let hit = projection
+        // A click-anchored push/pull may start with the pointer off the selected
+        // face; the face's own plane then gives the drag direction.
+        let (position, normal) = projection
             .exact_surface_picks(ray)
             .into_iter()
             .find(|hit| {
                 hit.definition_id == target.definition_id
                     && hit.instance_path == target.instance_path
                     && self.exact_hit_element(hit).as_ref() == Some(&target.element)
+            })
+            .map(|hit| (hit.position_mm, hit.outward_normal))
+            .or_else(|| {
+                self.selected_planar_face(target)
+                    .map(|face| (face.origin, face.normal))
             })?;
-        let projected = self.project(hit.position_mm + hit.outward_normal, rect)
-            - self.project(hit.position_mm, rect);
+        let projected = self.project(position + normal, rect) - self.project(position, rect);
         let scale = projected.length();
         if scale > SCREEN_ROUNDING_PX {
             Some((projected / scale, scale))
