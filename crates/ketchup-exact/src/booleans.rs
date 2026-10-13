@@ -124,7 +124,7 @@ impl ExactBackend {
                 "Right native body unavailable".to_owned(),
             )
         })?;
-        let result = ffi::query_body_pair_native(left, right);
+        let result = ffi::query_body_pair_native(left, right, contact_tolerance_mm);
         if result.status != 0 {
             return Err(error(
                 if result.status == 6 {

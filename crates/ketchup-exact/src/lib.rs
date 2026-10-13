@@ -478,6 +478,7 @@ mod ffi {
         fn query_body_pair_native(
             left: &NativeOperationResult,
             right: &NativeOperationResult,
+            contact_tolerance_mm: f64,
         ) -> NativePairQuery;
         fn boolean_bodies_native(
             target: &NativeOperationResult,

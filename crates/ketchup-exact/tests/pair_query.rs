@@ -529,3 +529,34 @@ fn native_pair_common_distance_contact_containment_and_failure() {
             .unwrap()
     );
 }
+
+#[test]
+fn a_box_inside_a_box_with_a_gap_all_round_is_an_overlap_either_way() {
+    let backend = ExactBackend::new();
+    let cube = |corner: f64, edge: f64| {
+        backend
+            .make_box(BoxSpec {
+                origin_mm: Point3 {
+                    x: corner,
+                    y: corner,
+                    z: corner,
+                },
+                size_mm: Size3 {
+                    x: edge,
+                    y: edge,
+                    z: edge,
+                },
+            })
+            .unwrap()
+    };
+    // The boundaries are 3 mm apart everywhere; only the inside test sees the overlap.
+    let (outer, inner) = (cube(0.0, 10.0), cube(3.0, 4.0));
+    for (left, right) in [(&outer, &inner), (&inner, &outer)] {
+        let query = backend
+            .query_body_pair(&left.body, &right.body, 1e-7)
+            .unwrap();
+        assert_eq!(query.relation, ExactPairRelation::Penetrating, "{query:?}");
+        assert!((query.common_volume_mm3 - 64.0).abs() < 1e-7, "{query:?}");
+        assert_eq!(query.distance_mm, 0.0);
+    }
+}

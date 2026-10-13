@@ -1,5 +1,10 @@
 #include "native_common.hxx"
 
+#include <BOPTools_AlgoTools3D.hxx>
+#include <IntTools_Context.hxx>
+
+#include <optional>
+
 namespace ketchup::exact {
 
 std::unique_ptr<NativeOperationResult> transform_body_native(
@@ -282,8 +287,81 @@ NativePairQuery query_face_pair_native(
   return result;
 }
 
+namespace {
+
+// Every face lies in a shell, every shell in a solid, every shell is closed
+// and edge-connected, and OCCT verifies the whole body.
+bool closed_connected_solids(const TopoDS_Shape& shape) {
+  if (TopExp_Explorer(shape, TopAbs_SHELL, TopAbs_SOLID).More()
+      || TopExp_Explorer(shape, TopAbs_FACE, TopAbs_SHELL).More()
+      || TopExp_Explorer(shape, TopAbs_EDGE, TopAbs_FACE).More()
+      || TopExp_Explorer(shape, TopAbs_VERTEX, TopAbs_EDGE).More()) {
+    return false;
+  }
+  bool any_shell = false;
+  for (TopExp_Explorer shell(shape, TopAbs_SHELL); shell.More(); shell.Next()) {
+    any_shell = true;
+    if (!BRep_Tool::IsClosed(shell.Current())) {
+      return false;
+    }
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(shell.Current(), TopAbs_FACE, faces);
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    TopExp::MapShapesAndAncestors(shell.Current(), TopAbs_EDGE, TopAbs_FACE, edge_faces);
+    std::vector<bool> reached(static_cast<std::size_t>(faces.Extent()) + 1, false);
+    std::vector<int> pending{1};
+    reached[1] = true;
+    int count = 1;
+    while (!pending.empty()) {
+      const int index = pending.back();
+      pending.pop_back();
+      for (TopExp_Explorer edge(faces(index), TopAbs_EDGE); edge.More(); edge.Next()) {
+        for (const TopoDS_Shape& neighbour : edge_faces.FindFromKey(edge.Current())) {
+          const int next = faces.FindIndex(neighbour);
+          if (next > 0 && !reached[static_cast<std::size_t>(next)]) {
+            reached[static_cast<std::size_t>(next)] = true;
+            pending.push_back(next);
+            ++count;
+          }
+        }
+      }
+    }
+    if (count != faces.Extent()) {
+      return false;
+    }
+  }
+  return any_shell && BRepCheck_Analyzer(shape, true).IsValid();
+}
+
+// One point from the interior of one face per shell of `body`, classified
+// against every solid of `other`. False on IN, ON or any probe failure.
+bool shells_outside(const TopoDS_Shape& body, const TopoDS_Shape& other,
+                    const Handle(IntTools_Context)& context) {
+  for (TopExp_Explorer shell(body, TopAbs_SHELL); shell.More(); shell.Next()) {
+    TopExp_Explorer face(shell.Current(), TopAbs_FACE);
+    if (!face.More()) {
+      return false;
+    }
+    gp_Pnt point;
+    gp_Pnt2d parameters;
+    if (BOPTools_AlgoTools3D::PointInFace(TopoDS::Face(face.Current()), point, parameters, context) != 0) {
+      return false;
+    }
+    for (TopExp_Explorer solid(other, TopAbs_SOLID); solid.More(); solid.Next()) {
+      BRepClass3d_SolidClassifier classifier(solid.Current(), point, tolerances().linear_mm);
+      if (classifier.State() != TopAbs_OUT) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 NativePairQuery query_body_pair_native(
-    const NativeOperationResult& left, const NativeOperationResult& right) noexcept {
+    const NativeOperationResult& left, const NativeOperationResult& right,
+    double contact_tolerance_mm) noexcept {
   NativePairQuery result{};
   result.status = STATUS_INVALID_SHAPE;
   try {
@@ -341,6 +419,43 @@ NativePairQuery query_body_pair_native(
           slab_low = std::min(low, high);
           slab_high = std::max(low, high);
         }
+      }
+    }
+    // Boundary minimum distance, multi-threaded; the two shapes' boundaries,
+    // not their solid sets.
+    const auto boundary_distance = [&]() -> std::optional<double> {
+      BRepExtrema_DistShapeShape distance;
+      distance.SetFlag(Extrema_ExtFlag_MIN);
+      distance.SetMultiThread(true);
+      distance.LoadS1(left.impl().shape);
+      distance.LoadS2(right.impl().shape);
+      distance.Perform();
+      if (!distance.IsDone() || distance.NbSolution() == 0 ||
+          !std::isfinite(distance.Value()) || distance.Value() < 0.0) {
+        return std::nullopt;
+      }
+      return distance.Value();
+    };
+    std::optional<double> measured_distance;
+    // Boundaries further apart than the contact tolerance cannot cross, so each
+    // closed connected shell lies wholly inside or wholly outside the other body
+    // and one interior face point decides which. Any overlap is bounded by such
+    // a shell inside the other body; with none in either direction the solids
+    // are separated and the Common and contact-area passes are not needed.
+    if (slab_axis < 0 && std::isfinite(contact_tolerance_mm)
+        && closed_connected_solids(left.impl().shape)
+        && closed_connected_solids(right.impl().shape)) {
+      measured_distance = boundary_distance();
+      const Handle(IntTools_Context) context = new IntTools_Context;
+      if (measured_distance
+          && *measured_distance > std::max(contact_tolerance_mm, tolerances().linear_mm)
+          && shells_outside(left.impl().shape, right.impl().shape, context)
+          && shells_outside(right.impl().shape, left.impl().shape, context)) {
+        result.common_volume_mm3 = 0.0;
+        result.common_contact_area_mm2 = 0.0;
+        result.distance_mm = *measured_distance;
+        result.status = STATUS_OK;
+        return result;
       }
     }
     double volume = 0.0;
@@ -493,18 +608,14 @@ NativePairQuery query_body_pair_native(
       result.status = STATUS_OK;
       return result;
     }
-    // The two-shape constructor already performs the distance computation. Only
-    // the minimum is wanted; the default also searches every face pair's maximum.
-    BRepExtrema_DistShapeShape distance(
-        left.impl().shape, right.impl().shape, Extrema_ExtFlag_MIN);
-    if (!distance.IsDone() || distance.NbSolution() == 0 ||
-        !std::isfinite(distance.Value()) || distance.Value() < 0.0) {
+    const std::optional<double> distance = measured_distance ? measured_distance : boundary_distance();
+    if (!distance) {
       result.diagnostic = "OCCT pair volume or distance query failed";
       return result;
     }
     result.common_volume_mm3 = volume;
     result.common_contact_area_mm2 = 0.0;
-    result.distance_mm = distance.Value();
+    result.distance_mm = *distance;
     result.status = STATUS_OK;
   } catch (const Standard_Failure& failure) {
     result.status = STATUS_BACKEND_EXCEPTION;

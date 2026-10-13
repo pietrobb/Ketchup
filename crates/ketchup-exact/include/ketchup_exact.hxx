@@ -23,7 +23,7 @@ struct NativeSegment;
 struct NativeLoftSection;
 NativePairQuery query_body_pair_native(
     const class NativeOperationResult& left,
-    const class NativeOperationResult& right) noexcept;
+    const class NativeOperationResult& right, double contact_tolerance_mm) noexcept;
 
 NativePairQuery query_face_pair_native(
     const class NativeOperationResult& left, std::uint32_t left_face,
