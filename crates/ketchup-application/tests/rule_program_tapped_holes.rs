@@ -61,6 +61,86 @@ fn a_panel_hole_and_a_later_hole_both_carry_their_thread() {
 }
 
 #[test]
+fn threads_run_from_each_hole_entry_and_along_each_bolt_shank() {
+    let _turn = crate::integration_support::file_turn();
+    let source = format!(
+        "{PLATE}hole(p,'z+',at=(10,10),diameter=6.8,depth=15,id='a',thread=('M8',10))\n\
+         hole(p,'x+',at=(10,10),diameter=5,depth=15,id='b')\n\
+         push_pull(p,face='x+',distance=10,name='wider')\n\
+         hole(p,'y+',at=(30,10),diameter=4.2,depth=12,id='c',thread=('M5',8))\n\
+         bolt('s','M8',40,at=(100,10,5),axis=(1,0,0))\n\
+         nut('n','M8',at=(0,100,0))\n"
+    );
+    let mut session = DocumentSession::default();
+    let applied = session.apply_rule_program(program(&source), false).unwrap();
+    let evaluated = ketchup_program::evaluate("tapped.star", &source, &Default::default()).unwrap();
+    let snapshot = &applied.snapshot;
+    let mut threads = ketchup_application::threads::thread_cylinders(snapshot, Some(&evaluated));
+    threads.sort_by(|a, b| a.size.cmp(&b.size).then(a.internal.cmp(&b.internal)));
+    let rounded = |values: [f64; 3]| values.map(|value| (value * 1e6).round() / 1e6 + 0.0);
+    let summary = threads
+        .iter()
+        .map(|thread| {
+            (
+                snapshot
+                    .definition(thread.definition_id)
+                    .unwrap()
+                    .name()
+                    .to_owned(),
+                thread.size.clone(),
+                thread.internal,
+                rounded(thread.start_mm),
+                rounded(thread.direction),
+                thread.length_mm,
+                thread.surface_diameter_mm,
+            )
+        })
+        .collect::<Vec<_>>();
+    // The untapped hole and the nut have no thread; the later hole is cut
+    // through a tool and still starts at its entry face.
+    assert_eq!(
+        summary,
+        [
+            (
+                "plate".to_owned(),
+                "M5".to_owned(),
+                true,
+                [30.0, 40.0, 10.0],
+                [0.0, -1.0, 0.0],
+                8.0,
+                4.2
+            ),
+            (
+                "s".to_owned(),
+                "M8".to_owned(),
+                false,
+                [0.0, 0.0, -40.0],
+                [0.0, 0.0, 1.0],
+                40.0,
+                8.0
+            ),
+            (
+                "plate".to_owned(),
+                "M8".to_owned(),
+                true,
+                [10.0, 10.0, 20.0],
+                [0.0, 0.0, -1.0],
+                10.0,
+                6.8
+            ),
+        ],
+        "{summary:#?}"
+    );
+    assert!(threads.iter().all(|thread| thread.nominal_diameter_mm
+        == if thread.size == "M8" { 8.0 } else { 5.0 }));
+    // Without the program's evaluation only the tapped holes are known.
+    assert_eq!(
+        ketchup_application::threads::thread_cylinders(snapshot, None).len(),
+        2
+    );
+}
+
+#[test]
 fn changing_or_removing_a_thread_rerecords_it_and_undo_restores_it() {
     let _turn = crate::integration_support::file_turn();
     let mut session = DocumentSession::default();

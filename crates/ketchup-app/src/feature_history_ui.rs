@@ -1443,11 +1443,7 @@ impl KetchupApp {
                 self.reconcile_selection();
                 if propagated {
                     let snapshot = self.document.current();
-                    self.render.plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
-                        &snapshot,
-                        &self.exact.results,
-                        &mut self.render.cache,
-                    )));
+                    self.rebuild_render_plan(&snapshot);
                     self.hover.projection_cache.get_mut().take();
                     self.exact.source =
                         Some(ketchup_application::evaluation::exact_source(&snapshot));

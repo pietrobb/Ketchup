@@ -268,6 +268,9 @@ pub(crate) struct TopologyByDefinition {
 pub(crate) struct RenderState {
     pub(crate) cache: DerivedRenderCache,
     pub(crate) plan: Option<Arc<InstancedRenderPlan>>,
+    /// `plan` was built while the program was still being evaluated, so it
+    /// lacks the threads of program parts until it is built again.
+    pub(crate) plan_awaits_program: bool,
     /// The last Move/Rotate/Scale preview plan: its base plan, the placements
     /// it shows and the plan itself.
     pub(crate) moved_plan: Option<MovedPlan>,

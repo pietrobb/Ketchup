@@ -76,6 +76,10 @@ mod takeoff;
 #[cfg(test)]
 #[path = "app/takeoff_tests.rs"]
 mod takeoff_tests;
+mod thread_display;
+#[cfg(test)]
+#[path = "app/thread_display_tests.rs"]
+mod thread_display_tests;
 mod transform;
 mod viewer_export;
 mod viewer_export_activity;

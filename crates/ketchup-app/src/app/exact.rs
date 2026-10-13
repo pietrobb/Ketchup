@@ -327,11 +327,7 @@ impl KetchupApp {
                     };
                     match published {
                         Ok(report) => {
-                            self.render.plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
-                                &snapshot,
-                                &self.exact.results,
-                                &mut self.render.cache,
-                            )));
+                            self.rebuild_render_plan(&snapshot);
                             self.hover.projection_cache.get_mut().take();
                             self.exact.source = (!report.needs_retry()).then(|| source.clone());
                             self.exact.retry_at = report

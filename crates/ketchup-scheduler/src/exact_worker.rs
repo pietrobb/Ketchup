@@ -2902,8 +2902,9 @@ fn exact_brep_profile_error(
     }
 }
 
-/// Fixed angular deflection so the same part always meshes identically.
-const STEP_MESH_ANGULAR_DEFLECTION: f64 = 0.35;
+/// Fixed angular deflection so the same part always meshes identically, in
+/// display meshes too: no chord of a curved face turns through more.
+pub const STEP_MESH_ANGULAR_DEFLECTION: f64 = 0.35;
 // not a tolerance: display mesh chord height relative to the part diagonal.
 const DISPLAY_MESH_RELATIVE_DEFLECTION: f64 = 1.0e-3;
 // not a tolerance: the finest display mesh chord height.

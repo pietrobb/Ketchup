@@ -235,6 +235,7 @@ impl KetchupApp {
             render: app_state::RenderState {
                 cache: DerivedRenderCache::default(),
                 plan: None,
+                plan_awaits_program: false,
                 moved_plan: None,
                 overlay_edge_cache: RefCell::new(BTreeMap::new()),
                 wgpu_target_format: None,

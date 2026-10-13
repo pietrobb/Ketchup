@@ -100,6 +100,14 @@ impl RenderGeometry {
     pub fn index_count(&self) -> usize {
         self.indices.len()
     }
+
+    /// Every line drawn with the faces: feature edges and decorations.
+    pub fn edge_segments(&self) -> impl Iterator<Item = [[f32; 3]; 2]> + '_ {
+        self.edge_vertices
+            .iter()
+            .step_by(6)
+            .map(|vertex| [vertex.start, vertex.end])
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -128,10 +136,24 @@ fn next_plan_id() -> u64 {
     NEXT_PLAN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Lines a definition draws with its feature edges, in its own frame: the
+/// cosmetic threads on its cylinders.
+pub type DefinitionLines = BTreeMap<DefinitionId, Vec<[[f32; 3]; 2]>>;
+
 impl InstancedRenderPlan {
     pub fn from_snapshot(
         snapshot: &Snapshot,
         exact_results: &ExactResultRegistry,
+        cache: &mut DerivedRenderCache,
+    ) -> Self {
+        Self::from_snapshot_with_lines(snapshot, exact_results, &DefinitionLines::new(), cache)
+    }
+
+    /// The plan of `snapshot` whose definitions also draw their `lines`.
+    pub fn from_snapshot_with_lines(
+        snapshot: &Snapshot,
+        exact_results: &ExactResultRegistry,
+        lines: &DefinitionLines,
         cache: &mut DerivedRenderCache,
     ) -> Self {
         let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
@@ -170,6 +192,7 @@ impl InstancedRenderPlan {
                         .get(&definition_id)
                         .map_or(&[][..], Vec::as_slice),
                     definition_id,
+                    lines.get(&definition_id).map_or(&[][..], Vec::as_slice),
                 );
                 if sources.is_empty() {
                     continue;
@@ -312,14 +335,17 @@ struct GeometrySource {
 
 pub(crate) type PlanarProfileMesh = (Vec<[f64; 3]>, Vec<[u32; 3]>);
 
+/// The geometries of `definition_id`; the first also draws `lines`.
 fn geometry_sources(
     snapshot: &Snapshot,
     exact_packages: &[&Arc<ExactBodyPackage>],
     definition_id: DefinitionId,
+    lines: &[[[f32; 3]; 2]],
 ) -> Vec<GeometrySource> {
     let exact = exact_packages
         .iter()
-        .map(|package| {
+        .enumerate()
+        .map(|(index, package)| {
             let positions = package
                 .vertices()
                 .iter()
@@ -335,7 +361,8 @@ fn geometry_sources(
                 .iter()
                 .map(|triangle| triangle.face_role)
                 .collect::<Vec<_>>();
-            build_render_geometry("exact", &positions, &triangles, &face_groups)
+            let lines = if index == 0 { lines } else { &[] };
+            build_render_geometry("exact", &positions, &triangles, &face_groups, lines)
         })
         .collect::<Vec<_>>();
     if !exact.is_empty() {
@@ -368,6 +395,7 @@ fn geometry_sources(
                 &positions,
                 &mesh.triangles,
                 &vec![None::<u8>; mesh.triangles.len()],
+                lines,
             )];
         }
     }
@@ -383,6 +411,7 @@ fn geometry_sources(
             &positions,
             &triangles,
             &vec![None::<u8>; triangles.len()],
+            lines,
         )];
     }
 
@@ -441,6 +470,7 @@ fn geometry_sources(
             Some(5),
             Some(5),
         ],
+        lines,
     )]
 }
 
@@ -546,6 +576,7 @@ fn build_render_geometry<G: Copy + Ord>(
     positions: &[[f32; 3]],
     triangles: &[[u32; 3]],
     face_groups: &[Option<G>],
+    lines: &[[[f32; 3]; 2]],
 ) -> GeometrySource {
     let feature_edges = feature_edges(positions, triangles, face_groups);
     let face_normals = triangles
@@ -582,7 +613,7 @@ fn build_render_geometry<G: Copy + Ord>(
         }
     }
     let indices = (0..vertices.len() as u32).collect::<Vec<_>>();
-    let edge_vertices = edge_quads(positions, &feature_edges);
+    let edge_vertices = edge_quads(positions, &feature_edges, lines);
     GeometrySource {
         fingerprint: geometry_fingerprint(kind, &vertices, &indices, &edge_vertices),
         vertices,
@@ -596,10 +627,17 @@ fn build_render_geometry<G: Copy + Ord>(
 /// thin slivers along notched outlines, and a line confined to the triangle owning
 /// the edge came out dotted wherever the sliver narrowed below a pixel. Faces mesh
 /// separately, so the edge two faces share appears twice and is drawn once.
-fn edge_quads(positions: &[[f32; 3]], feature_edges: &BTreeSet<[u32; 2]>) -> Vec<EdgeVertex> {
+/// `lines` are drawn the same way.
+fn edge_quads(
+    positions: &[[f32; 3]],
+    feature_edges: &BTreeSet<[u32; 2]>,
+    lines: &[[[f32; 3]; 2]],
+) -> Vec<EdgeVertex> {
     let mut segments = BTreeSet::new();
-    for [first, second] in feature_edges {
-        let ends = [positions[*first as usize], positions[*second as usize]];
+    let edge_ends = feature_edges
+        .iter()
+        .map(|[first, second]| [positions[*first as usize], positions[*second as usize]]);
+    for ends in edge_ends.chain(lines.iter().copied()) {
         let [start, end] = ends.map(|point| point.map(f32::to_bits));
         match start.cmp(&end) {
             std::cmp::Ordering::Less => segments.insert([start, end]),
@@ -645,11 +683,14 @@ fn normalize(vector: [f32; 3]) -> [f32; 3] {
 }
 
 /// The unit vector in GPU single precision; a degenerate vector stays as is.
-#[allow(clippy::cast_possible_truncation)]
 fn unit(vector: [f64; 3]) -> [f32; 3] {
-    linalg::normalize(vector)
-        .unwrap_or(vector)
-        .map(|value| value as f32)
+    single_precision(linalg::normalize(vector).unwrap_or(vector))
+}
+
+/// `point` in GPU single precision, rounded to the nearest `f32`.
+#[allow(clippy::cast_possible_truncation)]
+pub(crate) fn single_precision(point: [f64; 3]) -> [f32; 3] {
+    point.map(|value| value as f32)
 }
 
 fn geometry_fingerprint(

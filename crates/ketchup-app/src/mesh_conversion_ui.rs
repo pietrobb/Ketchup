@@ -197,11 +197,7 @@ impl KetchupApp {
                 }
                 self.exact.source = None;
                 self.exact.retry_at = None;
-                self.render.plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
-                    &snapshot,
-                    &self.exact.results,
-                    &mut self.render.cache,
-                )));
+                self.rebuild_render_plan(&snapshot);
                 self.hover.projection_cache.get_mut().take();
                 self.digest = self.catalog.text("digest-mesh-conversion-committed");
             }

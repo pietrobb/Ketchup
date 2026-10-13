@@ -2515,19 +2515,12 @@ impl KetchupApp {
             let plan = match self.render.plan.as_ref() {
                 Some(plan)
                     if plan.is_same_revision(&snapshot)
-                        && plan.matches_exact_results(&snapshot, &self.exact.results) =>
+                        && plan.matches_exact_results(&snapshot, &self.exact.results)
+                        && !self.render_plan_misses_program() =>
                 {
                     Arc::clone(plan)
                 }
-                _ => {
-                    let plan = Arc::new(InstancedRenderPlan::from_snapshot(
-                        &snapshot,
-                        &self.exact.results,
-                        &mut self.render.cache,
-                    ));
-                    self.render.plan = Some(Arc::clone(&plan));
-                    plan
-                }
+                _ => self.rebuild_render_plan(&snapshot),
             };
             Some(if move_transform_overrides.is_empty() {
                 plan
