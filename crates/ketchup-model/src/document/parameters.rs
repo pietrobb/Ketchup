@@ -139,6 +139,7 @@ pub(super) fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Op
         {
             Some(distance.millimetres())
         }
+        FeatureKind::Draft(spec) if path == "angle" => Some(spec.angle_degrees),
         FeatureKind::WeldmentMember(spec) if path == "orientation" => {
             Some(spec.orientation_degrees)
         }
@@ -562,6 +563,10 @@ pub(super) fn set_feature_kind_parameter(
             if path == "distance" =>
         {
             *distance = dimension.clone();
+            true
+        }
+        FeatureKind::Draft(spec) if path == "angle" => {
+            spec.angle_degrees = value;
             true
         }
         FeatureKind::SurfaceKnit { tolerance, .. } if path == "tolerance" => {

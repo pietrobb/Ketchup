@@ -136,6 +136,9 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
 std::unique_ptr<NativeOperationResult> offset_body_face_native(
     const NativeOperationResult& body, std::uint32_t face_ordinal,
     double distance) noexcept;
+std::unique_ptr<NativeOperationResult> draft_body_native(
+    const NativeOperationResult& body, rust::Slice<const std::uint32_t> face_ordinals,
+    std::uint32_t neutral_ordinal, double angle_degrees) noexcept;
 std::unique_ptr<NativeOperationResult> finish_body_native(
     const NativeOperationResult& body, rust::Slice<const std::uint32_t> edge_ordinals,
     rust::Slice<const std::uint32_t> face_ordinals, double amount, bool fillet,

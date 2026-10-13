@@ -26,10 +26,10 @@ use ketchup_geometry::linalg::{self, Affine3, Vec3};
 use ketchup_model::cam::CAM_SIMULATION_SCHEMA_V1;
 use ketchup_model::document::Transform;
 use ketchup_model::exact_brep_graph::{
-    ExactBRepBooleanOperation, ExactBRepChamferMode, ExactBRepEdgeFinishKind, ExactBRepGraph,
-    ExactBRepLinearInterval, ExactBRepLoftContinuity, ExactBRepLoftSection, ExactBRepOperation,
-    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
-    ExactBRepProfileFaceReference, ExactBRepShellDirection, ExactBRepSpatialPath,
+    ExactBRepBooleanOperation, ExactBRepChamferMode, ExactBRepDraft, ExactBRepEdgeFinishKind,
+    ExactBRepGraph, ExactBRepLinearInterval, ExactBRepLoftContinuity, ExactBRepLoftSection,
+    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    ExactBRepProfile, ExactBRepProfileFaceReference, ExactBRepShellDirection, ExactBRepSpatialPath,
     ExactBRepSpatialPathSegment, ExactBRepTopologyKind, ExactBRepTopologySelector,
     ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
     exact_brep_planar_rectangle_bounds, exact_sheet_metal_shape,
@@ -1284,6 +1284,7 @@ fn evaluate_exact_brep_graph(
                 distance_bits,
             } => {
                 let target_output = &outputs[target.index()];
+                let distance = f64::from_bits(*distance_bits);
                 if let Some(profile_face) = profile_face {
                     let names = face_names[target.index()].as_ref().ok_or_else(|| {
                         exact_brep_graph_error(
@@ -1293,12 +1294,7 @@ fn evaluate_exact_brep_graph(
                     })?;
                     let face_name = exact_brep_profile_face_name(profile_face);
                     let named = backend
-                        .named_offset_face_output(
-                            target_output,
-                            names,
-                            &face_name,
-                            f64::from_bits(*distance_bits),
-                        )
+                        .named_offset_face_output(target_output, names, &face_name, distance)
                         .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
                     let (output, names) = named.into_output_and_names();
                     produced_face_names = Some(names);
@@ -1308,13 +1304,10 @@ fn evaluate_exact_brep_graph(
                         exact_brep_graph_error(graph, "face offset selector is missing")
                     })?;
                     let ordinal = exact_brep_face_ordinal(graph, *target, target_output, face)?;
-                    backend.offset_body_face(
-                        &target_output.body,
-                        ordinal,
-                        f64::from_bits(*distance_bits),
-                    )?
+                    backend.offset_body_face(&target_output.body, ordinal, distance)?
                 }
             }
+            ExactBRepOperation::Draft(draft) => evaluate_draft(backend, graph, &outputs, draft)?,
             ExactBRepOperation::EdgeFinish {
                 target,
                 edges,
@@ -1482,6 +1475,7 @@ fn evaluate_exact_brep_graph(
             ExactBRepOperation::Extrude { .. } => true,
             ExactBRepOperation::ProfileCut { target, .. }
             | ExactBRepOperation::FaceOffset { target, .. }
+            | ExactBRepOperation::Draft(ExactBRepDraft { target, .. })
             | ExactBRepOperation::EdgeFinish { target, .. }
             | ExactBRepOperation::Boolean { target, .. }
             | ExactBRepOperation::RigidTransform { target, .. } => {
@@ -1742,6 +1736,29 @@ fn exact_brep_face_ordinal(
         ));
     };
     Ok(ordinal)
+}
+
+fn evaluate_draft(
+    backend: &ExactBackend,
+    graph: &ExactBRepGraph,
+    outputs: &[ExactOpOutput],
+    draft: &ExactBRepDraft,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let target_output = &outputs[draft.target.index()];
+    let faces = exact_brep_topology_ordinals(
+        graph,
+        draft.target,
+        target_output,
+        &draft.faces,
+        ExactBRepTopologyKind::Face,
+    )?;
+    let neutral = exact_brep_face_ordinal(graph, draft.target, target_output, &draft.neutral)?;
+    backend.draft_body(
+        &target_output.body,
+        &faces,
+        neutral,
+        f64::from_bits(draft.angle_degrees_bits),
+    )
 }
 
 fn exact_brep_chamfer_ordinal_pairs(

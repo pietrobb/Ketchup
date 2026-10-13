@@ -861,6 +861,37 @@ pub struct WeldmentJointSpec {
     pub primary: WeldmentJointPrimary,
 }
 
+/// Smallest draft angle either way, in degrees: a smaller tilt is a straight wall
+/// to every mould and every drawing.
+pub const MIN_DRAFT_ANGLE_DEGREES: f64 = 0.1;
+
+/// Largest draft angle either way, in degrees: beyond it a draft is a chamfer or a
+/// new face, not a tilted wall.
+pub const MAX_DRAFT_ANGLE_DEGREES: f64 = 45.0;
+
+/// Tilts `faces` of body `target` by `angle_degrees` about their line on the flat
+/// `neutral` face. The pull points from `neutral` into the body: a positive angle
+/// narrows the body away from the neutral face, a negative one widens it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DraftSpec {
+    pub target: FeatureId,
+    pub faces: Vec<FaceRef>,
+    pub neutral: FaceRef,
+    pub angle_degrees: f64,
+}
+
+impl DraftSpec {
+    /// The recorded references of the drafted faces and of the neutral face, or
+    /// `None` when one of them is not a recorded reference.
+    #[must_use]
+    pub fn recorded_faces(&self) -> Option<(Vec<TopologicalElementRef>, &TopologicalElementRef)> {
+        Some((
+            FaceRef::all_topological(&self.faces)?,
+            self.neutral.topological()?,
+        ))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FeatureKind {
     Workplane(WorkplaneSpec),
@@ -912,6 +943,7 @@ pub enum FeatureKind {
         face: FaceRef,
         distance: Dimension,
     },
+    Draft(DraftSpec),
     Boolean {
         operation: BooleanOperation,
         target: FeatureId,
@@ -989,6 +1021,14 @@ impl FeatureKind {
             Self::FaceOffset { target, face, .. } => {
                 Some((*target, face.topological().into_iter().collect()))
             }
+            Self::Draft(spec) => Some((
+                spec.target,
+                spec.faces
+                    .iter()
+                    .chain([&spec.neutral])
+                    .filter_map(FaceRef::topological)
+                    .collect(),
+            )),
             _ => None,
         }
     }
@@ -1334,6 +1374,9 @@ impl FeatureKind {
             Self::FaceOffset { .. } | Self::PlanarOffset { .. } | Self::SurfaceExtend { .. } => {
                 push_parameter_descriptor(&mut descriptors, "distance", ParameterValueType::Length);
             }
+            Self::Draft(_) => {
+                push_parameter_descriptor(&mut descriptors, "angle", ParameterValueType::Angle);
+            }
             Self::SurfaceKnit { .. } => {
                 push_parameter_descriptor(&mut descriptors, "tolerance", ParameterValueType::Length)
             }
@@ -1449,7 +1492,8 @@ impl FeatureKind {
                 .collect(),
             Self::Shell { target, .. }
             | Self::EdgeFinish { target, .. }
-            | Self::FaceOffset { target, .. } => [*target].into_iter().collect(),
+            | Self::FaceOffset { target, .. }
+            | Self::Draft(DraftSpec { target, .. }) => [*target].into_iter().collect(),
             Self::Boolean { target, tool, .. } => [*target, *tool].into_iter().collect(),
             Self::Sweep { profile, path, .. } => [*profile, *path].into_iter().collect(),
             Self::WeldmentMember(spec) => [spec.profile, spec.path].into_iter().collect(),
@@ -1509,6 +1553,7 @@ impl FeatureKind {
             | Self::Shell { .. }
             | Self::EdgeFinish { .. }
             | Self::FaceOffset { .. }
+            | Self::Draft(_)
             | Self::Boolean { .. }
             | Self::Sweep { .. }
             | Self::WeldmentMember(_)

@@ -1,9 +1,9 @@
 use crate::document::{
-    BodyKind, BooleanOperation, CanonicalError, ChamferMode, DefinitionId, Dimension,
-    EdgeFinishKind, EdgeRef, FaceRef, FeatureDependencyGraph, FeatureId, FeatureKind,
-    LoftContinuity, LoftSection, ProfileFaceReference, ProfileSegment, ShellDirection, Snapshot,
-    SpatialPathSegment, SurfaceBodySpec, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
-    solved_sketch_sweep_path,
+    BodyKind, BooleanOperation, CanonicalError, ChamferEdgeSide, ChamferMode, DefinitionId,
+    Dimension, DraftSpec, EdgeFinishKind, EdgeRef, FaceRef, FeatureDependencyGraph, FeatureId,
+    FeatureKind, LoftContinuity, LoftSection, ProfileFaceReference, ProfileSegment, ShellDirection,
+    Snapshot, SpatialPathSegment, SurfaceBodySpec, Transform, WeldmentJointPolicy,
+    WeldmentJointPrimary, solved_sketch_sweep_path,
 };
 use crate::exact_product::{
     ExactCircleProfile, ExactPlanarOffsetRegion, accepts_planar_circle_offset_geometry,
@@ -477,6 +477,7 @@ pub enum ExactBRepOperation {
         profile_face: Option<ExactBRepProfileFaceReference>,
         distance_bits: u64,
     },
+    Draft(ExactBRepDraft),
     Revolve {
         profile: ExactBRepProfileId,
         axis_start_bits: [u64; 2],
@@ -567,6 +568,7 @@ impl ExactBRepOperation {
             | Self::Shell { target, .. }
             | Self::EdgeFinish { target, .. }
             | Self::FaceOffset { target, .. }
+            | Self::Draft(ExactBRepDraft { target, .. })
             | Self::SurfaceExtend { target, .. }
             | Self::SurfaceThicken { target, .. }
             | Self::RigidTransform { target, .. } => vec![*target],
@@ -611,11 +613,23 @@ impl ExactBRepOperation {
             | Self::Shell { .. }
             | Self::EdgeFinish { .. }
             | Self::FaceOffset { .. }
+            | Self::Draft(_)
             | Self::SheetMetal { .. }
             | Self::ImportedExact { .. }
             | Self::RigidTransform { .. } => Vec::new(),
         }
     }
+}
+
+/// Tilts `faces` about their line on the flat `neutral` face; see
+/// `DraftSpec`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactBRepDraft {
+    pub target: ExactBRepNodeId,
+    pub faces: Vec<ExactBRepTopologySelector>,
+    pub neutral: ExactBRepTopologySelector,
+    pub angle_degrees_bits: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

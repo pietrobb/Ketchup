@@ -1,5 +1,7 @@
 #include "native_common.hxx"
 
+#include <BRepAlgoAPI_Section.hxx>
+#include <BRepOffsetAPI_DraftAngle.hxx>
 #include <BRepTools_ReShape.hxx>
 #include <Geom2d_Curve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
@@ -611,6 +613,115 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
       }
     }
     return collect_finished(operation);
+  });
+}
+
+// Tilts each selected face by `angle_degrees` about its line on the neutral plane.
+// The pull direction points from the neutral face into the body; a positive angle
+// leans the faces inward along it, so the body narrows away from the neutral plane.
+// Only planes and cylinders along the pull are drafted; every refusal names its cause.
+std::unique_ptr<NativeOperationResult> draft_body_native(
+    const NativeOperationResult& body,
+    rust::Slice<const std::uint32_t> face_ordinals,
+    std::uint32_t neutral_ordinal,
+    double angle_degrees) noexcept {
+  return guarded([&] {
+    if (!body.valid() || face_ordinals.empty() || face_ordinals.size() > 64
+        || neutral_ordinal >= body.impl().summary.face_count
+        || !std::isfinite(angle_degrees) || angle_degrees == 0.0
+        || std::abs(angle_degrees) >= 90.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Body draft payload is outside the bounded envelope");
+    }
+    const TopoDS_Face neutral = face_at_ordinal(body.impl().shape, neutral_ordinal);
+    gp_Dir neutral_normal;
+    if (neutral.IsNull() || !oriented_planar_face_normal(neutral, neutral_normal)) {
+      return error_result(STATUS_INVALID_PARAMETER,
+          "draft_neutral_face_not_planar: the neutral face must be flat");
+    }
+    const gp_Dir pull = neutral_normal.Reversed();
+    const gp_Pln neutral_plane(
+        BRepAdaptor_Surface(neutral, false).Plane().Location(), neutral_normal);
+    const double angular = tolerances().angular_rad;
+    std::vector<TopoDS_Face> selected;
+    std::uint32_t previous = 0;
+    bool first = true;
+    for (const std::uint32_t ordinal : face_ordinals) {
+      if ((!first && ordinal <= previous) || ordinal >= body.impl().summary.face_count
+          || ordinal == neutral_ordinal) {
+        return error_result(STATUS_INVALID_PARAMETER,
+            "Draft face ordinals are invalid, non-canonical or include the neutral face");
+      }
+      previous = ordinal;
+      first = false;
+      const TopoDS_Face face = face_at_ordinal(body.impl().shape, ordinal);
+      if (face.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Draft selected face is absent");
+      }
+      const BRepAdaptor_Surface surface(face, false);
+      const std::string which = "face " + std::to_string(ordinal);
+      if (surface.GetType() == GeomAbs_Plane) {
+        if (surface.Plane().Axis().Direction().IsParallel(pull, angular)) {
+          return error_result(STATUS_INVALID_PARAMETER,
+              "draft_face_perpendicular_to_pull: " + which
+              + " faces along the pull direction, so it has no wall to tilt");
+        }
+      } else if (surface.GetType() == GeomAbs_Cylinder) {
+        if (!surface.Cylinder().Axis().Direction().IsParallel(pull, angular)) {
+          return error_result(STATUS_INVALID_PARAMETER,
+              "draft_cylinder_axis_not_along_pull: the axis of cylindrical " + which
+              + " is not along the pull direction");
+        }
+      } else {
+        return error_result(STATUS_INVALID_PARAMETER,
+            "draft_unsupported_surface: " + which + " is neither flat nor cylindrical");
+      }
+      BRepAlgoAPI_Section section(face, neutral_plane, false);
+      section.Build();
+      if (!section.IsDone() || section.HasErrors()
+          || (count_subshapes(section.Shape(), TopAbs_EDGE) == 0
+              && count_subshapes(section.Shape(), TopAbs_VERTEX) == 0)) {
+        return error_result(STATUS_INVALID_PARAMETER,
+            "draft_neutral_plane_misses_face: the neutral plane neither crosses nor touches "
+            + which);
+      }
+      selected.push_back(face);
+    }
+
+    constexpr double DEGREES_TO_RADIANS = 3.14159265358979323846 / 180.0;
+    BRepOffsetAPI_DraftAngle draft(body.impl().shape);
+    bool built = true;
+    try {
+      for (const TopoDS_Face& face : selected) {
+        draft.Add(face, pull, angle_degrees * DEGREES_TO_RADIANS, neutral_plane);
+        built = built && draft.AddDone();
+      }
+      if (built) draft.Build();
+    } catch (const Standard_Failure&) {
+      // OCCT throws when a tilted face no longer meets its neighbours.
+      built = false;
+    }
+    if (!built || !draft.IsDone() || draft.Shape().IsNull()
+        || !BRepCheck_Analyzer(draft.Shape()).IsValid()
+        || count_subshapes(draft.Shape(), TopAbs_SOLID) != 1
+        || count_subshapes(draft.Shape(), TopAbs_FACE)
+            != count_subshapes(body.impl().shape, TopAbs_FACE)) {
+      return error_result(STATUS_DEGENERATE_OPERATION,
+          "draft_face_degenerates: tilting the faces by this angle would collapse a face "
+          "or the body");
+    }
+    const TopoDS_Shape result = draft.Shape();
+    std::vector<HistoryRecord> history;
+    append_propagated_history(history, draft, result, body.impl());
+    for (std::size_t index = 0; index < selected.size(); ++index) {
+      const std::string source_id = "generated-result/face/" + std::to_string(face_ordinals[index]);
+      const NCollection_List<TopoDS_Shape>& modified = draft.Modified(selected[index]);
+      for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+           iterator.More(); iterator.Next()) {
+        history.push_back(history_record(
+            "", "draft_selected_modified", source_id, result, iterator.Value()));
+      }
+    }
+    return success_result(result, std::move(history));
   });
 }
 

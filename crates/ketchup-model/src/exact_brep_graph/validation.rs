@@ -1,4 +1,5 @@
 use super::*;
+use crate::document::{MAX_DRAFT_ANGLE_DEGREES, MIN_DRAFT_ANGLE_DEGREES};
 use ketchup_tolerance::MAX_COORDINATE_MM;
 use ketchup_tolerance::limits;
 
@@ -330,8 +331,13 @@ pub(super) fn operation_requires_v15(operation: &ExactBRepOperation) -> bool {
     )
 }
 
+/// No build before draft wrote a draft node, so draft shares the newest schema
+/// instead of adding one.
 pub(super) fn operation_requires_v23(operation: &ExactBRepOperation) -> bool {
-    matches!(operation, ExactBRepOperation::SurfaceThicken { .. })
+    matches!(
+        operation,
+        ExactBRepOperation::SurfaceThicken { .. } | ExactBRepOperation::Draft(_)
+    )
 }
 
 pub(super) fn operation_requires_v22(operation: &ExactBRepOperation) -> bool {
@@ -819,6 +825,29 @@ pub(super) fn valid_operation(
                 } else {
                     valid_profile_face && prior_nodes.get(target.0 as usize).is_some()
                 }
+        }
+        ExactBRepOperation::Draft(ExactBRepDraft {
+            target,
+            faces,
+            neutral,
+            angle_degrees_bits,
+        }) => {
+            let angle = f64::from_bits(*angle_degrees_bits).abs();
+            (MIN_DRAFT_ANGLE_DEGREES..=MAX_DRAFT_ANGLE_DEGREES).contains(&angle)
+                && !faces.is_empty()
+                && !faces.contains(neutral)
+                && [faces.as_slice(), std::slice::from_ref(neutral)]
+                    .into_iter()
+                    .all(|selectors| {
+                        valid_topology_selectors(
+                            selectors,
+                            ExactBRepTopologyKind::Face,
+                            document_id,
+                            definition_id,
+                            *target,
+                            prior_nodes,
+                        )
+                    })
         }
         ExactBRepOperation::Revolve {
             axis_start_bits,

@@ -13,8 +13,8 @@ use ketchup_model::cam::{
 };
 use ketchup_model::document::{
     BodyKind, BooleanOperation, CanonicalCommand, CanonicalError, ChamferEdgeSide, ChamferMode,
-    CommandBatch, DefinitionId, Dimension, DocumentStore, EdgeFinishKind, EdgeRef, FaceRef,
-    FeatureId, FeatureKind, FeatureParameterTarget, FilletRadiusStation, InstancePath,
+    CommandBatch, DefinitionId, Dimension, DocumentStore, DraftSpec, EdgeFinishKind, EdgeRef,
+    FaceRef, FeatureId, FeatureKind, FeatureParameterTarget, FilletRadiusStation, InstancePath,
     LoftContinuity, LoftSection, NodeId, OccurrenceId, ParameterValueType, ProfileSegment,
     ShellDirection, Snapshot, SolidToolPlan, SpatialPathSegment, SurfaceBodySpec, Transform,
 };
@@ -7205,5 +7205,160 @@ fn a_closed_profile_drawn_either_way_round_extrudes_the_same_solid() {
     // stops a closed spline from compiling into the exact graph.
     for points in [square.to_vec(), reversed(&square)] {
         graph(FeatureKind::closed_spline(&points)).expect("closed spline in either direction");
+    }
+}
+
+/// A draft is one feature in the chain: it tilts the recorded sides of a box about
+/// its bottom into an exact frustum, keeps its angle across save and reopen, and a
+/// draft the document cannot take changes nothing.
+#[test]
+fn draft_feature_tilts_recorded_sides_into_an_exact_frustum_and_survives_reopen() {
+    let _turn = crate::integration_support::file_turn();
+    let definition = DefinitionId(37);
+    let profile = FeatureId(3_700);
+    let base = FeatureId(3_701);
+    let draft = FeatureId(3_702);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Drafted box".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Square".into(),
+                kind: FeatureKind::polygon(&[
+                    [0.0, 0.0],
+                    [100.0, 0.0],
+                    [100.0, 100.0],
+                    [0.0, 100.0],
+                ]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: base,
+                definition_id: definition,
+                name: "Box".into(),
+                kind: FeatureKind::extrusion(profile, dimension(50.0)),
+            },
+        ]))
+        .unwrap();
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let base_graph = ExactBRepGraph::from_snapshot(&document.current(), definition, base).unwrap();
+    let base_package = supervisor.evaluate_exact_brep_graph(&base_graph).unwrap();
+    // The face references are listed in face ordinal order.
+    let face_references = base_package
+        .topological_references
+        .iter()
+        .filter(|reference| reference.kind == TopologicalElementKind::Face)
+        .collect::<Vec<_>>();
+    let face_facing = |normal_z: f64| {
+        let mut faces = base_package
+            .face_evidence
+            .iter()
+            .filter(|face| (face.unit_normal[2] - normal_z).abs() < 1e-9)
+            .map(|face| face_references[face.face_ordinal as usize].clone())
+            .map(FaceRef::from)
+            .collect::<Vec<_>>();
+        faces.sort_unstable_by(|left, right| left.topological().cmp(&right.topological()));
+        faces
+    };
+    let (bottom, sides, top) = (face_facing(-1.0), face_facing(0.0), face_facing(1.0));
+    assert_eq!((bottom.len(), sides.len(), top.len()), (1, 4, 1));
+    let draft_kind = |faces: Vec<FaceRef>, angle_degrees: f64| {
+        FeatureKind::Draft(DraftSpec {
+            target: base,
+            faces,
+            neutral: bottom[0].clone(),
+            angle_degrees,
+        })
+    };
+
+    let before = document.current();
+    for (kind, error) in [
+        (
+            draft_kind(sides.clone(), 45.5),
+            "canonical.draft_angle_out_of_range",
+        ),
+        (
+            draft_kind(sides.clone(), 0.05),
+            "canonical.draft_angle_out_of_range",
+        ),
+        (
+            draft_kind(bottom.clone(), 5.0),
+            "canonical.invalid_topological_feature_reference",
+        ),
+    ] {
+        let Err(refused) =
+            document.apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id: draft,
+                definition_id: definition,
+                name: "Refused draft".into(),
+                kind,
+            }]))
+        else {
+            panic!("the document took a draft it must refuse");
+        };
+        assert_eq!(refused.code(), error);
+        assert_eq!(
+            document.current().canonical_digest(),
+            before.canonical_digest()
+        );
+        assert!(document.current().revision_id() == before.revision_id());
+    }
+
+    for angle in [5.0_f64, -5.0] {
+        let mut drafted = DocumentStore::from_snapshot(&before).unwrap();
+        drafted
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id: draft,
+                definition_id: definition,
+                name: "Draft".into(),
+                kind: draft_kind(sides.clone(), angle),
+            }]))
+            .unwrap();
+        let snapshot = drafted.current();
+        let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, draft).unwrap();
+        assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V23);
+        let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+        let top_side = 100.0 - 100.0 * angle.to_radians().tan();
+        let (a1, a2) = (100.0 * 100.0, top_side * top_side);
+        let frustum = 50.0 / 3.0 * (a1 + a2 + (a1 * a2).sqrt());
+        assert!(
+            (package.volume_mm3 - frustum).abs() <= frustum * 1e-9,
+            "{} != {frustum}",
+            package.volume_mm3
+        );
+
+        let bytes = persistence::save(&snapshot);
+        let reopened = persistence::load(&bytes).unwrap().snapshot();
+        assert_eq!(persistence::save(&reopened), bytes);
+        assert_eq!(reopened.canonical_digest(), snapshot.canonical_digest());
+        assert!(matches!(
+            reopened.feature(draft).unwrap().kind(),
+            FeatureKind::Draft(spec) if spec.angle_degrees == angle
+        ));
+    }
+
+    // The document takes these drafts, but the kernel refuses each by name: the top
+    // faces the pull, and 45 degrees on the 50 mm walls closes the top to nothing.
+    for (kind, cause) in [
+        (draft_kind(top, 5.0), "draft_face_perpendicular_to_pull"),
+        (draft_kind(sides, 45.0), "draft_face_degenerates"),
+    ] {
+        let mut refused = DocumentStore::from_snapshot(&before).unwrap();
+        refused
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id: draft,
+                definition_id: definition,
+                name: "Refused draft".into(),
+                kind,
+            }]))
+            .unwrap();
+        let graph = ExactBRepGraph::from_snapshot(&refused.current(), definition, draft).unwrap();
+        let error = supervisor.evaluate_exact_brep_graph(&graph).unwrap_err();
+        assert!(error.to_string().contains(cause), "{error}");
     }
 }

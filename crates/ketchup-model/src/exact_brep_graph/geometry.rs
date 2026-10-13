@@ -149,6 +149,30 @@ pub(super) fn topology_selector(
     .ok_or(ExactBRepGraphError::InvalidTopologySelector)
 }
 
+/// The selectors of each chamfered edge and its recorded side face.
+pub(super) fn chamfer_edge_side_selectors(
+    sides: &[ChamferEdgeSide],
+    target_feature_id: FeatureId,
+) -> Result<Vec<ExactBRepChamferEdgeSide>, ExactBRepGraphError> {
+    sides
+        .iter()
+        .map(|side| {
+            Ok(ExactBRepChamferEdgeSide {
+                edge: topology_selector(
+                    &side.edge,
+                    TopologicalElementKind::Edge,
+                    target_feature_id,
+                )?,
+                side_face: topology_selector(
+                    &side.side_face,
+                    TopologicalElementKind::Face,
+                    target_feature_id,
+                )?,
+            })
+        })
+        .collect()
+}
+
 pub(super) fn topology_selectors(
     references: &[TopologicalElementRef],
     expected_kind: TopologicalElementKind,

@@ -131,6 +131,7 @@ pub(super) fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
             | FeatureKind::Shell { .. }
             | FeatureKind::EdgeFinish { .. }
             | FeatureKind::FaceOffset { .. }
+            | FeatureKind::Draft(_)
             | FeatureKind::SurfaceThicken { .. }
             | FeatureKind::Boolean { .. }
             | FeatureKind::Sweep { .. }
@@ -245,6 +246,7 @@ pub(super) fn primary_solid_dependency(kind: &FeatureKind) -> Option<FeatureId> 
         FeatureKind::Shell { target, .. }
         | FeatureKind::EdgeFinish { target, .. }
         | FeatureKind::FaceOffset { target, .. }
+        | FeatureKind::Draft(DraftSpec { target, .. })
         | FeatureKind::SurfaceThicken { target, .. }
         | FeatureKind::Boolean { target, .. }
         | FeatureKind::RigidTransform { target, .. } => Some(*target),
@@ -1055,6 +1057,7 @@ pub(super) fn validate_feature_kind(
             Ok(())
         }
         FeatureKind::FaceOffset { face, distance, .. } => validate_face_offset(face, distance),
+        FeatureKind::Draft(spec) => validate_draft(spec),
         FeatureKind::ImportedExactBody(spec) => validate_imported_exact_body(spec),
         FeatureKind::RigidTransform { transform, .. } => {
             transform
@@ -1201,6 +1204,28 @@ fn validate_face_offset(face: &FaceRef, distance: &Dimension) -> Result<(), Cano
         FaceRef::Named(face) if face.is_valid() => Ok(()),
         FaceRef::Named(_) => Err(CanonicalError::InvalidTopologicalFeatureReference),
     }
+}
+
+/// A draft tilts at least one recorded face, never its own neutral face, by an
+/// angle in range either way.
+fn validate_draft(spec: &DraftSpec) -> Result<(), CanonicalError> {
+    let angle = spec.angle_degrees;
+    if !angle.is_finite()
+        || !(MIN_DRAFT_ANGLE_DEGREES..=MAX_DRAFT_ANGLE_DEGREES).contains(&angle.abs())
+    {
+        return Err(CanonicalError::DraftAngleOutOfRange);
+    }
+    let Some((recorded, neutral)) = spec.recorded_faces() else {
+        return Err(CanonicalError::InvalidTopologicalFeatureReference);
+    };
+    if recorded.is_empty() || recorded.contains(neutral) {
+        return Err(CanonicalError::InvalidTopologicalFeatureReference);
+    }
+    validate_topological_feature_references(&recorded, TopologicalElementKind::Face)?;
+    validate_topological_feature_references(
+        std::slice::from_ref(neutral),
+        TopologicalElementKind::Face,
+    )
 }
 
 pub(super) fn validate_imported_exact_body(

@@ -1,8 +1,8 @@
 //! Narrow, exception-safe exact geometry boundary used by the A0 gate.
 
 use ketchup_tolerance::{
-    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM,
-    NEGLIGIBLE, ROUNDING,
+    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_ANGULAR_TOLERANCE_RAD,
+    DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, NEGLIGIBLE, ROUNDING,
 };
 use std::fmt;
 
@@ -48,6 +48,7 @@ const fn native_tolerances() -> ffi::NativeTolerances {
         accumulated_rounding: ACCUMULATED_ROUNDING,
         approximation: APPROXIMATION,
         negligible: NEGLIGIBLE,
+        angular_rad: DEFAULT_ANGULAR_TOLERANCE_RAD,
     }
 }
 
@@ -62,6 +63,7 @@ mod ffi {
         accumulated_rounding: f64,
         approximation: f64,
         negligible: f64,
+        angular_rad: f64,
     }
 
     extern "Rust" {
@@ -382,6 +384,12 @@ mod ffi {
             body: &NativeOperationResult,
             face_ordinal: u32,
             distance: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn draft_body_native(
+            body: &NativeOperationResult,
+            face_ordinals: &[u32],
+            neutral_ordinal: u32,
+            angle_degrees: f64,
         ) -> UniquePtr<NativeOperationResult>;
         #[allow(clippy::too_many_arguments)]
         fn finish_body_native(

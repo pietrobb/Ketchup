@@ -75,6 +75,17 @@ pub(super) fn operation_bounds(
             distance_bits,
             ..
         } => grown_bounds(node_bounds, *target, |_| f64::from_bits(*distance_bits)),
+        // A tilted face moves at most its reach across the body times the tilt.
+        ExactBRepOperation::Draft(draft) => grown_bounds(node_bounds, draft.target, |bounds| {
+            let reach = (0..3)
+                .map(|axis| bounds[1][axis] - bounds[0][axis])
+                .fold(0.0, f64::max);
+            reach
+                * f64::from_bits(draft.angle_degrees_bits)
+                    .abs()
+                    .to_radians()
+                    .tan()
+        }),
         ExactBRepOperation::RigidTransform {
             target,
             matrix_bits,

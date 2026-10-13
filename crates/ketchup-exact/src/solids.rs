@@ -256,6 +256,47 @@ impl ExactBackend {
         )
     }
 
+    /// Tilts `face_ordinals` by `angle_degrees` about their line on the flat neutral
+    /// face. The pull points from the neutral face into the body; a positive angle
+    /// narrows the body away from the neutral face, a negative one widens it.
+    pub fn draft_body(
+        &self,
+        body: &ExactBody,
+        face_ordinals: &[u32],
+        neutral_ordinal: u32,
+        angle_degrees: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "draft_body:{}:{face_ordinals:?}:{neutral_ordinal}:{:016x}",
+            body.result_fingerprint,
+            angle_degrees.to_bits()
+        );
+        if face_ordinals.is_empty()
+            || !canonical_ordinals(face_ordinals, body.topology.face_count)
+            || neutral_ordinal >= body.topology.face_count
+            || face_ordinals.contains(&neutral_ordinal)
+            || !angle_degrees.is_finite()
+            || angle_degrees == 0.0
+            || angle_degrees.abs() >= 90.0
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "draft_body",
+                &input,
+                "Draft needs a canonical in-range face selection without the neutral face \
+                 and a non-zero angle below 90 degrees"
+                    .to_owned(),
+            ));
+        }
+        let native = body.owned_native("Exact body", "draft_body", &input)?;
+        collect_output(
+            ffi::draft_body_native(native, face_ordinals, neutral_ordinal, angle_degrees),
+            "draft_body",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
     pub fn finish_body(
         &self,
         body: &ExactBody,

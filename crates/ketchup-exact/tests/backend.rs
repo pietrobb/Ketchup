@@ -1744,3 +1744,213 @@ fn exact_cylinder_volume_mesh_reports_bounded_geometric_error() {
             .all(|triangle| triangle.face_ordinal < body.body.topology.face_count)
     );
 }
+
+/// The faces of `body` on `kind` surfaces whose outward normal is `normal`.
+fn faces_facing(body: &ketchup_exact::ExactBody, kind: &str, normal: [f64; 3]) -> Vec<u32> {
+    body.topology
+        .faces
+        .iter()
+        .filter(|face| {
+            face.surface_kind == kind
+                && (face.normal.x - normal[0]).abs() < 1e-9
+                && (face.normal.y - normal[1]).abs() < 1e-9
+                && (face.normal.z - normal[2]).abs() < 1e-9
+        })
+        .map(|face| face.ordinal)
+        .collect()
+}
+
+fn box_100_100_50(backend: &ExactBackend) -> ExactOpOutput {
+    backend
+        .make_box(BoxSpec {
+            origin_mm: Point3::ORIGIN,
+            size_mm: Size3 {
+                x: 100.0,
+                y: 100.0,
+                z: 50.0,
+            },
+        })
+        .unwrap()
+}
+
+fn box_sides(body: &ketchup_exact::ExactBody) -> Vec<u32> {
+    let mut sides = [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+    ]
+    .into_iter()
+    .flat_map(|normal| faces_facing(body, "plane", normal))
+    .collect::<Vec<_>>();
+    sides.sort_unstable();
+    sides
+}
+
+fn assert_relative(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() <= expected.abs() * 1e-9,
+        "{actual} != {expected}"
+    );
+}
+
+/// Drafting the four sides of a box from its bottom gives a frustum whose top is
+/// smaller for a positive angle and larger for a negative one, with each side
+/// tilted by exactly the angle.
+#[test]
+fn drafting_box_sides_from_the_bottom_gives_an_exact_frustum_either_way() {
+    let backend = ExactBackend::new();
+    let base = box_100_100_50(&backend);
+    let bottom = faces_facing(&base.body, "plane", [0.0, 0.0, -1.0]);
+    let sides = box_sides(&base.body);
+    assert_eq!((bottom.len(), sides.len()), (1, 4));
+    for angle in [5.0_f64, -5.0] {
+        let drafted = backend
+            .draft_body(&base.body, &sides, bottom[0], angle)
+            .unwrap();
+        assert_valid(&drafted);
+        let tilt = angle.to_radians();
+        let top_side = 100.0 - 2.0 * 50.0 * tilt.tan();
+        let (a1, a2) = (100.0 * 100.0, top_side * top_side);
+        assert_relative(
+            drafted.body.topology.volume_mm3,
+            50.0 / 3.0 * (a1 + a2 + (a1 * a2).sqrt()),
+        );
+        assert_eq!(drafted.body.topology.face_count, 6);
+        let tilted = drafted
+            .body
+            .topology
+            .faces
+            .iter()
+            .filter(|face| face.normal.z.abs() < 0.5)
+            .collect::<Vec<_>>();
+        assert_eq!(tilted.len(), 4);
+        for face in tilted {
+            assert!((face.normal.z - tilt.sin()).abs() < 1e-12, "{face:?}");
+        }
+    }
+}
+
+/// A cylinder drafted from its bottom becomes an exact cone frustum.
+#[test]
+fn drafting_a_cylinder_from_its_bottom_gives_an_exact_cone_frustum() {
+    let backend = ExactBackend::new();
+    let base = backend
+        .extrude_circle(CircleExtrudeSpec {
+            center_mm: [0.0, 0.0],
+            radius_mm: 25.0,
+            height_mm: 50.0,
+        })
+        .unwrap();
+    let bottom = faces_facing(&base.body, "plane", [0.0, 0.0, -1.0]);
+    let wall = base
+        .body
+        .topology
+        .faces
+        .iter()
+        .filter(|face| face.surface_kind == "cylinder")
+        .map(|face| face.ordinal)
+        .collect::<Vec<_>>();
+    assert_eq!(bottom.len(), 1);
+    assert!(!wall.is_empty());
+    let drafted = backend
+        .draft_body(&base.body, &wall, bottom[0], 5.0)
+        .unwrap();
+    assert_valid(&drafted);
+    let (r1, r2) = (25.0_f64, 25.0 - 50.0 * 5.0_f64.to_radians().tan());
+    assert_relative(
+        drafted.body.topology.volume_mm3,
+        std::f64::consts::PI * 50.0 / 3.0 * (r1 * r1 + r1 * r2 + r2 * r2),
+    );
+}
+
+/// The name a refused draft gives its cause: the diagnostic up to the first colon.
+fn draft_refusal(result: Result<ExactOpOutput, ketchup_exact::GeometryError>) -> String {
+    let error = result.expect_err("the draft must be refused");
+    error
+        .diagnostic
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// Each draft the kernel cannot make is refused with the name of its cause.
+#[test]
+fn drafts_that_cannot_be_made_are_refused_by_name() {
+    let backend = ExactBackend::new();
+    let base = box_100_100_50(&backend);
+    let bottom = faces_facing(&base.body, "plane", [0.0, 0.0, -1.0])[0];
+    let top = faces_facing(&base.body, "plane", [0.0, 0.0, 1.0])[0];
+    let east = faces_facing(&base.body, "plane", [1.0, 0.0, 0.0])[0];
+
+    assert_eq!(
+        draft_refusal(backend.draft_body(&base.body, &[top], bottom, 5.0)),
+        "draft_face_perpendicular_to_pull"
+    );
+    assert_eq!(
+        backend
+            .draft_body(&base.body, &[east], east, 5.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidParameter
+    );
+    // 45 degrees on the 50 mm walls of a 100 mm box closes its top to nothing.
+    assert_eq!(
+        draft_refusal(backend.draft_body(&base.body, &box_sides(&base.body), bottom, 45.0)),
+        "draft_face_degenerates"
+    );
+
+    let tower = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3 {
+                x: 30.0,
+                y: 30.0,
+                z: 50.0,
+            },
+            size_mm: Size3 {
+                x: 40.0,
+                y: 40.0,
+                z: 30.0,
+            },
+        })
+        .unwrap();
+    let stepped = backend
+        .boolean_bodies(
+            &base.body,
+            &tower.body,
+            ketchup_exact::ExactBodyBooleanOperation::Union,
+        )
+        .unwrap();
+    let stepped_bottom = faces_facing(&stepped.body, "plane", [0.0, 0.0, -1.0])[0];
+    let tower_east = stepped
+        .body
+        .topology
+        .faces
+        .iter()
+        .find(|face| face.normal.x > 0.5 && face.centroid_mm.z > 60.0)
+        .unwrap()
+        .ordinal;
+    assert_eq!(
+        draft_refusal(backend.draft_body(&stepped.body, &[tower_east], stepped_bottom, 5.0)),
+        "draft_neutral_plane_misses_face"
+    );
+
+    let PlanarProfileLoop::Segments(ellipse) = quarter_cubic_ellipse(40.0, 20.0) else {
+        unreachable!()
+    };
+    let elliptic = backend.extrude_mixed_profile(&ellipse, 30.0).unwrap();
+    let elliptic_bottom = faces_facing(&elliptic.body, "plane", [0.0, 0.0, -1.0])[0];
+    let curved = elliptic
+        .body
+        .topology
+        .faces
+        .iter()
+        .find(|face| face.surface_kind != "plane")
+        .unwrap()
+        .ordinal;
+    assert_eq!(
+        draft_refusal(backend.draft_body(&elliptic.body, &[curved], elliptic_bottom, 5.0)),
+        "draft_unsupported_surface"
+    );
+}

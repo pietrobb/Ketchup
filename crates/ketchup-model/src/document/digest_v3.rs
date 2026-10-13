@@ -1580,22 +1580,9 @@ impl DigestV3 {
                 chamfer_mode,
                 chamfer_edge_sides,
             } => {
-                let recorded = edges
-                    .iter()
-                    .filter_map(EdgeRef::topological)
-                    .collect::<Vec<_>>();
-                let profile_edges = edges.iter().filter_map(EdgeRef::named).collect::<Vec<_>>();
                 self.byte(22);
                 self.u64(target.0);
-                self.length(recorded.len());
-                for reference in recorded {
-                    self.topological_reference(reference);
-                }
-                self.length(profile_edges.len());
-                for edge in profile_edges {
-                    self.profile_face(&edge.first);
-                    self.profile_face(&edge.second);
-                }
+                self.edge_refs(edges);
                 self.byte(match kind {
                     EdgeFinishKind::Fillet => 1,
                     EdgeFinishKind::Chamfer => 2,
@@ -1640,6 +1627,8 @@ impl DigestV3 {
             }
             // Read through `OldRecords::sheet_metal`; a legacy file holds no other.
             FeatureKind::SheetMetal(_) => self.byte(29),
+            // Drafts came after the legacy format: no file this digest reads holds one.
+            FeatureKind::Draft(_) => self.byte(37),
             FeatureKind::ImportedExactBody(spec) => {
                 self.byte(16);
                 self.bytes(spec.schema.as_bytes());
@@ -1731,6 +1720,24 @@ impl DigestV3 {
                     }
                 }
             }
+        }
+    }
+
+    /// The recorded edges in order, then the named ones, each list with its length.
+    fn edge_refs(&mut self, edges: &[EdgeRef]) {
+        let recorded = edges
+            .iter()
+            .filter_map(EdgeRef::topological)
+            .collect::<Vec<_>>();
+        self.length(recorded.len());
+        for reference in recorded {
+            self.topological_reference(reference);
+        }
+        let named = edges.iter().filter_map(EdgeRef::named).collect::<Vec<_>>();
+        self.length(named.len());
+        for edge in named {
+            self.profile_face(&edge.first);
+            self.profile_face(&edge.second);
         }
     }
 

@@ -72,6 +72,26 @@ fn remap_face_refs(
         .collect()
 }
 
+fn remap_chamfer_edge_sides(
+    sides: &[ChamferEdgeSide],
+    new_definition_id: DefinitionId,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<Vec<ChamferEdgeSide>, CanonicalError> {
+    sides
+        .iter()
+        .map(|side| {
+            Ok(ChamferEdgeSide {
+                edge: remap_topological_reference(&side.edge, new_definition_id, mapping)?,
+                side_face: remap_topological_reference(
+                    &side.side_face,
+                    new_definition_id,
+                    mapping,
+                )?,
+            })
+        })
+        .collect()
+}
+
 pub(super) fn remap_edge_ref(
     edge: &EdgeRef,
     new_definition_id: DefinitionId,
@@ -322,23 +342,11 @@ pub(super) fn clone_definition_and_repoint(
                 amount: amount.clone(),
                 fillet_radius_stations: fillet_radius_stations.clone(),
                 chamfer_mode: chamfer_mode.clone(),
-                chamfer_edge_sides: chamfer_edge_sides
-                    .iter()
-                    .map(|selection| {
-                        Ok(ChamferEdgeSide {
-                            edge: remap_topological_reference(
-                                &selection.edge,
-                                new_definition_id,
-                                &mapping,
-                            )?,
-                            side_face: remap_topological_reference(
-                                &selection.side_face,
-                                new_definition_id,
-                                &mapping,
-                            )?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, CanonicalError>>()?,
+                chamfer_edge_sides: remap_chamfer_edge_sides(
+                    chamfer_edge_sides,
+                    new_definition_id,
+                    &mapping,
+                )?,
             },
             FeatureKind::FaceOffset {
                 target,
@@ -349,6 +357,12 @@ pub(super) fn clone_definition_and_repoint(
                 face: remap_face_ref(face, new_definition_id, &mapping)?,
                 distance: distance.clone(),
             },
+            FeatureKind::Draft(spec) => FeatureKind::Draft(DraftSpec {
+                target: remapped(&mapping, &spec.target)?,
+                faces: remap_face_refs(&spec.faces, new_definition_id, &mapping)?,
+                neutral: remap_face_ref(&spec.neutral, new_definition_id, &mapping)?,
+                angle_degrees: spec.angle_degrees,
+            }),
             FeatureKind::Boolean {
                 operation,
                 target,

@@ -50,6 +50,7 @@ pub enum CanonicalError {
     FeatureNotFound(FeatureId),
     FeatureHasNoDimension(FeatureId),
     InvalidHoleThread(FeatureId),
+    DraftAngleOutOfRange,
     FeatureIsNotProfile(FeatureId),
     FeatureDependencyCycle(FeatureId),
     InvalidFeatureSuppression(DefinitionId, BodyId),
@@ -235,6 +236,7 @@ impl CanonicalError {
             Self::FeatureNotFound(..) => "canonical.feature_not_found",
             Self::FeatureHasNoDimension(..) => "canonical.feature_has_no_dimension",
             Self::InvalidHoleThread(..) => "canonical.invalid_hole_thread",
+            Self::DraftAngleOutOfRange => "canonical.draft_angle_out_of_range",
             Self::FeatureIsNotProfile(..) => "canonical.feature_is_not_profile",
             Self::FeatureDependencyCycle(..) => "canonical.feature_dependency_cycle",
             Self::InvalidFeatureSuppression(..) => "canonical.invalid_feature_suppression",
@@ -522,6 +524,11 @@ impl fmt::Display for CanonicalError {
                 formatter,
                 "the thread of feature {} needs a size and a positive finite pitch and depth",
                 id.0
+            ),
+            Self::DraftAngleOutOfRange => write!(
+                formatter,
+                "a draft angle must be between {MIN_DRAFT_ANGLE_DEGREES} and \
+                 {MAX_DRAFT_ANGLE_DEGREES} degrees either way"
             ),
             Self::FeatureIsNotProfile(id) => {
                 write!(formatter, "feature {} is not a profile", id.0)

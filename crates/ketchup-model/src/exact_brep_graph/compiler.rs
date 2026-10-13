@@ -65,6 +65,7 @@ impl<'a> GraphCompiler<'a> {
                 FeatureKind::Shell { target, .. }
                 | FeatureKind::EdgeFinish { target, .. }
                 | FeatureKind::FaceOffset { target, .. }
+                | FeatureKind::Draft(DraftSpec { target, .. })
                 | FeatureKind::SurfaceExtend { target, .. }
                 | FeatureKind::SurfaceThicken { target, .. }
                 | FeatureKind::RigidTransform { target, .. } => pending.push((*target, false)),
@@ -303,29 +304,14 @@ impl<'a> GraphCompiler<'a> {
                         }
                     }
                 },
-                chamfer_edge_sides: chamfer_edge_sides
-                    .iter()
-                    .map(|selection| {
-                        Ok(ExactBRepChamferEdgeSide {
-                            edge: topology_selector(
-                                &selection.edge,
-                                TopologicalElementKind::Edge,
-                                *target,
-                            )?,
-                            side_face: topology_selector(
-                                &selection.side_face,
-                                TopologicalElementKind::Face,
-                                *target,
-                            )?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, ExactBRepGraphError>>()?,
+                chamfer_edge_sides: chamfer_edge_side_selectors(chamfer_edge_sides, *target)?,
             },
             FeatureKind::FaceOffset {
                 target,
                 face,
                 distance,
             } => self.face_offset(*target, face, distance)?,
+            FeatureKind::Draft(spec) => self.draft(spec)?,
             FeatureKind::Revolve {
                 profile,
                 axis_start_mm,
@@ -713,6 +699,19 @@ impl<'a> GraphCompiler<'a> {
                 self.snapshot.tolerance().linear_mm(),
             )?,
         })
+    }
+
+    fn draft(&self, spec: &DraftSpec) -> Result<ExactBRepOperation, ExactBRepGraphError> {
+        let (recorded, neutral) = spec
+            .recorded_faces()
+            .ok_or(ExactBRepGraphError::InvalidTopologySelector)?;
+        let face = TopologicalElementKind::Face;
+        Ok(ExactBRepOperation::Draft(ExactBRepDraft {
+            target: self.body_id(spec.target)?,
+            faces: topology_selectors(&recorded, face, spec.target)?,
+            neutral: topology_selector(neutral, face, spec.target)?,
+            angle_degrees_bits: spec.angle_degrees.to_bits(),
+        }))
     }
 
     pub(super) fn compile_loft_sections(

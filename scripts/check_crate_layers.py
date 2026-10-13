@@ -60,17 +60,17 @@ LONG_FUNCTIONS = {
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
     "crates/ketchup-application/src/validation.rs::assistant_hardware_manufacturing_report": 431,
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 606,
-    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 687,
-    "crates/ketchup-model/src/document/product_validation.rs::validate_features": 699,
+    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 676,
+    "crates/ketchup-model/src/document/product_validation.rs::validate_features": 698,
     "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 793,
-    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 453,
+    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 447,
     "crates/ketchup-model/src/document/store.rs::apply_batch_with_origin_and_validation": 2067,
-    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 593,
+    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 578,
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1396,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 558,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 786,
-    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 543,
+    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 537,
 }
 
 # A test checks one behavior; a longer one is several scenarios in one, and its
