@@ -68,6 +68,7 @@ impl KetchupApp {
                 plugin_consents: Vec::new(),
                 plugin_menu: live_bridge::plugin_menu::PluginMenu::new(),
                 variants: Default::default(),
+                edits: Default::default(),
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {
@@ -1319,6 +1320,7 @@ impl KetchupApp {
         self.poll_live_bridge(context);
         self.poll_window_plugin(context);
         self.poll_window_variant(context);
+        self.poll_window_edit(context);
         self.poll_validator_panel(context);
         self.poll_mesh_conversion(context);
         if let Some(program) = self.document.current_rule_program() {

@@ -37,6 +37,8 @@ pub(crate) struct LiveState {
     pub(crate) plugin_consents: Vec<live_bridge::plugin_consent::PluginConsent>,
     pub(crate) plugin_menu: live_bridge::plugin_menu::PluginMenu,
     pub(crate) variants: live_bridge::variant_window::VariantDock,
+    /// A pattern confirmed in the window, sent as one MCP CAD edit.
+    pub(crate) edits: live_bridge::window_edit::WindowEdits,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed

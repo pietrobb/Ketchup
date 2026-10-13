@@ -435,7 +435,11 @@ fn linear_pattern_plan_rejects_tamper_and_replay_atomically() {
     let undo_steps = app.undo_step_count();
 
     let mut tampered_commands = plan.clone();
-    tampered_commands.commands.reverse();
+    if let AssistantCadEditOperation::LinearPattern { step_mm, .. } =
+        &mut tampered_commands.operation
+    {
+        step_mm[0] += 1.0;
+    }
     assert!(!app.apply_linear_pattern_plan(tampered_commands));
     let mut tampered_source = plan.clone();
     tampered_source.source.source_primary = None;
@@ -445,6 +449,7 @@ fn linear_pattern_plan_rejects_tamper_and_replay_atomically() {
     assert_eq!(app.undo_step_count(), undo_steps);
 
     assert!(app.apply_linear_pattern_plan(plan.clone()));
+    app.finish_window_edit();
     assert_eq!(app.document_revision(), revision + 1);
     assert_eq!(app.active_box_count(), 3);
     assert_eq!(app.undo_step_count(), undo_steps + 1);
@@ -480,7 +485,11 @@ fn rectangular_pattern_plan_rejects_tamper_and_replay_atomically() {
     let undo_steps = app.undo_step_count();
 
     let mut tampered_commands = plan.clone();
-    tampered_commands.commands.reverse();
+    if let AssistantCadEditOperation::LinearPattern { step_mm, .. } =
+        &mut tampered_commands.operation
+    {
+        step_mm[0] += 1.0;
+    }
     assert!(!app.apply_rectangular_pattern_plan(tampered_commands));
     let mut tampered_source = plan.clone();
     tampered_source.source.source_primary = None;
@@ -490,6 +499,7 @@ fn rectangular_pattern_plan_rejects_tamper_and_replay_atomically() {
     assert_eq!(app.undo_step_count(), undo_steps);
 
     assert!(app.apply_rectangular_pattern_plan(plan.clone()));
+    app.finish_window_edit();
     assert_eq!(app.document_revision(), revision + 1);
     assert_eq!(app.active_box_count(), 4);
     assert_eq!(app.undo_step_count(), undo_steps + 1);
@@ -519,7 +529,12 @@ fn circular_pattern_plan_rejects_tamper_and_replay_atomically() {
     let undo_steps = app.undo_step_count();
 
     let mut tampered_commands = plan.clone();
-    tampered_commands.commands.reverse();
+    if let AssistantCadEditOperation::CircularPattern {
+        angle_step_degrees, ..
+    } = &mut tampered_commands.operation
+    {
+        *angle_step_degrees += 1.0;
+    }
     assert!(!app.apply_circular_pattern_plan(tampered_commands));
     let mut tampered_source = plan.clone();
     tampered_source.source.source_primary = None;
@@ -529,6 +544,7 @@ fn circular_pattern_plan_rejects_tamper_and_replay_atomically() {
     assert_eq!(app.undo_step_count(), undo_steps);
 
     assert!(app.apply_circular_pattern_plan(plan.clone()));
+    app.finish_window_edit();
     assert_eq!(app.document_revision(), revision + 1);
     assert_eq!(app.active_box_count(), 4);
     assert_eq!(app.undo_step_count(), undo_steps + 1);

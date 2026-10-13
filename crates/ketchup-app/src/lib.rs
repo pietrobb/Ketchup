@@ -25,14 +25,15 @@ use ketchup_application::transforms::{
     world_axis_rotation_transform, world_edit_in_parent_space, world_plane_mirror_transform,
 };
 use ketchup_application::validation::*;
+use ketchup_assistant::sidecar::{
+    AssistantAxisSpec, AssistantCadEditOperation, AssistantCadEditProgram,
+    AssistantCadEntitySelector, AssistantPatternDirection, AssistantRejectionDiagnostic,
+    AssistantRejectionPhase, MAX_CAD_GENERATED_OCCURRENCES,
+};
 #[cfg(test)]
 use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
     AssistantCadLoftContinuity,
-};
-use ketchup_assistant::sidecar::{
-    AssistantCadEditProgram, AssistantRejectionDiagnostic, AssistantRejectionPhase,
-    MAX_CAD_GENERATED_OCCURRENCES,
 };
 use ketchup_geometry::linalg::{circumcenter, cross, dot, length, signed_outline_distance};
 use ketchup_geometry::sketch::{
@@ -2216,7 +2217,8 @@ struct LinearPatternPlan {
     axis: Axis,
     spacing_mm: f64,
     count: usize,
-    commands: Vec<CanonicalCommand>,
+    /// The typed CAD operation the window sends, as an MCP client would.
+    operation: AssistantCadEditOperation,
 }
 
 #[derive(Clone, Debug)]
@@ -2258,7 +2260,7 @@ struct RectangularPatternPlan {
     secondary_axis: Axis,
     secondary_spacing_mm: f64,
     secondary_count: usize,
-    commands: Vec<CanonicalCommand>,
+    operation: AssistantCadEditOperation,
 }
 
 #[derive(Clone, Debug)]
@@ -2301,7 +2303,7 @@ struct CircularPatternPlan {
     centre_mm: Vec3,
     angle_step_degrees: f64,
     count: usize,
-    commands: Vec<CanonicalCommand>,
+    operation: AssistantCadEditOperation,
 }
 
 #[derive(Clone, Debug)]

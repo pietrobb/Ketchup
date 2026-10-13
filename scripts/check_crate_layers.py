@@ -325,7 +325,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-analysis allows": 1,
     "ketchup-analysis casts": 6,
     "ketchup-app allows": 9,
-    "ketchup-app casts": 240,
+    "ketchup-app casts": 233,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
     "ketchup-assistant allows": 3,

@@ -119,6 +119,7 @@ pub(super) fn blockers(app: &KetchupApp, ui_busy: bool) -> Vec<Blocker> {
         // Taken out of the app while it is polled, so it never blocks itself.
         (app.live.plugin_menu.is_running(), "job", "window_plugin", "A plugin started from the Plugins menu is running."),
         (app.live.variants.is_running(), "job", "window_variant", "A program variant started from the dock is being applied or exported."),
+        (app.live.edits.is_running(), "job", "window_edit", "A pattern confirmed in the window is being checked and published."),
     ];
     for (active, kind, target, reason) in conditions {
         if active {

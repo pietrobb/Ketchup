@@ -49,6 +49,7 @@ mod tests {
                             2
                         );
                         assert!(app.confirm_occurrence_operation_preview());
+                        app.finish_window_edit();
                     }
                     "rectangular" => {
                         assert!(app.preview_rectangular_pattern(
@@ -71,6 +72,7 @@ mod tests {
                             3
                         );
                         assert!(app.confirm_occurrence_operation_preview());
+                        app.finish_window_edit();
                     }
                     "circular" => {
                         assert!(app.preview_circular_pattern(source, Axis::Z, Vec3::ZERO, 90.0, 3));
@@ -83,6 +85,7 @@ mod tests {
                             2
                         );
                         assert!(app.confirm_occurrence_operation_preview());
+                        app.finish_window_edit();
                     }
                     _ => unreachable!(),
                 }

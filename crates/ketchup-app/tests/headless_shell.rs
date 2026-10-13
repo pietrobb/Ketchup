@@ -8033,17 +8033,12 @@ fn linear_pattern_is_localized_previewed_shared_and_one_undo_step() {
                 Some(DefinitionId(1))
             );
         }
+        // The planner's one copy name rule, the same as for an MCP pattern.
         let definition_name = shell.app().definition_name(DefinitionId(1)).unwrap();
         for occurrence_id in 2..=4 {
             assert_eq!(
                 shell.app().occurrence_name(OccurrenceId(occurrence_id)),
-                Some(shell.catalog().format(
-                    "model-copy-occurrence",
-                    &BTreeMap::from([
-                        ("name", definition_name.clone()),
-                        ("number", occurrence_id.to_string()),
-                    ]),
-                ))
+                Some(format!("{definition_name} {occurrence_id}"))
             );
             assert_eq!(
                 shell.app().occurrence_box_geometry(occurrence_id),
@@ -8242,16 +8237,7 @@ fn every_pattern_dialog_refuses_513_new_copies_and_makes_512() {
     assert!(shell.app().has_occurrence_operation_preview());
     let confirm = shell.catalog().text("dialog-linear-pattern-confirm");
     shell.click_role_and_label(Role::Button, &confirm);
-    let committed = shell.catalog().text("digest-linear-pattern-committed");
-    let delivered = shell.wait_until(|shell| {
-        shell.step();
-        shell.app().action_digest() == committed
-    });
-    assert!(
-        delivered,
-        "the window did not deliver the pattern: {}",
-        shell.app().action_digest()
-    );
+    shell.wait_for_digest("digest-linear-pattern-committed");
     assert_eq!(shell.app().occurrence_count(), 513);
     assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
     assert_eq!(
@@ -8260,6 +8246,11 @@ fn every_pattern_dialog_refuses_513_new_copies_and_makes_512() {
             Vec3::new(120.0 * 512.0, 0.0, 0.0),
             Vec3::new(100.0, 60.0, 20.0)
         ))
+    );
+    let definition_name = shell.app().definition_name(DefinitionId(1)).unwrap();
+    assert_eq!(
+        shell.app().occurrence_name(OccurrenceId(513)),
+        Some(format!("{definition_name} 513"))
     );
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), digest);
@@ -12272,6 +12263,7 @@ fn exact_linear_pattern_previews_then_commits_one_shared_definition_batch() {
     );
 
     assert!(shell.app_mut().confirm_occurrence_operation_preview());
+    shell.wait_for_digest("digest-linear-pattern-committed");
     let patterned_digest = shell.app().canonical_digest();
     assert_eq!(shell.app().document_revision(), before_revision + 1);
     assert_eq!(shell.app().active_box_count(), 5);

@@ -297,6 +297,21 @@ impl Shell {
         self.harness.step();
     }
 
+    /// Frames until the window reports `digest_key`, the answer of an edit it
+    /// handed to its bridge (a confirmed pattern); fails naming the digest shown.
+    pub fn wait_for_digest(&mut self, digest_key: &str) {
+        let expected = self.catalog().text(digest_key);
+        let delivered = self.wait_until(|shell| {
+            shell.step();
+            shell.app().action_digest() == expected
+        });
+        assert!(
+            delivered,
+            "the window did not deliver {digest_key}: {}",
+            self.app().action_digest()
+        );
+    }
+
     pub fn output_shapes(&self) -> &[egui::epaint::ClippedShape] {
         &self.harness.output().shapes
     }

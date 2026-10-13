@@ -7,6 +7,7 @@
 //! and are checked by the run, as for MCP.
 use super::plugin::{PluginAnswer, RunPluginRequest, default_plugin_timeout_ms};
 use super::plugin_manifest::{self, Description, InputType};
+use super::window_request::{Polled, WindowRequest};
 use super::*;
 use std::fs;
 
@@ -117,13 +118,6 @@ struct InputForm {
     fields: Vec<FormField>,
 }
 
-/// A plugin started from the menu and the answer it will give.
-struct WindowRun {
-    name: String,
-    runner: LiveBridge,
-    receiver: mpsc::Receiver<Response>,
-}
-
 /// What the last plugin run or folder action ended with.
 struct Outcome {
     title: String,
@@ -134,7 +128,8 @@ pub(crate) struct PluginMenu {
     root: Option<PathBuf>,
     listed: Option<io::Result<Vec<ListedPlugin>>>,
     form: Option<InputForm>,
-    run: Option<WindowRun>,
+    /// A plugin started from the menu, by name.
+    run: Option<WindowRequest<String>>,
     outcome: Option<Outcome>,
 }
 
@@ -176,7 +171,7 @@ impl KetchupApp {
         if let Some(run) = &menu.run {
             ui.label(self.catalog.format(
                 "plugins-running",
-                &BTreeMap::from([("name", run.name.clone())]),
+                &BTreeMap::from([("name", run.action.clone())]),
             ));
         }
         match menu.listed.as_ref() {
@@ -296,7 +291,6 @@ impl KetchupApp {
     }
 
     fn start_window_plugin(&mut self, context: &egui::Context, form: InputForm) {
-        take_error_details();
         let request = RunPluginRequest {
             plugin: Some(form.folder.to_string_lossy().into_owned()),
             inputs: Some(
@@ -308,76 +302,54 @@ impl KetchupApp {
             timeout_ms: default_plugin_timeout_ms(),
             ..RunPluginRequest::default()
         };
-        let (reply, receiver) = mpsc::sync_channel(1);
-        let mut runner = transport::local();
-        // A job an MCP client started keeps the window as busy as one of its own.
-        let client_jobs = self
-            .live
-            .bridge
-            .as_ref()
-            .map(LiveBridge::busy_jobs)
-            .unwrap_or_default();
-        if let Err(code) = busy::reject_if_busy(&client_jobs) {
-            LiveBridge::reply(self, 0, &reply, Err(code));
-        } else {
+        let run = WindowRequest::start(self, context, form.name, |runner, app, queued| {
             let answer = PluginAnswer {
-                id: 0,
-                reply,
-                cancelled: Arc::new(AtomicBool::new(false)),
+                id: queued.id,
+                reply: queued.reply,
+                cancelled: queued.cancelled,
             };
-            runner.start_plugin(self, context, answer, request, false);
-        }
-        self.live.plugin_menu.run = Some(WindowRun {
-            name: form.name,
-            runner,
-            receiver,
+            runner.start_plugin(app, context, answer, request, false);
         });
-        context.request_repaint();
+        self.live.plugin_menu.run = Some(run);
     }
 
     /// Drives a plugin run from the menu; taken out of the app meanwhile, so
     /// it is not a busy reason for its own publication.
     pub(crate) fn poll_window_plugin(&mut self, context: &egui::Context) {
-        let Some(mut run) = self.live.plugin_menu.run.take() else {
+        let Some(run) = self.live.plugin_menu.run.take() else {
             return;
         };
-        let busy = ui_busy(context);
-        run.runner.poll_apply_and_verify_job(self, context, busy);
-        run.runner.poll_program_check_job(self, context);
-        let text = match run.receiver.try_recv() {
-            Ok(response) if response.ok => {
-                let published = response
-                    .result
-                    .as_ref()
-                    .is_some_and(|result| result["published"] == true);
-                self.catalog.text(if published {
+        let (title, text) = match run.poll(self, context) {
+            Polled::Running(run) => {
+                self.live.plugin_menu.run = Some(run);
+                return;
+            }
+            Polled::Answered(name, Ok(result)) => {
+                let published = result["published"] == true;
+                let key = if published {
                     "plugins-published"
                 } else {
                     "plugins-unchanged"
-                })
+                };
+                (name, self.catalog.text(key))
             }
-            Ok(response) => rejection_text(response.result.as_ref().unwrap_or(&Value::Null)),
-            Err(mpsc::TryRecvError::Empty) => {
-                self.live.plugin_menu.run = Some(run);
-                context.request_repaint_after(Duration::from_millis(20));
-                return;
-            }
-            Err(mpsc::TryRecvError::Disconnected) => rejection_text(&rejection_result(
-                "apply_and_verify_worker_disconnected",
-                None,
-            )),
+            Polled::Answered(name, Err(refusal)) => (name, rejection_text(&refusal)),
+            Polled::Disconnected(name) => (
+                name,
+                rejection_text(&rejection_result(
+                    "apply_and_verify_worker_disconnected",
+                    None,
+                )),
+            ),
         };
-        self.live.plugin_menu.outcome = Some(Outcome {
-            title: run.name,
-            text,
-        });
+        self.live.plugin_menu.outcome = Some(Outcome { title, text });
     }
 
     /// The input form, the running plugin or how the last run ended.
     pub(crate) fn show_plugin_window(&mut self, context: &egui::Context) {
         let menu = &mut self.live.plugin_menu;
         let title = match (&menu.run, &menu.form, &menu.outcome) {
-            (Some(run), _, _) => run.name.clone(),
+            (Some(run), _, _) => run.action.clone(),
             (None, Some(form), _) => form.name.clone(),
             (None, None, Some(outcome)) => outcome.title.clone(),
             (None, None, None) => return,
@@ -394,7 +366,7 @@ impl KetchupApp {
                         ui.spinner();
                         ui.label(catalog.format(
                             "plugins-running",
-                            &BTreeMap::from([("name", running.name.clone())]),
+                            &BTreeMap::from([("name", running.action.clone())]),
                         ));
                     });
                     return;

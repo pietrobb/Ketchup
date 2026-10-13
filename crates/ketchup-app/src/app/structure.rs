@@ -2626,7 +2626,7 @@ impl KetchupApp {
                 };
                 (
                     plan.source.source_revision,
-                    CommandBatch::new(plan.commands.clone()),
+                    CommandBatch::new(Vec::new()),
                     boxes,
                     "digest-linear-pattern-committed",
                 )
@@ -2654,7 +2654,7 @@ impl KetchupApp {
                 };
                 (
                     plan.source.source_revision,
-                    CommandBatch::new(plan.commands.clone()),
+                    CommandBatch::new(Vec::new()),
                     boxes,
                     "digest-rectangular-pattern-committed",
                 )
@@ -2678,7 +2678,7 @@ impl KetchupApp {
                 };
                 (
                     plan.source.source_revision,
-                    CommandBatch::new(plan.commands.clone()),
+                    CommandBatch::new(Vec::new()),
                     boxes,
                     "digest-circular-pattern-committed",
                 )
@@ -2741,9 +2741,23 @@ impl KetchupApp {
             self.status_key = "error-preview-stale";
             return false;
         }
+        let operation = self
+            .tool_preview
+            .get::<OccurrenceOperationPreview>()
+            .and_then(|preview| preview.canonical_plan.as_ref())
+            .and_then(OccurrenceCanonicalPreviewPlan::window_operation);
+        if operation.is_some() && self.live.edits.is_running() {
+            return false;
+        }
         let Some(preview) = self.tool_preview.remove::<OccurrenceOperationPreview>() else {
             return false;
         };
+        // A pattern is published by the bridge, as the MCP edit of the same
+        // operation; its preview holds no commands of its own.
+        if let Some(operation) = operation {
+            self.solid_tools.target = None;
+            return self.queue_window_edit(operation, preview.committed_digest_key);
+        }
         if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
             self.status_key = "error-preview-stale";
             return false;

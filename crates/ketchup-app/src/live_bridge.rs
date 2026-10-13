@@ -89,6 +89,8 @@ mod tests;
 mod transport;
 mod validator_catalog;
 pub(crate) mod variant_window;
+pub(crate) mod window_edit;
+pub(crate) mod window_request;
 /// Incoming frames: large enough for whole programs, bounded so a bogus
 /// length header cannot make the window allocate gigabytes.
 pub const MAX_REQUEST_FRAME_BYTES: usize = 8 * 1024 * 1024;

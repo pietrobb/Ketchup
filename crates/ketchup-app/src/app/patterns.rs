@@ -236,51 +236,18 @@ impl KetchupApp {
         {
             return None;
         }
-        let mut commands = Vec::with_capacity(count - 1);
-        for index in 1..count {
-            let id = OccurrenceId(
-                source
-                    .next_occurrence_id
-                    .0
-                    .checked_add((index - 1) as u64)?,
-            );
-            let offset_mm = spacing_mm * index as f64;
-            if !offset_mm.is_finite() {
-                return None;
-            }
-            let transform =
-                translated_transform(source.source_transform, axis_vector(axis, offset_mm)).ok()?;
-            commands.push(CanonicalCommand::CreateOccurrence {
-                id,
-                definition_id: source.definition_id,
-                name: self.catalog.format(
-                    "model-copy-occurrence",
-                    &BTreeMap::from([
-                        ("name", source.definition_name.clone()),
-                        (
-                            "number",
-                            (source.existing_definition_occurrence_count + index).to_string(),
-                        ),
-                    ]),
-                ),
-                transform,
-                parent: source.source_parent,
-                tags: source.source_tags.clone(),
-                visible: source.source_visible,
-            });
-            if let Some(color) = source.source_color {
-                commands.push(CanonicalCommand::SetOccurrenceColor {
-                    id,
-                    color: Some(color),
-                });
-            }
-        }
+        let step = axis_vector(axis, spacing_mm);
         Some(LinearPatternPlan {
             source: source.clone(),
             axis,
             spacing_mm,
             count,
-            commands,
+            operation: AssistantCadEditOperation::LinearPattern {
+                selector: pattern_selector(source.occurrence_id),
+                instances: u32::try_from(count).ok()?,
+                step_mm: [step.x, step.y, step.z],
+                secondary: None,
+            },
         })
     }
 
@@ -338,14 +305,7 @@ impl KetchupApp {
                 };
                 self.linear_pattern_binding_is_current(pending)
                     && pending.preview_plan.as_ref() == Some(&plan)
-                    && self
-                        .tool_preview
-                        .get::<OccurrenceOperationPreview>()
-                        .is_some_and(|preview| {
-                            self.has_occurrence_operation_preview()
-                                && preview.source_revision == plan.source.source_revision
-                                && preview.batch.commands() == plan.commands.as_slice()
-                        })
+                    && self.previews_plan(&OccurrenceCanonicalPreviewPlan::LinearPattern(plan))
             })
     }
 
@@ -422,24 +382,17 @@ impl KetchupApp {
             .into_iter()
             .find(|item| item.instance_path == InstancePath::root(plan.source.occurrence_id))?;
         let mut boxes = BTreeMap::new();
-        for (command_index, command) in plan
-            .commands
-            .iter()
-            .filter(|command| matches!(command, CanonicalCommand::CreateOccurrence { .. }))
-            .enumerate()
-        {
-            let CanonicalCommand::CreateOccurrence { id, .. } = command else {
-                return None;
-            };
-            let offset_mm = plan.spacing_mm * (command_index + 1) as f64;
+        for index in 1..plan.count {
+            let id = copy_occurrence_id(plan.source.next_occurrence_id, index - 1)?;
+            let offset_mm = plan.spacing_mm * index as f64;
             if !offset_mm.is_finite() {
                 return None;
             }
             let delta_mm = axis_vector(plan.axis, offset_mm);
             let mut preview_box = source_box.clone();
-            preview_box.instance_path = InstancePath::root(*id);
+            preview_box.instance_path = InstancePath::root(id);
             preview_box.origin_mm += delta_mm;
-            boxes.insert(*id, preview_box);
+            boxes.insert(id, preview_box);
         }
         Some(boxes)
     }
@@ -455,7 +408,7 @@ impl KetchupApp {
         let Some(boxes) = self.linear_pattern_preview_boxes(&plan) else {
             return false;
         };
-        let batch = CommandBatch::new(plan.commands.clone());
+        let batch = CommandBatch::new(Vec::new());
         self.tool_preview.open(OccurrenceOperationPreview {
             source_revision: plan.source.source_revision,
             command_digest: batch.digest(),
@@ -484,14 +437,7 @@ impl KetchupApp {
             .linear_pattern_plan(&plan.source, plan.axis, plan.spacing_mm, plan.count)
             .as_ref()
             != Some(&plan)
-            || !self
-                .tool_preview
-                .get::<OccurrenceOperationPreview>()
-                .is_some_and(|preview| {
-                    self.has_occurrence_operation_preview()
-                        && preview.source_revision == plan.source.source_revision
-                        && preview.batch.commands() == plan.commands.as_slice()
-                })
+            || !self.previews_plan(&OccurrenceCanonicalPreviewPlan::LinearPattern(plan))
         {
             return false;
         }
@@ -530,49 +476,19 @@ impl KetchupApp {
         {
             return None;
         }
-        let mut commands = Vec::with_capacity(total_count - 1);
-        let mut created = 0usize;
-        for primary_index in 0..primary_count {
-            for secondary_index in 0..secondary_count {
-                if primary_index == 0 && secondary_index == 0 {
-                    continue;
-                }
-                let primary_offset = primary_spacing_mm * primary_index as f64;
-                let secondary_offset = secondary_spacing_mm * secondary_index as f64;
-                if !primary_offset.is_finite() || !secondary_offset.is_finite() {
-                    return None;
-                }
-                let delta_mm = axis_vector(primary_axis, primary_offset)
-                    + axis_vector(secondary_axis, secondary_offset);
-                let transform = translated_transform(source.source_transform, delta_mm).ok()?;
-                let id = OccurrenceId(source.next_occurrence_id.0.checked_add(created as u64)?);
-                created += 1;
-                commands.push(CanonicalCommand::CreateOccurrence {
-                    id,
-                    definition_id: source.definition_id,
-                    name: self.catalog.format(
-                        "model-copy-occurrence",
-                        &BTreeMap::from([
-                            ("name", source.definition_name.clone()),
-                            (
-                                "number",
-                                (source.existing_definition_occurrence_count + created).to_string(),
-                            ),
-                        ]),
-                    ),
-                    transform,
-                    parent: source.source_parent,
-                    tags: source.source_tags.clone(),
-                    visible: source.source_visible,
-                });
-                if let Some(color) = source.source_color {
-                    commands.push(CanonicalCommand::SetOccurrenceColor {
-                        id,
-                        color: Some(color),
-                    });
-                }
-            }
-        }
+        // The dialog's first direction is the outer one, so it is the typed
+        // pattern's row direction and the copies keep the dialog's order.
+        let row_step = axis_vector(primary_axis, primary_spacing_mm);
+        let step = axis_vector(secondary_axis, secondary_spacing_mm);
+        let operation = AssistantCadEditOperation::LinearPattern {
+            selector: pattern_selector(source.occurrence_id),
+            instances: u32::try_from(secondary_count).ok()?,
+            step_mm: [step.x, step.y, step.z],
+            secondary: Some(AssistantPatternDirection {
+                instances: u32::try_from(primary_count).ok()?,
+                step_mm: [row_step.x, row_step.y, row_step.z],
+            }),
+        };
         Some(RectangularPatternPlan {
             source: source.clone(),
             primary_axis,
@@ -581,7 +497,7 @@ impl KetchupApp {
             secondary_axis,
             secondary_spacing_mm,
             secondary_count,
-            commands,
+            operation,
         })
     }
 
@@ -666,14 +582,7 @@ impl KetchupApp {
                 };
                 self.rectangular_pattern_binding_is_current(pending)
                     && pending.preview_plan.as_ref() == Some(&plan)
-                    && self
-                        .tool_preview
-                        .get::<OccurrenceOperationPreview>()
-                        .is_some_and(|preview| {
-                            self.has_occurrence_operation_preview()
-                                && preview.source_revision == plan.source.source_revision
-                                && preview.batch.commands() == plan.commands.as_slice()
-                        })
+                    && self.previews_plan(&OccurrenceCanonicalPreviewPlan::RectangularPattern(plan))
             })
     }
 
@@ -768,18 +677,14 @@ impl KetchupApp {
             .into_iter()
             .find(|item| item.instance_path == InstancePath::root(plan.source.occurrence_id))?;
         let mut boxes = BTreeMap::new();
-        let mut commands = plan
-            .commands
-            .iter()
-            .filter(|command| matches!(command, CanonicalCommand::CreateOccurrence { .. }));
+        let mut created = 0;
         for primary_index in 0..plan.primary_count {
             for secondary_index in 0..plan.secondary_count {
                 if primary_index == 0 && secondary_index == 0 {
                     continue;
                 }
-                let Some(CanonicalCommand::CreateOccurrence { id, .. }) = commands.next() else {
-                    return None;
-                };
+                let id = copy_occurrence_id(plan.source.next_occurrence_id, created)?;
+                created += 1;
                 let primary_offset = plan.primary_spacing_mm * primary_index as f64;
                 let secondary_offset = plan.secondary_spacing_mm * secondary_index as f64;
                 if !primary_offset.is_finite() || !secondary_offset.is_finite() {
@@ -788,12 +693,12 @@ impl KetchupApp {
                 let delta_mm = axis_vector(plan.primary_axis, primary_offset)
                     + axis_vector(plan.secondary_axis, secondary_offset);
                 let mut preview_box = source_box.clone();
-                preview_box.instance_path = InstancePath::root(*id);
+                preview_box.instance_path = InstancePath::root(id);
                 preview_box.origin_mm += delta_mm;
-                boxes.insert(*id, preview_box);
+                boxes.insert(id, preview_box);
             }
         }
-        (commands.next().is_none()).then_some(boxes)
+        Some(boxes)
     }
 
     pub(crate) fn preview_rectangular_pattern_plan(
@@ -820,7 +725,7 @@ impl KetchupApp {
         let Some(boxes) = self.rectangular_pattern_preview_boxes(&plan) else {
             return false;
         };
-        let batch = CommandBatch::new(plan.commands.clone());
+        let batch = CommandBatch::new(Vec::new());
         self.tool_preview.open(OccurrenceOperationPreview {
             source_revision: plan.source.source_revision,
             command_digest: batch.digest(),
@@ -875,14 +780,7 @@ impl KetchupApp {
             )
             .as_ref()
             != Some(&plan)
-            || !self
-                .tool_preview
-                .get::<OccurrenceOperationPreview>()
-                .is_some_and(|preview| {
-                    self.has_occurrence_operation_preview()
-                        && preview.source_revision == plan.source.source_revision
-                        && preview.batch.commands() == plan.commands.as_slice()
-                })
+            || !self.previews_plan(&OccurrenceCanonicalPreviewPlan::RectangularPattern(plan))
         {
             return false;
         }
@@ -910,49 +808,22 @@ impl KetchupApp {
         {
             return None;
         }
-        let mut commands = Vec::with_capacity(count - 1);
-        for index in 1..count {
-            let id = OccurrenceId(
-                source
-                    .next_occurrence_id
-                    .0
-                    .checked_add((index - 1) as u64)?,
-            );
-            let rotation =
-                world_rotation_transform(centre_mm, axis, angle_step_degrees * index as f64)
-                    .ok()?;
-            commands.push(CanonicalCommand::CreateOccurrence {
-                id,
-                definition_id: source.definition_id,
-                name: self.catalog.format(
-                    "model-copy-occurrence",
-                    &BTreeMap::from([
-                        ("name", source.definition_name.clone()),
-                        (
-                            "number",
-                            (source.existing_definition_occurrence_count + index).to_string(),
-                        ),
-                    ]),
-                ),
-                transform: rotation.compose(source.source_transform),
-                parent: source.source_parent,
-                tags: source.source_tags.clone(),
-                visible: source.source_visible,
-            });
-            if let Some(color) = source.source_color {
-                commands.push(CanonicalCommand::SetOccurrenceColor {
-                    id,
-                    color: Some(color),
-                });
-            }
-        }
+        let direction = axis_vector(axis, 1.0);
         Some(CircularPatternPlan {
             source: source.clone(),
             axis,
             centre_mm,
             angle_step_degrees,
             count,
-            commands,
+            operation: AssistantCadEditOperation::CircularPattern {
+                selector: pattern_selector(source.occurrence_id),
+                instances: u32::try_from(count).ok()?,
+                axis: AssistantAxisSpec::OriginDirection {
+                    origin_mm: [centre_mm.x, centre_mm.y, centre_mm.z],
+                    direction: [direction.x, direction.y, direction.z],
+                },
+                angle_step_degrees,
+            },
         })
     }
 
@@ -1026,14 +897,7 @@ impl KetchupApp {
                 };
                 self.circular_pattern_binding_is_current(pending)
                     && pending.preview_plan.as_ref() == Some(&plan)
-                    && self
-                        .tool_preview
-                        .get::<OccurrenceOperationPreview>()
-                        .is_some_and(|preview| {
-                            self.has_occurrence_operation_preview()
-                                && preview.source_revision == plan.source.source_revision
-                                && preview.batch.commands() == plan.commands.as_slice()
-                        })
+                    && self.previews_plan(&OccurrenceCanonicalPreviewPlan::CircularPattern(plan))
             })
     }
 
@@ -1122,14 +986,8 @@ impl KetchupApp {
             .into_iter()
             .find(|item| item.instance_path == InstancePath::root(plan.source.occurrence_id))?;
         let mut boxes = BTreeMap::new();
-        let mut commands = plan
-            .commands
-            .iter()
-            .filter(|command| matches!(command, CanonicalCommand::CreateOccurrence { .. }));
         for index in 1..plan.count {
-            let Some(CanonicalCommand::CreateOccurrence { id, .. }) = commands.next() else {
-                return None;
-            };
+            let id = copy_occurrence_id(plan.source.next_occurrence_id, index - 1)?;
             let rotation = world_rotation_transform(
                 plan.centre_mm,
                 plan.axis,
@@ -1163,12 +1021,12 @@ impl KetchupApp {
                 },
             );
             let mut preview_box = source_box.clone();
-            preview_box.instance_path = InstancePath::root(*id);
+            preview_box.instance_path = InstancePath::root(id);
             preview_box.origin_mm = minimum;
             preview_box.size_mm = maximum - minimum;
-            boxes.insert(*id, preview_box);
+            boxes.insert(id, preview_box);
         }
-        (commands.next().is_none()).then_some(boxes)
+        Some(boxes)
     }
 
     pub(crate) fn preview_circular_pattern_plan(&mut self, plan: CircularPatternPlan) -> bool {
@@ -1188,7 +1046,7 @@ impl KetchupApp {
         let Some(boxes) = self.circular_pattern_preview_boxes(&plan) else {
             return false;
         };
-        let batch = CommandBatch::new(plan.commands.clone());
+        let batch = CommandBatch::new(Vec::new());
         self.tool_preview.open(OccurrenceOperationPreview {
             source_revision: plan.source.source_revision,
             command_digest: batch.digest(),
@@ -1234,14 +1092,7 @@ impl KetchupApp {
             )
             .as_ref()
             != Some(&plan)
-            || !self
-                .tool_preview
-                .get::<OccurrenceOperationPreview>()
-                .is_some_and(|preview| {
-                    self.has_occurrence_operation_preview()
-                        && preview.source_revision == plan.source.source_revision
-                        && preview.batch.commands() == plan.commands.as_slice()
-                })
+            || !self.previews_plan(&OccurrenceCanonicalPreviewPlan::CircularPattern(plan))
         {
             return false;
         }
@@ -1688,4 +1539,43 @@ const fn pattern_places_fit(places: usize) -> bool {
 /// The typed places of a dialog count field, when it is a number at all.
 fn typed_places(count: &str) -> Option<usize> {
     count.trim().parse::<usize>().ok()
+}
+
+/// The pattern's source as its typed operation names it.
+fn pattern_selector(occurrence_id: OccurrenceId) -> AssistantCadEntitySelector {
+    AssistantCadEntitySelector::Occurrences {
+        occurrence_ids: vec![occurrence_id.0],
+    }
+}
+
+/// The occurrence the `index`-th new copy previews as; the planner numbers
+/// the copies it creates the same way, from the document's next id.
+fn copy_occurrence_id(next: OccurrenceId, index: usize) -> Option<OccurrenceId> {
+    next.0
+        .checked_add(u64::try_from(index).ok()?)
+        .map(OccurrenceId)
+}
+
+impl OccurrenceCanonicalPreviewPlan {
+    /// The typed CAD operation a confirmed pattern sends to the bridge; the
+    /// other previews still publish their own commands.
+    pub(crate) fn window_operation(&self) -> Option<AssistantCadEditOperation> {
+        match self {
+            Self::LinearPattern(plan) => Some(plan.operation.clone()),
+            Self::RectangularPattern(plan) => Some(plan.operation.clone()),
+            Self::CircularPattern(plan) => Some(plan.operation.clone()),
+            Self::Alignment(_) | Self::Distribution(_) => None,
+        }
+    }
+}
+
+impl KetchupApp {
+    /// Whether the open preview is current and shows exactly `plan`.
+    fn previews_plan(&self, plan: &OccurrenceCanonicalPreviewPlan) -> bool {
+        self.has_occurrence_operation_preview()
+            && self
+                .tool_preview
+                .get::<OccurrenceOperationPreview>()
+                .is_some_and(|preview| preview.canonical_plan.as_ref() == Some(plan))
+    }
 }
