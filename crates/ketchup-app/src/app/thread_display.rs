@@ -15,16 +15,11 @@ impl KetchupApp {
     /// The instanced plan of `snapshot` with its threads drawn; it waits for
     /// the program's evaluation to draw the outside threads of program parts.
     pub(crate) fn rebuild_render_plan(&mut self, snapshot: &Snapshot) -> Arc<InstancedRenderPlan> {
-        let (evaluated, awaits_program) = match self
-            .document
-            .current_rule_program()
-            .map(|program| self.program_evaluations.try_get(program))
-        {
-            None => (None, false),
-            Some(Lookup::Ready(evaluation)) => (evaluation.ok(), false),
-            Some(Lookup::Pending) => (None, true),
+        let (threads, awaits_program) = match self.document_threads(snapshot) {
+            Some(threads) => (threads, false),
+            None => (thread_cylinders(snapshot, None), true),
         };
-        let lines = thread_lines(&thread_cylinders(snapshot, evaluated.as_deref()));
+        let lines = thread_lines(&threads);
         let plan = Arc::new(InstancedRenderPlan::from_snapshot_with_lines(
             snapshot,
             &self.exact.results,
@@ -34,6 +29,22 @@ impl KetchupApp {
         self.render.plan = Some(Arc::clone(&plan));
         self.render.plan_awaits_program = awaits_program;
         plan
+    }
+
+    /// Every thread of `snapshot`, its program parts' included; `None` while
+    /// the program is still being evaluated. A program that failed names no
+    /// threads of its own.
+    pub(crate) fn document_threads(&self, snapshot: &Snapshot) -> Option<Vec<ThreadCylinder>> {
+        let evaluated = match self
+            .document
+            .current_rule_program()
+            .map(|program| self.program_evaluations.try_get(program))
+        {
+            None => None,
+            Some(Lookup::Ready(evaluation)) => evaluation.ok(),
+            Some(Lookup::Pending) => return None,
+        };
+        Some(thread_cylinders(snapshot, evaluated.as_deref()))
     }
 
     /// Whether the plan lacks program threads that could be drawn now.

@@ -20,16 +20,23 @@ use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+mod threads;
+
+pub use threads::DrawingThread;
+use threads::ThreadMarks;
+
 type Point = [f64; 3];
 /// A closed outline in view millimetres.
 type Polyline = Vec<[f64; 2]>;
 
-/// One solid to draw: its triangles in world millimetres and its colour.
+/// One solid to draw: its triangles in world millimetres, its colour and the
+/// threads on its cylinders.
 #[derive(Clone, Debug)]
 pub struct DrawingSolid {
     pub name: String,
     pub color: [u8; 3],
     pub triangles: Vec<[Point; 3]>,
+    pub threads: Vec<DrawingThread>,
 }
 
 /// The views on the sheet, in layout order.
@@ -363,6 +370,11 @@ enum Item {
         color: [u8; 3],
     },
     Edge([[f64; 2]; 2]),
+    /// A thread line by ISO 6410, with its own stroke width.
+    Thread {
+        points: Vec<[f64; 2]>,
+        width_mm: f64,
+    },
 }
 
 struct DrawnView {
@@ -371,6 +383,8 @@ struct DrawnView {
     items: Vec<Item>,
     /// Cut fill per solid: loops and colour.
     cuts: Vec<(Vec<Polyline>, [u8; 3])>,
+    /// Thread lines on the cut, drawn over its fill.
+    on_cut: Vec<Item>,
     min: [f64; 2],
     max: [f64; 2],
     cut_at_mm: Option<f64>,
@@ -397,7 +411,11 @@ fn draw_view(
 ) -> DrawnView {
     let mut sorted: Vec<(f64, Item)> = Vec::new();
     let mut cuts = Vec::new();
+    let mut threads = ThreadMarks::default();
     for (solid, solid_edges) in solids.iter().zip(edges) {
+        for thread in &solid.threads {
+            threads.add(&frame, thread);
+        }
         let inward = winds_inward(solid);
         for triangle in &solid.triangles {
             let Some(normal) = unit_normal(triangle) else {
@@ -462,6 +480,7 @@ fn draw_view(
             cuts.push((loops, solid.color));
         }
     }
+    sorted.extend(threads.sorted);
     sorted.sort_by(|left, right| right.0.total_cmp(&left.0));
     let mut min = [f64::INFINITY; 2];
     let mut max = [f64::NEG_INFINITY; 2];
@@ -475,12 +494,14 @@ fn draw_view(
         match item {
             Item::Face { points, .. } => points.iter().for_each(&mut grow),
             Item::Edge(points) => points.iter().for_each(&mut grow),
+            Item::Thread { points, .. } => points.iter().for_each(&mut grow),
         }
     }
     DrawnView {
         view,
         items: sorted.into_iter().map(|(_, item)| item).collect(),
         cuts,
+        on_cut: threads.on_cut,
         min,
         max,
         // `cut` is measured along the depth direction, which is ±1 on the
@@ -639,6 +660,16 @@ fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f6
         color: EDGE_COLOR,
         dash_mm: Vec::new(),
     };
+    let thread_line = |page: &mut Page, points: &[[f64; 2]], width_mm: f64| {
+        page.line(
+            points.iter().map(|point| at(*point)).collect(),
+            Stroke {
+                width_mm,
+                color: EDGE_COLOR,
+                dash_mm: Vec::new(),
+            },
+        );
+    };
     for item in &view.items {
         match item {
             Item::Face { points, color } => page.marks.push(Mark::Fill {
@@ -652,6 +683,7 @@ fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f6
                 }),
             }),
             Item::Edge([a, b]) => page.line(vec![at(*a), at(*b)], edge.clone()),
+            Item::Thread { points, width_mm } => thread_line(page, points, *width_mm),
         }
     }
     for (loops, color) in &view.cuts {
@@ -663,6 +695,11 @@ fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f6
             color: color.map(|channel| channel / 2),
             outline: Some(Stroke::solid(CUT_STROKE_MM)),
         });
+    }
+    for item in &view.on_cut {
+        if let Item::Thread { points, width_mm } = item {
+            thread_line(page, points, *width_mm);
+        }
     }
     let [width, height] = extent(view);
     let [left, bottom] = at(view.min);
@@ -885,6 +922,7 @@ mod tests {
             name: name.to_owned(),
             color: [200, 160, 110],
             triangles,
+            threads: Vec::new(),
         }
     }
 

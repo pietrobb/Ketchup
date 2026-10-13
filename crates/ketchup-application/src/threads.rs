@@ -34,6 +34,23 @@ pub struct ThreadCylinder {
     pub internal: bool,
 }
 
+/// Not a tolerance: ISO 724's minor diameter of a shaft's thread is
+/// d3 = d − 1.226869·P.
+const SHAFT_ROOT_DEPTH_PER_PITCH: f64 = 1.226_869;
+
+impl ThreadCylinder {
+    /// The diameter at the thread's root: the major diameter in a hole, the
+    /// minor diameter on a shaft.
+    #[must_use]
+    pub fn root_diameter_mm(&self) -> f64 {
+        if self.internal {
+            self.nominal_diameter_mm
+        } else {
+            self.nominal_diameter_mm - SHAFT_ROOT_DEPTH_PER_PITCH * self.pitch_mm
+        }
+    }
+}
+
 /// Every thread of `snapshot`; the outside threads of program parts only
 /// with the program's `evaluated` model.
 #[must_use]

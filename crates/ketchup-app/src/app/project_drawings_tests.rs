@@ -242,3 +242,68 @@ fn large_house_the_house_sheet_has_plan_sections_and_elevations_of_the_visible_l
     assert!(sheet.page.texts().any(|text| text == "Ján Novák"));
     assert!(app.digest.contains("A0"), "{}", app.digest);
 }
+
+/// A plate tapped M8 from its top and an M8 × 40 bolt lying along x.
+const BOLTED: &str = "p = box('plate', (60, 40, 20))\n\
+    hole(p, 'z+', at = (10, 10), diameter = 6.8, depth = 15, id = 'a', thread = ('M8', 10))\n\
+    bolt('s', 'M8', 40, at = (100, 10, 5), axis = (1, 0, 0))\n";
+
+/// Threads reach the sheet as ISO 6410 lines: the tapped hole's root at its
+/// major diameter, the bolt's at its minor one, placed in the world; and the
+/// sheet waits for the program rather than leaving the bolt's thread out.
+#[test]
+fn tapped_holes_and_bolts_are_drawn_with_their_threads() {
+    let mut app = KetchupApp::new();
+    let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "bolted.star".into(),
+        source: BOLTED.into(),
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program.clone(), true).unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let solids = app.visible_drawing_solids(&app.document.current()).unwrap();
+    let threads = |name: &str| {
+        solids
+            .iter()
+            .filter(|solid| solid.name == name)
+            .flat_map(|solid| solid.threads.clone())
+            .collect::<Vec<_>>()
+    };
+    let close = |left: [f64; 3], right: [f64; 3]| {
+        (0..3).all(|axis| (left[axis] - right[axis]).abs() < 1e-6)
+    };
+
+    let [hole] = threads("plate").try_into().unwrap();
+    assert!(hole.internal);
+    assert!(close(hole.start_mm, [10.0, 10.0, 20.0]) && close(hole.direction, [0.0, 0.0, -1.0]));
+    assert!((hole.length_mm - 10.0).abs() < 1e-9);
+    assert!((hole.root_diameter_mm - 8.0).abs() < 1e-9);
+
+    let [bolt] = threads("s").try_into().unwrap();
+    assert!(!bolt.internal);
+    assert!(close(bolt.start_mm, [60.0, 10.0, 5.0]) && close(bolt.direction, [1.0, 0.0, 0.0]));
+    assert!((bolt.length_mm - 40.0).abs() < 1e-9);
+    assert!((bolt.major_diameter_mm - 8.0).abs() < 1e-9);
+    assert!((bolt.root_diameter_mm - (8.0 - 1.226_869 * 1.25)).abs() < 1e-9);
+
+    let sheet = app.project_drawings().unwrap();
+    let thin = sheet
+        .page
+        .marks
+        .iter()
+        .filter(|mark| {
+            matches!(mark, ketchup_manufacturing::sheet_pdf::Mark::Line { stroke, .. }
+                if (stroke.width_mm - 0.13).abs() < 1e-9)
+        })
+        .count();
+    assert!(thin > 0, "the sheet draws no thread root lines");
+
+    app.program_evaluations.forget();
+    assert!(matches!(
+        app.project_drawings(),
+        Err(ProjectDrawingsError::ProgramPlanning)
+    ));
+    app.program_evaluations.get_blocking(&program).unwrap();
+    assert!(app.project_drawings().is_ok());
+}

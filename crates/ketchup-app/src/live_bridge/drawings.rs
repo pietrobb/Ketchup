@@ -245,6 +245,11 @@ fn export(
                 ),
                 json!({"parts_without_exact_solid": parts}),
             ),
+            ProjectDrawingsError::ProgramPlanning => failure(
+                "drawings_unavailable",
+                "The program is still being evaluated, so the threads of its parts are not known yet. Export again when it is done.",
+                json!({"program_planning": true}),
+            ),
             ProjectDrawingsError::SettingsUnreadable(_) => "drawings_unavailable",
             ProjectDrawingsError::Write(error) => failed_because("drawings_write_failed", error),
         }

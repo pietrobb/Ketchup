@@ -6,9 +6,10 @@
 
 use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
+use ketchup_application::threads::ThreadCylinder;
 use ketchup_manufacturing::project_drawings::{
-    DrawingSolid, ProjectDrawingError, ProjectSheet, ProjectSheetOptions, ProjectView, SCALES,
-    default_plan_cut_z, project_sheet,
+    DrawingSolid, DrawingThread, ProjectDrawingError, ProjectSheet, ProjectSheetOptions,
+    ProjectView, SCALES, default_plan_cut_z, project_sheet,
 };
 use ketchup_manufacturing::sheet_pdf::PdfInfo;
 use ketchup_manufacturing::title_block::{
@@ -29,6 +30,9 @@ pub(crate) enum ProjectDrawingsError {
     /// Visible parts with no current exact solid, by name: the sheet would
     /// leave them out.
     NotEvaluated(Vec<String>),
+    /// The program is still being evaluated: the threads of its parts are
+    /// not known yet, and the sheet would leave them out.
+    ProgramPlanning,
     /// The title block and format stored in the document do not read; they
     /// are left as they are rather than replaced by the defaults.
     SettingsUnreadable(serde_json::Error),
@@ -73,14 +77,40 @@ fn today() -> String {
     format!("{day}. {month}. {year}")
 }
 
+/// `thread` of a definition where `transform` places it in the world; its
+/// sizes follow the placement's stretch along its axis.
+fn placed_thread(transform: &Transform, thread: &ThreadCylinder) -> Option<DrawingThread> {
+    let along = transform.transform_vector(thread.direction);
+    let stretch = ketchup_geometry::linalg::length(along);
+    Some(DrawingThread {
+        start_mm: transform.transform_point(thread.start_mm),
+        direction: ketchup_geometry::linalg::normalize(along)?,
+        length_mm: thread.length_mm * stretch,
+        major_diameter_mm: thread.nominal_diameter_mm * stretch,
+        root_diameter_mm: thread.root_diameter_mm() * stretch,
+        internal: thread.internal,
+    })
+}
+
 impl KetchupApp {
     /// Every visible body of every visible occurrence as its exact solid, in
-    /// world millimetres; a visible part with a body but no current exact solid
-    /// is an error naming it, never a sheet that silently leaves it out.
+    /// world millimetres, the part's threads on its first; a visible part with
+    /// a body but no current exact solid is an error naming it, never a sheet
+    /// that silently leaves it out.
     pub(crate) fn visible_drawing_solids(
         &self,
         snapshot: &Snapshot,
     ) -> Result<Vec<DrawingSolid>, ProjectDrawingsError> {
+        let mut threads = BTreeMap::<DefinitionId, Vec<ThreadCylinder>>::new();
+        for thread in self
+            .document_threads(snapshot)
+            .ok_or(ProjectDrawingsError::ProgramPlanning)?
+        {
+            threads
+                .entry(thread.definition_id)
+                .or_default()
+                .push(thread);
+        }
         let exact = self
             .exact
             .results
@@ -117,18 +147,27 @@ impl KetchupApp {
                     }
                 }
             }
-            drawn.extend(
-                packages
-                    .into_iter()
-                    .map(|package| (occurrence.clone(), package)),
-            );
+            let placed = threads
+                .get(&occurrence.definition_id)
+                .into_iter()
+                .flatten()
+                .filter_map(|thread| placed_thread(&occurrence.transform, thread))
+                .collect::<Vec<_>>();
+            drawn.extend(packages.into_iter().enumerate().map(|(index, package)| {
+                let threads = if index == 0 {
+                    placed.clone()
+                } else {
+                    Vec::new()
+                };
+                (occurrence.clone(), package, threads)
+            }));
         }
         if !missing.is_empty() {
             return Err(ProjectDrawingsError::NotEvaluated(missing));
         }
         Ok(drawn
             .into_iter()
-            .map(|(occurrence, package)| {
+            .map(|(occurrence, package, threads)| {
                 let vertices = package.vertices();
                 let world = |index: u32| {
                     let vertex = vertices.get(usize::try_from(index).ok()?)?;
@@ -146,6 +185,7 @@ impl KetchupApp {
                     name: occurrence.occurrence_name,
                     color: occurrence.color.unwrap_or(DEFAULT_SOLID_COLOR),
                     triangles,
+                    threads,
                 }
             })
             .collect())
@@ -297,6 +337,7 @@ impl KetchupApp {
                     ("parts", missing_parts_list(parts)),
                 ]),
             ),
+            ProjectDrawingsError::ProgramPlanning => self.catalog.text("status-program-planning"),
             ProjectDrawingsError::SettingsUnreadable(reason) => self.catalog.format(
                 "drawings-settings-unreadable",
                 &BTreeMap::from([("reason", reason.to_string())]),
