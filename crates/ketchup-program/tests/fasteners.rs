@@ -215,6 +215,13 @@ bolt(\"long\", \"M24\", 240, norm = \"ISO 4014\", at = (150, 0, 0))
             "{name}: shank {min:?} {max:?}"
         );
     }
+    // M8 x 100 (past the catalogued 40..80, so by the rule alone): b = 22, shank 78.
+    let m8x100 = self::model(
+        "box(\"b\", (bolt_thread_length(\"M8\", 100, norm = \"ISO 4014\"), 1, 1))\n\
+         box(\"f\", (bolt_thread_length(\"M8\", 40), 1, 1), at = (50, 0, 0))\n",
+    );
+    assert!(close(m8x100.part("b").unwrap().size_mm[0], 22.0));
+    assert!(close(m8x100.part("f").unwrap().size_mm[0], 40.0));
     // b = 26 >= l = 20: the whole shank is threaded.
     let short =
         self::model("box(\"b\", (bolt_thread_length(\"M10\", 20, norm = \"ISO 4014\"), 1, 1))\n");
