@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(pixel(side * 23 / 100, eye_y), [255, 255, 255, 255]);
         // Green background instead of the editor's blue.
         let &[r, g, b, _] = pixel(side * 8 / 100, side * 31 / 100) else {
-            unreachable!()
+            unreachable!("an RGBA pixel has four channels")
         };
         assert!(g > r && g > b, "background must be green, got {r} {g} {b}");
         let editor = include_bytes!("../../ketchup-app/assets/ketchup-128.rgba");

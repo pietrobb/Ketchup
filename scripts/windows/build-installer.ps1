@@ -348,9 +348,12 @@ $escapedOutput = $OutputDir.Replace('"', '""')
 $setupIcon = Join-Path $repoRoot "crates\ketchup-app\assets\ketchup.ico"
 Assert-Leaf $setupIcon "application icon"
 $escapedSetupIcon = $setupIcon.Replace('"', '""')
+# Inno signs the uninstaller it embeds only through a SignTool given to ISCC.
+$signedUninstaller = if ($Sign) { "SignTool=ketchupsign`r`nSignedUninstaller=yes" } else { "" }
+# The AppId stays fixed for every release: changing it installs side by side instead of upgrading.
 $iss = @"
 [Setup]
-AppId=Ketchup
+AppId={{C73827F1-5B7A-42CB-8D5E-8B40441C3EBD}
 AppName=Ketchup
 AppVersion=$Version
 AppPublisher=$publisher
@@ -368,6 +371,7 @@ OutputDir=$escapedOutput
 OutputBaseFilename=$setupBaseName
 SetupLogging=yes
 ChangesAssociations=yes
+$signedUninstaller
 
 [Files]
 Source: "$escapedPayload\*"; DestDir: "{app}"; Flags: ignoreversion
@@ -396,10 +400,30 @@ Root: HKA; Subkey: "Software\Classes\Ketchup.ViewerComments\shell\open\command";
 
 [Run]
 Filename: "{app}\Ketchup.exe"; Description: "Launch Ketchup"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// Test builds before 0.1.0 installed under another AppId. Remove them first, so the
+// release takes over instead of sharing .ketchup with an uninstaller that later deletes it.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Uninstaller: String;
+  ResultCode: Integer;
+begin
+  Result := '';
+  if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\KetchupManualAlpha_is1', 'UninstallString', Uninstaller) then
+    Exec(RemoveQuotes(Uninstaller), '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
 "@
 Write-Utf8 $issPath ($iss.TrimStart() + "`r`n")
 
-& $InnoCompilerPath $issPath
+$isccArguments = @($issPath)
+if ($Sign) {
+    $isccArguments = @(
+        "/Sketchupsign=`$q$SignToolPath`$q sign /v /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib `$q$AzureSigningDlibPath`$q /dmdf `$q$SigningMetadataPath`$q `$f",
+        $issPath
+    )
+}
+& $InnoCompilerPath @isccArguments
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed." }
 Assert-Leaf $setupPath "installer"
 if ($Sign) {
@@ -476,14 +500,24 @@ try {
 
     $uninstaller = Join-Path $installedDir "unins000.exe"
     Assert-Leaf $uninstaller "uninstaller"
+    if ($Sign) {
+        $uninstallerSignature = Get-AuthenticodeSignature $uninstaller
+        if ($uninstallerSignature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+            $uninstallerSignature.SignerCertificate.Subject -notlike 'CN=AEON GROUP spol. s r.o.*') {
+            throw "The installed uninstaller is not signed by AEON GROUP."
+        }
+    }
     $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
         "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART"
     ) -Wait -PassThru
     if ($uninstall.ExitCode -ne 0) { throw "Silent uninstall smoke test failed with exit code $($uninstall.ExitCode)." }
-    foreach ($key in @("Ketchup.ViewerPackage", "Ketchup.ViewerComments")) {
-        if (Test-Path "HKCU:\Software\Classes\$key") { throw "Uninstall left the Viewer association $key." }
+    foreach ($key in @("Ketchup.Document", "Ketchup.ViewerPackage", "Ketchup.ViewerComments")) {
+        if (Test-Path "HKCU:\Software\Classes\$key") { throw "Uninstall left the association $key." }
+    }
+    if (Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{C73827F1-5B7A-42CB-8D5E-8B40441C3EBD}_is1") {
+        throw "Uninstall left its Add/Remove Programs entry."
     }
 } finally {
     if (Test-Path $tempRoot) { Remove-Item $tempRoot -Recurse -Force }
