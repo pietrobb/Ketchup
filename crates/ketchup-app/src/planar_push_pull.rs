@@ -725,7 +725,17 @@ impl KetchupApp {
             return false;
         };
         if !evaluation.ready {
-            evaluation.confirm_requested = evaluation.failure.is_none();
+            if evaluation.failure.is_some() {
+                // A preview whose exact evaluation failed (a worker that timed
+                // out on a loaded machine) is evaluated again for the
+                // confirmation: it commits when that succeeds, and a second
+                // failure is reported by the poll. The typed value is never
+                // dropped as if there were nothing to apply.
+                self.push_pull.face_offset_evaluation = None;
+                self.request_face_offset_confirmation();
+                return false;
+            }
+            evaluation.confirm_requested = true;
             return false;
         }
         let Some(proposal) = self.push_pull.smart_proposal.as_ref() else {

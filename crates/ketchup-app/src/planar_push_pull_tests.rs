@@ -1117,3 +1117,102 @@ fn failed_cancelled_or_stale_face_offset_never_changes_document() {
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), steps);
 }
+
+/// The preview of a typed Push/Pull whose exact offset timed out, stored as
+/// the poll stores a worker that did not answer in time (forced here, not by
+/// load).
+fn timed_out_preview(distance: &str) -> KetchupApp {
+    let mut app = prism(
+        &[[0.0, 0.0], [40.0, 0.0], [8.0, 30.0]],
+        Transform::identity(),
+    );
+    select(&mut app, 0);
+    app.active_tool = ActiveTool::PushPull;
+    app.value_box.input = distance.into();
+    app.set_push_pull_distance_input(distance);
+    assert!(app.start_preview());
+    app.begin_face_offset_evaluation();
+    let evaluation = app.push_pull.face_offset_evaluation.as_mut().unwrap();
+    evaluation.task = None;
+    evaluation.ready = false;
+    evaluation.failure = Some(
+        Rejection::new("push_pull.exact_evaluation", RejectionPhase::Evaluation)
+            .reason("the exact evaluation stopped without an answer")
+            .caused_by(ketchup_application::evaluation::ExactEvaluationError::TimedOut),
+    );
+    app
+}
+
+fn poll_until(app: &mut KetchupApp, done: impl Fn(&KetchupApp) -> bool) {
+    let context = egui::Context::default();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !done(app) {
+        assert!(Instant::now() < deadline, "{}", app.digest);
+        app.poll_face_offset_evaluation(&context);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Review TST-1: Enter on a typed Push/Pull whose exact preview timed out did
+/// nothing but say "nothing to apply", so the edit was lost on a slow PC. Enter
+/// now evaluates the offset again and commits it.
+#[test]
+fn enter_after_a_timed_out_face_offset_preview_evaluates_again_and_commits() {
+    let mut app = timed_out_preview("2");
+    let revision = app.document_revision();
+    let steps = app.undo_step_count();
+    let face = app
+        .selected_planar_face(&app.selection.primary.clone().unwrap())
+        .unwrap();
+    assert!(app.apply_value_input(), "{}", app.digest);
+    assert_ne!(app.digest, app.catalog.text("digest-nothing-to-apply"));
+    poll_until(&mut app, |app| app.document_revision() != revision);
+    assert_eq!(app.undo_step_count(), steps + 1);
+    let support = package(&app)
+        .vertices()
+        .iter()
+        .map(|v| {
+            let [x, y, z] = v.position_mm;
+            dot(Vec3::new(x, y, z) - face.origin, face.normal)
+        })
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        (support - 2.0).abs() < 1.0e-6,
+        "committed offset: {support}"
+    );
+}
+
+/// Review TST-1: when the second evaluation fails as well, Enter is refused
+/// visibly: the digest names why and the document stays as it was.
+#[test]
+fn enter_after_a_timed_out_face_offset_preview_that_fails_again_says_why() {
+    let mut app = timed_out_preview("2");
+    let digest = app.canonical_digest();
+    let steps = app.undo_step_count();
+    app.headless_force_exact_worker_path("missing-exact-worker.exe");
+    assert!(app.apply_value_input(), "{}", app.digest);
+    poll_until(&mut app, |app| {
+        app.push_pull
+            .face_offset_evaluation
+            .as_ref()
+            .is_some_and(|evaluation| evaluation.task.is_none())
+    });
+    let failure = face_offset_failure_text(
+        app.push_pull
+            .face_offset_evaluation
+            .as_ref()
+            .unwrap()
+            .failure
+            .as_ref()
+            .expect("a missing worker fails the evaluation again"),
+    );
+    assert_eq!(
+        app.digest,
+        app.catalog.format(
+            "digest-push-pull-exact-failed",
+            &BTreeMap::from([("reason", failure)]),
+        )
+    );
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), steps);
+}
