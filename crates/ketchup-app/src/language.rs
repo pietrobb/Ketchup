@@ -175,5 +175,11 @@ mod tests {
             UiLanguage::resolve(None, None, ["en-GB", "sk-SK"]),
             UiLanguage::English
         );
+        // English Windows with the Slovak regional format: the regional format
+        // is not a display language, so only `en-US` reaches the resolver.
+        assert_eq!(
+            UiLanguage::resolve(None, None, ["en-US"]),
+            UiLanguage::English
+        );
     }
 }
