@@ -15,3 +15,5 @@ pub mod text;
 
 #[cfg(test)]
 mod gpu_tests;
+#[cfg(test)]
+mod test_gpu;
