@@ -1372,17 +1372,21 @@ impl KetchupApp {
         self.camera.pan += old_position - new_position;
     }
 
-    /// The nearest exact or mesh surface under the pointer: the point hit and
-    /// the outward normal there.
+    /// The nearest exact or mesh surface under the pointer that the section
+    /// keeps: the point hit and the outward normal there.
     pub(crate) fn surface_hit_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<(Vec3, Vec3)> {
         let ray = self.view_ray(pointer, rect)?;
         let snapshot = self.document.current();
         let exact = self
             .exact_projection(&snapshot)
-            .exact_surface_pick(ray)
+            .exact_surface_picks(ray)
+            .into_iter()
+            .find(|hit| self.section_keeps(hit.position_mm))
             .map(|hit| (hit.ray_distance_mm, hit.position_mm, hit.outward_normal));
         let mesh = MeshInteractionProjection::from_snapshot(&snapshot)
-            .exact_surface_pick(ray)
+            .exact_surface_picks(ray)
+            .into_iter()
+            .find(|hit| self.section_keeps(hit.position_mm))
             .map(|hit| (hit.ray_distance_mm, hit.position_mm, hit.outward_normal));
         [exact, mesh]
             .into_iter()

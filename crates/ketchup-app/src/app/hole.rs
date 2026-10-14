@@ -75,8 +75,8 @@ impl KetchupApp {
         self.queue_window_edit(operation, "digest-hole-created")
     }
 
-    /// The exact face nearest along the view ray and the hit point in its
-    /// part's coordinates.
+    /// The exact face nearest along the view ray that the section keeps, and
+    /// the hit point in its part's coordinates.
     pub(super) fn face_at_screen(
         &self,
         pointer: Pos2,
@@ -88,7 +88,7 @@ impl KetchupApp {
         let hit = ExactInteractionProjection::from_snapshot(&snapshot, topology_results)
             .exact_surface_picks(ray)
             .into_iter()
-            .next()?;
+            .find(|hit| self.section_keeps(hit.position_mm))?;
         let face = hit
             .topological_target?
             .resolve_current(&snapshot, topology_results)

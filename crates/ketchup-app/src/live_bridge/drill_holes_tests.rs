@@ -579,3 +579,48 @@ fn the_hole_tool_drills_where_the_face_is_clicked_in_one_undo_step() {
     assert!(!app.live.edits.is_running());
     assert!(unchanged(&app));
 }
+
+/// Review 2026-10-14 (GX-13): with a section open, Hole, Draft and Mirror
+/// reached the face the cut hides; they now take the first face it keeps.
+#[test]
+fn the_hole_and_mirror_tools_never_reach_the_face_a_section_hides() {
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let snapshot = app.document.current();
+    let world = snapshot
+        .world_transform_for_occurrence(snapshot.occurrences().next().unwrap().id())
+        .unwrap();
+    let top = face(&mut app, &mut bridge, "plane", [0.0, 0.0, 1.0]);
+    let bottom = face(&mut app, &mut bridge, "plane", [0.0, 0.0, -1.0]);
+    let [x, y, z] = centroid(&top);
+    let low = world.transform_point(centroid(&bottom))[2];
+    let high = world.transform_point([x, y, z])[2];
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0));
+    let [wx, wy, wz] = world.transform_point([x + 10.0, y, z]);
+    let click = app.project(Vec3::new(wx, wy, wz), rect);
+    app.set_section(crate::app::plane_at([0.0, 0.0, 1.0], (low + high) / 2.0));
+
+    // Mirror's plane: the kept bottom face, seen from inside the cut part.
+    let (hit, _) = app.surface_hit_at_screen(click, rect).unwrap();
+    assert!(
+        (hit.z - low).abs() < 1e-6,
+        "{hit:?} is not on the kept face"
+    );
+
+    // Hole (and Draft, which picks its face the same way): an 8 mm blind
+    // hole drilled from the bottom face, not from the hidden top.
+    app.dispatch_command(AppCommand::Hole);
+    app.value_box.input = "6 8".to_owned();
+    assert!(app.drill_hole_at_screen(click, rect), "{}", app.digest);
+    app.finish_window_edit();
+    assert_eq!(app.digest, app.catalog.text("digest-hole-created"));
+    evaluate_exact(&mut app);
+    // The hole's end faces down into it; the hidden top would have put it
+    // 8 mm below the top, facing up.
+    let end = face(&mut app, &mut bridge, "plane", [0.0, 0.0, -1.0]);
+    let end_z = world.transform_point(centroid(&end))[2];
+    assert!(
+        (end_z - (low + 8.0)).abs() < 1e-6,
+        "the hole ends at {end_z}, not 8 mm above the bottom {low}"
+    );
+}
