@@ -22,6 +22,8 @@ fn comment(id: u64) -> Comment {
                 normal: [0.0, 0.0, 1.0],
                 offset_mm: 5.0,
             }),
+            scene: None,
+            shown: None,
         },
         selected: Some(path(10)),
         arrows: vec![Arrow {
@@ -115,6 +117,8 @@ fn malformed_oversized_or_dangling_comments_are_refused() {
         |c| c.author = Some("a\0b".into()),
         |c| c.selected = Some(path(99)),
         |c| c.view.hidden = vec![path(99)],
+        |c| c.view.shown = Some(vec![path(99)]),
+        |c| c.view.scene = Some(99),
         |c| c.arrows[0].tip.occurrence = Some(path(99)),
         |c| c.arrows[0].tail.point_mm[0] = f64::NAN,
         |c| c.arrows = vec![c.arrows[0].clone(); MAX_ARROWS + 1],
@@ -142,4 +146,106 @@ fn malformed_oversized_or_dangling_comments_are_refused() {
     future.version = 2;
     let bytes = serde_json::to_vec(&future).unwrap();
     assert!(Comments::read(bytes.as_slice(), &package).is_err());
+}
+
+/// A house: 6000 loose parts, a wall panel assembly of 400 and a roof layer
+/// of every third loose part, hidden by the scene "Without roof".
+fn house() -> Package {
+    let mut package = package();
+    let manifest = &mut package.manifest;
+    let part = manifest.occurrences[0].clone();
+    let panel = (0..400).map(|local_id| InstancePath {
+        root_occurrence_id: 50,
+        steps: vec![PathStep::Occurrence {
+            owner_definition_id: 1,
+            local_id,
+        }],
+    });
+    manifest.occurrences = (1_000..7_000)
+        .map(path)
+        .chain(panel)
+        .map(|path| Occurrence {
+            path,
+            ..part.clone()
+        })
+        .collect();
+    manifest.scenes[0].id = 7;
+    manifest.scenes[0].hidden = (1_000..7_000).step_by(3).map(path).collect();
+    manifest.start_scene = Some(7);
+    package
+}
+
+#[test]
+fn isolations_and_hidden_layers_stay_small_and_restore_exactly() {
+    let package = house();
+    let manifest = &package.manifest;
+    let count = manifest.occurrences.len();
+    let roof = |i: usize| i < 6_000 && i.is_multiple_of(3);
+    let panel = |i: usize| i >= 6_000;
+    let views: [(&str, Vec<bool>); 4] = [
+        ("isolated part", (0..count).map(|i| i == 4_321).collect()),
+        ("roof layer hidden", (0..count).map(|i| !roof(i)).collect()),
+        (
+            "roof layer, the wall panel and one more part hidden",
+            (0..count)
+                .map(|i| !roof(i) && !panel(i) && i != 1)
+                .collect(),
+        ),
+        ("wall panel hidden", (0..count).map(|i| !panel(i)).collect()),
+    ];
+    let mut comments = Comments::new(&package).expect("new");
+    for (name, visible) in &views {
+        let mut view = comment(1).view;
+        view.set_visibility(manifest, visible);
+        let restored: Vec<bool> = manifest
+            .occurrences
+            .iter()
+            .map(|o| view.shows(manifest, &o.path))
+            .collect();
+        assert!(restored == *visible, "{name}: the view restores exactly");
+        let paths = view.hidden.len() + view.shown.as_ref().map_or(0, Vec::len);
+        assert!(paths <= 2, "{name}: {paths} paths, {view:?}");
+        for _ in 0..250 {
+            let mut written = comment(comments.new_id());
+            written.view = view.clone();
+            written.selected = Some(path(5_321));
+            for anchor in written
+                .arrows
+                .iter_mut()
+                .flat_map(|a| [&mut a.tip, &mut a.tail])
+            {
+                anchor.occurrence = Some(path(5_321));
+            }
+            comments.comments.push(written);
+        }
+    }
+    assert_eq!(
+        comments.comments[750].view.hidden,
+        [path(50)],
+        "a hidden assembly is one path"
+    );
+
+    // A thousand comments in these views still save, and read back the same.
+    let mut bytes = Vec::new();
+    comments.write(&mut bytes, &package).expect("write");
+    assert!(
+        bytes.len() < MAX_COMMENTS_BYTES / 4,
+        "{} bytes",
+        bytes.len()
+    );
+    assert_eq!(
+        Comments::read(bytes.as_slice(), &package).expect("read"),
+        comments
+    );
+
+    // A view a plain list describes as well is written as before, for
+    // Viewers that read only `hidden`.
+    let mut plain = comment(1).view;
+    plain.set_visibility(manifest, &(0..count).map(|i| i != 1).collect::<Vec<_>>());
+    assert_eq!(
+        (plain.hidden, plain.scene, plain.shown),
+        (vec![path(1_001)], None, None)
+    );
+    let json = serde_json::to_string(&comment(1)).unwrap();
+    assert!(!json.contains("shown") && !json.contains("scene"), "{json}");
 }

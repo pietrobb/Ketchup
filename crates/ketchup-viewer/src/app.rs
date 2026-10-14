@@ -622,19 +622,18 @@ impl ViewerApp {
     /// What is shown now, for a new comment.
     fn current_view(&self) -> Option<(CommentView, Option<InstancePath>)> {
         let (model, camera) = (self.model.as_ref()?, self.camera.as_ref()?);
+        let mut view = CommentView {
+            camera: camera.to_scene(),
+            hidden: vec![],
+            style: self.style.clone(),
+            section: self.section.clone(),
+            scene: None,
+            shown: None,
+        };
+        view.set_visibility(model.manifest(), &self.visible);
         let occurrences = &model.manifest().occurrences;
         Some((
-            CommentView {
-                camera: camera.to_scene(),
-                hidden: occurrences
-                    .iter()
-                    .zip(&self.visible)
-                    .filter(|(_, visible)| !**visible)
-                    .map(|(occurrence, _)| occurrence.path.clone())
-                    .collect(),
-                style: self.style.clone(),
-                section: self.section.clone(),
-            },
+            view,
             self.selected.map(|index| occurrences[index].path.clone()),
         ))
     }
@@ -651,12 +650,7 @@ impl ViewerApp {
         let occurrences = &model.manifest().occurrences;
         self.visible = occurrences
             .iter()
-            .map(|occurrence| {
-                !comment.view.hidden.iter().any(|hidden| {
-                    hidden.root_occurrence_id == occurrence.path.root_occurrence_id
-                        && occurrence.path.steps.starts_with(&hidden.steps)
-                })
-            })
+            .map(|occurrence| comment.view.shows(model.manifest(), &occurrence.path))
             .collect();
         self.style = comment.view.style.clone();
         self.section = comment.view.section.clone();

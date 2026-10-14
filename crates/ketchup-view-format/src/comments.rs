@@ -58,6 +58,9 @@ pub struct Comment {
 }
 
 /// Camera and what was shown, so another screen restores the same intent.
+/// What was shown is `shown` (only these, after an isolation) or else the
+/// `scene`'s visibility (all when none), less `hidden`; see
+/// [`CommentView::set_visibility`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommentView {
@@ -65,6 +68,10 @@ pub struct CommentView {
     pub hidden: Vec<InstancePath>,
     pub style: DisplayStyle,
     pub section: Option<Section>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<Vec<InstancePath>>,
 }
 
 /// An arrow from `tail` to `tip`, each held on a component or in the world.
@@ -149,7 +156,7 @@ impl Comments {
     /// Validate against `package`, then write; nothing is written on failure.
     pub fn write(&self, mut writer: impl Write, package: &Package) -> Result<(), Rejection> {
         self.validate(package)?;
-        let bytes = serde_json::to_vec_pretty(self).map_err(|error| {
+        let bytes = serde_json::to_vec(self).map_err(|error| {
             reject("comments", "The comments could not be encoded.").caused_by(error)
         })?;
         if bytes.len() > MAX_COMMENTS_BYTES {
@@ -218,7 +225,9 @@ impl Comments {
                     return Err(reject("comments.view.section", "The section is invalid."));
                 }
             }
-            if comment.view.hidden.len() > crate::container::MAX_ENTRIES {
+            if comment.view.hidden.len() > crate::container::MAX_ENTRIES
+                || comment.view.shown.as_ref().map_or(0, Vec::len) > crate::container::MAX_ENTRIES
+            {
                 return Err(reject(
                     "comments.view.hidden",
                     "Too many hidden components.",
@@ -252,14 +261,23 @@ impl Comments {
             .map(|o| &o.path)
             .collect();
         for comment in &self.comments {
-            for hidden in &comment.view.hidden {
+            let view = &comment.view;
+            for hidden in view.hidden.iter().chain(view.shown.iter().flatten()) {
                 // A hidden path may be an assembly above the bodies.
-                if !paths.iter().any(|path| {
-                    path.root_occurrence_id == hidden.root_occurrence_id
-                        && path.steps.starts_with(&hidden.steps)
-                }) {
+                if !paths
+                    .iter()
+                    .any(|path| crate::visibility::covered(std::slice::from_ref(hidden), path))
+                {
                     return Err(unknown_path("comments.view.hidden"));
                 }
+            }
+            if let Some(id) = view.scene
+                && !package.manifest.scenes.iter().any(|scene| scene.id == id)
+            {
+                return Err(reject(
+                    "comments.view.scene",
+                    "A comment refers to a scene that is not in this package.",
+                ));
             }
             let picked = comment.selected.iter();
             let anchored = comment

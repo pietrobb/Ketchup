@@ -868,6 +868,8 @@ fn customer_comments(package: &view::Package) -> view::Comments {
             hidden: vec![],
             style: view::DisplayStyle::Shaded,
             section: None,
+            scene: None,
+            shown: None,
         },
         selected: Some(view_path(10)),
         arrows: vec![view::Arrow {

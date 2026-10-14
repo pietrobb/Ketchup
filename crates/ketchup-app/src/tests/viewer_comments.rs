@@ -52,6 +52,8 @@ fn comments_on(package: &view::Package) -> view::Comments {
             hidden: vec![],
             style: view::DisplayStyle::Wireframe,
             section: None,
+            scene: None,
+            shown: None,
         },
         selected: Some(part.clone()),
         arrows: vec![view::Arrow {

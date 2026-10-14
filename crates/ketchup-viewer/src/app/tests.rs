@@ -727,6 +727,8 @@ fn system_opened_comments_file_finds_its_own_package_in_the_folder() {
             hidden: vec![],
             style: DisplayStyle::Shaded,
             section: None,
+            scene: None,
+            shown: None,
         },
         selected: Some(original.manifest.occurrences[0].path.clone()),
         arrows: vec![],
@@ -865,6 +867,8 @@ fn customer_with_comment(bytes: &[u8], text: &str) -> ViewerApp {
         hidden: vec![],
         style: DisplayStyle::Shaded,
         section: None,
+        scene: None,
+        shown: None,
     };
     let review = app.review.as_mut().unwrap();
     review.start(view, None);

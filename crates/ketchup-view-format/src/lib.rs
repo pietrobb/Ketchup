@@ -10,6 +10,7 @@ mod container;
 mod glb;
 mod schema;
 mod validation;
+mod visibility;
 
 pub use comments::{
     Arrow, Comment, CommentView, Comments, ExportRef, MAX_ARROWS, MAX_AUTHOR_BYTES,
