@@ -92,18 +92,12 @@ pub(crate) fn wait_preview(app: &mut KetchupApp) {
     if app.push_pull.face_offset_evaluation.is_none() {
         app.begin_face_offset_evaluation();
     }
-    let context = egui::Context::default();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while app
-        .push_pull
-        .face_offset_evaluation
-        .as_ref()
-        .is_some_and(|evaluation| evaluation.task.is_some())
-    {
-        assert!(Instant::now() < deadline, "preview timeout");
-        app.poll_face_offset_evaluation(&context);
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    poll_until(app, |app| {
+        app.push_pull
+            .face_offset_evaluation
+            .as_ref()
+            .is_none_or(|evaluation| evaluation.task.is_none())
+    });
     assert!(
         app.push_pull
             .face_offset_evaluation
