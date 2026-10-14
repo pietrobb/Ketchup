@@ -81,7 +81,7 @@ fn native_options() -> eframe::NativeOptions {
 }
 
 /// The Viewer icon on the title bar and taskbar: the editor's ketchup artwork
-/// with an eye badge (from `scripts/make_app_icon.py`).
+/// on a green background with a large eye (from `scripts/make_app_icon.py`).
 #[must_use]
 pub fn window_icon() -> egui::IconData {
     const SIDE: u32 = 128;
@@ -158,14 +158,15 @@ mod tests {
             assert_eq!(pixel(x, y)[3], 0, "corner ({x}, {y}) must be transparent");
         }
         assert_eq!(pixel(side / 2, side / 2)[3], 255);
-        // The eye badge in the lower right corner: white disk, dark pupil in its middle.
-        let badge = side * 46 / 100;
-        let center = side - badge / 2;
-        assert_eq!(
-            pixel(center, side - badge + badge * 15 / 100),
-            [255, 255, 255, 255]
-        );
-        assert_eq!(pixel(center, center), [10, 20, 40, 255]);
+        // The large eye over the lower half: dark pupil in its middle, white beside it.
+        let eye_y = side * 72 / 100;
+        assert_eq!(pixel(side / 2, eye_y), [10, 20, 40, 255]);
+        assert_eq!(pixel(side * 23 / 100, eye_y), [255, 255, 255, 255]);
+        // Green background instead of the editor's blue.
+        let &[r, g, b, _] = pixel(side * 8 / 100, side * 31 / 100) else {
+            unreachable!()
+        };
+        assert!(g > r && g > b, "background must be green, got {r} {g} {b}");
         let editor = include_bytes!("../../ketchup-app/assets/ketchup-128.rgba");
         assert_ne!(icon.rgba.as_slice(), editor.as_slice());
     }

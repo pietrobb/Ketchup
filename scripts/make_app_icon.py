@@ -2,7 +2,8 @@
 
 Writes ketchup.ico (the Windows executable and installer icon) and
 ketchup-128.rgba (the window icon: 128 x 128 straight RGBA, row-major).
-The Viewer gets the same artwork with an eye badge in the lower right corner,
+The Viewer gets the same artwork on a dark green background with a large eye
+over the lower half, so it differs from the editor even at 16 px,
 as ketchup-viewer.ico and ketchup-viewer-128.rgba in crates/ketchup-viewer/assets.
 The white background around the rounded square becomes transparent.
 Needs Pillow; run it only when the artwork changes and commit the outputs.
@@ -20,9 +21,6 @@ ICO_SIZES = [256, 128, 64, 48, 40, 32, 24, 20, 16]
 WINDOW_SIZE = 128
 # Background pixels are near white; the rounded square's blue rim stops the fill.
 FILL_THRESHOLD = 60
-# The eye badge spans this share of the icon side, large enough to read at 16 px.
-BADGE_SHARE = 0.46
-BADGE_SUPERSAMPLE = 4
 NAVY = (20, 40, 90, 255)
 WHITE = (255, 255, 255, 255)
 IRIS = (30, 110, 220, 255)
@@ -54,57 +52,6 @@ def scaled(image: Image.Image, size: int) -> Image.Image:
     return image.convert("RGBa").resize((size, size), Image.Resampling.LANCZOS).convert("RGBA")
 
 
-def disk(side: int, center: float, radius: float) -> Image.Image:
-    mask = Image.new("L", (side, side), 0)
-    ImageDraw.Draw(mask).ellipse([center - radius, center - radius, center + radius, center + radius], fill=255)
-    return mask
-
-
-def eye_badge(side: int) -> Image.Image:
-    """A navy-rimmed white disk holding an almond eye with a blue iris."""
-    n = side * BADGE_SUPERSAMPLE
-    center = n / 2
-    badge = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(badge)
-    rim = n * 0.07
-    draw.ellipse([0, 0, n - 1, n - 1], fill=NAVY)
-    draw.ellipse([rim, rim, n - 1 - rim, n - 1 - rim], fill=WHITE)
-    # The almond is the overlap of two circles through both eye corners.
-    width, height = n * 0.70, n * 0.42
-    radius = (width * width / 4 + height * height / 4) / height
-    upper = Image.new("L", (n, n), 0)
-    ImageDraw.Draw(upper).ellipse(
-        [center - radius, center - height / 2, center + radius, center - height / 2 + 2 * radius], fill=255
-    )
-    lower = Image.new("L", (n, n), 0)
-    ImageDraw.Draw(lower).ellipse(
-        [center - radius, center + height / 2 - 2 * radius, center + radius, center + height / 2], fill=255
-    )
-    almond = ImageChops.multiply(upper, lower)
-    badge.paste(Image.new("RGBA", (n, n), NAVY), (0, 0), almond)
-    inset = int(n * 0.05)
-    sclera = Image.new("L", (n, n), 0)
-    sclera.paste(almond.resize((n - 2 * inset, n - 2 * inset)), (inset, inset))
-    badge.paste(Image.new("RGBA", (n, n), WHITE), (0, 0), sclera)
-    iris = n * 0.16
-    badge.paste(Image.new("RGBA", (n, n), IRIS), (0, 0), disk(n, center, iris))
-    badge.paste(Image.new("RGBA", (n, n), PUPIL), (0, 0), disk(n, center, n * 0.075))
-    glint = n * 0.035
-    draw.ellipse(
-        [center + iris * 0.35 - glint, center - iris * 0.4 - glint, center + iris * 0.35 + glint, center - iris * 0.4 + glint],
-        fill=WHITE,
-    )
-    return badge.resize((side, side), Image.Resampling.LANCZOS)
-
-
-def with_eye_badge(icon: Image.Image) -> Image.Image:
-    side = icon.size[0]
-    badge_side = int(side * BADGE_SHARE)
-    viewer = icon.copy()
-    viewer.alpha_composite(eye_badge(badge_side), (side - badge_side, side - badge_side))
-    return viewer
-
-
 def write_icons(icon: Image.Image, folder: Path, stem: str) -> None:
     largest = scaled(icon, ICO_SIZES[0])
     largest.save(
@@ -116,11 +63,60 @@ def write_icons(icon: Image.Image, folder: Path, stem: str) -> None:
     (folder / f"{stem}-{WINDOW_SIZE}.rgba").write_bytes(scaled(icon, WINDOW_SIZE).tobytes())
 
 
+def almond(side: int, cx: float, cy: float, width: float, height: float) -> Image.Image:
+    radius = (width * width / 4 + height * height / 4) / height
+    upper = Image.new("L", (side, side), 0)
+    ImageDraw.Draw(upper).ellipse([cx - radius, cy - height / 2, cx + radius, cy - height / 2 + 2 * radius], fill=255)
+    lower = Image.new("L", (side, side), 0)
+    ImageDraw.Draw(lower).ellipse([cx - radius, cy + height / 2 - 2 * radius, cx + radius, cy + height / 2], fill=255)
+    return ImageChops.multiply(upper, lower)
+
+
+def big_eye(side: int, cx: float, cy: float, width: float, height: float, rim: float, iris_color) -> Image.Image:
+    """A large almond eye drawn on a transparent layer of the given side."""
+    layer = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    layer.paste(Image.new("RGBA", (side, side), NAVY), (0, 0), almond(side, cx, cy, width, height))
+    inner = almond(side, cx, cy, width - 2 * rim, height - 2 * rim)
+    layer.paste(Image.new("RGBA", (side, side), WHITE), (0, 0), inner)
+    def dot(r):
+        mask = Image.new("L", (side, side), 0)
+        ImageDraw.Draw(mask).ellipse([cx - r, cy - r, cx + r, cy + r], fill=255)
+        return ImageChops.multiply(mask, inner)
+
+    iris = height * 0.36
+    layer.paste(Image.new("RGBA", (side, side), iris_color), (0, 0), dot(iris))
+    layer.paste(Image.new("RGBA", (side, side), PUPIL), (0, 0), dot(iris * 0.48))
+    glint = iris * 0.22
+    gx, gy = cx + iris * 0.38, cy - iris * 0.4
+    ImageDraw.Draw(layer).ellipse([gx - glint, gy - glint, gx + glint, gy + glint], fill=WHITE)
+    return layer
+
+
+def recoloured_background(icon: Image.Image, hue: int, value: float) -> Image.Image:
+    """The artwork with its blue background turned to another hue; bottle, tape and pencil stay."""
+    rgb = icon.convert("RGB")
+    h, s, v = rgb.convert("HSV").split()
+    blue = ImageChops.multiply(
+        h.point(lambda x: 255 if 120 <= x <= 185 else 0), s.point(lambda x: 255 if x > 60 else 0)
+    )
+    shifted = Image.merge("HSV", (Image.new("L", rgb.size, hue), s, v.point(lambda x: round(x * value)))).convert("RGB")
+    out = icon.copy()
+    out.paste(shifted, (0, 0), blue)
+    return out
+
+
+def viewer_icon(icon: Image.Image) -> Image.Image:
+    side = icon.size[0]
+    out = recoloured_background(icon, hue=92, value=0.55)
+    out.alpha_composite(big_eye(side, side * 0.5, side * 0.72, side * 0.88, side * 0.44, side * 0.035, IRIS))
+    return out
+
+
 def main() -> None:
     icon = transparent_corners(Image.open(SOURCE).convert("RGB"))
     write_icons(icon, ASSETS, "ketchup")
     VIEWER_ASSETS.mkdir(exist_ok=True)
-    write_icons(with_eye_badge(icon), VIEWER_ASSETS, "ketchup-viewer")
+    write_icons(viewer_icon(icon), VIEWER_ASSETS, "ketchup-viewer")
 
 
 if __name__ == "__main__":
