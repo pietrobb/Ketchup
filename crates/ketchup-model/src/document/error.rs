@@ -461,7 +461,7 @@ impl fmt::Display for CanonicalError {
                 .write_str("scale factors must be finite and greater than zero, about a finite point"),
             Self::ScaledHoleThread(id) => write!(
                 formatter,
-                "feature {} taps a thread, and a scaled thread is no longer its standard size; remove the thread before scaling",
+                "feature {} carries a thread, and a scaled thread is no longer its standard size; remove the thread before scaling",
                 id.0
             ),
             Self::InvalidProfile => {

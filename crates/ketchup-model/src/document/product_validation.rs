@@ -196,15 +196,22 @@ fn validate_document_entries(
         return Err(CanonicalError::InvalidShaftThread(id));
     }
     // A thread names a standard size, which a Scale behind it would silently
-    // stop being; a hole tapped after a Scale is cut at its true size.
-    if let Some(id) = product.hole_threads.keys().copied().find(|id| {
-        let definition = &product.definitions[&product.features[id].definition_id];
-        definition
-            .feature_ids
-            .iter()
-            .skip_while(|candidate| *candidate != id)
-            .any(|later| matches!(product.features[later].kind, FeatureKind::Scale { .. }))
-    }) {
+    // stop being; a hole tapped after a Scale is cut at its true size. A
+    // modelled bolt thread is cut into the body before a Scale on it too.
+    if let Some(id) = product
+        .hole_threads
+        .keys()
+        .chain(product.shaft_threads.keys())
+        .copied()
+        .find(|id| {
+            let definition = &product.definitions[&product.features[id].definition_id];
+            definition
+                .feature_ids
+                .iter()
+                .skip_while(|candidate| *candidate != id)
+                .any(|later| matches!(product.features[later].kind, FeatureKind::Scale { .. }))
+        })
+    {
         return Err(CanonicalError::ScaledHoleThread(id));
     }
     if let Some(id) = product

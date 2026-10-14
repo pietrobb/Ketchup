@@ -196,6 +196,34 @@ fn the_window_switch_models_threads_keeps_the_program_and_undo_restores_cosmetic
         app.document.current().canonical_digest(),
         modeled.canonical_digest()
     );
+    // The document refuses such a Scale whoever asks for it.
+    let (threaded, _) = modeled.shaft_threads().next().unwrap();
+    let definition_id = modeled.feature(threaded).unwrap().definition_id();
+    let id = FeatureId(
+        modeled
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap()
+            + 1,
+    );
+    let error = app
+        .document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id,
+            definition_id,
+            name: "Scale".to_owned(),
+            kind: FeatureKind::Scale {
+                target: threaded,
+                origin_mm: [0.0; 3],
+                factors: [1.5; 3],
+            },
+        }]))
+        .err();
+    assert!(
+        matches!(error, Some(CanonicalError::ScaledHoleThread(_))),
+        "{error:?}"
+    );
 
     app.dispatch_command(AppCommand::Undo);
     let undone = app.document.current();
