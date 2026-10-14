@@ -25,6 +25,14 @@ Ketchup is an AI-native desktop modeler for creating, editing, assembling, valid
   <img src="pic/ketchup-modeler.png" alt="Ketchup desktop prototype showing a 480-occurrence timber scene" width="100%">
 </p>
 
+## Download and try it
+
+1. Download **`Ketchup-0.1.0-Setup.exe`** from the [latest release](https://github.com/pietrobb/Ketchup/releases/latest) and run it. It installs for the current user only, without administrator rights, into `%LOCALAPPDATA%\Programs\Ketchup` and adds **Ketchup** and **Ketchup Viewer** to the Start menu. If you prefer not to install anything, use `Ketchup-0.1.0-Portable.zip` from the same release.
+2. Download **`Ketchup-0.1.0-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer. The examples are described [below](#examples-you-can-open-right-away).
+3. Optional: connect the AI harness you already use, such as Claude Code, Codex, Claude Desktop, or Cursor. It can then model in the open Ketchup window. See [Connect your AI harness](#connect-your-ai-harness-mcp).
+
+Requires Windows 10 or 11 x64. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed.
+
 ## What you can do today
 
 | Model | Organize and edit | Deliver |
@@ -37,17 +45,24 @@ Ketchup is an AI-native desktop modeler for creating, editing, assembling, valid
 
 Advanced operations are intentionally bounded and fail closed when geometry, identity, resource, or worker guarantees cannot be met. This table describes tested product paths, not unrestricted support for every shape or imported model.
 
-## A real example: an articulated drawer assembly
+## Examples you can open right away
 
-Open [`examples/hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) with **File → Open**.
+All examples are in `Ketchup-0.1.0-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder of this repository. Double-click a file or use **File → Open**.
 
-The document combines an editable assembly with embedded exact STEP components, reusable occurrences, stable mechanical references, joints, travel limits, a coordinated motion study, and a persisted mounting/mechanical contract. It is a compact example of what Ketchup is becoming: not just a shape viewer, but a model whose geometry and engineering intent stay connected.
-
-Other included scenes:
+The [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) example is an articulated drawer assembly. It combines an editable assembly with embedded exact STEP components, reusable occurrences, stable mechanical references, joints, travel limits, a coordinated motion study, and a persisted mounting contract. Its geometry and engineering intent stay connected, which is what Ketchup is built for.
 
 | Example | Try it for |
 |---|---|
-| [`grooved-beam-array.ketchup`](examples/grooved-beam-array.ketchup) | A 480-occurrence timber stress scene with 24 shared definitions; useful for viewport, selection, Outliner, and instancing behavior. |
+| [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) | The drawer assembly described above, with joints, travel limits, and a motion study. |
+| [`table.ketchup`](examples/programs/table.ketchup) | A small table driven by a rule program ([`table.star`](examples/programs/table.star)). It is a good first model to edit by hand or with AI. |
+| [`wardrobe-chair-table.ketchup`](examples/wardrobe-chair-table.ketchup) | Furniture with 82 bodies and hundreds of drilled holes. |
+| [`tiny-house.ketchup`](examples/tiny-house.ketchup) | A timber-frame house of about 750 parts, with studs, noggins, and insulation. You can try layers, material takeoff (**Tools**), and project drawings. |
+| [`house-project.ketchup`](examples/house-project.ketchup) | A larger house generated from [`house-project.star`](examples/programs/house-project.star). |
+| [`garden-studio-colored.ketchup`](examples/garden-studio-colored.ketchup) | A colored garden studio built from exact solids. |
+| [`grooved-beam-array.ketchup`](examples/grooved-beam-array.ketchup) | A 480-occurrence timber stress scene with 24 shared definitions. Use it to test the viewport, selection, the Outliner, and instancing. |
+| [`kitchen.ketchup-view`](viewer/samples/kitchen.ketchup-view) | A read-only package for **Ketchup Viewer**, where you can review a model and save comments. |
+
+The rule programs behind several of these models are in [`examples/programs`](examples/programs). An AI harness can read them and use them as templates.
 
 ## One path from intent to geometry
 
@@ -96,21 +111,33 @@ Ketchup supports reusable occurrences, grounding, stable-reference planar/axial 
 - **SketchUp bridge:** open `.kscene` interchange subset rather than native `.skp` parsing.
 - **Export:** current visible exact model to STEP and current tessellation to STL, both with fail-closed freshness/loss checks.
 
-## Use Ketchup from any AI client (MCP)
+## Connect your AI harness (MCP)
 
-Ketchup has no built-in chat. `ketchup-app --mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. Any MCP client (Claude Code, Claude Desktop, Codex, Cursor, ...) can then work in the Ketchup window you have open: read and apply the model's program, inspect parts, make verified edits, undo, save and render images. This includes importing STEP, IGES, STL, DXF, GLB and SketchUp scene files and exporting STEP, IGES, STL and the other File-menu formats. Nothing else is needed besides the executable. The **Connect AI** section of the window's side panel shows whether a client is connected and has these set-up commands ready to copy.
+Ketchup has no built-in chat. Instead, you connect the AI harness you already use, such as Claude Code, Codex, Claude Desktop, or Cursor. Your harness keeps its own model, account, and subscription. Ketchup doesn't need an API key.
 
-Claude Code:
+`Ketchup.exe --mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. A connected harness works in the Ketchup window you have open. It can read and apply the model's program, inspect parts, make verified edits, undo, save, and render images. It can also import STEP, IGES, STL, DXF, DWG, GLB, and SketchUp scene files, and export STEP, IGES, STL, and the other File-menu formats. Every AI edit goes through the same validation and Undo as a manual edit.
+
+The **Connect AI** section of the window's side panel shows whether a harness is connected. It also has the set-up command with the correct path, ready to copy. With the default installation, the commands are:
+
+Claude Code (PowerShell):
 
 ```powershell
-claude mcp add ketchup -- "C:\path\to\ketchup-app.exe" --mcp
+claude mcp add ketchup -- "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp
 ```
 
-Other clients take the same command in their MCP configuration, for example:
+Codex (PowerShell):
+
+```powershell
+codex mcp add ketchup -- "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp
+```
+
+Other harnesses take the same command in their MCP configuration. Replace `<you>` with your Windows user name:
 
 ```json
-{ "mcpServers": { "ketchup": { "command": "C:\\path\\to\\ketchup-app.exe", "args": ["--mcp"] } } }
+{ "mcpServers": { "ketchup": { "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Ketchup\\Ketchup.exe", "args": ["--mcp"] } } }
 ```
+
+Then ask the agent, for example, to *"open tiny-house.ketchup in Ketchup and make the house 1 m longer"* or *"model a 120 × 60 cm desk with two drawers"*.
 
 The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one, and the window shows a Disconnect button while a client is connected.
 
