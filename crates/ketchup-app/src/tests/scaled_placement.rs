@@ -103,13 +103,20 @@ fn a_scaled_part_shows_no_volume_in_the_dock_or_the_mass_report() {
 
     let measures = app.selection_measures().unwrap();
     assert_eq!(measures.volume_mm3, None);
-    let refused = app.catalog.format(
-        "selection-measures-volume-refused",
-        &BTreeMap::from([("reason", reason())]),
-    );
     assert_eq!(
         app.selection_measure_lines(&measures).last(),
-        Some(&refused)
+        Some(&format!("Volume: not measured, {}", reason()))
+    );
+    // The whole line is Slovak in the Slovak interface, the reason too.
+    app.set_ui_language(crate::language::UiLanguage::Slovak);
+    assert_eq!(
+        app.selection_measure_lines(&measures)
+            .last()
+            .map(String::as_str),
+        Some(
+            "Objem: nemeria sa, umiestnenie dielu 1 mení jeho mierku alebo ho skosí; \
+             diel sa smie len posunúť a otočiť"
+        )
     );
     // Never "being computed": the mass report says why there is no mass.
     assert!(matches!(

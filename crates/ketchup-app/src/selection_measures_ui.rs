@@ -156,7 +156,7 @@ impl KetchupApp {
         lines.push(match (measures.volume_mm3, measures.scaled_placement) {
             (_, Some(scaled)) => format(
                 "selection-measures-volume-refused",
-                &[("reason", scaled.to_string())],
+                &[("occurrence", scaled.occurrence_id.0.to_string())],
             ),
             (Some(volume), None) => format(
                 "selection-measures-volume",
