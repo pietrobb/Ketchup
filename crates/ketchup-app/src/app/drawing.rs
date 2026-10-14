@@ -2086,14 +2086,10 @@ impl KetchupApp {
         if let Some(confirmed) = self.confirm_drawn_shape_preview() {
             return confirmed;
         }
-        if self.push_pull.face_offset_evaluation.is_some() {
+        if self.push_pull.face_offset_evaluation.is_some()
+            || (self.has_preview() && self.preview_requires_face_offset_evaluation())
+        {
             return self.confirm_face_offset_preview();
-        }
-        if self.has_preview() && self.preview_requires_face_offset_evaluation() {
-            if !self.request_face_offset_confirmation() {
-                self.status_key = "error-preview-stale";
-            }
-            return false;
         }
         if !self.has_preview() {
             self.tool_preview.close::<EphemeralBoxPreview>();

@@ -710,6 +710,10 @@ impl KetchupApp {
                 );
                 return true;
             }
+            if self.face_offset_failed() {
+                // The status line already names why the exact offset failed.
+                return false;
+            }
             self.await_program_if_planning();
         }
         if self.active_tool == ActiveTool::Move {
@@ -840,9 +844,6 @@ impl KetchupApp {
                     return true;
                 }
             }
-        }
-        if self.face_offset_confirmation_pending() {
-            return true;
         }
         self.digest = self.catalog.text("digest-nothing-to-apply");
         false

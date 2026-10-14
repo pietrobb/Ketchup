@@ -1218,6 +1218,9 @@ impl KetchupApp {
                             source_selected_group: self.selection.selected_group,
                             edit_context: self.selection.edit_context.clone(),
                             planning: self.push_pull_planning_plan()?,
+                            // The pushed face as it is selected now; the plan
+                            // keeps the face it was taken from in the parent.
+                            target: target.clone(),
                             ..source.clone()
                         });
                     }

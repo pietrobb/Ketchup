@@ -329,6 +329,7 @@ impl KetchupApp {
                         Ok(report) => {
                             self.rebuild_render_plan(&snapshot);
                             self.hover.projection_cache.get_mut().take();
+                            self.carry_box_face_selection_to_exact();
                             self.exact.source = (!report.needs_retry()).then(|| source.clone());
                             self.exact.retry_at = report
                                 .needs_retry()

@@ -479,23 +479,10 @@ fn continuous_motion_defers_exact_worker_until_idle_or_confirmation() {
         );
     }
 
-    assert!(!app.confirm_preview());
-    assert!(
-        app.push_pull
-            .face_offset_evaluation
-            .as_ref()
-            .is_some_and(|evaluation| {
-                evaluation.task.is_some() && evaluation.confirm_requested
-            })
-    );
+    // The confirmation evaluates the one exact offset it commits, at once.
     let revision = app.document_revision();
-    let context = egui::Context::default();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while app.document_revision() == revision {
-        assert!(Instant::now() < deadline, "confirmation timed out");
-        app.poll_face_offset_evaluation(&context);
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    assert!(app.confirm_preview(), "{}", app.digest);
+    assert!(app.document_revision() > revision);
     assert_eq!(app.undo_step_count(), undo_steps + 1);
 }
 
@@ -984,13 +971,10 @@ fn idle_preview_coalesces_in_flight_changes_and_confirms_latest_distance() {
                 .is_none()
         );
     }
-    assert!(!app.confirm_preview());
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while app.document_revision() == revision {
-        assert!(Instant::now() < deadline, "{}", app.digest);
-        app.poll_face_offset_evaluation(&context);
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // The confirmation waits out the stale worker and commits the latest
+    // distance, never the one that worker was evaluating.
+    assert!(app.confirm_preview(), "{}", app.digest);
+    assert!(app.document_revision() > revision);
     assert_eq!(app.undo_step_count(), steps + 1);
     let support = package(&app)
         .vertices()
@@ -1160,7 +1144,7 @@ fn enter_after_a_timed_out_face_offset_preview_evaluates_again_and_commits() {
         .unwrap();
     assert!(app.apply_value_input(), "{}", app.digest);
     assert_ne!(app.digest, app.catalog.text("digest-nothing-to-apply"));
-    poll_until(&mut app, |app| app.document_revision() != revision);
+    assert!(app.document_revision() > revision, "Enter commits at once");
     assert_eq!(app.undo_step_count(), steps + 1);
     let support = package(&app)
         .vertices()
@@ -1184,13 +1168,7 @@ fn enter_after_a_timed_out_face_offset_preview_that_fails_again_says_why() {
     let digest = app.canonical_digest();
     let steps = app.undo_step_count();
     app.headless_force_exact_worker_path("missing-exact-worker.exe");
-    assert!(app.apply_value_input(), "{}", app.digest);
-    poll_until(&mut app, |app| {
-        app.push_pull
-            .face_offset_evaluation
-            .as_ref()
-            .is_some_and(|evaluation| evaluation.task.is_none())
-    });
+    assert!(!app.apply_value_input(), "{}", app.digest);
     let failure = face_offset_failure_text(
         app.push_pull
             .face_offset_evaluation
@@ -1209,4 +1187,68 @@ fn enter_after_a_timed_out_face_offset_preview_that_fails_again_says_why() {
     );
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), steps);
+}
+
+/// Review TST-4 (capstone_chain:215/242): a typed Push/Pull on an exact face
+/// commits on Enter even while its preview is still being evaluated, and the
+/// pushed face stays selected as a box face does, so Escape clears it first.
+#[test]
+fn enter_on_an_exact_face_commits_at_once_and_keeps_the_pushed_face_selected() {
+    let mut app = prism(
+        &[[0.0, 0.0], [40.0, 0.0], [8.0, 30.0]],
+        Transform::identity(),
+    );
+    select(&mut app, 0);
+    app.active_tool = ActiveTool::PushPull;
+    let face = app
+        .selected_planar_face(&app.selection.primary.clone().unwrap())
+        .unwrap();
+    let revision = app.document_revision();
+    let steps = app.undo_step_count();
+    app.value_box.input = "3".into();
+    assert!(app.apply_value_input(), "{}", app.digest);
+    assert!(app.document_revision() > revision, "Enter commits at once");
+    assert_eq!(app.undo_step_count(), steps + 1);
+
+    let selected = app
+        .selection
+        .primary
+        .clone()
+        .expect("pushed face stays selected");
+    assert!(matches!(selected.element, ElementId::TopologicalFace(_)));
+    let moved = app.selected_planar_face(&selected).unwrap();
+    assert!(dot(moved.normal, face.normal) > 1.0 - 1.0e-9);
+    let travel = dot(moved.origin - face.origin, face.normal);
+    assert!(
+        (travel - 3.0).abs() < 1.0e-6,
+        "selected face travelled {travel}"
+    );
+
+    // A value typed straight after corrects that Push/Pull, as on a box.
+    app.value_box.input = "5".into();
+    assert!(app.apply_value_input(), "{}", app.digest);
+    assert_eq!(
+        app.undo_step_count(),
+        steps + 1,
+        "a correction, not a second step"
+    );
+    let support = package(&app)
+        .vertices()
+        .iter()
+        .map(|v| {
+            let [x, y, z] = v.position_mm;
+            dot(Vec3::new(x, y, z) - face.origin, face.normal)
+        })
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        (support - 5.0).abs() < 1.0e-6,
+        "corrected offset: {support}"
+    );
+    let selected = app.selection.primary.clone().expect("still selected");
+    let moved = app.selected_planar_face(&selected).unwrap();
+    let travel = dot(moved.origin - face.origin, face.normal);
+    assert!(
+        (travel - 5.0).abs() < 1.0e-6,
+        "selected face travelled {travel}"
+    );
 }

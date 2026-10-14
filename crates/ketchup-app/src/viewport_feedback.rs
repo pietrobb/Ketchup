@@ -609,6 +609,74 @@ mod tests {
         }
     }
 
+    /// Review TST-3: a face clicked while the exact body was still being
+    /// evaluated named the box side; once the exact faces were drawn nothing
+    /// matched it, so the face lost its fill and Push/Pull its exact face.
+    #[test]
+    fn a_face_clicked_before_the_exact_body_arrives_moves_to_the_exact_face() {
+        use std::time::{Duration, Instant};
+        let mut app = KetchupApp::new();
+        app.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
+        // The evaluation has not started yet: the click lands on the box.
+        app.exact.retry_at = Some(Instant::now() + Duration::from_secs(3600));
+        let context = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
+            ..Default::default()
+        };
+        let _ = context.run(input(), |context| app.ui(context));
+        let pointer = app.viewport_position(Vec3::new(50.0, 30.0, 20.0)).unwrap();
+        let mut raw = input();
+        raw.events.push(egui::Event::PointerMoved(pointer));
+        let _ = context.run(raw, |context| app.ui(context));
+        for pressed in [true, false] {
+            let mut raw = input();
+            raw.events.push(egui::Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            let _ = context.run(raw, |context| app.ui(context));
+        }
+        assert!(app.exact.task.is_none() && app.exact.source.is_none());
+        let clicked = app.selection.primary.clone().expect("click selects");
+        assert_eq!(
+            clicked.element,
+            ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum
+            }
+        );
+
+        app.exact.retry_at = None;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while app.exact.task.is_some() || app.exact.source.is_none() {
+            assert!(Instant::now() < deadline, "the exact body never arrived");
+            let _ = context.run(input(), |context| app.ui(context));
+            std::thread::yield_now();
+        }
+
+        let selected = app.selection.primary.clone().expect("selection kept");
+        assert!(
+            matches!(selected.element, ElementId::TopologicalFace(_)),
+            "{selected:?}"
+        );
+        assert_eq!(selected.instance_path, clicked.instance_path);
+        let face = app.selected_planar_face(&selected).expect("exact face");
+        assert_eq!(face.normal, Vec3::new(0.0, 0.0, 1.0));
+        for offset in [Vec2::ZERO, Vec2::new(3.0, 2.0), Vec2::splat(600.0)] {
+            let mut raw = input();
+            raw.events.push(egui::Event::PointerMoved(pointer + offset));
+            let output = context.run(raw, |context| app.ui(context));
+            assert_eq!(app.selection.primary.as_ref(), Some(&selected));
+            assert!(
+                output_has_fill(&output.shapes, &[], |color| color == SELECTED_FILL),
+                "selected face lost its fill at {offset:?}"
+            );
+        }
+    }
+
     #[test]
     fn cycled_back_face_emits_a_filled_hover_overlay() {
         let mut app = KetchupApp::new();

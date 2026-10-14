@@ -32,7 +32,57 @@ pub(super) struct FaceOffsetEvaluation {
     ready: bool,
     /// Why the exact evaluation of the preview did not finish.
     failure: Option<Rejection>,
-    confirm_requested: bool,
+}
+
+/// Longest a confirmation waits for the exact offset of its preview: a
+/// backstop only, the worker ends each request well before it.
+const FACE_OFFSET_CONFIRMATION_WAIT: Duration = Duration::from_secs(60);
+
+fn face_offset_rejection(reason: &str) -> Rejection {
+    Rejection::new("push_pull.exact_evaluation", RejectionPhase::Evaluation).reason(reason)
+}
+
+/// Publishes the finished evaluation of a preview into its own store, or
+/// records why it has no complete exact result.
+fn settle_face_offset_evaluation(
+    evaluation: &mut FaceOffsetEvaluation,
+    result: Result<ketchup_application::evaluation::ExactEvaluationResult, Rejection>,
+) {
+    let Some(task) = evaluation.task.take() else {
+        return;
+    };
+    let report = result
+        .and_then(|products| {
+            products.map_err(|error| {
+                face_offset_rejection("the exact evaluation failed").caused_by(error)
+            })
+        })
+        .and_then(|products| {
+            publish_exact_products(
+                &mut evaluation.document,
+                &mut evaluation.render,
+                &mut evaluation.topology,
+                &task,
+                products,
+            )
+            .map_err(|error| {
+                face_offset_rejection("the exact result could not be published").caused_by(error)
+            })
+        })
+        .and_then(|report| {
+            if report.complete && report.topology_complete {
+                Ok(())
+            } else {
+                Err(face_offset_rejection(
+                    report
+                        .not_evaluated
+                        .as_deref()
+                        .unwrap_or("the exact evaluation is incomplete"),
+                ))
+            }
+        });
+    evaluation.ready = report.is_ok();
+    evaluation.failure = report.err();
 }
 
 /// The reason of a failed preview evaluation followed by its causes.
@@ -143,6 +193,32 @@ fn planar_face(
         normal,
         local_to_world_scale: scale,
     })
+}
+
+/// The outward unit normal of one side of an axis-aligned box and the
+/// position of that side's plane along it.
+fn box_side_plane(item: &RenderBox, axis: Axis, side: Side) -> (Vec3, f64) {
+    let (unit, low, high) = match axis {
+        Axis::X => (
+            Vec3::new(1.0, 0.0, 0.0),
+            item.origin_mm.x,
+            item.origin_mm.x + item.size_mm.x,
+        ),
+        Axis::Y => (
+            Vec3::new(0.0, 1.0, 0.0),
+            item.origin_mm.y,
+            item.origin_mm.y + item.size_mm.y,
+        ),
+        Axis::Z => (
+            Vec3::new(0.0, 0.0, 1.0),
+            item.origin_mm.z,
+            item.origin_mm.z + item.size_mm.z,
+        ),
+    };
+    match side {
+        Side::Maximum => (unit, high),
+        Side::Minimum => (unit * -1.0, -low),
+    }
 }
 
 impl KetchupApp {
@@ -474,6 +550,99 @@ impl KetchupApp {
         }
     }
 
+    /// A face clicked before the body's exact result arrived names a side of
+    /// its box. Once the exact body is published the viewport draws and picks
+    /// its exact faces, so the selection moves to the one exact face lying on
+    /// that side's plane: it keeps its fill and Push/Pull offsets the exact
+    /// face. An ambiguous side (none or several faces there) stays as it was.
+    pub(crate) fn carry_box_face_selection_to_exact(&mut self) {
+        let Some(primary) = self.selection.primary.clone() else {
+            return;
+        };
+        let ElementId::Face { axis, side } = primary.element else {
+            return;
+        };
+        if !self.selection.topological.is_empty()
+            || self.tool_preview.get::<EphemeralBoxPreview>().is_some()
+        {
+            return;
+        }
+        let Some(item) = self
+            .active_boxes()
+            .into_iter()
+            .find(|item| item.instance_path == primary.instance_path)
+        else {
+            return;
+        };
+        let (outward, plane) = box_side_plane(&item, axis, side);
+        let Some((selection, topological)) = self.exact_face_on_plane(&primary, outward, plane)
+        else {
+            return;
+        };
+        if self.selection.exact_references.get(&primary.instance_path) == Some(&primary) {
+            self.selection
+                .exact_references
+                .insert(primary.instance_path, selection.clone());
+        }
+        self.selection
+            .topological
+            .push((selection.clone(), topological));
+        self.selection.primary = Some(selection);
+    }
+
+    /// The one planar face of `target`'s exact body whose outward normal is
+    /// `outward` and whose plane lies at `plane` along it, bound for selection;
+    /// `None` when no face or several faces lie there.
+    fn exact_face_on_plane(
+        &self,
+        target: &SelectionId,
+        outward: Vec3,
+        plane: f64,
+    ) -> Option<(SelectionId, SnapshotBoundTopologicalSelection)> {
+        let snapshot = self.document.current();
+        let occurrence = snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| occurrence.instance_path == target.instance_path)?;
+        let package = self
+            .exact
+            .topology_results
+            .get_render(&snapshot, target.definition_id)?;
+        let tolerance = package
+            .bounds_mm()
+            .into_iter()
+            .flatten()
+            .map(f64::abs)
+            .fold(plane.abs().max(1.0), f64::max)
+            * ACCUMULATED_ROUNDING;
+        let ordinals = package
+            .topological_references()
+            .iter()
+            .filter(|reference| reference.kind == TopologicalElementKind::Face)
+            .filter(|reference| {
+                planar_face(package, reference, occurrence.transform).is_some_and(|face| {
+                    dot(face.normal, outward) >= 1.0 - ROUNDING
+                        && (dot(face.origin, outward) - plane).abs() <= tolerance
+                })
+            })
+            .filter_map(|reference| face_ordinal(package, reference))
+            .collect::<BTreeSet<_>>();
+        let [ordinal] = ordinals.into_iter().collect::<Vec<_>>()[..] else {
+            return None;
+        };
+        let topological = self.bind_topological_selection(&TopologicalPickLocator {
+            instance_path: target.instance_path.clone(),
+            producer_feature_id: package.producer_feature_id(),
+            kind: TopologicalElementKind::Face,
+            ordinal,
+        })?;
+        let selection = SelectionId {
+            element: ElementId::TopologicalFace(ordinal),
+            ..target.clone()
+        };
+        Some((selection, topological))
+    }
+
     pub(super) fn preview_requires_face_offset_evaluation(&self) -> bool {
         // A bare polygon profile previews as its own prism, so only a picked face
         // of an evaluated body waits for the exact offset.
@@ -552,17 +721,30 @@ impl KetchupApp {
             topology: ExactResultRegistry::default(),
             ready: false,
             failure: None,
-            confirm_requested: false,
         });
     }
 
-    pub(super) fn request_face_offset_confirmation(&mut self) -> bool {
-        self.begin_face_offset_evaluation();
+    /// Waits for the exact offset of the preview still being evaluated. The
+    /// worker bounds each request, so this ends with the products or with
+    /// the reason they did not come.
+    fn wait_for_face_offset_evaluation(&mut self) {
         let Some(evaluation) = self.push_pull.face_offset_evaluation.as_mut() else {
-            return false;
+            return;
         };
-        evaluation.confirm_requested = true;
-        true
+        let Some(task) = evaluation.task.as_ref() else {
+            return;
+        };
+        let result = task.wait(FACE_OFFSET_CONFIRMATION_WAIT);
+        settle_face_offset_evaluation(evaluation, Ok(result));
+    }
+
+    /// Whether the exact offset of the preview could not be evaluated; its
+    /// reason is on the status line.
+    pub(super) fn face_offset_failed(&self) -> bool {
+        self.push_pull
+            .face_offset_evaluation
+            .as_ref()
+            .is_some_and(|evaluation| evaluation.failure.is_some())
     }
 
     pub(super) fn poll_face_offset_evaluation(&mut self, context: &egui::Context) {
@@ -593,64 +775,21 @@ impl KetchupApp {
                 context.request_repaint_after(Duration::from_millis(16));
                 return;
             }
-            result => {
-                let failed = |reason: &str| {
-                    Rejection::new("push_pull.exact_evaluation", RejectionPhase::Evaluation)
-                        .reason(reason)
-                };
-                let report = result
-                    .map_err(|error| {
-                        failed("the exact evaluation stopped without an answer").caused_by(error)
-                    })
-                    .and_then(|products| {
-                        products
-                            .map_err(|error| failed("the exact evaluation failed").caused_by(error))
-                    })
-                    .and_then(|products| {
-                        publish_exact_products(
-                            &mut evaluation.document,
-                            &mut evaluation.render,
-                            &mut evaluation.topology,
-                            task,
-                            products,
-                        )
-                        .map_err(|error| {
-                            failed("the exact result could not be published").caused_by(error)
-                        })
-                    })
-                    .and_then(|report| {
-                        if report.complete && report.topology_complete {
-                            Ok(())
-                        } else {
-                            Err(failed(
-                                report
-                                    .not_evaluated
-                                    .as_deref()
-                                    .unwrap_or("the exact evaluation is incomplete"),
-                            ))
-                        }
-                    });
-                evaluation.ready = report.is_ok();
-                evaluation.failure = report.err();
-                evaluation.task = None;
-            }
+            result => settle_face_offset_evaluation(
+                evaluation,
+                result.map_err(|error| {
+                    face_offset_rejection("the exact evaluation stopped without an answer")
+                        .caused_by(error)
+                }),
+            ),
         }
-        let confirm_requested = evaluation.confirm_requested;
-        let confirm = confirm_requested && evaluation.ready;
         let failure = evaluation.failure.clone();
         if !self.face_offset_evaluation_is_current() {
-            if confirm_requested {
-                self.push_pull.face_offset_evaluation = None;
-                self.request_face_offset_confirmation();
-            }
             context.request_repaint();
             return;
         }
         if let Some(failure) = failure {
             self.report_face_offset_failure(&failure);
-        }
-        if confirm {
-            self.confirm_preview();
         }
     }
 
@@ -699,43 +838,44 @@ impl KetchupApp {
             .cloned()
     }
 
-    pub(super) fn face_offset_confirmation_pending(&self) -> bool {
-        self.push_pull
-            .face_offset_evaluation
-            .as_ref()
-            .is_some_and(|evaluation| evaluation.confirm_requested && evaluation.failure.is_none())
-    }
-
+    /// Confirms an exact-face Push/Pull now. An offset still being evaluated
+    /// is waited for here, so Enter either commits or puts its reason on the
+    /// status line in this frame; a confirmation left to land later was lost
+    /// when the user moved on first. A preview whose evaluation failed (a
+    /// worker that timed out on a loaded machine) or went stale is evaluated
+    /// again once.
     pub(super) fn confirm_face_offset_preview(&mut self) -> bool {
         if !self.has_preview() {
             return false;
         }
-        if self
-            .push_pull
-            .face_offset_evaluation
-            .as_ref()
-            .is_some_and(|evaluation| evaluation.task.is_none())
-            && !self.face_offset_evaluation_is_current()
-        {
-            self.push_pull.face_offset_evaluation = None;
-            self.request_face_offset_confirmation();
-            return false;
+        for _ in 0..2 {
+            if self
+                .push_pull
+                .face_offset_evaluation
+                .as_ref()
+                .is_some_and(|evaluation| {
+                    evaluation.task.is_none()
+                        && (evaluation.failure.is_some()
+                            || !self.face_offset_evaluation_is_current())
+                })
+            {
+                self.push_pull.face_offset_evaluation = None;
+            }
+            self.begin_face_offset_evaluation();
+            self.wait_for_face_offset_evaluation();
+            if self.face_offset_evaluation_is_current() {
+                break;
+            }
         }
-        let Some(evaluation) = self.push_pull.face_offset_evaluation.as_mut() else {
+        let Some(evaluation) = self.push_pull.face_offset_evaluation.as_ref() else {
+            self.status_key = "error-preview-stale";
             return false;
         };
-        if !evaluation.ready {
-            if evaluation.failure.is_some() {
-                // A preview whose exact evaluation failed (a worker that timed
-                // out on a loaded machine) is evaluated again for the
-                // confirmation: it commits when that succeeds, and a second
-                // failure is reported by the poll. The typed value is never
-                // dropped as if there were nothing to apply.
-                self.push_pull.face_offset_evaluation = None;
-                self.request_face_offset_confirmation();
-                return false;
-            }
-            evaluation.confirm_requested = true;
+        if !evaluation.ready || !self.face_offset_evaluation_is_current() {
+            let failure = evaluation.failure.clone().unwrap_or_else(|| {
+                face_offset_rejection("the preview changed while it was evaluated")
+            });
+            self.report_face_offset_failure(&failure);
             return false;
         }
         let Some(proposal) = self.push_pull.smart_proposal.as_ref() else {
@@ -744,15 +884,11 @@ impl KetchupApp {
         let Some(snapshot) = proposal.preview(&self.document) else {
             return false;
         };
-        if ketchup_application::evaluation::exact_source(&snapshot) != evaluation.source {
-            self.push_pull.face_offset_evaluation = None;
-            self.request_face_offset_confirmation();
-            return false;
-        }
         let Some(preview) = self.tool_preview.get::<EphemeralBoxPreview>() else {
             return false;
         };
         let target = preview.plan.source.target.clone();
+        let distance_mm = f64::from_bits(preview.plan.distance_mm_bits);
         let face = self
             .selected_planar_face(&target)
             .map(|face| (preview.plan.source.clone(), face));
@@ -818,9 +954,28 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
-        self.remember_push_pull(target, face);
-        self.selection.clear();
         self.hover.projection_cache.get_mut().take();
+        // The pushed face stays selected, as a box face does: on the exact
+        // result it is the face moved by the distance along its normal.
+        let moved = face.as_ref().and_then(|(_, face)| {
+            self.exact_face_on_plane(
+                &target,
+                face.normal,
+                dot(face.origin, face.normal) + distance_mm,
+            )
+        });
+        match moved {
+            Some((selection, topological)) => {
+                self.selection.clear();
+                self.selection
+                    .select_topological(selection.clone(), topological, false);
+                self.remember_push_pull(selection, face);
+            }
+            None => {
+                self.remember_push_pull(target, face);
+                self.selection.clear();
+            }
+        }
         self.render.plan = None;
         self.status_key = "status-ready";
         true
