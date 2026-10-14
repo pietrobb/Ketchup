@@ -156,7 +156,14 @@ fn evaluated_fabrication(
         input: &cases,
     });
     assert_eq!(report.state, ValidationState::Passed);
-    project_general_fabrication(snapshot, &registry, &cases, &report, tolerance)
+    project_general_fabrication(
+        snapshot,
+        &registry,
+        &cases,
+        &report,
+        tolerance,
+        &ketchup_manufacturing::fabrication::shown_parts(snapshot),
+    )
 }
 
 #[test]

@@ -446,19 +446,12 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
             &validation.cases,
             &validation.report,
             tolerance,
+            &ketchup_manufacturing::fabrication::shown_parts(&snapshot),
         )
         .unwrap();
         assert!(fabrication.bom.envelope.is_current(&snapshot));
         assert_eq!(fabrication.bom.rows.len(), 2);
-        assert_eq!(
-            fabrication
-                .bom
-                .rows
-                .iter()
-                .map(|row| row.quantity)
-                .sum::<usize>(),
-            2
-        );
+        assert!(fabrication.bom.rows.iter().all(|row| row.quantity == 1));
         let expected_height = if stage == "undo" { 18.0 } else { 28.0 };
         for row in &fabrication.bom.rows {
             assert_eq!(row.dimensions.length_mm, 100.0);

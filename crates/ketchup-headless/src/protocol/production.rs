@@ -133,10 +133,19 @@ impl Server {
         self.session.evaluate_with_timeout(budget)?;
         let snapshot = self.session.snapshot();
         let tolerance = snapshot.tolerance();
+        let evaluated = self
+            .session
+            .rule_program()
+            .map(evaluate_program_source)
+            .transpose()?;
+        let made = ketchup_application::made_parts(
+            &snapshot,
+            evaluated.as_ref().map(|(evaluated, _)| &evaluated.model),
+        );
         let participants = snapshot
             .scene_query()
             .into_iter()
-            .filter(|instance| instance.visible)
+            .filter(|instance| made.contains(&instance.instance_path))
             .filter(|instance| {
                 snapshot
                     .definition(instance.definition_id)
@@ -149,7 +158,7 @@ impl Server {
                     })
             })
             .map(|instance| {
-                GeneralBodyParticipant::accept(
+                GeneralBodyParticipant::accept_made(
                     &snapshot,
                     self.session.exact_results(),
                     instance.instance_path,
@@ -182,6 +191,7 @@ impl Server {
             &collision.cases,
             &collision.report,
             tolerance,
+            &made,
         )
         .map_err(|error| Error::new("production_blocked", error.to_string()))?;
         let homag = HomagWoodwopAdapter {

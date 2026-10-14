@@ -19,10 +19,30 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
         let tolerance = snapshot.tolerance();
+        // The production scope comes from the program's evaluation; the export
+        // never evaluates a large program on the UI thread nor waits for one.
+        let made = match self.document.current_rule_program() {
+            Some(program) => match self.program_evaluations.try_get(program) {
+                crate::program_evaluation::Lookup::Ready(evaluation) => {
+                    let evaluated = evaluation
+                        .map_err(|error| failed("fabrication.production_scope", error))?;
+                    ketchup_application::made_parts(&snapshot, Some(&evaluated.model))
+                }
+                crate::program_evaluation::Lookup::Pending => {
+                    return Err(Rejection::new(
+                        "fabrication.program_planning",
+                        RejectionPhase::Planning,
+                    )
+                    .reason("the program is still being evaluated, so its production scope is not known yet")
+                    .fix_hint("Export again once the program has been evaluated."));
+                }
+            },
+            None => ketchup_application::made_parts(&snapshot, None),
+        };
         let occurrences = snapshot
             .scene_query()
             .into_iter()
-            .filter(|occurrence| occurrence.visible)
+            .filter(|occurrence| made.contains(&occurrence.instance_path))
             .filter(|occurrence| {
                 snapshot
                     .definition(occurrence.definition_id)
@@ -42,14 +62,14 @@ impl KetchupApp {
             return Err(
                 Rejection::new("fabrication.mesh_body", RejectionPhase::Validation)
                     .target(format!("{:?}", occurrence.instance_path))
-                    .reason("a visible occurrence is a mesh body without verified exact geometry; general fabrication projection is unavailable until explicit exact conversion")
+                    .reason("a made occurrence is a mesh body without verified exact geometry; general fabrication projection is unavailable until explicit exact conversion")
                     .fix_hint("Convert the mesh body to exact geometry first."),
             );
         }
         let participants = occurrences
             .into_iter()
             .map(|occurrence| {
-                GeneralBodyParticipant::accept(
+                GeneralBodyParticipant::accept_made(
                     &snapshot,
                     &self.exact.results,
                     occurrence.instance_path,
@@ -73,6 +93,7 @@ impl KetchupApp {
             &collision_validation.cases,
             &collision_validation.report,
             tolerance,
+            &made,
         )
         .map_err(|error| failed("fabrication.projection", error))
     }

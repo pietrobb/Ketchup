@@ -82,6 +82,9 @@ pub struct CollisionScope {
     canonical_digest: String,
     occurrence_ids: BTreeSet<OccurrenceId>,
     measured_pairs: BTreeSet<(InstancePath, InstancePath)>,
+    /// The parts whose bodies are checked, shown or hidden; `None` checks the
+    /// shown parts.
+    population: Option<BTreeSet<InstancePath>>,
 }
 
 impl CollisionScope {
@@ -95,7 +98,17 @@ impl CollisionScope {
             canonical_digest: snapshot.canonical_digest(),
             occurrence_ids: occurrence_ids.into_iter().collect(),
             measured_pairs: BTreeSet::new(),
+            population: None,
         }
+    }
+
+    /// The parts a production export makes, shown or hidden, checked against
+    /// each other only: a hidden floor of the production scope counts, a shown
+    /// part outside it (the concept) does not.
+    fn among(snapshot: &Snapshot, parts: BTreeSet<InstancePath>) -> Self {
+        let mut scope = Self::bind(snapshot, parts.iter().map(InstancePath::root_occurrence));
+        scope.population = Some(parts);
+        scope
     }
 
     /// The visible parts of `after` that `before` did not show the same way
@@ -342,15 +355,17 @@ pub fn fabrication_collision_validation_with_worker(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Scoped to the participants' occurrences: each is checked against every
-    // visible body, and the scope admits whole buildings (the unscoped scene stops
-    // at 512 occurrences). Without participants the whole model is checked.
+    // Scoped to the participants, the parts the export makes, shown or hidden:
+    // each is checked against the others, and the scope admits whole buildings
+    // (the unscoped scene stops at 512 occurrences). Without participants the
+    // whole shown model is checked.
     let scope = (!participants.is_empty()).then(|| {
-        CollisionScope::bind(
+        CollisionScope::among(
             snapshot,
             participants
                 .iter()
-                .map(|participant| participant.instance_path().root_occurrence()),
+                .map(|participant| participant.instance_path().clone())
+                .collect(),
         )
     });
     let collision = collision_report(
@@ -892,10 +907,16 @@ pub fn scoped_exact_pairs_with_worker(
 /// The bodies a definition ends in, each with the feature producing it.
 type TerminalBodies = Result<Vec<(BodyId, FeatureId)>, ExactProductError>;
 
-/// The visible occurrences. Hidden ones only count against the scene bound;
-/// the body limits of the collision check count visible ones. `None` (with the
-/// reason in `report`) when the scene is past its bound.
-fn visible_scene(snapshot: &Snapshot, report: &mut Value) -> Option<Vec<SceneOccurrence>> {
+/// The visible occurrences, or those of the scope's population shown or
+/// hidden. The others only count against the scene bound; the body limits of
+/// the collision check count the checked ones. `None` (with the reason in
+/// `report`) when the scene is past its bound.
+fn visible_scene(
+    snapshot: &Snapshot,
+    scope: Option<&CollisionScope>,
+    report: &mut Value,
+) -> Option<Vec<SceneOccurrence>> {
+    let population = scope.and_then(|scope| scope.population.as_ref());
     match snapshot.scene_query_bounded(
         MAX_SCOPED_COLLISION_OCCURRENCES,
         limits::INSTANCE_PATH_STEPS,
@@ -904,7 +925,11 @@ fn visible_scene(snapshot: &Snapshot, report: &mut Value) -> Option<Vec<SceneOcc
         Ok(occurrences) => Some(
             occurrences
                 .into_iter()
-                .filter(|occurrence| occurrence.visible)
+                .filter(|occurrence| {
+                    population.map_or(occurrence.visible, |parts| {
+                        parts.contains(&occurrence.instance_path)
+                    })
+                })
                 .collect(),
         ),
         Err(exceeded) => {
@@ -1031,7 +1056,7 @@ fn collision_report(
             );
         }
     }
-    let Some(visible) = visible_scene(snapshot, &mut report) else {
+    let Some(visible) = visible_scene(snapshot, scope, &mut report) else {
         return report;
     };
     // A whole model past the small-scene limit (1800 parts) is checked by the
@@ -1140,7 +1165,7 @@ fn collision_report(
             let analytic = worker
                 .is_none()
                 .then(|| {
-                    GeneralBodyParticipant::accept(
+                    GeneralBodyParticipant::accept_made(
                         snapshot,
                         &ExactResultRegistry::default(),
                         occurrence.instance_path.clone(),

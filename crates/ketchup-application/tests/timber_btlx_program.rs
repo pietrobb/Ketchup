@@ -79,6 +79,7 @@ fn projection(
         &[],
         &report,
         tolerance,
+        &ketchup_manufacturing::fabrication::shown_parts(snapshot),
     )
     .unwrap()
 }

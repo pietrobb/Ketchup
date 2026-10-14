@@ -32,6 +32,28 @@ pub fn rule_program_part_name(
     Some(names.join("/"))
 }
 
+/// The parts a manufacturing export makes: with `production(tags=…)` the
+/// program parts in that scope, shown or hidden; without it the shown parts.
+#[must_use]
+pub fn made_parts(
+    snapshot: &Snapshot,
+    model: Option<&ProgramModel>,
+) -> BTreeSet<ketchup_model::document::InstancePath> {
+    let scope = model.filter(|model| !model.production_scope.is_empty());
+    let parts = scope.map(ProgramModel::parts_by_name).unwrap_or_default();
+    snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| match scope {
+            None => occurrence.visible,
+            Some(model) => rule_program_part_name(snapshot, &occurrence.instance_path)
+                .and_then(|name| parts.get(name.as_str()).copied())
+                .is_some_and(|part| model.in_production(part)),
+        })
+        .map(|occurrence| occurrence.instance_path)
+        .collect()
+}
+
 pub(crate) fn copied_parts(model: &ProgramModel) -> BTreeSet<String> {
     model
         .instances

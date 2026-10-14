@@ -634,13 +634,23 @@ fn the_timber_frame_house_projects_a_manufacturable_handoff() {
     );
 
     let projection = ketchup_manufacturing::fabrication::project_general_fabrication(
-        &snapshot, &registry, &cases, &report, tolerance,
+        &snapshot,
+        &registry,
+        &cases,
+        &report,
+        tolerance,
+        &ketchup_manufacturing::fabrication::shown_parts(&snapshot),
     )
     .unwrap();
     assert_eq!(
         projection,
         ketchup_manufacturing::fabrication::project_general_fabrication(
-            &snapshot, &registry, &cases, &report, tolerance,
+            &snapshot,
+            &registry,
+            &cases,
+            &report,
+            tolerance,
+            &ketchup_manufacturing::fabrication::shown_parts(&snapshot),
         )
         .unwrap(),
         "the manufacturable handoff must regenerate deterministically"
@@ -822,6 +832,7 @@ fn measured_house_change_assembly_fabrication_step_and_reopen_workflow() {
         &cases,
         &validation,
         tolerance,
+        &ketchup_manufacturing::fabrication::shown_parts(&final_snapshot),
     )
     .unwrap();
     let bom = projection.bom_export(&final_snapshot).unwrap();

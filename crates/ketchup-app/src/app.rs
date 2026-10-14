@@ -45,6 +45,9 @@ mod mirror;
 mod outliner;
 mod patterns;
 #[cfg(test)]
+#[path = "app/production_export_tests.rs"]
+mod production_export_tests;
+#[cfg(test)]
 #[path = "app/program_isolation_tests.rs"]
 mod program_isolation_tests;
 #[cfg(test)]

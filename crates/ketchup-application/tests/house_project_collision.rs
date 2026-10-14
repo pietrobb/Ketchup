@@ -115,6 +115,7 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
         &validation.cases,
         &validation.report,
         tolerance,
+        &ketchup_manufacturing::fabrication::shown_parts(&snapshot),
     )
     .unwrap();
     assert!(

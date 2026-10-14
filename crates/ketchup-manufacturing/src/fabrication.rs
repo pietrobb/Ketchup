@@ -229,11 +229,6 @@ pub enum GeneralFabricationError {
     BtlxProfileRequestUnsupported {
         part: String,
     },
-    /// Production parts on hidden layers or hidden themselves would silently
-    /// be missing from the machine file.
-    HiddenProductionParts {
-        count: usize,
-    },
     /// A mirrored instance cannot share the machining of its definition.
     MirroredInstance,
     ScaledPlacement(ScaledPlacement),
@@ -296,10 +291,6 @@ impl fmt::Display for GeneralFabricationError {
             Self::BtlxProfileRequestUnsupported { part } => write!(
                 formatter,
                 "the requested BTLx profile strategy cannot cut a contour of part \"{part}\": edge saw cuts then milling takes only rectangular line contours with at most 32 intermediate cuts; choose the portable FreeContour strategy for this part",
-            ),
-            Self::HiddenProductionParts { count } => write!(
-                formatter,
-                "{count} production part(s) are hidden; show every layer and part before a production export so none is left out",
             ),
             Self::ScaledPlacement(error) => write!(formatter, "a part cannot be fabricated: {error}"),
             Self::MirroredInstance => formatter.write_str(
@@ -2771,12 +2762,29 @@ fn project_weldment_cut_list(
     }))
 }
 
+/// The shown parts: what an export makes when the model declares no
+/// production scope. A hidden layer or part (another floor, the hardware) is
+/// left out, so one floor alone can be exported.
+#[must_use]
+pub fn shown_parts(snapshot: &Snapshot) -> BTreeSet<InstancePath> {
+    snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| occurrence.visible)
+        .map(|occurrence| occurrence.instance_path)
+        .collect()
+}
+
+/// The fabrication of the `made` parts, shown or hidden: [`shown_parts`], or
+/// the parts of the program's `production(tags=…)` scope. Every other part is
+/// left out.
 pub fn project_general_fabrication(
     snapshot: &Snapshot,
     registry: &ExactResultRegistry,
     validation_cases: &[GeneralClearanceCase],
     validation_report: &ValidationReport,
     tolerance: TolerancePolicy,
+    made: &BTreeSet<InstancePath>,
 ) -> Result<GeneralFabricationProjection, GeneralFabricationError> {
     let bom_metadata = bom_occurrence_metadata(snapshot)?;
     let validation_input = general_body_input_bytes(validation_cases);
@@ -2787,22 +2795,14 @@ pub fn project_general_fabrication(
     {
         return Err(GeneralFabricationError::ValidationBindingMismatch);
     }
-    let hidden_production_parts = snapshot
+    let made_items = snapshot
         .scene_query()
         .into_iter()
         .filter(|occurrence| {
-            !occurrence.visible
+            made.contains(&occurrence.instance_path)
                 && bom_metadata.contains_key(&occurrence.occurrence_id)
-                && snapshot
-                    .definition(occurrence.definition_id)
-                    .is_some_and(|definition| !definition.feature_ids().is_empty())
         })
-        .count();
-    if hidden_production_parts > 0 {
-        return Err(GeneralFabricationError::HiddenProductionParts {
-            count: hidden_production_parts,
-        });
-    }
+        .collect::<Vec<_>>();
     let covered = validation_cases
         .iter()
         .flat_map(|case| [&case.left, &case.right])
@@ -2813,19 +2813,9 @@ pub fn project_general_fabrication(
             )
         })
         .collect::<BTreeSet<_>>();
-    let single_visible_bom_item = validation_cases.is_empty()
-        && snapshot
-            .scene_query()
-            .into_iter()
-            .filter(|occurrence| {
-                occurrence.visible && bom_metadata.contains_key(&occurrence.occurrence_id)
-            })
-            .count()
-            == 1;
+    let single_made_bom_item = validation_cases.is_empty() && made_items.len() == 1;
     let mut accepted = Vec::new();
-    for occurrence in snapshot.scene_query().into_iter().filter(|occurrence| {
-        occurrence.visible && bom_metadata.contains_key(&occurrence.occurrence_id)
-    }) {
+    for occurrence in made_items {
         let definition = snapshot
             .definition(occurrence.definition_id)
             .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
@@ -2834,13 +2824,13 @@ pub fn project_general_fabrication(
         }
         ScaledPlacement::check(occurrence.occurrence_id, occurrence.transform)
             .map_err(GeneralFabricationError::ScaledPlacement)?;
-        let participant = GeneralBodyParticipant::accept(
+        let participant = GeneralBodyParticipant::accept_made(
             snapshot,
             registry,
             occurrence.instance_path.clone(),
             tolerance,
         )?;
-        if !single_visible_bom_item
+        if !single_made_bom_item
             && !covered.contains(&(
                 participant.instance_path().clone(),
                 participant.source().clone(),

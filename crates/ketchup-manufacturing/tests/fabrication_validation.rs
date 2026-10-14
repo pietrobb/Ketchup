@@ -9,7 +9,7 @@ use ketchup_manufacturing::fabrication::{
     GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
     GeneralMachiningGeometry, GeneralManufacturingKind, MANUFACTURED_ITEM_ROLE_V1,
     MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus, TIMBER_MATERIAL_V1,
-    TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
+    TIMBER_MEMBER_ROLE_V1, project_general_fabrication, shown_parts,
 };
 use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
@@ -472,10 +472,8 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
     let report = general_report(&snapshot, &cases, tolerance);
     assert_eq!(report.state, ValidationState::Passed);
 
-    let projection =
-        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
-    let regenerated =
-        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    let projection = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    let regenerated = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
     assert_eq!(projection, regenerated);
     assert_eq!(projection.bom.envelope.status, ProjectionStatus::Complete);
     assert_eq!(projection.bom.rows.len(), 1);
@@ -576,7 +574,7 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
     let scaled_cases = vec![GeneralClearanceCase::new(scaled_left, scaled_right, 0.0).unwrap()];
     let scaled_report = general_report(&scaled_snapshot, &scaled_cases, tolerance);
     assert_eq!(
-        project_general_fabrication(
+        project_shown(
             &scaled_snapshot,
             &scaled_registry,
             &scaled_cases,
@@ -1053,8 +1051,7 @@ fn mixed_mechanical_bom_keeps_make_buy_materials_positions_and_timber_export_bou
     ];
     let report = general_report(&snapshot, &cases, tolerance);
 
-    let projection =
-        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    let projection = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
     assert_eq!(projection.bom.rows.len(), 3);
     assert_eq!(projection.bom.rows[0].position, 1);
     assert_eq!(projection.bom.rows[0].item_kind, GeneralBomItemKind::Timber);
@@ -1230,8 +1227,7 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
     let report = general_report(&snapshot, &cases, tolerance);
     assert_eq!(report.state, ValidationState::Passed);
 
-    let projection =
-        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    let projection = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
     assert_eq!(projection.bom.rows.len(), 2);
     assert_eq!(projection.bom.rows[0].position, 1);
     assert_eq!(
@@ -1566,8 +1562,7 @@ fn a_part_placed_scaled_is_refused_by_name_instead_of_a_generic_geometry_error()
     .unwrap();
     let tolerance = TolerancePolicy::default();
     let report = general_report(&snapshot, &[], tolerance);
-    let error =
-        project_general_fabrication(&snapshot, &registry, &[], &report, tolerance).unwrap_err();
+    let error = project_shown(&snapshot, &registry, &[], &report, tolerance).unwrap_err();
     assert_eq!(
         error,
         GeneralFabricationError::ScaledPlacement(ScaledPlacement {
@@ -1663,8 +1658,11 @@ fn an_unevenly_scaled_part_with_a_hole_claims_no_drilling_and_blocks_the_export(
     );
 }
 
+/// Review 2026-10-09 MF-N2/MF-N3: a hidden part is left out of the shown
+/// parts' export instead of blocking it, and a production scope makes its
+/// parts whether they are shown or hidden.
 #[test]
-fn production_projection_refuses_to_leave_out_hidden_parts() {
+fn a_hidden_part_is_left_out_of_the_shown_parts_and_made_in_a_production_scope() {
     let mut document = circular_drill_document();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -1686,10 +1684,31 @@ fn production_projection_refuses_to_leave_out_hidden_parts() {
     .unwrap();
     let tolerance = TolerancePolicy::default();
     let report = general_report(&snapshot, &[], tolerance);
+    let shown = project_shown(&snapshot, &registry, &[], &report, tolerance).unwrap();
+    assert_eq!(shown.bom.rows.len(), 1);
     assert_eq!(
-        project_general_fabrication(&snapshot, &registry, &[], &report, tolerance),
-        Err(GeneralFabricationError::HiddenProductionParts { count: 1 })
+        shown.bom.rows[0].instances,
+        [InstancePath::root(GRAPH_LEFT)]
     );
+    let btlx = String::from_utf8(shown.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert!(btlx.contains("Count=\"1\""), "{btlx}");
+
+    let participant = |id| {
+        GeneralBodyParticipant::accept_made(&snapshot, &registry, InstancePath::root(id), tolerance)
+            .unwrap()
+    };
+    let cases = vec![
+        GeneralClearanceCase::new(participant(GRAPH_LEFT), participant(GRAPH_RIGHT), 10.0).unwrap(),
+    ];
+    let report = general_report(&snapshot, &cases, tolerance);
+    let scope = [GRAPH_LEFT, GRAPH_RIGHT].map(InstancePath::root).into();
+    let made =
+        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance, &scope)
+            .unwrap();
+    assert_eq!(made.bom.rows.len(), 1);
+    assert_eq!(made.bom.rows[0].quantity, 2);
+    let btlx = String::from_utf8(made.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert!(btlx.contains("Count=\"2\""), "{btlx}");
 }
 #[test]
 fn production_preserves_proper_rotations_and_translations() {
@@ -2249,8 +2268,7 @@ fn canonical_mesh_keeps_bom_and_drawings_but_blocks_manufacturing_export() {
     let report = general_report(&snapshot, &cases, tolerance);
     assert_eq!(report.state, ValidationState::Passed);
 
-    let projection =
-        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    let projection = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
     assert_eq!(projection.bom.rows.len(), 2);
     assert_eq!(projection.bom.evidence_counts.exact, 2);
     assert_eq!(projection.bom.evidence_counts.tolerant, 2);
@@ -2430,7 +2448,25 @@ fn exact_document_fabrication_projection(
     .unwrap();
     let cases = vec![GeneralClearanceCase::new(left, right, 10.0).unwrap()];
     let report = general_report(&snapshot, &cases, tolerance);
-    project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance)
+    project_shown(&snapshot, &registry, &cases, &report, tolerance)
+}
+
+/// The fabrication of the shown parts, as without a production scope.
+fn project_shown(
+    snapshot: &Snapshot,
+    registry: &ExactResultRegistry,
+    cases: &[GeneralClearanceCase],
+    report: &ketchup_model::validation::ValidationReport,
+    tolerance: TolerancePolicy,
+) -> Result<GeneralFabricationProjection, GeneralFabricationError> {
+    project_general_fabrication(
+        snapshot,
+        registry,
+        cases,
+        report,
+        tolerance,
+        &shown_parts(snapshot),
+    )
 }
 
 fn general_report(
@@ -2488,11 +2524,10 @@ fn graph_fabrication_projection(
     let cases = vec![GeneralClearanceCase::new(left, right, 5.0).unwrap()];
     let report = general_report(&snapshot, &cases, tolerance);
     assert_eq!(report.state, ValidationState::Passed);
-    let projection =
-        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    let projection = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
     assert_eq!(
         projection,
-        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap()
+        project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap()
     );
     (snapshot, projection)
 }
@@ -2583,11 +2618,10 @@ fn exact_graph_document_fabrication_projection(
     let cases = vec![GeneralClearanceCase::new(left, right, 5.0).unwrap()];
     let report = general_report(&snapshot, &cases, tolerance);
     assert_eq!(report.state, ValidationState::Passed);
-    let projection =
-        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    let projection = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
     assert_eq!(
         projection,
-        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap(),
+        project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap(),
         "machining IR must regenerate deterministically"
     );
     (snapshot, projection)

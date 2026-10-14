@@ -95,7 +95,7 @@ LONG_TESTS = {
     "crates/ketchup-app/tests/instanced_rendering.rs::garden_studio_hardware_gpu_camera_frames": 337,
     "crates/ketchup-application/tests/cad_program.rs::one_physical_pin_joint_operation_creates_both_hole_rows_atomically": 305,
     "crates/ketchup-application/tests/cad_program.rs::public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact": 371,
-    "crates/ketchup-application/tests/evaluation_deadline.rs::physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence": 396,
+    "crates/ketchup-application/tests/evaluation_deadline.rs::physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence": 389,
     "crates/ketchup-application/tests/workflow_trace.rs::original_shared_side_make_unique_preserves_physical_holes_and_recipe": 332,
     "crates/ketchup-model/tests/pad_pocket.rs::face_supported_pocket_and_topology_history_make_unique_losslessly": 453,
     "crates/ketchup-model/tests/workplane_sketch.rs::all_principal_planes_and_one_resolved_planar_face_support_are_canonical": 310,

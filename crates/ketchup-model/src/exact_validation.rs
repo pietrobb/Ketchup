@@ -190,16 +190,40 @@ impl std::error::Error for GeneralBodyValidationError {
 }
 
 impl GeneralBodyParticipant {
+    /// A shown body.
     pub fn accept(
         snapshot: &Snapshot,
         registry: &ExactResultRegistry,
         instance_path: InstancePath,
         tolerance: TolerancePolicy,
     ) -> Result<Self, GeneralBodyValidationError> {
+        Self::accept_if(snapshot, registry, instance_path, tolerance, true)
+    }
+
+    /// A body a production export makes, shown or hidden: a production scope
+    /// makes the parts of a hidden layer too.
+    pub fn accept_made(
+        snapshot: &Snapshot,
+        registry: &ExactResultRegistry,
+        instance_path: InstancePath,
+        tolerance: TolerancePolicy,
+    ) -> Result<Self, GeneralBodyValidationError> {
+        Self::accept_if(snapshot, registry, instance_path, tolerance, false)
+    }
+
+    fn accept_if(
+        snapshot: &Snapshot,
+        registry: &ExactResultRegistry,
+        instance_path: InstancePath,
+        tolerance: TolerancePolicy,
+        shown_only: bool,
+    ) -> Result<Self, GeneralBodyValidationError> {
         let occurrence = snapshot
             .scene_query()
             .into_iter()
-            .find(|occurrence| occurrence.instance_path == instance_path && occurrence.visible)
+            .find(|occurrence| {
+                occurrence.instance_path == instance_path && (occurrence.visible || !shown_only)
+            })
             .ok_or(GeneralBodyValidationError::InvalidOrHiddenInstance)?;
         let transform = occurrence.transform;
         let (source, vertices, exact_box) = if let Some(package) =
