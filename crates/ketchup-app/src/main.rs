@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+// No console window behind the editor; MCP and launchers still talk over inherited pipes.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use ketchup_app::{
     KetchupApp, inspect_native_document, live_bridge::bootstrap::LiveStdinBootstrap,
