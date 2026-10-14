@@ -104,23 +104,28 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
     if format_98 && let Some(product) = field(&mut value, "product") {
         rename_format_98_fields(product, |(old, new)| (old, new));
     }
+    // Each conversion applies only to the formats written before it was introduced.
     let sheet_metal = match field(&mut value, "product") {
-        Some(product) => read_format_100_sheet_metal(product)?,
-        None => BTreeMap::new(),
+        Some(product) if format < 101 => read_format_100_sheet_metal(product)?,
+        _ => BTreeMap::new(),
     };
     if let Some(product) = field(&mut value, "product") {
-        format_101_occurrence_tags(product, false);
+        if format < 102 {
+            format_101_occurrence_tags(product, false);
+        }
         format_102_joint_participants(product, false);
     }
     let decoded: DecodedSnapshot = value.deserialized().map_err(|error| invalid(&error))?;
     // The writer hashed the identity form under its own field names, and before
-    // [`rename_format_99_role_categories`], which the caller applies to every older format.
+    // [`rename_format_99_role_categories`], which the caller applies to formats before 100.
     let mut writer_form =
         crate::document::identity_form(|| ciborium::Value::serialized(&decoded.product))
             .map_err(|error| invalid(&error))?;
     restore_format_100_sheet_metal(&mut writer_form, sheet_metal);
     format_102_joint_participants(&mut writer_form, true);
-    format_101_occurrence_tags(&mut writer_form, true);
+    if format < 102 {
+        format_101_occurrence_tags(&mut writer_form, true);
+    }
     if format_98 {
         rename_format_98_fields(&mut writer_form, |(old, new)| (new, old));
     }
@@ -481,26 +486,7 @@ mod tests {
             }
             product
         };
-        let product = as_format_100(ciborium::Value::serialized(snapshot.product()).unwrap());
-        let writer_digest = crate::document::digest_product(&as_format_100(
-            crate::document::identity_form(|| ciborium::Value::serialized(snapshot.product()))
-                .unwrap(),
-        ));
-        let mut payload = Vec::new();
-        ciborium::into_writer(
-            &ciborium::Value::Map(vec![
-                (
-                    ciborium::Value::Text("revision_id".into()),
-                    ciborium::Value::Integer(snapshot.revision_id().into()),
-                ),
-                (ciborium::Value::Text("product".into()), product),
-            ]),
-            &mut payload,
-        )
-        .unwrap();
-        let mut body = crate::graph::sha256_bytes(&payload).to_vec();
-        body.extend_from_slice(&payload);
-
+        let (body, writer_digest) = written_as(&snapshot, as_format_100);
         let decoded = decode(100, &body).unwrap();
         assert_eq!(decoded.writer_digest, Some(writer_digest));
         assert_eq!(
@@ -578,7 +564,74 @@ mod tests {
             stored_tags,
             [ciborium::Value::Integer(3.into()), ciborium::Value::Null]
         );
-        let writer_digest = crate::document::digest_product(&as_format_101(
+        let (body, writer_digest) = written_as(&snapshot, as_format_101);
+        let decoded = decode(101, &body).unwrap();
+        assert_eq!(decoded.writer_digest, Some(writer_digest));
+        assert!(
+            decoded.product.occurrences[&OccurrenceId(1)]
+                .tags
+                .iter()
+                .eq([&TagId(3)])
+        );
+        assert!(
+            decoded.product.occurrences[&OccurrenceId(2)]
+                .tags
+                .is_empty()
+        );
+    }
+
+    /// A bracket in the sheet-metal form of format 101 and later, on a part with `tags`.
+    fn bracket_on_tagged_part(tags: &[u64]) -> Snapshot {
+        use crate::document::{OccurrenceId, TagId, Transform};
+        let (bracket, _) = SheetMetalV1 {
+            width: dimension(100.0),
+            depth: dimension(50.0),
+            thickness: dimension(2.0),
+            k_factor: 0.4,
+            flanges: vec![flange("MinX", 20.0, 90.0)],
+        }
+        .to_current()
+        .unwrap();
+        let mut commands = vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Bracket".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Flange".into(),
+                kind: FeatureKind::SheetMetal(bracket),
+            },
+        ];
+        commands.extend(tags.iter().map(|&id| CanonicalCommand::CreateTag {
+            id: TagId(id),
+            name: format!("Layer {id}"),
+            visible: true,
+        }));
+        commands.push(CanonicalCommand::CreateOccurrence {
+            id: OccurrenceId(1),
+            definition_id: DefinitionId(1),
+            name: "Bracket".into(),
+            transform: Transform::identity(),
+            parent: None,
+            tags: tags.iter().map(|&id| TagId(id)).collect(),
+            visible: true,
+        });
+        let mut store = DocumentStore::new();
+        store.apply_batch(&CommandBatch::new(commands)).unwrap();
+        store.current()
+    }
+
+    /// The body `decode` reads for `snapshot` stored as an older format, where
+    /// `as_format` turns the current serde form into that format's form, and the digest
+    /// that format's writer computed.
+    fn written_as(
+        snapshot: &Snapshot,
+        as_format: impl Fn(ciborium::Value) -> ciborium::Value,
+    ) -> (Vec<u8>, String) {
+        let product = as_format(ciborium::Value::serialized(snapshot.product()).unwrap());
+        let writer_digest = crate::document::digest_product(&as_format(
             crate::document::identity_form(|| ciborium::Value::serialized(snapshot.product()))
                 .unwrap(),
         ));
@@ -596,19 +649,47 @@ mod tests {
         .unwrap();
         let mut body = crate::graph::sha256_bytes(&payload).to_vec();
         body.extend_from_slice(&payload);
+        (body, writer_digest)
+    }
 
-        let decoded = decode(101, &body).unwrap();
-        assert_eq!(decoded.writer_digest, Some(writer_digest));
-        assert!(
-            decoded.product.occurrences[&OccurrenceId(1)]
-                .tags
-                .iter()
-                .eq([&TagId(3)])
-        );
-        assert!(
-            decoded.product.occurrences[&OccurrenceId(2)]
-                .tags
-                .is_empty()
-        );
+    #[test]
+    fn format_101_and_102_sheet_metal_on_tagged_parts_opens_under_its_writer_digest() {
+        let as_format_102 = |mut product: ciborium::Value| {
+            format_102_joint_participants(&mut product, true);
+            product
+        };
+        let as_format_101 = |product: ciborium::Value| {
+            let mut product = as_format_102(product);
+            format_101_occurrence_tags(&mut product, true);
+            product
+        };
+        for (format, tags, as_format) in [
+            (
+                101,
+                &[3][..],
+                &as_format_101 as &dyn Fn(ciborium::Value) -> ciborium::Value,
+            ),
+            (102, &[3, 4][..], &as_format_102),
+            (102, &[3][..], &as_format_102),
+        ] {
+            let snapshot = bracket_on_tagged_part(tags);
+            let (body, writer_digest) = written_as(&snapshot, as_format);
+            let decoded = decode(format, &body)
+                .unwrap_or_else(|error| panic!("format {format} {tags:?}: {error}"));
+            assert_eq!(
+                decoded.writer_digest,
+                Some(writer_digest),
+                "format {format} {tags:?}"
+            );
+            assert_eq!(
+                decoded.product.features[&FeatureId(2)].kind,
+                snapshot.product().features[&FeatureId(2)].kind
+            );
+            assert_eq!(
+                decoded.product.occurrences,
+                snapshot.product().occurrences,
+                "format {format} {tags:?}"
+            );
+        }
     }
 }

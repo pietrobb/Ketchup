@@ -2028,7 +2028,7 @@ fn load_document(
             Some(migrated.source_digest),
         )
     };
-    if schema < CURRENT_SCHEMA {
+    if schema < 100 {
         snapshot_codec::rename_format_99_role_categories(&mut product);
     }
 

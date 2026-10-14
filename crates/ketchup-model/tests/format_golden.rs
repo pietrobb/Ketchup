@@ -141,6 +141,11 @@ fn a_format_102_file_with_history_opens_with_every_revision_it_was_written_with(
     };
     assert_eq!(audit.source_schema, 102);
     assert_eq!(audit.history_discarded, None);
+    // A release recorded under this digest must still verify (FMT-1).
+    assert_eq!(
+        audit.source_canonical_digest,
+        *REVISION_DIGESTS_102.last().unwrap()
+    );
     assert_eq!(revision_digests(&document), REVISION_DIGESTS_102);
 }
 
