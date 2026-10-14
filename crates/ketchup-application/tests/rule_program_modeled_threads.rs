@@ -115,6 +115,22 @@ fn modelled_threads_cut_a_bolt_and_its_hole_in_phase_and_undo_restores_cosmetic(
     );
     assert!(modeled.modeled_threads());
     assert_eq!(grooves(&modeled), [1, 1]);
+    // Left without its grooves (as drawings show it), each modelled body is
+    // the cosmetic one, node for node.
+    for part in ["plate", "s"] {
+        let plain = graph(&modeled, part).without_thread_grooves().unwrap();
+        assert_eq!(
+            plain.map(|plain| plain.graph_digest),
+            Some(graph(&cosmetic, part).graph_digest),
+            "{part}"
+        );
+        assert!(
+            graph(&cosmetic, part)
+                .without_thread_grooves()
+                .unwrap()
+                .is_none()
+        );
+    }
     let modeled_volumes = volumes(&modeled);
     for (cut, plain) in modeled_volumes.iter().zip(cosmetic_volumes) {
         assert!(

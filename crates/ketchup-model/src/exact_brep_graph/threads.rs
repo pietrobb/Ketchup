@@ -18,6 +18,54 @@ pub(super) fn threads_previous_node(node: &ExactBRepNode, prior_nodes: &[ExactBR
     )
 }
 
+impl ExactBRepGraph {
+    /// The graph with its modelled threads cosmetic: every thread groove left
+    /// out, so the body is the one the document makes with cosmetic threads
+    /// (drawings show a modelled thread by ISO 6410, as a cosmetic one).
+    /// `None` when the graph models no thread.
+    ///
+    /// # Errors
+    /// The graph cannot be serialised for its digest.
+    pub fn without_thread_grooves(&self) -> Result<Option<Self>, ExactBRepGraphError> {
+        if !self
+            .nodes
+            .iter()
+            .any(|node| matches!(node.operation, ExactBRepOperation::ThreadGroove(_)))
+        {
+            return Ok(None);
+        }
+        // Each old node's id in the new graph; a groove stands for its target.
+        let mut renumbered = Vec::<ExactBRepNodeId>::with_capacity(self.nodes.len());
+        let mut nodes = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            if let ExactBRepOperation::ThreadGroove(groove) = &node.operation {
+                renumbered.push(renumbered[groove.target.index()]);
+                continue;
+            }
+            let mut node = node.clone();
+            for dependency in node.operation.dependencies_mut() {
+                *dependency = renumbered[dependency.index()];
+            }
+            node.id = ExactBRepNodeId(
+                nodes
+                    .len()
+                    .try_into()
+                    .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
+            );
+            renumbered.push(node.id);
+            nodes.push(node);
+        }
+        let mut graph = Self {
+            schema: graph_schema(&nodes, &self.profiles).to_owned(),
+            nodes,
+            ..self.clone()
+        };
+        graph.graph_digest = graph.compute_graph_digest()?;
+        graph.canonical_input_digest = graph.compute_canonical_input_digest();
+        Ok(Some(graph))
+    }
+}
+
 /// A modelled thread in the definition's frame.
 struct ModeledThread {
     metric: MetricThread,

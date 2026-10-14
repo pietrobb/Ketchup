@@ -612,7 +612,17 @@ pub fn exact_brep_scale_matrix(origin_mm: [f64; 3], factors: [f64; 3]) -> [f64; 
 }
 
 impl ExactBRepOperation {
+    /// The nodes this operation takes as input.
     fn dependencies(&self) -> Vec<ExactBRepNodeId> {
+        self.clone()
+            .dependencies_mut()
+            .into_iter()
+            .map(|node| *node)
+            .collect()
+    }
+
+    /// The nodes of [`Self::dependencies`], to renumber.
+    fn dependencies_mut(&mut self) -> Vec<&mut ExactBRepNodeId> {
         match self {
             Self::ProfileCut { target, .. }
             | Self::Shell { target, .. }
@@ -623,14 +633,14 @@ impl ExactBRepOperation {
             | Self::SurfaceExtend { target, .. }
             | Self::SurfaceThicken { target, .. }
             | Self::RigidTransform { target, .. }
-            | Self::Scale { target, .. } => vec![*target],
+            | Self::Scale { target, .. } => vec![target],
             Self::Boolean { target, tool, .. }
             | Self::SurfaceTrim {
                 target,
                 cutter: tool,
-            } => vec![*target, *tool],
-            Self::WeldmentJoint { first, second, .. } => vec![*first, *second],
-            Self::SurfaceKnit { surfaces, .. } => surfaces.clone(),
+            } => vec![target, tool],
+            Self::WeldmentJoint { first, second, .. } => vec![first, second],
+            Self::SurfaceKnit { surfaces, .. } => surfaces.iter_mut().collect(),
             Self::Extrude { .. }
             | Self::Revolve { .. }
             | Self::PlanarOffset { .. }
@@ -927,93 +937,7 @@ impl ExactBRepGraph {
         let mut compiler = GraphCompiler::new(snapshot, definition_id);
         compiler.compile_body(producer_feature_id)?;
         let source_digest = snapshot.canonical_digest();
-        let schema = if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v23(&node.operation))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V23
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v22(&node.operation))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V22
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v21(&node.operation))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V21
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v20(&node.operation))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V20
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v19(&node.operation))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V19
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v18(&node.operation))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V18
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v17(&node.operation))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V17
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v16(&node.operation))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V16
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v15(&node.operation))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V15
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v14(&node.operation, &compiler.profiles))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V14
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v12(&node.operation))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V12
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v11(&node.operation, &compiler.profiles))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V11
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v10(&node.operation, &compiler.profiles))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V10
-        } else if compiler
-            .nodes
-            .iter()
-            .any(|node| operation_requires_v9(&node.operation, &compiler.profiles))
-        {
-            EXACT_BREP_GRAPH_SCHEMA_V9
-        } else {
-            EXACT_BREP_GRAPH_SCHEMA_V8
-        };
+        let schema = graph_schema(&compiler.nodes, &compiler.profiles);
         let mut graph = Self {
             schema: schema.to_owned(),
             document_id: snapshot.document_id().0,

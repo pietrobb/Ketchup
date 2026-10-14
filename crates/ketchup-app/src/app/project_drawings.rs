@@ -6,7 +6,7 @@
 
 use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
-use ketchup_application::threads::ThreadCylinder;
+use ketchup_application::threads::{CosmeticThreadBodyError, ThreadCylinder, cosmetic_thread_body};
 use ketchup_manufacturing::project_drawings::{
     DrawingSolid, DrawingThread, ProjectDrawingError, ProjectSheet, ProjectSheetOptions,
     ProjectView, SCALES, default_plan_cut_z, project_sheet,
@@ -36,6 +36,9 @@ pub(crate) enum ProjectDrawingsError {
     /// The title block and format stored in the document do not read; they
     /// are left as they are rather than replaced by the defaults.
     SettingsUnreadable(serde_json::Error),
+    /// The named part's modelled threads could not be made cosmetic for the
+    /// sheet, which would otherwise draw every edge of their helices.
+    CosmeticThreads(String, CosmeticThreadBodyError),
     Write(std::io::Error),
 }
 
@@ -165,30 +168,50 @@ impl KetchupApp {
         if !missing.is_empty() {
             return Err(ProjectDrawingsError::NotEvaluated(missing));
         }
-        Ok(drawn
-            .into_iter()
-            .map(|(occurrence, package, threads)| {
-                let vertices = package.vertices();
-                let world = |index: u32| {
-                    let vertex = vertices.get(usize::try_from(index).ok()?)?;
-                    Some(occurrence.transform.transform_point(vertex.position_mm))
-                };
-                let triangles = package
-                    .triangles()
-                    .iter()
-                    .filter_map(|triangle| {
-                        let [a, b, c] = triangle.vertex_indices;
-                        Some([world(a)?, world(b)?, world(c)?])
-                    })
-                    .collect();
-                DrawingSolid {
-                    name: occurrence.occurrence_name,
-                    color: occurrence.color.unwrap_or(DEFAULT_SOLID_COLOR),
-                    triangles,
-                    threads,
-                }
-            })
-            .collect())
+        let executable = self.exact.worker_path.clone().or_else(|| {
+            exact_worker_candidates()
+                .into_iter()
+                .find(|candidate| candidate.is_file())
+        });
+        let mut solids = Vec::with_capacity(drawn.len());
+        for (occurrence, package, threads) in drawn {
+            // Modelled threads are drawn by ISO 6410 like cosmetic ones: from
+            // the body with them cosmetic, made only now, never the helix.
+            let package: &ExactBodyPackage = package;
+            let cosmetic = match package {
+                ExactBodyPackage::Graph(package) => cosmetic_thread_body(
+                    executable.as_deref(),
+                    package,
+                    self.file.container_data.blobs(),
+                )
+                .map_err(|cause| {
+                    ProjectDrawingsError::CosmeticThreads(occurrence.occurrence_name.clone(), cause)
+                })?
+                .map(ExactBodyPackage::Graph),
+                ExactBodyPackage::Imported(_) => None,
+            };
+            let package = cosmetic.as_ref().unwrap_or(package);
+            let vertices = package.vertices();
+            let world = |index: u32| {
+                let vertex = vertices.get(usize::try_from(index).ok()?)?;
+                Some(occurrence.transform.transform_point(vertex.position_mm))
+            };
+            let triangles = package
+                .triangles()
+                .iter()
+                .filter_map(|triangle| {
+                    let [a, b, c] = triangle.vertex_indices;
+                    Some([world(a)?, world(b)?, world(c)?])
+                })
+                .collect();
+            solids.push(DrawingSolid {
+                name: occurrence.occurrence_name,
+                color: occurrence.color.unwrap_or(DEFAULT_SOLID_COLOR),
+                triangles,
+                threads,
+            });
+        }
+        Ok(solids)
     }
 
     /// The document name: its file name, else the program's.
@@ -341,6 +364,10 @@ impl KetchupApp {
             ProjectDrawingsError::SettingsUnreadable(reason) => self.catalog.format(
                 "drawings-settings-unreadable",
                 &BTreeMap::from([("reason", reason.to_string())]),
+            ),
+            ProjectDrawingsError::CosmeticThreads(part, cause) => self.catalog.format(
+                "drawings-cosmetic-threads-failed",
+                &BTreeMap::from([("part", part.clone()), ("reason", cause.to_string())]),
             ),
             ProjectDrawingsError::Write(error) => error.to_string(),
         }

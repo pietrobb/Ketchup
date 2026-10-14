@@ -307,3 +307,181 @@ fn tapped_holes_and_bolts_are_drawn_with_their_threads() {
     app.program_evaluations.get_blocking(&program).unwrap();
     assert!(app.project_drawings().is_ok());
 }
+
+/// An M5 × 10 bolt 7.3 mm into a plate tapped M5 10 mm deep, turned 37°.
+const SCREWED: &str = "p = box('plate', (20, 20, 12))\n\
+    hole(p, 'z+', at = (10, 10), depth = 12, id = 'a', thread = ('M5', 10))\n\
+    s = bolt('s', 'M5', 10, at = (10, 10, 14.7))\n\
+    place(s, origin = (10, 10, 14.7), z = (0, 0, 1), x = (0.7986355100472928, 0.6018150231520483, 0))\n";
+
+/// Corners of `solids` named `name` inside a thread's groove on the axis
+/// x = y = 10: between `radii` from it, within `heights` along it.
+fn in_groove(
+    solids: &[ketchup_manufacturing::project_drawings::DrawingSolid],
+    name: &str,
+    radii: (f64, f64),
+    heights: (f64, f64),
+) -> usize {
+    solids
+        .iter()
+        .filter(|solid| solid.name == name)
+        .flat_map(|solid| solid.triangles.iter().flatten())
+        .filter(|[x, y, z]| {
+            let radius = (x - 10.0).hypot(y - 10.0);
+            radius > radii.0 && radius < radii.1 && *z > heights.0 && *z < heights.1
+        })
+        .count()
+}
+
+/// The 0.18 mm lines of a sheet (the solids' edges) and its filled faces.
+fn edge_lines_and_faces(sheet: &ProjectSheet) -> [usize; 2] {
+    use ketchup_manufacturing::sheet_pdf::Mark;
+    let count =
+        |wanted: fn(&Mark) -> bool| sheet.page.marks.iter().filter(|mark| wanted(mark)).count();
+    [
+        count(
+            |mark| matches!(mark, Mark::Line { stroke, .. } if (stroke.width_mm - 0.18).abs() < 1e-9),
+        ),
+        count(|mark| matches!(mark, Mark::Fill { .. })),
+    ]
+}
+
+/// A modelled thread is drawn by ISO 6410 exactly as a cosmetic one, not with
+/// the edges of its helix: the sheet of the screwed bolt is the same in both
+/// modes, while the modelled bodies' own triangles carry the grooves.
+#[test]
+fn modelled_threads_draw_the_same_sheet_as_cosmetic_ones_without_helix_edges() {
+    use ketchup_manufacturing::project_drawings::{ProjectSheetOptions, project_sheet};
+    let mut app = KetchupApp::new();
+    let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "screwed.star".into(),
+        source: SCREWED.into(),
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program.clone(), true).unwrap();
+    app.program_evaluations.get_blocking(&program).unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let cosmetic = app.project_drawings().unwrap();
+    let cosmetic_solids = app.visible_drawing_solids(&app.document.current()).unwrap();
+
+    assert!(app.set_modeled_threads(true));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let snapshot = app.document.current();
+    assert!(snapshot.modeled_threads());
+    let modeled = app.project_drawings().unwrap();
+    let drawn = app.visible_drawing_solids(&snapshot).unwrap();
+    // The bodies as the exact kernel modelled them, grooves and all.
+    let packages = app.exact.results.body_values(&snapshot).unwrap();
+    let grooved = drawn
+        .iter()
+        .cloned()
+        .map(|mut solid| {
+            let occurrence = snapshot
+                .scene_query()
+                .into_iter()
+                .find(|occurrence| occurrence.occurrence_name == solid.name)
+                .unwrap();
+            let (_, package) = packages
+                .iter()
+                .find(|(key, _)| key.definition_id == occurrence.definition_id)
+                .unwrap();
+            let vertices = package.vertices();
+            solid.triangles = package
+                .triangles()
+                .iter()
+                .map(|triangle| {
+                    triangle.vertex_indices.map(|index| {
+                        occurrence
+                            .transform
+                            .transform_point(vertices[index as usize].position_mm)
+                    })
+                })
+                .collect();
+            solid
+        })
+        .collect::<Vec<_>>();
+
+    // M5 × 0.8: the bolt's root at 2.01 mm from the axis, its crest at 2.5;
+    // the hole's bore at 2.1 (4.2 drill), its 6H root at 2.5 or a little
+    // past. The thread runs down the bolt's shank from z = 14.7 and down the
+    // hole from z = 12.
+    let bolt = ((2.05, 2.45), (5.2, 14.2));
+    let hole = ((2.12, 2.6), (2.5, 11.5));
+    for (solids, grooves) in [(&cosmetic_solids, false), (&drawn, false), (&grooved, true)] {
+        for (part, (radii, heights)) in [("s", bolt), ("plate", hole)] {
+            assert_eq!(
+                in_groove(solids, part, radii, heights) > 0,
+                grooves,
+                "{part}: grooves {grooves}"
+            );
+        }
+    }
+    assert!(
+        cosmetic == modeled,
+        "the modelled sheet differs: {} vs {} marks, {:?} vs {:?} edge lines and faces",
+        cosmetic.page.marks.len(),
+        modeled.page.marks.len(),
+        edge_lines_and_faces(&cosmetic),
+        edge_lines_and_faces(&modeled)
+    );
+    let info = ketchup_manufacturing::sheet_pdf::PdfInfo::default();
+    assert!(cosmetic.pdf(&info) == modeled.pdf(&info), "the PDFs differ");
+    // Drawn from the grooved bodies, the sheet would carry the helix: its
+    // edges and the facets of its flanks.
+    let options = ProjectSheetOptions::default();
+    let [plain_edges, plain_faces] =
+        edge_lines_and_faces(&project_sheet(&drawn, &options).unwrap());
+    let [helix_edges, helix_faces] =
+        edge_lines_and_faces(&project_sheet(&grooved, &options).unwrap());
+    assert!(
+        helix_edges > plain_edges && helix_faces > 2 * plain_faces,
+        "edges {helix_edges} vs {plain_edges}, faces {helix_faces} vs {plain_faces}"
+    );
+}
+
+/// Evaluating modelled threads makes only the grooved bodies: their cosmetic
+/// form is made when a sheet is drawn, so without an exact worker then the
+/// sheet is refused (naming the part), and with one it draws.
+#[test]
+fn modelled_threads_are_made_cosmetic_only_when_a_sheet_is_drawn() {
+    let mut app = KetchupApp::new();
+    let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "screwed.star".into(),
+        source: SCREWED.into(),
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program.clone(), true).unwrap();
+    app.program_evaluations.get_blocking(&program).unwrap();
+    assert!(app.set_modeled_threads(true));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let snapshot = app.document.current();
+    // Each evaluated body is the grooved one and nothing more.
+    let drawn = app.visible_drawing_solids(&snapshot).unwrap();
+    let mut grooved_bodies = 0;
+    for (_, package) in app.exact.results.body_values(&snapshot).unwrap() {
+        let ketchup_model::exact_product::ExactBodyPackage::Graph(package) = &**package else {
+            panic!("a program part is a graph body");
+        };
+        if package.graph.without_thread_grooves().unwrap().is_some() {
+            grooved_bodies += 1;
+            assert!(
+                drawn
+                    .iter()
+                    .all(|solid| solid.triangles.len() != package.triangles.len()),
+                "a sheet draws the cosmetic body, not the evaluated one"
+            );
+        }
+    }
+    assert_eq!(grooved_bodies, 2);
+
+    let worker = app.exact.worker_path.clone();
+    app.exact.worker_path = Some(std::env::temp_dir().join("no-such-exact-worker.exe"));
+    let Err(ProjectDrawingsError::CosmeticThreads(part, _)) = app.project_drawings() else {
+        panic!("a sheet of modelled threads needs the exact worker");
+    };
+    assert!(part == "plate" || part == "s", "{part}");
+    app.exact.worker_path = worker;
+    assert!(app.project_drawings().is_ok());
+}

@@ -1666,6 +1666,7 @@ drawings-view-right = Pohľad sprava
 drawings-unavailable = Zatiaľ nie sú viditeľné žiadne presné telesá na kreslenie; počkaj, kým sa model vyhodnotí.
 drawings-parts-not-evaluated = Viditeľné diely bez presného telesa ({ $count }) by vo výkrese chýbali: { $parts }. Oprav ich alebo skry, prípadne počkaj, kým sa model vyhodnotí.
 drawings-settings-unreadable = Rohová pečiatka a formát výkresu uložené v dokumente sa nedajú prečítať ({ $reason }); ostávajú, ako sú. Vyplň pečiatku znova v okne Projektové výkresy, tým ich nahradíš.
+drawings-cosmetic-threads-failed = Vymodelované závity dielu { $part } sa nedajú nakresliť podľa ISO 6410 ({ $reason }); výkres by ukázal všetky hrany ich skrutkovíc. Exportuj znova alebo prepni závity na kozmetické.
 drawings-settings-unreadable-edit = Rohová pečiatka uložená v dokumente sa nedá prečítať ({ $reason }). Každá zmena tu ju nahradí.
 digest-exported-project-drawings = Projektové výkresy (pôdorys, rezy a pohľady) na formáte { $format } v mierke 1:{ $scale } boli exportované do { $path }
 error-export-project-drawings = Export projektových výkresov do { $path } zlyhal: { $reason }

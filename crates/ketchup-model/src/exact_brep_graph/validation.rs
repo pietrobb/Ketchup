@@ -271,6 +271,83 @@ pub(super) fn operation_requires_v8(
     )
 }
 
+/// The oldest graph schema that carries every operation of `nodes`.
+pub(super) fn graph_schema(nodes: &[ExactBRepNode], profiles: &[ExactBRepProfile]) -> &'static str {
+    if nodes
+        .iter()
+        .any(|node| operation_requires_v23(&node.operation))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V23
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v22(&node.operation))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V22
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v21(&node.operation))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V21
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v20(&node.operation))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V20
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v19(&node.operation))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V19
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v18(&node.operation))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V18
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v17(&node.operation))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V17
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v16(&node.operation))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V16
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v15(&node.operation))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V15
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v14(&node.operation, profiles))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V14
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v12(&node.operation))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V12
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v11(&node.operation, profiles))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V11
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v10(&node.operation, profiles))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V10
+    } else if nodes
+        .iter()
+        .any(|node| operation_requires_v9(&node.operation, profiles))
+    {
+        EXACT_BREP_GRAPH_SCHEMA_V9
+    } else {
+        EXACT_BREP_GRAPH_SCHEMA_V8
+    }
+}
+
 pub(super) fn operation_requires_v9(
     operation: &ExactBRepOperation,
     profiles: &[ExactBRepProfile],

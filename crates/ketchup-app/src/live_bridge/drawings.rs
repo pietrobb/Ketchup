@@ -251,6 +251,13 @@ fn export(
                 json!({"program_planning": true}),
             ),
             ProjectDrawingsError::SettingsUnreadable(_) => "drawings_unavailable",
+            ProjectDrawingsError::CosmeticThreads(part, cause) => failure(
+                "drawings_unavailable",
+                format!(
+                    "The modelled threads of {part} could not be drawn by ISO 6410 ({cause}); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic."
+                ),
+                json!({"part": part}),
+            ),
             ProjectDrawingsError::Write(error) => failed_because("drawings_write_failed", error),
         }
     })?;

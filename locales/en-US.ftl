@@ -1666,6 +1666,7 @@ drawings-view-right = Right elevation
 drawings-unavailable = There are no visible exact solids to draw yet; wait until the model is evaluated.
 drawings-parts-not-evaluated = { $count } visible parts have no exact solid, so the sheet would leave them out: { $parts }. Fix or hide them, or wait until the model is evaluated.
 drawings-settings-unreadable = The title block and sheet format stored in the document cannot be read ({ $reason }); they are kept as they are. Fill in the title block again in Project drawings to replace them.
+drawings-cosmetic-threads-failed = The modelled threads of { $part } cannot be drawn by ISO 6410 ({ $reason }); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic.
 drawings-settings-unreadable-edit = The title block stored in the document cannot be read ({ $reason }). Any change made here replaces it.
 digest-exported-project-drawings = Project drawings (floor plan, sections and elevations) on { $format } at 1:{ $scale } were exported to { $path }
 error-export-project-drawings = Project drawings export to { $path } failed: { $reason }

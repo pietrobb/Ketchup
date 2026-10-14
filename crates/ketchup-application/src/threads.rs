@@ -7,10 +7,104 @@
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Snapshot, metric_nominal_diameter,
 };
+use ketchup_model::exact_brep_graph::{ExactBRepGraphError, ExactBRepOperation};
+use ketchup_model::exact_product::ExactBRepGraphPackage;
 use ketchup_model::tolerance::ROUNDING;
+use ketchup_scheduler::WorkerError;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 pub use ketchup_model::document::ThreadCylinder;
+
+/// Why the body of a modelled thread could not be made cosmetic.
+#[derive(Debug)]
+pub enum CosmeticThreadBodyError {
+    Graph(ExactBRepGraphError),
+    /// The document holds no imported source with this SHA-256.
+    ImportedSourceMissing(String),
+    Unavailable(crate::worker_pool::ExactWorkerUnavailable),
+    Worker(WorkerError),
+}
+
+impl fmt::Display for CosmeticThreadBodyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Graph(error) => {
+                write!(formatter, "the graph without threads is invalid: {error}")
+            }
+            Self::ImportedSourceMissing(sha256) => {
+                write!(formatter, "imported source {sha256} is missing")
+            }
+            Self::Unavailable(error) => error.fmt(formatter),
+            Self::Worker(error) => write!(formatter, "exact worker failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for CosmeticThreadBodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Graph(error) => Some(error),
+            Self::ImportedSourceMissing(_) => None,
+            Self::Unavailable(error) => Some(error),
+            Self::Worker(error) => Some(error),
+        }
+    }
+}
+
+/// `package`'s body with its modelled threads cosmetic, so a drawing shows
+/// them by ISO 6410: its graph without the thread grooves, evaluated only now
+/// by a pooled exact worker, whose output cache already holds the nodes before
+/// them. `None` when the body models no thread. `blobs` are the document's
+/// imported sources by SHA-256.
+///
+/// # Errors
+/// The graph without grooves is invalid, an imported source is missing, or
+/// no exact worker evaluates it.
+pub fn cosmetic_thread_body(
+    executable: Option<&Path>,
+    package: &ExactBRepGraphPackage,
+    blobs: &BTreeMap<String, Vec<u8>>,
+) -> Result<Option<ExactBRepGraphPackage>, CosmeticThreadBodyError> {
+    let Some(graph) = package
+        .graph
+        .without_thread_grooves()
+        .map_err(CosmeticThreadBodyError::Graph)?
+    else {
+        return Ok(None);
+    };
+    let mut hashes = Vec::new();
+    for node in &graph.nodes {
+        if let ExactBRepOperation::ImportedExact { source_sha256, .. } = &node.operation {
+            let hash = source_sha256
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            if !hashes.contains(&hash) {
+                hashes.push(hash);
+            }
+        }
+    }
+    let sources = hashes
+        .into_iter()
+        .map(|hash| {
+            blobs
+                .get(&hash)
+                .map(Vec::as_slice)
+                .ok_or(CosmeticThreadBodyError::ImportedSourceMissing(hash))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let cancelled = AtomicBool::new(false);
+    let mut worker = crate::worker_pool::checkout(executable, &cancelled)
+        .map_err(CosmeticThreadBodyError::Unavailable)?;
+    let body = worker
+        .evaluate_exact_brep_graph_with_imported_sources(&graph, &sources)
+        .map_err(CosmeticThreadBodyError::Worker)?;
+    worker.release();
+    Ok(Some(body))
+}
 
 /// Every thread of `snapshot`; the outside threads of program parts only
 /// with the program's `evaluated` model.
