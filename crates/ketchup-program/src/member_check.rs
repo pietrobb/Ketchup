@@ -165,7 +165,7 @@ const COLUMN_COS: f64 = 0.44;
 const STEPS: usize = 64;
 
 /// Duration class, psi0 and psi2 of each load kind.
-fn action(kind: &str) -> (usize, f64, f64) {
+pub(crate) fn action(kind: &str) -> (usize, f64, f64) {
     match kind {
         "imposed" => (2, 0.7, 0.3),
         "roof" => (3, 0.0, 0.0),

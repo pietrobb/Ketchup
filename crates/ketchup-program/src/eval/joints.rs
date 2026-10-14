@@ -86,11 +86,24 @@ fn parse_rating<'v>(
     if source.is_empty() {
         anyhow::bail!("rating source must name the published table or document");
     }
+    let tension_n = match value.get_attr("tension_n", heap).ok().flatten() {
+        Some(value) if !value.is_none() => {
+            let tension_n = number(value, "rating tension_n")?;
+            if !tension_n.is_finite() || tension_n <= 0.0 {
+                anyhow::bail!(
+                    "rating tension_n must be a positive number of newtons, got {tension_n}"
+                );
+            }
+            Some(tension_n)
+        }
+        _ => None,
+    };
     Ok(Some(JointRating {
         load_n,
         basis,
         source,
         note: text_field("note").unwrap_or_default(),
+        tension_n,
     }))
 }
 

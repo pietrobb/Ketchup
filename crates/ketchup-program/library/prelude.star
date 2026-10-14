@@ -832,11 +832,15 @@ def boss(part, face, profile, height, name = "boss"):
 #     bearing=True: the joint carries a's weight into b (a hanger, a joist hanger,
 #     a dovetail): the load path counts it as a support at the fasteners (or the
 #     contact). Without it a joint only holds a part in place and carries nothing.
-#     rating=connector_rating(load_n=, basis=, source=, note="") on a bearing joint: the
-#     load the whole connection may carry as its maker publishes it; basis "allowable"
-#     (permissible load), "characteristic" (R_k) or "design" (R_d). The report's joints
-#     list shows every bearing joint with its rating, or not_verified with what is
-#     missing (a rating, the load on it). Ratings are data with a source, never guessed:
+#     rating=connector_rating(load_n=, basis=, source=, note="", tension_n=None) on a bearing
+#     joint: the load the whole connection may carry as its maker publishes it; basis
+#     "allowable" (permissible load), "characteristic" (R_k) or "design" (R_d). tension_n is
+#     the published pull on the same basis when the joint holds the carried part down (an
+#     overhang lifting its back end); without it such a pull is not verified. The report's
+#     joints list shows every bearing joint with its rating, or not_verified with what is
+#     missing (a rating, the load on it), and every other joint that holds a member down,
+#     as not_verified: only a bearing joint with tension_n checks the pull. Ratings are data
+#     with a source, never guessed:
 #     CONNECTOR_RATINGS[fastener] holds the published ones (connector_rating_of(name)
 #     gives None for others, e.g. a hanger without a maker's table).
 #   arunda(a, b, template="80 B", name=None) -> None
@@ -887,9 +891,9 @@ DOWELS = {
     "10x50": (10, 50),
 }
 
-def connector_rating(load_n, basis, source, note = ""):
+def connector_rating(load_n, basis, source, note = "", tension_n = None):
     """A published load rating of a bearing connection; see joint(rating=)."""
-    return struct(load_n = load_n, basis = basis, source = source, note = note)
+    return struct(load_n = load_n, basis = basis, source = source, note = note, tension_n = tension_n)
 
 _ARUNDA_SOURCE = "Arunda load table (HYBOX Slovakia), https://arunda.sk/assets/docs/zatezova-tabulka.pdf"
 

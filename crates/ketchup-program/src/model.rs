@@ -1627,6 +1627,10 @@ pub struct JointRating {
     pub source: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
+    /// Pull the connection may take holding the carried part down, newtons,
+    /// on the same basis; none published: a pull on it is not verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tension_n: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

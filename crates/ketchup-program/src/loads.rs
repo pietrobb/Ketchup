@@ -109,12 +109,43 @@ pub struct MemberLoad {
 pub struct JointLoad {
     pub loads_n: Loads,
     pub missing: Vec<String>,
+    /// The pull it takes holding a member down, when it does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tension: Option<Tension>,
+}
+
+/// The pull a joint takes holding a member down against lifting, in newtons
+/// (positive), each load kind counted apart on every stretch of the member.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Tension {
+    /// For static equilibrium (EN 1990 A1.2(A)): permanent 0.9 where it holds
+    /// the member down and 1.1 where it lifts it, variable loads 1.5 only where
+    /// they lift.
+    pub design_n: f64,
+    /// Permanent whole, variable loads only where they lift.
+    pub characteristic_n: f64,
+    /// The load kinds that lift the member there.
+    pub lifted_by: Vec<String>,
+}
+
+impl Tension {
+    fn add(&mut self, other: &Tension) {
+        self.design_n = round(self.design_n + other.design_n);
+        self.characteristic_n = round(self.characteristic_n + other.characteristic_n);
+        for kind in &other.lifted_by {
+            if !self.lifted_by.contains(kind) {
+                self.lifted_by.push(kind.clone());
+            }
+        }
+        self.lifted_by.sort();
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct LoadReport {
     pub members: Vec<MemberLoad>,
-    /// Load passed through each bearing joint, by joint name.
+    /// Load passed through each bearing joint, and the pull of every joint
+    /// that holds a member down, by joint name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub joints: BTreeMap<String, JointLoad>,
     /// Loaded parts (no members) that rest on nothing that carries them, with
@@ -491,13 +522,21 @@ fn beam_shares(patches: &[Patch], ranges: &[(f64, f64)], held: &[bool]) -> Share
     // The design value of each reaction for static equilibrium (the member as
     // a rigid body): every kind apart on the overhang beyond the first bearing
     // still in contact, between the outer bearings and beyond the last.
-    let equilibrium = |active: &[usize]| -> Vec<f64> {
+    // Negative: the support has to pull the member down, by `Tension`.
+    let equilibrium = |active: &[usize]| -> Vec<Tension> {
         let at: Vec<f64> = active.iter().map(|c| clusters[*c].0).collect();
         let (Some(first), Some(last)) = (active.first(), active.last()) else {
             return Vec::new();
         };
         let outer = [bearings[*first].0, bearings[*last].1];
-        let mut holding = vec![0.0; active.len()];
+        let mut holding = vec![
+            Tension {
+                design_n: 0.0,
+                characteristic_n: 0.0,
+                lifted_by: Vec::new(),
+            };
+            active.len()
+        ];
         for (kind, pieces) in &pieces {
             for stretch in continuous_span::by_stretch(&outer, pieces) {
                 if stretch.is_empty() {
@@ -505,7 +544,14 @@ fn beam_shares(patches: &[Patch], ranges: &[(f64, f64)], held: &[bool]) -> Share
                 }
                 let solution = continuous_span::solve(&at, &[], &stretch);
                 for (k, reaction) in solution.reactions.into_iter().enumerate() {
-                    holding[k] += holding_down(kind, reaction);
+                    let held = &mut holding[k];
+                    held.design_n += holding_down(kind, reaction);
+                    if kind.as_str() == "permanent" || reaction < 0.0 {
+                        held.characteristic_n += reaction;
+                    }
+                    if reaction < 0.0 && !held.lifted_by.contains(*kind) {
+                        held.lifted_by.push((*kind).clone());
+                    }
                 }
             }
         }
@@ -519,7 +565,7 @@ fn beam_shares(patches: &[Patch], ranges: &[(f64, f64)], held: &[bool]) -> Share
         let holding = equilibrium(&active);
         let worst = (0..active.len())
             .filter(|k| !held_cluster(active[*k]))
-            .map(|k| (k, holding[k]))
+            .map(|k| (k, holding[k].design_n))
             .filter(|(_, value)| *value < 0.0)
             .min_by(|a, b| a.1.total_cmp(&b.1));
         let Some((k, _)) = worst else {
@@ -528,17 +574,32 @@ fn beam_shares(patches: &[Patch], ranges: &[(f64, f64)], held: &[bool]) -> Share
         active.remove(k);
     }
     let reactions = solve(&active);
+    let holding = if active.len() > 1 {
+        equilibrium(&active)
+    } else {
+        Vec::new()
+    };
     let mut shares = vec![Loads::new(); ranges.len()];
     let mut lifted = vec![true; ranges.len()];
+    let mut tension = vec![None; ranges.len()];
     for (k, cluster) in active.iter().enumerate() {
         let members = &clusters[*cluster].1;
+        let part = 1.0 / members.len() as f64;
         for member in members {
-            add(
-                &mut shares[*member],
-                &reactions[k],
-                1.0 / members.len() as f64,
-            );
+            add(&mut shares[*member], &reactions[k], part);
             lifted[*member] = false;
+            tension[*member] = holding
+                .get(k)
+                .filter(|held| held.design_n < 0.0)
+                .map(|held| Tension {
+                    design_n: round(-held.design_n * part),
+                    characteristic_n: round((-held.characteristic_n * part).max(0.0)),
+                    lifted_by: {
+                        let mut kinds = held.lifted_by.clone();
+                        kinds.sort();
+                        kinds
+                    },
+                });
         }
     }
     // Lifting off down to one support of several, the member tips over it.
@@ -546,6 +607,7 @@ fn beam_shares(patches: &[Patch], ranges: &[(f64, f64)], held: &[bool]) -> Share
     Shares {
         loads: shares,
         lifted,
+        tension,
         tips,
     }
 }
@@ -553,6 +615,8 @@ fn beam_shares(patches: &[Patch], ranges: &[(f64, f64)], held: &[bool]) -> Share
 /// What a beam passes to each of its supports.
 struct Shares {
     loads: Vec<Loads>,
+    /// The pull a support held by a joint takes holding the member down.
+    tension: Vec<Option<Tension>>,
     /// The member lifts off this support (it carries nothing).
     lifted: Vec<bool>,
     /// It lifted off all but one of its supports and tips over that one.
@@ -919,6 +983,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
         // What each support takes, in pieces with where they act on the supporter
         // (None: along the whole bearing).
         let mut lifted = vec![false; list.len()];
+        let mut tension = vec![None; list.len()];
         let pieces: Vec<Pieces> = if member[item] {
             let ranges: Vec<(f64, f64)> = list
                 .iter()
@@ -945,6 +1010,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                 ));
             }
             lifted = shares.lifted;
+            tension = shares.tension;
             shares
                 .loads
                 .into_iter()
@@ -954,7 +1020,9 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
             sheet_shares(&parts[item], &patches[item], list, &frames)
         };
         let carried = missing[item].clone();
-        for ((support, pieces), lifted_off) in list.iter().zip(pieces).zip(lifted) {
+        for (((support, pieces), lifted_off), tension) in
+            list.iter().zip(pieces).zip(lifted).zip(tension)
+        {
             let target = support.supporter;
             let (from_mm, to_mm) = frames[target].range(&support.points);
             let mut share = Loads::new();
@@ -973,14 +1041,40 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                     lifted_off,
                 });
             }
+            let entry = |joints: &mut BTreeMap<String, JointLoad>, joint: &str| {
+                joints.entry(joint.to_owned()).or_insert_with(|| JointLoad {
+                    loads_n: Loads::new(),
+                    missing: carried.iter().cloned().collect(),
+                    tension: None,
+                });
+            };
             if let Some(joint) = &support.joint {
-                report.joints.insert(
-                    joint.clone(),
-                    JointLoad {
-                        loads_n: rounded(&share),
-                        missing: carried.iter().cloned().collect(),
-                    },
-                );
+                entry(&mut report.joints, joint);
+                report.joints.get_mut(joint).expect("just added").loads_n = rounded(&share);
+            }
+            if let Some(tension) = tension {
+                // The pull goes through the joint at this support, or else
+                // through every joint that ties the two parts together.
+                let holders: Vec<&str> = match &support.joint {
+                    Some(joint) => vec![joint.as_str()],
+                    None => model
+                        .joints
+                        .iter()
+                        .filter(|joint| {
+                            let names = [&parts[item].name, &parts[target].name];
+                            joint.parts.iter().all(|part| names.contains(&part))
+                        })
+                        .map(|joint| joint.name.as_str())
+                        .collect(),
+                };
+                for joint in holders {
+                    entry(&mut report.joints, joint);
+                    let load = report.joints.get_mut(joint).expect("just added");
+                    match &mut load.tension {
+                        Some(sum) => sum.add(&tension),
+                        none => *none = Some(tension.clone()),
+                    }
+                }
             }
             for (loads, range) in pieces {
                 // An upward pull is not passed down as relief of the supporter.

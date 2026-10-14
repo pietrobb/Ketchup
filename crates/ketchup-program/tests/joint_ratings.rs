@@ -1,4 +1,6 @@
-use ketchup_program::joint_check::{NO_LOAD, NO_RATING, NO_SERVICE_CLASS};
+use ketchup_program::joint_check::{
+    NO_LOAD, NO_RATING, NO_SERVICE_CLASS, NO_TENSION_RATING, not_bearing,
+};
 use ketchup_program::{Report, run};
 use std::collections::BTreeMap;
 
@@ -188,6 +190,123 @@ fn a_characteristic_rating_on_parts_without_a_strength_class_is_not_verified() {
     assert_eq!(check.utilization, None);
     assert_eq!(check.status, "not_verified");
     assert_eq!(check.missing, [NO_SERVICE_CLASS]);
+}
+
+/// The balcony beam of `member_loads` (posts centred 50 and 2950 mm, a 1550 mm
+/// cantilever, a 1 m deck with g 0.5 and q 2 kN/m²) held down at post a by `joint`.
+fn anchored(joint: &str) -> Report {
+    report(&format!(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+weight_scope([\"heavy\"])
+area_load(\"finish\", kind = \"permanent\", kn_m2 = 0.5, on = [\"deck\"], source = \"test\")
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+post = box(\"post a\", (100, 100, 2000), material = \"C24\", grounded = True)
+box(\"post b\", (100, 100, 2000), at = (2900, 0, 0), material = \"C24\", grounded = True)
+beam = box(\"beam\", (4500, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"deck\", (4500, 1000, 20), at = (0, -450, 2200), material = \"OSB\", tags = [\"deck\"])
+{joint}
+"
+    ))
+}
+
+/// Post a's reaction by hand, per N/mm: 1450 / 2900 of the 3000 mm between
+/// the outer bearing edges, less 800 / 2900 of the 1500 mm cantilever.
+const INSIDE: f64 = 1500.0;
+const CANTILEVER: f64 = -1500.0 * 800.0 / 2900.0;
+
+fn hold_down(rating: &str) -> String {
+    format!(
+        "joint(beam, post, kind = \"hold-down\", bearing = True, fasteners = [(50, 50, 2100)],
+      rating = connector_rating({rating}, source = \"ETA-00/0000\"))"
+    )
+}
+
+fn only_check(report: &Report) -> ketchup_program::joint_check::JointCheck {
+    let [check] = report.joints.as_slice() else {
+        panic!("{:?}", report.joints);
+    };
+    check.clone()
+}
+
+/// Review cbec147 ST-N3: a rated hanger compared |pull| with its downward
+/// capacity, and a pull through any other joint was never checked.
+#[test]
+fn a_joint_holding_a_balcony_down_is_checked_for_its_pull_against_a_tension_rating() {
+    let (g, q) = (0.5, 2.0);
+    // EQU: 0.9 g inside, 1.1 g and 1.5 q on the cantilever: 794 N of pull.
+    let design = -(0.9 * g * INSIDE + 1.1 * g * CANTILEVER + 1.5 * q * CANTILEVER);
+    // Characteristic: g whole, q only on the cantilever: 284 N.
+    let characteristic = -(g * (INSIDE + CANTILEVER) + q * CANTILEVER);
+    assert!((design - 794.0).abs() < 0.1 && (characteristic - 284.5).abs() < 0.1);
+    // Downward (whole deck, lever rule): g and q x 4500 x 700 / 2900.
+    let down = |load: f64| load * 4500.0 * 700.0 / 2900.0;
+
+    // A design rating that gives only the load downward: the pull is not verified.
+    let check = only_check(&anchored(&hold_down("load_n = 5000, basis = \"design\"")));
+    let tension = check.tension.as_ref().expect("a pull");
+    assert!((tension.design_n - design).abs() < 0.1, "{tension:?}");
+    assert!(
+        (tension.characteristic_n - characteristic).abs() < 0.1,
+        "{tension:?}"
+    );
+    assert_eq!(tension.lifted_by, ["imposed", "permanent"]);
+    let downward = (1.35 * down(g) + 1.5 * down(q)) / 5000.0;
+    assert!(
+        (check.utilization.unwrap() - downward).abs() < 0.001,
+        "{check:?}"
+    );
+    assert_eq!(check.status, "not_verified");
+    assert_eq!(check.missing, [NO_TENSION_RATING]);
+
+    // With tension_n the pull governs: 794 / 700.
+    let check = only_check(&anchored(&hold_down(
+        "load_n = 5000, basis = \"design\", tension_n = 700",
+    )));
+    assert!(
+        (check.utilization.unwrap() - design / 700.0).abs() < 0.001,
+        "{check:?}"
+    );
+    assert_eq!(check.status, "fail");
+    assert!(
+        check
+            .combination
+            .as_deref()
+            .unwrap()
+            .starts_with("pull, EQU")
+    );
+
+    // Allowable: the characteristic pull, 284 / 250.
+    let check = only_check(&anchored(&hold_down(
+        "load_n = 5000, basis = \"allowable\", tension_n = 250",
+    )));
+    assert!(
+        (check.utilization.unwrap() - characteristic / 250.0).abs() < 0.001,
+        "{check:?}"
+    );
+    assert_eq!(check.status, "fail");
+    let check = only_check(&anchored(&hold_down(
+        "load_n = 5000, basis = \"allowable\", tension_n = 400",
+    )));
+    assert_eq!(check.status, "pass", "{check:?}");
+
+    // A screw that is not bearing holds it down too, but is never checked.
+    let check = only_check(&anchored(
+        "joint(beam, post, kind = \"screw\", fastener = \"screw 8 x 200\", fasteners = [(50, 50, 2100)])",
+    ));
+    assert_eq!(check.joint, "screw:beam+post a");
+    assert_eq!(check.status, "not_verified");
+    assert_eq!(
+        check.missing,
+        [not_bearing(check.tension.as_ref().unwrap().design_n)]
+    );
+    assert!((check.tension.unwrap().design_n - design).abs() < 0.1);
+    assert!(
+        rejected(&format!(
+            "{FRAME}joint(joist, header, kind = \"hanger\", bearing = True,
+      rating = connector_rating(load_n = 5000, basis = \"design\", source = \"ETA\", tension_n = 0))\n"
+        ))
+        .contains("tension_n must be a positive number")
+    );
 }
 
 #[test]
