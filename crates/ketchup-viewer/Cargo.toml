@@ -39,6 +39,7 @@ eframe = { version = "0.32.3", default-features = false, features = ["accesskit"
 [dev-dependencies]
 pollster = "0.4.0"
 egui_kittest = { version = "0.32.0", features = ["wgpu"] }
+ketchup-test-gpu = { path = "../ketchup-test-gpu" }
 
 [lints]
 workspace = true

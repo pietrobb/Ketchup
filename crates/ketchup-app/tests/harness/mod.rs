@@ -224,7 +224,7 @@ impl Shell {
             // The default frame step is a quarter of a second, which is longer
             // than the double-click delay — two clicks would never pair up.
             .with_step_dt(1.0 / 60.0)
-            .renderer(crate::test_gpu::renderer())
+            .renderer(ketchup_test_gpu::renderer())
             .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
         // Without this, collapsing headers, tooltips and fade-ins need a
         // variable number of frames and every assertion becomes a race.

@@ -11,7 +11,7 @@ fn pixels(device: &wgpu::Device, queue: &wgpu::Queue, target: &RenderTarget) -> 
 
 #[test]
 fn package_instances_visibility_selection_edges_and_section_change_gpu_pixels() {
-    let (device, queue) = crate::test_gpu::gpu_device();
+    let (device, queue) = ketchup_test_gpu::gpu_device();
     device.push_error_scope(wgpu::ErrorFilter::Validation);
     let package = crate::app::tests::scene_package();
     let model = Model::from_package(package).expect("package");
@@ -111,7 +111,7 @@ fn package_instances_visibility_selection_edges_and_section_change_gpu_pixels() 
 
 #[test]
 fn axes_and_grid_are_drawn_behind_the_model_and_ignore_the_section() {
-    let (device, queue) = crate::test_gpu::gpu_device();
+    let (device, queue) = ketchup_test_gpu::gpu_device();
     device.push_error_scope(wgpu::ErrorFilter::Validation);
     let model = Model::from_package(crate::app::tests::scene_package()).expect("package");
     let renderer = MeshRenderer::new(&device, &model).expect("upload");

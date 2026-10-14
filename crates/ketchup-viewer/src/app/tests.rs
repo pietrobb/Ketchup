@@ -46,7 +46,7 @@ pub(crate) fn scene_package() -> ketchup_view_format::Package {
 
 #[test]
 fn native_viewport_shows_the_rendered_model_at_its_projected_position() {
-    let state = crate::test_gpu::render_state();
+    let state = ketchup_test_gpu::render_state();
     eprintln!("Viewer UI adapter: {:?}", state.adapter.get_info());
     let renderer = egui_kittest::wgpu::WgpuTestRenderer::from_render_state(state.clone());
     let mut app = ViewerApp::new(Some(state.clone())).with_language(Language::ENGLISH);
@@ -134,7 +134,7 @@ fn scene_dimensions_are_drawn_where_they_project_and_switch_off() {
     package.manifest.scenes[0].visible_dimensions = vec![1, 2];
     let mut bytes = Vec::new();
     package.write(&mut bytes).unwrap();
-    let state = crate::test_gpu::render_state();
+    let state = ketchup_test_gpu::render_state();
     let renderer = egui_kittest::wgpu::WgpuTestRenderer::from_render_state(state.clone());
     let mut app = ViewerApp::new(Some(state)).with_language(Language::ENGLISH);
     app.open(bytes.as_slice()).unwrap();

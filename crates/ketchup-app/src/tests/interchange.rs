@@ -210,13 +210,7 @@ fn viewer_renders_every_exported_scene(path: &std::path::Path) {
             "axis {axis}: Viewer {shown} mm vs source {source} mm"
         );
     }
-    let adapter = pollster::block_on(
-        crate::test_gpu::instance().request_adapter(&wgpu::RequestAdapterOptions::default()),
-    )
-    .expect("GPU adapter required, never skip rendering proof");
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .expect("GPU device");
+    let (device, queue) = ketchup_test_gpu::gpu_device();
     device.push_error_scope(wgpu::ErrorFilter::Validation);
     let renderer = gpu::MeshRenderer::new(&device, &model).expect("upload exported geometry");
     let target = gpu::RenderTarget::new(&device, [96, 64]);

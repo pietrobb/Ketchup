@@ -29,10 +29,10 @@ def test_the_viewer_tests_that_corrupted_the_heap_fail(tmp_path):
 
 
 def test_the_shared_instance_and_production_code_pass(tmp_path):
-    write(tmp_path, "crates/ketchup-viewer/src/test_gpu.rs",
-          "fn instance() { block_on(default_wgpu_setup().new_instance()) }\n")
+    write(tmp_path, "crates/ketchup-test-gpu/src/lib.rs",
+          "pub fn instance() { block_on(default_wgpu_setup().new_instance()) }\n")
     write(tmp_path, "crates/ketchup-viewer/src/gpu_tests.rs",
-          "fn t() { let (device, queue) = crate::test_gpu::gpu_device(); }\n")
+          "fn t() { let (device, queue) = ketchup_test_gpu::gpu_device(); }\n")
     write(tmp_path, "crates/ketchup-viewer/src/desktop.rs",
           "fn run() { let i = wgpu::Instance::new(&d); }\n")
     assert checker.check(tmp_path) == 0
@@ -51,7 +51,7 @@ def test_a_rendered_harness_needs_an_explicit_renderer(tmp_path):
     assert checker.current_counts(tmp_path) == {"crates/ketchup-app/tests/image.rs": 1}
     write(tmp_path, "crates/ketchup-app/tests/image.rs",
           "fn t() {\n"
-          "    let mut h = Harness::builder()\n        .renderer(crate::test_gpu::renderer())\n"
+          "    let mut h = Harness::builder()\n        .renderer(ketchup_test_gpu::renderer())\n"
           "        .build_state(|c, a| a.ui(c), app);\n"
           "    h.render().unwrap();\n"
           "}\n")

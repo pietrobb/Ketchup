@@ -23,7 +23,7 @@ const OCCURRENCES: usize = 10_000;
 /// The high-performance DX12 adapter of the tests' shared instance: a discrete GPU before
 /// an integrated one, never a software one.
 fn hardware_dx12_adapter() -> Option<wgpu::Adapter> {
-    crate::test_gpu::instance()
+    ketchup_test_gpu::instance()
         .enumerate_adapters(wgpu::Backends::DX12)
         .into_iter()
         .filter_map(|adapter| match adapter.get_info().device_type {

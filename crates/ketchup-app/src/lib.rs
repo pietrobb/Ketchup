@@ -2874,6 +2874,4 @@ mod selection_mass_ui_tests;
 #[cfg(test)]
 mod selection_measures_ui_tests;
 #[cfg(test)]
-mod test_gpu;
-#[cfg(test)]
 mod tests;

@@ -1,0 +1,18 @@
+[package]
+name = "ketchup-test-gpu"
+description = "The one wgpu instance of a Ketchup test process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+eframe = { version = "0.32.3", default-features = false, features = ["wgpu"] }
+egui_kittest = { version = "0.32.0", features = ["wgpu"] }
+pollster = "0.4.0"
+wgpu = { version = "25.0.2", default-features = false }
+
+[lints]
+workspace = true

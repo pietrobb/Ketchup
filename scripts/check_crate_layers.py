@@ -24,6 +24,7 @@ LAYERS = {
     "ketchup-tolerance": 0,
     "ketchup-rejection": 0,
     "ketchup-test-env": 0,
+    "ketchup-test-gpu": 0,
     "ketchup-geometry": 1,
     "ketchup-dwg": 1,
     "ketchup-model": 2,

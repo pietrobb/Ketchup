@@ -2365,6 +2365,7 @@ dependencies = [
  "ketchup-rejection",
  "ketchup-scheduler",
  "ketchup-test-env",
+ "ketchup-test-gpu",
  "ketchup-view-format",
  "ketchup-viewer",
  "pollster",
@@ -2567,6 +2568,16 @@ name = "ketchup-test-env"
 version = "0.1.0"
 
 [[package]]
+name = "ketchup-test-gpu"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui_kittest",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "ketchup-tolerance"
 version = "0.1.0"
 dependencies = [
@@ -2594,6 +2605,7 @@ dependencies = [
  "egui_kittest",
  "ketchup-geometry",
  "ketchup-rejection",
+ "ketchup-test-gpu",
  "ketchup-tolerance",
  "ketchup-view-format",
  "num-traits",

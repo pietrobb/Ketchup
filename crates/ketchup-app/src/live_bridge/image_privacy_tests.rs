@@ -98,7 +98,7 @@ fn isolated_pixels_exclude_late_transformed_and_same_layer_sentinels() {
     let app = KetchupApp::new();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1600.0, 1000.0))
-        .renderer(crate::test_gpu::renderer())
+        .renderer(ketchup_test_gpu::renderer())
         .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
     h.ctx.style_mut(|style| style.animation_time = 0.0);
     for _ in 0..30 {
@@ -194,7 +194,7 @@ fn discarded_capture_and_session_replacement_never_reuse_authority() {
     let app = KetchupApp::new();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1600.0, 1000.0))
-        .renderer(crate::test_gpu::renderer())
+        .renderer(ketchup_test_gpu::renderer())
         .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
     for _ in 0..20 {
         h.step();
@@ -260,7 +260,7 @@ fn native_harness_with_size(ppp: f32, size: egui::Vec2) -> Harness<'static, Ketc
     let mut h = Harness::builder()
         .with_size(size)
         .with_pixels_per_point(ppp)
-        .renderer(crate::test_gpu::renderer())
+        .renderer(ketchup_test_gpu::renderer())
         .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
     h.ctx.style_mut(|style| style.animation_time = 0.0);
     for _ in 0..30 {
