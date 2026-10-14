@@ -148,9 +148,6 @@ def main() -> int:
         "ketchup-app",
         "--bin",
         "ketchup-app",
-        "--no-default-features",
-        "--features",
-        "manual-alpha",
     ])
 
     headless_path, worker_path = native_paths(target_directory)
@@ -158,22 +155,19 @@ def main() -> int:
     worker = require_component(worker_path, "ketchup-exact-worker executable")
     worker_handshake(worker)
     suffix = ".exe" if os.name == "nt" else ""
-    manual_alpha = require_component(
+    app = require_component(
         target_directory / "release" / f"ketchup-app{suffix}",
-        "OAuth-enabled Manual Alpha executable",
+        "ketchup-app release executable",
     )
     with tempfile.TemporaryDirectory(prefix="ketchup-production-smoke-") as directory:
-        persistence_path = Path(directory) / "manual-alpha-roundtrip.ketchup"
+        persistence_path = Path(directory) / "install-roundtrip.ketchup"
         verification = run(
-            [str(manual_alpha), "--verify-manual-alpha", str(persistence_path)],
+            [str(app), "--verify-install", str(persistence_path)],
             capture_output=True,
         ).stdout.strip()
-        expected = (
-            "Ketchup Manual Alpha production-test verified; "
-            "private-oauth codex-oauth gpt-5.6-sol"
-        )
+        expected = "Ketchup production-test verified"
         if verification != expected or not persistence_path.is_file():
-            raise RunnerError("Manual Alpha startup/persistence verification failed")
+            raise RunnerError("ketchup-app startup/persistence verification failed")
 
     os.environ["KETCHUP_HEADLESS"] = str(headless)
     os.environ["KETCHUP_EXACT_WORKER"] = str(worker)
@@ -181,7 +175,7 @@ def main() -> int:
     print(f"Python: {Path(sys.executable).resolve()}")
     print(f"KETCHUP_HEADLESS={headless} sha256={sha256(headless)}")
     print(f"KETCHUP_EXACT_WORKER={worker} sha256={sha256(worker)}")
-    print(f"MANUAL_ALPHA={manual_alpha} sha256={sha256(manual_alpha)}")
+    print(f"KETCHUP_APP={app} sha256={sha256(app)}")
 
     missing_tests = [relative for relative in NATIVE_TESTS if not (ROOT / relative).is_file()]
     if missing_tests:

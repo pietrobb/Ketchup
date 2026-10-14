@@ -34,32 +34,28 @@ fn main() -> eframe::Result {
         .unwrap_or_else(|error| bootstrap_failed(error));
     let mut arguments = all_arguments.into_iter();
     let first_argument = arguments.next();
-    if first_argument.as_deref() == Some(std::ffi::OsStr::new("--verify-manual-alpha")) {
+    if first_argument.as_deref() == Some(std::ffi::OsStr::new("--verify-install")) {
         let persistence_path = arguments.next();
         if arguments.next().is_some() {
-            eprintln!("--verify-manual-alpha accepts at most one persistence path");
-            std::process::exit(2);
-        }
-        if !KetchupApp::is_manual_alpha_build() {
-            eprintln!("this is not a Manual Alpha build");
+            eprintln!("--verify-install accepts at most one persistence path");
             std::process::exit(2);
         }
         let app = KetchupApp::new();
         if let Some(path) = persistence_path {
             let path = std::path::PathBuf::from(path);
             if !path.is_absolute() || path.exists() {
-                eprintln!("Manual Alpha persistence path must be absolute and absent");
+                eprintln!("the persistence path must be absolute and absent");
                 std::process::exit(2);
             }
             let before = app.document_snapshot();
             if persistence::save_atomic(&path, &before).is_err() {
-                eprintln!("Manual Alpha persistence save failed");
+                eprintln!("persistence save failed");
                 std::process::exit(2);
             }
             let reopened = match persistence::load_file(&path) {
                 Ok(LoadOutcome::Editable { document, .. }) => document.current(),
                 _ => {
-                    eprintln!("Manual Alpha persistence reopen failed");
+                    eprintln!("persistence reopen failed");
                     std::process::exit(2);
                 }
             };
@@ -67,14 +63,11 @@ fn main() -> eframe::Result {
                 || reopened.revision_id() != before.revision_id()
                 || reopened.canonical_digest() != before.canonical_digest()
             {
-                eprintln!("Manual Alpha persistence identity changed after reopen");
+                eprintln!("persistence identity changed after reopen");
                 std::process::exit(2);
             }
         }
-        println!(
-            "Ketchup Manual Alpha {} verified",
-            KetchupApp::build_version()
-        );
+        println!("Ketchup {} verified", KetchupApp::build_version());
         return Ok(());
     }
     if first_argument.as_deref() == Some(std::ffi::OsStr::new("--inspect-native-document")) {

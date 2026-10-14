@@ -57,7 +57,7 @@ ako `.ketchup-comments` a opätovné otvorenie toho súboru.
   dvojklik na `.ketchup-view` a „Otvoriť v…“ naozaj otvorili súbor, aj keď
   Viewer už beží. Riešenie drž v tenkej platformovej vrstve, nie v UI.
 - Skript na zostavenie bundle a `.dmg` daj do `scripts/macos/` (vzor:
-  `scripts/windows/build-manual-alpha.ps1`, ktorý robí to isté pre Windows).
+  `scripts/windows/build-installer.ps1`, ktorý robí to isté pre Windows).
 - Podpis: lokálne stačí ad-hoc (`codesign -s -`). Developer ID a notarizáciu
   rob iba ak ich na Macu máš nastavené; inak ich nechaj ako ďalší krok.
 - Overenie: zostav `.app`, spusti

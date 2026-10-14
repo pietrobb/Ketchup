@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.1.0-alpha.1",
+    [Parameter(Mandatory = $true)]
+    [string]$Version,
     [string]$OutputDir,
     [string]$BinaryDir,
     [string]$OcctRoot,
@@ -20,7 +21,7 @@ Set-StrictMode -Version Latest
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
-    $OutputDir = Join-Path $repoRoot "artifacts\manual-alpha\$Version"
+    $OutputDir = Join-Path $repoRoot "artifacts\release\$Version"
 }
 if ([string]::IsNullOrWhiteSpace($BinaryDir)) {
     $BinaryDir = Join-Path $repoRoot "target\release"
@@ -49,9 +50,9 @@ $OcctRoot = [IO.Path]::GetFullPath($OcctRoot)
 $OcctManifestPath = [IO.Path]::GetFullPath($OcctManifestPath)
 $SigningMetadataPath = [IO.Path]::GetFullPath($SigningMetadataPath)
 $payloadDir = Join-Path $OutputDir "payload"
-$setupBaseName = "Ketchup-Manual-Alpha-$Version-Setup"
+$setupBaseName = "Ketchup-$Version-Setup"
 $setupPath = Join-Path $OutputDir "$setupBaseName.exe"
-$zipPath = Join-Path $OutputDir "Ketchup-Manual-Alpha-$Version-Portable.zip"
+$zipPath = Join-Path $OutputDir "Ketchup-$Version-Portable.zip"
 $packageManifestPath = Join-Path $payloadDir "package-manifest.json"
 
 function Assert-Leaf([string]$Path, [string]$Label) {
@@ -107,7 +108,7 @@ function Invoke-AzureSigning([string]$Path) {
 }
 
 if ($env:OS -ne "Windows_NT") {
-    throw "Manual Alpha packaging is Windows x64 only."
+    throw "Installer packaging is Windows x64 only."
 }
 if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z.-]{0,63}$') {
     throw "Version contains unsupported characters: $Version"
@@ -130,7 +131,7 @@ if ($Sign) {
 
 if (Test-Path $OutputDir) {
     if (@(Get-ChildItem $OutputDir -Force).Count -ne 0) {
-        throw "OutputDir must be absent or empty; refusing to overwrite Manual Alpha artifacts: $OutputDir"
+        throw "OutputDir must be absent or empty; refusing to overwrite release artifacts: $OutputDir"
     }
 } else {
     [void](New-Item $OutputDir -ItemType Directory)
@@ -143,8 +144,8 @@ if (-not $SkipBuild) {
         $previousBuildVersion = [Environment]::GetEnvironmentVariable("KETCHUP_BUILD_VERSION", "Process")
         try {
             [Environment]::SetEnvironmentVariable("KETCHUP_BUILD_VERSION", $Version, "Process")
-            & cargo build --locked --release -p ketchup-app --bin ketchup-app --no-default-features --features manual-alpha
-            if ($LASTEXITCODE -ne 0) { throw "Manual Alpha application build failed." }
+            & cargo build --locked --release -p ketchup-app --bin ketchup-app
+            if ($LASTEXITCODE -ne 0) { throw "Application release build failed." }
         } finally {
             [Environment]::SetEnvironmentVariable("KETCHUP_BUILD_VERSION", $previousBuildVersion, "Process")
         }
@@ -159,7 +160,7 @@ if (-not $SkipBuild) {
 
 $appSource = Join-Path $BinaryDir "ketchup-app.exe"
 $workerSource = Join-Path $BinaryDir "ketchup-exact-worker.exe"
-Assert-Leaf $appSource "Manual Alpha application"
+Assert-Leaf $appSource "application"
 Assert-Leaf $workerSource "exact worker"
 $viewerSource = Join-Path $BinaryDir "ketchup-viewer.exe"
 Assert-Leaf $viewerSource "Viewer"
@@ -169,7 +170,7 @@ public static extern uint ExtractIconEx(string file, int index, IntPtr[] large, 
 '@
 foreach ($iconSource in @($appSource, $viewerSource)) {
     if ([KetchupBuild.Shell]::ExtractIconEx($iconSource, -1, $null, $null, 0) -lt 1) {
-        throw "Manual Alpha executable has no embedded icon: $iconSource"
+        throw "Executable has no embedded icon: $iconSource"
     }
 }
 Copy-Item $appSource (Join-Path $payloadDir "Ketchup.exe")
@@ -204,21 +205,20 @@ if ($Sign) {
 }
 $publisher = if ($Sign) { "AEON GROUP spol. s r.o." } else { "Ketchup" }
 $distributionNotice = if ($Sign) {
-    "Ide o digitalne podpisany vyvojovy alpha build od AEON GROUP spol. s r.o., nie verejne vydanie."
+    "Program je digitalne podpisany vydavatelom AEON GROUP spol. s r.o."
 } else {
-    "Ide o nepodpisany vyvojovy alpha build, nie verejne vydanie. Windows SmartScreen moze pri prvom spusteni zobrazit upozornenie."
+    "Nepodpisany build. Windows SmartScreen moze pri prvom spusteni zobrazit upozornenie."
 }
 
 $startHere = @"
-KECUP MANUAL ALPHA $Version
-===========================
+KECUP $Version
+==============
 
-Tento build je urceny iba na testovanie rucneho 2D/3D modelovania.
-Ketchup nema vlastny AI chat a nie je potrebny ucet, API kluc ani Python.
+Kecup je 2D/3D parametricky modelar. Nie je potrebny ucet, API kluc ani Python.
 AI klienta s podporou MCP (Claude Code, Codex) pripojite v pravom paneli v casti "Pripojit AI".
 
-ODPORUCANY TEST (priblizne 30-60 minut)
-1. Spustite Ketchup Manual Alpha a vytvorte prazdny dokument.
+ODPORUCANY PRVY POKUS (priblizne 30-60 minut)
+1. Spustite Ketchup a vytvorte prazdny dokument.
 2. Vyskusajte pohyb pohladu, zoom, vyber a zrusenie vyberu objektu.
 3. Nakreslite obdlznik, kruh a oblukovy profil a zadajte presne rozmery. Kruh sa musi
    zobrazit ako kruh. Oblukovy profil je plocha uzavreta tetivou a musi sa tak zobrazit uz v 2D.
@@ -257,8 +257,8 @@ Na dolezitu pracu pouzivajte kopie suborov.
 Write-Utf8 (Join-Path $payloadDir "START_HERE.txt") ($startHere.TrimStart() + "`r`n")
 
 $feedback = @"
-KECUP MANUAL ALPHA - SPATNA VAZBA
-=================================
+KECUP $Version - SPATNA VAZBA
+==========================
 
 Tester:
 Datum:
@@ -296,7 +296,7 @@ Vedeli by ste dnes v Kecupe dokoncit jednoduchu realnu ulohu? Preco ano alebo ni
 Co by sa muselo zmenit, aby ste ho chceli pouzit znova?
 "@
 Write-Utf8 (Join-Path $payloadDir "FEEDBACK.txt") ($feedback.TrimStart() + "`r`n")
-Write-Utf8 (Join-Path $payloadDir "VERSION.txt") ("Ketchup Manual Alpha $Version`r`nWindows x64`r`nManual-only test build`r`n")
+Write-Utf8 (Join-Path $payloadDir "VERSION.txt") ("Ketchup $Version`r`nWindows x64`r`n")
 
 $head = (& git -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') {
@@ -316,11 +316,9 @@ $files = @(
 )
 $packageManifest = [ordered]@{
     schema_version = 1
-    kind = "manual-alpha"
+    kind = "release"
     version = $Version
     platform = "windows-x86_64"
-    build_features = @("manual-alpha")
-    assistant_visible = $false
     code_signing = [ordered]@{
         signed = [bool]$Sign
         publisher = if ($Sign) { $publisher } else { $null }
@@ -344,7 +342,7 @@ $packageManifest = [ordered]@{
 }
 Write-Utf8 $packageManifestPath (($packageManifest | ConvertTo-Json -Depth 8) + "`n")
 
-$issPath = Join-Path $OutputDir "manual-alpha.iss"
+$issPath = Join-Path $OutputDir "ketchup.iss"
 $escapedPayload = $payloadDir.Replace('"', '""')
 $escapedOutput = $OutputDir.Replace('"', '""')
 $setupIcon = Join-Path $repoRoot "crates\ketchup-app\assets\ketchup.ico"
@@ -352,12 +350,12 @@ Assert-Leaf $setupIcon "application icon"
 $escapedSetupIcon = $setupIcon.Replace('"', '""')
 $iss = @"
 [Setup]
-AppId=KetchupManualAlpha
-AppName=Ketchup Manual Alpha
+AppId=Ketchup
+AppName=Ketchup
 AppVersion=$Version
 AppPublisher=$publisher
-DefaultDirName={localappdata}\Programs\Ketchup Manual Alpha
-DefaultGroupName=Ketchup Manual Alpha
+DefaultDirName={localappdata}\Programs\Ketchup
+DefaultGroupName=Ketchup
 UninstallDisplayIcon={app}\Ketchup.exe
 SetupIconFile=$escapedSetupIcon
 ArchitecturesAllowed=x64compatible
@@ -375,44 +373,44 @@ ChangesAssociations=yes
 Source: "$escapedPayload\*"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Ketchup Manual Alpha"; Filename: "{app}\Ketchup.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\Ketchup Manual Alpha"; Filename: "{app}\Ketchup.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\Ketchup"; Filename: "{app}\Ketchup.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\Ketchup"; Filename: "{app}\Ketchup.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 Name: "{group}\Ketchup Viewer"; Filename: "{app}\KetchupViewer.exe"; WorkingDir: "{app}"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Registry]
-Root: HKA; Subkey: "Software\Classes\.ketchup"; ValueType: string; ValueName: ""; ValueData: "KetchupManualAlpha.Document"; Flags: uninsdeletevalue uninsdeletekeyifempty
-Root: HKA; Subkey: "Software\Classes\KetchupManualAlpha.Document"; ValueType: string; ValueName: ""; ValueData: "Ketchup Document"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\KetchupManualAlpha.Document\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\Ketchup.exe,0"
-Root: HKA; Subkey: "Software\Classes\KetchupManualAlpha.Document\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Ketchup.exe"" ""%1"""
-Root: HKA; Subkey: "Software\Classes\.ketchup-view"; ValueType: string; ValueName: ""; ValueData: "KetchupManualAlpha.ViewerPackage"; Flags: uninsdeletevalue uninsdeletekeyifempty
-Root: HKA; Subkey: "Software\Classes\KetchupManualAlpha.ViewerPackage"; ValueType: string; ValueName: ""; ValueData: "Ketchup Viewer Package"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\KetchupManualAlpha.ViewerPackage\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\KetchupViewer.exe,0"
-Root: HKA; Subkey: "Software\Classes\KetchupManualAlpha.ViewerPackage\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\KetchupViewer.exe"" ""%1"""
-Root: HKA; Subkey: "Software\Classes\.ketchup-comments"; ValueType: string; ValueName: ""; ValueData: "KetchupManualAlpha.ViewerComments"; Flags: uninsdeletevalue uninsdeletekeyifempty
-Root: HKA; Subkey: "Software\Classes\KetchupManualAlpha.ViewerComments"; ValueType: string; ValueName: ""; ValueData: "Ketchup Viewer Comments"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\KetchupManualAlpha.ViewerComments\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\KetchupViewer.exe,0"
-Root: HKA; Subkey: "Software\Classes\KetchupManualAlpha.ViewerComments\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\KetchupViewer.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\.ketchup"; ValueType: string; ValueName: ""; ValueData: "Ketchup.Document"; Flags: uninsdeletevalue uninsdeletekeyifempty
+Root: HKA; Subkey: "Software\Classes\Ketchup.Document"; ValueType: string; ValueName: ""; ValueData: "Ketchup Document"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Ketchup.Document\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\Ketchup.exe,0"
+Root: HKA; Subkey: "Software\Classes\Ketchup.Document\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Ketchup.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\.ketchup-view"; ValueType: string; ValueName: ""; ValueData: "Ketchup.ViewerPackage"; Flags: uninsdeletevalue uninsdeletekeyifempty
+Root: HKA; Subkey: "Software\Classes\Ketchup.ViewerPackage"; ValueType: string; ValueName: ""; ValueData: "Ketchup Viewer Package"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Ketchup.ViewerPackage\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\KetchupViewer.exe,0"
+Root: HKA; Subkey: "Software\Classes\Ketchup.ViewerPackage\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\KetchupViewer.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\.ketchup-comments"; ValueType: string; ValueName: ""; ValueData: "Ketchup.ViewerComments"; Flags: uninsdeletevalue uninsdeletekeyifempty
+Root: HKA; Subkey: "Software\Classes\Ketchup.ViewerComments"; ValueType: string; ValueName: ""; ValueData: "Ketchup Viewer Comments"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Ketchup.ViewerComments\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\KetchupViewer.exe,0"
+Root: HKA; Subkey: "Software\Classes\Ketchup.ViewerComments\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\KetchupViewer.exe"" ""%1"""
 
 [Run]
-Filename: "{app}\Ketchup.exe"; Description: "Launch Ketchup Manual Alpha"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Ketchup.exe"; Description: "Launch Ketchup"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 "@
 Write-Utf8 $issPath ($iss.TrimStart() + "`r`n")
 
 & $InnoCompilerPath $issPath
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed." }
-Assert-Leaf $setupPath "Manual Alpha installer"
+Assert-Leaf $setupPath "installer"
 if ($Sign) {
     Invoke-AzureSigning $setupPath
 }
 Remove-Item $issPath -Force
 
 Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
-Assert-Leaf $zipPath "portable Manual Alpha archive"
+Assert-Leaf $zipPath "portable archive"
 
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("ketchup-manual-alpha-verify-" + [Guid]::NewGuid().ToString("N"))
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("ketchup-installer-verify-" + [Guid]::NewGuid().ToString("N"))
 $installedDir = Join-Path $tempRoot "installed"
 try {
     [void](New-Item $tempRoot -ItemType Directory)
@@ -426,14 +424,13 @@ try {
     if ($process.ExitCode -ne 0) { throw "Silent installer smoke test failed with exit code $($process.ExitCode)." }
 
     $manifest = Get-Content (Join-Path $installedDir "package-manifest.json") -Raw | ConvertFrom-Json
-    if ($manifest.kind -cne "manual-alpha" -or
+    if ($manifest.kind -cne "release" -or
         $manifest.version -cne $Version -or
         $manifest.platform -cne "windows-x86_64" -or
-        $manifest.assistant_visible -ne $false -or
         $manifest.code_signing.signed -ne [bool]$Sign -or
         $manifest.code_signing.timestamped -ne [bool]$Sign -or
         $manifest.occt.runtime_dll_count -ne @($occtManifest.shared_libraries).Count) {
-        throw "Installed Manual Alpha manifest is invalid."
+        throw "Installed package manifest is invalid."
     }
     foreach ($record in @($manifest.files)) {
         $installedPath = Join-Path $installedDir ([string]$record.path)
@@ -447,20 +444,20 @@ try {
     . (Join-Path $PSScriptRoot "exact-worker-handshake.ps1")
     Assert-ExactWorkerHandshake (Join-Path $installedDir "ketchup-exact-worker.exe") "Installed exact worker"
 
-    $persistenceSmokePath = Join-Path $tempRoot "manual-alpha-persistence-smoke.ketchup"
-    $manualAlphaVerification = (& (Join-Path $installedDir "Ketchup.exe") --verify-manual-alpha $persistenceSmokePath).Trim()
-    $expectedVerification = "Ketchup Manual Alpha $Version verified"
-    if ($LASTEXITCODE -ne 0 -or $manualAlphaVerification -cne $expectedVerification -or
+    $persistenceSmokePath = Join-Path $tempRoot "install-persistence-smoke.ketchup"
+    $installVerification = (& (Join-Path $installedDir "Ketchup.exe") --verify-install $persistenceSmokePath).Trim()
+    $expectedVerification = "Ketchup $Version verified"
+    if ($LASTEXITCODE -ne 0 -or $installVerification -cne $expectedVerification -or
         -not (Test-Path $persistenceSmokePath -PathType Leaf)) {
-        throw "Installed application failed its headless Manual Alpha startup/persistence check."
+        throw "Installed application failed its headless startup/persistence check."
     }
 
     # The system opens both Viewer file types with the installed Viewer.
     $installedViewer = Join-Path $installedDir "KetchupViewer.exe"
     $expectedViewerCommand = """$installedViewer"" ""%1"""
     foreach ($association in @(
-            @{ extension = ".ketchup-view"; progId = "KetchupManualAlpha.ViewerPackage" },
-            @{ extension = ".ketchup-comments"; progId = "KetchupManualAlpha.ViewerComments" })) {
+            @{ extension = ".ketchup-view"; progId = "Ketchup.ViewerPackage" },
+            @{ extension = ".ketchup-comments"; progId = "Ketchup.ViewerComments" })) {
         $registered = (Get-ItemProperty "HKCU:\Software\Classes\$($association.extension)" -ErrorAction SilentlyContinue).'(default)'
         $command = (Get-ItemProperty "HKCU:\Software\Classes\$($association.progId)\shell\open\command" -ErrorAction SilentlyContinue).'(default)'
         if ($registered -cne $association.progId -or $command -ne $expectedViewerCommand) {
@@ -478,14 +475,14 @@ try {
     }
 
     $uninstaller = Join-Path $installedDir "unins000.exe"
-    Assert-Leaf $uninstaller "Manual Alpha uninstaller"
+    Assert-Leaf $uninstaller "uninstaller"
     $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
         "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART"
     ) -Wait -PassThru
     if ($uninstall.ExitCode -ne 0) { throw "Silent uninstall smoke test failed with exit code $($uninstall.ExitCode)." }
-    foreach ($key in @("KetchupManualAlpha.ViewerPackage", "KetchupManualAlpha.ViewerComments")) {
+    foreach ($key in @("Ketchup.ViewerPackage", "Ketchup.ViewerComments")) {
         if (Test-Path "HKCU:\Software\Classes\$key") { throw "Uninstall left the Viewer association $key." }
     }
 } finally {
@@ -500,6 +497,6 @@ $checksums = @(
 Write-Utf8 (Join-Path $OutputDir "SHA256SUMS.txt") (($checksums -join "`r`n") + "`r`n")
 
 $signingResult = if ($Sign) { "AEON-signed payload and installer, " } else { "" }
-Write-Host "PASS: Manual Alpha ${signingResult}portable archive, exact payload hashes, worker handshake, headless build identity, Viewer file associations, and uninstall smoke test."
+Write-Host "PASS: ${signingResult}portable archive, exact payload hashes, worker handshake, headless build identity, Viewer file associations, and uninstall smoke test."
 Write-Host "Installer: $setupPath"
 Write-Host "Portable:  $zipPath"

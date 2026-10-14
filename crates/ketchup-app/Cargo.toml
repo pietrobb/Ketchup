@@ -10,7 +10,6 @@ repository.workspace = true
 
 [features]
 default = []
-manual-alpha = []
 # Hooks only tests may use; the app's own tests enable it through the dev-dependency below.
 testing = []
 

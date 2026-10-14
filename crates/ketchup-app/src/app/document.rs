@@ -23,18 +23,8 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub const fn is_manual_alpha_build() -> bool {
-        cfg!(feature = "manual-alpha")
-    }
-
-    #[must_use]
     pub fn title() -> String {
-        let title = LocaleCatalog::english().text("app-title");
-        if Self::is_manual_alpha_build() {
-            format!("{title} Manual Alpha")
-        } else {
-            title
-        }
+        LocaleCatalog::english().text("app-title")
     }
 
     pub(crate) fn document_title(&self) -> String {
