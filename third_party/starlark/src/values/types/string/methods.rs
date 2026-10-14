@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: checks the bytes an operation would build against the heap bound (Heap::set_allocation_limit) before allocating. See PATCH.md.
+
 //! Methods for the `string` type.
 
 use std::cmp;

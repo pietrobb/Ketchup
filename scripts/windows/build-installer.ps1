@@ -198,6 +198,8 @@ foreach ($record in @($occtManifest.shared_libraries)) {
     }
     Copy-Item $source (Join-Path $payloadDir $name)
 }
+. (Join-Path $PSScriptRoot "package-notices.ps1")
+Copy-PackageNotices $repoRoot $OcctRoot $payloadDir
 if ($Sign) {
     Invoke-AzureSigning (Join-Path $payloadDir "Ketchup.exe")
     Invoke-AzureSigning (Join-Path $payloadDir "ketchup-exact-worker.exe")
@@ -433,6 +435,7 @@ Remove-Item $issPath -Force
 
 Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
 Assert-Leaf $zipPath "portable archive"
+Assert-PackageNotices $zipPath "The portable archive"
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("ketchup-installer-verify-" + [Guid]::NewGuid().ToString("N"))
 $installedDir = Join-Path $tempRoot "installed"
@@ -464,6 +467,7 @@ try {
             throw "Installed payload fingerprint mismatch: $($record.path)"
         }
     }
+    Assert-PackageNotices $installedDir "The installed program"
 
     . (Join-Path $PSScriptRoot "exact-worker-handshake.ps1")
     Assert-ExactWorkerHandshake (Join-Path $installedDir "ketchup-exact-worker.exe") "Installed exact worker"
@@ -532,6 +536,6 @@ $checksums = @(
 Write-Utf8 (Join-Path $OutputDir "SHA256SUMS.txt") (($checksums -join "`r`n") + "`r`n")
 
 $signingResult = if ($Sign) { "AEON-signed payload and installer, " } else { "" }
-Write-Host "PASS: ${signingResult}portable archive, exact payload hashes, worker handshake, headless build identity, Viewer file associations, and uninstall smoke test."
+Write-Host "PASS: ${signingResult}portable archive, third-party notices, exact payload hashes, worker handshake, headless build identity, Viewer file associations, and uninstall smoke test."
 Write-Host "Installer: $setupPath"
 Write-Host "Portable:  $zipPath"

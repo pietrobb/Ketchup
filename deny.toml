@@ -19,9 +19,13 @@ allow = [
     "CC0-1.0",
     "OFL-1.1",
     "Ubuntu-font-1.0",
-    # acadrust (DWG read/write in ketchup-dwg), used unmodified from crates.io.
-    "MPL-2.0",
 ]
+
+# acadrust (DWG read/write in ketchup-dwg), used unmodified from crates.io; its
+# source link is in THIRD_PARTY_NOTICES.txt. No other crate may bring in MPL-2.0.
+[[licenses.exceptions]]
+crate = "acadrust"
+allow = ["MPL-2.0"]
 
 [bans]
 multiple-versions = "warn"

@@ -1,0 +1,50 @@
+Kecup - third-party notices
+===========================
+
+Kecup includes the components below. Their license texts ship beside this file
+in the installed folder and in the portable archive. The remaining Rust crates
+compiled into Kecup and its embedded fonts are under permissive licenses
+(MIT, Apache-2.0, BSD, ISC, Zlib, Unicode, BSL, CC0, OFL, Ubuntu Font); the
+allowed set is enforced by deny.toml in the source repository:
+https://github.com/pietrobb/Ketchup
+
+
+1. Open CASCADE Technology (OCCT) 8.0.1
+---------------------------------------
+Files:    TK*.dll in the program folder
+License:  GNU Lesser General Public License 2.1 with the Open CASCADE
+          exception: LICENSE-OCCT-LGPL-2.1.txt, LICENSE-OCCT-LGPL-EXCEPTION.txt
+Source:   https://github.com/Open-Cascade-SAS/OCCT
+          tag V8.0.1, commit b8f597c677811d1f9f4d8a97f5ae2825c0353a42
+Copyright (c) 1991-1999 Matra Datavision
+Copyright (c) 1999-2014 OPEN CASCADE SAS
+
+OCCT is used unmodified and dynamically linked: Kecup loads the TK*.dll
+libraries at run time. You may replace them with your own build of the same
+OCCT version from the source above.
+
+
+2. acadrust 0.6.4 (DWG and DXF reading and writing)
+---------------------------------------------------
+License:  Mozilla Public License 2.0, https://mozilla.org/MPL/2.0/
+Source:   https://crates.io/crates/acadrust/0.6.4
+          https://github.com/hakanaktt/acadrust
+
+acadrust is used unmodified. Its source code is available at the addresses
+above under the terms of the MPL 2.0.
+
+
+3. starlark 0.13.0 (the language of Kecup programs), modified
+-------------------------------------------------------------
+License:  Apache License 2.0: LICENSE-Starlark-Apache-2.0.txt
+Source:   https://crates.io/crates/starlark/0.13.0
+          https://github.com/facebook/starlark-rust
+Copyright 2019 The Starlark in Rust Authors.
+Copyright (c) Facebook, Inc. and its affiliates.
+
+Kecup builds a modified copy. The changes run the statement hook once per
+loop iteration and bound the memory that string, list and tuple operations
+may allocate, so a program cannot run or allocate without limit. Each changed
+file carries a "Modified for Kecup" line; the list of changes and the reasons
+are in third_party/starlark/PATCH.md of the Kecup source repository:
+https://github.com/pietrobb/Ketchup/blob/main/third_party/starlark/PATCH.md

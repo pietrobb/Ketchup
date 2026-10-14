@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: allows two lints newer rustc reports in unchanged upstream code. See PATCH.md.
+
 //! A [Starlark interpreter in Rust](https://github.com/facebook/starlark-rust).
 //! Starlark is a deterministic version of Python, with [a specification](https://github.com/bazelbuild/starlark/blob/master/spec.md),
 //! used by (amongst others) the [Buck](https://buck.build) and [Bazel](https://bazel.build) build systems.

@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: records the first instruction of every loop iteration as a statement, so before_stmt runs once per iteration. See PATCH.md.
+
 //! Bytecode writer.
 
 use std::cmp;

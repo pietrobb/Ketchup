@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: adds the heap bound (Heap::set_allocation_limit) and its error. See PATCH.md.
+
 use std::any;
 use std::cell::Cell;
 use std::cell::RefCell;

@@ -15,6 +15,14 @@ Kečup window process, and one such line (`"a" * 1500000000`) took gigabytes bef
 `src/lib.rs` also allows two lints that newer rustc reports in the unchanged upstream
 code (`deprecated`, `mismatched_lifetime_syntaxes`), so the build stays quiet.
 
+Changed files, each marked with a "Modified for Kecup" line under its license header
+(Apache-2.0 §4(b)): `src/lib.rs`, `src/eval/bc/writer.rs`,
+`src/values/layout/heap/heap_type.rs`, `src/values/layout/value.rs`,
+`src/values/types/{list,tuple}/{globals,value}.rs` and
+`src/values/types/string/{methods,str_type}.rs`. `LICENSE` is the Apache License 2.0 the
+upstream project (https://github.com/facebook/starlark-rust) is published under; the
+crates.io package does not carry it.
+
 Why: `ketchup-program` bounds program evaluation (`execution_budget.rs`) through
 `before_stmt`. Upstream emits the hook only before statements, so a comprehension
 (`[0 for a in L for b in L]`) or a loop whose body is only `pass` iterated without
