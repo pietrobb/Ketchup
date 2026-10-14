@@ -45,6 +45,9 @@ mod mirror;
 mod outliner;
 mod patterns;
 #[cfg(test)]
+#[path = "app/program_isolation_tests.rs"]
+mod program_isolation_tests;
+#[cfg(test)]
 #[path = "program_outliner_tests.rs"]
 mod program_outliner_tests;
 pub(crate) mod project_drawings;
