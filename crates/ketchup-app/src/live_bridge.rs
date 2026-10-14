@@ -66,6 +66,7 @@ pub mod bootstrap;
 mod busy;
 pub mod consent;
 mod drawings;
+mod dwg_import;
 mod image;
 mod interchange;
 mod program_access;
@@ -1295,6 +1296,15 @@ impl KetchupApp {
                         cancelled,
                     };
                     bridge.start_queued_variant_export(self, context, queued, request);
+                    continue;
+                }
+                request if dwg_import::imports_dwg(&request) => {
+                    let queued = program_dry_run::QueuedReply {
+                        id,
+                        reply,
+                        cancelled,
+                    };
+                    bridge.start_dwg_import(self, context, queued, request, ui_busy);
                     continue;
                 }
                 request => request,
@@ -2784,7 +2794,9 @@ impl LiveBridge {
             request @ Request::ExportDrawings { .. } => {
                 Self::export_drawings(app, request, ui_busy)
             }
-            request @ Request::Import { .. } => Self::import_file(app, request, ui_busy, cancelled),
+            request @ Request::Import { .. } => {
+                Self::import_file(app, &request, ui_busy, cancelled, None)
+            }
             request @ Request::Export { .. } => Self::export_file(app, request, ui_busy, cancelled),
             Request::Open { expected, path } => {
                 Self::guard(app, &expected)?;

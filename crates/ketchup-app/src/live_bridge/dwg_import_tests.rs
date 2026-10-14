@@ -4,8 +4,28 @@
 //! refused without changing the document.
 
 use super::*;
-use crate::app::dwg_import::LAYERED_DRAWING_DXF;
+use crate::app::dwg_import::{LAYERED_DRAWING_DXF, read_dwg};
+use crate::live_bridge::program_check::ProgramCheckJob;
+use crate::live_bridge::program_dry_run::QueuedReply;
 use ketchup_model::import::ImportFormat;
+use ketchup_program::CancelToken;
+
+fn layered_dwg(directory: &Path, name: &str) -> PathBuf {
+    let path = directory.join(name);
+    std::fs::write(
+        &path,
+        ketchup_dwg::dxf_to_dwg(LAYERED_DRAWING_DXF.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    path
+}
+
+fn importing_dwg(bridge: &LiveBridge) -> bool {
+    matches!(
+        bridge.program_check_job,
+        Some(ProgramCheckJob::DwgImport(_))
+    )
+}
 
 fn import(path: &Path) -> Request {
     Request::Import {
@@ -147,4 +167,110 @@ fn a_dwg_declaring_a_huge_section_is_refused_and_the_window_lives_on() {
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     assert_eq!(answer["review"]["profiles"], 3, "{answer}");
     assert_eq!(app.undo_step_count(), undo + 1);
+}
+
+/// Review DR-3: a client's DWG import does not read the file on the window's
+/// thread. The poll that takes the request only starts a job and returns; the
+/// window keeps polling, names the import as busy, and imports in a later poll.
+#[test]
+fn a_clients_dwg_import_reads_the_file_off_the_windows_thread() {
+    let directory = tempfile::tempdir().unwrap();
+    let dwg = layered_dwg(directory.path(), "plan.dwg");
+    let mut wire = Wire::new();
+    wire.call(Request::Status {});
+    let undo = wire.app.undo_step_count();
+
+    wire.send(import(&dwg), false);
+    let mut reader = wire.stream.try_clone().unwrap();
+    let (sender, answers) = mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        let mut header = [0; 4];
+        reader.read_exact(&mut header).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        sender
+            .send(serde_json::from_slice::<Response>(&bytes).unwrap())
+            .unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while !importing_dwg(wire.app.live.bridge.as_ref().unwrap()) {
+        assert!(
+            Instant::now() < deadline,
+            "the import was never a job: the window read the file itself"
+        );
+        assert!(answers.try_recv().is_err(), "answered without a job");
+        wire.app.poll_live_bridge(&wire.context);
+        std::thread::yield_now();
+    }
+    let bridge = wire.app.live.bridge.as_ref().unwrap();
+    let busy = serde_json::to_value(bridge.busy_jobs()).unwrap();
+    assert_eq!(busy[0]["target"], "import", "{busy}");
+    assert_eq!(wire.app.undo_step_count(), undo, "nothing imported yet");
+
+    let answer = loop {
+        if let Ok(answer) = answers.try_recv() {
+            break answer;
+        }
+        assert!(Instant::now() < deadline, "the import did not finish");
+        wire.app.poll_live_bridge(&wire.context);
+        std::thread::yield_now();
+    };
+    reading.join().unwrap();
+    assert!(answer.ok, "{answer:?}");
+    let result = answer.result.unwrap();
+    assert_eq!(result["review"]["profiles"], 3, "{result}");
+    assert_eq!(
+        result["review"]["dwg"]["version"],
+        ketchup_dwg::WRITTEN_VERSION
+    );
+    assert_eq!(wire.app.undo_step_count(), undo + 1, "one Undo step");
+}
+
+/// A cancelled DWG import is answered at once, stops its worker and changes
+/// nothing.
+#[test]
+fn a_cancelled_dwg_import_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let dwg = layered_dwg(directory.path(), "plan.dwg");
+    let (mut app, mut bridge) = setup();
+    let (digest, undo) = (app.canonical_digest(), app.undo_step_count());
+    let context = egui::Context::default();
+    let (reply, answers) = mpsc::sync_channel(1);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let queued = QueuedReply {
+        id: 1,
+        reply,
+        cancelled: Arc::clone(&cancelled),
+    };
+
+    bridge.start_dwg_import(&app, &context, queued, import(&dwg), false);
+    assert!(importing_dwg(&bridge));
+    cancelled.store(true, Ordering::Release);
+    bridge.poll_program_check_job(&mut app, &context);
+
+    let answer = answers.try_recv().expect("answered in the same poll");
+    assert_eq!(answer.error.as_deref(), Some("request_cancelled"));
+    assert!(bridge.program_check_job.is_none());
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo);
+}
+
+/// A conversion an open review or an import still holds is never dropped from
+/// the cache, so publishing it does not read the file again on the window's
+/// thread, however many other DWG files were read meanwhile.
+#[test]
+fn a_held_dwg_conversion_is_not_read_again() {
+    let drawing = |radius: &str| {
+        let dxf = LAYERED_DRAWING_DXF.replace("40\n7.5\n", &format!("40\n{radius}\n"));
+        ketchup_dwg::dxf_to_dwg(dxf.as_bytes()).unwrap()
+    };
+    let cancel = CancelToken::default();
+    let reviewed = drawing("7.25");
+    let held = read_dwg(&reviewed, &cancel).unwrap();
+    for radius in ["7.125", "7.0625", "7.03125"] {
+        read_dwg(&drawing(radius), &cancel).unwrap();
+    }
+
+    let again = read_dwg(&reviewed, &cancel).unwrap();
+    assert!(Arc::ptr_eq(&held, &again), "read again in the worker");
 }

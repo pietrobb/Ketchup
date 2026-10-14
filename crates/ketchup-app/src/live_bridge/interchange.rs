@@ -5,15 +5,24 @@
 //! manufacturing waits for the user's confirmation in the window as after the menu.
 
 use super::{LiveBridge, Request, drawings::local_absolute_path, failure, record_rejection};
-use crate::KetchupApp;
 use crate::app::import_file::{import_format, parse_unit};
 use crate::export_bundle::ExportError;
+use crate::{ImportError, ImportFormat, ImportLengthUnit, KetchupApp};
 use ketchup_application::rejections::rejected;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 type Exporter = fn(&mut KetchupApp, &Path) -> Result<(), ExportError>;
+
+/// Records why the import of `path` failed for the answer.
+pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
+    record_rejection(
+        &rejected("import_failed").caused_by(error),
+        json!({"path": path}),
+    );
+    "import_failed"
+}
 
 /// Every export format of the File menu with the file extensions it writes.
 const EXPORT_FORMATS: [(&str, &[&str], Exporter); 12] = [
@@ -63,12 +72,31 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 12] = [
 ];
 
 impl LiveBridge {
+    /// Imports the file `request` names. `source` is its bytes when a thread has
+    /// read them already (a `.dwg` file, see [`super::dwg_import`]).
     pub(super) fn import_file(
         app: &mut KetchupApp,
-        request: Request,
+        request: &Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
+        source: Option<Vec<u8>>,
     ) -> Result<Value, &'static str> {
+        let (path, format, unit) = Self::import_target(app, request, ui_busy)?;
+        Self::require_request_authority(cancelled)?;
+        let summary = match source {
+            Some(source) => app.import_drawing(Path::new(&path), source, unit),
+            None => app.import_file(format, Path::new(&path), unit),
+        }
+        .map_err(|error| import_failed(&path, error))?;
+        Ok(json!({"imported": true, "path": path, "review": summary, "dirty": app.is_dirty()}))
+    }
+
+    /// The file, format and unit of an import request the window takes now.
+    pub(super) fn import_target(
+        app: &KetchupApp,
+        request: &Request,
+        ui_busy: bool,
+    ) -> Result<(String, ImportFormat, Option<ImportLengthUnit>), &'static str> {
         let Request::Import {
             expected,
             path,
@@ -77,18 +105,18 @@ impl LiveBridge {
         else {
             return Err("invalid_request");
         };
-        Self::guard(app, &expected)?;
+        Self::guard(app, expected)?;
         Self::available(app, ui_busy)?;
         // The local check comes first: `is_file` on a network path would
         // already authenticate to its server.
-        if !local_absolute_path(&path) || !Path::new(&path).is_file() {
+        if !local_absolute_path(path) || !Path::new(path).is_file() {
             return Err(failure(
                 "invalid_path",
                 "Import reads an existing file at a local absolute path.",
                 json!({"path": path}),
             ));
         }
-        let format = import_format(Path::new(&path)).ok_or_else(|| {
+        let format = import_format(Path::new(path)).ok_or_else(|| {
             failure(
                 "unsupported_format",
                 "Import reads .step/.stp, .iges/.igs, .stl, .dxf, .dwg, .glb and .kscene files.",
@@ -107,17 +135,7 @@ impl LiveBridge {
                 })
             })
             .transpose()?;
-        Self::require_request_authority(cancelled)?;
-        let summary = app
-            .import_file(format, Path::new(&path), unit)
-            .map_err(|error| {
-                record_rejection(
-                    &rejected("import_failed").caused_by(error),
-                    json!({"path": path}),
-                );
-                "import_failed"
-            })?;
-        Ok(json!({"imported": true, "path": path, "review": summary, "dirty": app.is_dirty()}))
+        Ok((path.clone(), format, unit))
     }
 
     pub(super) fn export_file(

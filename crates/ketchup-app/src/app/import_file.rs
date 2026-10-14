@@ -136,55 +136,7 @@ impl KetchupApp {
                 })?;
                 Ok(summary)
             }
-            ImportFormat::Dxf => {
-                let bytes = Self::read_dxf_source(path)?;
-                let units = {
-                    let (dxf, _) = crate::app::dwg_import::drawing_dxf(path, &bytes)?;
-                    Self::inspect_dxf_for_review(&dxf)?.units()
-                };
-                let unit = if units.authority() == ImportUnitAuthority::FileDeclared {
-                    units.source_unit()
-                } else {
-                    unit.ok_or_else(|| {
-                        ImportError::failed(
-                            format,
-                            "the DXF file declares no length unit; pass unit as mm, cm, m, in or ft",
-                        )
-                    })?
-                };
-                let plan = self.prepare_dxf_import_preview_plan(ImportSourcePlan::seal(
-                    format,
-                    path.to_owned(),
-                    bytes,
-                    unit,
-                    &snapshot,
-                ))?;
-                let (layers, layers_total) = bounded(plan.review.layers());
-                let (diagnostics, diagnostics_total) = bounded(plan.review.diagnostics());
-                let summary = json!({
-                    "profiles": plan.review.profiles().len(),
-                    "layers": layers,
-                    "layers_total": layers_total,
-                    "unit": unit_name(unit),
-                    "unit_from_file": units.authority() == ImportUnitAuthority::FileDeclared,
-                    "diagnostics": diagnostics,
-                    "diagnostics_total": diagnostics_total,
-                    "dwg": plan.dwg.as_ref().map(|dwg| json!({
-                        "version": dwg.version,
-                        "skipped_records": dwg.skipped.iter().map(|skipped| json!({
-                            "record_type": skipped.record_type,
-                            "count": skipped.count,
-                        })).collect::<Vec<_>>(),
-                    })),
-                });
-                self.import_dxf_from(&PendingDxfImport {
-                    plan,
-                    unit_confirmed: true,
-                    review_error: None,
-                    invalidated: false,
-                })?;
-                Ok(summary)
-            }
+            ImportFormat::Dxf => self.import_drawing(path, Self::read_dxf_source(path)?, unit),
             ImportFormat::SketchupScene => {
                 let source = ImportSourcePlan::seal(
                     format,
@@ -210,5 +162,63 @@ impl KetchupApp {
             }
             ImportFormat::Glb => self.import_glb_file(path),
         }
+    }
+
+    /// Imports the drawing `bytes`, the bytes of the `.dxf` or `.dwg` file at
+    /// `path`, like [`Self::import_file`].
+    pub(crate) fn import_drawing(
+        &mut self,
+        path: &Path,
+        bytes: Vec<u8>,
+        unit: Option<ImportLengthUnit>,
+    ) -> Result<Value, ImportError> {
+        let format = ImportFormat::Dxf;
+        let snapshot = self.document.current();
+        let units = {
+            let (dxf, _) = crate::app::dwg_import::drawing_dxf(path, &bytes)?;
+            Self::inspect_dxf_for_review(&dxf)?.units()
+        };
+        let unit = if units.authority() == ImportUnitAuthority::FileDeclared {
+            units.source_unit()
+        } else {
+            unit.ok_or_else(|| {
+                ImportError::failed(
+                    format,
+                    "the DXF file declares no length unit; pass unit as mm, cm, m, in or ft",
+                )
+            })?
+        };
+        let plan = self.prepare_dxf_import_preview_plan(ImportSourcePlan::seal(
+            format,
+            path.to_owned(),
+            bytes,
+            unit,
+            &snapshot,
+        ))?;
+        let (layers, layers_total) = bounded(plan.review.layers());
+        let (diagnostics, diagnostics_total) = bounded(plan.review.diagnostics());
+        let summary = json!({
+            "profiles": plan.review.profiles().len(),
+            "layers": layers,
+            "layers_total": layers_total,
+            "unit": unit_name(unit),
+            "unit_from_file": units.authority() == ImportUnitAuthority::FileDeclared,
+            "diagnostics": diagnostics,
+            "diagnostics_total": diagnostics_total,
+            "dwg": plan.dwg.as_ref().map(|dwg| json!({
+                "version": dwg.version,
+                "skipped_records": dwg.skipped.iter().map(|skipped| json!({
+                    "record_type": skipped.record_type,
+                    "count": skipped.count,
+                })).collect::<Vec<_>>(),
+            })),
+        });
+        self.import_dxf_from(&PendingDxfImport {
+            plan,
+            unit_confirmed: true,
+            review_error: None,
+            invalidated: false,
+        })?;
+        Ok(summary)
     }
 }

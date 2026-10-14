@@ -6,9 +6,10 @@
 //!
 //! The reader allocates what a file declares, so it runs in the program worker
 //! (review SEC-5): a damaged file costs that process, not the window. The window
-//! reads the file on a thread of its own and shows it is busy (DR-3); the review,
-//! its plan and the publication then find the conversion of the same bytes here
-//! instead of reading the file again.
+//! never waits for it (DR-3): the menu and a client's import read the file on a
+//! thread of their own, and hold the conversion while its review is open, so the
+//! review, its plan and the publication find it here instead of reading the file
+//! again on the window's thread.
 
 use crate::*;
 use ketchup_dwg::DwgDrawing;
@@ -16,14 +17,18 @@ use ketchup_program::CancelToken;
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
-/// The last DWG files read, by the SHA-256 of their bytes.
+/// The DWG files read, by the SHA-256 of their bytes: every one a review or an
+/// import still holds, and the last [`KEPT_READS`] besides.
 static READ: Mutex<Vec<([u8; 32], Arc<DwgDrawing>)>> = Mutex::new(Vec::new());
 
-/// Enough for a review in the window and one of a client at the same time.
+/// Conversions nothing holds any more that are kept for a file read again.
 const KEPT_READS: usize = 2;
 
 /// The conversion of `source`, from [`READ`] or read now in the program worker.
-fn read_dwg(source: &[u8], cancel: &CancelToken) -> Result<Arc<DwgDrawing>, ImportError> {
+pub(crate) fn read_dwg(
+    source: &[u8],
+    cancel: &CancelToken,
+) -> Result<Arc<DwgDrawing>, ImportError> {
     let digest = sha256_bytes(source);
     let read = || {
         READ.lock()
@@ -41,16 +46,33 @@ fn read_dwg(source: &[u8], cancel: &CancelToken) -> Result<Arc<DwgDrawing>, Impo
     let mut kept = read();
     kept.retain(|(other, _)| *other != digest);
     kept.push((digest, Arc::clone(&drawing)));
-    let excess = kept.len().saturating_sub(KEPT_READS);
-    kept.drain(..excess);
+    // Oldest first, and never one still held: publishing an open review must not
+    // read its file again on the window's thread.
+    let mut excess = kept.len().saturating_sub(KEPT_READS);
+    kept.retain(|(_, kept)| {
+        let evict = excess > 0 && Arc::strong_count(kept) == 1;
+        excess -= usize::from(evict);
+        !evict
+    });
     Ok(drawing)
+}
+
+/// A DWG file's bytes and their conversion, or why it could not be read.
+pub(crate) type DwgRead = Result<(Vec<u8>, Arc<DwgDrawing>), ImportError>;
+
+/// The bytes of the DWG file at `path` and their conversion, for a thread that
+/// reads it for the window.
+pub(crate) fn read_dwg_file(path: &Path, cancel: &CancelToken) -> DwgRead {
+    let source = KetchupApp::read_dxf_source(path)?;
+    let drawing = read_dwg(&source, cancel)?;
+    Ok((source, drawing))
 }
 
 /// A DWG file being read for the import review, off the window's thread.
 pub(crate) struct DwgReadTask {
     path: PathBuf,
     cancel: CancelToken,
-    receiver: std::sync::mpsc::Receiver<Result<Vec<u8>, ImportError>>,
+    receiver: std::sync::mpsc::Receiver<DwgRead>,
 }
 
 impl KetchupApp {
@@ -61,11 +83,10 @@ impl KetchupApp {
         let cancel = CancelToken::default();
         let (thread_path, thread_cancel, repaint) = (path.clone(), cancel.clone(), context.clone());
         std::thread::spawn(move || {
-            let result = Self::read_dxf_source(&thread_path).and_then(|source| {
-                read_dwg(&source, &thread_cancel)?;
-                Ok(source)
-            });
-            if sender.send(result).is_ok() {
+            if sender
+                .send(read_dwg_file(&thread_path, &thread_cancel))
+                .is_ok()
+            {
                 repaint.request_repaint();
             }
         });
@@ -90,7 +111,8 @@ impl KetchupApp {
         };
         let task = self.file.activity.dwg_reading.take().expect("polled task");
         match result {
-            Ok(source) => self.open_drawing_import(task.path, source),
+            // Held until the review's plan holds it.
+            Ok((source, _held)) => self.open_drawing_import(task.path, source),
             Err(error) => self.report_import_failure(&task.path, &error),
         }
         context.request_repaint();
@@ -105,13 +127,25 @@ impl KetchupApp {
 }
 
 /// What reading a DWG file as DXF reported.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct DwgConversion {
     /// The file's version code, for example `AC1032`.
     pub(crate) version: String,
     /// Records the DWG reader could not decode and left out, most frequent first.
     pub(crate) skipped: Vec<ketchup_dwg::SkippedRecords>,
+    /// Keeps the conversion in [`READ`] while the plan that read it lives.
+    drawing: Arc<DwgDrawing>,
 }
+
+impl PartialEq for DwgConversion {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.skipped == other.skipped
+            && (Arc::ptr_eq(&self.drawing, &other.drawing) || self.drawing.dxf == other.drawing.dxf)
+    }
+}
+
+impl Eq for DwgConversion {}
 
 pub(crate) fn is_dwg_path(path: &Path) -> bool {
     path.extension()
@@ -120,8 +154,10 @@ pub(crate) fn is_dwg_path(path: &Path) -> bool {
 
 /// The DXF a drawing import reads from `source`, the bytes of `path`: those
 /// bytes, or for a `.dwg` file the DXF they convert to, refused when it would
-/// be larger than a DXF file the import reads. A file not read yet is read in
-/// the program worker while the caller waits.
+/// be larger than a DXF file the import reads. The window has read the file on
+/// a thread before ([`KetchupApp::start_dwg_read`], the bridge's DWG import) and
+/// holds the conversion, so it is found here; only a caller that has not read it
+/// (the in-process harness) waits for the program worker.
 pub(crate) fn drawing_dxf<'a>(
     path: &Path,
     source: &'a [u8],
@@ -135,6 +171,7 @@ pub(crate) fn drawing_dxf<'a>(
         Some(DwgConversion {
             version: drawing.version.clone(),
             skipped: drawing.skipped.clone(),
+            drawing: Arc::clone(&drawing),
         }),
     ))
 }
