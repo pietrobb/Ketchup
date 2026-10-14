@@ -5,13 +5,13 @@ use egui_kittest::kittest::Queryable;
 
 const SOURCE: &str = "for i in range(5):\n    box(\"stena/stĺpik %d\" % i, (60, 140, 2500), at = (i * 600, 0, 0), material = \"drevo\", tags = [\"konštrukcia\"])\nbox(\"obal/stena\", (3000, 160, 2500), at = (0, 400, 0), material = \"drevostavba\", tags = [\"koncept\"])\n";
 
-fn summary(app: &KetchupApp, counted: usize, excluded: usize) -> String {
+fn summary(app: &KetchupApp, counted: usize, excluded: usize, exact: usize) -> String {
     app.catalog.format(
         "takeoff-summary",
         &BTreeMap::from([
             ("counted", counted.to_string()),
             ("excluded", excluded.to_string()),
-            ("exact", "0".to_owned()),
+            ("exact", exact.to_string()),
         ]),
     )
 }
@@ -33,8 +33,8 @@ fn takeoff_window_follows_layer_visibility() {
     .unwrap();
     let window = app.catalog.text("window-material-takeoff");
     let menu = app.catalog.text("menu-window");
-    let all = summary(&app, 6, 0);
-    let without_concept = summary(&app, 5, 1);
+    let all = summary(&app, 6, 0, 6);
+    let without_concept = summary(&app, 5, 1, 5);
     let concept_layer = app.catalog.format(
         "tags-row",
         &BTreeMap::from([("name", "koncept".to_owned()), ("count", "1".to_owned())]),
@@ -44,6 +44,18 @@ fn takeoff_window_follows_layer_visibility() {
         .with_step_dt(1.0 / 60.0)
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run_steps(3);
+    // The window counts the exact solid volumes once the parts are evaluated,
+    // which a warm exact worker of an earlier request may finish within these
+    // frames and a cold one may not: wait for it, as a user sees the window.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while harness.state().exact.task.is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the parts were never evaluated"
+        );
+        harness.step();
+        std::thread::yield_now();
+    }
     harness.get_by_role_and_label(Role::Button, &menu).click();
     harness.run_steps(2);
     harness.get_by_role_and_label(Role::Button, &window).click();

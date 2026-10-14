@@ -241,6 +241,23 @@ fn click(harness: &mut Harness<'_, KetchupApp>, world: Vec3) {
     }
 }
 
+/// Frames until `ready` answers, at most 60 s.
+fn step_until<T>(
+    harness: &mut Harness<'_, KetchupApp>,
+    failure: &str,
+    ready: impl Fn(&KetchupApp) -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(value) = ready(harness.state()) {
+            return value;
+        }
+        assert!(Instant::now() < deadline, "{failure}");
+        harness.step();
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 fn push_pull_snaps_profile_corner_midpoint_and_edge_with_exact_preview_commit() {
     for (target, kind) in [
@@ -259,8 +276,24 @@ fn push_pull_snaps_profile_corner_midpoint_and_edge_with_exact_preview_commit() 
             .with_step_dt(1.0 / 60.0)
             .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
         harness.step();
+        // The box has been on screen long enough to be evaluated, so its face
+        // is picked as an exact face whose preview is the exact offset. Waiting
+        // makes that hold whether the process has a warm exact worker from an
+        // earlier request or has to start one.
+        step_until(&mut harness, "the box was never evaluated", |app| {
+            app.exact.task.is_none().then_some(())
+        });
         click(&mut harness, Vec3::new(50.0, 30.0, 20.0));
         assert!(harness.state().push_pull_click_anchor_active());
+        assert!(matches!(
+            harness
+                .state()
+                .selection
+                .primary
+                .as_ref()
+                .map(|picked| &picked.element),
+            Some(ElementId::TopologicalFace(_))
+        ));
         let before = harness.state().canonical_digest();
         let steps = harness.state().undo_step_count();
         pointer(&mut harness, target);
@@ -268,16 +301,13 @@ fn push_pull_snaps_profile_corner_midpoint_and_edge_with_exact_preview_commit() 
         assert_eq!(harness.state().canonical_digest(), before);
         let expected = harness.state().hovered_snap_position().unwrap().z;
         assert!((expected - target.z).abs() < 1e-8);
-        let preview = &harness
-            .state()
-            .tool_preview
-            .get::<EphemeralBoxPreview>()
-            .expect("snapped preview")
-            .plan
-            .preview_box;
+        let preview = step_until(&mut harness, "no exact offset preview", |app| {
+            app.face_offset_preview_package(INITIAL_BOX_DEFINITION)
+        });
+        let top = preview.bounds_mm()[1][2];
         assert!(
-            (preview.origin_mm.z + preview.size_mm.z - expected).abs() < 1e-8,
-            "preview must meet target without rounding"
+            (top - expected).abs() < 1e-8,
+            "preview must meet target without rounding: {top} vs {expected}"
         );
         click(&mut harness, target);
         assert!(!harness.state().push_pull_click_anchor_active());
