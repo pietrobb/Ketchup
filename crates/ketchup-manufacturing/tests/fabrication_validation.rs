@@ -1512,7 +1512,7 @@ fn homag_production_rejects_reflected_blind_drilling() {
     }
 }
 #[test]
-fn btlx_rejects_a_mirrored_copy_that_would_reuse_its_original_machining() {
+fn btlx_and_woodwop_reject_a_mirrored_copy_that_would_reuse_its_original_machining() {
     for axis in 0..3 {
         for inherited in [false, true] {
             let mut linear = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
@@ -1523,12 +1523,21 @@ fn btlx_rejects_a_mirrored_copy_that_would_reuse_its_original_machining() {
                 Err(GeneralFabricationError::MirroredInstance),
                 "axis={axis}, inherited={inherited}"
             );
+            // One woodWOP program machines both copies of the part (MF-N1).
+            assert_eq!(
+                projection.woodwop_mpr_4_0_drill_export(&snapshot),
+                Err(GeneralFabricationError::MirroredInstance),
+                "axis={axis}, inherited={inherited}"
+            );
         }
     }
     let (snapshot, projection) =
         transformed_production_fixture([0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0], false);
     let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
     assert!(btlx.contains("Count=\"2\""), "{btlx}");
+    let mpr =
+        String::from_utf8(projection.woodwop_mpr_4_0_drill_export(&snapshot).unwrap()).unwrap();
+    assert!(mpr.contains("\\Bohr"), "{mpr}");
 }
 #[test]
 fn a_part_placed_scaled_is_refused_by_name_instead_of_a_generic_geometry_error() {

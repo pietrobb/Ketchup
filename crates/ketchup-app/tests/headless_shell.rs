@@ -13668,7 +13668,8 @@ fn a_typed_scale_factor_grows_the_part_and_a_second_one_replaces_it() {
     let (_, digest, undo, _) = scale_untouched_state(&shell);
 
     shell.click_menu_command("menu-tools", AppCommand::Scale);
-    enter_value(&mut shell, "1.5");
+    // A Slovak decimal comma (GX-15).
+    enter_value(&mut shell, "1,5");
     assert_eq!(
         shell.app().undo_step_count(),
         undo + 1,

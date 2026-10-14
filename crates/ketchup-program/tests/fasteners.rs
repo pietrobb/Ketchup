@@ -538,10 +538,15 @@ box(\"own bar\", (10, 10, 2500), at = (0, 300, 0), attributes = {\"cut_length_mm
 }
 
 #[test]
-fn metric_threads_give_the_coarse_pitch_and_the_tap_drill_d_minus_p() {
+fn metric_threads_give_the_coarse_pitch_and_the_tap_drill_of_the_shop() {
     let threads = ketchup_program::library_metric_threads().unwrap();
-    for (size, pitch_mm, tap_drill_mm) in [("M3", 0.5, 2.5), ("M8", 1.25, 6.75), ("M24", 3.0, 21.0)]
-    {
+    // A drill in 0.1 mm steps: M8 and M12 are not D - P (6.75, 10.25; TH-1).
+    for (size, pitch_mm, tap_drill_mm) in [
+        ("M3", 0.5, 2.5),
+        ("M8", 1.25, 6.8),
+        ("M12", 1.75, 10.2),
+        ("M24", 3.0, 21.0),
+    ] {
         let thread = threads[size];
         assert!(close(thread.pitch_mm, pitch_mm), "{size}: {thread:?}");
         assert!(

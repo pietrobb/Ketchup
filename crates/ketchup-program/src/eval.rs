@@ -2377,51 +2377,49 @@ pub fn library_material_weights()
         .map_err(Clone::clone)
 }
 
-/// The coarse pitch P of an ISO metric thread and its tap drill D − P, in mm.
+/// The coarse pitch P of an ISO metric thread and its tap drill, in mm.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MetricThread {
     pub pitch_mm: f64,
     pub tap_drill_mm: f64,
 }
 
-/// How far a tapped hole may sit from D − P: drills come in 0.1 mm steps, so
-/// the drill nearest to D − P (M8: 6.8 for 6.75) is at most half a step away.
+/// How far a tapped hole may sit from its tap drill: half a 0.1 mm drill step,
+/// so a hole drilled D − P (M8: 6.75 for the 6.8 drill) still takes the thread.
 pub const TAP_DRILL_STEP_TOLERANCE_MM: f64 = 0.05;
 
 impl MetricThread {
-    /// Whether a `diameter_mm` hole takes this thread: its tap drill D − P or
-    /// the 0.1 mm drill nearest to it, within the model `tolerance_mm`.
+    /// Whether a `diameter_mm` hole takes this thread: its tap drill or one
+    /// within half a drill step of it, within the model `tolerance_mm`.
     #[must_use]
     pub fn fits_drill(&self, diameter_mm: f64, tolerance_mm: f64) -> bool {
         (diameter_mm - self.tap_drill_mm).abs() <= TAP_DRILL_STEP_TOLERANCE_MM + tolerance_mm
     }
 }
 
-/// `METRIC_COARSE_PITCH` of the prelude in use, size ("M8") → pitch and the
-/// tap drill D − P, read from the frozen library like [`library_material_weights`].
+/// `METRIC_COARSE_PITCH` and `METRIC_TAP_DRILL` of the prelude in use, size
+/// ("M8") → pitch and tap drill, read from the frozen library like
+/// [`library_material_weights`].
 ///
 /// # Errors
-/// `prelude_invalid` when the prelude does not evaluate or the table is not a
-/// dict of "M<D>" sizes to pitches.
+/// `prelude_invalid` when the prelude does not evaluate, a table is not a dict
+/// of sizes to millimetres, or a pitch has no tap drill.
 pub fn library_metric_threads() -> Result<&'static BTreeMap<String, MetricThread>, ProgramError> {
     static THREADS: std::sync::OnceLock<Result<BTreeMap<String, MetricThread>, ProgramError>> =
         std::sync::OnceLock::new();
     THREADS
         .get_or_init(|| {
             let table: BTreeMap<String, f64> = prelude_table("METRIC_COARSE_PITCH")?;
+            let drills: BTreeMap<String, f64> = prelude_table("METRIC_TAP_DRILL")?;
             table
                 .into_iter()
                 .map(|(size, pitch_mm)| {
-                    let nominal_mm = size
-                        .strip_prefix('M')
-                        .and_then(|nominal| nominal.parse::<f64>().ok())
-                        .ok_or_else(|| {
-                            evaluation_error(
-                                "prelude_invalid",
-                                format!("METRIC_COARSE_PITCH: {size:?} is not M<diameter>"),
-                            )
-                        })?;
-                    let tap_drill_mm = nominal_mm - pitch_mm;
+                    let tap_drill_mm = *drills.get(&size).ok_or_else(|| {
+                        evaluation_error(
+                            "prelude_invalid",
+                            format!("METRIC_TAP_DRILL has no drill for {size:?}"),
+                        )
+                    })?;
                     Ok((
                         size,
                         MetricThread {

@@ -159,8 +159,8 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
 /// `thread=(size, depth)` of a hole `depth_mm` deep: the library thread and
 /// the hole's diameter, its tap drill when `diameter_mm` is not given. The
 /// same rule as the `drill_holes` operation: the size is in
-/// `METRIC_COARSE_PITCH`, the hole is its tap drill D − P or the 0.1 mm drill
-/// nearest to it, and the thread is at most as deep as the hole.
+/// `METRIC_COARSE_PITCH`, the hole is its tap drill (`METRIC_TAP_DRILL`) within
+/// half a drill step, and the thread is at most as deep as the hole.
 fn tapped<'v>(
     thread: Value<'v>,
     diameter_mm: Option<f64>,
@@ -191,8 +191,8 @@ fn tapped<'v>(
     let diameter_mm = diameter_mm.unwrap_or(metric.tap_drill_mm);
     if !metric.fits_drill(diameter_mm, TOLERANCE_MM) {
         anyhow::bail!(
-            "an {size} thread (pitch {}) is tapped into a D - P = {} mm hole, or the 0.1 mm drill \
-             nearest to it; this hole is {diameter_mm} mm (omit diameter to drill the tap drill)",
+            "an {size} thread (pitch {}) is tapped into its {} mm tap drill hole; this hole is \
+             {diameter_mm} mm (omit diameter to drill the tap drill)",
             metric.pitch_mm,
             metric.tap_drill_mm
         );

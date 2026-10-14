@@ -957,6 +957,8 @@ impl GeneralFabricationProjection {
         {
             return Err(GeneralFabricationError::ExportBlocked);
         }
+        // One program machines every copy of the row.
+        check_copies_share_machining(snapshot, row)?;
         let stock_frame =
             woodwop_stock_frame(&stock.machining).ok_or(GeneralFabricationError::ExportBlocked)?;
         let macros = machining
@@ -974,13 +976,6 @@ impl GeneralFabricationProjection {
             })
             .collect::<Option<Vec<_>>>()
             .ok_or(GeneralFabricationError::ExportBlocked)?;
-        let [length_mm, width_mm, thickness_mm] = stock_frame.dimensions_mm;
-        let length =
-            format_btlx_positive_number(length_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
-        let width =
-            format_btlx_positive_number(width_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
-        let thickness = format_btlx_positive_number(thickness_mm)
-            .ok_or(GeneralFabricationError::ExportBlocked)?;
         let export_contract = if machining
             .iter()
             .any(|operation| operation.kind == GeneralManufacturingKind::ProfileCut)
@@ -989,17 +984,7 @@ impl GeneralFabricationProjection {
         } else {
             WOODWOP_MPR_4_0_DRILL_EXPORT_V1
         };
-        let mut output = format!(
-            "[H\nVERSION=\"4.0\"\nOP=\"1\"\nINCH=\"0\"\nMAT=\"HOMAG\"\n_BSX={length}\n_BSY={width}\n_BSZ={thickness}\n\\{export_contract}\\\n<100 \\WerkStck\\\nLA=\"{length}\"\nBR=\"{width}\"\nDI=\"{thickness}\"\nFNX=\"0\"\nFNY=\"0\"\nAX=\"0\"\nAY=\"0\"\nRNX=\"0\"\nRNY=\"0\"\nRNZ=\"0\"\n"
-        );
-        for processing in macros {
-            output.push_str(&processing);
-        }
-        output.push_str("!\n");
-        if !output.is_ascii() {
-            return Err(GeneralFabricationError::ExportBlocked);
-        }
-        Ok(output.into_bytes())
+        woodwop_mpr_output(stock_frame, &macros, export_contract)
     }
 
     pub fn woodwop_mpr_4_0_production_package(
@@ -1219,24 +1204,8 @@ impl GeneralFabricationProjection {
                 {
                     return Err(GeneralFabricationError::ExportBlocked);
                 }
-                // One BTLx part carries one set of processings for all `Count` copies,
-                // so a mirrored copy would be machined as its original.
-                for instance_path in &row.instances {
-                    let resolved = snapshot
-                        .resolve_instance_path(instance_path)
-                        .map_err(GeneralFabricationError::UnresolvedInstance)?;
-                    if resolved.definition_id != row.definition_id {
-                        return Err(GeneralFabricationError::ExportBlocked);
-                    }
-                    if !is_production_transform(resolved.world_transform) {
-                        ScaledPlacement::check(
-                            instance_path.root_occurrence(),
-                            resolved.world_transform,
-                        )
-                        .map_err(GeneralFabricationError::ScaledPlacement)?;
-                        return Err(GeneralFabricationError::MirroredInstance);
-                    }
-                }
+                // One BTLx part carries one set of processings for all `Count` copies.
+                check_copies_share_machining(snapshot, row)?;
                 let Some((count, single_member_number)) =
                     btlx_component_identifiers(row.quantity, index)
                 else {
@@ -4224,6 +4193,28 @@ fn general_envelope_is_current(
 
 fn is_production_transform(transform: Transform) -> bool {
     transform.is_rigid() && (transform.affine().determinant() - 1.0).abs() <= ROUNDING
+}
+
+/// Every copy in `row` is placed by a proper rigid motion. The copies of a row share
+/// one set of machining, so a mirrored copy would be machined as its original.
+fn check_copies_share_machining(
+    snapshot: &Snapshot,
+    row: &GeneralBomRow,
+) -> Result<(), GeneralFabricationError> {
+    for instance_path in &row.instances {
+        let resolved = snapshot
+            .resolve_instance_path(instance_path)
+            .map_err(GeneralFabricationError::UnresolvedInstance)?;
+        if resolved.definition_id != row.definition_id {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
+        if !is_production_transform(resolved.world_transform) {
+            ScaledPlacement::check(instance_path.root_occurrence(), resolved.world_transform)
+                .map_err(GeneralFabricationError::ScaledPlacement)?;
+            return Err(GeneralFabricationError::MirroredInstance);
+        }
+    }
+    Ok(())
 }
 
 fn local_dimensions(

@@ -318,8 +318,8 @@ fn admit_thread(
         return Err((
             "planning.cad_hole_thread_diameter_mismatch",
             format!(
-                "An {} thread (pitch {}) is tapped into a D - P = {} mm hole, or the 0.1 mm drill \
-                 nearest to it; this hole is {} mm.",
+                "An {} thread (pitch {}) is tapped into its {} mm tap drill hole; this hole is \
+                 {} mm.",
                 thread.size, metric.pitch_mm, metric.tap_drill_mm, diameter_mm
             ),
             "Drill the thread's tap drill diameter, or choose the thread that fits the hole.",

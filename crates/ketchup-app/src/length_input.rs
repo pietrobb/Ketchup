@@ -24,6 +24,19 @@ pub fn parse_length_mm(input: &str) -> Option<f64> {
     (parser.at == parser.chars.len() && value.mm.is_finite()).then_some(value.mm)
 }
 
+/// A plain number with a decimal point or a decimal comma (`0,5`), as typed
+/// in a field that takes no length units, such as an angle or a scale factor.
+#[must_use]
+pub fn parse_decimal(input: &str) -> Option<f64> {
+    let trimmed = input.trim();
+    let value = if trimmed.contains('.') || trimmed.matches(',').count() > 1 {
+        trimmed.parse::<f64>().ok()?
+    } else {
+        trimmed.replacen(',', ".", 1).parse::<f64>().ok()?
+    };
+    value.is_finite().then_some(value)
+}
+
 /// The evaluated value of a typed expression, shown next to the field. A
 /// plain number needs no preview, so only expressions and unit conversions
 /// get one.

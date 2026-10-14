@@ -1916,7 +1916,7 @@ pub enum AssistantCadEditOperation {
         #[serde(default)]
         through: bool,
         /// Taps every hole: the thread's pitch comes from the fastener library
-        /// (METRIC_COARSE_PITCH), diameter_mm must be its tap drill D − P, and the
+        /// (METRIC_COARSE_PITCH), diameter_mm must be its tap drill (METRIC_TAP_DRILL), and the
         /// thread is listed in the machining and hardware reports.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thread: Option<AssistantHoleThread>,

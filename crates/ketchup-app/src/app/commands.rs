@@ -591,12 +591,7 @@ impl KetchupApp {
             return self.set_polygon_sides_from_value_box();
         }
         if self.active_tool == ActiveTool::Scale {
-            let Some(factor) = self
-                .value_box
-                .input
-                .trim()
-                .parse::<f64>()
-                .ok()
+            let Some(factor) = crate::length_input::parse_decimal(&self.value_box.input)
                 .filter(|factor| factor.is_finite() && *factor > 0.0 && *factor <= 1_000.0)
             else {
                 self.digest = self.catalog.text("digest-scale-invalid-factor");
@@ -1490,10 +1485,8 @@ pub(super) fn parse_angle_degrees(input: &str) -> Option<f64> {
         .strip_suffix('\u{b0}')
         .or_else(|| trimmed.strip_suffix("deg"))
         .or_else(|| trimmed.strip_suffix("DEG"))
-        .unwrap_or(trimmed)
-        .trim();
-    let degrees = numeric.parse::<f64>().ok()?;
-    degrees.is_finite().then_some(degrees)
+        .unwrap_or(trimmed);
+    crate::length_input::parse_decimal(numeric)
 }
 
 pub(crate) fn format_signed_mm(distance: f64) -> String {

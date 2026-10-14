@@ -198,18 +198,26 @@ fn validate_document_entries(
     // A thread names a standard size, which a Scale behind it would silently
     // stop being; a hole tapped after a Scale is cut at its true size. A
     // modelled bolt thread is cut into the body before a Scale on it too.
+    // Definitions are checked after this, so a missing entry is left to them.
     if let Some(id) = product
         .hole_threads
         .keys()
         .chain(product.shaft_threads.keys())
         .copied()
         .find(|id| {
-            let definition = &product.definitions[&product.features[id].definition_id];
+            let Some(definition) = product
+                .features
+                .get(id)
+                .and_then(|feature| product.definitions.get(&feature.definition_id))
+            else {
+                return false;
+            };
             definition
                 .feature_ids
                 .iter()
                 .skip_while(|candidate| *candidate != id)
-                .any(|later| matches!(product.features[later].kind, FeatureKind::Scale { .. }))
+                .filter_map(|later| product.features.get(later))
+                .any(|later| matches!(later.kind, FeatureKind::Scale { .. }))
         })
     {
         return Err(CanonicalError::ScaledHoleThread(id));
@@ -1586,6 +1594,36 @@ mod incremental_equivalence_tests {
             edit(&mut p.tags, TagId(2), |t| t.name = "fronts".into());
         }),
     ];
+
+    /// A damaged file whose tapped feature lists a missing feature or sits in a missing
+    /// definition is refused by name instead of crashing on open (NEW-B).
+    #[test]
+    fn a_thread_in_a_damaged_definition_is_refused_instead_of_crashing() {
+        let mut tapped = product();
+        tapped.hole_threads.insert(
+            FeatureId(12),
+            HoleThread {
+                size: "M8".into(),
+                pitch_mm: 1.25,
+                depth_mm: 3.0,
+                modeled: None,
+            },
+        );
+        validate_product(&tapped).unwrap();
+        let mut missing_feature = tapped.clone();
+        edit(&mut missing_feature.definitions, DefinitionId(1), |d| {
+            d.feature_ids.push(FeatureId(99))
+        });
+        assert_eq!(
+            validate_product(&missing_feature),
+            Err(CanonicalError::FeatureNotFound(FeatureId(99)))
+        );
+        let mut missing_definition = tapped;
+        edit(&mut missing_definition.features, FeatureId(12), |f| {
+            f.definition_id = DefinitionId(99)
+        });
+        assert!(validate_product(&missing_definition).is_err());
+    }
 
     /// Validating only what an edit changed accepts and refuses exactly what validating the
     /// whole product does, with the same error, for every edit and every pair of edits.

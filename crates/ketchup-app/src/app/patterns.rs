@@ -881,7 +881,7 @@ impl KetchupApp {
                     pending.centre_x.trim().parse::<f64>(),
                     pending.centre_y.trim().parse::<f64>(),
                     pending.centre_z.trim().parse::<f64>(),
-                    pending.angle.trim().parse::<f64>(),
+                    crate::length_input::parse_decimal(&pending.angle).ok_or(()),
                     pending.count.trim().parse::<usize>(),
                 ) else {
                     return false;
@@ -909,7 +909,7 @@ impl KetchupApp {
             pending.centre_x.trim().parse::<f64>(),
             pending.centre_y.trim().parse::<f64>(),
             pending.centre_z.trim().parse::<f64>(),
-            pending.angle.trim().parse::<f64>(),
+            crate::length_input::parse_decimal(&pending.angle).ok_or(()),
             pending.count.trim().parse::<usize>(),
         ) else {
             return false;
@@ -1399,7 +1399,7 @@ impl KetchupApp {
                 y.trim().parse::<f64>().ok()?,
                 z.trim().parse::<f64>().ok()?,
             );
-            let angle = angle.trim().parse::<f64>().ok()?;
+            let angle = crate::length_input::parse_decimal(angle)?;
             let count = count.trim().parse::<usize>().ok()?;
             (centre.x.is_finite()
                 && centre.y.is_finite()

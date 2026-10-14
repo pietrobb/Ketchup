@@ -564,8 +564,8 @@ def round_thread(radius, name = "thread"):
 #   hole(part, face, at=(u, v) | world=(x, y, z), diameter=, depth=, through=False, thread=, id=)
 #     Returns struct(part=part_name, id=operation_id), usable in joint_link(); callers may ignore it.
 #     thread=("M5", 10) taps an ISO metric coarse thread 10 mm deep (size from METRIC_COARSE_PITCH).
-#     The hole is then the tap drill D - P or the 0.1 mm drill nearest to it (M8: 6.75 or 6.8);
-#     omit diameter to drill D - P. The thread is listed in the machining report and the document.
+#     The hole is then the tap drill METRIC_TAP_DRILL[size] (M8: 6.8; 6.75 is accepted too);
+#     omit diameter to drill it. The thread is listed in the machining report and the document.
 #     depth is always explicit; through=True declares an intentional through bore, not a blind bore accidentally breaking out.
 #     Set depth to at least the part span along the drilling direction; a shorter through bore reports an error.
 #     Intent is retained in source, machining reports and canonical through cuts. Shallow through requests keep numeric geometry and report an error, not a silently deeper cut.
@@ -1259,7 +1259,7 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   Holes are not made for them: drill the parts (hole(..., through=True)) a little wider than
 #   the shank, and subtract() a bar or rod cast into concrete from the concrete.
 #   METRIC_COARSE_PITCH[size] is the ISO metric coarse pitch P, e.g. METRIC_COARSE_PITCH["M8"]
-#   = 1.25; a tapped hole is drilled D - P (M8: 6.75, the 6.8 drill): hole(..., thread=("M8", 12)).
+#   = 1.25; a tapped hole is drilled with METRIC_TAP_DRILL[size] (M8: 6.8): hole(..., thread=("M8", 12)).
 #   Example (an M12 bolt through two 10 mm plates; the full program with anchor rods and a
 #   rebar mesh in a footing is the example file anchored-beam.star):
 #     a = box("a", (100, 100, 10))
@@ -1303,6 +1303,9 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   DIN 975: fasteners.eu/standards/din/975 and boltport.com/standards/din-975; M3-M24.
 #   METRIC_COARSE_PITCH: fullerfasteners.com (ISO metric coarse, recommended tapping drill
 #     size) and jcfasteners.com (metric thread drill & tap chart); their pitches agree M3-M24.
+#   METRIC_TAP_DRILL: de.wikipedia.org (Metrisches ISO-Gewinde, Kernlochbohrer column) and
+#     fullerfasteners.com agree M3-M24 except M8, where fullerfasteners gives D - P = 6.75 and
+#     the 6.8 drill of the German table is kept.
 #   B500B kg/m: reinforcing-bar.com (rebar sizes, metric table d6-d50), ulamex.com (ribbed bars
 #     B500B EN 10080, d6-d32: the formula d^2 x 0.006165 and d8/10/12/16/20/25/32),
 #     calcsteel.com (rebar weight calculator, EN 10080 d6-d40: the formula, d10/16/25). They
@@ -1394,10 +1397,17 @@ THREADED_RODS = {
 }
 
 # size: coarse pitch P of the ISO metric thread. The drill_holes operation takes a hole's
-# thread from here; its tap drill is D - P.
+# thread from here.
 METRIC_COARSE_PITCH = {
     "M3": 0.5, "M4": 0.7, "M5": 0.8, "M6": 1, "M8": 1.25, "M10": 1.5, "M12": 1.75, "M14": 2,
     "M16": 2, "M18": 2.5, "M20": 2.5, "M22": 2.5, "M24": 3,
+}
+
+# size: the tap drill a tapped hole is drilled with. It is D - P except M8 (6.8, not 6.75)
+# and M12 (10.2, not 10.25): drills come in 0.1 mm steps.
+METRIC_TAP_DRILL = {
+    "M3": 2.5, "M4": 3.3, "M5": 4.2, "M6": 5, "M8": 6.8, "M10": 8.5, "M12": 10.2, "M14": 12,
+    "M16": 14, "M18": 15.5, "M20": 17.5, "M22": 19.5, "M24": 21,
 }
 
 _FASTENER_SOURCES = {

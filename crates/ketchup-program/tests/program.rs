@@ -643,7 +643,7 @@ fn a_thread_that_does_not_fit_its_hole_is_refused_by_name() {
     for (arguments, expected) in [
         (
             "diameter = 7, depth = 15, thread = (\"M8\", 12)",
-            "D - P = 6.75 mm hole",
+            "its 6.8 mm tap drill hole",
         ),
         ("depth = 15, thread = (\"M7\", 5)", "no thread \"M7\""),
         (
