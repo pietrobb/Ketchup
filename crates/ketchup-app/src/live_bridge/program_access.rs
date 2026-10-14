@@ -13,6 +13,7 @@ pub struct SourceEdit {
 pub enum ReportSection {
     CutList,
     Hardware,
+    BarSchedule,
     Machining,
     Relations,
     Issues,
@@ -385,6 +386,12 @@ fn report_rows(report: &ketchup_program::Report, section: ReportSection) -> Vec<
             })
             .collect(),
         ReportSection::Hardware => report.bom.hardware.iter().map(|row| json!(row)).collect(),
+        ReportSection::BarSchedule => report
+            .bom
+            .bar_schedule
+            .iter()
+            .map(|row| json!(row))
+            .collect(),
         ReportSection::Machining => report
             .bom
             .machining

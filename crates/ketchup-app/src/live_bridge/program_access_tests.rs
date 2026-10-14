@@ -855,12 +855,12 @@ fn standard_fasteners_weigh_their_simplified_steel_body() {
     assert_eq!(report["assembly"]["status"], "complete", "{report}");
 }
 
-/// #2482: a B500B bar Ø12 x 1000 is 0.888 kg ±1 % both in the hardware list
-/// (the library's nominal EN 10080 mass; a designated part is bought, not cut)
+/// #2482: a B500B bar Ø12 x 1000 is 0.888 kg ±1 % both in the bar schedule
+/// (the library's nominal EN 10080 mass, derived; bars are ordered as pieces)
 /// and in inspect mass (the exact solid x steel density). Each is checked on its
 /// own: should they ever part, this fails instead of trusting one of them.
 #[test]
-fn a_b500b_bar_weighs_its_nominal_mass_in_the_hardware_list_and_in_inspect_mass() {
+fn a_b500b_bar_weighs_its_nominal_mass_in_the_bar_schedule_and_in_inspect_mass() {
     let (mut app, mut bridge) = setup();
     let source = "rebar(\"bar\", 12, 1000, axis = (1, 0, 0))\n";
     bridge
@@ -887,14 +887,15 @@ fn a_b500b_bar_weighs_its_nominal_mass_in_the_hardware_list_and_in_inspect_mass(
         "inspect mass {weighed} kg"
     );
 
-    let model = ketchup_program::evaluate("bar.star", source, &BTreeMap::new())
-        .unwrap()
-        .model;
-    let hardware = ketchup_program::bom(&model).hardware;
-    assert_eq!(hardware.len(), 1, "{hardware:?}");
-    let listed: f64 = hardware[0].attributes["mass_kg"].parse().unwrap();
+    assert!(all_rows(&mut app, &mut bridge, ReportSection::Hardware).is_empty());
+    let bars = all_rows(&mut app, &mut bridge, ReportSection::BarSchedule);
+    assert_eq!(bars.len(), 1, "{bars:?}");
+    assert_eq!(bars[0]["diameter_mm"], 12.0);
+    assert_eq!(bars[0]["cut_length_mm"], 1000.0);
+    assert_eq!(bars[0]["count"], 1);
+    let listed = bars[0]["mass_kg"].as_f64().unwrap();
     assert!(
         (listed - 0.888).abs() <= 0.00888,
-        "hardware list {listed} kg"
+        "bar schedule {listed} kg"
     );
 }

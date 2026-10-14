@@ -2253,26 +2253,6 @@
     ],
     "hardware": [
       {
-        "item": "B500B Ø12 L700",
-        "count": 8,
-        "parts": [
-          "bar x1",
-          "bar y1",
-          "bar x2",
-          "bar y2",
-          "bar x3",
-          "bar y3",
-          "bar x4",
-          "bar y4"
-        ],
-        "attributes": {
-          "mass_basis": "nominal EN 10080: pi d^2 / 4 x length x 7850 kg/m3, ribs not modelled",
-          "mass_kg": "0.621",
-          "source": "reinforcing-bar.com, ulamex.com, calcsteel.com (catalogue tables, not the standard text)",
-          "standard": "EN 10080"
-        }
-      },
-      {
         "item": "DIN 975 M12x400",
         "count": 4,
         "parts": [
@@ -2339,6 +2319,28 @@
           "source": "itpbolt.com, engineersedge.com, fasteners.eu (catalogue tables, not the standard text)",
           "standard": "ISO 7089"
         }
+      }
+    ],
+    "bar_schedule": [
+      {
+        "position": 1,
+        "diameter_mm": 12.0,
+        "grade": "B500B",
+        "shape": "straight",
+        "cut_length_mm": 700.0,
+        "count": 8,
+        "total_length_m": 5.6,
+        "mass_kg": 4.968,
+        "parts": [
+          "bar x1",
+          "bar y1",
+          "bar x2",
+          "bar y2",
+          "bar x3",
+          "bar y3",
+          "bar x4",
+          "bar y4"
+        ]
       }
     ],
     "machining": [

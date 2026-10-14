@@ -2,9 +2,10 @@
 
 use crate::cut_list::plain_attribute;
 use crate::model::ProgramModel;
+use crate::table::{Cell, Table};
 use ketchup_model::document::HoleThread;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One cut-list row: identical parts (material and dimensions) grouped.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -28,6 +29,27 @@ pub struct HardwareRow {
     /// Their program attributes besides the designation, e.g. the standard.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: BTreeMap<String, String>,
+}
+
+/// Bars cut (and bent) to length, e.g. reinforcement, ordered as pieces:
+/// identical pieces (grade, diameter, shape, cut length) are one position.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BarRow {
+    pub position: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diameter_mm: Option<f64>,
+    pub grade: String,
+    /// The bends, "straight" for none.
+    pub shape: String,
+    /// Developed length of one piece.
+    pub cut_length_mm: f64,
+    pub count: usize,
+    pub total_length_m: f64,
+    /// Derived from the pieces' `mass_kg`, not what the bars are ordered by;
+    /// omitted when a piece names no mass.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mass_kg: Option<f64>,
+    pub parts: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -59,6 +81,8 @@ pub struct PartMachining {
 pub struct Bom {
     pub cut_list: Vec<CutListRow>,
     pub hardware: Vec<HardwareRow>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bar_schedule: Vec<BarRow>,
     pub machining: Vec<PartMachining>,
     pub total_parts: usize,
 }
@@ -91,7 +115,37 @@ fn bought<'a>(
 pub fn bom(model: &ProgramModel) -> Bom {
     let mut rows: BTreeMap<(String, [i64; 3]), CutListRow> = BTreeMap::new();
     let mut hardware = BTreeMap::new();
+    let mut bars: BTreeMap<(i64, String, String, i64), BarRow> = BTreeMap::new();
     for part in model.parts.iter().filter(|part| model.in_production(part)) {
+        let text = |name: &str| part.attributes.get(name).cloned().unwrap_or_default();
+        let number = |name: &str| part.attributes.get(name)?.parse::<f64>().ok();
+        if let Some(cut_length_mm) = part.cut_length_mm() {
+            let diameter_mm = number("diameter_mm");
+            let row = bars
+                .entry((
+                    diameter_mm.map_or(-1, key),
+                    text("grade"),
+                    text("shape"),
+                    key(cut_length_mm),
+                ))
+                .or_insert_with(|| BarRow {
+                    position: 0,
+                    diameter_mm,
+                    grade: text("grade"),
+                    shape: text("shape"),
+                    cut_length_mm,
+                    count: 0,
+                    total_length_m: 0.0,
+                    mass_kg: Some(0.0),
+                    parts: Vec::new(),
+                });
+            row.count += 1;
+            // In mm until the rows are complete.
+            row.total_length_m += cut_length_mm;
+            row.mass_kg = row.mass_kg.zip(number("mass_kg")).map(|(sum, kg)| sum + kg);
+            row.parts.push(part.name.clone());
+            continue;
+        }
         if let Some(designation) = part.designation() {
             let attributes = part
                 .attributes
@@ -169,9 +223,20 @@ pub fn bom(model: &ProgramModel) -> Bom {
                 .collect(),
         })
         .collect();
+    let bar_schedule = bars
+        .into_values()
+        .enumerate()
+        .map(|(index, row)| BarRow {
+            position: index + 1,
+            total_length_m: row.total_length_m / 1000.0,
+            mass_kg: row.mass_kg.map(|kg| (kg * 1000.0).round() / 1000.0),
+            ..row
+        })
+        .collect();
     Bom {
         cut_list: rows.into_values().collect(),
         hardware: hardware.into_values().collect(),
+        bar_schedule,
         machining,
         total_parts: model
             .parts
@@ -179,4 +244,64 @@ pub fn bom(model: &ProgramModel) -> Bom {
             .filter(|part| model.in_production(part))
             .count(),
     }
+}
+
+/// The hardware rows as a table for a spreadsheet: item, count, parts, then
+/// one column per attribute any row has.
+#[must_use]
+pub fn hardware_table(rows: &[HardwareRow]) -> Table {
+    let names: BTreeSet<&String> = rows.iter().flat_map(|row| row.attributes.keys()).collect();
+    let mut header: Vec<String> = ["item", "count", "parts"].map(str::to_owned).into();
+    header.extend(names.iter().map(|name| (*name).clone()));
+    let rows =
+        rows.iter()
+            .map(|row| {
+                let mut cells = vec![
+                    Cell::Text(row.item.clone()),
+                    Cell::Count(row.count),
+                    Cell::Text(row.parts.join(", ")),
+                ];
+                cells.extend(names.iter().map(|name| {
+                    Cell::Text(row.attributes.get(*name).cloned().unwrap_or_default())
+                }));
+                cells
+            })
+            .collect();
+    Table { header, rows }
+}
+
+/// The bar schedule as a table for the bending shop, one row per position.
+#[must_use]
+pub fn bar_schedule_table(rows: &[BarRow]) -> Table {
+    let header = [
+        "position",
+        "diameter_mm",
+        "grade",
+        "shape",
+        "cut_length_mm",
+        "count",
+        "total_length_m",
+        "mass_kg",
+        "parts",
+    ]
+    .map(str::to_owned)
+    .into();
+    let optional = |value: Option<f64>| value.map_or(Cell::Text(String::new()), Cell::Number);
+    let rows = rows
+        .iter()
+        .map(|row| {
+            vec![
+                Cell::Count(row.position),
+                optional(row.diameter_mm),
+                Cell::Text(row.grade.clone()),
+                Cell::Text(row.shape.clone()),
+                Cell::Number(row.cut_length_mm),
+                Cell::Count(row.count),
+                Cell::Number(row.total_length_m),
+                optional(row.mass_kg),
+                Cell::Text(row.parts.join(", ")),
+            ]
+        })
+        .collect();
+    Table { header, rows }
 }

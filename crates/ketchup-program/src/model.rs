@@ -753,10 +753,26 @@ pub struct Part {
 impl Part {
     /// The designation a bought part is ordered by (attribute `designation`,
     /// e.g. a library fastener's "ISO 4017 M8x40"): it belongs to the hardware
-    /// list, not to the cut list of made parts.
+    /// list, not to the cut list of made parts, unless it is a bar.
     #[must_use]
     pub fn designation(&self) -> Option<&str> {
         self.attributes.get("designation").map(String::as_str)
+    }
+
+    /// The length a bar is cut to (attribute `cut_length_mm`, the developed
+    /// length of a bent one, e.g. a library `rebar()`): it is ordered as
+    /// pieces of that length and shape, in the bar schedule, neither bought
+    /// as hardware nor in the cut list.
+    #[must_use]
+    pub fn cut_length_mm(&self) -> Option<f64> {
+        self.attributes.get("cut_length_mm")?.parse().ok()
+    }
+
+    /// A part made in the workshop of the cut list: neither bought by its
+    /// designation nor cut from bar stock.
+    #[must_use]
+    pub fn made(&self) -> bool {
+        self.designation().is_none() && self.cut_length_mm().is_none()
     }
 
     pub fn holes(&self) -> impl Iterator<Item = &Hole> {

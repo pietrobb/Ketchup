@@ -289,7 +289,8 @@ rebar(\"along\", 40, 2500, at = (0, 100, 0), axis = (1, 0, 0))
         "{min:?} {max:?}"
     );
     assert_eq!(up.material.as_deref(), Some("steel"));
-    assert_eq!(up.attributes["designation"], "B500B Ø12 L1000");
+    assert_eq!(up.attributes["grade"], "B500B");
+    assert_eq!(up.cut_length_mm(), Some(1000.0));
     assert_eq!(up.attributes["standard"], "EN 10080");
     let mass: f64 = up.attributes["mass_kg"].parse().unwrap();
     assert!((mass - 0.888).abs() <= 0.00888, "{mass}");
@@ -399,20 +400,12 @@ rebar(\"r2\", 12, 1000, at = (0, 150, 0), axis = (1, 0, 0))
     assert_eq!(row("ISO 4017 M8x40").count, 2);
     assert_eq!(row("ISO 4017 M8x50").count, 1);
     assert_eq!(row("ISO 4017 M8x40").attributes["thread"], "M8");
-    // A bar names its nominal mass per piece; the fasteners have none.
-    let bar = row("B500B Ø12 L1000");
-    assert_eq!(bar.count, 2);
-    assert_eq!(bar.attributes["standard"], "EN 10080");
-    let mass: f64 = bar.attributes["mass_kg"].parse().unwrap();
-    assert!((mass - 0.888).abs() <= 0.00888, "{mass}");
-    assert!(bar.attributes["mass_basis"].starts_with("nominal EN 10080"));
-    assert!(!row("ISO 4032 M8").attributes.contains_key("mass_kg"));
-    assert_eq!(bom.hardware.len(), 6, "{:?}", bom.hardware);
+    // The bars are not bought by weight: they are in the bar schedule.
+    assert_eq!(bom.hardware.len(), 5, "{:?}", bom.hardware);
     for row in &bom.hardware {
         assert!(!row.attributes.contains_key("designation"), "{row:?}");
         assert!(
-            row.attributes["mass_basis"].contains("simplified solid x 7850 kg/m3")
-                || row.item.starts_with("B500B"),
+            row.attributes["mass_basis"].contains("simplified solid x 7850 kg/m3"),
             "{row:?}"
         );
         assert!(
@@ -440,6 +433,101 @@ rebar(\"r2\", 12, 1000, at = (0, 150, 0), axis = (1, 0, 0))
             table.header
         );
     }
+}
+
+#[test]
+fn bars_are_scheduled_as_pieces_of_a_length_not_as_hardware_or_cut_parts() {
+    let model = model(
+        "board(\"plate\", (300, 200, 18))
+rebar(\"r1\", 12, 1000, at = (0, 100, 0), axis = (1, 0, 0))
+rebar(\"r2\", 12, 1000, at = (0, 150, 0), axis = (1, 0, 0))
+rebar(\"r3\", 12, 700, at = (0, 200, 0), axis = (1, 0, 0))
+rebar(\"r4\", 8, 1000, at = (0, 250, 0), axis = (1, 0, 0))
+box(\"own bar\", (10, 10, 2500), at = (0, 300, 0), attributes = {\"cut_length_mm\": \"2500\", \"grade\": \"S235\", \"shape\": \"straight\"})
+",
+    );
+    let bom = ketchup_program::bom(&model);
+    assert!(bom.hardware.is_empty(), "{:?}", bom.hardware);
+    assert_eq!(bom.cut_list.len(), 1);
+    assert_eq!(bom.cut_list[0].parts, ["plate"]);
+    let rows: Vec<_> = bom
+        .bar_schedule
+        .iter()
+        .map(|row| {
+            (
+                row.position,
+                row.diameter_mm,
+                row.grade.as_str(),
+                row.shape.as_str(),
+                row.cut_length_mm,
+                row.count,
+                row.total_length_m,
+                row.parts.join(", "),
+            )
+        })
+        .collect();
+    // The rule is the cut length, not the name: a program's own bar is scheduled too.
+    assert_eq!(
+        rows,
+        [
+            (
+                1,
+                None,
+                "S235",
+                "straight",
+                2500.0,
+                1,
+                2.5,
+                "own bar".to_owned()
+            ),
+            (
+                2,
+                Some(8.0),
+                "B500B",
+                "straight",
+                1000.0,
+                1,
+                1.0,
+                "r4".to_owned()
+            ),
+            (
+                3,
+                Some(12.0),
+                "B500B",
+                "straight",
+                700.0,
+                1,
+                0.7,
+                "r3".to_owned()
+            ),
+            (
+                4,
+                Some(12.0),
+                "B500B",
+                "straight",
+                1000.0,
+                2,
+                2.0,
+                "r1, r2".to_owned()
+            ),
+        ]
+    );
+    // The mass is derived: 2 x 0.888 kg; a piece without mass_kg leaves it out.
+    let mass = bom.bar_schedule[3].mass_kg.unwrap();
+    assert!((mass - 1.776).abs() <= 0.01776, "{mass}");
+    assert_eq!(bom.bar_schedule[0].mass_kg, None);
+    let table = ketchup_program::bom::bar_schedule_table(&bom.bar_schedule);
+    assert_eq!(
+        table
+            .csv(ketchup_program::table::DecimalSeparator::Comma)
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>(),
+        [
+            "\u{feff}position;diameter_mm;grade;shape;cut_length_mm;count;total_length_m;mass_kg;parts",
+            "1;;S235;straight;2500;1;2,5;;own bar"
+        ]
+    );
 }
 
 #[test]

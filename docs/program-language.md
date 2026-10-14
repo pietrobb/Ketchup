@@ -152,7 +152,8 @@ height (2 up to 900 mm, 3 to 1600, 4 to 2000, then 5); a door further than
 `washer(name, size)` (ISO 7089), `bolt(name, size, length, norm="ISO 4017")`
 (also `ISO 4014`, `ISO 4762`) and `threaded_rod(name, size, length)` (DIN 975)
 place a simplified steel body, seated at `at` along `axis`, with `designation`
-(e.g. `ISO 4017 M8x40`), `standard`, `mass_basis` and `source` in the cut list.
+(e.g. `ISO 4017 M8x40`), `standard`, `mass_basis` and `source`; they are bought,
+so report section `hardware` lists them and the cut list does not.
 A size or bolt length the norm does not have is refused with the valid ones;
 `bolt_lengths(size, norm)` lists the lengths. An ISO 4014 bolt is threaded only
 `bolt_thread_length(size, length, norm)` from its tip (b = 2d + 6, 2d + 12 or
@@ -162,8 +163,12 @@ length. ISO 4017 is threaded to the head. The dimensions come from public
 catalogues, not from the text of the standards; a value of one size that only
 one catalogue gives is named in that part's `source`. `rebar(name, diameter,
 length)` places a straight B500B bar (EN 10080, Ø6–Ø40) as a plain cylinder of
-the nominal diameter; its `mass_kg` in the cut list is the nominal mass
-(Ø12 × 1000 mm = 0.888 kg), which the window's mass of the solid equals.
+the nominal diameter, with `grade`, `diameter_mm`, `shape` and `cut_length_mm`.
+Bars are ordered as pieces of a length and shape, not by weight: any part with
+`cut_length_mm` is in report section `bar_schedule` (the cutting and bending
+schedule: position, diameter, grade, shape, cut length, count, total length and
+the mass derived from `mass_kg`, Ø12 × 1000 mm = 0.888 kg, which the window's
+mass of the solid equals), not in the hardware list or the cut list.
 The parts get no holes by themselves: drill them a little wider than the shank
 and subtract a bar or rod cast into concrete from the concrete.
 [`examples/programs/anchored-beam.star`](../examples/programs/anchored-beam.star)

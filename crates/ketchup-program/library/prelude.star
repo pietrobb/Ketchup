@@ -1216,9 +1216,12 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   rebar(name, diameter, length, grade="B500B", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
 #     a straight reinforcing bar, diameter in mm (6, 8, 10, 12, 14, 16, 20, 25, 28, 32, 40),
 #     any length > 0, from `at` along `axis`. Its body is a plain cylinder of the nominal
-#     diameter (no ribs), so the window weighs exactly the nominal mass; designation
-#     "B500B Ø12 L1000", standard "EN 10080", mass_kg the nominal mass of the piece
-#     (rebar_mass_kg(diameter, length) = pi d^2 / 4 x length x 7850 kg/m3; Ø12 x 1000 = 0.888).
+#     diameter (no ribs), so the window weighs exactly the nominal mass. Attributes grade
+#     "B500B", diameter_mm, shape "straight", cut_length_mm (the length), standard
+#     "EN 10080", mass_kg the nominal mass of the piece (rebar_mass_kg(diameter, length) =
+#     pi d^2 / 4 x length x 7850 kg/m3; Ø12 x 1000 = 0.888). Bars are ordered as pieces of
+#     a length and shape, not by weight: report section bar_schedule (the cutting and
+#     bending schedule) lists them, the hardware list and the cut list leave them out.
 #     REBAR_MASS_KG_M holds the catalogues' kg/m, which this formula matches within 0.1 %.
 #   A size or length the norm (or this library) does not have is refused with the valid ones
 #   listed; the model is then unchanged, like any refused program.
@@ -1230,9 +1233,13 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   The body is simplified: a hexagon of the nominal width across flats s (or a ring, or a
 #   round head with its hexagon socket), the bore and shank the nominal thread diameter, no
 #   thread, chamfers, washer face or insert. Material "steel".
-#   Every part with a designation is bought, not made: report section hardware counts it
-#   (one row per designation with count, parts and the other attributes), the cut list
-#   leaves it out. Attributes: designation (e.g. "ISO 4032 M8", "ISO 4017 M8x40"),
+#   Where a part is ordered follows its attributes, for library and program parts alike:
+#   one with cut_length_mm is a bar cut (and bent) to that length, in report section
+#   bar_schedule (position, diameter, grade, shape, cut length, count, total length, mass
+#   derived from mass_kg); any other with a designation is bought, in report section
+#   hardware (one row per designation with count, parts and the other attributes); the
+#   rest is made, in the cut list. Nuts, washers, bolts and rods are bought. Their
+#   attributes: designation (e.g. "ISO 4032 M8", "ISO 4017 M8x40"),
 #   standard, mass_basis (the mass is the simplified body's volume x 7850 kg/m3, not a
 #   catalogue weight) and source, which names a value of this size that has only one source.
 #   Bolts and threaded rods also carry thread (their size, e.g. "M8") and thread_from_mm /
@@ -1586,7 +1593,10 @@ def rebar(name, diameter, length, grade = "B500B", at = (0, 0, 0), axis = (0, 0,
     note = _REBAR_SOURCE_NOTES.get(d)
     part = extrude(name, profile = _circle(d / 2.0, "bar"), distance = length, at = at, material = "steel",
                    tags = tags, attributes = {
-                       "designation": "%s Ø%s L%s" % (grade, d, length),
+                       "grade": grade,
+                       "diameter_mm": "%g" % d,
+                       "shape": "straight",
+                       "cut_length_mm": "%g" % length,
                        "standard": "EN 10080",
                        "mass_basis": _REBAR_MASS_BASIS,
                        "mass_kg": str(int(rebar_mass_kg(d, length) * 1000 + 0.5) / 1000.0),
