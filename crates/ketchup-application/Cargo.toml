@@ -14,6 +14,7 @@ default = []
 [dependencies]
 ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-assistant = { path = "../ketchup-assistant" }
+ketchup-dwg = { path = "../ketchup-dwg" }
 ketchup-model = { path = "../ketchup-model" }
 ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-interaction = { path = "../ketchup-interaction" }

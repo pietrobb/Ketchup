@@ -924,32 +924,16 @@ impl KetchupApp {
             AppCommand::ImportBlenderGlb => self.begin_glb_import(),
             AppCommand::ImportDrawingDxf => {
                 if let Some(path) = self.choose_dxf_import_path() {
-                    let result = Self::read_dxf_source(&path).and_then(|source| {
-                        let (dxf, _) = crate::app::dwg_import::drawing_dxf(&path, &source)?;
-                        let initial_review = Self::inspect_dxf_for_review(&dxf)?;
-                        let unit = initial_review.units().source_unit();
-                        let unit_confirmed =
-                            initial_review.units().authority() == ImportUnitAuthority::FileDeclared;
-                        let source_plan = ImportSourcePlan::seal(
-                            ImportFormat::Dxf,
-                            path.clone(),
-                            source,
-                            unit,
-                            &self.document.current(),
-                        );
-                        let plan = self.prepare_dxf_import_preview_plan(source_plan)?;
-                        Ok(PendingDxfImport {
-                            plan,
-                            unit_confirmed,
-                            review_error: None,
-                            invalidated: false,
-                        })
-                    });
-                    match result {
-                        Ok(pending) => self.modal.open(pending),
-                        Err(reason) => {
-                            self.report_import_failure(&path, &reason);
+                    // In a frame a DWG file is read on a thread while the window shows it.
+                    let context = self.file.activity.context.clone();
+                    match context {
+                        Some(context) if crate::app::dwg_import::is_dwg_path(&path) => {
+                            self.start_dwg_read(path, &context);
                         }
+                        _ => match Self::read_dxf_source(&path) {
+                            Ok(source) => self.open_drawing_import(path, source),
+                            Err(reason) => self.report_import_failure(&path, &reason),
+                        },
                     }
                 }
             }

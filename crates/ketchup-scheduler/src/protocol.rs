@@ -8,6 +8,7 @@ use crate::{
     CamSimulationWireEvidence, CamSimulationWireRequest, ExactVolumeMeshWireOptions,
     StepAssemblyManifest, StepXdeWorkerEvidence, WorkerExactBRepGraphResult,
 };
+use ketchup_dwg::MAX_DWG_SOURCE_BYTES;
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_GRAPH_BYTES};
 use ketchup_model::graph::sha256_hex;
 use ketchup_program::{Evaluated, ProgramError, ProgramModel, SourceLines};
@@ -18,8 +19,12 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-/// A maximal graph plus bounded request metadata (CAM motions, source paths).
-pub const MAX_REQUEST_FRAME_BYTES: usize = MAX_EXACT_BREP_GRAPH_BYTES + 1024 * 1024;
+/// A maximal graph or DWG file plus bounded request metadata (CAM motions, source paths).
+pub const MAX_REQUEST_FRAME_BYTES: usize = if MAX_EXACT_BREP_GRAPH_BYTES > MAX_DWG_SOURCE_BYTES {
+    MAX_EXACT_BREP_GRAPH_BYTES
+} else {
+    MAX_DWG_SOURCE_BYTES
+} + 1024 * 1024;
 /// Bulky meshes travel through files named in the request, not through replies.
 pub const MAX_REPLY_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
@@ -119,6 +124,9 @@ pub enum WorkerRequest {
     /// Runs a user's rule program. Only the program worker gets it: a process of
     /// its own in a job with a memory limit, killed on cancel and at the deadline.
     EvaluateProgram(ProgramInput),
+    /// Reads a DWG file as DXF. Only the program worker gets it, for the same
+    /// reason: the reader allocates what a damaged file declares.
+    ConvertDwg(DwgInput),
     /// Test hooks: a native exception, a long job and a hard crash.
     Exception,
     Sleep {
@@ -153,7 +161,149 @@ pub enum WorkerReply {
     PairLoaded { slot: usize },
     Pair(PairMeasure),
     Program(Box<ProgramOutcome>),
+    Dwg(Box<DwgOutcome>),
     Failure(WorkerFailure),
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct DwgInput {
+    #[serde(with = "cbor_bytes")]
+    pub dwg: Vec<u8>,
+    pub max_dxf_bytes: usize,
+}
+
+/// [`ketchup_dwg::dwg_to_dxf`] on the wire.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum DwgOutcome {
+    Converted {
+        #[serde(with = "cbor_bytes")]
+        dxf: Vec<u8>,
+        version: String,
+        /// Record type and count of every kind of record the read left out.
+        skipped: Vec<(String, usize)>,
+    },
+    Refused(DwgRefusal),
+}
+
+/// A [`ketchup_dwg::DwgError`] on the wire, with its facts as fields.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum DwgRefusal {
+    SourceTooLarge {
+        bytes: usize,
+        limit: usize,
+    },
+    DxfTooLarge {
+        limit: usize,
+    },
+    NothingRead {
+        diagnostic: Option<String>,
+    },
+    /// acadrust refused the file or panicked reading it: the error's report
+    /// with its cause, which does not cross the process boundary as a type.
+    Reader {
+        report: String,
+    },
+}
+
+impl From<ketchup_dwg::DwgError> for DwgRefusal {
+    fn from(error: ketchup_dwg::DwgError) -> Self {
+        use ketchup_dwg::DwgError;
+        match error {
+            DwgError::SourceTooLarge { bytes, limit } => Self::SourceTooLarge { bytes, limit },
+            DwgError::DxfTooLarge { limit } => Self::DxfTooLarge { limit },
+            DwgError::NothingRead { diagnostic } => Self::NothingRead { diagnostic },
+            DwgError::Library { .. } | DwgError::Panicked { .. } => {
+                let report = std::error::Error::source(&error)
+                    .map_or_else(|| error.to_string(), |cause| format!("{error}: {cause}"));
+                Self::Reader { report }
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for DwgRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use ketchup_dwg::DwgError;
+        match self {
+            Self::SourceTooLarge { bytes, limit } => DwgError::SourceTooLarge {
+                bytes: *bytes,
+                limit: *limit,
+            }
+            .fmt(formatter),
+            Self::DxfTooLarge { limit } => DwgError::DxfTooLarge { limit: *limit }.fmt(formatter),
+            Self::NothingRead { diagnostic } => DwgError::NothingRead {
+                diagnostic: diagnostic.clone(),
+            }
+            .fmt(formatter),
+            Self::Reader { report } => formatter.write_str(report),
+        }
+    }
+}
+
+impl std::error::Error for DwgRefusal {}
+
+impl From<Result<ketchup_dwg::DwgDrawing, ketchup_dwg::DwgError>> for DwgOutcome {
+    fn from(result: Result<ketchup_dwg::DwgDrawing, ketchup_dwg::DwgError>) -> Self {
+        match result {
+            Ok(drawing) => Self::Converted {
+                dxf: drawing.dxf,
+                version: drawing.version,
+                skipped: drawing
+                    .skipped
+                    .into_iter()
+                    .map(|records| (records.record_type, records.count))
+                    .collect(),
+            },
+            Err(error) => Self::Refused(error.into()),
+        }
+    }
+}
+
+impl From<DwgOutcome> for Result<ketchup_dwg::DwgDrawing, DwgRefusal> {
+    fn from(outcome: DwgOutcome) -> Self {
+        match outcome {
+            DwgOutcome::Converted {
+                dxf,
+                version,
+                skipped,
+            } => Ok(ketchup_dwg::DwgDrawing {
+                dxf,
+                version,
+                skipped: skipped
+                    .into_iter()
+                    .map(|(record_type, count)| ketchup_dwg::SkippedRecords { record_type, count })
+                    .collect(),
+            }),
+            DwgOutcome::Refused(refusal) => Err(refusal),
+        }
+    }
+}
+
+/// Bytes as one CBOR byte string, not an array of numbers twice their size.
+mod cbor_bytes {
+    use serde::{Deserializer, Serializer, de};
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(bytes)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        struct Bytes;
+        impl de::Visitor<'_> for Bytes {
+            type Value = Vec<u8>;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a byte string")
+            }
+            fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<Vec<u8>, E> {
+                Ok(bytes.to_vec())
+            }
+            fn visit_byte_buf<E: de::Error>(self, bytes: Vec<u8>) -> Result<Vec<u8>, E> {
+                Ok(bytes)
+            }
+        }
+        deserializer.deserialize_byte_buf(Bytes)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

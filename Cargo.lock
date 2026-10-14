@@ -2385,6 +2385,7 @@ version = "0.1.0"
 dependencies = [
  "ketchup-analysis",
  "ketchup-assistant",
+ "ketchup-dwg",
  "ketchup-geometry",
  "ketchup-interaction",
  "ketchup-manufacturing",
@@ -2551,6 +2552,7 @@ dependencies = [
  "ed25519-dalek",
  "ketchup-analysis",
  "ketchup-assistant",
+ "ketchup-dwg",
  "ketchup-exact",
  "ketchup-geometry",
  "ketchup-interaction",

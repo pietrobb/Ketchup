@@ -16,11 +16,21 @@ use acadrust::{
     DwgReadOptions, DwgReader, DwgWriter, DxfError, DxfReader, DxfVersion, DxfWriter, ReadStats,
 };
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 #[cfg(test)]
 mod tests;
 
 /// The DWG version Ketchup writes: AutoCAD 2018.
 pub const WRITTEN_VERSION: &str = "AC1032";
+
+/// The largest DWG file Ketchup reads.
+pub const MAX_DWG_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+
+/// The DXF sections whose content [`dwg_to_dxf`] writes: the ones a drawing import reads.
+/// The others (classes, tables, objects) are written empty; the objects section alone is
+/// commonly most of a drawing's DXF text.
+pub const DXF_SECTIONS_KEPT: [&str; 3] = ["HEADER", "BLOCKS", "ENTITIES"];
 
 /// The step of a conversion that failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,7 +55,7 @@ impl fmt::Display for Stage {
 #[derive(Debug)]
 pub enum DwgError {
     /// The DWG file is larger than the caller reads; nothing was read.
-    SourceTooLarge { bytes: u64, limit: u64 },
+    SourceTooLarge { bytes: usize, limit: usize },
     /// The DXF text of the DWG drawing grew past the caller's limit; writing stopped there.
     DxfTooLarge { limit: usize },
     /// The DWG file's object stream could not be read at all (a damaged header or section
@@ -68,8 +78,8 @@ impl fmt::Display for DwgError {
             }
             Self::DxfTooLarge { limit } => write!(
                 formatter,
-                "DWG drawing converts to more than {limit} bytes of DXF; the file is probably \
-                 damaged or holds objects the DWG reader misreads"
+                "the header, blocks and entities of the DWG drawing are more than the {limit} \
+                 bytes of DXF a drawing import reads"
             ),
             Self::NothingRead {
                 diagnostic: Some(diagnostic),
@@ -112,16 +122,20 @@ pub struct DwgDrawing {
     pub skipped: Vec<SkippedRecords>,
 }
 
-/// Reads a DWG file and writes its drawing as DXF text. The size of the file is checked
-/// before reading and the DXF size while writing, so a runaway conversion stops at the limit.
-/// Object records the reader cannot decode are left out and listed in
-/// [`DwgDrawing::skipped`]; a file whose object stream cannot be read at all is refused.
+/// Reads a DWG file and writes its drawing as DXF text with the content of
+/// [`DXF_SECTIONS_KEPT`] only. The size of the file is checked before reading and the DXF size
+/// while writing, so a runaway conversion stops at the limit. Object records the reader cannot
+/// decode are left out and listed in [`DwgDrawing::skipped`]; a file whose object stream cannot
+/// be read at all is refused.
+///
+/// The reader trusts sizes the file declares: a damaged or hostile file can make it allocate
+/// more memory than there is, which aborts the process. Run it in a process of its own.
 pub fn dwg_to_dxf(
     dwg: &[u8],
-    max_dwg_bytes: u64,
+    max_dwg_bytes: usize,
     max_dxf_bytes: usize,
 ) -> Result<DwgDrawing, DwgError> {
-    let bytes = u64::try_from(dwg.len()).unwrap_or(u64::MAX);
+    let bytes = dwg.len();
     if bytes > max_dwg_bytes {
         return Err(DwgError::SourceTooLarge {
             bytes,
@@ -137,22 +151,19 @@ pub fn dwg_to_dxf(
             diagnostic: outcome.stats.diagnostics.first().map(|d| d.message.clone()),
         });
     }
-    let mut out = CappedWriter {
-        buf: Vec::new(),
-        limit: max_dxf_bytes,
-        exceeded: false,
-    };
+    let mut out = SectionWriter::new(max_dxf_bytes);
     let written = guarded(Stage::WriteDxf, || {
         DxfWriter::new(&outcome.document).write_to_writer(&mut out)
     });
-    if out.exceeded {
+    let dxf = out.finish();
+    let Some(dxf) = dxf else {
         return Err(DwgError::DxfTooLarge {
             limit: max_dxf_bytes,
         });
-    }
+    };
     written?;
     Ok(DwgDrawing {
-        dxf: out.buf,
+        dxf,
         version: outcome.stats.source_version.clone(),
         skipped: skipped_records(&outcome.stats),
     })
@@ -220,20 +231,109 @@ fn skipped_records(stats: &ReadStats) -> Vec<SkippedRecords> {
     skipped
 }
 
-/// Collects DXF text and fails every write once it would grow past `limit`.
-struct CappedWriter {
-    buf: Vec<u8>,
-    limit: usize,
-    exceeded: bool,
+/// Where a [`SectionWriter`] is in the DXF text.
+enum Place {
+    BetweenSections,
+    /// After `0 SECTION`, before the `2 <name>` pair; the first pair is held.
+    SectionStart(Vec<u8>),
+    InSection {
+        kept: bool,
+    },
 }
 
-impl Write for CappedWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if self.exceeded || self.buf.len().saturating_add(bytes.len()) > self.limit {
+/// Collects DXF text pair by pair, keeping only the content of [`DXF_SECTIONS_KEPT`], and fails
+/// every write once the kept text would grow past `limit`.
+struct SectionWriter {
+    out: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+    /// The line being written, up to its newline.
+    line: Vec<u8>,
+    /// The group code line of the pair being written.
+    code: Option<Vec<u8>>,
+    place: Place,
+}
+
+impl SectionWriter {
+    const fn new(limit: usize) -> Self {
+        Self {
+            out: Vec::new(),
+            limit,
+            exceeded: false,
+            line: Vec::new(),
+            code: None,
+            place: Place::BetweenSections,
+        }
+    }
+
+    fn pair(&mut self, code: &[u8], value: &[u8]) {
+        let is = |line: &[u8], text: &str| line.trim_ascii().eq_ignore_ascii_case(text.as_bytes());
+        let pair = [code, value].concat();
+        match std::mem::replace(&mut self.place, Place::BetweenSections) {
+            Place::BetweenSections if is(code, "0") && is(value, "SECTION") => {
+                self.place = Place::SectionStart(pair);
+            }
+            Place::BetweenSections => self.emit(&pair),
+            Place::SectionStart(start) => {
+                // A section without a name pair keeps its content, for the import to refuse.
+                let kept = !is(code, "2") || DXF_SECTIONS_KEPT.iter().any(|name| is(value, name));
+                self.emit(&start);
+                self.emit(&pair);
+                self.place = Place::InSection { kept };
+            }
+            Place::InSection { .. } if is(code, "0") && is(value, "ENDSEC") => self.emit(&pair),
+            Place::InSection { kept } => {
+                if kept {
+                    self.emit(&pair);
+                }
+                self.place = Place::InSection { kept };
+            }
+        }
+    }
+
+    fn emit(&mut self, bytes: &[u8]) {
+        if self.out.len().saturating_add(bytes.len()) > self.limit {
             self.exceeded = true;
+        } else {
+            self.out.extend_from_slice(bytes);
+        }
+    }
+
+    /// The kept text, with any unfinished pair as it was written; `None` past the limit.
+    fn finish(mut self) -> Option<Vec<u8>> {
+        if let Place::SectionStart(start) =
+            std::mem::replace(&mut self.place, Place::BetweenSections)
+        {
+            self.emit(&start);
+        }
+        let rest = [
+            self.code.take().unwrap_or_default(),
+            std::mem::take(&mut self.line),
+        ]
+        .concat();
+        self.emit(&rest);
+        (!self.exceeded).then_some(self.out)
+    }
+}
+
+impl Write for SectionWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.exceeded {
             return Err(std::io::Error::other("DXF size limit reached"));
         }
-        self.buf.extend_from_slice(bytes);
+        for piece in bytes.split_inclusive(|byte| *byte == b'\n') {
+            self.line.extend_from_slice(piece);
+            if piece.ends_with(b"\n") {
+                let line = std::mem::take(&mut self.line);
+                match self.code.take() {
+                    None => self.code = Some(line),
+                    Some(code) => self.pair(&code, &line),
+                }
+            }
+        }
+        if self.exceeded {
+            return Err(std::io::Error::other("DXF size limit reached"));
+        }
         Ok(bytes.len())
     }
 

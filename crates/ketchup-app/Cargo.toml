@@ -44,6 +44,7 @@ winreg = "0.56.0"
 ketchup-view-format = { path = "../ketchup-view-format" }
 ketchup-viewer = { path = "../ketchup-viewer" }
 ketchup-test-env = { path = "../ketchup-test-env" }
+ketchup-dwg = { path = "../ketchup-dwg", features = ["testing"] }
 ketchup-test-gpu = { path = "../ketchup-test-gpu" }
 ketchup-app = { path = ".", features = ["testing"] }
 ketchup-model = { path = "../ketchup-model", features = ["testing"] }

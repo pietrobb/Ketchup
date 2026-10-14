@@ -11,5 +11,9 @@ repository.workspace = true
 # MPL-2.0 (https://github.com/hakanaktt/acadrust), used unmodified from crates.io.
 acadrust = "=0.6.4"
 
+[features]
+# Damaged DWG files for tests in other crates.
+testing = []
+
 [lints]
 workspace = true

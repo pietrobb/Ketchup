@@ -10,6 +10,7 @@ pub(crate) struct FileActivity {
     opening: Option<OpenTask>,
     pub(super) saving: Option<super::save_activity::SaveTask>,
     pub(super) viewer_export: Option<super::viewer_export_activity::ViewerExportTask>,
+    pub(super) dwg_reading: Option<super::dwg_import::DwgReadTask>,
 }
 
 type OpenResult = Result<
@@ -116,6 +117,7 @@ impl KetchupApp {
             || self.file.activity.opening.is_some()
             || self.file.activity.saving.is_some()
             || self.file.activity.viewer_export.is_some()
+            || self.file.activity.dwg_reading.is_some()
         {
             return true;
         }
@@ -157,6 +159,8 @@ impl KetchupApp {
     pub(crate) fn file_activity_label(&self) -> Option<String> {
         let command = if self.file.activity.opening.is_some() {
             AppCommand::Open
+        } else if self.file.activity.dwg_reading.is_some() {
+            AppCommand::ImportDrawingDxf
         } else if self.file.activity.viewer_export.is_some() {
             AppCommand::ExportViewer
         } else if self.file.activity.saving.is_some() {
@@ -179,6 +183,7 @@ impl KetchupApp {
         if context.input(|input| input.viewport().close_requested()) {
             self.file.activity.pending = None;
             self.file.activity.opening = None;
+            self.cancel_dwg_read();
             self.defer_close_until_saved(context);
             self.defer_close_until_exported(context);
             self.cancel_save_preparation();
@@ -203,6 +208,7 @@ impl KetchupApp {
         if (response.inner || response.should_close()) && !self.file_write_in_progress() {
             self.file.activity.pending = None;
             self.file.activity.opening = None;
+            self.cancel_dwg_read();
             self.cancel_save_preparation();
             self.cancel_viewer_export_preparation();
             context.request_repaint();
@@ -218,6 +224,10 @@ impl KetchupApp {
         }
         if self.file.activity.opening.is_some() {
             self.poll_document_read(context);
+            return;
+        }
+        if self.file.activity.dwg_reading.is_some() {
+            self.poll_dwg_read(context);
             return;
         }
         let pending = self

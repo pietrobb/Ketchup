@@ -1,12 +1,108 @@
 //! A `.dwg` drawing imports as the DXF that `ketchup-dwg` converts it to: the
 //! review, the plan and the bounded DXF limits are those of a DXF import. The
 //! sealed source stays the DWG file's own bytes, so publication still checks
-//! that the file on disk is the one reviewed, and the conversion runs again from
-//! it. What the DWG reader could not decode is listed in the review, never
-//! dropped silently.
+//! that the file on disk is the one reviewed. What the DWG reader could not
+//! decode is listed in the review, never dropped silently.
+//!
+//! The reader allocates what a file declares, so it runs in the program worker
+//! (review SEC-5): a damaged file costs that process, not the window. The window
+//! reads the file on a thread of its own and shows it is busy (DR-3); the review,
+//! its plan and the publication then find the conversion of the same bytes here
+//! instead of reading the file again.
 
 use crate::*;
+use ketchup_dwg::DwgDrawing;
+use ketchup_program::CancelToken;
 use std::borrow::Cow;
+use std::sync::{Arc, Mutex};
+
+/// The last DWG files read, by the SHA-256 of their bytes.
+static READ: Mutex<Vec<([u8; 32], Arc<DwgDrawing>)>> = Mutex::new(Vec::new());
+
+/// Enough for a review in the window and one of a client at the same time.
+const KEPT_READS: usize = 2;
+
+/// The conversion of `source`, from [`READ`] or read now in the program worker.
+fn read_dwg(source: &[u8], cancel: &CancelToken) -> Result<Arc<DwgDrawing>, ImportError> {
+    let digest = sha256_bytes(source);
+    let read = || {
+        READ.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    if let Some((_, drawing)) = read().iter().find(|(kept, _)| *kept == digest) {
+        return Ok(Arc::clone(drawing));
+    }
+    let max_dxf_bytes =
+        usize::try_from(ImportFormat::Dxf.source_limit_bytes()).unwrap_or(usize::MAX);
+    let drawing = Arc::new(
+        ketchup_application::program_isolation::convert_dwg(source, max_dxf_bytes, cancel)
+            .map_err(|error| ImportError::failed(ImportFormat::Dxf, error))?,
+    );
+    let mut kept = read();
+    kept.retain(|(other, _)| *other != digest);
+    kept.push((digest, Arc::clone(&drawing)));
+    let excess = kept.len().saturating_sub(KEPT_READS);
+    kept.drain(..excess);
+    Ok(drawing)
+}
+
+/// A DWG file being read for the import review, off the window's thread.
+pub(crate) struct DwgReadTask {
+    path: PathBuf,
+    cancel: CancelToken,
+    receiver: std::sync::mpsc::Receiver<Result<Vec<u8>, ImportError>>,
+}
+
+impl KetchupApp {
+    /// Reads the DWG file at `path` on a thread; [`Self::poll_dwg_read`] opens
+    /// the review when it is read.
+    pub(crate) fn start_dwg_read(&mut self, path: PathBuf, context: &egui::Context) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancel = CancelToken::default();
+        let (thread_path, thread_cancel, repaint) = (path.clone(), cancel.clone(), context.clone());
+        std::thread::spawn(move || {
+            let result = Self::read_dxf_source(&thread_path).and_then(|source| {
+                read_dwg(&source, &thread_cancel)?;
+                Ok(source)
+            });
+            if sender.send(result).is_ok() {
+                repaint.request_repaint();
+            }
+        });
+        self.file.activity.dwg_reading = Some(DwgReadTask {
+            path,
+            cancel,
+            receiver,
+        });
+    }
+
+    pub(super) fn poll_dwg_read(&mut self, context: &egui::Context) {
+        let Some(task) = self.file.activity.dwg_reading.as_ref() else {
+            return;
+        };
+        let result = match task.receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(ImportError::failed(
+                ImportFormat::Dxf,
+                "the thread that reads the DWG file stopped",
+            )),
+        };
+        let task = self.file.activity.dwg_reading.take().expect("polled task");
+        match result {
+            Ok(source) => self.open_drawing_import(task.path, source),
+            Err(error) => self.report_import_failure(&task.path, &error),
+        }
+        context.request_repaint();
+    }
+
+    /// Stops reading a DWG file; the worker reading it is killed.
+    pub(super) fn cancel_dwg_read(&mut self) {
+        if let Some(task) = self.file.activity.dwg_reading.take() {
+            task.cancel.cancel();
+        }
+    }
+}
 
 /// What reading a DWG file as DXF reported.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,7 +120,8 @@ pub(crate) fn is_dwg_path(path: &Path) -> bool {
 
 /// The DXF a drawing import reads from `source`, the bytes of `path`: those
 /// bytes, or for a `.dwg` file the DXF they convert to, refused when it would
-/// be larger than a DXF file the import reads.
+/// be larger than a DXF file the import reads. A file not read yet is read in
+/// the program worker while the caller waits.
 pub(crate) fn drawing_dxf<'a>(
     path: &Path,
     source: &'a [u8],
@@ -32,16 +129,12 @@ pub(crate) fn drawing_dxf<'a>(
     if !is_dwg_path(path) {
         return Ok((Cow::Borrowed(source), None));
     }
-    // The DWG file and its DXF are each bounded like a DXF file.
-    let limit = ImportFormat::Dxf.source_limit_bytes();
-    let drawing =
-        ketchup_dwg::dwg_to_dxf(source, limit, usize::try_from(limit).unwrap_or(usize::MAX))
-            .map_err(|error| ImportError::failed(ImportFormat::Dxf, error))?;
+    let drawing = read_dwg(source, &CancelToken::default())?;
     Ok((
-        Cow::Owned(drawing.dxf),
+        Cow::Owned(drawing.dxf.clone()),
         Some(DwgConversion {
-            version: drawing.version,
-            skipped: drawing.skipped,
+            version: drawing.version.clone(),
+            skipped: drawing.skipped.clone(),
         }),
     ))
 }

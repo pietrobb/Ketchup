@@ -456,7 +456,7 @@ fn assert_the_dwg_carries_the_dxf(
     let dwg = std::fs::read(path).unwrap();
     assert_eq!(exported["bytes"], dwg.len());
     assert!(dwg.starts_with(ketchup_dwg::WRITTEN_VERSION.as_bytes()));
-    let read = ketchup_dwg::dwg_to_dxf(&dwg, u64::MAX, usize::MAX).unwrap();
+    let read = ketchup_dwg::dwg_to_dxf(&dwg, usize::MAX, usize::MAX).unwrap();
     assert_eq!(read.version, ketchup_dwg::WRITTEN_VERSION);
     assert!(read.skipped.is_empty(), "{:?}", read.skipped);
     let back = String::from_utf8(read.dxf).unwrap();

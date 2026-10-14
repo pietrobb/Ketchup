@@ -2,6 +2,7 @@
 //! module here, so the crate links one test executable instead of one per file.
 
 mod background_task;
+mod dwg_worker;
 mod exact_brep_graph;
 mod exact_evidence_transport;
 mod generic_sketch_pocket;

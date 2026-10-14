@@ -110,6 +110,34 @@ impl KetchupApp {
         read_import_source(ImportFormat::Dxf, path)
     }
 
+    /// Opens the review of the drawing read from `path`, or tells why it cannot.
+    pub(crate) fn open_drawing_import(&mut self, path: PathBuf, source: Vec<u8>) {
+        let units = drawing_dxf(&path, &source)
+            .and_then(|(dxf, _)| Ok(Self::inspect_dxf_for_review(&dxf)?.units()));
+        let result = units.and_then(|units| {
+            let unit = units.source_unit();
+            let unit_confirmed = units.authority() == ImportUnitAuthority::FileDeclared;
+            let source_plan = ImportSourcePlan::seal(
+                ImportFormat::Dxf,
+                path.clone(),
+                source,
+                unit,
+                &self.document.current(),
+            );
+            let plan = self.prepare_dxf_import_preview_plan(source_plan)?;
+            Ok(PendingDxfImport {
+                plan,
+                unit_confirmed,
+                review_error: None,
+                invalidated: false,
+            })
+        });
+        match result {
+            Ok(pending) => self.modal.open(pending),
+            Err(reason) => self.report_import_failure(&path, &reason),
+        }
+    }
+
     pub(crate) fn inspect_dxf_for_review(source: &[u8]) -> Result<ParsedDxf, ImportError> {
         let mut last_error = None;
         for unit in [

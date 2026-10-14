@@ -2,8 +2,111 @@
 //! with the DWG version named, and confirming it imports the profiles in one
 //! Undo step.
 use crate::app::dwg_import::LAYERED_DRAWING_DXF;
+use crate::tests::shell::step_until;
 use crate::*;
 use egui_kittest::kittest::Queryable as _;
+
+/// Review SEC-5 and DR-3: in the window a DWG file is read on a thread, in the
+/// program worker, while the window shows that it is busy. A file that declares
+/// a 300 GiB section ends with a refusal in the status line, not with the
+/// window, and the next file opens its review.
+#[test]
+fn the_window_reads_a_dwg_file_on_a_thread_and_outlives_a_hostile_one() {
+    let directory = tempfile::tempdir().unwrap();
+    let dwg = ketchup_dwg::dxf_to_dwg(LAYERED_DRAWING_DXF.as_bytes()).unwrap();
+    let (hostile, plan) = (
+        directory.path().join("hostile.dwg"),
+        directory.path().join("plan.dwg"),
+    );
+    std::fs::write(
+        &hostile,
+        ketchup_dwg::testing::with_declared_header_section(&dwg, 300 << 30),
+    )
+    .unwrap();
+    std::fs::write(&plan, &dwg).unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &hostile)
+        .queue_import(ImportFormat::Dxf, &plan);
+    let app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1600.0, 1200.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.step();
+    let undo = harness.state().undo_step_count();
+
+    for path in [&hostile, &plan] {
+        // The command as the File menu dispatches it, inside a frame.
+        let context = harness.ctx.clone();
+        let app = harness.state_mut();
+        app.file.activity.context = Some(context);
+        app.dispatch_file_command(AppCommand::ImportDrawingDxf);
+        assert!(
+            app.file.activity.dwg_reading.is_some(),
+            "{}",
+            path.display()
+        );
+        assert!(app.modal.get::<PendingDxfImport>().is_none());
+        let label = app.file_activity_label().expect("busy");
+        harness.step();
+        // Shown while the file is read, unless it was read within the frame.
+        assert!(
+            harness
+                .query_all(egui_kittest::kittest::by().label(&label))
+                .next()
+                .is_some()
+                || harness.state().file.activity.dwg_reading.is_none()
+        );
+        step_until(
+            &mut harness,
+            Duration::from_secs(60),
+            "the DWG file was not read",
+            |app| app.file.activity.dwg_reading.is_none(),
+        );
+    }
+
+    let app = harness.state();
+    let pending = app
+        .modal
+        .get::<PendingDxfImport>()
+        .unwrap_or_else(|| panic!("no review: {}", app.action_digest()));
+    assert_eq!(pending.plan.source.path, plan);
+    assert_eq!(pending.plan.review.profiles().len(), 3);
+    assert_eq!(app.undo_step_count(), undo);
+}
+
+/// The refusal of the hostile file stays in the status line until the next
+/// file is chosen; read alone so the line is checked before it is replaced.
+#[test]
+fn the_window_names_why_a_hostile_dwg_file_was_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let dwg = ketchup_dwg::dxf_to_dwg(LAYERED_DRAWING_DXF.as_bytes()).unwrap();
+    let hostile = directory.path().join("hostile.dwg");
+    std::fs::write(
+        &hostile,
+        ketchup_dwg::testing::with_declared_header_section(&dwg, 300 << 30),
+    )
+    .unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &hostile);
+    let app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1600.0, 1200.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.step();
+    let context = harness.ctx.clone();
+    let app = harness.state_mut();
+    app.file.activity.context = Some(context);
+    app.dispatch_file_command(AppCommand::ImportDrawingDxf);
+    step_until(
+        &mut harness,
+        Duration::from_secs(60),
+        "the DWG file was not read",
+        |app| app.file.activity.dwg_reading.is_none(),
+    );
+    let app = harness.state();
+    assert!(app.digest.contains("hostile.dwg"), "{}", app.digest);
+    assert!(app.digest.contains("2 GiB of memory"), "{}", app.digest);
+    assert!(app.modal.get::<PendingDxfImport>().is_none());
+}
 
 #[test]
 fn the_window_reviews_and_imports_a_dwg_drawing() {

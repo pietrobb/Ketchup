@@ -88,7 +88,7 @@ fn a_file_that_is_no_dwg_or_too_large_is_refused_and_changes_nothing() {
     let large = directory.path().join("large.dwg");
     std::fs::File::create(&large)
         .unwrap()
-        .set_len(ImportFormat::Dxf.source_limit_bytes() + 1)
+        .set_len(u64::try_from(ketchup_dwg::MAX_DWG_SOURCE_BYTES).unwrap() + 1)
         .unwrap();
     let (mut app, mut bridge) = setup();
     let (digest, undo) = (app.canonical_digest(), app.undo_step_count());
@@ -108,4 +108,43 @@ fn a_file_that_is_no_dwg_or_too_large_is_refused_and_changes_nothing() {
         assert_eq!(app.canonical_digest(), digest);
         assert_eq!(app.undo_step_count(), undo);
     }
+}
+
+/// Review SEC-5: a DWG file whose section map declares 300 GiB. Read in the
+/// window's process the reader aborts it on the allocation; read in the program
+/// worker it is refused, and the next file imports.
+#[test]
+fn a_dwg_declaring_a_huge_section_is_refused_and_the_window_lives_on() {
+    let directory = tempfile::tempdir().unwrap();
+    let dwg = ketchup_dwg::dxf_to_dwg(LAYERED_DRAWING_DXF.as_bytes()).unwrap();
+    let (hostile, plan) = (
+        directory.path().join("hostile.dwg"),
+        directory.path().join("plan.dwg"),
+    );
+    std::fs::write(
+        &hostile,
+        ketchup_dwg::testing::with_declared_header_section(&dwg, 300 << 30),
+    )
+    .unwrap();
+    std::fs::write(&plan, &dwg).unwrap();
+    let (mut app, mut bridge) = setup();
+    let (digest, undo) = (app.canonical_digest(), app.undo_step_count());
+
+    assert_eq!(
+        bridge.execute(&mut app, import(&hostile), false),
+        Err("import_failed")
+    );
+    let error = app
+        .import_file(ImportFormat::Dxf, &hostile, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("2 GiB of memory"), "{error}");
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo);
+
+    let answer = bridge
+        .execute(&mut app, import(&plan), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(answer["review"]["profiles"], 3, "{answer}");
+    assert_eq!(app.undo_step_count(), undo + 1);
 }

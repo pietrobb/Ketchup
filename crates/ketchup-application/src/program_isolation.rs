@@ -1,13 +1,17 @@
-//! Every evaluation of a user's program in the editor goes through here: it runs
-//! in a program worker process (see `ketchup_scheduler::program_worker`), so a
-//! program that takes all the memory or never ends cannot take the window down.
+//! Every evaluation of a user's program in the editor, and every DWG file it
+//! reads, goes through here: they run in a program worker process (see
+//! `ketchup_scheduler::program_worker`), so a program that takes all the memory
+//! or never ends, or a damaged DWG file, cannot take the window down.
 use crate::evaluation::{configured_exact_worker, exact_worker_candidates};
+use ketchup_dwg::DwgDrawing;
 use ketchup_program::{CancelToken, Evaluated, ProgramError, Report};
-use ketchup_scheduler::program_worker::ProgramWorker;
+use ketchup_scheduler::WorkerError;
+use ketchup_scheduler::program_worker::{DwgConversionError, ProgramWorker};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Mutex;
 
-/// Idle workers kept for the next evaluation; more run only while evaluations overlap.
+/// Idle workers kept for the next request; more run only while requests overlap.
 const MAX_IDLE_WORKERS: usize = 2;
 
 static IDLE_WORKERS: Mutex<Vec<ProgramWorker>> = Mutex::new(Vec::new());
@@ -22,22 +26,15 @@ pub fn evaluate_program(
     overrides: &BTreeMap<String, f64>,
     cancel: &CancelToken,
 ) -> Result<Evaluated, ProgramError> {
-    let idle = IDLE_WORKERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .pop();
-    let mut worker = match idle {
-        Some(worker) => worker,
-        None => new_worker()?,
-    };
-    let result = worker.evaluate(file_name, source, overrides, cancel);
-    let mut idle = IDLE_WORKERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if idle.len() < MAX_IDLE_WORKERS {
-        idle.push(worker);
-    }
-    result
+    with_worker(|worker| worker.evaluate(file_name, source, overrides, cancel)).unwrap_or_else(
+        |error| {
+            Err(ProgramError {
+                code: "worker_failed",
+                message: format!("programs cannot be evaluated: {error}"),
+                location: None,
+            })
+        },
+    )
 }
 
 /// [`ketchup_program::run`] with the evaluation in a program worker; the report
@@ -55,6 +52,95 @@ pub fn run_program(
     Ok((evaluated, report))
 }
 
+/// [`ketchup_dwg::dwg_to_dxf`] in a program worker.
+///
+/// # Errors
+/// The reader refused the file, or reading it was stopped at the worker's
+/// memory or time limit.
+pub fn convert_dwg(
+    dwg: &[u8],
+    max_dxf_bytes: usize,
+    cancel: &CancelToken,
+) -> Result<DwgDrawing, DwgReadError> {
+    with_worker(|worker| worker.convert_dwg(dwg, max_dxf_bytes, cancel))
+        .map_err(DwgReadError::Unavailable)?
+        .map_err(DwgReadError::Conversion)
+}
+
+/// Why no program worker could take a request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkerUnavailable {
+    /// `ketchup-program-worker` is not beside the exact worker.
+    NotInstalled,
+    /// The worker executable is there but was refused.
+    Refused(WorkerError),
+}
+
+impl fmt::Display for WorkerUnavailable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotInstalled => {
+                formatter.write_str("ketchup-program-worker is not installed next to Kečup")
+            }
+            Self::Refused(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for WorkerUnavailable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotInstalled => None,
+            Self::Refused(error) => Some(error),
+        }
+    }
+}
+
+/// Why a DWG file was not read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DwgReadError {
+    Unavailable(WorkerUnavailable),
+    Conversion(DwgConversionError),
+}
+
+impl fmt::Display for DwgReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable(error) => write!(formatter, "DWG files cannot be read: {error}"),
+            Self::Conversion(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for DwgReadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unavailable(error) => Some(error),
+            Self::Conversion(error) => Some(error),
+        }
+    }
+}
+
+/// Runs `request` on an idle worker or a new one, keeping the worker for the next.
+fn with_worker<T>(request: impl FnOnce(&mut ProgramWorker) -> T) -> Result<T, WorkerUnavailable> {
+    let idle = IDLE_WORKERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop();
+    let mut worker = match idle {
+        Some(worker) => worker,
+        None => new_worker()?,
+    };
+    let result = request(&mut worker);
+    let mut idle = IDLE_WORKERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if idle.len() < MAX_IDLE_WORKERS {
+        idle.push(worker);
+    }
+    Ok(result)
+}
+
 const PROGRAM_WORKER: &str = if cfg!(windows) {
     "ketchup-program-worker.exe"
 } else {
@@ -62,22 +148,12 @@ const PROGRAM_WORKER: &str = if cfg!(windows) {
 };
 
 /// The program worker is installed beside the exact worker.
-fn new_worker() -> Result<ProgramWorker, ProgramError> {
+fn new_worker() -> Result<ProgramWorker, WorkerUnavailable> {
     let executable = configured_exact_worker()
         .into_iter()
         .chain(exact_worker_candidates())
         .map(|exact| exact.with_file_name(PROGRAM_WORKER))
         .find(|path| path.is_file())
-        .ok_or_else(|| ProgramError {
-            code: "worker_failed",
-            message:
-                "programs cannot be evaluated: ketchup-program-worker is not installed next to Kečup"
-                    .to_owned(),
-            location: None,
-        })?;
-    ProgramWorker::new(executable).map_err(|error| ProgramError {
-        code: "worker_failed",
-        message: format!("programs cannot be evaluated: {error}"),
-        location: None,
-    })
+        .ok_or(WorkerUnavailable::NotInstalled)?;
+    ProgramWorker::new(executable).map_err(WorkerUnavailable::Refused)
 }
