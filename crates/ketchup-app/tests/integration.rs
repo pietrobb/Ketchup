@@ -42,6 +42,9 @@ mod viewport_shell;
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
 
+#[path = "../src/test_gpu.rs"]
+mod test_gpu;
+
 #[test]
 fn every_test_file_is_registered() {
     integration_support::assert_every_test_file_is_registered(

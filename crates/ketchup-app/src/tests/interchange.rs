@@ -210,10 +210,10 @@ fn viewer_renders_every_exported_scene(path: &std::path::Path) {
             "axis {axis}: Viewer {shown} mm vs source {source} mm"
         );
     }
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-            .expect("GPU adapter required, never skip rendering proof");
+    let adapter = pollster::block_on(
+        crate::test_gpu::instance().request_adapter(&wgpu::RequestAdapterOptions::default()),
+    )
+    .expect("GPU adapter required, never skip rendering proof");
     let (device, queue) =
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .expect("GPU device");

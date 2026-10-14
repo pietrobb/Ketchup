@@ -90,7 +90,7 @@ LONG_TESTS = {
     "crates/ketchup-app/tests/face_workflow_ui.rs::line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical": 419,
     "crates/ketchup-app/tests/file_workflow.rs::file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscreen": 471,
     "crates/ketchup-app/tests/file_workflow.rs::file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscreen": 344,
-    "crates/ketchup-app/tests/instanced_rendering.rs::garden_studio_hardware_gpu_camera_frames": 345,
+    "crates/ketchup-app/tests/instanced_rendering.rs::garden_studio_hardware_gpu_camera_frames": 337,
     "crates/ketchup-application/tests/cad_program.rs::one_physical_pin_joint_operation_creates_both_hole_rows_atomically": 305,
     "crates/ketchup-application/tests/cad_program.rs::public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact": 371,
     "crates/ketchup-application/tests/evaluation_deadline.rs::physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence": 396,

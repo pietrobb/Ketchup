@@ -7,9 +7,9 @@ use it; the Kečup Viewer tests so corrupted the heap (0xc0000374, #103). Tests 
 instance from their crate's `test_gpu.rs`, which creates it once per test process, and
 create only their own devices.
 
-`KNOWN` lists the files that still create instances, with their count; a count may only
-go down. (An `egui_kittest` harness without an explicit renderer also creates one when it
-renders; that cannot be seen here.)
+An `egui_kittest` harness without an explicit renderer creates an instance of its own
+when it renders, so a harness that is rendered (`<name>.render()` or a snapshot; any
+unnamed harness in a file that renders) must be built with `.renderer(...)`.
 """
 from __future__ import annotations
 
@@ -25,13 +25,27 @@ ROOT = Path(__file__).resolve().parents[1]
 SHARED = "test_gpu.rs"
 CREATES = re.compile(
     r"\bInstance::new\(|\bcreate_render_state\(|\bnew_instance\(\)"
-    r"|\bWgpuTestRenderer::(?:new|from_setup)\("
+    r"|\bWgpuTestRenderer::(?:new|from_setup|default)\(|\.wgpu(?:_setup)?\("
 )
-KNOWN = {
-    "crates/ketchup-app/src/tests/interchange.rs": 1,
-    "crates/ketchup-app/tests/instanced_rendering.rs": 2,
-    "crates/ketchup-app/tests/viewer_release_smoke.rs": 1,
-}
+HARNESS = re.compile(
+    r"(?:let\s+(?:mut\s+)?(\w+)\s*(?::[^=;]*)?=\s*)?(?:egui_kittest::)?Harness::(builder\(\)|new\w*\()"
+)
+BUILD = re.compile(r"\.build\w*\(")
+RENDERS = r"\s*\.\s*(?:render\(\)|try_snapshot|snapshot_options\(|snapshot\((?!\)))"
+
+
+def renderless_harnesses(text: str) -> int:
+    count = 0
+    for match in HARNESS.finditer(text):
+        name, constructor = match.groups()
+        if constructor == "builder()":
+            build = BUILD.search(text, match.end())
+            if ".renderer(" in text[match.end(): build.start() if build else len(text)]:
+                continue
+        receiver = rf"\b{name}" if name else r"[\w)\]]"
+        if re.search(receiver + RENDERS, text):
+            count += 1
+    return count
 
 
 def current_counts(root: Path = ROOT) -> dict[str, int]:
@@ -43,18 +57,17 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
         text = path.read_text(encoding="utf-8", errors="replace")
         if not is_test_file(relative):
             text = "".join(match.group(0) for match in TEST_MODULE.finditer(text))
-        count = len(CREATES.findall(text))
+        count = len(CREATES.findall(text)) + renderless_harnesses(text)
         if count:
             counts[relative.as_posix()] = count
     return counts
 
 
 def check(root: Path = ROOT) -> int:
-    grown = [f"{key}: {value} (allowed {KNOWN.get(key, 0)})"
-             for key, value in sorted(current_counts(root).items()) if value > KNOWN.get(key, 0)]
-    if grown:
+    found = [f"{key}: {value}" for key, value in sorted(current_counts(root).items())]
+    if found:
         print(f"Tests create their own wgpu instance; take it from the crate's {SHARED}:")
-        print(*grown, sep="\n  ")
+        print(*found, sep="\n  ")
         return 1
     print("OK")
     return 0

@@ -38,5 +38,25 @@ def test_the_shared_instance_and_production_code_pass(tmp_path):
     assert checker.check(tmp_path) == 0
 
 
-def test_the_repository_is_within_its_known_instances():
+def test_a_rendered_harness_needs_an_explicit_renderer(tmp_path):
+    write(tmp_path, "crates/ketchup-app/tests/image.rs",
+          "fn t() {\n"
+          "    let mut h = Harness::builder()\n        .with_size(s)\n"
+          "        .build_state(|c, a| a.ui(c), app);\n"
+          "    h.render().unwrap();\n"
+          "    let mut quiet = Harness::builder().build_state(|c, a| a.ui(c), app);\n"
+          "    quiet.step();\n"
+          "    let doc = store.snapshot();\n"
+          "}\n")
+    assert checker.current_counts(tmp_path) == {"crates/ketchup-app/tests/image.rs": 1}
+    write(tmp_path, "crates/ketchup-app/tests/image.rs",
+          "fn t() {\n"
+          "    let mut h = Harness::builder()\n        .renderer(crate::test_gpu::renderer())\n"
+          "        .build_state(|c, a| a.ui(c), app);\n"
+          "    h.render().unwrap();\n"
+          "}\n")
+    assert checker.check(tmp_path) == 0
+
+
+def test_the_repository_creates_no_instances_in_tests():
     assert checker.check(ROOT) == 0

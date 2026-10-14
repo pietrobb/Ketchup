@@ -47,6 +47,7 @@ fn export_copy(source: &Path, output: &Path, name: &str) -> std::path::PathBuf {
     let mut ui = Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
         .with_step_dt(1.0 / 60.0)
+        .renderer(crate::test_gpu::renderer())
         .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
     ui.input_mut().events.push(egui::Event::Key {
         key: egui::Key::O,
@@ -216,8 +217,7 @@ fn save_and_reopen(ui: &mut Harness<'_, KetchupApp>, path: &Path, name: &str) {
 }
 
 fn render_viewer(path: &Path, output: &Path, name: &str) {
-    let render_state =
-        egui_kittest::wgpu::create_render_state(egui_kittest::wgpu::default_wgpu_setup());
+    let render_state = crate::test_gpu::render_state();
     eprintln!("VQ GPU: {:?}", render_state.adapter.get_info());
     let renderer = egui_kittest::wgpu::WgpuTestRenderer::from_render_state(render_state.clone());
     let mut viewer =

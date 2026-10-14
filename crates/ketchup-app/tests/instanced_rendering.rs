@@ -20,6 +20,21 @@ const PROFILE: FeatureId = FeatureId(1);
 const BODY: FeatureId = FeatureId(2);
 const OCCURRENCES: usize = 10_000;
 
+/// The high-performance DX12 adapter of the tests' shared instance: a discrete GPU before
+/// an integrated one, never a software one.
+fn hardware_dx12_adapter() -> Option<wgpu::Adapter> {
+    crate::test_gpu::instance()
+        .enumerate_adapters(wgpu::Backends::DX12)
+        .into_iter()
+        .filter_map(|adapter| match adapter.get_info().device_type {
+            wgpu::DeviceType::DiscreteGpu => Some((0, adapter)),
+            wgpu::DeviceType::IntegratedGpu => Some((1, adapter)),
+            _ => None,
+        })
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, adapter)| adapter)
+}
+
 fn grid_transform(index: usize) -> Transform {
     Transform::from_translation(
         (index % 100) as f64 * 20.0,
@@ -323,16 +338,8 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
         "{spatial_stats:?}"
     );
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::DX12,
-        ..Default::default()
-    });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-    }))
-    .expect("M16 product proof requires a hardware DX12 adapter");
+    let adapter =
+        hardware_dx12_adapter().expect("M16 product proof requires a hardware DX12 adapter");
     let adapter_info = adapter.get_info();
     assert_eq!(adapter_info.backend, wgpu::Backend::Dx12);
     assert!(!matches!(
@@ -587,16 +594,8 @@ fn garden_studio_hardware_gpu_camera_frames() {
         }
     }
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::DX12,
-        ..Default::default()
-    });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-    }))
-    .expect("garden regression requires a physical DX12 GPU, never software fallback");
+    let adapter = hardware_dx12_adapter()
+        .expect("garden regression requires a physical DX12 GPU, never software fallback");
     let adapter_info = adapter.get_info();
     assert_eq!(adapter_info.backend, wgpu::Backend::Dx12);
     assert!(matches!(

@@ -21,6 +21,7 @@ fn harness() -> Harness<'static, KetchupApp> {
     let app = KetchupApp::new();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1600.0, 1000.0))
+        .renderer(crate::test_gpu::renderer())
         .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
     h.ctx.style_mut(|s| s.animation_time = 0.0);
     for _ in 0..30 {
