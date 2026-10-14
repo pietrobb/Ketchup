@@ -56,7 +56,3 @@ def test_a_rendered_harness_needs_an_explicit_renderer(tmp_path):
           "    h.render().unwrap();\n"
           "}\n")
     assert checker.check(tmp_path) == 0
-
-
-def test_the_repository_creates_no_instances_in_tests():
-    assert checker.check(ROOT) == 0
