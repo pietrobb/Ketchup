@@ -1,3 +1,4 @@
+use super::takeoff::PartList;
 use crate::*;
 use eframe::egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
@@ -256,7 +257,11 @@ fn a_production_scope_counts_hidden_production_parts_and_never_the_concept() {
     assert_eq!((takeoff.counted_parts, takeoff.excluded_parts), (5, 1));
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("kusovnik.csv");
-    assert!(app.export_cut_list_to(&path), "{}", app.digest);
+    assert!(
+        app.export_list_to(PartList::CutList, &path),
+        "{}",
+        app.digest
+    );
     let csv = std::fs::read_to_string(&path).unwrap();
     assert!(csv.contains(",drevo,2500,140,60,5\n"), "{csv}");
     assert!(!csv.contains("obal"), "{csv}");
@@ -298,6 +303,68 @@ fn takeoff_csv_export_writes_the_visible_parts() {
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 
+/// The window exports the hardware list and the bar schedule the program
+/// report gives (MCP report sections `hardware` and `bar_schedule`).
+#[test]
+fn hardware_and_bar_schedule_export_the_report_rows() {
+    let mut app = KetchupApp::new();
+    let source = "board(\"plate\", (300, 200, 18))\n\
+                  bolt(\"b1\", \"M8\", 40, at = (50, 50, 18))\n\
+                  bolt(\"b2\", \"M8\", 40, at = (150, 50, 18))\n\
+                  rebar(\"r1\", 12, 1000, at = (0, 300, 0), axis = (1, 0, 0))\n\
+                  rebar(\"r2\", 12, 1000, at = (0, 350, 0), axis = (1, 0, 0))\n";
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "bars.star".into(),
+            source: source.into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    app.set_ui_language(crate::language::UiLanguage::Slovak);
+    let directory = tempfile::tempdir().unwrap();
+    let (_, report) = ketchup_program::run("bars.star", source, &BTreeMap::new()).unwrap();
+
+    let path = directory.path().join("kovanie.csv");
+    assert!(
+        app.export_list_to(PartList::Hardware, &path),
+        "{}",
+        app.digest
+    );
+    let csv = std::fs::read_to_string(&path).unwrap();
+    let mut lines = csv.lines();
+    assert_eq!(
+        lines.next(),
+        Some(
+            "\u{feff}item;count;parts;mass_basis;source;standard;thread;thread_from_mm;thread_to_mm"
+        )
+    );
+    let row = lines.next().unwrap();
+    assert!(row.starts_with("ISO 4017 M8x40;2;b1, b2;"), "{csv}");
+    assert!(row.ends_with(";ISO 4017;M8;'-40.0;0.0"), "{csv}");
+    assert_eq!(lines.next(), None, "the bars are not hardware: {csv}");
+    assert_eq!(
+        csv,
+        ketchup_program::bom::hardware_table(&report.bom.hardware)
+            .csv(ketchup_program::table::DecimalSeparator::Comma)
+    );
+    assert!(app.digest.contains("kovanie.csv"), "{}", app.digest);
+
+    let path = directory.path().join("vystuz.csv");
+    assert!(app.export_list_to(PartList::BarSchedule, &path));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "\u{feff}position;diameter_mm;grade;shape;cut_length_mm;count;total_length_m;mass_kg;parts\n\
+         1;12;B500B;straight;1000;2;2;1,776;r1, r2\n"
+    );
+    let workbook = directory.path().join("vystuz.xlsx");
+    assert!(app.export_list_to(PartList::BarSchedule, &workbook));
+    let text = String::from_utf8_lossy(&std::fs::read(&workbook).unwrap()).into_owned();
+    assert!(text.contains("<c r=\"E2\"><v>1000</v></c>"), "{text}");
+}
+
 /// Review 2026-10-09 §5.1 (8) and CSV-1: the cut list is a real table, one row
 /// per group of identical visible parts, with a header; CSV follows the
 /// interface language's decimal separator and XLSX is a workbook.
@@ -326,7 +393,11 @@ fn cut_list_export_is_a_table_of_the_visible_parts_in_csv_or_xlsx() {
 
     app.set_ui_language(crate::language::UiLanguage::Slovak);
     let path = directory.path().join("kusovnik.csv");
-    assert!(app.export_cut_list_to(&path), "{}", app.digest);
+    assert!(
+        app.export_list_to(PartList::CutList, &path),
+        "{}",
+        app.digest
+    );
     let csv = std::fs::read_to_string(&path).unwrap();
     assert_eq!(
         csv,
@@ -336,13 +407,13 @@ fn cut_list_export_is_a_table_of_the_visible_parts_in_csv_or_xlsx() {
     assert!(app.digest.contains("kusovnik.csv"), "{}", app.digest);
 
     app.set_ui_language(crate::language::UiLanguage::English);
-    assert!(app.export_cut_list_to(&path));
+    assert!(app.export_list_to(PartList::CutList, &path));
     let csv = std::fs::read_to_string(&path).unwrap();
     assert!(csv.starts_with("\u{feff}position,parts,material,"), "{csv}");
     assert!(csv.contains(",drevo,2500,140,60,5\n"), "{csv}");
 
     let workbook = directory.path().join("kusovnik.xlsx");
-    assert!(app.export_cut_list_to(&workbook));
+    assert!(app.export_list_to(PartList::CutList, &workbook));
     let bytes = std::fs::read(&workbook).unwrap();
     assert!(bytes.starts_with(b"PK\x03\x04"), "a ZIP package");
     let text = String::from_utf8_lossy(&bytes);

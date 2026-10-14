@@ -6,9 +6,29 @@
 use crate::app_state::{TakeoffCache, TakeoffError};
 use crate::*;
 use ketchup_program::ProgramModel;
+use ketchup_program::bom::{bar_schedule_table, bom, hardware_table};
 use ketchup_program::cut_list::cut_list_table;
 use ketchup_program::table::DecimalSeparator;
 use ketchup_program::takeoff::{Takeoff, material_takeoff, takeoff_csv};
+
+/// A list of the program's parts the takeoff window exports as a table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PartList {
+    CutList,
+    Hardware,
+    BarSchedule,
+}
+
+impl PartList {
+    /// The middle of its message keys, e.g. `digest-exported-hardware`.
+    const fn key(self) -> &'static str {
+        match self {
+            Self::CutList => "cut-list",
+            Self::Hardware => "hardware",
+            Self::BarSchedule => "bar-schedule",
+        }
+    }
+}
 
 impl KetchupApp {
     /// The counted program parts by program name, each with its published
@@ -134,9 +154,11 @@ impl KetchupApp {
         result.is_ok()
     }
 
-    /// Writes the cut list of the counted parts: XLSX for a `.xlsx` path,
-    /// otherwise CSV with the decimal separator of the interface language.
-    pub fn export_cut_list_to(&mut self, path: &Path) -> bool {
+    /// Writes `list` as a table: XLSX for a `.xlsx` path, otherwise CSV with
+    /// the decimal separator of the interface language. The cut list has the
+    /// counted parts, the hardware list and the bar schedule are the rows the
+    /// program report gives (MCP report sections `hardware`, `bar_schedule`).
+    pub(crate) fn export_list_to(&mut self, list: PartList, path: &Path) -> bool {
         let result = self.material_takeoff().and_then(|_| {
             let snapshot = self.document.current();
             let table = {
@@ -145,8 +167,14 @@ impl KetchupApp {
                     .as_ref()
                     .and_then(|cached| cached.model.as_ref().ok())
                     .ok_or(TakeoffError::NoProgram)?;
-                let counted = self.takeoff_parts(&snapshot, model, |_| true);
-                cut_list_table(model, |name| counted.contains_key(name))
+                match list {
+                    PartList::CutList => {
+                        let counted = self.takeoff_parts(&snapshot, model, |_| true);
+                        cut_list_table(model, |name| counted.contains_key(name))
+                    }
+                    PartList::Hardware => hardware_table(&bom(model).hardware),
+                    PartList::BarSchedule => bar_schedule_table(&bom(model).bar_schedule),
+                }
             };
             let xlsx = path
                 .extension()
@@ -164,14 +192,14 @@ impl KetchupApp {
             write_atomically(path, &bytes).map_err(|error| TakeoffError::Write(Arc::new(error)))
         });
         let (key, mut arguments) = match &result {
-            Ok(()) => ("digest-exported-cut-list", BTreeMap::new()),
+            Ok(()) => (format!("digest-exported-{}", list.key()), BTreeMap::new()),
             Err(reason) => (
-                "error-export-cut-list",
+                format!("error-export-{}", list.key()),
                 BTreeMap::from([("reason", self.takeoff_error_text(reason))]),
             ),
         };
         arguments.insert("path", path.display().to_string());
-        self.digest = self.catalog.format(key, &arguments);
+        self.digest = self.catalog.format(&key, &arguments);
         result.is_ok()
     }
 
@@ -204,21 +232,17 @@ impl KetchupApp {
                             &BTreeMap::from([("count", takeoff.outside_program_parts.to_string())]),
                         ));
                     }
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if ui.button(self.catalog.text("takeoff-export-csv")).clicked() {
-                            export = Some("takeoff");
+                            export = Some(None);
                         }
-                        if ui
-                            .button(self.catalog.text("takeoff-export-cut-list-csv"))
-                            .clicked()
-                        {
-                            export = Some("csv");
-                        }
-                        if ui
-                            .button(self.catalog.text("takeoff-export-cut-list-xlsx"))
-                            .clicked()
-                        {
-                            export = Some("xlsx");
+                        for list in [PartList::CutList, PartList::Hardware, PartList::BarSchedule] {
+                            for extension in ["csv", "xlsx"] {
+                                let label = format!("takeoff-export-{}-{extension}", list.key());
+                                if ui.button(self.catalog.text(&label)).clicked() {
+                                    export = Some(Some((list, extension)));
+                                }
+                            }
                         }
                     });
                     ui.separator();
@@ -233,14 +257,14 @@ impl KetchupApp {
             self.takeoff.open = false;
         }
         match export {
-            Some("takeoff") => {
+            Some(None) => {
                 if let Some(path) = self.choose_export_path("csv") {
                     self.export_material_takeoff_to(&path);
                 }
             }
-            Some(extension) => {
+            Some(Some((list, extension))) => {
                 if let Some(path) = self.choose_export_path(extension) {
-                    self.export_cut_list_to(&path);
+                    self.export_list_to(list, &path);
                 }
             }
             None => {}
