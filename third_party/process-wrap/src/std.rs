@@ -16,6 +16,9 @@ pub use creation_flags::CreationFlags;
 #[cfg(all(windows, feature = "job-object"))]
 #[doc(inline)]
 pub use job_object::{JobObject, JobObjectChild};
+#[cfg(all(windows, feature = "job-object"))]
+#[doc(inline)]
+pub use job_memory_limit::JobMemoryLimit;
 #[cfg(feature = "kill-on-drop")]
 #[doc(inline)]
 pub use kill_on_drop::KillOnDrop;
@@ -32,6 +35,8 @@ pub use reset_sigmask::ResetSigmask;
 mod core;
 #[cfg(all(windows, feature = "creation-flags"))]
 mod creation_flags;
+#[cfg(all(windows, feature = "job-object"))]
+mod job_memory_limit;
 #[cfg(all(windows, feature = "job-object"))]
 mod job_object;
 #[cfg(feature = "kill-on-drop")]

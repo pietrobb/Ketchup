@@ -109,7 +109,7 @@ impl CommandWrapper for JobObject {
 			}
 		};
 
-		let job_port = match make_job_object(handle, kill_on_drop) {
+		let job_port = match make_job_object(handle, kill_on_drop, None) {
 			Ok(job_port) => job_port,
 			Err(error) => {
 				terminate_child(&mut *inner);

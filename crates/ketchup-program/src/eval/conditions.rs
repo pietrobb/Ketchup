@@ -30,7 +30,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             model.declared_issues.push(crate::validate::Issue {
                 source_lines: Vec::new(),
                 severity,
-                kind: "program_condition_failed",
+                kind: crate::validate::PROGRAM_CONDITION_FAILED,
                 parts,
                 message: message.to_owned(),
                 where_mm: None,

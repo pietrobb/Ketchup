@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAX_STATEMENTS: u64 = 5_000_000;
-const MAX_TIME: Duration = Duration::from_secs(20);
+/// Wall time one evaluation may take.
+pub const MAX_TIME: Duration = Duration::from_secs(20);
 /// Bytes the program heap may hold. Evaluation runs inside the window process,
 /// so a program that builds a huge string or list must fail instead of taking
 /// the memory of the whole computer.
-const MAX_HEAP_BYTES: usize = 1 << 30;
+pub const MAX_HEAP_BYTES: usize = 1 << 30;
 /// Statements between two looks at the clock and the cancel flag.
 const CHECK_EVERY: u64 = 256;
 
@@ -27,6 +28,12 @@ impl CancelToken {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
+    }
+
+    /// The shared flag, for code that polls it while waiting on another process.
+    #[must_use]
+    pub fn flag(&self) -> &AtomicBool {
+        &self.0
     }
 }
 

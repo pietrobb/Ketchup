@@ -11,20 +11,20 @@ use crate::model::{Joint, Part, ProgramModel, ProgramPartBody};
 use crate::validate::{Issue, Severity};
 use ketchup_geometry::linalg::cross2;
 use ketchup_tolerance::ROUNDING;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct LoadPath {
     pub name: String,
     /// Only parts carrying one of these tags are members; empty: every part.
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub only_tags: BTreeSet<String>,
     /// Tags of other parts that may carry members (a floor deck); besides
     /// them only members and parts on the floor or anchored carry anything.
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub carrier_tags: BTreeSet<String>,
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub ignore: BTreeSet<String>,
     pub hint: String,
 }

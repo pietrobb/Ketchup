@@ -35,11 +35,12 @@ LAYERS = {
     "ketchup-pdm": 3,
     "ketchup-manufacturing": 3,
     "ketchup-program": 4,
-    "ketchup-scheduler": 4,
-    "ketchup-application": 5,
+    # The scheduler's program worker evaluates programs (review PRG-M1).
+    "ketchup-scheduler": 5,
+    "ketchup-application": 6,
     "ketchup-mcp": 5,
-    "ketchup-headless": 6,
-    "ketchup-app": 6,
+    "ketchup-headless": 7,
+    "ketchup-app": 7,
     "ketchup-viewer": 2,
     "ketchup-view-format": 1,
 }

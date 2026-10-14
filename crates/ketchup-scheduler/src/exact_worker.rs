@@ -161,6 +161,8 @@ fn handle_request(
         WorkerRequest::PairLoad(input) => pairs.load(backend, &input),
         WorkerRequest::PairQuery(query) => pairs.query(backend, &query),
         WorkerRequest::PairEnd => pairs.end(),
+        // Programs run in ketchup-program-worker.
+        WorkerRequest::EvaluateProgram(_) => Err(WorkerFailure::invalid_request()),
         WorkerRequest::Exception => match backend.exception_probe() {
             Ok(_) => Err(WorkerFailure::code("unexpected_success")),
             Err(error) => Err(WorkerFailure::code(error.code.as_str())),

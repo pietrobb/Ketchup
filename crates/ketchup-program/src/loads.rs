@@ -16,7 +16,7 @@ use crate::eval::TOLERANCE_MM;
 use crate::load_path::{joint_points, on_floor};
 use crate::model::{Part, ProgramModel, ProgramPartBody};
 use ketchup_geometry::linalg::{self, cross, dot, length, sub};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const LOAD_KINDS: [&str; 4] = ["permanent", "imposed", "roof", "snow"];
@@ -38,7 +38,7 @@ const BEARING_PROBE_MM: f64 = 5.0;
 /// Newtons by load kind.
 pub type Loads = BTreeMap<String, f64>;
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct MaterialWeight {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kg_m3: Option<f64>,
@@ -48,7 +48,7 @@ pub struct MaterialWeight {
     pub source: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct AreaLoad {
     pub name: String,
     pub kind: String,
@@ -87,7 +87,7 @@ pub struct Reaction {
     pub joint: Option<String>,
     /// The member only rests here and lifts off under its loads (static
     /// equilibrium, EN 1990 EQU): this support carries nothing.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lifted_off: bool,
 }
 
@@ -115,11 +115,11 @@ pub struct JointLoad {
 pub struct LoadReport {
     pub members: Vec<MemberLoad>,
     /// Load passed through each bearing joint, by joint name.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub joints: BTreeMap<String, JointLoad>,
     /// Loaded parts (no members) that rest on nothing that carries them, with
     /// why: their load reaches no member, so no check is complete.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unassigned: BTreeMap<String, String>,
 }
 

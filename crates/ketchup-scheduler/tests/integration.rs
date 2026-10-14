@@ -7,6 +7,7 @@ mod exact_evidence_transport;
 mod generic_sketch_pocket;
 mod job_lifecycle;
 mod plugin_sandbox;
+mod program_worker;
 mod scheduler_identity;
 mod scheduler_reliability;
 mod sheet_metal;

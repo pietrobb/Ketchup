@@ -25,7 +25,7 @@ fn controlled_worker() -> (
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let mut child = spawn_exact_worker_command(command).unwrap();
+    let mut child = spawn_limited_worker_command(command, None).unwrap();
     assert!(
         BufReader::new(child.stdout().take().unwrap())
             .lines()
@@ -61,7 +61,7 @@ fn request_timeout_terminates_exact_worker_descendants() {
         .arg(&sentinel)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let child = spawn_exact_worker_command(command).unwrap();
+    let child = spawn_limited_worker_command(command, None).unwrap();
     let (write_sender, writes) = mpsc::channel();
     let (_responses, response_receiver) = mpsc::channel();
     let mut worker = ExactWorkerClient {
@@ -103,7 +103,7 @@ fn dropping_exact_worker_terminates_descendants() {
         .arg(&sentinel)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let child = spawn_exact_worker_command(command).unwrap();
+    let child = spawn_limited_worker_command(command, None).unwrap();
     let (write_sender, _writes) = mpsc::channel();
     let (_responses, response_receiver) = mpsc::channel();
     let worker = ExactWorkerClient {
@@ -140,7 +140,7 @@ fn parent_holding_a_busy_worker() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    hold_busy_child(spawn_exact_worker_command(command).unwrap());
+    hold_busy_child(spawn_limited_worker_command(command, None).unwrap());
 }
 
 #[test]

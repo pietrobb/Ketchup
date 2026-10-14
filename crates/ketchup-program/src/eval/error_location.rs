@@ -1,6 +1,6 @@
 //! Where in the user's program an evaluation failed: file, line and column,
 //! the lines around it and the calls that led there.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use starlark::codemap::FileSpan;
 
 /// Lines shown on each side of the failing line.
@@ -11,14 +11,14 @@ const MAX_LINE_CHARS: usize = 200;
 const MAX_FRAMES: usize = 12;
 
 /// One numbered line of the evaluated source.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct NumberedLine {
     pub line: usize,
     pub text: String,
 }
 
 /// A 1-based position in a program file.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Position {
     pub file: String,
     pub line: usize,
@@ -27,7 +27,7 @@ pub struct Position {
 
 /// One call on the way to the failure, outermost first: the function called
 /// and where it was called from.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CallFrame {
     pub function: String,
     #[serde(flatten)]
@@ -36,14 +36,14 @@ pub struct CallFrame {
 
 /// The innermost place in the user's own program (not the library) where the
 /// failure happened, the source around it and the call stack.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ErrorLocation {
     #[serde(flatten)]
     pub at: Position,
     /// The failing line and up to two lines on each side, from the evaluated
     /// text: after a patch these are the patched lines the caller never saw.
     pub excerpt: Vec<NumberedLine>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub call_stack: Vec<CallFrame>,
 }
 

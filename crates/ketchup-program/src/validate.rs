@@ -10,16 +10,55 @@ use crate::model::{
     Part, ProgramBooleanKind, ProgramModel, ProgramPartBody, ProgramProfileSegment,
 };
 use ketchup_geometry::linalg::dot;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Issue kind for a box overlap that only the exact solids can decide.
 pub const COLLISION_UNVERIFIED: &str = "collision_unverified";
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Error,
     Warning,
+}
+
+/// Issue kind of a failed `check()`: the only issue a program model carries.
+pub const PROGRAM_CONDITION_FAILED: &str = "program_condition_failed";
+
+/// An issue as a program worker sends it: only a program's own issue kind is accepted.
+#[derive(Deserialize)]
+struct DeclaredIssue {
+    severity: Severity,
+    kind: String,
+    parts: Vec<String>,
+    message: String,
+    #[serde(default)]
+    where_mm: Option<([f64; 3], [f64; 3])>,
+    hint: String,
+    #[serde(default)]
+    source_lines: Vec<crate::SourceLines>,
+}
+
+// By hand: a derived reader would tie `kind: &'static str` to the input's lifetime.
+impl<'de> Deserialize<'de> for Issue {
+    fn deserialize<D: serde::Deserializer<'de>>(reader: D) -> Result<Self, D::Error> {
+        let issue = DeclaredIssue::deserialize(reader)?;
+        if issue.kind != PROGRAM_CONDITION_FAILED {
+            return Err(serde::de::Error::custom(format!(
+                "issue kind {:?} is not declared by a program",
+                issue.kind
+            )));
+        }
+        Ok(Self {
+            severity: issue.severity,
+            kind: PROGRAM_CONDITION_FAILED,
+            parts: issue.parts,
+            message: issue.message,
+            where_mm: issue.where_mm,
+            hint: issue.hint,
+            source_lines: issue.source_lines,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -32,7 +71,7 @@ pub struct Issue {
     pub where_mm: Option<([f64; 3], [f64; 3])>,
     pub hint: String,
     /// The program lines that define the issue's parts.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_lines: Vec<crate::SourceLines>,
 }
 

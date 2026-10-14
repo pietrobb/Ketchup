@@ -109,7 +109,9 @@ impl CommandWrapper for JobObject {
 			}
 		};
 
-		let job_port = match make_job_object(handle, kill_on_drop) {
+		let memory_limit = core.get_wrap::<super::JobMemoryLimit>().map(|limit| limit.0);
+
+		let job_port = match make_job_object(handle, kill_on_drop, memory_limit) {
 			Ok(job_port) => job_port,
 			Err(error) => {
 				terminate_child(&mut *inner);

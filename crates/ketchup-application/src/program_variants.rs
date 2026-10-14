@@ -185,7 +185,7 @@ pub fn evaluate_variants(
         .variants
         .iter()
         .map(|(name, values)| {
-            let evaluated = ketchup_program::evaluate_cancellable(
+            let evaluated = crate::program_isolation::evaluate_program(
                 &program.file_name,
                 &program.source,
                 values,

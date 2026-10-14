@@ -2556,6 +2556,7 @@ dependencies = [
  "ketchup-interaction",
  "ketchup-manufacturing",
  "ketchup-model",
+ "ketchup-program",
  "ketchup-test-env",
  "process-wrap",
  "serde",

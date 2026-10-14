@@ -12,19 +12,19 @@ use crate::validate::{
     Issue, Severity, booleans_leave_overlap, is_box, needs_exact_shapes, overlap,
 };
 use ketchup_tolerance::APPROXIMATION;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct FreeSpace {
     pub name: String,
     /// The tool body that is the space.
     pub zone: String,
     /// Only parts carrying one of these tags count; empty: every part.
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub only_tags: BTreeSet<String>,
     /// Parts that belong in the space (the thing it serves).
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub ignore: BTreeSet<String>,
     pub hint: String,
 }

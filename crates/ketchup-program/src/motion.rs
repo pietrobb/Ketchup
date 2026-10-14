@@ -4,10 +4,10 @@ use ketchup_model::{
     assembly_joint::{AssemblyJointAxis, AssemblyJointKind, AssemblyJointLimits},
     document::Transform,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramMotion {
     pub name: String,
     pub endpoints: [String; 2],
@@ -21,7 +21,7 @@ pub struct ProgramMotion {
 
 /// Ordered insertion of a rigid part/group using a named motion. The source
 /// order is the assembly order; undeclared parts are already present.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramAssemblyStep {
     pub motion: String,
     pub from: f64,
@@ -29,7 +29,7 @@ pub struct ProgramAssemblyStep {
 }
 
 /// Auxiliary solid at its working pose, with a declared approach ending at zero.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramToolAccess {
     pub name: String,
     pub envelope: Option<String>,

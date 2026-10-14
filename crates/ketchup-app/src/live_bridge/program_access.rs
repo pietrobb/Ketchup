@@ -354,9 +354,12 @@ impl LiveBridge {
                     "Use inspect query for a detached document.",
                 )
             })?;
-            let (_, report) =
-                ketchup_program::run(&source.file_name, &source.source, &source.overrides)
-                    .map_err(|error| failed_because("program_rejected", error))?;
+            let (_, report) = ketchup_application::program_isolation::run_program(
+                &source.file_name,
+                &source.source,
+                &source.overrides,
+            )
+            .map_err(|error| failed_because("program_rejected", error))?;
             self.program_report = Some((expected.clone(), report, "program_evaluation"));
         }
         let Some((_, report, basis)) = self.program_report.as_ref() else {

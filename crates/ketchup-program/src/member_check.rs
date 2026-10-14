@@ -11,10 +11,10 @@ use crate::loads::{LOAD_KINDS, LoadReport, Loads, MemberLoad, axes, extents};
 use crate::model::{Part, ProgramModel, ProgramPartBody, ProgramProfileSegment};
 use ketchup_geometry::linalg::{dot, length};
 use ketchup_tolerance::ROUNDING;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct TimberClass {
     pub strength_class: String,
     pub service_class: u8,

@@ -48,7 +48,7 @@ impl Drop for Pending {
 }
 
 fn evaluate(source: &RuleProgramSource, cancel: &CancelToken) -> Evaluation {
-    ketchup_program::evaluate_cancellable(
+    ketchup_application::program_isolation::evaluate_program(
         &source.file_name,
         &source.source,
         &source.overrides,

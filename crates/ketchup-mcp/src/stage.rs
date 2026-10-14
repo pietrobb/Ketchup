@@ -25,11 +25,11 @@ pub fn window_source() -> Option<PathBuf> {
         .or_else(|| std::env::current_exe().ok())
 }
 
-/// Executables a window needs beside itself; the exact worker is optional.
+/// Executables a window needs beside itself; the workers are optional.
 const COMPANIONS: &[&str] = if cfg!(windows) {
-    &["ketchup-exact-worker.exe"]
+    &["ketchup-exact-worker.exe", "ketchup-program-worker.exe"]
 } else {
-    &["ketchup-exact-worker"]
+    &["ketchup-exact-worker", "ketchup-program-worker"]
 };
 
 const LIBRARY_EXTENSION: &str = if cfg!(windows) {

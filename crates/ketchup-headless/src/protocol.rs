@@ -1263,12 +1263,15 @@ fn parse_program_source(
 fn evaluate_program_source(
     source: &ketchup_model::document::RuleProgramSource,
 ) -> Result<(ketchup_program::Evaluated, ketchup_program::Report)> {
-    ketchup_program::run(&source.file_name, &source.source, &source.overrides).map_err(|error| {
-        Error {
-            code: format!("program.{}", error.code),
-            message: error.message,
-            details: None,
-        }
+    ketchup_application::program_isolation::run_program(
+        &source.file_name,
+        &source.source,
+        &source.overrides,
+    )
+    .map_err(|error| Error {
+        code: format!("program.{}", error.code),
+        message: error.message,
+        details: None,
     })
 }
 fn boolean(p: &Map<String, Value>, key: &str, default: bool) -> Result<bool> {

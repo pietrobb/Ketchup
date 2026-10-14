@@ -92,8 +92,11 @@ fn validate(
     options: ValidationOptions,
 ) -> Result<(Value, ketchup_program::Report), ketchup_program::ProgramError> {
     let started = Instant::now();
-    let (evaluated, mut report) =
-        ketchup_program::run(&source.file_name, &source.source, &source.overrides)?;
+    let (evaluated, mut report) = ketchup_application::program_isolation::run_program(
+        &source.file_name,
+        &source.source,
+        &source.overrides,
+    )?;
     let exact = verify_rule_program_all(
         &snapshot,
         &evaluated.model,

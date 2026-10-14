@@ -9,10 +9,10 @@
 use crate::frame::{self, Mat3, Obb};
 use ketchup_geometry::linalg::{CubicBezier, dot};
 use ketchup_model::tolerance::ROUNDING;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Param {
     pub name: String,
     pub value: f64,
@@ -21,11 +21,11 @@ pub struct Param {
     pub min: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub doc: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgramFeatureKind {
     Transform,
@@ -41,7 +41,7 @@ pub enum ProgramFeatureKind {
     FaceOffset,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgramParameterValueType {
     Length,
@@ -49,14 +49,14 @@ pub enum ProgramParameterValueType {
     Scalar,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramFeatureParameter {
     pub path: String,
     pub value_type: ProgramParameterValueType,
     pub value: f64,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramFeature {
     /// Stable identity inside one part. Reordering program statements does not change it.
     pub name: String,
@@ -68,7 +68,7 @@ pub struct ProgramFeature {
 /// coordinates `at_mm` (u, v on a plane; angle in degrees, v on a cylinder).
 /// `entry_mm` and `inward` are in the part's frame as the operations written
 /// before the hole left it; the operations after it carry it on.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Hole {
     pub id: String,
     pub face: String,
@@ -89,7 +89,7 @@ pub struct Hole {
 /// off the face edges. `corner_mm` (the rectangle's (u_min, v_min) corner),
 /// `u`, `v` and `inward` are in the part's frame as the operations written
 /// before the pocket left it.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Pocket {
     pub id: String,
     pub face: String,
@@ -151,7 +151,7 @@ impl Pocket {
 /// One named edge of a closed profile: a straight line, a circular arc
 /// around `arc.center_mm` from `start_mm` to `end_mm`, or a cubic Bezier
 /// curve with the two inner control points `bezier`.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramProfileSegment {
     pub name: String,
     pub start_mm: [f64; 2],
@@ -162,7 +162,7 @@ pub struct ProgramProfileSegment {
     pub bezier: Option<[[f64; 2]; 2]>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramArc {
     pub center_mm: [f64; 2],
     pub clockwise: bool,
@@ -374,14 +374,14 @@ fn moved_side(
     ])
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgramEdgeFinishKind {
     Fillet,
     Chamfer,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramEdgeFillet {
     pub name: String,
     pub kind: ProgramEdgeFinishKind,
@@ -389,7 +389,7 @@ pub struct ProgramEdgeFillet {
     pub radius_mm: f64,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramCut {
     pub name: String,
     pub segments: Vec<ProgramProfileSegment>,
@@ -397,7 +397,7 @@ pub struct ProgramCut {
     pub depth_mm: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgramBooleanKind {
     /// Removes the tool's volume from the part.
@@ -412,14 +412,14 @@ pub enum ProgramBooleanKind {
 /// tool is recorded as it was when the operation was declared: its body shape
 /// and its own booleans; its holes, pockets, cuts and finishes are not part of
 /// the removed or kept volume.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramBoolean {
     pub name: String,
     pub kind: ProgramBooleanKind,
     pub tool: Part,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramFaceOffset {
     pub name: String,
     pub face: String,
@@ -428,7 +428,7 @@ pub struct ProgramFaceOffset {
 
 /// The solid reflected in its own frame across the plane where coordinate
 /// `axis` equals `center_mm`. Every face keeps the name of the face it mirrors.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramMirror {
     pub name: String,
     pub axis: usize,
@@ -451,7 +451,7 @@ impl ProgramMirror {
 /// The solid hollowed to walls `thickness_mm` thick, measured inwards; the
 /// `open` faces are removed so the hollow opens there (none: a closed void).
 /// The inner walls are "<name>.<face they follow>".
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramShell {
     pub name: String,
     pub thickness_mm: f64,
@@ -460,7 +460,7 @@ pub struct ProgramShell {
 
 /// One shaping step on a part's solid. A part applies its operations in the
 /// order the program wrote them, each to the result of the one before.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum ProgramOperation {
     Cut(ProgramCut),
@@ -491,7 +491,7 @@ impl ProgramOperation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProgramPartBody {
     /// The closed profile padded along local +z by `distance_mm`; `caps`
@@ -579,7 +579,7 @@ impl ProgramPartBody {
 }
 
 /// A circular path arc, counter-clockwise about `normal` seen from its tip.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramPathArc {
     pub center_mm: [f64; 3],
     pub normal: [f64; 3],
@@ -587,7 +587,7 @@ pub struct ProgramPathArc {
 
 /// One piece of a sweep path in the part's frame: a line, an arc, or a
 /// cubic Bezier curve with the two inner control points `bezier`.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramPathSegment {
     pub start_mm: [f64; 3],
     pub end_mm: [f64; 3],
@@ -597,7 +597,7 @@ pub struct ProgramPathSegment {
     pub bezier: Option<[[f64; 3]; 2]>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramLoftSection {
     pub segments: Vec<ProgramProfileSegment>,
     pub elevation_mm: f64,
@@ -720,7 +720,7 @@ impl std::fmt::Display for FaceNameError {
 
 impl std::error::Error for FaceNameError {}
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Part {
     /// Stable identity: the path given in the program, e.g. `korpus/bok_lavy`.
     pub name: String,
@@ -729,7 +729,10 @@ pub struct Part {
     /// World position of the local origin.
     pub at_mm: [f64; 3],
     /// Row-major rotation of the local frame; columns are the local axes in world.
-    #[serde(skip_serializing_if = "frame::is_identity")]
+    #[serde(
+        default = "frame::identity",
+        skip_serializing_if = "frame::is_exact_identity"
+    )]
     pub rotation: Mat3,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub material: Option<String>,
@@ -737,14 +740,14 @@ pub struct Part {
     pub color: Option<[u8; 3]>,
     /// Free named attributes the program attaches for its own use, e.g. a
     /// library's direction of a material's texture.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: BTreeMap<String, String>,
     /// Names of the document tags (layers) the part belongs to.
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub tags: BTreeSet<String>,
     pub body: ProgramPartBody,
     /// Cuts, finishes, moved faces, booleans, holes and pockets in program order.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<ProgramOperation>,
     /// Stable, operation-class-level source tree used by incremental reconciliation.
     pub features: Vec<ProgramFeature>,
@@ -1572,7 +1575,7 @@ impl Part {
 }
 
 /// An explicit operation identity, local to a part (never a geometric match).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct JointOperationRef {
     pub part: String,
     pub id: String,
@@ -1580,7 +1583,7 @@ pub struct JointOperationRef {
 
 /// One declared machining/hardware association, such as a pair of mating bores.
 /// Empty hardware means metadata only; no physical body is inferred or created.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct JointLink {
     pub operations: Vec<JointOperationRef>,
     pub hardware_parts: Vec<String>,
@@ -1588,7 +1591,7 @@ pub struct JointLink {
 
 /// A declared connection between two parts. Overlap inside `volume` is
 /// expected; a joint whose parts do not touch is an error.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Joint {
     pub name: String,
     pub kind: String,
@@ -1606,7 +1609,7 @@ pub struct Joint {
     pub max_gap_mm: f64,
     /// The connector carries one part's weight onto the other (a joist
     /// hanger, structural screws), so the load path may hang on it.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bearing: bool,
     /// The load the connection may carry, as its maker publishes it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1615,18 +1618,18 @@ pub struct Joint {
 
 /// A published load rating of one connection, with where it comes from.
 /// Never derived from geometry or names; absent means not verified.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct JointRating {
     /// Load the whole connection carries, in newtons.
     pub load_n: f64,
     /// "allowable" (permissible load), "characteristic" (R_k) or "design" (R_d).
     pub basis: String,
     pub source: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramGroup {
     pub name: String,
     pub grounded: bool,
@@ -1635,7 +1638,7 @@ pub struct ProgramGroup {
 }
 
 /// One shared assembly definition; its original group is also its first instance.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramComponent {
     pub name: String,
     pub parts: Vec<Part>,
@@ -1644,7 +1647,7 @@ pub struct ProgramComponent {
     pub motions: Vec<crate::motion::ProgramMotion>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProgramInstance {
     pub name: String,
     pub component: String,
@@ -1652,60 +1655,60 @@ pub struct ProgramInstance {
     pub rotation: Mat3,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct ProgramModel {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floor_z_mm: Option<f64>,
     pub params: Vec<Param>,
     pub parts: Vec<Part>,
     /// Explicit new-name to previous-name identity claims, independent of geometry.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub continuations: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<ProgramGroup>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<ProgramComponent>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instances: Vec<ProgramInstance>,
     /// Auxiliary bodies for booleans or declared access checks; never physical parts.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Part>,
     pub joints: Vec<Joint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub motions: Vec<crate::motion::ProgramMotion>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assembly_steps: Vec<crate::motion::ProgramAssemblyStep>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_access: Vec<crate::motion::ProgramToolAccess>,
     /// Conditions the program states about its geometry (`expect()`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expectations: Vec<crate::expect::Expectation>,
     /// Spaces parts must stay out of (`keep_clear()`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub free_spaces: Vec<crate::clearance::FreeSpace>,
     /// Members that must pass their weight down (`load_path()`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub load_paths: Vec<crate::load_path::LoadPath>,
     /// Weights of materials (`material_weight()`), by material name.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub material_weights: BTreeMap<String, crate::loads::MaterialWeight>,
     /// Tags of the parts whose own weight loads the members (`weight_scope()`).
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub weight_scope: BTreeSet<String>,
     /// Tags of the parts that are made (`production()`): the cut list, the
     /// hardware, the machining plan and the takeoff count only parts with one
     /// of them. Empty: every part is made.
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub production_scope: BTreeSet<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub area_loads: Vec<crate::loads::AreaLoad>,
     /// Strength classes of timber materials (`timber_strength()`), by material name.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub strength_classes: BTreeMap<String, crate::member_check::TimberClass>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared_issues: Vec<crate::validate::Issue>,
     /// Sets of tags that are alternative representations (`alternatives()`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternative_tags: Vec<BTreeSet<String>>,
 }
 

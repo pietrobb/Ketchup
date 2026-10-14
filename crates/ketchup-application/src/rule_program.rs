@@ -63,8 +63,13 @@ pub fn rule_program_part_sources(
     std::collections::BTreeMap<String, Vec<ketchup_program::SourceLines>>,
     ketchup_program::ProgramError,
 > {
-    ketchup_program::evaluate(&source.file_name, &source.source, &source.overrides)
-        .map(|evaluated| evaluated.part_sources)
+    crate::program_isolation::evaluate_program(
+        &source.file_name,
+        &source.source,
+        &source.overrides,
+        &ketchup_program::CancelToken::default(),
+    )
+    .map(|evaluated| evaluated.part_sources)
 }
 
 /// Rewrites a manual Push/Pull into the program source that owns the part.
@@ -524,13 +529,17 @@ fn replacement_batch(
 fn evaluate(
     source: &RuleProgramSource,
 ) -> Result<ketchup_program::Evaluated, RuleProgramApplyError> {
-    ketchup_program::evaluate(&source.file_name, &source.source, &source.overrides).map_err(
-        |error| RuleProgramApplyError::Program {
-            code: error.code.to_owned(),
-            message: error.message,
-            location: error.location,
-        },
+    crate::program_isolation::evaluate_program(
+        &source.file_name,
+        &source.source,
+        &source.overrides,
+        &ketchup_program::CancelToken::default(),
     )
+    .map_err(|error| RuleProgramApplyError::Program {
+        code: error.code.to_owned(),
+        message: error.message,
+        location: error.location,
+    })
 }
 
 fn append_removed_parts(

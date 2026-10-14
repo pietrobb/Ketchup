@@ -22,7 +22,7 @@ use ketchup_geometry::helix::Helix;
 use ketchup_geometry::linalg::normalize_within;
 use ketchup_model::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
 use ketchup_tolerance::limits;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
@@ -61,6 +61,45 @@ impl std::fmt::Display for ProgramError {
 }
 
 impl std::error::Error for ProgramError {}
+
+/// Every [`ProgramError`] code. The last three come from the separate process
+/// that evaluates programs: it ran out of memory, ran past its time, or died.
+pub const ERROR_CODES: [&str; 8] = [
+    "syntax_error",
+    "evaluation_error",
+    "cancelled",
+    "internal_error",
+    "prelude_invalid",
+    "memory_limit",
+    "time_limit",
+    "worker_failed",
+];
+
+#[derive(Deserialize)]
+struct ProgramErrorWire {
+    code: String,
+    message: String,
+    #[serde(default)]
+    location: Option<Box<ErrorLocation>>,
+}
+
+// By hand: a derived reader would tie `code: &'static str` to the input's lifetime.
+impl<'de> Deserialize<'de> for ProgramError {
+    fn deserialize<D: serde::Deserializer<'de>>(reader: D) -> Result<Self, D::Error> {
+        let wire = ProgramErrorWire::deserialize(reader)?;
+        let code = ERROR_CODES
+            .into_iter()
+            .find(|known| *known == wire.code)
+            .ok_or_else(|| {
+                serde::de::Error::custom(format!("unknown program error code {:?}", wire.code))
+            })?;
+        Ok(Self {
+            code,
+            message: wire.message,
+            location: wire.location,
+        })
+    }
+}
 
 #[derive(Debug, Default)]
 struct State {
@@ -105,7 +144,7 @@ impl State {
 }
 
 /// An inclusive, 1-based line range of the user's program.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct SourceLines {
     pub first: usize,
     pub last: usize,

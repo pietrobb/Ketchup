@@ -149,8 +149,8 @@ if (-not $SkipBuild) {
         } finally {
             [Environment]::SetEnvironmentVariable("KETCHUP_BUILD_VERSION", $previousBuildVersion, "Process")
         }
-        & cargo build --locked --release -p ketchup-scheduler --bin ketchup-exact-worker
-        if ($LASTEXITCODE -ne 0) { throw "Exact worker release build failed." }
+        & cargo build --locked --release -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker
+        if ($LASTEXITCODE -ne 0) { throw "Worker release build failed." }
         & cargo build --locked --release -p ketchup-viewer --bin ketchup-viewer
         if ($LASTEXITCODE -ne 0) { throw "Viewer release build failed." }
     } finally {
@@ -162,6 +162,8 @@ $appSource = Join-Path $BinaryDir "ketchup-app.exe"
 $workerSource = Join-Path $BinaryDir "ketchup-exact-worker.exe"
 Assert-Leaf $appSource "application"
 Assert-Leaf $workerSource "exact worker"
+$programWorkerSource = Join-Path $BinaryDir "ketchup-program-worker.exe"
+Assert-Leaf $programWorkerSource "program worker"
 $viewerSource = Join-Path $BinaryDir "ketchup-viewer.exe"
 Assert-Leaf $viewerSource "Viewer"
 Add-Type -Namespace KetchupBuild -Name Shell -MemberDefinition @'
@@ -175,6 +177,7 @@ foreach ($iconSource in @($appSource, $viewerSource)) {
 }
 Copy-Item $appSource (Join-Path $payloadDir "Ketchup.exe")
 Copy-Item $workerSource (Join-Path $payloadDir "ketchup-exact-worker.exe")
+Copy-Item $programWorkerSource (Join-Path $payloadDir "ketchup-program-worker.exe")
 Copy-Item $viewerSource (Join-Path $payloadDir "KetchupViewer.exe")
 
 $occtManifest = Get-Content $OcctManifestPath -Raw | ConvertFrom-Json
@@ -203,6 +206,7 @@ Copy-PackageNotices $repoRoot $OcctRoot $payloadDir
 if ($Sign) {
     Invoke-AzureSigning (Join-Path $payloadDir "Ketchup.exe")
     Invoke-AzureSigning (Join-Path $payloadDir "ketchup-exact-worker.exe")
+    Invoke-AzureSigning (Join-Path $payloadDir "ketchup-program-worker.exe")
     Invoke-AzureSigning (Join-Path $payloadDir "KetchupViewer.exe")
 }
 $publisher = if ($Sign) { "AEON GROUP spol. s r.o." } else { "Ketchup" }
@@ -471,6 +475,7 @@ try {
 
     . (Join-Path $PSScriptRoot "exact-worker-handshake.ps1")
     Assert-ExactWorkerHandshake (Join-Path $installedDir "ketchup-exact-worker.exe") "Installed exact worker"
+    Assert-ExactWorkerHandshake (Join-Path $installedDir "ketchup-program-worker.exe") "Installed program worker"
 
     $persistenceSmokePath = Join-Path $tempRoot "install-persistence-smoke.ketchup"
     # Ketchup.exe is a windowed app: only a pipeline makes PowerShell wait for its output.

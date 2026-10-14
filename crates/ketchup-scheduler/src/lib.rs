@@ -6,6 +6,7 @@ pub mod exact_worker;
 pub mod general;
 pub mod pair_query;
 pub mod plugin;
+pub mod program_worker;
 pub mod protocol;
 pub use pair_query::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation};
 pub mod validator_runtime;
@@ -41,7 +42,7 @@ use ketchup_model::import::{
 };
 use process_wrap::std::{ChildWrapper, CommandWrap};
 #[cfg(windows)]
-use process_wrap::std::{JobObject, KillOnDrop};
+use process_wrap::std::{JobMemoryLimit, JobObject, KillOnDrop};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -1031,12 +1032,24 @@ fn verify_exact_worker_identity(
     Ok(guarded)
 }
 
-fn spawn_exact_worker_command(command: Command) -> io::Result<Box<dyn ChildWrapper>> {
+/// `memory_limit`: bytes each process of the worker's job may commit.
+fn spawn_limited_worker_command(
+    command: Command,
+    memory_limit: Option<usize>,
+) -> io::Result<Box<dyn ChildWrapper>> {
     let mut command = CommandWrap::from(command);
     // KillOnDrop makes the job kill-on-close: the worker dies with this process even when
     // it crashes or is killed mid-request, instead of outliving it as an orphan.
     #[cfg(windows)]
-    command.wrap(KillOnDrop).wrap(JobObject);
+    {
+        command.wrap(KillOnDrop);
+        if let Some(bytes) = memory_limit {
+            command.wrap(JobMemoryLimit(bytes));
+        }
+        command.wrap(JobObject);
+    }
+    #[cfg(not(windows))]
+    let _ = memory_limit;
     command.spawn()
 }
 

@@ -19,6 +19,7 @@ use windows::{
 			IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED},
 			JobObjects::{
 				AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+				JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
 				JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
 				JobObjectAssociateCompletionPortInformation, JobObjectExtendedLimitInformation,
 				SetInformationJobObject, TerminateJobObject,
@@ -117,8 +118,13 @@ impl Drop for JobPort {
 ///
 /// If `kill_on_drop` is true, we opt into the `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` flag, which
 /// essentially implements the "reap children" feature of Unix systems directly in Win32.
+/// `memory_limit` caps the committed memory of each process in the job, in bytes.
 #[cfg_attr(feature = "tracing", instrument(level = "debug"))]
-pub(crate) fn make_job_object(process_handle: HANDLE, kill_on_drop: bool) -> Result<JobPort> {
+pub(crate) fn make_job_object(
+	process_handle: HANDLE,
+	kill_on_drop: bool,
+	memory_limit: Option<usize>,
+) -> Result<JobPort> {
 	let job = OwnedHandle(unsafe { CreateJobObjectW(None, None) }.map_err(Error::other)?);
 	#[cfg(feature = "tracing")]
 	debug!(?job, "done CreateJobObjectW");
@@ -152,7 +158,13 @@ pub(crate) fn make_job_object(process_handle: HANDLE, kill_on_drop: bool) -> Res
 	let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
 
 	if kill_on_drop {
-		info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+		info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+	}
+	if let Some(bytes) = memory_limit {
+		// A process stopped by its limit dies quietly instead of opening an error dialog.
+		info.BasicLimitInformation.LimitFlags |=
+			JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+		info.ProcessMemoryLimit = bytes;
 	}
 
 	unsafe {

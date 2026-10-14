@@ -18,6 +18,20 @@ pub fn is_identity(rotation: &Mat3) -> bool {
     same_orientation(rotation, &IDENTITY)
 }
 
+/// Bit for bit the identity: a rotation left out of the serialized part reads
+/// back as exactly the one it was.
+pub(crate) fn is_exact_identity(rotation: &Mat3) -> bool {
+    rotation
+        .as_flattened()
+        .iter()
+        .zip(IDENTITY.as_flattened())
+        .all(|(a, b)| a.to_bits() == b.to_bits())
+}
+
+pub(crate) const fn identity() -> Mat3 {
+    IDENTITY
+}
+
 #[must_use]
 pub fn same_orientation(a: &Mat3, b: &Mat3) -> bool {
     (0..3).all(|row| {

@@ -38,11 +38,12 @@ pub mod validate;
 
 pub use bom::{Bom, bom};
 pub use eval::{
-    CallFrame, CancelToken, ErrorLocation, Evaluated, MetricThread, NumberedLine, PRELUDE,
-    Position, ProgramError, SourceLines, evaluate, evaluate_cancellable, library_material_weights,
-    library_metric_threads, use_prelude,
+    CallFrame, CancelToken, ERROR_CODES, ErrorLocation, Evaluated, MetricThread, NumberedLine,
+    PRELUDE, Position, ProgramError, SourceLines, evaluate, evaluate_cancellable,
+    library_material_weights, library_metric_threads, use_prelude,
 };
 pub use exact::{ExactPair, ExactShapes, exact_candidates};
+pub use execution_budget::{MAX_HEAP_BYTES as EVALUATION_HEAP_BYTES, MAX_TIME as EVALUATION_TIME};
 pub use model::{
     ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,

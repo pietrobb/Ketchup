@@ -3,8 +3,8 @@
 use super::*;
 use crate::protocol::{
     ExportReceipt, Frame, GraphInput, MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MeshReceipt,
-    SourceFile, WorkerFailure, WorkerImportPart, WorkerReply, WorkerRequest, encode_frame,
-    protocol_identity, read_frame,
+    ProgramInput, ProgramOutcome, SourceFile, WorkerFailure, WorkerImportPart, WorkerReply,
+    WorkerRequest, encode_frame, protocol_identity, read_frame,
 };
 
 pub(crate) struct WorkerWriteRequest {
@@ -39,6 +39,15 @@ impl ExactWorkerClient {
     }
 
     pub(crate) fn spawn_guarded(executable: GuardedExactWorker) -> Result<Self, WorkerError> {
+        Self::spawn_guarded_with(executable, None).map(|(client, _)| client)
+    }
+
+    /// With a memory limit the worker's standard error comes back too: a failed
+    /// allocation names itself there before the process aborts.
+    pub(crate) fn spawn_guarded_with(
+        executable: GuardedExactWorker,
+        memory_limit: Option<usize>,
+    ) -> Result<(Self, Option<std::process::ChildStderr>), WorkerError> {
         let working_directory = executable
             .executable
             .parent()
@@ -54,9 +63,14 @@ impl ExactWorkerClient {
             .env("TMPDIR", temp_directory.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = spawn_exact_worker_command(command)
+            .stderr(if memory_limit.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            });
+        let mut child = spawn_limited_worker_command(command, memory_limit)
             .map_err(|error| WorkerError::Spawn(error.to_string()))?;
+        let stderr = child.stderr().take();
         let stdin = child
             .stdin()
             .take()
@@ -69,13 +83,14 @@ impl ExactWorkerClient {
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
         spawn_worker_writer(stdin, write_receiver);
         spawn_worker_reader(stdout, response_sender);
-        Ok(Self {
+        let client = Self {
             child,
             terminated: false,
             write_sender,
             response_receiver,
             _temp_directory: temp_directory,
-        })
+        };
+        Ok((client, stderr))
     }
 
     /// Handshake: the worker must speak the protocol of this exact build.
@@ -645,6 +660,18 @@ impl ExactWorkerClient {
             return self.fail_protocol("worker STEP output hash mismatch".to_owned());
         }
         Ok(bytes)
+    }
+
+    pub(crate) fn evaluate_program(
+        &mut self,
+        input: ProgramInput,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<ProgramOutcome, WorkerError> {
+        match self.call(&WorkerRequest::EvaluateProgram(input), cancelled, timeout)? {
+            WorkerReply::Program(outcome) => Ok(*outcome),
+            reply => self.unexpected(reply),
+        }
     }
 
     pub fn exception_probe(&mut self) -> Result<String, WorkerError> {

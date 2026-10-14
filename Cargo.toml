@@ -25,6 +25,10 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# Every worker start hashes its executable; unoptimized, that takes most of a second in tests.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

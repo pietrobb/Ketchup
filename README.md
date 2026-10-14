@@ -148,7 +148,7 @@ When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-s
 The supported development platform is **Windows x86-64** with Rust 1.97.0 and OCCT 8.0.1. See the [Windows toolchain guide](docs/toolchain/WINDOWS.md) for the pinned native environment.
 
 ```powershell
-cargo build -p ketchup-scheduler --bin ketchup-exact-worker
+cargo build -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker
 cargo run -p ketchup-app
 ```
 

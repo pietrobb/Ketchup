@@ -11,18 +11,18 @@ use crate::frame;
 use crate::model::{Part, ProgramModel};
 use crate::relations::polygon_area;
 use crate::validate::{Issue, Severity};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A world direction, fixed or following a face of a part wherever the part
 /// ends up.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     World([f64; 3]),
     Face { part: String, face: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "measure", rename_all = "snake_case")]
 pub enum Measure {
     /// How far `part` reaches along `direction` (see `reach()`).
@@ -39,7 +39,7 @@ pub enum Measure {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum Comparison {
     #[serde(rename = "==")]
     Equal,
@@ -82,7 +82,7 @@ impl Comparison {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Expectation {
     pub name: String,
     /// `Σ coefficient · measure`.
