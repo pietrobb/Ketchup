@@ -186,6 +186,42 @@ bolt(\"shank\", \"M10\", 45, norm = \"ISO 4014\", at = (200, 0, 0))
 }
 
 #[test]
+fn an_iso_4014_bolt_is_threaded_only_b_from_the_tip_and_an_iso_4017_bolt_to_the_head() {
+    let model = model(
+        "bolt(\"partial\", \"M8\", 80, norm = \"ISO 4014\")
+bolt(\"full\", \"M8\", 40, at = (50, 0, 0))
+bolt(\"mid\", \"M16\", 160, norm = \"ISO 4014\", at = (100, 0, 0))
+bolt(\"long\", \"M24\", 240, norm = \"ISO 4014\", at = (150, 0, 0))
+",
+    );
+    // (thread length from the tip, plain shank above it) by b = 2d + 6 / 12 / 25.
+    for (name, length, thread, shank, diameter) in [
+        ("partial", 80.0, 22.0, 58.0, 8.0),
+        ("full", 40.0, 40.0, 0.0, 8.0),
+        ("mid", 160.0, 44.0, 116.0, 16.0),
+        ("long", 240.0, 73.0, 167.0, 24.0),
+    ] {
+        let part = model.part(name).unwrap();
+        let bound = |key: &str| part.attributes[key].parse::<f64>().unwrap();
+        let (from, to) = (bound("thread_from_mm"), bound("thread_to_mm"));
+        assert!(
+            close(from, -length) && close(to - from, thread) && close(-to, shank),
+            "{name}: thread {from}..{to}"
+        );
+        // The plain shank keeps the nominal diameter d: one cylinder, tip to head.
+        let (min, max) = part.booleans().next().unwrap().tool.world_bounds();
+        assert!(
+            close(max[1] - min[1], diameter) && close(max[2] - min[2], length),
+            "{name}: shank {min:?} {max:?}"
+        );
+    }
+    // b = 26 >= l = 20: the whole shank is threaded.
+    let short =
+        self::model("box(\"b\", (bolt_thread_length(\"M10\", 20, norm = \"ISO 4014\"), 1, 1))\n");
+    assert!(close(short.part("b").unwrap().size_mm[0], 20.0));
+}
+
+#[test]
 fn a_bolt_length_the_size_lacks_is_refused_with_the_valid_lengths() {
     let error = refused("bolt(\"b\", \"M8\", 42)\n");
     assert!(

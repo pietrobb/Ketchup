@@ -727,6 +727,29 @@ fn a_screw_past_the_thread_of_another_size_or_off_its_axis_still_collides() {
 }
 
 #[test]
+fn the_plain_shank_of_an_iso_4014_bolt_in_a_tapped_hole_collides() {
+    // M8x80 ISO 4014 is threaded b = 22 mm from the tip, ISO 4017 all 80 mm.
+    let collisions = |norm: &str, depth: u32| {
+        let source = format!(
+            "p = box(\"p\", (40, 40, 40))\n\
+             hole(p, \"z+\", world = (20, 20, 40), diameter = 6.75, depth = {depth}, thread = (\"M8\", {depth}))\n\
+             bolt(\"s\", \"M8\", 80, norm = \"{norm}\", at = (20, 20, {}))\n",
+            40 + 80 - depth
+        );
+        let (_, report) =
+            run("bolt.star", &source, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
+        report
+            .issues
+            .iter()
+            .filter(|issue| issue.kind.starts_with("collision"))
+            .count()
+    };
+    assert_eq!(collisions("ISO 4014", 22), 0, "the thread alone engages");
+    assert_eq!(collisions("ISO 4014", 30), 1, "8 mm of plain shank");
+    assert_eq!(collisions("ISO 4017", 30), 0, "threaded to the head");
+}
+
+#[test]
 fn a_screw_head_sunk_into_the_tapped_part_still_collides() {
     // The tapped thread reaches past the shank, so only the head decides.
     let (_, report) = run(

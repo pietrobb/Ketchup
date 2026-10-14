@@ -154,7 +154,11 @@ height (2 up to 900 mm, 3 to 1600, 4 to 2000, then 5); a door further than
 place a simplified steel body, seated at `at` along `axis`, with `designation`
 (e.g. `ISO 4017 M8x40`), `standard`, `mass_basis` and `source` in the cut list.
 A size or bolt length the norm does not have is refused with the valid ones;
-`bolt_lengths(size, norm)` lists the lengths. The dimensions come from public
+`bolt_lengths(size, norm)` lists the lengths. An ISO 4014 bolt is threaded only
+`bolt_thread_length(size, length, norm)` from its tip (b = 2d + 6, 2d + 12 or
+2d + 25 by length; M8x80: 22 mm), the rest is a plain shank of diameter d; the
+view, the drawing, the modelled thread and the tapped-hole check take only that
+length. ISO 4017 is threaded to the head. The dimensions come from public
 catalogues, not from the text of the standards; a value of one size that only
 one catalogue gives is named in that part's `source`. `rebar(name, diameter,
 length)` places a straight B500B bar (EN 10080, Ø6–Ø40) as a plain cylinder of

@@ -1203,10 +1203,14 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   washer(name, size, norm="ISO 7089", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
 #     a plain washer, normal series.
 #   bolt(name, size, length, norm="ISO 4017", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
-#     norm "ISO 4017" (hexagon head, thread to the head), "ISO 4014" (hexagon head with a
-#     plain shank part; same head, longer lengths) or "ISO 4762" (socket head cap screw).
+#     norm "ISO 4017" (hexagon head, thread to the head), "ISO 4014" (hexagon head, threaded
+#     only b from the tip, the rest a plain shank of the nominal diameter d; same head,
+#     longer lengths) or "ISO 4762" (socket head cap screw, threaded to the head here).
 #     length is the nominal length under the head and must be one of the size's lengths.
 #   bolt_lengths(size, norm="ISO 4017")  -> those lengths, e.g. bolt_lengths("M8") = [16, 20, 25, ... 80]
+#   bolt_thread_length(size, length, norm="ISO 4017")  -> the threaded length from the tip:
+#     ISO 4014 b = 2d + 6 (l <= 125), 2d + 12 (125 < l <= 200), 2d + 25 (l > 200), the whole
+#     length when b >= l (M8x80: 22); otherwise the whole length.
 #   threaded_rod(name, size, length, norm="DIN 975", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
 #     any length > 0 (sold by the metre and cut to length).
 #   rebar(name, diameter, length, grade="B500B", at=(0, 0, 0), axis=(0, 0, 1), tags=None)  -> part
@@ -1232,7 +1236,9 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   standard, mass_basis (the mass is the simplified body's volume x 7850 kg/m3, not a
 #   catalogue weight) and source, which names a value of this size that has only one source.
 #   Bolts and threaded rods also carry thread (their size, e.g. "M8") and thread_from_mm /
-#   thread_to_mm (where it runs along the part's local z: the shank of a bolt, the whole rod).
+#   thread_to_mm (where it runs along the part's local z: bolt_thread_length from the tip of
+#   a bolt, the whole rod); the cosmetic and modelled thread, the drawing and the tapped-hole
+#   collision check take only that span.
 #   In a hole tapped with that thread (hole(..., thread=)) on their axis they engage it, not
 #   collide, as deep as the thread; a different size, an offset axis, a tip past the thread or
 #   a head sunk into the tapped part is still a collision.
@@ -1501,6 +1507,16 @@ def bolt_lengths(size, norm = "ISO 4017"):
     shortest, longest = BOLT_LENGTH_RANGES[norm][size]
     return [length for length in _BOLT_LENGTH_SERIES if length >= shortest and length <= longest]
 
+def bolt_thread_length(size, length, norm = "ISO 4017"):
+    """How far from the tip the shank of a bolt is threaded: ISO 4014 b = 2d + 6 for
+    l <= 125, 2d + 12 for l <= 200, 2d + 25 longer (at most the whole shank); ISO 4017,
+    and ISO 4762 in this library, the whole shank."""
+    if norm != "ISO 4014":
+        return length
+    d = int(size[1:])
+    b = 2 * d + (6 if length <= 125 else 12 if length <= 200 else 25)
+    return min(b, length)
+
 def bolt(name, size, length, norm = "ISO 4017", at = (0, 0, 0), axis = (0, 0, 1), tags = None, modeled_thread = None):
     """A standard bolt (simplified body): head seated at `at` and rising along `axis`, the
     shank `length` long running the other way."""
@@ -1511,13 +1527,14 @@ def bolt(name, size, length, norm = "ISO 4017", at = (0, 0, 0), axis = (0, 0, 1)
              (norm, size, length, ", ".join([str(l) for l in lengths])))
     length = [l for l in lengths if l == length][0]
     designation = "%s %sx%s" % (norm, size, length)
+    thread = (size, -length, bolt_thread_length(size, length, norm) - length)
     if norm == "ISO 4762":
         dk, k, s, t = head
-        part = _fastener_part(name, _circle(dk / 2.0, "head"), k, at, norm, size, designation, tags, (size, -length, 0), modeled_thread)
+        part = _fastener_part(name, _circle(dk / 2.0, "head"), k, at, norm, size, designation, tags, thread, modeled_thread)
         cut(part, profile = _hexagon(s), depth = t, name = "socket")
     else:
         s, k = head
-        part = _fastener_part(name, _hexagon(s), k, at, norm, size, designation, tags, (size, -length, 0), modeled_thread)
+        part = _fastener_part(name, _hexagon(s), k, at, norm, size, designation, tags, thread, modeled_thread)
     shank = extrude("%s/shank" % name, profile = _circle(int(size[1:]) / 2.0, "shank"), distance = length,
                     at = (at[0], at[1], at[2] - length), tool = True)
     union(part, shank, name = "shank")

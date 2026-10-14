@@ -140,6 +140,33 @@ fn threads_run_from_each_hole_entry_and_along_each_bolt_shank() {
     );
 }
 
+/// The view, the drawing and the modelled groove all take a bolt's thread
+/// from here: an ISO 4014 bolt only b from its tip, an ISO 4017 one to the head.
+#[test]
+fn an_iso_4014_bolt_is_threaded_b_from_its_tip_and_an_iso_4017_bolt_to_its_head() {
+    let _turn = crate::integration_support::file_turn();
+    let source = "bolt('partial','M8',80,norm='ISO 4014')\nbolt('full','M8',40,at=(50,0,0))\n";
+    let mut session = DocumentSession::default();
+    let applied = session.apply_rule_program(program(source), false).unwrap();
+    let evaluated = ketchup_program::evaluate("tapped.star", source, &Default::default()).unwrap();
+    let snapshot = &applied.snapshot;
+    let mut threads = ketchup_application::threads::thread_cylinders(snapshot, Some(&evaluated))
+        .into_iter()
+        .map(|thread| {
+            let name = snapshot.definition(thread.definition_id).unwrap().name();
+            (name.to_owned(), thread.start_mm[2], thread.length_mm)
+        })
+        .collect::<Vec<_>>();
+    threads.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        threads,
+        [
+            ("full".to_owned(), -40.0, 40.0),
+            ("partial".to_owned(), -80.0, 22.0)
+        ]
+    );
+}
+
 #[test]
 fn changing_or_removing_a_thread_rerecords_it_and_undo_restores_it() {
     let _turn = crate::integration_support::file_turn();
