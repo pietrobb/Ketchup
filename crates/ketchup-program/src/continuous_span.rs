@@ -45,6 +45,35 @@ fn within(pieces: &[Piece], from: f64, to: f64) -> Vec<Piece> {
         .collect()
 }
 
+/// `pieces` split at the positions `at` (ascending) into the stretches of the
+/// member before, between and after them (`at.len() + 1` lists). A point load
+/// belongs to the stretch it lies in, one on a position to the stretch before
+/// it. Split at the supports, a variable load can be laid only where it is
+/// unfavourable (load patterns, EN 1990 6.4.3.1(4)).
+pub(crate) fn by_stretch(at: &[f64], pieces: &[Piece]) -> Vec<Vec<Piece>> {
+    let bounds: Vec<f64> = std::iter::once(f64::NEG_INFINITY)
+        .chain(at.iter().copied())
+        .chain(std::iter::once(f64::INFINITY))
+        .collect();
+    bounds
+        .windows(2)
+        .map(|stretch| {
+            let (from, to) = (stretch[0], stretch[1]);
+            pieces
+                .iter()
+                .filter_map(|&(a, b, f)| {
+                    if is_point(&(a, b, f)) {
+                        (a > from && a <= to).then_some((a, b, f))
+                    } else {
+                        let (lo, hi) = (a.max(from), b.min(to));
+                        (hi > lo).then(|| (lo, hi, f * (hi - lo) / (b - a)))
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// Mean of a cubic over [a, b] times f (Simpson's rule is exact for it).
 fn spread(piece: &Piece, cubic: impl Fn(f64) -> f64) -> f64 {
     let (a, b, f) = *piece;

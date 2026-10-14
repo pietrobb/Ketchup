@@ -148,7 +148,7 @@ pub const BASIS: [&str; 9] = [
     "bending with kh (3.2, 3.3), kcrit = 1: members assumed braced against lateral torsional buckling by the decking",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, the reaction at half the bearing length from the notch",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
-    "moments, shear and deflection: spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
+    "moments, shear and deflection: spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
     "a computed check, not an authorized structural design",
 ];
 
@@ -500,7 +500,7 @@ enum Kind {
     RightCantilever,
 }
 
-/// Bending moments (N mm), end shears and deflections (mm, for EI = 1) per load kind.
+/// Bending moments (N mm), end shears and deflections (mm, for EI = 1) per load component.
 struct Segment {
     p: f64,
     q: f64,
@@ -510,14 +510,14 @@ struct Segment {
     deflections: Vec<Vec<f64>>,
 }
 
-/// `end_moments`: per load kind, the moments over the supports at p and q of
+/// `end_moments`: per load component, the moments over the supports at p and q of
 /// a span continuous over them (hogging negative; along the member, without
 /// `lever`); cantilevers ignore them.
 fn segment(
     p: f64,
     q: f64,
     kind: Kind,
-    per_kind: &[Vec<(f64, f64, f64)>],
+    components: &[Vec<Piece>],
     end_moments: &[[f64; 2]],
     lever: f64,
     arc: f64,
@@ -533,7 +533,7 @@ fn segment(
     let mut moments = Vec::new();
     let mut shears = Vec::new();
     let mut deflections = Vec::new();
-    for (patches, [m_p, m_q]) in per_kind.iter().zip(end_moments) {
+    for (patches, [m_p, m_q]) in components.iter().zip(end_moments) {
         let pieces = clipped(patches, p, q, ends);
         let total: f64 = pieces.iter().map(|piece| piece.2).sum();
         let (m, v): (Vec<f64>, [f64; 2]) = match kind {
@@ -602,13 +602,37 @@ fn segment(
     }
 }
 
-fn combine(factors: &Loads, values: &[f64]) -> f64 {
-    LOAD_KINDS
-        .iter()
-        .zip(values)
-        .map(|(kind, value)| factors.get(*kind).copied().unwrap_or(0.0) * value)
-        .sum()
+/// The largest magnitude of an effect, from its `values` under the load
+/// components of `kinds` (indices into `LOAD_KINDS`) with `factors`. The
+/// permanent load takes its factor where it adds to the effect and `relieving`
+/// where it relieves it (1.0 at the ultimate limit state, EN 1990 table
+/// A1.2(B)); each stretch of a variable load counts only where it adds.
+fn envelope(factors: &Loads, kinds: &[usize], values: &[f64], relieving: Option<f64>) -> f64 {
+    let mut permanent = 0.0;
+    let (mut adding, mut relieving_variable) = (0.0, 0.0);
+    for (kind, value) in kinds.iter().zip(values) {
+        if *kind == 0 {
+            permanent += value;
+            continue;
+        }
+        let effect = factors.get(LOAD_KINDS[*kind]).copied().unwrap_or(0.0) * value;
+        if effect > 0.0 {
+            adding += effect;
+        } else {
+            relieving_variable += effect;
+        }
+    }
+    let gamma = factors.get(LOAD_KINDS[0]).copied().unwrap_or(0.0);
+    let low = relieving.unwrap_or(gamma);
+    let (largest, smallest) = (
+        (gamma * permanent).max(low * permanent) + adding,
+        (gamma * permanent).min(low * permanent) + relieving_variable,
+    );
+    largest.abs().max(smallest.abs())
 }
+
+/// gamma_G of a permanent load that relieves an ultimate effect.
+const GAMMA_G_FAVOURABLE: f64 = 1.0;
 
 struct Best(Option<Check>);
 
@@ -711,15 +735,31 @@ fn beam_checks(
             supports.push(hi);
         }
     }
+    // The permanent load is one action (one source); every variable kind is laid
+    // stretch by stretch between the supports, and each effect takes a stretch
+    // only where it adds to it (load patterns, EN 1990 6.4.3.1(4)).
+    let mut kinds: Vec<usize> = Vec::new();
+    let mut components: Vec<Vec<Piece>> = Vec::new();
+    for (kind, pieces) in per_kind.into_iter().enumerate() {
+        let stretches = if kind == 0 || supports.is_empty() {
+            vec![pieces]
+        } else {
+            continuous_span::by_stretch(&supports, &pieces)
+        };
+        for stretch in stretches.into_iter().filter(|stretch| !stretch.is_empty()) {
+            kinds.push(kind);
+            components.push(stretch);
+        }
+    }
     let support_moments: Vec<Vec<f64>> = if supports.is_empty() {
         Vec::new()
     } else {
-        per_kind
+        components
             .iter()
             .map(|pieces| continuous_span::solve(&supports, &bedded, pieces).moments)
             .collect()
     };
-    let no_moments = vec![[0.0; 2]; per_kind.len()];
+    let no_moments = vec![[0.0; 2]; components.len()];
     let mut segments = Vec::new();
     if let (Some(first), Some(last)) = (supports.first(), supports.last()) {
         if *first > 1.0 {
@@ -727,7 +767,7 @@ fn beam_checks(
                 0.0,
                 *first,
                 Kind::LeftCantilever,
-                &per_kind,
+                &components,
                 &no_moments,
                 lever,
                 shape.arc,
@@ -743,7 +783,7 @@ fn beam_checks(
                     pair[0],
                     pair[1],
                     Kind::Span,
-                    &per_kind,
+                    &components,
                     &ends,
                     lever,
                     shape.arc,
@@ -755,7 +795,7 @@ fn beam_checks(
                 *last,
                 load.length_mm,
                 Kind::RightCantilever,
-                &per_kind,
+                &components,
                 &no_moments,
                 lever,
                 shape.arc,
@@ -790,7 +830,12 @@ fn beam_checks(
             let moment = (0..=STEPS)
                 .map(|j| {
                     let values: Vec<f64> = seg.moments.iter().map(|m| m[j]).collect();
-                    combine(&combination.factors, &values).abs()
+                    envelope(
+                        &combination.factors,
+                        &kinds,
+                        &values,
+                        Some(GAMMA_G_FAVOURABLE),
+                    )
                 })
                 .fold(0.0, f64::max);
             let fm = design.strength(class.fm_k, combination.duration) * kh;
@@ -798,7 +843,12 @@ fn beam_checks(
             let ends: Vec<f64> = (0..2)
                 .map(|side| {
                     let values: Vec<f64> = seg.shears.iter().map(|v| v[side]).collect();
-                    combine(&combination.factors, &values)
+                    envelope(
+                        &combination.factors,
+                        &kinds,
+                        &values,
+                        Some(GAMMA_G_FAVOURABLE),
+                    )
                 })
                 .collect();
             let force = ends[0].max(ends[1]) * cos_t;
@@ -824,7 +874,7 @@ fn beam_checks(
                 (0..=STEPS)
                     .map(|j| {
                         let values: Vec<f64> = seg.deflections.iter().map(|w| w[j]).collect();
-                        combine(factors, &values).abs() / ei
+                        envelope(factors, &kinds, &values, None) / ei
                     })
                     .fold(0.0, f64::max)
             };

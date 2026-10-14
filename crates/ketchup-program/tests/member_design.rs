@@ -121,19 +121,50 @@ box(\"deck\", (6000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
 }
 
 #[test]
+fn imposed_load_on_two_of_three_spans_governs_the_moment_over_the_post_between_them() {
+    // 8950 mm beam on post centres 50, 3000, 5950, 8900 mm: three spans of
+    // 2950 mm, ending on the outer posts (with no permanent load, imposed load
+    // on an overhang past them would tip it).
+    let report = report(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+timber_design({\"C24\": \"C24\"})
+for x in (0, 2950, 5900, 8850):
+    box(\"post %d\" % x, (100, 100, 2000), at = (x, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (8950, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"deck\", (8950, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+",
+        &[],
+    );
+    let beam = member(&report, "beam");
+    let (q, l) = (1.2, 2950.0);
+    // Three-moment equation with q on the first two spans only:
+    // 4 M_B + M_C = -q L² / 2, M_B + 4 M_C = -q L² / 4, so M_B = -7/60 q L²
+    // (loaded everywhere M_B = -q L² / 10, 14 % less).
+    let moment = 1.5 * 7.0 / 60.0 * q * l * l;
+    close(
+        utilization(beam, "bending"),
+        moment / (100.0 * 200.0 * 200.0 / 6.0) / (0.8 * 24.0 / 1.3),
+    );
+}
+
+#[test]
 fn bearings_closer_than_the_beam_is_deep_hold_it_as_one() {
     // A post 20 mm before a long sill, behind a 1 m overhang of a 200 mm deep
     // beam: the overhang's moment is no lever pair over the 70 mm from the
-    // post centre to the sill (that would be about 0.6 in shear).
+    // post centre to the sill (that would be about 0.6 in shear). With no
+    // permanent load, imposed load on the overhang alone would tip the beam
+    // (EQU), so it is screwed down to post b.
     let report = report(
         "load_path(only = [\"frame\"], carriers = [\"deck\"])
 area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
 timber_design({\"C24\": \"C24\"})
 box(\"post a\", (100, 100, 2000), at = (1000, 0, 0), material = \"C24\", grounded = True)
 box(\"sill\", (1880, 100, 2000), at = (1120, 0, 0), material = \"C24\", grounded = True)
-box(\"post b\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
-box(\"beam\", (4000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+b = box(\"post b\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+beam = box(\"beam\", (4000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
 box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+joint(beam, b, kind = \"screw\", fastener = \"screw 8 x 200\", fasteners = [(3950, 50, 2100)])
 ",
         &[],
     );

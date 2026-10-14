@@ -450,6 +450,7 @@ fn beam_shares(patches: &[Patch], ranges: &[(f64, f64)], held: &[bool]) -> Share
             _ => clusters.push(((lo, hi), vec![index])),
         }
     }
+    let bearings: Vec<(f64, f64)> = clusters.iter().map(|(range, _)| *range).collect();
     let clusters: Vec<(f64, Vec<usize>)> = clusters
         .into_iter()
         .map(|((lo, hi), members)| (f64::midpoint(lo, hi), members))
@@ -487,23 +488,46 @@ fn beam_shares(patches: &[Patch], ranges: &[(f64, f64)], held: &[bool]) -> Share
         }
         out
     };
+    // The design value of each reaction for static equilibrium (the member as
+    // a rigid body): every kind apart on the overhang beyond the first bearing
+    // still in contact, between the outer bearings and beyond the last.
+    let equilibrium = |active: &[usize]| -> Vec<f64> {
+        let at: Vec<f64> = active.iter().map(|c| clusters[*c].0).collect();
+        let (Some(first), Some(last)) = (active.first(), active.last()) else {
+            return Vec::new();
+        };
+        let outer = [bearings[*first].0, bearings[*last].1];
+        let mut holding = vec![0.0; active.len()];
+        for (kind, pieces) in &pieces {
+            for stretch in continuous_span::by_stretch(&outer, pieces) {
+                if stretch.is_empty() {
+                    continue;
+                }
+                let solution = continuous_span::solve(&at, &[], &stretch);
+                for (k, reaction) in solution.reactions.into_iter().enumerate() {
+                    holding[k] += holding_down(kind, reaction);
+                }
+            }
+        }
+        holding
+    };
     // A support that would have to pull the member down and holds it by no
     // joint lets go; the rest take its share. The worst one first.
     let held_cluster = |c: usize| clusters[c].1.iter().any(|member| held[*member]);
     let mut active: Vec<usize> = (0..clusters.len()).collect();
-    let mut reactions = solve(&active);
     while active.len() > 1 {
+        let holding = equilibrium(&active);
         let worst = (0..active.len())
             .filter(|k| !held_cluster(active[*k]))
-            .map(|k| (k, holding_down(&reactions[k])))
+            .map(|k| (k, holding[k]))
             .filter(|(_, value)| *value < 0.0)
             .min_by(|a, b| a.1.total_cmp(&b.1));
         let Some((k, _)) = worst else {
             break;
         };
         active.remove(k);
-        reactions = solve(&active);
     }
+    let reactions = solve(&active);
     let mut shares = vec![Loads::new(); ranges.len()];
     let mut lifted = vec![true; ranges.len()];
     for (k, cluster) in active.iter().enumerate() {
@@ -535,19 +559,19 @@ struct Shares {
     tips: bool,
 }
 
-/// The design value of a reaction for static equilibrium (EN 1990 table
-/// A1.2(A)): permanent 0.9 holding down and 1.1 lifting, variable loads only
-/// lifting, by 1.5. Negative: the member lifts off.
-fn holding_down(reaction: &Loads) -> f64 {
-    reaction
-        .iter()
-        .map(|(kind, value)| match (kind.as_str(), *value >= 0.0) {
-            ("permanent", true) => 0.9 * value,
-            ("permanent", false) => 1.1 * value,
-            (_, true) => 0.0,
-            (_, false) => 1.5 * value,
-        })
-        .sum()
+/// The design value for static equilibrium (EN 1990 table A1.2(A)) of the
+/// reaction one stretch of one load kind gives: permanent 0.9 holding down and
+/// 1.1 lifting, a variable load only lifting, by 1.5. The favourable and the
+/// unfavourable stretches of an action count apart (6.4.3.1(4)), so a load on
+/// the span does not hide the uplift of the same load on an overhang.
+/// Negative: the member lifts off.
+fn holding_down(kind: &str, reaction: f64) -> f64 {
+    match (kind, reaction >= 0.0) {
+        ("permanent", true) => 0.9 * reaction,
+        ("permanent", false) => 1.1 * reaction,
+        (_, true) => 0.0,
+        (_, false) => 1.5 * reaction,
+    }
 }
 
 /// Where loads land on a supporter: (loads, range along it or None for its whole bearing).

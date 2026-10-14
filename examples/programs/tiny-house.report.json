@@ -165887,7 +165887,7 @@
       "bending with kh (3.2, 3.3), kcrit = 1: members assumed braced against lateral torsional buckling by the decking",
       "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, the reaction at half the bearing length from the notch",
       "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
-      "moments, shear and deflection: spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
+      "moments, shear and deflection: spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
       "a computed check, not an authorized structural design"
     ],
     "members": [
@@ -166052,25 +166052,25 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.198,
+            "utilization": 0.221,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 4405-5130 mm"
           },
           {
             "name": "shear",
-            "utilization": 0.287,
+            "utilization": 0.298,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 3780-4405 mm"
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.083,
+            "utilization": 0.116,
             "combination": "1 permanent + 1 imposed",
             "at": "span 4405-5130 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.09,
+            "utilization": 0.122,
             "combination": "1 permanent + 1 imposed",
             "at": "span 4405-5130 mm"
           },
@@ -166796,7 +166796,7 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.04,
+            "utilization": 0.041,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 30-990 mm"
           },
@@ -166867,7 +166867,7 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.227,
+            "utilization": 0.228,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 30-1890 mm"
           },
@@ -166879,7 +166879,7 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.116,
+            "utilization": 0.117,
             "combination": "1 permanent + 1 imposed",
             "at": "span 30-1890 mm"
           },
@@ -167084,25 +167084,25 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.038,
-            "combination": "1.35 permanent",
-            "at": "span 655-1280 mm"
+            "utilization": 0.04,
+            "combination": "1.35 permanent + 1.5 roof",
+            "at": "span 30-655 mm"
           },
           {
             "name": "shear",
             "utilization": 0.056,
-            "combination": "1.35 permanent",
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 30-655 mm"
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.019,
+            "utilization": 0.022,
             "combination": "1 permanent + 1 roof",
             "at": "span 30-655 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.022,
+            "utilization": 0.025,
             "combination": "1 permanent + 1 roof",
             "at": "span 30-655 mm"
           },
@@ -167509,25 +167509,25 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.214,
+            "utilization": 0.234,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 570-1280 mm"
           },
           {
             "name": "shear",
-            "utilization": 0.223,
+            "utilization": 0.23,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 570-1280 mm"
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.1,
+            "utilization": 0.118,
             "combination": "1 permanent + 1 imposed",
             "at": "span 570-1280 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.108,
+            "utilization": 0.126,
             "combination": "1 permanent + 1 imposed",
             "at": "span 570-1280 mm"
           },
@@ -168328,8 +168328,8 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.038,
-            "combination": "1.35 permanent",
+            "utilization": 0.039,
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 655-1280 mm"
           },
           {
@@ -168340,13 +168340,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.019,
+            "utilization": 0.021,
             "combination": "1 permanent + 1 roof",
             "at": "span 30-655 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.022,
+            "utilization": 0.024,
             "combination": "1 permanent + 1 roof",
             "at": "span 30-655 mm"
           },
@@ -168705,25 +168705,25 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.158,
+            "utilization": 0.166,
             "combination": "1.35 permanent + 1.05 imposed + 1.5 roof",
             "at": "span 655-1280 mm"
           },
           {
             "name": "shear",
-            "utilization": 0.277,
+            "utilization": 0.284,
             "combination": "1.35 permanent + 1.05 imposed + 1.5 roof",
             "at": "span 30-655 mm"
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.082,
+            "utilization": 0.095,
             "combination": "1 permanent + 0.7 imposed + 1 roof",
             "at": "span 30-655 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.097,
+            "utilization": 0.109,
             "combination": "1 permanent + 0.7 imposed + 1 roof",
             "at": "span 30-655 mm"
           },
@@ -169097,19 +169097,19 @@
           },
           {
             "name": "shear",
-            "utilization": 0.014,
+            "utilization": 0.015,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 515-1249 mm"
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.008,
+            "utilization": 0.009,
             "combination": "1 permanent + 1 roof",
             "at": "span 515-1249 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.009,
+            "utilization": 0.01,
             "combination": "1 permanent + 1 roof",
             "at": "span 515-1249 mm"
           },
@@ -169144,7 +169144,7 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.013,
+            "utilization": 0.014,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 450-1108 mm"
           },
@@ -169156,13 +169156,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.007,
+            "utilization": 0.008,
             "combination": "1 permanent + 1 roof",
             "at": "span 1108-1718 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.008,
+            "utilization": 0.009,
             "combination": "1 permanent + 1 roof",
             "at": "span 1108-1718 mm"
           },
@@ -170200,25 +170200,25 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.175,
+            "utilization": 0.182,
             "combination": "1.35 permanent + 1.05 imposed + 1.5 roof",
             "at": "span 30-655 mm"
           },
           {
             "name": "shear",
-            "utilization": 0.251,
+            "utilization": 0.259,
             "combination": "1.35 permanent + 1.05 imposed + 1.5 roof",
             "at": "span 30-655 mm"
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.073,
+            "utilization": 0.088,
             "combination": "1 permanent + 0.7 imposed + 1 roof",
             "at": "span 30-655 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.087,
+            "utilization": 0.101,
             "combination": "1 permanent + 0.7 imposed + 1 roof",
             "at": "span 30-655 mm"
           },
@@ -170880,18 +170880,18 @@
           {
             "name": "bending",
             "utilization": 0.012,
-            "combination": "1.35 permanent",
-            "at": "span 1140-1718 mm"
+            "combination": "1.35 permanent + 1.5 roof",
+            "at": "span 515-1140 mm"
           },
           {
             "name": "shear",
             "utilization": 0.014,
-            "combination": "1.35 permanent",
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 1140-1718 mm"
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.006,
+            "utilization": 0.007,
             "combination": "1 permanent + 1 roof",
             "at": "span 1140-1718 mm"
           },
@@ -170938,19 +170938,19 @@
           },
           {
             "name": "shear",
-            "utilization": 0.014,
+            "utilization": 0.015,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 1108-1718 mm"
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.008,
+            "utilization": 0.009,
             "combination": "1 permanent + 1 roof",
             "at": "span 1108-1718 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.009,
+            "utilization": 0.01,
             "combination": "1 permanent + 1 roof",
             "at": "span 1108-1718 mm"
           },
@@ -171674,7 +171674,7 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.026,
+            "utilization": 0.027,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 1698-2678 mm"
           },
@@ -171686,13 +171686,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.01,
+            "utilization": 0.011,
             "combination": "1 permanent + 1 imposed",
             "at": "span 38-1698 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.01,
+            "utilization": 0.011,
             "combination": "1 permanent + 1 imposed",
             "at": "span 38-1698 mm"
           },
@@ -171956,7 +171956,7 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.026,
+            "utilization": 0.027,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 0-1020 mm"
           },
@@ -172418,13 +172418,13 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.023,
+            "utilization": 0.024,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 38-1698 mm"
           },
           {
             "name": "shear",
-            "utilization": 0.04,
+            "utilization": 0.041,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 38-1698 mm"
           },
@@ -172436,7 +172436,7 @@
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.009,
+            "utilization": 0.01,
             "combination": "1 permanent + 1 imposed",
             "at": "span 38-1698 mm"
           },
@@ -172518,7 +172518,7 @@
           },
           {
             "name": "shear",
-            "utilization": 0.227,
+            "utilization": 0.228,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 38-3738 mm"
           },
@@ -172559,7 +172559,7 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.373,
+            "utilization": 0.374,
             "combination": "1.35 permanent + 1.5 imposed",
             "at": "span 38-3738 mm"
           },
@@ -172798,7 +172798,7 @@
           160.0,
           280.0
         ],
-        "utilization": 0.628,
+        "utilization": 0.641,
         "governing": "deflection_fin",
         "checks": [
           {
@@ -172815,13 +172815,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.523,
+            "utilization": 0.538,
             "combination": "1 permanent + 1 roof",
             "at": "span 510-6490 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.628,
+            "utilization": 0.641,
             "combination": "1 permanent + 1 roof",
             "at": "span 510-6490 mm"
           },
@@ -173077,7 +173077,7 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.04,
+            "utilization": 0.046,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 692-2584 mm"
           },
@@ -173089,13 +173089,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.033,
+            "utilization": 0.04,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.037,
+            "utilization": 0.043,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
@@ -173195,13 +173195,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.061,
+            "utilization": 0.068,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.074,
+            "utilization": 0.08,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
@@ -173236,8 +173236,8 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.068,
-            "combination": "1.35 permanent",
+            "utilization": 0.07,
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 692-2584 mm"
           },
           {
@@ -173248,13 +173248,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.056,
+            "utilization": 0.062,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.067,
+            "utilization": 0.072,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
@@ -173289,25 +173289,25 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.106,
+            "utilization": 0.112,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "shear",
-            "utilization": 0.068,
+            "utilization": 0.069,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.089,
+            "utilization": 0.096,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.104,
+            "utilization": 0.11,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
@@ -173342,25 +173342,25 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.114,
+            "utilization": 0.12,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "shear",
-            "utilization": 0.067,
+            "utilization": 0.069,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.094,
+            "utilization": 0.1,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.109,
+            "utilization": 0.114,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
@@ -173395,8 +173395,8 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.066,
-            "combination": "1.35 permanent",
+            "utilization": 0.068,
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 692-2584 mm"
           },
           {
@@ -173407,13 +173407,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.054,
+            "utilization": 0.061,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.065,
+            "utilization": 0.07,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
@@ -173460,13 +173460,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.06,
+            "utilization": 0.067,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.073,
+            "utilization": 0.078,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
@@ -173554,7 +173554,7 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.039,
+            "utilization": 0.044,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 692-2584 mm"
           },
@@ -173566,13 +173566,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.032,
+            "utilization": 0.038,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.036,
+            "utilization": 0.041,
             "combination": "1 permanent + 1 roof",
             "at": "span 692-2584 mm"
           },
@@ -173796,7 +173796,7 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.042,
+            "utilization": 0.049,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 40-1932 mm"
           },
@@ -173808,13 +173808,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.035,
+            "utilization": 0.042,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.039,
+            "utilization": 0.045,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
@@ -173903,7 +173903,7 @@
           {
             "name": "bending",
             "utilization": 0.078,
-            "combination": "1.35 permanent",
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 40-1932 mm"
           },
           {
@@ -173914,13 +173914,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.063,
+            "utilization": 0.07,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.076,
+            "utilization": 0.082,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
@@ -173955,8 +173955,8 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.068,
-            "combination": "1.35 permanent",
+            "utilization": 0.072,
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 40-1932 mm"
           },
           {
@@ -173967,13 +173967,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.057,
+            "utilization": 0.064,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.068,
+            "utilization": 0.074,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
@@ -174008,8 +174008,8 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.068,
-            "combination": "1.35 permanent",
+            "utilization": 0.072,
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 40-1932 mm"
           },
           {
@@ -174020,13 +174020,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.057,
+            "utilization": 0.064,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.068,
+            "utilization": 0.074,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
@@ -174061,8 +174061,8 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.068,
-            "combination": "1.35 permanent",
+            "utilization": 0.072,
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 40-1932 mm"
           },
           {
@@ -174073,13 +174073,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.057,
+            "utilization": 0.064,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.068,
+            "utilization": 0.074,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
@@ -174114,8 +174114,8 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.068,
-            "combination": "1.35 permanent",
+            "utilization": 0.072,
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 40-1932 mm"
           },
           {
@@ -174126,13 +174126,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.057,
+            "utilization": 0.064,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.068,
+            "utilization": 0.074,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
@@ -174168,7 +174168,7 @@
           {
             "name": "bending",
             "utilization": 0.078,
-            "combination": "1.35 permanent",
+            "combination": "1.35 permanent + 1.5 roof",
             "at": "span 40-1932 mm"
           },
           {
@@ -174179,13 +174179,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.063,
+            "utilization": 0.07,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.076,
+            "utilization": 0.082,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
@@ -174273,7 +174273,7 @@
         "checks": [
           {
             "name": "bending",
-            "utilization": 0.042,
+            "utilization": 0.049,
             "combination": "1.35 permanent + 1.5 roof",
             "at": "span 40-1932 mm"
           },
@@ -174285,13 +174285,13 @@
           },
           {
             "name": "deflection_inst",
-            "utilization": 0.035,
+            "utilization": 0.042,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },
           {
             "name": "deflection_fin",
-            "utilization": 0.039,
+            "utilization": 0.045,
             "combination": "1 permanent + 1 roof",
             "at": "span 40-1932 mm"
           },

@@ -233,6 +233,71 @@ box(\"block\", (100, 100, 100), at = (4450, 0, 2200), material = \"steel\", tags
     );
 }
 
+/// A balcony beam 4500 mm long on posts centred 50 and 2950 mm along it, a
+/// 1550 mm cantilever beyond, under a 1 m wide deck with `g` and `q` kN/m².
+fn balcony(g: f64, q: f64) -> Report {
+    report(
+        &format!(
+            "load_path(only = [\"frame\"], carriers = [\"deck\"])
+weight_scope([\"heavy\"])
+area_load(\"finish\", kind = \"permanent\", kn_m2 = {g}, on = [\"deck\"], source = \"test\")
+area_load(\"live\", kind = \"imposed\", kn_m2 = {q}, on = [\"deck\"], source = \"test\")
+box(\"post a\", (100, 100, 2000), material = \"C24\", grounded = True)
+box(\"post b\", (100, 100, 2000), at = (2900, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (4500, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"deck\", (4500, 1000, 20), at = (0, -450, 2200), material = \"OSB\", tags = [\"deck\"])\n"
+        ),
+        &[],
+    )
+}
+
+#[test]
+fn a_balcony_loaded_only_on_its_cantilever_lifts_off_its_back_post() {
+    // Reaction at post a (centre 50, span 2900 mm) of 1 N/mm, by hand: between
+    // the outer bearing edges 0-3000 (3000 x 1450 / 2900) and on the cantilever
+    // past post b, 3000-4500 (-1500 x 800 / 2900).
+    let (inside, cantilever) = (1500.0, -1500.0 * 800.0 / 2900.0);
+    let (g, q) = (0.5, 2.0);
+    // EQU (EN 1990 A1.2(A), 6.4.3.1(4)): permanent 0.9 where it holds post a
+    // down, 1.1 on the cantilever; imposed only on the cantilever, by 1.5:
+    // 0.9 x 750 - 1.1 x 206.9 - 1.5 x 827.6 = -794 N. The beam tips. Taken as one
+    // action loaded everywhere it would be 0.9 x 543 > 0 (the review's `pass`).
+    let holding = 0.9 * g * inside + 1.1 * g * cantilever + 1.5 * q * cantilever;
+    assert!(holding < -790.0, "{holding}");
+    assert!(0.9 * g * (inside + cantilever) > 0.0);
+    let report = balcony(g, q);
+    let beam = member(&report, "beam");
+    let post_a = beam
+        .reactions
+        .iter()
+        .find(|reaction| reaction.part == "post a")
+        .unwrap_or_else(|| panic!("{:?}", beam.reactions));
+    assert!(post_a.lifted_off, "{:?}", beam.reactions);
+    assert_eq!(
+        beam.missing,
+        [
+            "it lifts off post a and tips over its last support (EQU 0.9 G + 1.5 Q): no joint holds it down"
+        ]
+    );
+    // Without imposed load the finish holds it down: 0.9 x 750 - 1.1 x 206.9 = +447 N,
+    // and post a takes the elastic reaction of the finish, g x 1086.2 = 543 N.
+    let report = balcony(g, 0.0);
+    let beam = member(&report, "beam");
+    assert!(
+        beam.reactions.iter().all(|reaction| !reaction.lifted_off),
+        "{:?}",
+        beam.reactions
+    );
+    assert_eq!(beam.missing, Vec::<String>::new());
+    let post_a = beam
+        .reactions
+        .iter()
+        .find(|reaction| reaction.part == "post a")
+        .unwrap();
+    // 4500 mm of g centred 2250, lever (2950 - 2250) / 2900.
+    close(post_a.loads_n["permanent"], g * 4500.0 * 700.0 / 2900.0);
+}
+
 fn report_with_screw() -> Report {
     report(
         "load_path(only = [\"frame\"])
