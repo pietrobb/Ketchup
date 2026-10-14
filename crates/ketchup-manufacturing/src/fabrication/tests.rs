@@ -192,6 +192,40 @@ fn a_boolean_tool_opening_only_the_far_face_is_machined_from_that_face() {
     assert_eq!(within_stock(tool(-5.0, 15.0), cube), Some(tool(0.0, 10.0)));
     // A tool beside the cube removes nothing there.
     assert_eq!(within_stock(tool(12.0, 20.0), cube), None);
+    // From z = 3 to 7: open only to the side at x = 10 (review MF-N4). Entered
+    // from z = 3 inside the cube, the cutter would pass through material that
+    // stays, so the cut is refused, never written from an inner plane.
+    assert_eq!(within_stock(tool(3.0, 7.0), cube), None);
+}
+
+/// Review MF-N4: a rectangular pocket open only to the side x = 10 (profile
+/// x 8..12, y 2..6, from z = 3 to 7) is machined from that side face, 2 mm
+/// deep; the same rectangle inside the cube is a cavity and is refused.
+#[test]
+fn a_rectangular_cut_open_only_to_a_side_is_machined_from_that_side() {
+    let cube = [[0.0; 3], [10.0; 3]];
+    let pocket = |[x0, y0]: [f64; 2], [x1, y1]: [f64; 2]| GeneralMachiningGeometry::ProfileCut {
+        frame: identity_machining_frame(),
+        segments: rectangle_segments([x0, y0], [x1, y1]),
+        start_mm: 3.0,
+        end_mm: 7.0,
+    };
+    let GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments,
+        start_mm,
+        end_mm,
+    } = within_stock(pocket([8.0, 2.0], [12.0, 6.0]), cube).unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(frame.normal, [-1.0, 0.0, 0.0]);
+    assert_eq!(frame.origin_mm[0] + frame.normal[0] * start_mm, 10.0);
+    assert_eq!(end_mm - start_mm, 2.0);
+    // The profile now spans y 2..6 and z 3..7 (y flipped for the turned frame).
+    let [low, high] = rectangle(&segments).unwrap();
+    assert_eq!((high[0] - low[0], high[1] - low[1]), (4.0, 4.0));
+    assert_eq!(within_stock(pocket([4.0, 4.0], [6.0, 6.0]), cube), None);
 }
 
 #[test]

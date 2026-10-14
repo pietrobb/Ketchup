@@ -298,7 +298,7 @@ impl fmt::Display for GeneralFabricationError {
             ),
             Self::PartExportBlocked { part } => write!(
                 formatter,
-                "part \"{part}\" cannot be written to the machine file: its stock is not a rectangular box, a cut is not one the format describes or reaches outside the stock, or its exact result is stale; check this part's cuts or evaluate the model again",
+                "part \"{part}\" cannot be written to the machine file: its stock is not a rectangular box, a cut is not one the format describes, reaches outside the stock or starts inside the material (a cavity, or a cut that opens only to a side and is not rectangular), or its exact result is stale; let each cut tool reach past the face it enters, or evaluate the model again",
             ),
         }
     }
@@ -860,7 +860,17 @@ impl GeneralFabricationProjection {
             || self.manufacturing.validation_state != ValidationState::Passed
             || !self.manufacturing.unresolved_sources.is_empty()
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            // Name the first part whose cuts could not be described, so the
+            // user knows which one to check.
+            let part = self
+                .bom
+                .rows
+                .iter()
+                .find(|row| self.manufacturing.unresolved_sources.contains(&row.source))
+                .and_then(|row| snapshot.definition(row.definition_id));
+            return Err(part.map_or(GeneralFabricationError::ExportBlocked, |part| {
+                GeneralFabricationError::ExportBlocked.at_part(part.name())
+            }));
         }
         let mut output = format!(
             "{GENERAL_MANUFACTURING_EXPORT_V2}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\n",
@@ -3463,10 +3473,15 @@ fn extent_along(
 /// A Boolean tool may reach past the stock. The cut is machined only where the
 /// stock is (its interval clipped to the stock along the normal), and a cut
 /// that opens only on the far face is described from that face, like a blind
-/// profile cut. None when nothing of the tool lies in the stock.
+/// profile cut. A rectangular cut that neither enters nor leaves through a face
+/// along its normal (open only to a side) is described along the profile axis
+/// through whose face it opens, so a notch or a side pocket is machined from
+/// that face. None when nothing of the tool lies in the stock, or when no
+/// description enters through a face (another profile open only to a side, or
+/// a cavity): the tool would have to pass through material that stays.
 fn within_stock(
     machining: GeneralMachiningGeometry,
-    [minimum, maximum]: [[f64; 3]; 2],
+    bounds: [[f64; 3]; 2],
 ) -> Option<GeneralMachiningGeometry> {
     let GeneralMachiningGeometry::ProfileCut {
         frame,
@@ -3477,9 +3492,64 @@ fn within_stock(
     else {
         return Some(machining);
     };
-    let (low, high) = extent_along([minimum, maximum], frame.origin_mm, frame.normal);
+    let (low, high) = extent_along(bounds, frame.origin_mm, frame.normal);
     let (start_mm, end_mm) = (start_mm.max(low), end_mm.min(high));
     if end_mm - start_mm <= ROUNDING {
+        return None;
+    }
+    if let Some(cut) = clipped_along(frame, segments.clone(), start_mm, end_mm, bounds) {
+        return Some(cut);
+    }
+    let [[x0, y0], [x1, y1]] = rectangle(&segments)?;
+    let overlaps = |axis: [f64; 3], first: f64, last: f64| {
+        let (low, high) = extent_along(bounds, frame.origin_mm, axis);
+        last.min(high) - first.max(low) > ROUNDING
+    };
+    if !overlaps(frame.x_axis, x0, x1) || !overlaps(frame.y_axis, y0, y1) {
+        return None;
+    }
+    // Right-handed turns of the frame: (y, normal, x) and (normal, x, y).
+    let along_x = GeneralMachiningFrame {
+        x_axis: frame.y_axis,
+        y_axis: frame.normal,
+        normal: frame.x_axis,
+        ..frame
+    };
+    let along_y = GeneralMachiningFrame {
+        x_axis: frame.normal,
+        y_axis: frame.x_axis,
+        normal: frame.y_axis,
+        ..frame
+    };
+    [
+        (along_x, [y0, start_mm], [y1, end_mm], x0, x1),
+        (along_y, [start_mm, x0], [end_mm, x1], y0, y1),
+    ]
+    .into_iter()
+    .find_map(|(frame, low, high, start_mm, end_mm)| {
+        clipped_along(
+            frame,
+            rectangle_segments(low, high),
+            start_mm,
+            end_mm,
+            bounds,
+        )
+    })
+}
+
+/// The cut clipped to the stock along its normal, described from the face it
+/// enters; None when it neither enters nor leaves through a face there.
+fn clipped_along(
+    frame: GeneralMachiningFrame,
+    segments: Vec<GeneralMachiningSegment>,
+    start_mm: f64,
+    end_mm: f64,
+    bounds: [[f64; 3]; 2],
+) -> Option<GeneralMachiningGeometry> {
+    let (low, high) = extent_along(bounds, frame.origin_mm, frame.normal);
+    let (start_mm, end_mm) = (start_mm.max(low), end_mm.min(high));
+    let (enters, leaves) = (start_mm <= low + ROUNDING, end_mm >= high - ROUNDING);
+    if end_mm - start_mm <= ROUNDING || !(enters || leaves) {
         return None;
     }
     let clipped = GeneralMachiningGeometry::ProfileCut {
@@ -3488,11 +3558,44 @@ fn within_stock(
         start_mm,
         end_mm,
     };
-    Some(if start_mm > low + ROUNDING && end_mm >= high - ROUNDING {
+    Some(if !enters {
         entering_from_end(clipped)
     } else {
         clipped
     })
+}
+
+/// The corners `[[x0, y0], [x1, y1]]` of a profile that is a rectangle along
+/// its frame axes.
+fn rectangle(segments: &[GeneralMachiningSegment]) -> Option<[[f64; 2]; 2]> {
+    let lines = segments
+        .iter()
+        .map(|segment| match segment {
+            GeneralMachiningSegment::Line { start_mm, end_mm } => Some((*start_mm, *end_mm)),
+            GeneralMachiningSegment::CircularArc { .. } => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if lines.len() != 4 {
+        return None;
+    }
+    let points = || lines.iter().flat_map(|(start, end)| [*start, *end]);
+    let low = [0, 1].map(|axis| points().map(|p| p[axis]).fold(f64::INFINITY, f64::min));
+    let high = [0, 1].map(|axis| points().map(|p| p[axis]).fold(f64::NEG_INFINITY, f64::max));
+    let close = |left: f64, right: f64| (left - right).abs() <= ROUNDING;
+    let corner =
+        |p: [f64; 2]| (0..2).all(|axis| close(p[axis], low[axis]) || close(p[axis], high[axis]));
+    let square = lines.iter().all(|(start, end)| {
+        corner(*start) && corner(*end) && (close(start[0], end[0]) != close(start[1], end[1]))
+    });
+    (square && (0..2).all(|axis| high[axis] - low[axis] > ROUNDING)).then_some([low, high])
+}
+
+fn rectangle_segments([x0, y0]: [f64; 2], [x1, y1]: [f64; 2]) -> Vec<GeneralMachiningSegment> {
+    [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        .into_iter()
+        .zip([[x1, y0], [x1, y1], [x0, y1], [x0, y0]])
+        .map(|(start_mm, end_mm)| GeneralMachiningSegment::Line { start_mm, end_mm })
+        .collect()
 }
 
 /// The same machining grown evenly by `factor` and then moved by

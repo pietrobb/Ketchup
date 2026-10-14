@@ -1654,7 +1654,7 @@ fn an_unevenly_scaled_part_with_a_hole_claims_no_drilling_and_blocks_the_export(
     assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
     assert_eq!(
         projection.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked.at_part("Timber with circular drilling"))
     );
 }
 
@@ -2158,15 +2158,15 @@ fn circular_boolean_tools_are_not_promoted_to_manufacturing_drilling() {
     assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
     assert_eq!(
         projection.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked.at_part("Timber with circular drilling"))
     );
     assert_eq!(
         projection.btlx_2_3_1_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked.at_part("Timber with circular drilling"))
     );
     assert_eq!(
         projection.woodwop_mpr_4_0_drill_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked.at_part("Timber with circular drilling"))
     );
 }
 
@@ -2191,7 +2191,7 @@ fn unsupported_or_unverified_exact_graph_manufacturing_fails_closed_atomically()
         assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
         assert_eq!(
             projection.manufacturing_export(&snapshot),
-            Err(GeneralFabricationError::ExportBlocked)
+            Err(GeneralFabricationError::ExportBlocked.at_part("Graph fabrication"))
         );
     }
 
@@ -2205,7 +2205,7 @@ fn unsupported_or_unverified_exact_graph_manufacturing_fails_closed_atomically()
     assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
     assert_eq!(
         projection.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked.at_part("Graph fabrication"))
     );
 
     let (snapshot, projection) = graph_fabrication_projection(
@@ -2221,7 +2221,7 @@ fn unsupported_or_unverified_exact_graph_manufacturing_fails_closed_atomically()
     assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
     assert_eq!(
         projection.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked.at_part("Graph fabrication"))
     );
 }
 
@@ -2283,7 +2283,7 @@ fn canonical_mesh_keeps_bom_and_drawings_but_blocks_manufacturing_export() {
     assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
     assert_eq!(
         projection.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked.at_part("Canonical mesh"))
     );
 }
 

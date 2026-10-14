@@ -112,3 +112,62 @@ fn a_stock_box_with_successive_prism_cuts_exports_to_btlx() {
     assert!(btlx.contains("Length=\"2000\""), "{btlx}");
     assert!(btlx.matches("ProcessID=").count() >= 2, "{btlx}");
 }
+
+/// Review MF-N4: a cut open only to the side of the rafter (its tool from
+/// z = 500 to 580 inside the 2000 mm length, reaching past the side face x = 60)
+/// was written as a contour from a plane inside the rafter, so the cutter would
+/// pass through wood that stays. A rectangular pocket is machined from the side
+/// face it opens on, 10 mm deep.
+#[test]
+fn a_rectangular_pocket_open_only_to_the_side_is_machined_from_that_side() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let source = format!(
+        "p=box('rafter',(60,140,2000),{ROLE})\n\
+         a=box('rafter / slot',(20,40,80),tool=True)\nplace(a,origin=(50,50,500),z=(0,0,1),x=(1,0,0))\nsubtract(p,a,name='slot')\n"
+    );
+    let snapshot = apply(&source);
+    let projection = projection(&mut worker, &snapshot, "rafter");
+    assert!(projection.manufacturing.unresolved_sources.is_empty());
+    let cut = &projection.manufacturing.operations[1].machining;
+    let ketchup_manufacturing::fabrication::GeneralMachiningGeometry::ProfileCut {
+        frame,
+        start_mm,
+        end_mm,
+        ..
+    } = cut
+    else {
+        panic!("{cut:?}")
+    };
+    assert_eq!(frame.normal, [-1.0, 0.0, 0.0], "{cut:?}");
+    assert_eq!(
+        frame.origin_mm[0] + frame.normal[0] * start_mm,
+        60.0,
+        "{cut:?}"
+    );
+    assert_eq!(end_mm - start_mm, 10.0, "{cut:?}");
+    let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert_eq!(btlx.matches("ProcessID=").count(), 1, "{btlx}");
+}
+
+/// Review MF-N4: a triangular cut open only to the side (z = 500 to 520) has no
+/// face to enter along any axis, so the BTLx export refuses it, naming the part.
+#[test]
+fn a_triangular_cut_open_only_to_the_side_is_refused_with_its_part() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let source = format!(
+        "p=box('rafter',(60,140,2000),{ROLE})\n\
+         a=extrude('rafter / v',profile=[(0,0),(40,0),(0,80)],distance=20,tool=True)\nplace(a,origin=(50,30,500),z=(0,0,1),x=(1,0,0))\nsubtract(p,a,name='v')\n"
+    );
+    let snapshot = apply(&source);
+    let projection = projection(&mut worker, &snapshot, "rafter");
+    let error = projection
+        .btlx_2_3_1_export(&snapshot)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("\"rafter\"") && error.contains("starts inside the material"),
+        "{error}"
+    );
+}
