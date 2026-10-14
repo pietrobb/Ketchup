@@ -2373,6 +2373,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "sys-locale",
  "tempfile",
  "wgpu",
  "winreg",

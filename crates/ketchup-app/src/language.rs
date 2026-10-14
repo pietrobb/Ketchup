@@ -1,7 +1,8 @@
 //! The language of the user interface: English or Slovak.
 //!
 //! At start the language comes from `KETCHUP_LANGUAGE`, then from the choice
-//! saved in Window > Language, then from the system language, else English.
+//! saved in Window > Language, then from the system display languages, else
+//! English.
 
 use ketchup_interaction::LocaleCatalog;
 
@@ -56,24 +57,33 @@ impl UiLanguage {
     }
 
     /// The first known language of an explicit override, the saved choice and
-    /// the system language, in that order; English when none is known.
+    /// the system display languages in preference order; English when none is
+    /// known.
     #[must_use]
-    pub fn resolve(override_tag: Option<&str>, saved: Option<&str>, system: Option<&str>) -> Self {
-        [override_tag, saved, system]
+    pub fn resolve<'a>(
+        override_tag: Option<&'a str>,
+        saved: Option<&'a str>,
+        system: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        [override_tag, saved]
             .into_iter()
             .flatten()
+            .chain(system)
             .find_map(Self::from_tag)
             .unwrap_or(Self::English)
     }
 
-    /// The language to start the window in.
+    /// The language to start the window in. The system languages are the
+    /// user's display languages (as the Viewer reads them), not the regional
+    /// format, which may well differ.
     #[must_use]
     pub fn at_startup() -> Self {
         let override_tag = std::env::var("KETCHUP_LANGUAGE").ok();
+        let system: Vec<String> = sys_locale::get_locales().collect();
         Self::resolve(
             override_tag.as_deref(),
             saved_choice().as_deref(),
-            system_language().as_deref(),
+            system.iter().map(String::as_str),
         )
     }
 }
@@ -115,26 +125,6 @@ pub fn save_choice(_language: UiLanguage) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The user's display language, e.g. `sk-SK`.
-#[cfg(windows)]
-fn system_language() -> Option<String> {
-    use winreg::RegKey;
-    use winreg::enums::HKEY_CURRENT_USER;
-
-    RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey(r"Control Panel\International")
-        .ok()?
-        .get_value("LocaleName")
-        .ok()
-}
-
-#[cfg(not(windows))]
-fn system_language() -> Option<String> {
-    ["LC_ALL", "LC_MESSAGES", "LANG"]
-        .into_iter()
-        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::UiLanguage;
@@ -156,19 +146,33 @@ mod tests {
     #[test]
     fn override_beats_saved_choice_beats_system_language() {
         assert_eq!(
-            UiLanguage::resolve(None, None, Some("sk-SK")),
+            UiLanguage::resolve(None, None, ["sk-SK"]),
             UiLanguage::Slovak
         );
         assert_eq!(
-            UiLanguage::resolve(None, Some("en-US"), Some("sk-SK")),
+            UiLanguage::resolve(None, Some("en-US"), ["sk-SK"]),
             UiLanguage::English
         );
         assert_eq!(
-            UiLanguage::resolve(Some("sk"), Some("en-US"), None),
+            UiLanguage::resolve(Some("sk"), Some("en-US"), []),
             UiLanguage::Slovak
         );
         assert_eq!(
-            UiLanguage::resolve(Some("de"), None, Some("cs-CZ")),
+            UiLanguage::resolve(Some("de"), None, ["cs-CZ"]),
+            UiLanguage::English
+        );
+    }
+
+    #[test]
+    fn the_first_translated_display_language_wins() {
+        // A German display language with Slovak as the second preference.
+        assert_eq!(
+            UiLanguage::resolve(None, None, ["de-DE", "sk-SK", "en-US"]),
+            UiLanguage::Slovak
+        );
+        // An English display language: English even for a Slovak user.
+        assert_eq!(
+            UiLanguage::resolve(None, None, ["en-GB", "sk-SK"]),
             UiLanguage::English
         );
     }
