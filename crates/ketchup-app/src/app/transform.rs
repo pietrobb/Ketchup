@@ -2997,11 +2997,15 @@ pub(crate) fn scale_feature_batch(
         if !definition.local_occurrence_ids().is_empty() {
             return Err("digest-scale-refused-assembly");
         }
-        if snapshot.hole_threads().any(|(id, _)| {
+        // A modelled bolt's thread is cut before the Scale, which would stretch it too.
+        let threaded = |id: FeatureId| {
             snapshot
                 .feature(id)
                 .is_some_and(|feature| feature.definition_id() == part.definition_id)
-        }) {
+        };
+        if snapshot.hole_threads().any(|(id, _)| threaded(id))
+            || snapshot.shaft_threads().any(|(id, _)| threaded(id))
+        {
             return Err("digest-scale-refused-thread");
         }
         if !part.transform.is_rigid() {

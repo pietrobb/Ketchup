@@ -176,6 +176,26 @@ fn the_window_switch_models_threads_keeps_the_program_and_undo_restores_cosmetic
         );
     }
     assert!(!app.set_modeled_threads(true), "already modelled");
+    // Scaling the bolt would stretch its modelled M8 thread out of size.
+    let bolt_id = modeled
+        .occurrences()
+        .find(|occurrence| {
+            modeled
+                .definition(occurrence.definition_id())
+                .is_some_and(|definition| definition.name() == "s")
+        })
+        .unwrap()
+        .id();
+    assert!(app.headless_select_occurrence(bolt_id));
+    assert!(!app.scale_selected(1.5));
+    assert_eq!(
+        app.action_digest(),
+        app.catalog.text("digest-scale-refused-thread")
+    );
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        modeled.canonical_digest()
+    );
 
     app.dispatch_command(AppCommand::Undo);
     let undone = app.document.current();
