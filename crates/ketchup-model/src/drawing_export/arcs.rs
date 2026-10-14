@@ -49,14 +49,15 @@ pub(super) fn view_arcs(view: &OrthographicView) -> ViewArcs {
         let Some(index) = chord_circle(&circles, pieces) else {
             continue;
         };
-        let center = circles[index].center_mm;
+        let center = circles[index].circle.center_mm;
         for (style, line) in pieces {
             runs[index][*style].push(minor_arc(center, line.start_mm, line.end_mm));
             replaced_lines.insert(line.stable_line_id.clone());
         }
     }
     let mut arcs = Vec::new();
-    for (circle, styles) in circles.iter().zip(runs) {
+    for (view_circle, styles) in circles.iter().zip(runs) {
+        let circle = view_circle.circle;
         for (style, intervals) in [LineStyle::Visible, LineStyle::Hidden]
             .into_iter()
             .zip(styles)
@@ -90,25 +91,49 @@ pub(super) fn view_arcs(view: &OrthographicView) -> ViewArcs {
     }
 }
 
+/// One curve of the view and the parts of it that exact edges cover.
+struct ViewCircle<'a> {
+    circle: &'a ProjectedCircle,
+    /// (start, counter-clockwise span) of every edge on the curve.
+    extents: Vec<(f64, f64)>,
+}
+
 /// Coincident circles (the two rims of a hole seen along it) are one curve of
-/// the view; the first by id names it.
-fn distinct_circles(circles: &[ProjectedCircle]) -> Vec<&ProjectedCircle> {
-    let mut distinct = Vec::<&ProjectedCircle>::new();
+/// the view; the first by id names it, and it covers what any of them covers.
+fn distinct_circles(circles: &[ProjectedCircle]) -> Vec<ViewCircle<'_>> {
+    let mut distinct = Vec::<ViewCircle<'_>>::new();
     for circle in circles {
         let usable = circle.radius_mm.is_finite()
             && circle.radius_mm > 0.0
-            && circle.center_mm.iter().all(|value| value.is_finite());
-        if usable
-            && !distinct.iter().any(|known| {
-                let tolerance = tolerance(known);
-                (known.radius_mm - circle.radius_mm).abs() <= tolerance
-                    && distance(known.center_mm, circle.center_mm) <= tolerance
-            })
-        {
-            distinct.push(circle);
+            && circle.center_mm.iter().all(|value| value.is_finite())
+            && circle.start_rad.is_finite()
+            && circle.span_rad.is_finite()
+            && circle.span_rad > 0.0;
+        if !usable {
+            continue;
+        }
+        let extent = (circle.start_rad, circle.span_rad);
+        match distinct.iter_mut().find(|known| {
+            let tolerance = tolerance(known.circle);
+            (known.circle.radius_mm - circle.radius_mm).abs() <= tolerance
+                && distance(known.circle.center_mm, circle.center_mm) <= tolerance
+        }) {
+            Some(known) => known.extents.push(extent),
+            None => distinct.push(ViewCircle {
+                circle,
+                extents: vec![extent],
+            }),
         }
     }
     distinct
+}
+
+/// Whether the counter-clockwise interval `(start, span)` lies on one of
+/// `extents`, within `gap` at either end.
+fn covered(extents: &[(f64, f64)], (start, span): (f64, f64), gap: f64) -> bool {
+    extents.iter().any(|&(from, width)| {
+        width >= TAU || (start - from + gap).rem_euclid(TAU) + span <= width + 2.0 * gap
+    })
 }
 
 fn tolerance(circle: &ProjectedCircle) -> f64 {
@@ -130,9 +155,11 @@ fn edge_id(line_id: &str) -> &str {
 }
 
 /// The circle whose chord the pieces of one edge form: both ends of the edge
-/// on the circle, every piece on the chord, the chord no wider than one step.
+/// on the circle, every piece on the chord, the chord no wider than one step
+/// and on the part of the circle an exact edge covers (a flat whose ends lie on
+/// the circle is no chord of it).
 fn chord_circle(
-    circles: &[&ProjectedCircle],
+    circles: &[ViewCircle<'_>],
     pieces: &[(usize, &ProjectedVisibleLine)],
 ) -> Option<usize> {
     let (_, first) = pieces.first()?;
@@ -153,7 +180,8 @@ fn chord_circle(
     let end = *points
         .iter()
         .max_by(|left, right| along(**left).total_cmp(&along(**right)))?;
-    circles.iter().position(|circle| {
+    circles.iter().position(|view_circle| {
+        let circle = view_circle.circle;
         let tolerance = tolerance(circle);
         let on_circle =
             |point| (distance(point, circle.center_mm) - circle.radius_mm).abs() <= tolerance;
@@ -171,6 +199,11 @@ fn chord_circle(
             && span > tolerance / circle.radius_mm
             && span <= MAX_CHORD_SPAN_RAD
             && points.iter().all(|point| across(*point) <= tolerance)
+            && covered(
+                &view_circle.extents,
+                minor_arc(circle.center_mm, start, end),
+                tolerance / circle.radius_mm,
+            )
     })
 }
 

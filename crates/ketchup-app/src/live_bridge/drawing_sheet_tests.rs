@@ -415,6 +415,108 @@ fn a_drilled_hole_and_a_rounded_corner_are_an_exact_circle_and_arc_in_the_dxf() 
     );
 }
 
+/// A round bar with a flat (review DR-1): Ø100 with a 3 mm flat is, seen along
+/// its axis, an ARC of 320.1 degrees and the LINE of the flat. The flat's ends
+/// lie on the exact circle and it spans 39.9 degrees, like one step of a
+/// tessellated circle, but it is no part of the circular edge.
+#[test]
+fn a_round_bar_with_a_flat_is_an_arc_and_the_line_of_the_flat_in_the_dxf() {
+    const RADIUS_MM: f64 = 50.0;
+    const FLAT_MM: f64 = 3.0;
+    let (mut app, mut bridge) = setup();
+    app.new_document();
+    let source = format!(
+        "bar = revolve('bar', profile = [(0, 0), ({RADIUS_MM}, 0), ({RADIUS_MM}, 20), (0, 20)], \
+         axis = [(0, 0), (0, 1)])\n\
+         rotate(bar, axis = (1, 0, 0), angle = 90)\n\
+         trim(bar, ({}, 0, 0), (1, 0, 0))\n",
+        RADIUS_MM - FLAT_MM
+    );
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "flat.star".into(),
+            source,
+            overrides: BTreeMap::new(),
+        },
+        false,
+    )
+    .unwrap();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("flat.dxf");
+    let exported = bridge
+        .execute(
+            &mut app,
+            export_drawings(&path, json!({"sheet_id": id})),
+            false,
+        )
+        .unwrap();
+    assert_eq!(exported["exported"], true, "{exported}");
+
+    let written = std::fs::read_to_string(&path).unwrap();
+    let snapshot = app.document.current();
+    let sheet = snapshot.drawing_sheet(DrawingSheetId(id)).unwrap();
+    let drawing = project_orthographic_drawing(&snapshot, &app.exact.results, sheet).unwrap();
+    // The view along the bar's axis: the one that faces its rims.
+    let index = drawing
+        .views
+        .iter()
+        .position(|view| !view.circles.is_empty() && view.kind.stable_name() != "back")
+        .unwrap();
+    let (view, placement) = (
+        &drawing.views[index],
+        &drawing.layout.view_placements[index],
+    );
+    let scale = (placement.page_bounds_mm[1][0] - placement.page_bounds_mm[0][0])
+        / (view.bounds_mm[1][0] - view.bounds_mm[0][0]);
+    let prefix = format!("{}/", view.stable_view_id);
+    let entities = entities(&written);
+    let axis_view = entities
+        .iter()
+        .filter(|entity| entity.id.starts_with(&prefix) && entity.layer == "VISIBLE")
+        .collect::<Vec<_>>();
+    let close = |left: f64, right: f64| (left - right).abs() <= 1e-4;
+
+    assert!(
+        !axis_view.iter().any(|entity| entity.kind == "CIRCLE"),
+        "the bar with a flat is drawn as a full circle:\n{written}"
+    );
+    let half_gap = ((RADIUS_MM - FLAT_MM) / RADIUS_MM).acos().to_degrees();
+    let rim = axis_view
+        .iter()
+        .find(|entity| entity.kind == "ARC" && close(entity.codes[&40] / scale, RADIUS_MM))
+        .unwrap_or_else(|| {
+            panic!(
+                "no rim arc in the view along the axis: {} {:?} {:?}",
+                exported["dxf_curves"],
+                view.circles,
+                axis_view
+                    .iter()
+                    .map(|entity| (
+                        entity.kind.as_str(),
+                        entity.codes.get(&40).map(|r| r / scale)
+                    ))
+                    .collect::<Vec<_>>()
+            )
+        });
+    let span = (rim.codes[&51] - rim.codes[&50]).rem_euclid(360.0);
+    assert!((span - (360.0 - 2.0 * half_gap)).abs() < 1e-3, "{span}");
+    let chord = 2.0 * RADIUS_MM * half_gap.to_radians().sin();
+    assert!(
+        axis_view.iter().any(|entity| {
+            entity.kind == "LINE"
+                && close(
+                    (entity.codes[&11] - entity.codes[&10])
+                        .hypot(entity.codes[&21] - entity.codes[&20])
+                        / scale,
+                    chord,
+                )
+        }),
+        "the flat of {chord} mm is no line of the view along the axis:\n{written}"
+    );
+}
+
 /// The geometry of every LINE, CIRCLE and ARC: type, layer, KETCHUP id and
 /// its numbers to five decimals of page millimetres, sorted.
 fn drawn(dxf: &str) -> Vec<String> {

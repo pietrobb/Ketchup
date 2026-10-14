@@ -26,6 +26,8 @@ fn circle(id: &str) -> ProjectedCircle {
         stable_circle_id: id.to_owned(),
         center_mm: CENTER,
         radius_mm: RADIUS,
+        start_rad: 0.0,
+        span_rad: TAU,
     }
 }
 
@@ -141,6 +143,34 @@ fn coincident_circles_are_one_curve_named_by_the_first() {
             .collect::<Vec<_>>(),
         ["c:1/visible"]
     );
+}
+
+#[test]
+fn a_flat_whose_ends_lie_on_the_circle_stays_a_line_beside_the_arc_of_the_edge() {
+    // The exact edge covers steps 2..16; the flat from step 0 to 2 spans 45
+    // degrees with both ends on the circle, like one step of the circle.
+    let mut lines = (2..STEPS)
+        .map(|step| chord(format!("e:{step}"), step, step + 1))
+        .collect::<Vec<_>>();
+    lines.push(chord("flat".into(), 0, 2));
+    let step = TAU / STEPS as f64;
+    let rim = ProjectedCircle {
+        start_rad: 2.0 * step,
+        span_rad: TAU - 2.0 * step,
+        ..circle("c:1")
+    };
+    let result = view_arcs(&view(lines, Vec::new(), vec![rim]));
+    let [arc] = result.arcs.as_slice() else {
+        panic!("one arc: {}", result.arcs.len());
+    };
+    assert_eq!(arc.id, "c:1/visible-arc-0");
+    let (start, span) = degrees(arc);
+    assert!(
+        (start - 45.0).abs() < 1e-9 && (span - 315.0).abs() < 1e-9,
+        "{start} {span}"
+    );
+    assert!(!result.replaced_lines.contains("flat"));
+    assert_eq!(result.replaced_lines.len(), STEPS - 2);
 }
 
 #[test]
