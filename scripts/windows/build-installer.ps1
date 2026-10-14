@@ -469,7 +469,8 @@ try {
     Assert-ExactWorkerHandshake (Join-Path $installedDir "ketchup-exact-worker.exe") "Installed exact worker"
 
     $persistenceSmokePath = Join-Path $tempRoot "install-persistence-smoke.ketchup"
-    $installVerification = (& (Join-Path $installedDir "Ketchup.exe") --verify-install $persistenceSmokePath).Trim()
+    # Ketchup.exe is a windowed app: only a pipeline makes PowerShell wait for its output.
+    $installVerification = (& (Join-Path $installedDir "Ketchup.exe") --verify-install $persistenceSmokePath | Out-String).Trim()
     $expectedVerification = "Ketchup $Version verified"
     if ($LASTEXITCODE -ne 0 -or $installVerification -cne $expectedVerification -or
         -not (Test-Path $persistenceSmokePath -PathType Leaf)) {
