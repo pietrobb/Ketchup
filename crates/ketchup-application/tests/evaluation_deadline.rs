@@ -665,6 +665,89 @@ fn session_reuses_only_a_complete_full_baseline_for_incremental_exact() {
     );
 }
 
+/// A hidden part is still made (production scope, MF-N3): an edit of it while
+/// its layer is hidden must be evaluated incrementally like a shown one, not
+/// dropped from the exact results until the layer is shown again.
+#[test]
+fn incremental_exact_reevaluates_an_edited_hidden_part() {
+    let mut session = worker_session();
+    add_part(&mut session);
+    session
+        .apply_cad_program(
+            &program_at("Hidden part", [100.0, 0.0, 0.0]),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+    let (hidden, hidden_definition) = session
+        .snapshot()
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Hidden part")
+        .map(|occurrence| (occurrence.id(), occurrence.definition_id()))
+        .unwrap();
+    let proposal = session
+        .plan_commands(CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: hidden,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    session.apply_proposal(&proposal).unwrap();
+    let full = session.evaluate().unwrap();
+    assert!(full.establishes_full_baseline(), "{full:?}");
+    let before = registry_fingerprints(&session.snapshot(), session.exact_results());
+    assert_eq!(before.len(), 2, "a full evaluation covers the hidden part");
+    let extrusion = session
+        .snapshot()
+        .features()
+        .find(|feature| {
+            feature.definition_id() == hidden_definition && feature.kind().produces_body()
+        })
+        .unwrap()
+        .id();
+
+    let proposal = session
+        .plan_commands(CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: extrusion,
+                dimension: Dimension::new("44", 44.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    session.apply_proposal(&proposal).unwrap();
+    let plan = session.incremental_exact_plan().unwrap();
+    assert!(plan.baseline_reused, "{plan:?}");
+    let ExactEvaluationSelection::Scoped(scope) = &plan.selection else {
+        panic!("complete baseline must enable a scoped plan: {plan:?}");
+    };
+    assert!(
+        scope
+            .iter()
+            .any(|producer| producer.definition_id == hidden_definition),
+        "the edited hidden part must be in the scope: {plan:?}"
+    );
+    assert!(
+        !plan.collision_occurrences.contains(&hidden),
+        "a hidden part is not collision-checked: {plan:?}"
+    );
+    let task = session.start_incremental_exact_evaluation_task();
+    let products = task.wait(Duration::from_secs(30)).unwrap();
+    let scoped = session.publish_exact_evaluation(&task, products).unwrap();
+    assert!(scoped.complete && scoped.topology_complete, "{scoped:?}");
+    let after = registry_fingerprints(&session.snapshot(), session.exact_results());
+    assert_eq!(
+        after.len(),
+        2,
+        "the hidden part keeps a current exact result"
+    );
+    let hidden_key = |map: &BTreeMap<(u64, u64, u64), String>| {
+        map.iter()
+            .find(|(key, _)| key.0 == hidden_definition.0)
+            .map(|(_, fingerprint)| fingerprint.clone())
+    };
+    assert_ne!(hidden_key(&after), hidden_key(&before));
+}
+
 #[test]
 fn incremental_unsupported_producer_is_incomplete_and_cannot_establish_baseline() {
     let mut session = worker_session();

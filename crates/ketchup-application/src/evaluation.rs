@@ -369,14 +369,15 @@ pub fn plan_incremental_exact_scope(
         .into_iter()
         .map(|occurrence| (occurrence.instance_path.clone(), occurrence))
         .collect::<BTreeMap<_, _>>();
-    let visible_definitions = after_scene
+    // Hidden parts too, like a full evaluation: a hidden layer is still made
+    // (production scope), so its edit must not leave it without a result.
+    let scene_definitions = after_scene
         .values()
-        .filter(|occurrence| occurrence.visible)
         .map(|occurrence| occurrence.definition_id)
         .collect::<BTreeSet<_>>();
     let mut producers = BTreeSet::new();
     for (definition_id, terminals) in &after_terminals {
-        if !visible_definitions.contains(definition_id) {
+        if !scene_definitions.contains(definition_id) {
             continue;
         }
         for feature_id in terminals.values() {
