@@ -222,15 +222,20 @@ fn outside_files(
             .map(|argument| lexical(&folder.join(argument))),
     );
     for candidate in candidates {
-        if candidate.starts_with(folder) || !candidate.is_file() {
+        if candidate.starts_with(folder) {
             continue;
         }
+        // Before `is_file`: asking a network share whether a file exists
+        // already sends it the user's credentials.
         if !local_absolute_path(&candidate.to_string_lossy()) {
             return Err(failure(
                 "invalid_path",
                 "No plugin argument names a network share, device or stream.",
                 json!({"canonical_mutation": false}),
             ));
+        }
+        if !candidate.is_file() {
+            continue;
         }
         let sha256 = fs::File::open(&candidate)
             .and_then(sha256_reader_hex)

@@ -11,6 +11,7 @@ mod bridge;
 mod discovery;
 mod docs;
 pub mod local_auth;
+pub mod path_policy;
 mod schema;
 mod server;
 pub mod stage;

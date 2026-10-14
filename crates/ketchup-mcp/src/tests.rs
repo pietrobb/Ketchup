@@ -210,7 +210,20 @@ fn bounded_program_read_rejects_oversize_utf8_errors_and_special_files() {
         "consume only limit+1 bytes"
     );
     #[cfg(windows)]
-    assert!(read_program_source(Path::new(r"\\.\NUL")).is_err());
+    {
+        assert!(read_program_source(Path::new(r"\\.\NUL")).is_err());
+        // Only a drive path is read: the same readable file named through a
+        // share or device prefix is refused before the file system sees it.
+        let small = root.path().join("small.star");
+        std::fs::write(&small, "box('a', (1, 1, 1))\n").unwrap();
+        assert!(read_program_source(&small).is_ok());
+        let verbatim = format!(r"\\?\{}", small.display());
+        let error = read_program_source(Path::new(&verbatim)).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("local drive"),
+            "{verbatim}: {error:?}"
+        );
+    }
     #[cfg(unix)]
     {
         assert!(read_program_source(Path::new("/dev/zero")).is_err());
@@ -687,6 +700,31 @@ fn a_lost_window_is_never_replaced_by_another_open_window() {
         other.try_recv().is_err(),
         "the other window is not attached"
     );
+}
+
+/// PR-N2: `open_window` takes a document only by a drive path, so a share or
+/// device name never reaches the file system or the new window.
+#[cfg(windows)]
+#[test]
+fn open_window_refuses_a_document_named_through_a_share_or_device_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let document = root.path().join("desk.ketchup");
+    std::fs::write(&document, b"not opened").unwrap();
+    let mut tools = Tools::new(
+        Some(root.path().join("missing-Ketchup.exe")),
+        Some(root.path().to_owned()),
+    );
+    for path in [
+        format!(r"\\?\{}", document.display()),
+        r"\/server.invalid\share\desk.ketchup".to_owned(),
+    ] {
+        let answer = text(&call(
+            &mut tools,
+            "open_window",
+            json!({"document_path": path}),
+        ));
+        assert_eq!(answer["error"], "invalid_path", "{path}: {answer}");
+    }
 }
 
 fn call(tools: &mut Tools, name: &str, arguments: Value) -> Value {

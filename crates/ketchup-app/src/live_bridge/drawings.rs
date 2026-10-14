@@ -145,31 +145,8 @@ fn dxf_curves(curves: &DxfCurves) -> Value {
     })
 }
 
-/// Longest drawing target path, in bytes.
-const PATH_BYTES: usize = 4096;
-
-/// A path on a local drive: not a network share or device (`\\server\…`,
-/// `\\?\…`, `\\.\…`) and no alternate data stream (`file.pdf:stream`).
-fn local_file_path(path: &str) -> bool {
-    if cfg!(windows) {
-        let unc = path.starts_with(r"\\") || path.starts_with("//");
-        let stream = path.char_indices().any(|(index, c)| c == ':' && index != 1);
-        !unc && !stream
-    } else {
-        true
-    }
-}
-
-/// The one path policy of the protocol for `open`, `save_as` and drawings:
-/// absolute, bounded and local. It reads nothing from the file system, so a
-/// network path is refused before any request reaches its server.
-pub(super) fn local_absolute_path(path: &str) -> bool {
-    !path.is_empty()
-        && path.len() <= PATH_BYTES
-        && !path.contains('\0')
-        && Path::new(path).is_absolute()
-        && local_file_path(path)
-}
+/// The one path policy, shared with the MCP server.
+pub(super) use ketchup_mcp::path_policy::local_absolute_path;
 
 fn export(
     app: &mut KetchupApp,
@@ -346,20 +323,5 @@ mod tests {
         assert!(matches!(error, ProjectDrawingsError::SettingsUnreadable(_)));
         assert!(!target.exists());
         assert_eq!(stored(&app), Some(corrupt));
-    }
-
-    #[test]
-    fn network_shares_devices_and_streams_are_not_local_files() {
-        assert!(local_file_path(r"C:\work\sheet.pdf"));
-        if cfg!(windows) {
-            for path in [
-                r"\\server\share\sheet.pdf",
-                r"\\?\C:\sheet.pdf",
-                r"\\.\pipe\sheet.pdf",
-                r"C:\work\sheet.pdf:hidden.pdf",
-            ] {
-                assert!(!local_file_path(path), "{path}");
-            }
-        }
     }
 }

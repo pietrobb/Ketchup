@@ -509,11 +509,13 @@ impl Tools {
             )
         })?;
         if let Some(path) = document
-            && !(Path::new(path).is_absolute() && Path::new(path).is_file())
+            && !(crate::path_policy::local_absolute_path(path) && Path::new(path).is_file())
         {
             return Err(ToolError::new(
                 "invalid_path",
-                format!("document_path must be an absolute path of an existing file: {path}"),
+                format!(
+                    "document_path must be an absolute path of an existing file on a local drive (no network share or device): {path}"
+                ),
             ));
         }
         let failed = |error| {
@@ -791,10 +793,13 @@ pub(crate) fn read_program_source(path: &Path) -> Result<String, ToolError> {
             ),
         )
     };
-    if !path.is_absolute() {
+    if !path
+        .to_str()
+        .is_some_and(crate::path_policy::local_absolute_path)
+    {
         return Err(ToolError::new(
             "invalid_path",
-            "source_path must be an absolute regular-file path.",
+            "source_path must be an absolute regular-file path on a local drive (no network share or device).",
         ));
     }
     let metadata = std::fs::symlink_metadata(path).map_err(failed)?;

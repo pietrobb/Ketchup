@@ -37,7 +37,11 @@ pub async fn start(
     let window = web_sys::window().ok_or("The Viewer needs a browser window.")?;
     let query = window.location().search()?;
     let origins: Vec<&str> = allowed_origins.split_whitespace().collect();
-    let shared = share::shared_model(&query, &origins);
+    let shared = share::shared_model(&query, &origins).and_then(|address| {
+        address
+            .map(|address| browser_origin_allowed(&window, &address, &origins).map(|()| address))
+            .transpose()
+    });
     let unsaved = Rc::new(Cell::new(false));
     guard_unsaved_comments(&window, unsaved.clone());
     let status_canvas = canvas.clone();
@@ -168,6 +172,33 @@ impl WebViewer {
         }
         download(&file_name, &bytes)
     }
+}
+
+/// The origin the browser itself resolves `address` to must be this page's or
+/// one of `allowed`: the link check reads the text, this reads the URL the
+/// browser will fetch, so no quirk of URL parsing can leave the host.
+fn browser_origin_allowed(
+    window: &web_sys::Window,
+    address: &str,
+    allowed: &[&str],
+) -> Result<(), Rejection> {
+    let refused = || {
+        Rejection::new("viewer.link.origin", RejectionPhase::Request)
+            .target(address.to_owned())
+            .reason("This Viewer does not open models from that address.")
+            .fix_hint("Open the link published by the manufacturer, or ask them to allow the model's origin.")
+    };
+    let location = window.location();
+    let page = location.origin().map_err(|_| refused())?;
+    let base = location.href().map_err(|_| refused())?;
+    let origin = web_sys::Url::new_with_base(address, &base)
+        .map_err(|_| refused())?
+        .origin();
+    let known = origin == page
+        || allowed
+            .iter()
+            .any(|allowed| allowed.trim_end_matches('/').eq_ignore_ascii_case(&origin));
+    if known { Ok(()) } else { Err(refused()) }
 }
 
 /// Download the shared model; same-origin or CORS-enabled hosts only.

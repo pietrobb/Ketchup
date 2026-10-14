@@ -19,7 +19,13 @@ pub fn shared_model(query: &str, allowed_origins: &[&str]) -> Result<Option<Stri
         return Ok(None);
     };
     let address = percent_decode(value).ok_or_else(|| link_error(value))?;
-    if address.is_empty() || address.chars().any(|c| c.is_control() || c == '\\') {
+    // A browser strips spaces around an address before resolving it, so
+    // ` //evil.example/x` would leave the host; it is refused, not classified.
+    if address.is_empty()
+        || address.starts_with(' ')
+        || address.ends_with(' ')
+        || address.chars().any(|c| c.is_control() || c == '\\')
+    {
         return Err(link_error(&address));
     }
     if address.starts_with("//") {
@@ -138,6 +144,10 @@ mod tests {
             "model=//evil.example/a.ketchup-view",
             "model=https://cdn.example.com.evil.example/a.ketchup-view",
             "model=https://cdn.example.com@evil.example/a.ketchup-view",
+            // The browser strips the space and leaves the host (SEC-4).
+            "model=+//evil.example/a.ketchup-view",
+            "model=%20%20https://evil.example/a.ketchup-view",
+            "model=//evil.example/a.ketchup-view+",
         ] {
             let code = shared_model(link, CDN).unwrap_err().code().to_owned();
             assert!(code.starts_with("viewer.link."), "{link}: {code}");

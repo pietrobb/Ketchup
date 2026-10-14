@@ -519,3 +519,29 @@ fn a_link_in_or_as_a_plugin_folder_is_refused_without_a_prompt() {
     assert_eq!(height(&wire.app), original);
     assert_eq!(wire.app.undo_step_count(), undo);
 }
+
+/// SEC-1/PR-N1: a manifest argument naming a share, however its separators are
+/// mixed, is refused before anything asks the share whether the file exists.
+#[cfg(windows)]
+#[test]
+fn a_plugin_argument_on_a_network_share_is_refused_without_a_prompt() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let dialogs = ScriptedFileDialogs::new().always_confirm_high_risk_as(1);
+    let probe = dialogs.clone();
+    let mut wire = plugin_wire_answering(dialogs);
+    for share in [
+        r"\\server.invalid\share\module.py",
+        r"\/server.invalid\share\module.py",
+        r"/\server.invalid\share\module.py",
+    ] {
+        let mut manifest: Value =
+            serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+        manifest["arguments"] = json!(["plugin.py", share]);
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        let request = folder_request(&folder, json!({"height_mm": 35}));
+        assert_refused_without_prompt(&mut wire, request, "invalid_path", &probe);
+    }
+    assert!(probe.high_risk_prompts().is_empty());
+}
