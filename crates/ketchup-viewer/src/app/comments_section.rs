@@ -24,7 +24,7 @@ impl ViewerApp {
         };
         ui.separator();
         ui.heading(t("viewer-comments"));
-        if review.unsaved {
+        if review.unsaved() {
             ui.small(t("viewer-comments-unsaved"));
         }
         if let Some(draft) = &mut review.draft {
@@ -187,12 +187,14 @@ impl ViewerApp {
                     .save_file()
             {
                 write_atomically(&path, |file| self.save_comments(file))
+                    .map(|written| self.comments_written(written))
             } else if ui.button(t("viewer-comments-save-copy")).clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter(t("viewer-file-filter"), &["ketchup-view"])
                     .save_file()
             {
                 write_atomically(&path, |file| self.save_commented_copy(file))
+                    .map(|written| self.comments_written(written))
             } else {
                 Ok(())
             };
@@ -206,23 +208,25 @@ impl ViewerApp {
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 /// Write `path` through a sibling temporary file, so an interrupted save
 /// never leaves a half-written file in place of an earlier one.
-pub(crate) fn write_atomically(
+pub(crate) fn write_atomically<T>(
     path: &Path,
-    write: impl FnOnce(&mut std::fs::File) -> Result<(), Rejection>,
-) -> Result<(), Rejection> {
+    write: impl FnOnce(&mut std::fs::File) -> Result<T, Rejection>,
+) -> Result<T, Rejection> {
     let mut name = path.file_name().unwrap_or_default().to_owned();
     name.push(".part");
     let temporary = path.with_file_name(name);
     let mut file = std::fs::File::create(&temporary)
         .map_err(|error| file_error("viewer.comments.save", &temporary, error))?;
-    let written = write(&mut file).and_then(|()| {
+    let written = write(&mut file).and_then(|value| {
         file.flush()
             .and_then(|()| file.sync_all())
+            .map(|()| value)
             .map_err(|error| file_error("viewer.comments.save", &temporary, error))
     });
     drop(file);
-    let renamed = written.and_then(|()| {
+    let renamed = written.and_then(|value| {
         std::fs::rename(&temporary, path)
+            .map(|()| value)
             .map_err(|error| file_error("viewer.comments.save", path, error))
     });
     if renamed.is_err() {

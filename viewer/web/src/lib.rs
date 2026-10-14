@@ -35,6 +35,12 @@ pub async fn start(
     allowed_origins: String,
 ) -> Result<(), JsValue> {
     let window = web_sys::window().ok_or("The Viewer needs a browser window.")?;
+    // Rust has no randomness of its own here; comment IDs must differ
+    // between two customers' browsers.
+    let random = || (js_sys::Math::random() * 2f64.powi(32)) as u64;
+    ketchup_viewer::review::seed_comment_ids(
+        (random() << 32 | random()) ^ js_sys::Date::now().to_bits(),
+    );
     let query = window.location().search()?;
     let origins: Vec<&str> = allowed_origins.split_whitespace().collect();
     let shared = share::shared_model(&query, &origins).and_then(|address| {
@@ -148,7 +154,7 @@ impl WebViewer {
 
     fn perform(&mut self, request: FileRequest, ctx: &egui::Context) -> Result<(), Rejection> {
         let name = self.model_name.as_deref();
-        let (bytes, file_name) = match request {
+        let (bytes, written, file_name) = match request {
             FileRequest::OpenPackage => {
                 return pick_file(".ketchup-view", false, self.inbox.clone(), ctx.clone());
             }
@@ -158,19 +164,31 @@ impl WebViewer {
             // The web Viewer offers no share button; a download is its way out.
             FileRequest::SaveComments | FileRequest::ShareComments => {
                 let mut bytes = Vec::new();
-                self.app.save_comments(&mut bytes)?;
-                (bytes, share::download_name(name, ".ketchup-comments"))
+                let written = self.app.save_comments(&mut bytes)?;
+                (
+                    bytes,
+                    written,
+                    share::download_name(name, ".ketchup-comments"),
+                )
             }
             FileRequest::SaveCommentedCopy => {
                 let mut bytes = Vec::new();
-                self.app.save_commented_copy(&mut bytes)?;
-                (bytes, share::download_name(name, "-comments.ketchup-view"))
+                let written = self.app.save_commented_copy(&mut bytes)?;
+                (
+                    bytes,
+                    written,
+                    share::download_name(name, "-comments.ketchup-view"),
+                )
             }
         };
         if bytes.is_empty() {
             return Ok(());
         }
-        download(&file_name, &bytes)
+        // Saved once the browser has taken the download; a failed one keeps
+        // the comments unsaved and the page's leave warning on.
+        download(&file_name, &bytes)?;
+        self.app.comments_written(written);
+        Ok(())
     }
 }
 

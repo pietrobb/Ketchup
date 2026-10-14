@@ -6,7 +6,7 @@ use crate::{
     dimensions,
     gpu::{MeshRenderer, RenderTarget, RenderView},
     model::Model,
-    review::Review,
+    review::{Review, Written},
     text::Language,
 };
 use eframe::egui;
@@ -682,19 +682,30 @@ impl ViewerApp {
     }
 
     /// Write the comments for the author; the package file is never touched.
-    pub fn save_comments(&mut self, writer: impl Write) -> Result<(), Rejection> {
-        match (&self.model, &mut self.review) {
-            (Some(model), Some(review)) => review.save(writer, model),
-            _ => Ok(()),
+    /// `None` when nothing is open. Pass the result to
+    /// [`Self::comments_written`] once the host has kept the file.
+    pub fn save_comments(&self, writer: impl Write) -> Result<Option<Written>, Rejection> {
+        match (&self.model, &self.review) {
+            (Some(model), Some(review)) => review.save(writer, model).map(Some),
+            _ => Ok(None),
         }
     }
 
     /// Write a copy of the package with every comment in it; the opened
-    /// file is untouched unless the customer chooses its path.
-    pub fn save_commented_copy(&mut self, writer: impl Write) -> Result<(), Rejection> {
-        match (&self.model, &mut self.review) {
-            (Some(model), Some(review)) => review.save_copy(writer, model),
-            _ => Ok(()),
+    /// file is untouched unless the customer chooses its path. Saved as
+    /// [`Self::save_comments`].
+    pub fn save_commented_copy(&self, writer: impl Write) -> Result<Option<Written>, Rejection> {
+        match (&self.model, &self.review) {
+            (Some(model), Some(review)) => review.save_copy(writer, model).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// The host kept the file `written` came from; a cancelled save dialog
+    /// or a share sheet, whose outcome the host never learns, keeps nothing.
+    pub fn comments_written(&mut self, written: Option<Written>) {
+        if let (Some(review), Some(written)) = (&mut self.review, written) {
+            review.written(written);
         }
     }
 
@@ -713,7 +724,7 @@ impl ViewerApp {
 
     /// Unsaved comments would be lost by opening another package or closing.
     pub fn has_unsaved_comments(&self) -> bool {
-        self.review.as_ref().is_some_and(|review| review.unsaved)
+        self.review.as_ref().is_some_and(Review::unsaved)
     }
 
     /// Whether the opened comments may be replaced now; the first attempt

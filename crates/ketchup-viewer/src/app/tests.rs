@@ -549,9 +549,9 @@ fn customer_comments_restore_their_view_keep_arrows_on_parts_and_travel_offline(
     harness.run();
 
     let review = harness.state().review.as_ref().expect("review");
-    assert!(review.unsaved && review.draft.is_none());
+    assert!(review.unsaved() && review.draft.is_none());
     let comment = review.comments.comments[0].clone();
-    assert_eq!(comment.id, 1);
+    let id = comment.id;
     assert_eq!(comment.text, "Raise the shelf by 2 cm — ďakujem");
     assert_eq!(comment.author.as_deref(), Some("Jana"));
     assert_eq!(comment.view.camera, written_camera);
@@ -617,7 +617,7 @@ fn customer_comments_restore_their_view_keep_arrows_on_parts_and_travel_offline(
     harness.run();
     let comments = harness.state().review.as_ref().unwrap().comments.clone();
     assert_eq!(comments.comments.len(), 1);
-    assert_eq!(comments.comments[0].id, 1);
+    assert_eq!(comments.comments[0].id, id);
     assert!(comments.comments[0].text.ends_with("please"));
     assert_eq!(comments.comments[0].arrows, comment.arrows);
 
@@ -626,15 +626,21 @@ fn customer_comments_restore_their_view_keep_arrows_on_parts_and_travel_offline(
     assert!(harness.state_mut().may_discard_comments());
 
     let mut returned = Vec::new();
-    harness
-        .state_mut()
+    let written = harness
+        .state()
         .save_comments(&mut returned)
         .expect("comments file");
     let mut copy = Vec::new();
-    harness
-        .state_mut()
+    let copied = harness
+        .state()
         .save_commented_copy(&mut copy)
         .expect("copy");
+    assert!(
+        harness.state().has_unsaved_comments(),
+        "saved only once the host keeps the file"
+    );
+    harness.state_mut().comments_written(written);
+    harness.state_mut().comments_written(copied);
     assert!(!harness.state().has_unsaved_comments());
     assert_eq!(
         harness.state().model.as_ref().unwrap().package(),
@@ -657,7 +663,7 @@ fn customer_comments_restore_their_view_keep_arrows_on_parts_and_travel_offline(
         .open_comments(returned.as_slice())
         .expect("return file");
     assert_eq!(author.review.as_ref().unwrap().comments, comments);
-    author.show_comment(1).expect("show");
+    author.show_comment(id).expect("show");
     assert_same_view(&author.camera.clone().unwrap().to_scene(), &written_camera);
 
     // Comments for another export are refused; the current ones stay.
@@ -824,12 +830,19 @@ fn web_host_downloads_comments_that_a_fresh_viewer_imports() {
         [FileRequest::SaveComments]
     );
 
+    // VW-1: a save dialog the customer cancels writes nothing, so the
+    // comments stay unsaved and the next Open still warns first.
+    let mut cancelled = Vec::new();
+    let _dropped = harness.state().save_comments(&mut cancelled).unwrap();
+    assert!(harness.state().has_unsaved_comments());
+
     // The host downloads what the Viewer writes; another browser imports it.
     let mut downloaded = Vec::new();
-    harness
-        .state_mut()
+    let written = harness
+        .state()
         .save_comments(&mut downloaded)
         .expect("download");
+    harness.state_mut().comments_written(written);
     assert!(!harness.state().has_unsaved_comments());
     let mut imported = ViewerApp::new(None).with_host_files();
     imported.open(bytes.as_slice()).expect("open");
@@ -840,6 +853,62 @@ fn web_host_downloads_comments_that_a_fresh_viewer_imports() {
     assert_eq!(comments.len(), 1);
     assert_eq!(comments[0].text, "Darker oak, please");
     assert_eq!(imported.opened_counts().map(|[_, _, c]| c), Some(1));
+}
+
+/// A customer's Viewer with one committed comment `text`.
+fn customer_with_comment(bytes: &[u8], text: &str) -> ViewerApp {
+    let mut app = ViewerApp::new(None).with_host_files();
+    app.open(bytes).expect("open");
+    let model = app.model.as_ref().unwrap();
+    let view = CommentView {
+        camera: model.manifest().scenes[0].camera.clone(),
+        hidden: vec![],
+        style: DisplayStyle::Shaded,
+        section: None,
+    };
+    let review = app.review.as_mut().unwrap();
+    review.start(view, None);
+    review.draft.as_mut().unwrap().text = text.to_owned();
+    assert!(review.commit());
+    app
+}
+
+#[test]
+fn comments_count_as_saved_only_for_the_file_the_host_kept() {
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let mut app = customer_with_comment(&bytes, "Darker oak");
+    let mut first = Vec::new();
+    let written = app.save_comments(&mut first).unwrap();
+    // The customer adds a comment while the save dialog is open: keeping
+    // the earlier file does not save the newer comment.
+    let review = app.review.as_mut().unwrap();
+    review.start(review.comments.comments[0].view.clone(), None);
+    review.draft.as_mut().unwrap().text = "And brass handles".into();
+    assert!(review.commit());
+    app.comments_written(written);
+    assert!(app.has_unsaved_comments());
+    // A file written from another opened package saves nothing here.
+    let other = customer_with_comment(&bytes, "Other");
+    let foreign = other.save_comments(&mut Vec::new()).unwrap();
+    app.comments_written(foreign);
+    assert!(app.has_unsaved_comments());
+    let current = app.save_comments(&mut Vec::new()).unwrap();
+    app.comments_written(current);
+    assert!(!app.has_unsaved_comments());
+}
+
+/// VW-7: two customers comment on one export; the author keeps both,
+/// because the author matches comments by export and ID.
+#[test]
+fn two_customers_comments_on_one_export_have_different_ids() {
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let jana = customer_with_comment(&bytes, "Raise the shelf");
+    let peter = customer_with_comment(&bytes, "Lower the shelf");
+    let id = |app: &ViewerApp| app.review.as_ref().unwrap().comments.comments[0].id;
+    assert_ne!(id(&jana), id(&peter));
+    assert!(id(&jana) < 1 << 53 && id(&peter) < 1 << 53);
 }
 
 #[cfg(all(test, any(target_os = "windows", target_os = "macos")))]
@@ -857,7 +926,7 @@ mod atomic_save {
         std::fs::write(&path, b"earlier").unwrap();
         let failed = write_atomically(&path, |file| {
             file.write_all(b"half").unwrap();
-            Err(Rejection::new("test.failure", RejectionPhase::Io))
+            Err::<(), _>(Rejection::new("test.failure", RejectionPhase::Io))
         });
         assert!(failed.is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"earlier");

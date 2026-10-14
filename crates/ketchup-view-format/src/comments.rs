@@ -6,7 +6,10 @@ use crate::{Anchor, Camera, DisplayStyle, InstancePath, Package, Section, Source
 use ketchup_rejection::Rejection;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::hash::BuildHasher;
 use std::io::{Read, Write};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Largest accepted comments file.
 pub const MAX_COMMENTS_BYTES: usize = 4 * 1024 * 1024;
@@ -157,9 +160,16 @@ impl Comments {
         })
     }
 
-    /// The next free comment ID.
-    pub fn next_id(&self) -> u64 {
-        self.comments.iter().map(|c| c.id).max().unwrap_or(0) + 1
+    /// A new comment ID no comment here has. IDs are random, not counted from
+    /// 1, so the comments two customers write on one export keep apart when
+    /// the author imports both: the author matches comments by export and ID.
+    pub fn new_id(&self) -> u64 {
+        loop {
+            let id = random_id();
+            if id != 0 && !self.comments.iter().any(|c| c.id == id) {
+                return id;
+            }
+        }
     }
 
     /// Every check except the binding to one export: format, limits, text,
@@ -273,6 +283,30 @@ fn check_text(text: &str, limit: usize, target: &str) -> Result<(), Rejection> {
         ));
     }
     Ok(())
+}
+
+/// The state new comment IDs are drawn from in this process.
+static ID_STREAM: OnceLock<AtomicU64> = OnceLock::new();
+
+/// Seed the comment IDs of this process. A host whose Rust standard library
+/// has no randomness of its own (the browser) calls it once, before any
+/// comment is written; elsewhere the operating system seeds it.
+pub fn seed_comment_ids(seed: u64) {
+    let _ = ID_STREAM.set(AtomicU64::new(seed));
+}
+
+/// A random ID below 2^53, exact in every JSON reader (SplitMix64).
+fn random_id() -> u64 {
+    const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
+    let stream = ID_STREAM.get_or_init(|| {
+        AtomicU64::new(std::collections::hash_map::RandomState::new().hash_one(GOLDEN))
+    });
+    let mut z = stream
+        .fetch_add(GOLDEN, Ordering::Relaxed)
+        .wrapping_add(GOLDEN);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) >> 11
 }
 
 fn unknown_path(target: &str) -> Rejection {

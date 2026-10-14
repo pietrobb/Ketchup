@@ -41,9 +41,10 @@ fn comment(id: u64) -> Comment {
 fn comments_roundtrip_offline_and_bind_to_their_export() {
     let package = package();
     let mut comments = Comments::new(&package).expect("new");
-    assert_eq!(comments.next_id(), 1);
     comments.comments.push(comment(1));
-    comments.comments.push(comment(comments.next_id()));
+    let id = comments.new_id();
+    assert!(id != 1 && id < 1 << 53, "{id}");
+    comments.comments.push(comment(id));
     let mut bytes = Vec::new();
     comments.write(&mut bytes, &package).expect("write");
     let reopened = Comments::read(bytes.as_slice(), &package).expect("read");

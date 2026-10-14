@@ -9,6 +9,7 @@ use jni::{Env, jni_sig, jni_str};
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_view_format::Package;
 use ketchup_viewer::app::{FileRequest, ViewerApp};
+use ketchup_viewer::review::Written;
 
 /// Request code ViewerActivity gives a file another app opened with the Viewer.
 const OPENED_BY_ANOTHER_APP: i32 = 0;
@@ -38,8 +39,9 @@ pub(crate) fn with_activity<T>(
 
 pub(crate) struct Files {
     android_app: android_activity::AndroidApp,
-    /// Saved bytes waiting for the customer to choose their place, by request code.
-    unsaved: HashMap<i32, Vec<u8>>,
+    /// Saved bytes waiting for the customer to choose their place, by request
+    /// code; the comments count as saved only once they are written there.
+    pending: HashMap<i32, (Vec<u8>, Option<Written>)>,
     /// File name of the opened package, for suggested save names.
     model_name: Option<String>,
     /// A picker or save dialog is open and its answer is still to come.
@@ -50,7 +52,7 @@ impl Files {
     pub(crate) fn new(android_app: android_activity::AndroidApp) -> Self {
         Self {
             android_app,
-            unsaved: HashMap::new(),
+            pending: HashMap::new(),
             model_name: None,
             waiting: false,
         }
@@ -66,23 +68,25 @@ impl Files {
         let name = self.model_name.as_deref();
         let save = match request {
             FileRequest::OpenPackage | FileRequest::OpenComments => None,
+            // The share sheet never says whether anything was sent, so the
+            // comments stay unsaved.
             FileRequest::ShareComments => {
                 let mut bytes = Vec::new();
-                app.save_comments(&mut bytes)?;
+                let _unconfirmed = app.save_comments(&mut bytes)?;
                 let name = ketchup_viewer::share::download_name(name, ".ketchup-comments");
                 return self.share(&name, &bytes);
             }
             FileRequest::SaveComments => {
                 let mut bytes = Vec::new();
-                app.save_comments(&mut bytes)?;
+                let written = app.save_comments(&mut bytes)?;
                 let name = ketchup_viewer::share::download_name(name, ".ketchup-comments");
-                Some((bytes, name))
+                Some((bytes, written, name))
             }
             FileRequest::SaveCommentedCopy => {
                 let mut bytes = Vec::new();
-                app.save_commented_copy(&mut bytes)?;
+                let written = app.save_commented_copy(&mut bytes)?;
                 let name = ketchup_viewer::share::download_name(name, "-comments.ketchup-view");
-                Some((bytes, name))
+                Some((bytes, written, name))
             }
         };
         let started = match save {
@@ -95,9 +99,9 @@ impl Files {
                 )
                 .map(drop)
             }),
-            Some((bytes, _)) if bytes.is_empty() => return Ok(()),
-            Some((bytes, name)) => {
-                self.unsaved.insert(code, bytes);
+            Some((bytes, _, _)) if bytes.is_empty() => return Ok(()),
+            Some((bytes, written, name)) => {
+                self.pending.insert(code, (bytes, written));
                 with_activity(&self.android_app, |env, activity| {
                     let name = env.new_string(name)?;
                     env.call_method(
@@ -151,8 +155,9 @@ impl Files {
             };
             self.waiting = false;
             if uri.is_empty() {
-                // Cancelled: nothing opens, the unsaved bytes are dropped.
-                self.unsaved.remove(&code);
+                // Cancelled: nothing opens, the pending bytes are dropped and
+                // the comments stay unsaved.
+                self.pending.remove(&code);
                 continue;
             }
             if let Err(error) = self.handle(app, code, &uri) {
@@ -162,8 +167,10 @@ impl Files {
     }
 
     fn handle(&mut self, app: &mut ViewerApp, code: i32, uri: &str) -> Result<(), Rejection> {
-        if let Some(bytes) = self.unsaved.remove(&code) {
-            return self.write(uri, &bytes);
+        if let Some((bytes, written)) = self.pending.remove(&code) {
+            self.write(uri, &bytes)?;
+            app.comments_written(written);
+            return Ok(());
         }
         let name = self.display_name(uri);
         let bytes = self.read(uri, &name)?;

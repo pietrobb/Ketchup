@@ -4,21 +4,36 @@
 
 use crate::{dimensions, model::Model};
 use ketchup_rejection::Rejection;
+pub use ketchup_view_format::seed_comment_ids;
 use ketchup_view_format::{
     Anchor, Arrow, Comment, CommentView, Comments, InstancePath, MAX_ARROWS,
 };
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Comments on one package and the one being written.
 pub struct Review {
     pub comments: Comments,
-    /// Changes not yet written to a comments file.
-    pub unsaved: bool,
+    /// Changes with every edit of `comments`; unique in the process, so a
+    /// file written from another Review never counts as saving this one.
+    revision: u64,
+    /// The revision last confirmed written to a file.
+    saved_revision: u64,
     pub draft: Option<Draft>,
     /// The comment whose view and arrows are shown.
     pub active: Option<u64>,
     /// The customer was told that unsaved comments would be lost.
     discard_warned: bool,
+}
+
+/// Comments written to bytes the host has still to keep in a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use = "pass it to `written` once the file is kept"]
+pub struct Written(u64);
+
+fn next_revision() -> u64 {
+    static REVISIONS: AtomicU64 = AtomicU64::new(0);
+    REVISIONS.fetch_add(1, Ordering::Relaxed) + 1
 }
 
 /// A comment being written or edited.
@@ -37,20 +52,16 @@ pub struct Draft {
 impl Review {
     /// No comments yet on the package `model` shows.
     pub fn new(model: &Model) -> Result<Self, Rejection> {
-        Ok(Self {
-            comments: Comments::new(model.package())?,
-            unsaved: false,
-            draft: None,
-            active: None,
-            discard_warned: false,
-        })
+        Ok(Self::with(Comments::new(model.package())?))
     }
 
     /// Comments already validated against the opened package.
     pub fn with(comments: Comments) -> Self {
+        let revision = next_revision();
         Self {
             comments,
-            unsaved: false,
+            revision,
+            saved_revision: revision,
             draft: None,
             active: None,
             discard_warned: false,
@@ -59,29 +70,36 @@ impl Review {
 
     /// Comments read from a returned file, checked against `model`'s package.
     pub fn open(reader: impl Read, model: &Model) -> Result<Self, Rejection> {
-        Ok(Self {
-            comments: Comments::read(reader, model.package())?,
-            unsaved: false,
-            draft: None,
-            active: None,
-            discard_warned: false,
-        })
+        Comments::read(reader, model.package()).map(Self::with)
     }
 
-    /// Write every comment; the package itself is never written.
-    pub fn save(&mut self, writer: impl Write, model: &Model) -> Result<(), Rejection> {
+    /// Write every comment; the package itself is never written. The
+    /// comments count as saved only once the host confirms the file with
+    /// [`Self::written`]: a save dialog the customer cancels saves nothing.
+    pub fn save(&self, writer: impl Write, model: &Model) -> Result<Written, Rejection> {
         self.comments.write(writer, model.package())?;
-        self.unsaved = false;
-        Ok(())
+        Ok(Written(self.revision))
     }
 
-    /// Write a copy of the package carrying every comment.
-    pub fn save_copy(&mut self, writer: impl Write, model: &Model) -> Result<(), Rejection> {
+    /// Write a copy of the package carrying every comment; saved as [`Self::save`].
+    pub fn save_copy(&self, writer: impl Write, model: &Model) -> Result<Written, Rejection> {
         model
             .package()
             .write_with_comments(writer, &self.comments)?;
-        self.unsaved = false;
-        Ok(())
+        Ok(Written(self.revision))
+    }
+
+    /// The host kept the file `written` came from: the comments as they were
+    /// then are saved; changes made since stay unsaved.
+    pub fn written(&mut self, written: Written) {
+        if written.0 == self.revision {
+            self.saved_revision = self.revision;
+        }
+    }
+
+    /// Changes not yet confirmed written to a file.
+    pub fn unsaved(&self) -> bool {
+        self.revision != self.saved_revision
     }
 
     /// Start a new comment on what is shown now; the last author is offered.
@@ -122,7 +140,7 @@ impl Review {
         let Some(draft) = self.draft.take_if(|draft| !draft.text.trim().is_empty()) else {
             return false;
         };
-        let id = draft.editing.unwrap_or_else(|| self.comments.next_id());
+        let id = draft.editing.unwrap_or_else(|| self.comments.new_id());
         let author = draft.author.trim();
         let comment = Comment {
             id,
@@ -137,9 +155,13 @@ impl Review {
             None => self.comments.comments.push(comment),
         }
         self.active = Some(id);
-        self.unsaved = true;
-        self.discard_warned = false;
+        self.changed();
         true
+    }
+
+    fn changed(&mut self) {
+        self.revision = next_revision();
+        self.discard_warned = false;
     }
 
     /// Remove comment `id`.
@@ -148,8 +170,7 @@ impl Review {
         if self.active == Some(id) {
             self.active = None;
         }
-        self.unsaved = true;
-        self.discard_warned = false;
+        self.changed();
     }
 
     /// Place the next arrow end at a picked point: the tip first, then the
@@ -203,7 +224,7 @@ impl Review {
     /// Whether unsaved comments may be dropped now: the first attempt only
     /// warns, a repeated one proceeds.
     pub fn may_discard(&mut self) -> bool {
-        if !self.unsaved || self.discard_warned {
+        if !self.unsaved() || self.discard_warned {
             return true;
         }
         self.discard_warned = true;

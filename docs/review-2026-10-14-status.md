@@ -17,7 +17,7 @@ Poradie podľa §8 review: Hneď → Tento týždeň → Potom.
 | PRG-M1 | otvorené | R10-B: vyhodnocovanie programu v samostatnom procese | |
 | DR-1 | neoverené | R10-B | |
 | GE-N2 | neoverené | R10-B, sonda | |
-| VW-1 | neoverené | R10-A | |
+| VW-1 | opravené | `Review::save`/`save_copy` len zapíšu bajty a vrátia `Written` (revízia komentárov). Uložené sú až po `comments_written`: Android po zápise do vybraného URI, desktop po atomickom premenovaní, web po prevzatí sťahovania prehliadačom. Zrušený dialóg aj zdieľanie (výsledok sa nedá zistiť) nechajú komentáre neuložené, takže ďalšie Otvoriť varuje. Komentár pridaný počas otvoreného dialógu ostane neuložený; `Written` z iného balíka nič neuloží. Android a web overené len `cargo clippy` pre ich ciele | `app::tests::comments_count_as_saved_only_for_the_file_the_host_kept`, `app::tests::web_host_downloads_comments_that_a_fresh_viewer_imports` (zrušené uloženie) |
 | VW-2 | neoverené | R10-B | |
 | VW-3 | neoverené | R10-B | |
 | ST-N1 | otvorené | R10-B (prenesené z `cbec147`) | |
@@ -33,4 +33,5 @@ Poradie podľa §8 review: Hneď → Tento týždeň → Potom.
 | PR-N2 | opravené | `open_window` (`document_path`) a `source_path` v MCP procese volajú tú istú politiku pred `is_file`/`symlink_metadata` | `tests::open_window_refuses_a_document_named_through_a_share_or_device_prefix`, `tests::bounded_program_read_rejects_oversize_utf8_errors_and_special_files` (`\\?\` cesta k čitateľnému súboru) |
 | SEC-1 | opravené | `plugin_manifest::outside_files` overí lokalitu argumentu pred `is_file()`, takže UNC argument v `plugin.json` nič nepošle sieťovému serveru a menu Pluginy ho odmietne bez dialógu | `run_plugin::a_plugin_argument_on_a_network_share_is_refused_without_a_prompt` |
 | SEC-4 | opravené | `share::shared_model` odmietne adresu s medzerou na začiatku alebo konci (prehliadač ju oreže a `+//evil` by odišlo na cudzí server); webový Viewer navyše overí pôvod URL, ktorú prehliadač naozaj stiahne (`Url::new_with_base` + porovnanie s pôvodom stránky alebo povolenými). V prehliadači nespustené, len `cargo check/clippy` pre wasm32 | `share::tests::foreign_origins_need_the_hosts_permission` |
+| VW-7 | opravené | ID komentára je náhodné číslo pod 2^53 (`Comments::new_id`, SplitMix64 nasadený zo systému; webový Viewer ho nasadí z `Math.random` a času), nie max+1. Komentáre dvoch zákazníkov na jednom exporte sa v Kečupe (kľúč export + ID) už neprepíšu. Súbory zo starších Viewerov s ID od 1 ostávajú platné, ich kolízie sa spätne neriešia | `app::tests::two_customers_comments_on_one_export_have_different_ids` |
 | GX-15 | opravené | Uhol (otočenie, úkos, kruhové pole) a mierka prijmú desatinnú čiarku (`length_input::parse_decimal`); bez opravy „5,0“ v úkose aj „1,5“ v mierke boli odmietnuté | `draft_faces::the_draft_tool_drafts_the_selected_faces_about_the_clicked_one_in_one_undo_step` („5,0“), `headless_shell::a_typed_scale_factor_grows_the_part_and_a_second_one_replaces_it` („1,5“) |
