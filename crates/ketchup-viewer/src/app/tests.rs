@@ -898,6 +898,62 @@ fn comments_count_as_saved_only_for_the_file_the_host_kept() {
     assert!(!app.has_unsaved_comments());
 }
 
+/// VW-2: Android ends a Viewer in the background (and used to on split
+/// screen, a fold, a keyboard or a language change); the next start opens the
+/// model and comments it kept, unsaved ones still unsaved.
+#[test]
+fn a_viewer_ended_in_the_background_reopens_its_model_and_unsaved_comments() {
+    let dir = std::env::temp_dir().join(format!("ketchup-viewer-session-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let mut app = customer_with_comment(&bytes, "Darker oak");
+    assert_eq!(ViewerApp::new(None).keep_session(&dir, None).unwrap(), None);
+    let kept = app.keep_session(&dir, None).unwrap();
+    assert!(kept.is_some());
+    // Unchanged, nothing is written again.
+    std::fs::remove_file(dir.join("session.ketchup-view")).unwrap();
+    assert_eq!(app.keep_session(&dir, kept).unwrap(), kept);
+    assert!(!dir.join("session.ketchup-view").exists());
+
+    let kept = app.keep_session(&dir, None).unwrap();
+    let mut restarted = ViewerApp::new(None).with_host_files();
+    assert_eq!(
+        restarted.restore_session(&dir).unwrap(),
+        restarted.session_mark()
+    );
+    assert_eq!(restarted.opened_counts(), app.opened_counts());
+    let text = |app: &ViewerApp| {
+        app.review.as_ref().unwrap().comments.comments[0]
+            .text
+            .clone()
+    };
+    assert_eq!(text(&restarted), "Darker oak");
+    assert!(restarted.has_unsaved_comments());
+    // A second comment, then a save the host kept: the session follows both.
+    let review = app.review.as_mut().unwrap();
+    review.start(review.comments.comments[0].view.clone(), None);
+    review.draft.as_mut().unwrap().text = "And brass handles".into();
+    assert!(review.commit());
+    let kept = app.keep_session(&dir, kept).unwrap();
+    let written = app.save_comments(&mut Vec::new()).unwrap();
+    app.comments_written(written);
+    assert_ne!(app.session_mark(), kept);
+    app.keep_session(&dir, kept).unwrap();
+    let mut restarted = ViewerApp::new(None);
+    restarted.restore_session(&dir).unwrap();
+    assert_eq!(restarted.opened_counts().map(|[_, _, c]| c), Some(2));
+    assert!(!restarted.has_unsaved_comments());
+    // Nothing kept: nothing opens.
+    assert_eq!(
+        ViewerApp::new(None)
+            .restore_session(&dir.join("none"))
+            .unwrap(),
+        None
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// VW-7: two customers comment on one export; the author keeps both,
 /// because the author matches comments by export and ID.
 #[test]

@@ -20,6 +20,8 @@ fn android_main(android_app: android_activity::AndroidApp) {
     let path = android_app
         .external_data_path()
         .map(|path| path.join("model.ketchup-view"));
+    // Private storage, kept while the app is installed.
+    let session_dir = android_app.internal_data_path();
     let mut options = eframe::NativeOptions {
         android_app: Some(android_app.clone()),
         renderer: eframe::Renderer::Wgpu,
@@ -48,7 +50,28 @@ fn android_main(android_app: android_activity::AndroidApp) {
         Box::new(move |cc| {
             let mut app = ketchup_viewer::app::ViewerApp::new(cc.wgpu_render_state.clone())
                 .with_host_sharing();
-            if let Some(path) = path
+            // What the customer had open when Android ended the process,
+            // else the development install's package.
+            let session = match session_dir.as_deref().map(|dir| app.restore_session(dir)) {
+                Some(Ok(mark)) => {
+                    if let (Some(_), Some([components, scenes, comments])) =
+                        (mark, app.opened_counts())
+                    {
+                        log::info!(
+                            "Opened the kept session: {components} components, {scenes} scenes, {comments} comments, unsaved {}",
+                            app.has_unsaved_comments()
+                        );
+                    }
+                    mark
+                }
+                Some(Err(error)) => {
+                    log::error!("{error}; {}", error.fix_hint_text());
+                    None
+                }
+                None => None,
+            };
+            if session.is_none()
+                && let Some(path) = path
                 && path.exists()
                 && let Err(error) = app.open_path(&path)
             {
@@ -61,6 +84,8 @@ fn android_main(android_app: android_activity::AndroidApp) {
                 measured_for: None,
                 bars: [0; 4],
                 keyboard: 0,
+                session_dir,
+                session,
             }))
         }),
     );
@@ -85,6 +110,10 @@ struct AndroidViewer {
     bars: [i32; 4],
     /// Height of the on-screen keyboard in pixels, 0 when closed.
     keyboard: i32,
+    /// Where the opened package and its comments are kept for the next start.
+    session_dir: Option<std::path::PathBuf>,
+    /// What is kept there now.
+    session: Option<ketchup_viewer::app::SessionMark>,
 }
 
 #[cfg(target_os = "android")]
@@ -161,6 +190,18 @@ impl eframe::App for AndroidViewer {
         for request in self.app.take_file_requests() {
             if let Err(error) = self.files.request(&mut self.app, request) {
                 self.app.report(error);
+            }
+        }
+        // Android may end the process whenever the app is in the background:
+        // keep every change to the package or its comments as it happens.
+        if let Some(dir) = &self.session_dir {
+            match self.app.keep_session(dir, self.session) {
+                Ok(mark) => self.session = mark,
+                Err(error) => {
+                    log::error!("{error}; {}", error.fix_hint_text());
+                    // Tried once for this change, not again every frame.
+                    self.session = self.app.session_mark();
+                }
             }
         }
         // The picker's answer comes back with the activity, not as input.

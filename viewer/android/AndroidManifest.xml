@@ -12,7 +12,7 @@
         <activity
             android:name="sk.ketchup.viewer.ViewerActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density|uiMode"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|touchscreen|density|uiMode|colorMode|locale|layoutDirection|fontScale|fontWeightAdjustment|grammaticalGender|mcc|mnc"
             android:launchMode="singleTask">
             <meta-data android:name="android.app.lib_name" android:value="ketchup_viewer_android" />
             <intent-filter>

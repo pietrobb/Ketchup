@@ -102,6 +102,17 @@ impl Review {
         self.revision != self.saved_revision
     }
 
+    /// Changes with every edit and is unique in the process.
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Comments restored from a session in which they were not yet saved:
+    /// they stay unsaved until a file is kept (revisions start at 1).
+    pub(crate) fn still_unsaved(&mut self) {
+        self.saved_revision = 0;
+    }
+
     /// Start a new comment on what is shown now; the last author is offered.
     pub fn start(&mut self, view: CommentView, selected: Option<InstancePath>) {
         self.draft = Some(Draft {
