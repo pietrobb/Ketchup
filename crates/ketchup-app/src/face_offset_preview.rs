@@ -33,49 +33,6 @@ fn face_offset_rejection(reason: &str) -> Rejection {
     Rejection::new("push_pull.exact_evaluation", RejectionPhase::Evaluation).reason(reason)
 }
 
-/// Publishes the finished evaluation of a preview into its own store, or
-/// records why it has no complete exact result.
-fn settle_face_offset_evaluation(
-    evaluation: &mut FaceOffsetEvaluation,
-    result: Result<ketchup_application::evaluation::ExactEvaluationResult, Rejection>,
-) {
-    let Some(task) = evaluation.task.take() else {
-        return;
-    };
-    let report = result
-        .and_then(|products| {
-            products.map_err(|error| {
-                face_offset_rejection("the exact evaluation failed").caused_by(error)
-            })
-        })
-        .and_then(|products| {
-            publish_exact_products(
-                &mut evaluation.document,
-                &mut evaluation.render,
-                &mut evaluation.topology,
-                &task,
-                products,
-            )
-            .map_err(|error| {
-                face_offset_rejection("the exact result could not be published").caused_by(error)
-            })
-        })
-        .and_then(|report| {
-            if report.complete && report.topology_complete {
-                Ok(())
-            } else {
-                Err(face_offset_rejection(
-                    report
-                        .not_evaluated
-                        .as_deref()
-                        .unwrap_or("the exact evaluation is incomplete"),
-                ))
-            }
-        });
-    evaluation.ready = report.is_ok();
-    evaluation.failure = report.err();
-}
-
 /// The reason of a failed preview evaluation followed by its causes.
 pub(super) fn face_offset_failure_text(failure: &Rejection) -> String {
     std::iter::once(failure.reason_text().to_owned())
@@ -94,11 +51,11 @@ impl KetchupApp {
     }
 
     pub(super) fn begin_face_offset_evaluation(&mut self) {
-        if !self.preview_requires_face_offset_evaluation() {
-            self.push_pull.face_offset_evaluation = None;
-            return;
-        }
-        let Some(preview) = self.tool_preview.get::<EphemeralBoxPreview>() else {
+        let Some(preview) = self
+            .tool_preview
+            .get::<EphemeralBoxPreview>()
+            .filter(|preview| preview.plan.source.topological_reference.is_some())
+        else {
             self.push_pull.face_offset_evaluation = None;
             return;
         };
@@ -123,9 +80,7 @@ impl KetchupApp {
             Ok(document) => document,
             Err(error) => {
                 self.report_face_offset_failure(
-                    &Rejection::new("push_pull.exact_evaluation", RejectionPhase::Evaluation)
-                        .reason("the preview cannot be evaluated")
-                        .caused_by(error),
+                    &face_offset_rejection("the preview cannot be evaluated").caused_by(error),
                 );
                 return;
             }
@@ -166,18 +121,66 @@ impl KetchupApp {
         });
     }
 
-    /// Waits for the exact offset of the preview still being evaluated. The
-    /// worker bounds each request, so this ends with the products or with
-    /// the reason they did not come.
-    fn wait_for_face_offset_evaluation(&mut self) {
+    /// Publishes the finished evaluation of the preview into its own store,
+    /// or records why it has no complete exact result. `wait` blocks for it
+    /// (the worker bounds each request, so it ends with the products or the
+    /// reason they did not come); otherwise an evaluation still running is
+    /// left alone and this answers false.
+    fn finish_face_offset_evaluation(&mut self, wait: bool) -> bool {
         let Some(evaluation) = self.push_pull.face_offset_evaluation.as_mut() else {
-            return;
+            return false;
         };
-        let Some(task) = evaluation.task.as_ref() else {
-            return;
+        let Some(task) = evaluation.task.take() else {
+            return false;
         };
-        let result = task.wait(FACE_OFFSET_CONFIRMATION_WAIT);
-        settle_face_offset_evaluation(evaluation, Ok(result));
+        let result = if wait {
+            Ok(task.wait(FACE_OFFSET_CONFIRMATION_WAIT))
+        } else {
+            match task.poll() {
+                Err(TryRecvError::Empty) => {
+                    evaluation.task = Some(task);
+                    return false;
+                }
+                result => result.map_err(|error| {
+                    face_offset_rejection("the exact evaluation stopped without an answer")
+                        .caused_by(error)
+                }),
+            }
+        };
+        let report = result
+            .and_then(|products| {
+                products.map_err(|error| {
+                    face_offset_rejection("the exact evaluation failed").caused_by(error)
+                })
+            })
+            .and_then(|products| {
+                publish_exact_products(
+                    &mut evaluation.document,
+                    &mut evaluation.render,
+                    &mut evaluation.topology,
+                    &task,
+                    products,
+                )
+                .map_err(|error| {
+                    face_offset_rejection("the exact result could not be published")
+                        .caused_by(error)
+                })
+            })
+            .and_then(|report| {
+                if report.complete && report.topology_complete {
+                    Ok(())
+                } else {
+                    Err(face_offset_rejection(
+                        report
+                            .not_evaluated
+                            .as_deref()
+                            .unwrap_or("the exact evaluation is incomplete"),
+                    ))
+                }
+            });
+        evaluation.ready = report.is_ok();
+        evaluation.failure = report.err();
+        true
     }
 
     /// Whether the exact offset of the preview could not be evaluated; its
@@ -206,31 +209,24 @@ impl KetchupApp {
                 context.request_repaint_after(Duration::from_millis(16));
             }
         }
-        let Some(evaluation) = self.push_pull.face_offset_evaluation.as_mut() else {
+        let running = self
+            .push_pull
+            .face_offset_evaluation
+            .as_ref()
+            .is_some_and(|evaluation| evaluation.task.is_some());
+        if !running {
             return;
-        };
-        let Some(task) = evaluation.task.as_ref() else {
-            return;
-        };
-        match task.poll() {
-            Err(TryRecvError::Empty) => {
-                context.request_repaint_after(Duration::from_millis(16));
-                return;
-            }
-            result => settle_face_offset_evaluation(
-                evaluation,
-                result.map_err(|error| {
-                    face_offset_rejection("the exact evaluation stopped without an answer")
-                        .caused_by(error)
-                }),
-            ),
         }
-        let failure = evaluation.failure.clone();
-        if !self.face_offset_evaluation_is_current() {
+        if !self.finish_face_offset_evaluation(false) {
+            context.request_repaint_after(Duration::from_millis(16));
+        } else if !self.face_offset_evaluation_is_current() {
             context.request_repaint();
-            return;
-        }
-        if let Some(failure) = failure {
+        } else if let Some(failure) = self
+            .push_pull
+            .face_offset_evaluation
+            .as_ref()
+            .and_then(|evaluation| evaluation.failure.clone())
+        {
             self.report_face_offset_failure(&failure);
         }
     }
@@ -291,20 +287,13 @@ impl KetchupApp {
             return false;
         }
         for _ in 0..2 {
-            if self
-                .push_pull
-                .face_offset_evaluation
-                .as_ref()
-                .is_some_and(|evaluation| {
-                    evaluation.task.is_none()
-                        && (evaluation.failure.is_some()
-                            || !self.face_offset_evaluation_is_current())
-                })
-            {
+            // A stale finished evaluation is replaced by `begin`; a failed one
+            // of the same preview has to be dropped first.
+            if self.face_offset_failed() {
                 self.push_pull.face_offset_evaluation = None;
             }
             self.begin_face_offset_evaluation();
-            self.wait_for_face_offset_evaluation();
+            self.finish_face_offset_evaluation(true);
             if self.face_offset_evaluation_is_current() {
                 break;
             }
@@ -334,10 +323,7 @@ impl KetchupApp {
         let face = self
             .selected_planar_face(&target)
             .map(|face| (preview.plan.source.clone(), face));
-        let rule_program = match self.rewrite_program_push_pull(
-            &preview.plan.source,
-            f64::from_bits(preview.plan.distance_mm_bits),
-        ) {
+        let rule_program = match self.rewrite_program_push_pull(&preview.plan.source, distance_mm) {
             Ok(source) => source,
             Err(error) => {
                 self.digest = error.reason_text().to_owned();
@@ -353,20 +339,17 @@ impl KetchupApp {
         let mut render = ExactResultRegistry::carried_forward(&snapshot, &self.exact.results);
         let mut topology =
             ExactResultRegistry::carried_forward(&snapshot, &self.exact.topology_results);
-        for package in evaluation.render.values() {
-            if render
-                .insert_current(&snapshot, Arc::clone(package))
-                .is_err()
-            {
-                return false;
-            }
-        }
-        for package in evaluation.topology.values() {
-            if topology
-                .insert_current(&snapshot, Arc::clone(package))
-                .is_err()
-            {
-                return false;
+        for (registry, packages) in [
+            (&mut render, &evaluation.render),
+            (&mut topology, &evaluation.topology),
+        ] {
+            for package in packages.values() {
+                if registry
+                    .insert_current(&snapshot, Arc::clone(package))
+                    .is_err()
+                {
+                    return false;
+                }
             }
         }
         if self

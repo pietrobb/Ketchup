@@ -118,25 +118,10 @@ pub(super) fn planar_face(
 /// The outward unit normal of one side of an axis-aligned box and the
 /// position of that side's plane along it.
 fn box_side_plane(item: &RenderBox, axis: Axis, side: Side) -> (Vec3, f64) {
-    let (unit, low, high) = match axis {
-        Axis::X => (
-            Vec3::new(1.0, 0.0, 0.0),
-            item.origin_mm.x,
-            item.origin_mm.x + item.size_mm.x,
-        ),
-        Axis::Y => (
-            Vec3::new(0.0, 1.0, 0.0),
-            item.origin_mm.y,
-            item.origin_mm.y + item.size_mm.y,
-        ),
-        Axis::Z => (
-            Vec3::new(0.0, 0.0, 1.0),
-            item.origin_mm.z,
-            item.origin_mm.z + item.size_mm.z,
-        ),
-    };
+    let unit = axis_vector(axis, 1.0);
+    let low = dot(item.origin_mm, unit);
     match side {
-        Side::Maximum => (unit, high),
+        Side::Maximum => (unit, low + dot(item.size_mm, unit)),
         Side::Minimum => (unit * -1.0, -low),
     }
 }
