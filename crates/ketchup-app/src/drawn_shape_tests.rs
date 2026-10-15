@@ -45,8 +45,16 @@ fn placement(degrees: f64, at: [f64; 3]) -> Transform {
 }
 
 /// One 100 x 60 x 40 block definition placed once per transform, so more
-/// than one placement makes it a component with copies.
+/// than one placement makes it a component with copies, with their exact
+/// solids evaluated.
 fn blocks(app: &mut KetchupApp, placements: &[Transform]) -> Vec<OccurrenceId> {
+    let ids = place_blocks(app, placements);
+    evaluate_exact(app);
+    ids
+}
+
+/// The blocks of [`blocks`] before their exact solids are evaluated.
+fn place_blocks(app: &mut KetchupApp, placements: &[Transform]) -> Vec<OccurrenceId> {
     let snapshot = app.document.current();
     let definition_id = DefinitionId(
         snapshot
@@ -107,7 +115,6 @@ fn blocks(app: &mut KetchupApp, placements: &[Transform]) -> Vec<OccurrenceId> {
     app.document
         .apply_batch(&CommandBatch::new(commands))
         .unwrap();
-    evaluate_exact(app);
     ids
 }
 
@@ -288,6 +295,112 @@ fn pushing_into_the_bottom_or_across_an_edge_mills_only_the_part() {
     assert!(push_pull(&mut app, "-5"), "{}", app.digest);
     evaluate_exact(&mut app);
     assert_volume(volume(&app, block), VOLUME - 2000.0 - 20.0 * 20.0 * 5.0);
+}
+
+/// A shape drawn on the ground around a whole part, pulled up through all of
+/// it, would mill the part away; it becomes a part of its own, as it does
+/// before the part's exact solid arrives.
+#[test]
+fn a_shape_around_a_whole_part_pulled_through_it_becomes_a_part_of_its_own() {
+    let mut app = KetchupApp::new();
+    let [block] = blocks(&mut app, &[placement(0.0, [0.0; 3])])[..] else {
+        unreachable!()
+    };
+    let ground = |app: &mut KetchupApp, segments| {
+        draw(app, [0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], segments)
+    };
+    let around = ground(&mut app, rectangle([-10.0, -10.0], [110.0, 70.0]));
+    // Short of the top it still mills a pocket from below.
+    assert!(matches!(app.drawn_shape_edit(&around, 39.0), Some(Ok(_))));
+    for distance in [40.0, 55.0] {
+        assert!(
+            app.drawn_shape_edit(&around, distance).is_none(),
+            "{distance}"
+        );
+    }
+    // The shape drawn exactly on the bottom's edges takes all of the part too.
+    let edges = ground(&mut app, rectangle([0.0, 0.0], [100.0, 60.0]));
+    assert!(app.drawn_shape_edit(&edges, 40.0).is_none());
+    // A D around the part, its arc bulging past the far end.
+    let d = ground(
+        &mut app,
+        vec![
+            ProfileSegment::Line {
+                start_mm: [-10.0, 160.0],
+                end_mm: [-10.0, -100.0],
+            },
+            ProfileSegment::CircularArc {
+                start_mm: [-10.0, -100.0],
+                end_mm: [-10.0, 160.0],
+                center_mm: [-10.0, 30.0],
+                clockwise: false,
+            },
+        ],
+    );
+    assert!(app.drawn_shape_edit(&d, 40.0).is_none());
+    app.set_push_pull_distance_input("40");
+    assert!(app.start_preview(), "{}", app.digest);
+    assert!(!app.has_drawn_shape_preview());
+    assert_eq!(app.push_pull_preview_definition(), Some(d.definition_id));
+    app.cancel_preview();
+    evaluate_exact(&mut app);
+    assert_volume(volume(&app, block), VOLUME);
+}
+
+/// Enter on a shape drawn on a part whose exact solid is still being
+/// evaluated waits for the solid and mills the pocket; before, the missing
+/// solid made the shape a part of its own standing in the block.
+#[test]
+fn enter_before_the_parts_exact_solid_arrives_waits_and_mills_the_pocket() {
+    let mut app = KetchupApp::new();
+    let [block] = place_blocks(&mut app, &[placement(0.0, [0.0; 3])])[..] else {
+        unreachable!()
+    };
+    draw(
+        &mut app,
+        [0.0, 0.0, 40.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        rectangle([10.0, 10.0], [30.0, 30.0]),
+    );
+    let worker = exact_worker_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+        .expect("build ketchup-exact-worker alongside the app tests");
+    app.headless_force_exact_worker_path(&worker);
+    let snapshot = app.document.current();
+    app.exact.task = Some(ketchup_application::evaluation::start_exact_evaluation(
+        snapshot.clone(),
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
+        Some(worker),
+        || {},
+    ));
+    let revision = app.document_revision();
+    app.active_tool = ActiveTool::PushPull;
+    app.value_box.input = "-5".into();
+    assert!(!app.apply_value_input(), "{}", app.digest);
+    assert_eq!(app.status_key, "status-exact-pending");
+    assert_eq!(app.value_input_awaits_program, Some(ActiveTool::PushPull));
+    assert_eq!(app.document_revision(), revision);
+
+    let task = app.exact.task.take().unwrap();
+    let products = task.wait(Duration::from_secs(60)).unwrap();
+    ketchup_application::evaluation::publish_exact_products(
+        &mut app.document,
+        &mut app.exact.results,
+        &mut app.exact.topology_results,
+        &task,
+        products,
+    )
+    .unwrap();
+    app.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+    // The frame that finds the solid applies the waiting value.
+    assert!(app.apply_value_input(), "{}", app.digest);
+    assert_eq!(app.document.current().occurrences().count(), 1);
+    evaluate_exact(&mut app);
+    assert_volume(volume(&app, block), VOLUME - 20.0 * 20.0 * 5.0);
 }
 
 #[test]

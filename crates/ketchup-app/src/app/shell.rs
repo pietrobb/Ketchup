@@ -1337,6 +1337,7 @@ impl KetchupApp {
         }
         if let Some(tool) = self.value_input_awaits_program
             && !self.program_is_planning()
+            && !(self.status_key == "status-exact-pending" && self.exact.task.is_some())
         {
             self.value_input_awaits_program = None;
             if tool == self.active_tool {

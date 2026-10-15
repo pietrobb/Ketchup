@@ -567,10 +567,13 @@ impl KetchupApp {
         }
     }
 
-    /// A typed value refused because the program is still being evaluated is
-    /// applied by the frame that finds the evaluation ready.
+    /// A typed value refused because the program or a part's exact solid is
+    /// still being evaluated is applied by the frame that finds it ready.
     fn await_program_if_planning(&mut self) {
-        if self.status_key == "status-program-planning" {
+        if matches!(
+            self.status_key,
+            "status-program-planning" | "status-exact-pending"
+        ) {
             self.value_input_awaits_program = Some(self.active_tool);
         }
     }

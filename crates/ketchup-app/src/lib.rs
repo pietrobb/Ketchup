@@ -2542,8 +2542,9 @@ pub struct KetchupApp {
     feature_history: feature_history_ui::FeatureHistoryUiState,
     push_pull: app_state::PushPullState,
     program_evaluations: program_evaluation::ProgramEvaluations,
-    /// The tool whose typed value waits for the program evaluation; it is
-    /// applied when the evaluation is ready if that tool is still active.
+    /// The tool whose typed value waits for the program evaluation or a
+    /// part's exact solid; it is applied when that is ready if that tool is
+    /// still active.
     value_input_awaits_program: Option<ActiveTool>,
     solid_tools: app_state::SolidToolInputs,
     helix_tool: helix_ui::HelixUiState,

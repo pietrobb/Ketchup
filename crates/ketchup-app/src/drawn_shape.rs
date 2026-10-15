@@ -236,6 +236,85 @@ fn consumed(snapshot: &Snapshot, drawn: &Occurrence) -> Vec<CanonicalCommand> {
     commands
 }
 
+/// The drawn loop as a polygon in its own plane, fine enough to tell which
+/// side of it a point lies on; `None` for a spline.
+fn loop_polygon(segments: &[ProfileSegment]) -> Option<Vec<[f64; 2]>> {
+    use std::f64::consts::TAU;
+    let mut polygon = Vec::new();
+    for segment in segments {
+        match segment {
+            ProfileSegment::Line { start_mm, .. } => polygon.push(*start_mm),
+            ProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => {
+                let angle = |p: [f64; 2]| (p[1] - center_mm[1]).atan2(p[0] - center_mm[0]);
+                let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+                let from = angle(*start_mm);
+                let ccw = (angle(*end_mm) - from).rem_euclid(TAU);
+                // An arc ending where it starts is the whole circle.
+                let full = ccw < APPROXIMATION || TAU - ccw < APPROXIMATION;
+                let sweep = match (full, *clockwise) {
+                    (true, false) => TAU,
+                    (true, true) => -TAU,
+                    (false, false) => ccw,
+                    (false, true) => ccw - TAU,
+                };
+                let steps = (sweep.abs() / TAU * 1024.0).ceil().max(1.0) as usize;
+                polygon.extend((0..steps).map(|step| {
+                    let at = from + sweep * step as f64 / steps as f64;
+                    [
+                        center_mm[0] + radius * at.cos(),
+                        center_mm[1] + radius * at.sin(),
+                    ]
+                }));
+            }
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => polygon.extend((0..64).map(|step| {
+                let t = f64::from(step) / 64.0;
+                let s = 1.0 - t;
+                let weights = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
+                let points = [start_mm, control_1_mm, control_2_mm, end_mm];
+                [0, 1].map(|axis| (0..4).map(|i| weights[i] * points[i][axis]).sum())
+            })),
+            ProfileSegment::Spline { .. } => return None,
+        }
+    }
+    (polygon.len() >= 3).then_some(polygon)
+}
+
+/// Whether `p` lies inside `polygon` or within `tolerance` of its boundary.
+fn within_loop(polygon: &[[f64; 2]], p: [f64; 2], tolerance: f64) -> bool {
+    let mut inside = false;
+    let mut previous = polygon[polygon.len() - 1];
+    for &next in polygon {
+        let edge = [next[0] - previous[0], next[1] - previous[1]];
+        let to_p = [p[0] - previous[0], p[1] - previous[1]];
+        let length_squared = edge[0] * edge[0] + edge[1] * edge[1];
+        let t = if length_squared > 0.0 {
+            ((to_p[0] * edge[0] + to_p[1] * edge[1]) / length_squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if (to_p[0] - t * edge[0]).hypot(to_p[1] - t * edge[1]) <= tolerance {
+            return true;
+        }
+        if (next[1] > p[1]) != (previous[1] > p[1])
+            && p[0] < previous[0] + edge[0] * (p[1] - previous[1]) / edge[1]
+        {
+            inside = !inside;
+        }
+        previous = next;
+    }
+    inside
+}
+
 /// The bounds of a drawn loop in its own plane; an arc counts with its
 /// whole circle.
 fn loop_bounds(segments: &[ProfileSegment]) -> ([f64; 2], [f64; 2]) {
@@ -355,6 +434,8 @@ pub(crate) enum DrawnShapeRefusal {
     NotBuildable { part: String },
     /// The document's program is still being evaluated in the background.
     ProgramPlanning,
+    /// The exact solid of a part the shape may lie on is still being evaluated.
+    ExactPending,
     /// The document's program does not evaluate.
     ProgramFails(String),
 }
@@ -373,6 +454,7 @@ impl DrawnShapeRefusal {
                 &BTreeMap::from([("part", part.clone())]),
             ),
             Self::ProgramPlanning => catalog.refusal("status-program-planning"),
+            Self::ExactPending => catalog.refusal("status-exact-pending"),
             Self::ProgramFails(reason) => catalog.refusal_with(
                 "error-drawn-shape-program-fails",
                 &BTreeMap::from([("reason", reason.clone())]),
@@ -609,6 +691,8 @@ impl KetchupApp {
         // Hosts with a face in the drawing plane that the shape overlaps; the
         // sign says whether that face looks along the drawing's normal.
         let mut hosts = Vec::new();
+        let polygon = std::cell::OnceCell::new();
+        let mut pending = false;
         let current = self.document.current();
         // Looked up per host, so indexed once rather than scanned per host.
         let rendered = self.exact.topology_results.render_by_definition(snapshot);
@@ -630,6 +714,9 @@ impl KetchupApp {
                 };
                 (input(snapshot)? == input(&current)?).then_some(package)
             }) else {
+                // Its solid may still be on its way; without it the shape
+                // would wrongly become a part of its own.
+                pending |= self.exact.task.is_some();
                 continue;
             };
             let Some(to_host) = host
@@ -700,16 +787,40 @@ impl KetchupApp {
                 });
                 overlaps.then_some(cosine.signum())
             });
-            if let Some(facing) = facing {
+            // A shape around the whole part pushed through all of it would
+            // mill the part away: it was drawn around the part, not on it.
+            let depth = [distance_mm.min(0.0), distance_mm.max(0.0)];
+            let milled_away = || {
+                polygon
+                    .get_or_init(|| loop_polygon(segments))
+                    .as_ref()
+                    .is_some_and(|polygon| {
+                        vertices.iter().all(|vertex| {
+                            let p = sub(vertex.position_mm, origin);
+                            let along = dot(p, axes[2]);
+                            along >= depth[0] - plane_mm
+                                && along <= depth[1] + plane_mm
+                                && within_loop(
+                                    polygon,
+                                    [dot(p, axes[0]), dot(p, axes[1])],
+                                    plane_mm,
+                                )
+                        })
+                    })
+            };
+            if let Some(facing) = facing.filter(|_| !milled_away()) {
                 hosts.push((host, to_host, facing, package.producer_feature_id()));
             }
         }
         // Pushing into a part mills it. Pulled out of a plain part the shape
         // stays a part of its own (the other Push/Pull paths make it), as
         // assembled parts are separate bodies, not bosses on each other.
-        let (host, to_host, facing, target) = *hosts
+        let Some(&(host, to_host, facing, target)) = hosts
             .iter()
-            .find(|(_, _, facing, _)| distance_mm * facing < 0.0)?;
+            .find(|(_, _, facing, _)| distance_mm * facing < 0.0)
+        else {
+            return pending.then_some(Err(DrawnShapeRefusal::ExactPending));
+        };
         let amount_mm = distance_mm.abs();
         // The tool covers [start, start + length] along the face's outward
         // normal: into the part and a millimetre out of it.
@@ -839,6 +950,13 @@ impl KetchupApp {
                 self.clear_push_pull_preview();
                 self.status_key = "status-program-planning";
                 self.digest = self.catalog.text("status-program-planning");
+                return Some(false);
+            }
+            Err(DrawnShapeRefusal::ExactPending) => {
+                // Enter waits for the solid; the published result repaints.
+                self.clear_push_pull_preview();
+                self.status_key = "status-exact-pending";
+                self.digest = self.catalog.text("status-exact-pending");
                 return Some(false);
             }
             Err(error) => {
