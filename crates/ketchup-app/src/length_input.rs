@@ -3,6 +3,8 @@
 //! is millimetres. A product of two lengths is an area, not a length, and is
 //! refused rather than silently read as millimetres.
 
+use std::ops::RangeInclusive;
+
 const MAX_INPUT_CHARS: usize = 256;
 const MAX_NESTING: usize = 32;
 const MM_PER_INCH: f64 = 25.4;
@@ -22,6 +24,33 @@ pub fn parse_length_mm(input: &str) -> Option<f64> {
     let value = parser.expression()?;
     parser.skip_spaces();
     (parser.at == parser.chars.len() && value.mm.is_finite()).then_some(value.mm)
+}
+
+/// Several lengths typed in one field, such as a rectangle's sides or a Move
+/// vector, each one a full length expression. The values are split at `;`
+/// when there is one (so `12,5;0` keeps its decimal comma), else at `x`, else
+/// at commas, and only then at one `*` or `×` between two values (`80*60`).
+/// `None` unless the number of values is in `counts`.
+#[must_use]
+pub fn parse_length_list(input: &str, counts: RangeInclusive<usize>) -> Option<Vec<f64>> {
+    let split = |separators: &[char]| -> Option<Vec<f64>> {
+        let values = input
+            .split(separators)
+            .map(parse_length_mm)
+            .collect::<Option<Vec<_>>>()?;
+        counts.contains(&values.len()).then_some(values)
+    };
+    if input.contains(';') {
+        split(&[';'])
+    } else if input.contains(['x', 'X']) {
+        split(&['x', 'X'])
+    } else {
+        split(&[',']).or_else(|| {
+            (input.matches(['*', '×']).count() == 1)
+                .then(|| split(&['*', '×']))
+                .flatten()
+        })
+    }
 }
 
 /// A plain number with a decimal point or a decimal comma (`0,5`), as typed
@@ -305,6 +334,20 @@ mod tests {
         }
         assert_eq!(mm(&"(".repeat(40)), None);
         assert_eq!(mm(&"1+".repeat(200)), None);
+    }
+
+    #[test]
+    fn a_list_of_lengths_splits_at_one_separator_kind() {
+        let list = |input: &str| parse_length_list(input, 2..=3);
+        assert_eq!(list("12,5;0"), Some(vec![12.5, 0.0]));
+        assert_eq!(list("8 cm x 6 cm"), Some(vec![80.0, 60.0]));
+        assert_eq!(list("10+5,20,1m"), Some(vec![15.0, 20.0, 1000.0]));
+        assert_eq!(list("80*60"), Some(vec![80.0, 60.0]));
+        assert_eq!(list("80×60"), Some(vec![80.0, 60.0]));
+        assert_eq!(list("2*20;12,5"), Some(vec![40.0, 12.5]));
+        for input in ["80", "1;2;3;4", "1*2*3", "1m*1m;2", "a;b", ""] {
+            assert_eq!(list(input), None, "{input:?}");
+        }
     }
 
     #[test]

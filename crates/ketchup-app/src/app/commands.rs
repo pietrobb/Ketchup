@@ -1525,19 +1525,9 @@ fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
         .then_some((mode, count))
 }
 
+/// A typed Move vector: two or three lengths read like any other length.
 fn parse_move_vector(input: &str) -> Option<Vec3> {
-    let trimmed = input.trim();
-    let numeric = trimmed
-        .strip_suffix("mm")
-        .or_else(|| trimmed.strip_suffix("MM"))
-        .unwrap_or(trimmed);
-    let values = numeric
-        .split([',', ';', 'x', 'X', '*'])
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::parse::<f64>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
+    let values = crate::length_input::parse_length_list(input, 2..=3)?;
     let vector = match values.as_slice() {
         [x, y] => Vec3::new(*x, *y, 0.0),
         [x, y, z] => Vec3::new(*x, *y, *z),

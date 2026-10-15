@@ -3522,22 +3522,12 @@ pub(crate) fn create_box_batch(
 }
 
 /// Width and depth typed as two lengths, each with units, arithmetic and a
-/// decimal comma like any length: `80;60`, `8 cm x 6 cm`, or `80,60` when no
-/// other separator leaves the comma free.
+/// decimal comma like any length: `80;60`, `8 cm x 6 cm`, `80*60`, or `80,60`
+/// when no other separator leaves the comma free.
 pub(crate) fn parse_rectangle_dimensions(input: &str) -> Option<[f64; 2]> {
-    let separator: &[char] = if input.contains(';') {
-        &[';']
-    } else if input.contains(['x', 'X']) {
-        &['x', 'X']
-    } else {
-        &[',']
-    };
-    let mut sides = input.split(separator);
-    let (Some(width), Some(depth), None) = (sides.next(), sides.next(), sides.next()) else {
-        return None;
-    };
-    let side = |text: &str| parse_distance_mm(text).filter(|side| *side > limits::MIN_LENGTH_MM);
-    Some([side(width)?, side(depth)?])
+    let sides = length_input::parse_length_list(input, 2..=2)?;
+    let side = |side: f64| (side > limits::MIN_LENGTH_MM).then_some(side);
+    Some([side(sides[0])?, side(sides[1])?])
 }
 
 fn exact_arc_profile_geometry(
