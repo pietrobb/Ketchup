@@ -333,7 +333,7 @@ impl DocumentStore {
             return Err(RuleProgramError::AlreadyBound.into());
         }
         Self::validate_rule_program_source(&source)?;
-        Arc::make_mut(&mut self.revisions[self.cursor]).rule_program = Some(source);
+        Arc::make_mut(&mut self.revisions[self.cursor]).rule_program = Some(Arc::new(source));
         Ok(())
     }
 
@@ -366,7 +366,7 @@ impl DocumentStore {
             batch_digest: format!("{digest:x}")[..16].to_owned(),
             origin: RevisionOrigin::Principal(ProposalPrincipal::ManualClient),
             checkpoint: None,
-            rule_program: Some(source),
+            rule_program: Some(Arc::new(source)),
             recomputed_nodes: BTreeSet::new(),
             dirty_features: BTreeSet::new(),
             feature_states: current.feature_states.clone(),
@@ -1100,7 +1100,7 @@ impl DocumentStore {
     /// the document's threads between modelled and cosmetic keeps the program
     /// owning the model; any other edit detaches it. A program's own bolts
     /// following its mode are its own edit, which binds its source anew.
-    fn rule_program_kept_by(&self, batch: &CommandBatch) -> Option<RuleProgramSource> {
+    fn rule_program_kept_by(&self, batch: &CommandBatch) -> Option<Arc<RuleProgramSource>> {
         let switches_mode = batch
             .commands
             .iter()

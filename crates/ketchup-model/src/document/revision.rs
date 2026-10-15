@@ -153,7 +153,9 @@ pub struct Revision {
     pub(super) batch_digest: String,
     pub(super) origin: RevisionOrigin,
     pub(super) checkpoint: Option<String>,
-    pub(super) rule_program: Option<RuleProgramSource>,
+    /// Shared between the revisions that keep the same program, so an Undo history
+    /// holds each program once.
+    pub(super) rule_program: Option<std::sync::Arc<RuleProgramSource>>,
     pub(super) recomputed_nodes: BTreeSet<NodeId>,
     pub(super) dirty_features: BTreeSet<FeatureId>,
     pub(super) feature_states: BTreeMap<FeatureId, FeatureEvaluationState>,
@@ -187,8 +189,8 @@ impl Revision {
     }
 
     #[must_use]
-    pub const fn rule_program(&self) -> Option<&RuleProgramSource> {
-        self.rule_program.as_ref()
+    pub fn rule_program(&self) -> Option<&RuleProgramSource> {
+        self.rule_program.as_deref()
     }
 
     #[must_use]
@@ -322,5 +324,5 @@ pub(crate) type StoredRevision = (
     String,
     RevisionOrigin,
     Option<String>,
-    Option<RuleProgramSource>,
+    Option<std::sync::Arc<RuleProgramSource>>,
 );

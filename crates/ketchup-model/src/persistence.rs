@@ -35,14 +35,26 @@ const WORK_RECOVERY_SCHEMA: u16 = 1;
 /// [`crate::tolerance::limits::UNDO_REVISIONS`] can hold this many; loading keeps only the
 /// revisions within the Undo limit.
 const FILE_HISTORY_REVISIONS: u32 = 4_096;
-/// Most bytes the revision snapshots of a history assemble to, the current one
-/// aside (PS-1). Chunks shared between revisions keep `history.bin` small, so
-/// without this a small file could name gigabytes. Saving and opening check the
-/// same budget, so a file that saves also opens; past it, Save keeps the current
-/// revision only.
-const MAX_HISTORY_ASSEMBLED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// The entry the budget is reported for.
+/// What the chunks of a history may assemble to. Chunks shared between revisions
+/// keep `history.bin` small, so without these a small file could name gigabytes.
+/// Saving and opening check the same budget, so a file that saves also opens;
+/// past it, Save keeps the current revision only.
+#[derive(Clone, Copy)]
+struct HistoryBudget {
+    /// Revision snapshots, the current one aside, each assembled only while it
+    /// loads (PS-1).
+    snapshots: u64,
+    /// Distinct programs, which an opened history holds all at once, each once
+    /// however many revisions keep it (PS-2).
+    programs: u64,
+}
+const HISTORY_BUDGET: HistoryBudget = HistoryBudget {
+    snapshots: 2 * 1024 * 1024 * 1024,
+    programs: 256 * 1024 * 1024,
+};
+/// The entries the budget is reported for.
 const HISTORY_REVISIONS_ENTRY: &str = "the revisions of history.bin";
+const HISTORY_PROGRAMS_ENTRY: &str = "the programs of history.bin";
 pub const CURRENT_SCHEMA: u16 = snapshot_codec::SNAPSHOT_FORMAT;
 
 /// Largest serialized document snapshot: the current document or one revision in its
@@ -611,7 +623,7 @@ fn encode_history(
     cursor: usize,
     next_revision_id: u64,
     document_bin: &crate::document::EncodedSnapshot,
-    assembled_budget: u64,
+    budget: HistoryBudget,
 ) -> Result<Vec<u8>, PersistenceError> {
     let count = u32::try_from(revisions.len())
         .map_err(|_: std::num::TryFromIntError| PersistenceError::ResourceLimit)?;
@@ -627,6 +639,8 @@ fn encode_history(
     }
     let mut records = Vec::new();
     let mut assembled = 0u64;
+    let mut programs = BTreeSet::new();
+    let mut program_bytes = 0u64;
     for (index, revision) in revisions.iter().enumerate() {
         let previous = index.checked_sub(1).map(|previous| revisions[previous]);
         write_revision_header(&mut records, revision);
@@ -635,12 +649,20 @@ fn encode_history(
         {
             push_u8(&mut records, HISTORY_RULE_PROGRAM_AS_PREVIOUS);
         } else if let Some(encoded) = encoded_rule_program(revision)? {
-            assembled = check_assembled(assembled, encoded.len(), assembled_budget)?;
+            let checksum = crate::graph::sha256_bytes(&encoded);
+            if programs.insert(checksum) {
+                program_bytes = check_assembled(
+                    HISTORY_PROGRAMS_ENTRY,
+                    program_bytes,
+                    encoded.len(),
+                    budget.programs,
+                )?;
+            }
             push_u8(&mut records, HISTORY_RULE_PROGRAM_IN_CHUNKS);
             table.write(
                 &mut records,
                 &encoded,
-                &crate::graph::sha256_bytes(&encoded),
+                &checksum,
                 &history_chunks::chunks(&encoded),
             );
         } else {
@@ -651,7 +673,12 @@ fn encode_history(
             continue;
         }
         let snapshot = encoded_snapshot(revision.snapshot());
-        assembled = check_assembled(assembled, snapshot.bytes.len(), assembled_budget)?;
+        assembled = check_assembled(
+            HISTORY_REVISIONS_ENTRY,
+            assembled,
+            snapshot.bytes.len(),
+            budget.snapshots,
+        )?;
         let chunks = snapshot
             .chunks
             .get_or_init(|| history_chunks::chunks(&snapshot.bytes));
@@ -681,7 +708,7 @@ fn encode_revision_history(
         document.history_cursor(),
         document.next_revision_id(),
         document_bin,
-        MAX_HISTORY_ASSEMBLED_BYTES,
+        HISTORY_BUDGET,
     )
 }
 
@@ -698,16 +725,21 @@ fn encode_current_revision_history(
         0,
         document.next_revision_id(),
         document_bin,
-        MAX_HISTORY_ASSEMBLED_BYTES,
+        HISTORY_BUDGET,
     )
 }
 
-/// `assembled` plus a revision snapshot of `bytes`, within `budget`.
-fn check_assembled(assembled: u64, bytes: usize, budget: u64) -> Result<u64, PersistenceError> {
+/// `assembled` plus `bytes` more of `entry`, within `budget`.
+fn check_assembled(
+    entry: &str,
+    assembled: u64,
+    bytes: usize,
+    budget: u64,
+) -> Result<u64, PersistenceError> {
     let total = assembled.saturating_add(bytes as u64);
     if total > budget {
         return Err(PersistenceError::TooLarge {
-            entry: HISTORY_REVISIONS_ENTRY.to_owned(),
+            entry: entry.to_owned(),
             bytes: total,
             limit: budget,
         });
@@ -1655,7 +1687,7 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             &document,
             &outcome,
             &history_container_data,
-            MAX_HISTORY_ASSEMBLED_BYTES,
+            HISTORY_BUDGET,
         );
         match (&mut outcome, restored) {
             // A program the file holds but that breaks its rules is refused by
@@ -1701,7 +1733,7 @@ fn decode_revision_history(
     document_bytes: &[u8],
     expected_current: &LoadOutcome,
     container_data: &ContainerData,
-    assembled_budget: u64,
+    budget: HistoryBudget,
 ) -> Result<DocumentStore, PersistenceError> {
     if bytes.len() > MAX_SIDECAR_BYTES {
         return Err(PersistenceError::ResourceLimit);
@@ -1745,6 +1777,8 @@ fn decode_revision_history(
 
     let mut records = Vec::with_capacity(count);
     let mut assembled = 0u64;
+    let mut programs = BTreeMap::new();
+    let mut program_bytes = 0u64;
     let mut previous_revision_id = None;
     let mut checkpoint_names = BTreeSet::new();
     for index in 0..count {
@@ -1787,14 +1821,33 @@ fn decode_revision_history(
                     if length > crate::document::MAX_RULE_PROGRAM_BYTES {
                         return Err(PersistenceError::ResourceLimit);
                     }
-                    Some(decode_rule_program(reader.take(length)?)?)
+                    Some(Arc::new(decode_rule_program(reader.take(length)?)?))
                 }
                 HISTORY_RULE_PROGRAM_IN_CHUNKS if schema >= 5 => {
                     let program =
                         read_chunk_list(&mut reader, crate::document::MAX_RULE_PROGRAM_BYTES)?;
-                    assembled =
-                        check_assembled(assembled, program.assembled_len(), assembled_budget)?;
-                    Some(decode_rule_program(&program.assemble(&chunks)?)?)
+                    let HistorySnapshot::Chunks {
+                        length,
+                        checksum,
+                        numbers,
+                    } = program
+                    else {
+                        unreachable!("a chunk list")
+                    };
+                    // A program the history named before is the same one, held once.
+                    if let Some(decoded) = programs.get(&(length, checksum, numbers)) {
+                        Some(Arc::clone(decoded))
+                    } else {
+                        program_bytes = check_assembled(
+                            HISTORY_PROGRAMS_ENTRY,
+                            program_bytes,
+                            length,
+                            budget.programs,
+                        )?;
+                        let decoded = Arc::new(decode_rule_program(&program.assemble(&chunks)?)?);
+                        programs.insert((length, checksum, numbers), Arc::clone(&decoded));
+                        Some(decoded)
+                    }
                 }
                 HISTORY_RULE_PROGRAM_AS_PREVIOUS if schema >= 4 => Some(
                     records
@@ -1834,9 +1887,10 @@ fn decode_revision_history(
         )?;
         // Checked before anything is assembled.
         assembled = check_assembled(
+            HISTORY_REVISIONS_ENTRY,
             assembled,
             encoded_snapshot.assembled_len(),
-            assembled_budget,
+            budget.snapshots,
         )?;
         previous_revision_id = Some(revision_id);
         records.push(HistoryRecord {
@@ -1944,7 +1998,7 @@ struct HistoryRecord<'a> {
     batch_digest: String,
     origin: RevisionOrigin,
     checkpoint: Option<String>,
-    rule_program: Option<crate::document::RuleProgramSource>,
+    rule_program: Option<Arc<crate::document::RuleProgramSource>>,
     encoded_snapshot: HistorySnapshot<'a>,
 }
 
@@ -2719,13 +2773,17 @@ mod tests {
             .filter(|(index, _)| *index != cursor)
             .map(|(_, revision)| encoded_snapshot(revision.snapshot()).bytes.len() as u64)
             .sum::<u64>();
-        let encode = |budget| {
+        let budget = |snapshots| HistoryBudget {
+            snapshots,
+            ..HISTORY_BUDGET
+        };
+        let encode = |snapshots| {
             encode_history(
                 &revisions,
                 cursor,
                 store.next_revision_id(),
                 &document_bin,
-                budget,
+                budget(snapshots),
             )
         };
         let history = encode(fits).unwrap();
@@ -2735,19 +2793,106 @@ mod tests {
         ));
 
         let outcome = load(&save(&store.current())).unwrap();
-        let decode = |budget| {
+        let decode = |snapshots| {
             decode_revision_history(
                 &history,
                 &document_bin.bytes,
                 &outcome,
                 &ContainerData::default(),
-                budget,
+                budget(snapshots),
             )
         };
         assert_eq!(decode(fits).unwrap().revision_count(), revisions.len());
         assert!(matches!(
             decode(fits - 1),
             Err(PersistenceError::TooLarge { bytes, .. }) if bytes == fits
+        ));
+    }
+
+    /// PS-2 review 52: programs that chunks of a small `history.bin` name are held
+    /// once each, not once per revision, and their distinct bytes are within a
+    /// budget Save and opening keep alike.
+    #[test]
+    fn opening_a_history_holds_each_distinct_program_once() {
+        use crate::document::{CanonicalCommand, CommandBatch, NodeId, RuleProgramSource};
+        use ketchup_geometry::dimension::Dimension;
+        let program = |name: &str| RuleProgramSource {
+            file_name: "model.star".into(),
+            source: format!("# {name}\n{}", "x = 1\n".repeat(40_000)),
+            overrides: BTreeMap::new(),
+            variants: BTreeMap::new(),
+        };
+        let (a, b) = (program("A"), program("B"));
+        let mut store = DocumentStore::new();
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateEvaluatorNode {
+                    id: NodeId(1),
+                    name: "parameter".into(),
+                    dimension: Dimension::new("1", 1.0).unwrap(),
+                    dependencies: vec![],
+                },
+            ]))
+            .unwrap();
+        store.bind_rule_program(a.clone()).unwrap();
+        for edit in 0..64 {
+            let next = if edit % 2 == 0 { &b } else { &a };
+            store.replace_rule_program_source(next.clone()).unwrap();
+        }
+        let document_bin = encoded_snapshot(&store.current());
+        let history = encode_revision_history(&store, &document_bin).unwrap();
+        let program_bytes = serde_json::to_vec(&a).unwrap().len();
+        // 65 programs of 240 KB, two of them distinct.
+        assert!(history.len() < 3 * program_bytes, "{}", history.len());
+
+        let outcome = load(&save(&store.current())).unwrap();
+        let decode = |history: &[u8], programs| {
+            decode_revision_history(
+                history,
+                &document_bin.bytes,
+                &outcome,
+                &ContainerData::default(),
+                HistoryBudget {
+                    programs,
+                    ..HISTORY_BUDGET
+                },
+            )
+        };
+        let opened = decode(&history, HISTORY_BUDGET.programs).unwrap();
+        let held = opened
+            .revision_history()
+            .filter_map(|revision| revision.rule_program())
+            .map(|program| program.source.as_ptr())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(opened.revision_count(), 66);
+        assert_eq!(held.len(), 2, "programs held, one per distinct program");
+
+        // The distinct programs count against their budget, alike on Save and opening.
+        let fits = 2 * program_bytes as u64;
+        let revisions = store.revision_history().collect::<Vec<_>>();
+        let encode = |programs| {
+            encode_history(
+                &revisions,
+                store.history_cursor(),
+                store.next_revision_id(),
+                &document_bin,
+                HistoryBudget {
+                    programs,
+                    ..HISTORY_BUDGET
+                },
+            )
+        };
+        assert_eq!(encode(fits).unwrap(), history);
+        assert!(matches!(
+            encode(fits - 1),
+            Err(PersistenceError::TooLarge { entry, bytes, .. })
+                if entry == HISTORY_PROGRAMS_ENTRY && bytes == fits
+        ));
+        assert_eq!(decode(&history, fits).unwrap().revision_count(), 66);
+        assert!(matches!(
+            decode(&history, fits - 1),
+            Err(PersistenceError::TooLarge { entry, bytes, .. })
+                if entry == HISTORY_PROGRAMS_ENTRY && bytes == fits
         ));
     }
 
