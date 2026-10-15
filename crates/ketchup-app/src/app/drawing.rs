@@ -3148,14 +3148,16 @@ impl KetchupApp {
             memory.has_focus(value_field) || memory.had_focus_last_frame(value_field)
         }) && !self.value_box.input.trim().is_empty();
         // Under Select with no edit in progress the value is for no operation,
-        // and the field keeps its own text Undo and Redo.
+        // and the field keeps its own text Undo and Redo. The shortcut matches
+        // Ctrl+Shift+Z too, which is Redo.
         let undo_typed_value = typing_value
             && (self.active_tool != ActiveTool::Select || self.ephemeral_edit_active())
             && context.input_mut(|input| {
-                input.consume_shortcut(&egui::KeyboardShortcut::new(
-                    egui::Modifiers::COMMAND,
-                    egui::Key::Z,
-                ))
+                !input.modifiers.shift
+                    && input.consume_shortcut(&egui::KeyboardShortcut::new(
+                        egui::Modifiers::COMMAND,
+                        egui::Key::Z,
+                    ))
             });
         let command = if undo_typed_value {
             Some(AppCommand::Deselect)

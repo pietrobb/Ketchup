@@ -301,6 +301,27 @@ fn start_interrupted(shell: &mut Shell, tool: &str) {
     type_value(shell, "4");
 }
 
+/// UI-2 (review 2026-10-15): only Ctrl+Z drops a value being typed with its
+/// operation. Ctrl+Shift+Z is the field's own Redo there and cancels nothing.
+#[test]
+fn ctrl_shift_z_in_a_typed_value_keeps_the_value_and_its_operation() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    shell.key(Key::D, ctrl());
+    shell.key(Key::Z, ctrl());
+    start_interrupted(&mut shell, "Move");
+    let before = DocumentState::of(&shell);
+    shell.key(Key::Z, ctrl_shift());
+    assert_eq!(shell.app().value_input(), "4");
+    assert!(
+        shell.app().action_digest().starts_with("Move"),
+        "{}",
+        shell.app().action_digest()
+    );
+    assert!(DocumentState::of(&shell) == before);
+    shell.press_key(Key::Escape);
+}
+
 #[test]
 fn an_interrupted_operation_leaves_document_selection_and_history_as_they_were() {
     let mut shell = Shell::new();
