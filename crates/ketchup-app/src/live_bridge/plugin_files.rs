@@ -11,17 +11,40 @@ use std::io;
 use std::path::Path;
 
 /// Opens `path` for reading; on Windows nobody may write, rename or delete
-/// it while the handle is open.
+/// it while the handle is open. Only a regular file opens (`open_regular`).
 pub(super) fn open_held(path: &Path) -> io::Result<File> {
     let mut options = fs::OpenOptions::new();
-    options.read(true);
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
         const FILE_SHARE_READ: u32 = 0x1;
         options.share_mode(FILE_SHARE_READ);
     }
-    options.open(path)
+    open_checked(path, options)
+}
+
+/// Opens `path` for reading if the opened handle is a regular file. On Unix
+/// the open does not wait for a writer, so a FIFO in its place is refused
+/// instead of blocking the open forever.
+pub(super) fn open_regular(path: &Path) -> io::Result<File> {
+    open_checked(path, fs::OpenOptions::new())
+}
+
+fn open_checked(path: &Path, mut options: fs::OpenOptions) -> io::Result<File> {
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    Ok(file)
 }
 
 /// What a plugin run holds until its process has ended: the hashed files,

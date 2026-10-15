@@ -37,6 +37,9 @@ sys-locale = "0.3"
 tempfile = "3.23.0"
 wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56.0"
 

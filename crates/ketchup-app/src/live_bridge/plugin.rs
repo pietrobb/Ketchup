@@ -63,6 +63,23 @@ pub(super) struct PluginJob {
     receiver: mpsc::Receiver<Result<PluginRunResult, PluginHostError>>,
 }
 
+/// What preparing a run ends with: the launch, or the refusal with its cause.
+type Prepared = Result<PluginLaunch, (&'static str, Option<Value>)>;
+
+/// A plugin folder or command line being read, staged and hashed off the UI
+/// thread; the user is asked once it is ready.
+pub(super) struct PluginPrepareJob {
+    answer: PluginAnswer,
+    request: RunPluginRequest,
+    receiver: mpsc::Receiver<Prepared>,
+}
+
+/// Holds the `launch` of the named plugin folder until the test sends or
+/// drops its sender.
+#[cfg(test)]
+pub(super) static LAUNCH_GATE: std::sync::Mutex<Option<(String, mpsc::Receiver<()>)>> =
+    std::sync::Mutex::new(None);
+
 /// Where a plugin run answers: the request id, its reply channel and whether
 /// the caller has gone.
 pub(super) struct PluginAnswer {
@@ -90,6 +107,14 @@ fn invalid_params(reason: &str) -> &'static str {
 
 /// Reads the plugin folder or the command line; nothing starts yet.
 fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'static str> {
+    #[cfg(test)]
+    if let Some((_, gate)) = LAUNCH_GATE
+        .lock()
+        .ok()
+        .and_then(|mut gate| gate.take_if(|(plugin, _)| request.plugin.as_ref() == Some(plugin)))
+    {
+        let _ = gate.recv_timeout(Duration::from_secs(5));
+    }
     match (&request.plugin, &request.executable) {
         (Some(plugin), None) => {
             if !request.arguments.is_empty()
@@ -193,7 +218,7 @@ impl LiveBridge {
         app: &KetchupApp,
         request: &RunPluginRequest,
         ui_busy: bool,
-    ) -> Result<PluginLaunch, &'static str> {
+    ) -> Result<(), &'static str> {
         if self.program_check_job.is_some() {
             return Err(failure(
                 "busy",
@@ -206,10 +231,11 @@ impl LiveBridge {
         }
         Self::mandatory_validation_selection(&request.validators)?;
         Self::guard(app, &request.expected)?;
-        Self::available(app, ui_busy)?;
-        launch(request)
+        Self::available(app, ui_busy)
     }
 
+    /// Checks the request, then reads, stages and hashes the plugin on a
+    /// worker thread: a large or slow folder never blocks the window.
     pub(super) fn start_plugin(
         &mut self,
         app: &mut KetchupApp,
@@ -218,27 +244,90 @@ impl LiveBridge {
         request: RunPluginRequest,
         ui_busy: bool,
     ) {
+        take_error_details();
+        if let Err(error) = Self::require_request_authority(&answer.cancelled)
+            .and_then(|()| self.prepare_plugin(app, &request, ui_busy))
+        {
+            Self::reply(app, answer.id, &answer.reply, Err(error));
+            return;
+        }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let repaint = context.clone();
+        let worker_request = request.clone();
+        let spawn = std::thread::Builder::new()
+            .name("ketchup-plugin-read".into())
+            .spawn(move || {
+                take_error_details();
+                let prepared = launch(&worker_request).map_err(|code| (code, take_error_details()));
+                let _ = sender.try_send(prepared);
+                repaint.request_repaint();
+            });
+        if let Err(error) = spawn {
+            let error = failed_because("job_worker_unavailable", error);
+            Self::reply(app, answer.id, &answer.reply, Err(error));
+            return;
+        }
+        self.program_check_job = Some(program_check::ProgramCheckJob::PluginPreparing(
+            PluginPrepareJob {
+                answer,
+                request,
+                receiver,
+            },
+        ));
+        context.request_repaint_after(Duration::from_millis(10));
+    }
+
+    pub(super) fn poll_plugin_preparing(
+        &mut self,
+        app: &mut KetchupApp,
+        context: &egui::Context,
+        job: PluginPrepareJob,
+    ) {
+        take_error_details();
+        let launch = if let Err(error) = Self::require_request_authority(&job.answer.cancelled) {
+            Err(error)
+        } else {
+            match job.receiver.try_recv() {
+                Ok(Ok(launch)) => Self::guard(app, &job.request.expected).map(|()| launch),
+                Ok(Err((code, details))) => {
+                    restore_error_details(details);
+                    Err(code)
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.program_check_job =
+                        Some(program_check::ProgramCheckJob::PluginPreparing(job));
+                    context.request_repaint_after(Duration::from_millis(10));
+                    return;
+                }
+                Err(error) => Err(failed_because("job_worker_unavailable", error)),
+            }
+        };
+        match launch {
+            Ok(launch) => self.run_prepared_plugin(app, context, job.answer, job.request, launch),
+            Err(error) => Self::reply(app, job.answer.id, &job.answer.reply, Err(error)),
+        }
+    }
+
+    /// The user decides only on a run that could otherwise start.
+    fn run_prepared_plugin(
+        &mut self,
+        app: &mut KetchupApp,
+        context: &egui::Context,
+        answer: PluginAnswer,
+        request: RunPluginRequest,
+        launch: PluginLaunch,
+    ) {
         let PluginAnswer {
             id,
             reply,
             cancelled,
         } = answer;
-        take_error_details();
-        // The user decides only on a run that could otherwise start.
         let PluginLaunch {
             command,
             grant,
             consent,
             held,
-        } = match Self::require_request_authority(&cancelled)
-            .and_then(|()| self.prepare_plugin(app, &request, ui_busy))
-        {
-            Ok(launch) => launch,
-            Err(error) => {
-                Self::reply(app, id, &reply, Err(error));
-                return;
-            }
-        };
+        } = launch;
         if let Err(error) = app
             .consent_to_plugin(consent)
             .and_then(|()| Self::require_request_authority(&cancelled))

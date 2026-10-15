@@ -7,9 +7,9 @@
 //! is what the user allowed.
 use super::drawings::local_absolute_path;
 use super::plugin_consent::{ConsentFolder, PluginConsent, started_executable};
-use super::plugin_files::HeldFiles;
+use super::plugin_files::{HeldFiles, open_regular};
 use super::*;
-use ketchup_model::graph::{sha256_hex, sha256_reader_hex};
+use ketchup_model::graph::sha256_hex;
 use ketchup_scheduler::plugin::PluginCommand;
 use std::ffi::OsString;
 use std::fs;
@@ -135,6 +135,12 @@ fn walk(folder: &Path) -> Result<Vec<PathBuf>, &'static str> {
                 pending.push(relative);
                 continue;
             }
+            if !metadata.is_file() {
+                return Err(invalid(format!(
+                    "{} is not a regular file; a plugin folder holds files and folders only",
+                    slashed(&relative)
+                )));
+            }
             bytes = bytes.saturating_add(metadata.len());
             if files.len() >= MAX_FOLDER_FILES || bytes > MAX_FOLDER_BYTES {
                 return Err(invalid(format!(
@@ -148,35 +154,46 @@ fn walk(folder: &Path) -> Result<Vec<PathBuf>, &'static str> {
     Ok(files)
 }
 
-/// Every file under `folder` with its SHA-256, by `/`-separated relative
-/// path; with `held`, each read through a handle held until the run ends.
+/// Every file under `folder` by `/`-separated relative path; for a run (with
+/// `held`) with its SHA-256, read through a handle held until the run ends. A
+/// listing names the files without reading them.
 fn folder_files(
     folder: &Path,
     mut held: Option<&mut HeldFiles>,
 ) -> Result<Vec<(String, String)>, &'static str> {
     let mut files = Vec::new();
     for relative in walk(folder)? {
-        let path = folder.join(&relative);
         let sha256 = match held.as_deref_mut() {
-            Some(held) => held.hash(&path),
-            None => fs::File::open(&path).and_then(sha256_reader_hex),
-        }
-        .map_err(unreadable)?;
+            Some(held) => held.hash(&folder.join(&relative)).map_err(unreadable)?,
+            None => String::new(),
+        };
         files.push((slashed(&relative), sha256));
     }
     files.sort();
     Ok(files)
 }
 
-/// Copies every file under `folder` into the stage of `held`.
+/// Copies every file under `folder` into the stage of `held`, each read
+/// through a handle checked to be a regular file, and no more bytes in all
+/// than a plugin folder may hold, however the files grew after the walk.
 fn stage_folder(folder: &Path, held: &HeldFiles) -> Result<(), &'static str> {
     let stage = held.stage().expect("a staged run has a stage");
+    let mut remaining = MAX_FOLDER_BYTES;
     for relative in walk(folder)? {
         let target = stage.join(&relative);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(unreadable)?;
         }
-        fs::copy(folder.join(&relative), target).map_err(unreadable)?;
+        let source = open_regular(&folder.join(&relative)).map_err(unreadable)?;
+        let mut copy = fs::File::create_new(target).map_err(unreadable)?;
+        let copied = std::io::copy(&mut std::io::Read::take(source, remaining + 1), &mut copy)
+            .map_err(unreadable)?;
+        remaining = remaining.checked_sub(copied).ok_or_else(|| {
+            invalid(format!(
+                "the plugin folder holds more than {} MiB",
+                MAX_FOLDER_BYTES / (1024 * 1024)
+            ))
+        })?;
     }
     Ok(())
 }
@@ -188,7 +205,7 @@ fn read_manifest(
     let path = folder.join(MANIFEST);
     let bytes = match held {
         Some(held) => held.read(&path, MAX_MANIFEST_BYTES),
-        None => fs::File::open(&path).and_then(|file| {
+        None => open_regular(&path).and_then(|file| {
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(
                 &mut std::io::Read::take(file, MAX_MANIFEST_BYTES + 1),
@@ -197,7 +214,12 @@ fn read_manifest(
             .map(|_| bytes)
         }),
     }
-    .map_err(unreadable)?;
+    .map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => invalid(format!(
+            "the folder has no {MANIFEST}; it is no plugin folder"
+        )),
+        _ => unreadable(error),
+    })?;
     if !u64::try_from(bytes.len()).is_ok_and(|length| length <= MAX_MANIFEST_BYTES) {
         return Err(invalid(format!(
             "{MANIFEST} is larger than {MAX_MANIFEST_BYTES} bytes"
@@ -291,11 +313,13 @@ fn outside_files(
             ));
         }
         if candidate.is_file() {
+            // A listing does not read the file; a run hashes it.
             let sha256 = match held.as_deref_mut() {
-                Some(held) => held.hash(&candidate),
-                None => fs::File::open(&candidate).and_then(sha256_reader_hex),
-            }
-            .map_err(|error| failed_because("plugin_failed", error))?;
+                Some(held) => held
+                    .hash(&candidate)
+                    .map_err(|error| failed_because("plugin_failed", error))?,
+                None => String::new(),
+            };
             if let Some(given) = given.as_mut() {
                 *given = candidate.display().to_string();
             }
@@ -352,8 +376,8 @@ struct ReadFolder {
     held: Option<HeldFiles>,
 }
 
-/// Reads and hashes `plugin`; `staged` copies it into a stage first and
-/// hashes the copy, held until the run ends.
+/// Reads `plugin`; `staged` (a run) copies it into a stage first and hashes
+/// the copy, held until the run ends.
 fn read_folder(plugin: &str, staged: bool) -> Result<ReadFolder, &'static str> {
     let folder = plugin_folder(plugin)?;
     if fs::symlink_metadata(&folder)
@@ -365,6 +389,9 @@ fn read_folder(plugin: &str, staged: bool) -> Result<ReadFolder, &'static str> {
             "the plugin folder is a link; a plugin folder holds its own files only",
         ));
     }
+    // A folder without a valid manifest is no plugin: refused before any of
+    // its files is walked, copied or hashed.
+    let (manifest, _) = read_manifest(&folder, None)?;
     let mut held = if staged {
         let held = HeldFiles::staged().map_err(unreadable)?;
         stage_folder(&folder, &held)?;
@@ -378,11 +405,17 @@ fn read_folder(plugin: &str, staged: bool) -> Result<ReadFolder, &'static str> {
         .unwrap_or(&folder)
         .to_owned();
     let files = folder_files(&root, held.as_mut())?;
-    let (manifest, manifest_sha256) = read_manifest(&root, held.as_mut())?;
-    // The manifest read is the manifest hashed with the folder.
-    if !files.contains(&(MANIFEST.to_owned(), manifest_sha256)) {
-        return Err(invalid(format!("{MANIFEST} changed while it was read")));
-    }
+    let manifest = match held.as_mut() {
+        // A run uses the staged manifest, which is the one hashed with the folder.
+        Some(held) => {
+            let (manifest, manifest_sha256) = read_manifest(&root, Some(held))?;
+            if !files.contains(&(MANIFEST.to_owned(), manifest_sha256)) {
+                return Err(invalid(format!("{MANIFEST} changed while it was read")));
+            }
+            manifest
+        }
+        None => manifest,
+    };
     let (executable, arguments, outside) =
         outside_files(&folder, &manifest, &files, held.as_mut())?;
     Ok(ReadFolder {
@@ -409,8 +442,9 @@ pub(super) struct Description {
     pub inputs: Vec<DeclaredInput>,
 }
 
-/// Reads the plugin folder exactly as a run does, so a folder that could not
-/// run is refused here with the same code and reason.
+/// Reads the plugin folder as a run does, so a folder that could not run is
+/// refused here with the same code and reason; on the UI thread, so only its
+/// manifest is read and its other files are named, not read or hashed.
 pub(super) fn describe(folder: &Path) -> Result<Description, &'static str> {
     let read = read_folder(&folder.to_string_lossy(), false)?;
     Ok(Description {

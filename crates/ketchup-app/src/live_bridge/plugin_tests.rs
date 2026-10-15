@@ -713,6 +713,119 @@ fn a_windows_plugin_executable_is_the_exe_file_that_starts() {
     assert_eq!(probe.high_risk_prompts().len(), asked);
 }
 
+/// SEC-3 (review 2026-10-15): a folder without a manifest is refused before
+/// its files are walked, copied or hashed.
+#[test]
+fn a_folder_without_a_manifest_is_refused_before_its_files_are_read() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let folder = directory.path().join("not-a-plugin");
+    std::fs::create_dir(&folder).unwrap();
+    for index in 0..1_001 {
+        std::fs::write(folder.join(format!("{index}.txt")), "").unwrap();
+    }
+    let probe = ScriptedFileDialogs::new();
+    let mut wire = plugin_wire_answering(probe.clone());
+    let request = folder_request(&folder, json!({}));
+    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(30));
+    assert_eq!(response.error.as_deref(), Some("plugin_manifest_invalid"));
+    let result = response.result.unwrap();
+    assert_eq!(
+        result["reason"], "the folder has no plugin.json; it is no plugin folder",
+        "{result}"
+    );
+    assert!(probe.high_risk_prompts().is_empty());
+}
+
+/// SEC-3 (review 2026-10-15): the Plugins menu lists a folder from its
+/// manifest and file names on the UI thread; it reads none of the other files,
+/// so one held open exclusively by another program does not stop the listing.
+#[cfg(windows)]
+#[test]
+fn the_plugins_menu_lists_a_folder_without_reading_its_files() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let data = folder.join("data.bin");
+    std::fs::write(&data, "data").unwrap();
+    let exclusive = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&data)
+        .unwrap();
+    take_error_details();
+    let listed = crate::live_bridge::plugin_manifest::describe(&folder);
+    let details = take_error_details();
+    drop(exclusive);
+    assert_eq!(
+        listed.map(|description| description.name).ok(),
+        Some("Height".to_owned()),
+        "{details:?}"
+    );
+}
+
+/// SEC-3 (review 2026-10-15): the plugin folder is read, staged and hashed on
+/// a worker thread; the window keeps drawing frames meanwhile.
+#[test]
+fn a_plugin_folder_is_read_staged_and_hashed_off_the_ui_thread() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let probe = ScriptedFileDialogs::new();
+    let mut wire = plugin_wire_answering(probe.clone());
+    let (release, gate) = mpsc::channel::<()>();
+    *crate::live_bridge::plugin::LAUNCH_GATE.lock().unwrap() =
+        Some((folder.to_string_lossy().into_owned(), gate));
+    let original = height(&wire.app);
+    wire.send(
+        Request::RunPlugin(folder_request(&folder, json!({"height_mm": 35}))),
+        false,
+    );
+    let mut reader = wire.stream.try_clone().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader_thread = std::thread::spawn(move || {
+        let mut header = [0; 4];
+        reader.read_exact(&mut header).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
+            .unwrap();
+    });
+
+    // While the folder cannot be read every frame returns at once.
+    for _ in 0..50 {
+        let frame = Instant::now();
+        wire.app.poll_live_bridge(&wire.context);
+        assert!(
+            frame.elapsed() < Duration::from_secs(1),
+            "a frame waited for the folder"
+        );
+        assert!(rx.recv_timeout(Duration::from_millis(5)).is_err());
+    }
+    assert!(wire.app.live.bridge.as_ref().is_some_and(|bridge| matches!(
+        bridge.program_check_job,
+        Some(program_check::ProgramCheckJob::PluginPreparing(_))
+    )));
+
+    // Once read, the user is asked; refused, nothing ran.
+    drop(release);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let response = loop {
+        if let Ok(response) = rx.recv_timeout(Duration::from_millis(5)) {
+            break response;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no answer after the folder was read"
+        );
+        wire.app.poll_live_bridge(&wire.context);
+    };
+    reader_thread.join().unwrap();
+    assert_eq!(response.error.as_deref(), Some("plugin_consent_required"));
+    assert_eq!(probe.high_risk_prompts().len(), 1);
+    assert_eq!(height(&wire.app), original);
+}
+
 /// SEC-1: an argument that leaves the folder and comes back into it names the
 /// folder's file the consent hashed, and the process gets that file's staged
 /// copy, not a path that leads out of the stage it runs in.

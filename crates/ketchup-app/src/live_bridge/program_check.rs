@@ -62,6 +62,7 @@ pub(super) enum ProgramCheckJob {
     Validating(super::program_validate::ProgramValidationJob),
     Measuring(super::measurement::MeasurementJob),
     DryRun(super::program_dry_run::DryRunJob),
+    PluginPreparing(super::plugin::PluginPrepareJob),
     Plugin(super::plugin::PluginJob),
     VariantExport(super::program_variant_export::VariantExportJob),
     DwgImport(super::dwg_import::DwgImportJob),
@@ -396,6 +397,10 @@ impl LiveBridge {
             }
             ProgramCheckJob::DryRun(job) => {
                 self.poll_program_dry_run(app, context, job);
+                return;
+            }
+            ProgramCheckJob::PluginPreparing(job) => {
+                self.poll_plugin_preparing(app, context, job);
                 return;
             }
             ProgramCheckJob::Plugin(job) => {

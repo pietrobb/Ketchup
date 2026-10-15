@@ -203,7 +203,10 @@ impl LiveBridge {
                 match self.program_check_job {
                     Some(program_check::ProgramCheckJob::Validating(_)) => "program_validate",
                     Some(program_check::ProgramCheckJob::Measuring(_)) => "measure_faces",
-                    Some(program_check::ProgramCheckJob::Plugin(_)) => "run_plugin",
+                    Some(
+                        program_check::ProgramCheckJob::Plugin(_)
+                        | program_check::ProgramCheckJob::PluginPreparing(_),
+                    ) => "run_plugin",
                     Some(program_check::ProgramCheckJob::DwgImport(_)) => "import",
                     _ => "program_apply",
                 },

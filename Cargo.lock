@@ -2368,6 +2368,7 @@ dependencies = [
  "ketchup-test-gpu",
  "ketchup-view-format",
  "ketchup-viewer",
+ "libc",
  "pollster",
  "raw-window-handle",
  "rfd",

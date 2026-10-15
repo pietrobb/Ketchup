@@ -836,6 +836,12 @@ pub(crate) fn take_error_details() -> Option<Value> {
     ERROR_DETAILS.with(|slot| slot.borrow_mut().take())
 }
 
+/// Records on this thread the cause a worker thread took with
+/// `take_error_details`, for the error response the UI thread sends.
+fn restore_error_details(details: Option<Value>) {
+    ERROR_DETAILS.with(|slot| *slot.borrow_mut() = details);
+}
+
 const MAX_REPORTED_ISSUES: usize = 12;
 const MAX_REPORTED_RELATIONS: usize = 8;
 const MAX_REPORTED_PARTS: usize = 100;
