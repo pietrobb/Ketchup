@@ -22,6 +22,10 @@ pub(crate) struct SelectionMeasures {
     pub scaled_placement: Option<ScaledPlacement>,
 }
 
+/// Rows of the most mass lines: mass, centre and moments; or a partial or
+/// unknown mass, the first missing part and how many more are missing.
+const MASS_ROWS: usize = 3;
+
 fn turned(transform: Transform) -> bool {
     let matrix = transform.matrix();
     let identity = Transform::identity();
@@ -177,6 +181,13 @@ impl KetchupApp {
             return;
         };
         let mass = self.selection_mass(&measures);
+        // The volume and mass arrive with the exact solids while the user may
+        // be reaching for a button below: one row per line, the mass always
+        // in its three rows, so nothing under this section moves.
+        let mut mass_lines = self.selection_mass_lines(&mass);
+        if mass_lines.len() < MASS_ROWS {
+            mass_lines.resize(MASS_ROWS, String::new());
+        }
         egui::CollapsingHeader::new(self.catalog.text("selection-measures-title"))
             .id_salt("selection-measures")
             .default_open(true)
@@ -184,9 +195,9 @@ impl KetchupApp {
                 for line in self
                     .selection_measure_lines(&measures)
                     .into_iter()
-                    .chain(self.selection_mass_lines(&mass))
+                    .chain(mass_lines)
                 {
-                    ui.label(line);
+                    ui.add(egui::Label::new(line).truncate());
                 }
             });
         ui.separator();

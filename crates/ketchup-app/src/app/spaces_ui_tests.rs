@@ -19,6 +19,14 @@ fn apply(app: &mut KetchupApp, operations: Vec<AssistantCadEditOperation>) {
 
 /// A board, a bathroom and the required free volume in front of its door.
 fn harness() -> egui_kittest::Harness<'static, KetchupApp> {
+    let mut app = board_and_bathroom();
+    // The board's exact solid is there before the first frame, so these tests
+    // do not depend on when the worker publishes.
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    shell(app)
+}
+
+fn board_and_bathroom() -> KetchupApp {
     let mut app = KetchupApp::new();
     let source = ketchup_model::document::RuleProgramSource {
         variants: Default::default(),
@@ -49,9 +57,10 @@ fn harness() -> egui_kittest::Harness<'static, KetchupApp> {
             },
         ],
     );
-    // The board's exact solid is there before the first frame: arriving later
-    // it would add the mass rows above the buttons these tests click.
-    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    app
+}
+
+fn shell(app: KetchupApp) -> Shell {
     let mut harness = egui_kittest::Harness::builder()
         .with_size(Vec2::new(1600.0, 1200.0))
         .with_step_dt(1.0 / 60.0)
@@ -227,6 +236,36 @@ fn the_selected_part_gives_a_space_and_a_clearance_in_front() {
         harness.state().document.current().canonical_digest(),
         digest
     );
+}
+
+/// The board's volume and mass arriving with its exact solid leave "Space
+/// from selection" where the user is about to click it.
+#[test]
+fn the_space_button_stays_put_when_the_mass_arrives() {
+    let mut app = board_and_bathroom();
+    // No worker of its own: the exact solid arrives when this test says.
+    app.exact.worker_attempted = true;
+    let mut harness = shell(app);
+    harness.state_mut().select_all();
+    harness.run_steps(2);
+    let label = harness.state().catalog.text("spaces-create-from-selection");
+    let button = |harness: &Shell| harness.get_by_role_and_label(Role::Button, &label).rect();
+    let measures = harness.state().selection_measures().unwrap();
+    assert_eq!(
+        harness.state().selection_mass(&measures),
+        crate::selection_mass_ui::SelectionMass::Pending
+    );
+    let before = button(&harness);
+
+    crate::drawn_shape::tests::evaluate_exact(harness.state_mut());
+    harness.run_steps(2);
+    let measures = harness.state().selection_measures().unwrap();
+    assert!(measures.volume_mm3.is_some());
+    assert!(matches!(
+        harness.state().selection_mass(&measures),
+        crate::selection_mass_ui::SelectionMass::Ready(_)
+    ));
+    assert_eq!(button(&harness), before);
 }
 
 fn clearance_findings(harness: &mut Shell) -> Vec<ValidatorPanelFinding> {
