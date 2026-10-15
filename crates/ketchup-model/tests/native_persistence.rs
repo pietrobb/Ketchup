@@ -1907,6 +1907,54 @@ fn interrupted_or_corrupt_primary_recovers_the_last_verified_container() {
     assert!(recovered.audit().recovered_from_backup);
 }
 
+/// A file a newer Kečup wrote is not damaged: opening it says so and never
+/// falls back to its older `.recovery`, whose next Save would overwrite the
+/// newer work.
+#[test]
+fn a_primary_from_a_newer_format_is_refused_and_never_replaced_by_its_recovery() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = persistence::ContainerData::default();
+    let mut store = graph_document();
+    for (name, schema_offset) in [("container.ketchup", true), ("snapshot.ketchup", false)] {
+        let path = directory.path().join(name);
+        let save = |store: &DocumentStore| {
+            if schema_offset {
+                persistence::save_atomic_document_store_with_container(&path, store, &data)
+                    .unwrap();
+            } else {
+                persistence::save_atomic(&path, &store.current()).unwrap();
+            }
+        };
+        save(&store);
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new("9", 9.0).unwrap(),
+                },
+            ]))
+            .unwrap();
+        save(&store);
+        assert!(path.with_extension("ketchup.recovery").is_file());
+
+        let mut newer = std::fs::read(&path).unwrap();
+        newer[10..12].copy_from_slice(&u16::MAX.to_le_bytes());
+        std::fs::write(&path, newer).unwrap();
+        let Err(persistence::FilePersistenceError::Format(error)) = persistence::load_file(&path)
+        else {
+            panic!("{name}: a newer file must not open from its recovery");
+        };
+        assert!(
+            matches!(
+                error,
+                PersistenceError::UnsupportedContainerSchema(u16::MAX)
+                    | PersistenceError::UnsupportedSchema(u16::MAX)
+            ),
+            "{name}: {error}"
+        );
+    }
+}
+
 #[test]
 fn conditional_save_rejects_external_replacement_without_touching_primary_or_recovery() {
     let directory = tempfile::tempdir().unwrap();

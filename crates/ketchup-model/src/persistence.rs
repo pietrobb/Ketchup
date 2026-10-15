@@ -1556,9 +1556,15 @@ pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FileP
                     }),
                 }
             }
-            Err(primary_error @ PersistenceError::LegacyFeatureRequiresMigration { .. }) => {
-                Err(FilePersistenceError::Format(primary_error))
-            }
+            // A file that needs migration or that a newer Kečup wrote is not
+            // damaged; its older recovery would overwrite the newer work on Save.
+            Err(
+                primary_error @ (PersistenceError::LegacyFeatureRequiresMigration { .. }
+                | PersistenceError::UnsupportedSchema(_)
+                | PersistenceError::UnsupportedContainerSchema(_)
+                | PersistenceError::UnsupportedContainerEntry(_)
+                | PersistenceError::UnknownFields(_)),
+            ) => Err(FilePersistenceError::Format(primary_error)),
             Err(primary_error) => {
                 try_load_recovery(path)?.ok_or(FilePersistenceError::Format(primary_error))
             }
