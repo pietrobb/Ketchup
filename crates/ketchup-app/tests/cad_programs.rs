@@ -386,6 +386,10 @@ fn create_part_program_round_trips_state_view_and_one_step_undo_redo() {
     };
     let program_request = program.clone();
     let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
     let baseline_revision = shell.app().document_revision();
     let baseline_digest = shell.app().canonical_digest();
     let baseline_undo = shell.app().undo_step_count();
@@ -393,6 +397,26 @@ fn create_part_program_round_trips_state_view_and_one_step_undo_redo() {
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
     apply_program(&mut shell, request, &program_request);
+    // The exact result of the new part registers its face evidence in this
+    // revision; the state compared after Redo is the one that includes it.
+    let new_part = shell
+        .app()
+        .document_snapshot()
+        .definitions()
+        .find(|definition| definition.name() == "Editable prism")
+        .unwrap()
+        .id();
+    assert!(
+        shell.wait_until(|shell| {
+            shell.step();
+            shell
+                .app()
+                .document_snapshot()
+                .exact_reference_evidence()
+                .any(|evidence| evidence.definition_id == new_part)
+        }),
+        "the exact result of the new part was never published"
+    );
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();

@@ -517,6 +517,9 @@ mod tests {
     #[test]
     fn an_alt_choice_ends_when_the_pointer_moves_after_alt_is_released() {
         let mut app = KetchupApp::new();
+        // Box faces throughout: an exact body arriving mid-test would rename
+        // the hovered face, which this test of Alt cycling does not cover.
+        app.exact.worker_attempted = true;
         app.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
         let context = egui::Context::default();
         let input = || egui::RawInput {
