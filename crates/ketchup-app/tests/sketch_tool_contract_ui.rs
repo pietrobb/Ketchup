@@ -1,9 +1,9 @@
 //! The shared tool contract applied to every Sketch tool, drawn on the ground
-//! beside the default box by click-move-click.
+//! beside the default box by click-move-click and by press-drag-release.
 
 use crate::harness::Shell;
 use crate::harness::contract::{ToolGesture, assert_tool_contract};
-use eframe::egui::Pos2;
+use eframe::egui::{Modifiers, Pos2};
 use ketchup_app::AppCommand;
 use ketchup_interaction::Vec3;
 
@@ -113,4 +113,94 @@ fn spline_click_move_click_keeps_the_tool_contract() {
             [10.0, -40.0],
         ],
     );
+}
+
+/// The first point is pressed and dragged to the second, held through the
+/// preview, and released to commit, or to place the second point of a shape
+/// that needs more; the remaining points are clicked.
+fn assert_sketch_drag_contract(name: &str, tool: AppCommand, points: &[[f64; 2]]) {
+    let [first, second] = [points[0], points[1]];
+    let rest = &points[2..];
+    let press_and_drag = |shell: &mut Shell| {
+        let from = at(shell, first[0], first[1]);
+        shell.move_pointer(from);
+        shell.set_primary_button(from, Modifiers::NONE, true);
+        hover(shell, second[0], second[1]);
+    };
+    let release = |shell: &mut Shell| {
+        let to = at(shell, second[0], second[1]);
+        shell.set_primary_button(to, Modifiers::NONE, false);
+    };
+    assert_tool_contract(
+        &sketch_shell,
+        &ToolGesture {
+            name,
+            arm: &|shell| shell.click_command(tool),
+            preview: &|shell| {
+                press_and_drag(shell);
+                if let Some(([x, y], placed)) = rest.split_last() {
+                    release(shell);
+                    for [x, y] in placed {
+                        click(shell, *x, *y);
+                    }
+                    hover(shell, *x, *y);
+                }
+            },
+            commit: &|shell| match rest.last() {
+                Some([x, y]) => click(shell, *x, *y),
+                None => release(shell),
+            },
+        },
+        AppCommand::Select,
+        &another_client_adds_a_box,
+    );
+}
+
+#[test]
+fn every_sketch_tool_keeps_the_tool_contract_when_dragged() {
+    for (name, tool, points) in [
+        (
+            "Line drag",
+            AppCommand::Line,
+            &[[10.0, -40.0], [60.0, -40.0]][..],
+        ),
+        (
+            "Rectangle drag",
+            AppCommand::Rectangle,
+            &[[10.0, -60.0], [60.0, -30.0]],
+        ),
+        (
+            "Circle drag",
+            AppCommand::Circle,
+            &[[35.0, -45.0], [50.0, -45.0]],
+        ),
+        (
+            "Polygon drag",
+            AppCommand::Polygon,
+            &[[35.0, -45.0], [50.0, -45.0]],
+        ),
+        (
+            "Arc drag",
+            AppCommand::Arc,
+            &[[10.0, -40.0], [60.0, -40.0], [35.0, -55.0]],
+        ),
+        (
+            "Ellipse drag",
+            AppCommand::Ellipse,
+            &[[35.0, -45.0], [55.0, -45.0], [35.0, -35.0]],
+        ),
+        (
+            "Spline drag",
+            AppCommand::Spline,
+            &[
+                [10.0, -40.0],
+                [50.0, -40.0],
+                [50.0, -60.0],
+                [10.0, -60.0],
+                [10.0, -40.0],
+            ],
+        ),
+    ] {
+        assert_sketch_drag_contract(name, tool, points);
+    }
 }
