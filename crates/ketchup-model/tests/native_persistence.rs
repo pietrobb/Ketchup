@@ -786,6 +786,49 @@ fn schema_three_checks_checksum_before_payload_decode_and_rejects_envelopes() {
     );
 }
 
+/// PS-4: a newer Kečup writing a field this version does not know under the same format
+/// number must not have it dropped on open and lost at the next Save.
+#[test]
+fn a_field_this_version_does_not_know_is_refused_not_dropped() {
+    let mut store = DocumentStore::new();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Shelf".into(),
+            },
+        ]))
+        .unwrap();
+    let bytes = persistence::save(&store.current());
+    let text = |text: &str| ciborium::Value::Text(text.to_owned());
+    let newer = ketchup_model::testing::rewrite_saved_snapshot(&bytes, |saved| {
+        let product = ketchup_model::testing::cbor_entry(saved, "product");
+        let definition = ketchup_model::testing::cbor_entry(
+            ketchup_model::testing::cbor_entry(product, "definitions"),
+            1,
+        );
+        definition
+            .as_map_mut()
+            .unwrap()
+            .push((text("grain"), ciborium::Value::Integer(90.into())));
+        product
+            .as_map_mut()
+            .unwrap()
+            .push((text("finish"), text("oiled")));
+    });
+    assert_eq!(
+        load_error(&newer),
+        PersistenceError::UnknownFields(vec![
+            "product.definitions.1.grain".to_owned(),
+            "product.finish".to_owned(),
+        ])
+    );
+    let LoadOutcome::Editable { document, .. } = persistence::load(&bytes).unwrap() else {
+        panic!("the file as written is editable")
+    };
+    assert_eq!(persistence::save(&document.current()), bytes);
+}
+
 #[test]
 fn exact_override_declarations_round_trip_and_lossless_load_is_editable() {
     let store = graph_document();

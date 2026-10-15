@@ -6,12 +6,15 @@
 //! Schema policy: the saved serde form of [`ProductModel`] is the format. A history
 //! revision must encode back to the same CBOR, so any change to that form needs a new
 //! [`SNAPSHOT_FORMAT`], its conversion in [`decode`] and a golden file of the previous
-//! format: a renamed, moved or reinterpreted field, a changed default, and a new field
-//! that is written when it has its default. The one change without a new number is a
-//! new field with both `#[serde(default)]` and a `skip_serializing_if` for that default,
-//! because files without it encode back unchanged. `tests/format_golden.rs` fails on
-//! any other change. The encoder writes the serde form directly, so every map in it
-//! must state its length: `#[serde(flatten)]` would write an indefinite-length map.
+//! format: a renamed, moved or reinterpreted field, a changed default, and any new
+//! field, also one with `#[serde(default)]` and a `skip_serializing_if` for that
+//! default. Format 103 shipped in Kečup 0.1.0, which ignores fields it does not know,
+//! so a new field under 103 would be dropped by 0.1.0 and lost at its next Save (PS-4).
+//! The optional fields of format 103 are listed in `tests/format_golden.rs`, which also
+//! fails on any other change. The reader refuses a current-format snapshot with fields
+//! it does not know (`PersistenceError::UnknownFields`). The encoder writes the serde
+//! form directly, so every map in it must state its length: `#[serde(flatten)]` would
+//! write an indefinite-length map.
 
 use super::sheet_metal_v1::{SheetMetalV1, bend_path, flange_path};
 use super::{MAGIC, PersistenceError};
@@ -92,6 +95,7 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
     if format == SNAPSHOT_FORMAT {
         let decoded: DecodedSnapshot =
             ciborium::from_reader(payload).map_err(|error| invalid(&error))?;
+        refuse_unknown_fields(payload, &decoded)?;
         return Ok(Decoded {
             revision_id: decoded.revision_id,
             product: decoded.product,
@@ -134,6 +138,91 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
         writer_digest: Some(crate::document::digest_product(&writer_form)),
         product: decoded.product,
     })
+}
+
+/// Refuses a snapshot of the current format that holds fields this version does not
+/// know. Serde skips them, so the document would open without them and the next Save
+/// would drop them: a newer version wrote them, or the format policy was broken. A
+/// document this version wrote encodes back to the same bytes, so only a difference is
+/// searched for the unknown fields.
+fn refuse_unknown_fields(
+    payload: &[u8],
+    decoded: &DecodedSnapshot,
+) -> Result<(), PersistenceError> {
+    let mut known = Vec::with_capacity(payload.len());
+    ciborium::into_writer(
+        &EncodedSnapshot {
+            revision_id: decoded.revision_id,
+            product: &decoded.product,
+        },
+        &mut known,
+    )
+    .expect("the product model serializes into memory");
+    if known == payload {
+        return Ok(());
+    }
+    let invalid =
+        |error: &dyn std::fmt::Display| PersistenceError::InvalidPayload(error.to_string());
+    let stored: ciborium::Value =
+        ciborium::from_reader(payload).map_err(|error| invalid(&error))?;
+    let known: ciborium::Value =
+        ciborium::from_reader(known.as_slice()).map_err(|error| invalid(&error))?;
+    let mut unknown = Vec::new();
+    unknown_fields(&stored, &known, &mut String::new(), &mut unknown);
+    if unknown.is_empty() {
+        Ok(())
+    } else {
+        Err(PersistenceError::UnknownFields(unknown))
+    }
+}
+
+/// Appends the path of every map entry of `stored` that `known` lacks.
+fn unknown_fields(
+    stored: &ciborium::Value,
+    known: &ciborium::Value,
+    path: &mut String,
+    unknown: &mut Vec<String>,
+) {
+    let mut descend =
+        |segment: String, stored: &ciborium::Value, known: Option<&ciborium::Value>| {
+            let length = path.len();
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(&segment);
+            match known {
+                Some(known) => unknown_fields(stored, known, path, unknown),
+                None => unknown.push(path.clone()),
+            }
+            path.truncate(length);
+        };
+    match (stored, known) {
+        (ciborium::Value::Map(stored), ciborium::Value::Map(known)) => {
+            for (key, value) in stored {
+                let segment = match key {
+                    ciborium::Value::Text(name) => name.clone(),
+                    ciborium::Value::Integer(number) => i128::from(*number).to_string(),
+                    other => format!("{other:?}"),
+                };
+                let counterpart = known
+                    .iter()
+                    .find(|(candidate, _)| candidate == key)
+                    .map(|(_, value)| value);
+                descend(segment, value, counterpart);
+            }
+        }
+        (ciborium::Value::Array(stored), ciborium::Value::Array(known))
+            if stored.len() == known.len() =>
+        {
+            for (index, (stored, known)) in stored.iter().zip(known).enumerate() {
+                descend(index.to_string(), stored, Some(known));
+            }
+        }
+        (ciborium::Value::Tag(_, stored), ciborium::Value::Tag(_, known)) => {
+            unknown_fields(stored, known, path, unknown);
+        }
+        _ => {}
+    }
 }
 
 /// Format 99 names the generic pin joint: the product's `dowel_joints` became

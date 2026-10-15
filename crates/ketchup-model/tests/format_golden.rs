@@ -187,3 +187,100 @@ fn with_current_history_format(mut bytes: Vec<u8>) -> Vec<u8> {
     rehash_container_entry(&mut bytes, checksum, offset, len);
     bytes
 }
+
+/// Every field of the model that is left out of the file while it has its default, as
+/// `file: field` under `src/`. Format 103 shipped in Kečup 0.1.0, which drops a field it
+/// does not know and loses it at its next Save, so a new optional field of the saved
+/// document needs a new format number like any other new field (PS-4).
+const OPTIONAL_FIELDS_103: &[&str] = &[
+    "document.rs: contact_joints",
+    "document.rs: floor_z_mm",
+    "document.rs: grounded_instances",
+    "document.rs: hole_threads",
+    "document.rs: modeled_threads",
+    "document.rs: saved_views",
+    "document.rs: shaft_threads",
+    "document.rs: tolerance",
+    "document/entities.rs: modeled",
+    "document/entities.rs: section",
+    "document/entities.rs: up",
+    "document/revision.rs: variants",
+    "exact_brep_graph.rs: chamfer_edge_sides",
+    "exact_brep_graph.rs: crest_bits",
+    "exact_brep_graph.rs: fillet_radius_stations",
+    "exact_brep_graph.rs: guide",
+    "exact_brep_graph.rs: guide",
+    "exact_brep_graph.rs: name",
+    "exact_brep_graph.rs: profile_edges",
+    "exact_brep_graph.rs: profile_faces",
+    "exact_brep_graph.rs: segment_entity_ids",
+    "exact_brep_graph.rs: tolerance",
+    "exact_brep_graph.rs: tolerance",
+    "exact_brep_graph.rs: tool_name",
+    "exact_brep_graph.rs: tool_name",
+    "exact_brep_graph.rs: trim_bits",
+    "exact_brep_graph.rs: up_bits",
+];
+
+#[test]
+fn no_optional_field_is_added_without_a_new_format_number() {
+    fn scan(directory: &std::path::Path, root: &std::path::Path, found: &mut Vec<String>) {
+        let mut entries = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                scan(&path, root, found);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let file = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let source = std::fs::read_to_string(&path).unwrap();
+            let lines = source.lines().collect::<Vec<_>>();
+            for (index, line) in lines.iter().enumerate() {
+                if !line.contains("skip_serializing_if") || line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let field = lines[index + 1..]
+                    .iter()
+                    .map(|line| line.trim_start())
+                    .filter(|line| !line.starts_with('#'))
+                    .find_map(field_name)
+                    .unwrap_or_else(|| panic!("no field after {file}:{}", index + 1));
+                found.push(format!("{file}: {field}"));
+            }
+        }
+    }
+    /// The name of the field `line` declares, as in `pub(crate) name: Type`.
+    fn field_name(line: &str) -> Option<&str> {
+        let line = line
+            .strip_prefix("pub(crate) ")
+            .or_else(|| line.strip_prefix("pub "))
+            .unwrap_or(line);
+        let line = line.strip_prefix("r#").unwrap_or(line);
+        let (name, _) = line.split_once(':')?;
+        let name = name.trim_end();
+        let identifier = name.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        });
+        (!name.is_empty() && identifier).then_some(name)
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    scan(&root, &root, &mut found);
+    found.sort();
+    assert_eq!(
+        found, OPTIONAL_FIELDS_103,
+        "the optional fields of the model changed. A field of the saved document left out \
+         at its default still needs a new format number, because Kečup 0.1.0 would drop it \
+         (see the snapshot_codec module comment); list a field outside the document here"
+    );
+}

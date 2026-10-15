@@ -141,14 +141,18 @@ mod tests {
         fields.push(("unknown".into(), true.into()));
         let mut payload = Vec::new();
         ciborium::into_writer(&value, &mut payload).unwrap();
-        for payload in [payload, [old[offset..].to_vec(), vec![0]].concat()] {
+        let unknown = PersistenceError::UnknownFields(vec!["unknown".to_owned()]).to_string();
+        for (payload, reason) in [
+            (payload, unknown.as_str()),
+            (
+                [old[offset..].to_vec(), vec![0]].concat(),
+                "revision history is invalid",
+            ),
+        ] {
             let mut changed = old[..MAGIC.len() + 2].to_vec();
             changed.extend_from_slice(&crate::graph::sha256_bytes(&payload));
             changed.extend_from_slice(&payload);
-            opens_without_history(
-                &with_history_snapshot(&document, &changed),
-                "revision history is invalid",
-            );
+            opens_without_history(&with_history_snapshot(&document, &changed), reason);
         }
         let mut corrupt = old;
         corrupt[offset] ^= 1;

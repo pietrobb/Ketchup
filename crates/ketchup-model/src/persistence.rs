@@ -2441,6 +2441,9 @@ pub enum PersistenceError {
     InvalidExactReference,
     ChecksumMismatch,
     InvalidPayload(String),
+    /// The document holds fields this version does not know (by path), which opening it
+    /// would drop and the next Save would lose.
+    UnknownFields(Vec<String>),
     InvalidRuleProgram(crate::document::RuleProgramError),
     ResourceLimit,
     /// A container entry, or the whole file, is larger than a document may be.
@@ -2517,6 +2520,12 @@ impl fmt::Display for PersistenceError {
             Self::InvalidPayload(reason) => {
                 write!(formatter, "document payload is invalid: {reason}")
             }
+            Self::UnknownFields(paths) => write!(
+                formatter,
+                "the document holds data this version of Kečup does not know ({}); it was \
+                 probably saved by a newer version, and opening it here would lose that data",
+                paths.join(", ")
+            ),
             Self::InvalidRuleProgram(error) => {
                 write!(formatter, "the document's program is invalid: {error}")
             }
