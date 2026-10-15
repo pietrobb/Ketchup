@@ -232,6 +232,16 @@ fn wait_for_one_exact_body(shell: &mut Shell) {
     wait_for_exact_bodies(shell, 1);
 }
 
+/// Points the window at a file that is no exact worker, so no exact body is
+/// published until the test connects the real worker: the test decides when
+/// the exact result arrives instead of the speed of the machine.
+fn hold_exact_bodies_back(shell: &mut Shell) {
+    shell
+        .app_mut()
+        .connect_exact_worker(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .unwrap();
+}
+
 fn replace_parameter_expression(shell: &mut Shell, expression: &str) {
     let input = shell.catalog().text("parameters-expression");
     let apply = shell.catalog().text("parameters-apply");
@@ -3482,7 +3492,13 @@ fn nested_group_component_context_is_visible_shared_and_selection_safe() {
     assert_eq!(shell.app().edit_context_depth(), 0);
     assert!(shell.has_visible_label(&outside));
 
-    shell.click_at(shell.top_face_centre(2));
+    // With the exact body shown a viewport click picks the part inside the
+    // group, so the group itself is selected in the outliner.
+    wait_for_one_exact_body(&mut shell);
+    shell.click_row(&shell.catalog().format(
+        "outliner-group",
+        &BTreeMap::from([("name", "Group 1".to_owned()), ("count", "2".to_owned())]),
+    ));
     assert!(shell.app().command_is_enabled(AppCommand::Ungroup));
     shell.click_menu_command("menu-model", AppCommand::Ungroup);
     shell.click_at(shell.top_face_centre(2));
@@ -4971,10 +4987,17 @@ fn tags_panel_visibility_toggle_is_localized_canonical_and_undoable() {
             "Hardware".to_owned(),
             true
         ));
+        hold_exact_bodies_back(&mut shell);
         shell.settle();
 
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-model", AppCommand::AssignTag);
+        // The exact body arrives while the dialog is open; it must stay open.
+        shell
+            .app_mut()
+            .connect_exact_worker(exact_worker_path())
+            .unwrap();
+        wait_for_one_exact_body(&mut shell);
         shell.click_role_and_label(Role::CheckBox, "Hardware");
         shell.click_role_and_label(
             Role::Button,
@@ -7211,6 +7234,9 @@ fn ground_occurrence_is_localized_state_bound_and_undoable() {
         assert_eq!(shell.app().canonical_digest(), initial_digest);
         assert_eq!(shell.app().undo_step_count(), initial_undo_steps);
 
+        // The face picked on the exact body the user sees; a box face picked
+        // earlier moves to it when the body arrives (TST-3).
+        wait_for_one_exact_body(&mut shell);
         shell.click_at(shell.top_face_centre(1));
         let selected_reference = shell
             .app()
@@ -10990,6 +11016,8 @@ fn viewport_snap_hysteresis_acquires_retains_and_releases_an_endpoint() {
 #[test]
 fn tab_pick_through_selects_the_rear_face_of_one_solid() {
     let mut shell = Shell::new();
+    // The faces of the box itself, before any exact body is shown.
+    hold_exact_bodies_back(&mut shell);
     let top_centre = shell
         .app()
         .viewport_position(Vec3::new(50.0, 30.0, 20.0))
@@ -11097,6 +11125,7 @@ fn shift_click_removing_the_primary_occurrence_promotes_the_remaining_exact_face
     shell.click_at(shell.viewport_rect().center());
     assert!(shell.app_mut().copy_selected(Vec3::new(180.0, 0.0, 0.0)));
     shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    wait_for_one_exact_body(&mut shell);
     shell.click_command(AppCommand::Select);
     shell.click_at(shell.top_face_centre(1));
     shell.click_at_with(shell.top_face_centre(2), shift());
@@ -11109,13 +11138,10 @@ fn shift_click_removing_the_primary_occurrence_promotes_the_remaining_exact_face
         .selected_reference()
         .expect("the remaining viewport selection must retain an exact primary face");
     assert_eq!(primary.instance_path, InstancePath::root(OccurrenceId(2)));
-    assert!(matches!(
-        primary.element,
-        ElementId::Face {
-            axis: Axis::Z,
-            side: Side::Maximum,
-        }
-    ));
+    assert!(matches!(primary.element, ElementId::TopologicalFace(_)));
+    // It is the exact top face a plain click on that part picks.
+    shell.click_at(shell.top_face_centre(2));
+    assert_eq!(shell.app().selected_reference(), Some(primary));
 }
 
 #[test]
@@ -11161,6 +11187,7 @@ fn tab_cycles_overlapping_occurrences_and_click_selects_the_visible_choice() {
     shell.click_at(centre);
     assert!(shell.app_mut().copy_selected(Vec3::new(100.0, 0.0, 0.0)));
     assert!(shell.app_mut().move_selected(Vec3::new(-100.0, 0.0, 0.0)));
+    wait_for_one_exact_body(&mut shell);
     shell.move_pointer(centre);
 
     assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 4)));
@@ -13776,6 +13803,7 @@ fn copies_sharing_a_definition_refuse_scale_until_made_unique() {
 #[test]
 fn solid_union_previews_and_ctrl_keeps_the_tool_in_one_undo_step() {
     let mut shell = Shell::new();
+    hold_exact_bodies_back(&mut shell);
     assert!(shell.app_mut().create_box());
     assert!(shell.app_mut().move_selected(Vec3::new(0.0, -35.0, 0.0)));
     shell.settle();
@@ -13793,6 +13821,13 @@ fn solid_union_previews_and_ctrl_keeps_the_tool_in_one_undo_step() {
         .unwrap();
     shell.click_at(target);
     shell.click_at_with(tool, ctrl());
+    assert!(shell.app().has_occurrence_operation_preview());
+    // The exact bodies arrive while the preview is open; it must stay.
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_exact_bodies(&mut shell, 2);
 
     assert!(shell.app().has_occurrence_operation_preview());
     assert_eq!(shell.app().document_revision(), before_revision);
@@ -13936,6 +13971,7 @@ fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_linea
     assert!(shell.app_mut().move_selected(Vec3::new(-100.0, 0.0, 0.0)));
     shell.settle();
     assert_eq!(shell.app().active_box_count(), 2);
+    wait_for_exact_bodies(&mut shell, 2);
 
     let before_revision = shell.app().document_revision();
     let before_undo = shell.app().undo_step_count();
@@ -14123,7 +14159,12 @@ fn d_profile_solid_union_preserves_review_lifecycle_exact_mesh_and_arc_lineage()
     shell.click_command(AppCommand::PushPull);
     shell.type_text("20");
     shell.press_key(Key::Enter);
-    assert_eq!(shell.app().active_box_count(), 2);
+    // On the profile's exact face Enter commits once its exact offset is evaluated.
+    let extruded = shell.wait_until(|shell| {
+        shell.step();
+        shell.app().active_box_count() == 2
+    });
+    assert!(extruded, "{}", shell.app().action_digest());
 
     let before_revision = shell.app().document_revision();
     let before_undo = shell.app().undo_step_count();

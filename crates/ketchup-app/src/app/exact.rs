@@ -287,6 +287,7 @@ impl KetchupApp {
 
     pub(crate) fn refresh_exact_products(&mut self, context: &egui::Context) {
         self.poll_face_offset_evaluation(context);
+        self.carry_box_face_selection_to_exact();
         let snapshot = self.document.current();
         let source = ketchup_application::evaluation::exact_source(&snapshot);
         if self
@@ -391,8 +392,16 @@ impl KetchupApp {
         self.exact.task = Some(task);
     }
 
+    /// From now on exact geometry is evaluated by `executable`: an evaluation
+    /// the first frames started with the discovered worker is cancelled, or it
+    /// would still publish a body, and the next frame evaluates again.
     #[cfg(feature = "testing")]
     pub fn headless_force_exact_worker_path(&mut self, executable: impl AsRef<Path>) {
+        if let Some(task) = self.exact.task.take() {
+            task.cancelled.store(true, Ordering::Release);
+            self.exact.source = None;
+            self.exact.retry_at = None;
+        }
         self.exact.worker_path = Some(executable.as_ref().to_owned());
         self.exact.worker_attempted = true;
     }

@@ -222,6 +222,34 @@ fn box_side_plane(item: &RenderBox, axis: Axis, side: Side) -> (Vec3, f64) {
 }
 
 impl KetchupApp {
+    /// How far `target`'s exact body reaches behind `face` against its normal;
+    /// `None` without that body. Pushing the face that far or further in
+    /// leaves no body behind it.
+    pub(super) fn exact_depth_behind(
+        &self,
+        target: &SelectionId,
+        face: &PlanarFace,
+    ) -> Option<f64> {
+        let snapshot = self.document.current();
+        let package = self
+            .exact
+            .topology_results
+            .get_render(&snapshot, target.definition_id)?;
+        let occurrence = snapshot
+            .scene_query()
+            .into_iter()
+            .find(|item| item.instance_path == target.instance_path)?;
+        package
+            .vertices()
+            .iter()
+            .map(|vertex| {
+                let p = vertex.position_mm;
+                let p = transform_model_point(occurrence.transform, Vec3::new(p[0], p[1], p[2]));
+                -dot(p - face.origin, face.normal)
+            })
+            .reduce(f64::max)
+    }
+
     pub(super) fn planar_source_box(&self, target: &SelectionId) -> Option<RenderBox> {
         self.selected_planar_face(target)?;
         let snapshot = self.document.current();
@@ -555,18 +583,44 @@ impl KetchupApp {
     /// its exact faces, so the selection moves to the one exact face lying on
     /// that side's plane: it keeps its fill and Push/Pull offsets the exact
     /// face. An ambiguous side (none or several faces there) stays as it was.
+    /// An open dialog, a live preview, a typed correction of the last Push/Pull
+    /// or another tool was planned from the selection as it is; changing it
+    /// under them would close the dialog, drop the preview or refuse the
+    /// correction, so the selection moves only once nothing depends on it.
+    /// Only a face clicked in the viewport moves; a part chosen in the outliner
+    /// or added with Shift stays a part. Called every frame; cheap unless such
+    /// a click is waiting.
     pub(crate) fn carry_box_face_selection_to_exact(&mut self) {
-        let Some(primary) = self.selection.primary.clone() else {
+        let Some(primary) = self.exact.clicked_box_face.clone() else {
             return;
         };
+        if self.selection.primary.as_ref() != Some(&primary) {
+            self.exact.clicked_box_face = None;
+            return;
+        }
         let ElementId::Face { axis, side } = primary.element else {
             return;
         };
         if !self.selection.topological.is_empty()
-            || self.tool_preview.get::<EphemeralBoxPreview>().is_some()
+            || self.modal.is_some()
+            || self.tool_preview.is_some()
+            || self.gesture.drag.is_some()
+            || !matches!(self.active_tool, ActiveTool::Select | ActiveTool::PushPull)
+            || self
+                .current_last_push_pull()
+                .is_some_and(|last| last.selection == primary)
         {
             return;
         }
+        let attempt = (
+            primary.clone(),
+            self.exact.results.contents_stamp(),
+            self.exact.topology_results.contents_stamp(),
+        );
+        if self.exact.carried_face_attempt.as_ref() == Some(&attempt) {
+            return;
+        }
+        self.exact.carried_face_attempt = Some(attempt);
         let Some(item) = self
             .active_boxes()
             .into_iter()
@@ -574,6 +628,11 @@ impl KetchupApp {
         else {
             return;
         };
+        // A drawn profile without an extrusion is pushed as that profile; its
+        // flat exact face is not the target.
+        if item.extrusion_feature_id.is_none() {
+            return;
+        }
         let (outward, plane) = box_side_plane(&item, axis, side);
         let Some((selection, topological)) = self.exact_face_on_plane(&primary, outward, plane)
         else {
@@ -588,6 +647,7 @@ impl KetchupApp {
             .topological
             .push((selection.clone(), topological));
         self.selection.primary = Some(selection);
+        self.exact.clicked_box_face = None;
     }
 
     /// The one planar face of `target`'s exact body whose outward normal is

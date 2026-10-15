@@ -667,11 +667,15 @@ impl KetchupApp {
             return applied;
         }
         if self.active_tool == ActiveTool::PushPull {
-            // An exact-face Push/Pull clears the selection; a value typed right
-            // after it still corrects that face.
-            if self.selection.primary.is_none()
-                && let Some(last) = self.current_last_push_pull().cloned()
-            {
+            // A value typed right after an exact-face Push/Pull corrects that
+            // face, whether the selection was cleared or still holds the pushed
+            // face (re-bound by Undo and Redo, so its recorded binding is used).
+            if let Some(last) = self.current_last_push_pull().cloned().filter(|last| {
+                self.selection
+                    .primary
+                    .as_ref()
+                    .is_none_or(|primary| *primary == last.selection)
+            }) {
                 self.selection.primary = Some(last.selection);
                 self.selection.topological = last.topological;
             }

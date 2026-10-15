@@ -485,6 +485,9 @@ fn undo_and_redo_cancel_push_pull_preview_without_navigating_nonempty_history() 
 #[test]
 fn press_drag_release_preserves_live_preview_and_commits_one_reviewed_step() {
     let mut shell = Shell::new();
+    wait_for(&mut shell, "exact body", |shell| {
+        shell.app().exact_render_body_count() > 0
+    });
     let top = shell.top_face_centre(1);
     let projected_up = shell
         .app()
@@ -509,12 +512,69 @@ fn press_drag_release_preserves_live_preview_and_commits_one_reviewed_step() {
         saw_preview,
         "the held drag must publish an observational preview"
     );
-    assert_eq!(shell.app().document_revision(), before.0 + 1);
+    assert_eq!(
+        shell.app().document_revision(),
+        before.0 + 1,
+        "{}",
+        shell.app().action_digest()
+    );
     assert_ne!(shell.app().canonical_digest(), before.1);
     assert_eq!(shell.app().undo_step_count(), before.2 + 1);
     assert_eq!(shell.app().redo_step_count(), before.3);
     assert!(shell.app().document_height_mm() > 20.0);
     assert!(!shell.app().push_pull_click_anchor_active());
+}
+
+/// The box's exact body arriving while the user still holds a Push/Pull drag
+/// on its face must not drop the drag: the release commits it. The test, not
+/// the machine's speed, decides when the body arrives.
+#[test]
+fn a_push_pull_drag_held_while_the_exact_body_arrives_commits_on_release() {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .unwrap();
+    shell.settle();
+    assert_eq!(shell.app().exact_render_body_count(), 0);
+    let top = shell.top_face_centre(1);
+    let projected_up = shell
+        .app()
+        .viewport_position(Vec3::new(50.0, 30.0, 21.0))
+        .unwrap();
+    let drag_direction = (projected_up - top).normalized();
+    shell.move_pointer(top);
+    shell.press_key(Key::P);
+    let before = (
+        shell.app().document_revision(),
+        shell.app().undo_step_count(),
+    );
+
+    shell.set_primary_button(top, Modifiers::NONE, true);
+    shell.move_pointer(top + drag_direction * 60.0);
+    assert!(shell.app().preview_action_digest().is_some());
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for(&mut shell, "exact body", |shell| {
+        shell.app().exact_render_body_count() > 0
+    });
+    let release = top + drag_direction * 120.0;
+    shell.move_pointer(release);
+    shell.set_primary_button(release, Modifiers::NONE, false);
+    shell.step();
+
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().undo_step_count()
+        ),
+        (before.0 + 1, before.1 + 1),
+        "{}",
+        shell.app().action_digest()
+    );
+    assert!(shell.app().document_height_mm() > 20.0);
 }
 
 #[test]
@@ -525,6 +585,11 @@ fn push_pull_cycles_to_a_hidden_parallel_face_on_another_object() {
     shell.settle();
     shell.click_menu_command("menu-model", AppCommand::MakeUnique);
     shell.click_command(AppCommand::ZoomFit);
+    // Both bodies exact: the snapped distance comes from transformed exact
+    // faces and must still read as the plain 40 and 20.
+    wait_for(&mut shell, "exact bodies", |shell| {
+        shell.app().exact_render_body_count() == 2
+    });
 
     let source_top = shell.top_face_centre(1);
     let target_top = shell.top_face_centre(2);

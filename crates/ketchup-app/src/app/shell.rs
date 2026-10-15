@@ -231,6 +231,8 @@ impl KetchupApp {
                 retry_at: None,
                 status_counts: std::cell::Cell::new(None),
                 topology_by_definition: std::cell::RefCell::new(None),
+                clicked_box_face: None,
+                carried_face_attempt: None,
             },
             render: app_state::RenderState {
                 cache: DerivedRenderCache::default(),

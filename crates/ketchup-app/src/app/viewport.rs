@@ -533,6 +533,8 @@ impl KetchupApp {
         }
         self.end_transform_correction();
         let snapshot = self.document.current();
+        self.exact.clicked_box_face =
+            (!additive && matches!(target.element, ElementId::Face { .. })).then(|| target.clone());
         self.selection.select_exact(target.clone(), additive);
         if let Some(item) = snapshot
             .scene_query()
@@ -3860,9 +3862,17 @@ impl KetchupApp {
                 })
             }));
             if let Some(proxy_pick) = proxy_pick {
-                overlapping.extend(proxy_pick.overlapping.into_iter().filter(|candidate| {
-                    candidate.reference.instance_path != primary.reference.instance_path
-                }));
+                // A proxy only stands in for a part without exact hits; a part
+                // the ray already crossed exactly must not be offered twice.
+                let exact_paths = overlapping
+                    .iter()
+                    .map(|hit| hit.reference.instance_path.clone())
+                    .collect::<BTreeSet<_>>();
+                overlapping.extend(
+                    proxy_pick.overlapping.into_iter().filter(|candidate| {
+                        !exact_paths.contains(&candidate.reference.instance_path)
+                    }),
+                );
             }
             if let Some(mesh) = mesh_hit.as_ref().filter(|mesh| {
                 mesh.instance_path != primary.reference.instance_path

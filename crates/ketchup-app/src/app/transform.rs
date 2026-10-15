@@ -1543,8 +1543,14 @@ impl KetchupApp {
         if let Some(face) = self.selected_planar_face(&drag.selection) {
             let distance = dot(target.position_mm - face.origin, face.normal);
             // A face in the start plane (the one a profile was drawn on, say)
-            // would push by nothing.
-            return (distance.is_finite() && distance.abs() >= 0.01).then_some(distance);
+            // would push by nothing. As for a box face, a snap onto or past
+            // the far side of the face's own body (its back edge seen behind
+            // the pointer, say) would leave no body, so the pointer decides.
+            let depth = self.exact_depth_behind(&drag.selection, &face);
+            return (distance.is_finite()
+                && distance.abs() >= 0.01
+                && depth.is_none_or(|depth| distance > -depth + 0.01))
+            .then_some(distance);
         }
         let ElementId::Face {
             axis: source_axis,
@@ -1605,7 +1611,13 @@ impl KetchupApp {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
         }
-        let snapped = self.push_pull_snap_distance(drag);
+        // The value box shows the snapped distance, not the f64 rounding the
+        // transforms of an exact face leave in it (40.00000000000006 for 40);
+        // a target given to 1e-9 mm (13.123456789) is met exactly.
+        let snapped = self.push_pull_snap_distance(drag).map(|value| {
+            (value / ketchup_model::tolerance::ROUNDING).round()
+                * ketchup_model::tolerance::ROUNDING
+        });
         let distance = snapped.unwrap_or_else(|| {
             push_pull_distance_from_pointer(drag, pointer, self.face_workflow.snaps_enabled())
         });

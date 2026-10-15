@@ -591,7 +591,15 @@ mod tests {
             let mut raw = input();
             raw.events.push(egui::Event::PointerMoved(pointer + offset));
             let output = context.run(raw, |context| app.ui(context));
-            assert_eq!(app.selection.primary.as_ref(), Some(&selected));
+            // The box face clicked before its exact body arrived moves to the
+            // exact face on that side once it does (TST-3); it stays selected.
+            let primary = app.selection.primary.clone().expect("selection stays");
+            assert!(
+                primary == selected
+                    || (primary.instance_path == selected.instance_path
+                        && matches!(primary.element, ElementId::TopologicalFace(_))),
+                "{primary:?} replaced {selected:?}"
+            );
             let fills = |fill| output_has_fill(&output.shapes, &[], |color| color == fill);
             assert!(
                 fills(SELECTED_FILL),
