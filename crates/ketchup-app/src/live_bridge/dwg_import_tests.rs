@@ -243,7 +243,7 @@ fn a_cancelled_dwg_import_changes_nothing() {
         cancelled: Arc::clone(&cancelled),
     };
 
-    bridge.start_dwg_import(&app, &context, queued, import(&dwg), false);
+    bridge.start_dwg_import(&mut app, &context, queued, import(&dwg), false);
     assert!(importing_dwg(&bridge));
     cancelled.store(true, Ordering::Release);
     bridge.poll_program_check_job(&mut app, &context);

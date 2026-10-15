@@ -57,6 +57,41 @@ fn an_imported_stl_is_one_undo_step_in_the_declared_unit() {
     assert_eq!(app.undo_step_count(), undo_steps + 1);
 }
 
+/// SEC-5 (review 2026-10-15): an attached client reads a local file into the
+/// model only after the user allows that exact path, as it opens one.
+#[test]
+fn an_attached_client_imports_a_file_only_after_the_user_allows_its_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("tetrahedron.stl");
+    std::fs::write(&source, TETRAHEDRON).unwrap();
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(7);
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.live.consent_attached = true;
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let before = app.document_snapshot().canonical_digest();
+
+    assert_eq!(
+        bridge.execute(&mut app, import(&source, Some("mm")), false),
+        Err("import_declined")
+    );
+    assert_eq!(app.document_snapshot().canonical_digest(), before);
+    let prompts = probe.high_risk_prompts();
+    assert_eq!(prompts.len(), 1);
+    assert!(
+        prompts[0].contains(&source.display().to_string()),
+        "{prompts:?}"
+    );
+
+    let imported = bridge
+        .execute(&mut app, import(&source, Some("mm")), false)
+        .unwrap();
+    assert_eq!(imported["review"]["triangles"], 4);
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+}
+
 #[test]
 fn a_large_import_review_fits_the_answer_of_the_import_that_already_happened() {
     let (mut app, mut bridge, directory) = window();

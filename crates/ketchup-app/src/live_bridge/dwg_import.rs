@@ -28,7 +28,7 @@ pub(super) fn imports_dwg(request: &Request) -> bool {
 impl LiveBridge {
     pub(super) fn start_dwg_import(
         &mut self,
-        app: &KetchupApp,
+        app: &mut KetchupApp,
         context: &egui::Context,
         queued: QueuedReply,
         request: Request,

@@ -93,7 +93,7 @@ impl LiveBridge {
 
     /// The file, format and unit of an import request the window takes now.
     pub(super) fn import_target(
-        app: &KetchupApp,
+        app: &mut KetchupApp,
         request: &Request,
         ui_busy: bool,
     ) -> Result<(String, ImportFormat, Option<ImportLengthUnit>), &'static str> {
@@ -135,6 +135,9 @@ impl LiveBridge {
                 })
             })
             .transpose()?;
+        if !app.confirm_live_import_path(Path::new(path)) {
+            return Err("import_declined");
+        }
         Ok((path.clone(), format, unit))
     }
 

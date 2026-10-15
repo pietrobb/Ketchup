@@ -250,12 +250,30 @@ impl KetchupApp {
     }
 
     pub(crate) fn confirm_live_open_path(&mut self, path: &Path) -> bool {
+        self.confirm_live_read_path(
+            path,
+            "live-open-consent-title",
+            "live-open-consent-description",
+        )
+    }
+
+    pub(crate) fn confirm_live_import_path(&mut self, path: &Path) -> bool {
+        self.confirm_live_read_path(
+            path,
+            "live-import-consent-title",
+            "live-import-consent-description",
+        )
+    }
+
+    /// An attached client reads a local file into the window only after the
+    /// user allows that exact path.
+    fn confirm_live_read_path(&mut self, path: &Path, title: &str, description: &str) -> bool {
         if !self.live.consent_attached {
             return true;
         }
-        let title = self.catalog.text("live-open-consent-title");
+        let title = self.catalog.text(title);
         let description = self.catalog.format(
-            "live-open-consent-description",
+            description,
             &std::collections::BTreeMap::from([("path", path.display().to_string())]),
         );
         self.dialogs
