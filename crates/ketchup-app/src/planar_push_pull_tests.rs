@@ -1,4 +1,6 @@
 use super::*;
+use crate::face_offset_preview::face_offset_failure_text;
+use ketchup_application::evaluation::publish_exact_products;
 
 pub(crate) const TEST_PRISM_DEFINITION: DefinitionId = DefinitionId(17);
 

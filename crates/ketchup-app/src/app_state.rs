@@ -45,7 +45,7 @@ pub(crate) struct LiveState {
 /// push/pull.
 pub(crate) struct PushPullState {
     pub(crate) distance_input: String,
-    pub(crate) face_offset_evaluation: Option<planar_push_pull::FaceOffsetEvaluation>,
+    pub(crate) face_offset_evaluation: Option<face_offset_preview::FaceOffsetEvaluation>,
     pub(crate) face_offset_preview_due: Option<Instant>,
     pub(crate) smart_proposal: Option<SmartPushPullProposal>,
     pub(crate) smart_planning: Option<SmartPushPullPlanning>,
