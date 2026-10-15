@@ -3092,7 +3092,15 @@ impl KetchupApp {
                     if text != crate::app_state::SYSTEM_CLIPBOARD_TEXT)
             })
         });
-        let command = context.input_mut(|input| keymap::pressed(input, typing));
+        // In the Hole tool a typed "M" starts a thread size ("M8 12"), not Move.
+        let starts_thread = self.active_tool == ActiveTool::Hole
+            && !typing
+            && context.input(|input| {
+                input.events.iter().any(|event| {
+                    matches!(event, egui::Event::Text(text) if text.starts_with(['M', 'm']))
+                })
+            });
+        let command = context.input_mut(|input| keymap::pressed(input, typing || starts_thread));
         let cycle_overlap = cycle_with_alt
             || (!typing
                 && context.input_mut(|input| input.consume_shortcut(&keymap::CYCLE_OVERLAP)));
@@ -3104,9 +3112,10 @@ impl KetchupApp {
                     .iter()
                     .filter_map(|event| match event {
                         egui::Event::Text(text)
-                            if text
-                                .chars()
-                                .all(|character| "0123456789.,-;xX*×/ ".contains(character)) =>
+                            if starts_thread
+                                || text.chars().all(|character| {
+                                    "0123456789.,-;xX*×/ ".contains(character)
+                                }) =>
                         {
                             Some(text.as_str())
                         }

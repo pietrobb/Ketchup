@@ -300,6 +300,36 @@ fn space_selects_without_opening_the_value_field() {
     assert_eq!(harness.state().active_tool, ActiveTool::Rectangle);
 }
 
+/// Review 2026-10-14 (GX-14): typing "M8 12" in the Hole tool switched to
+/// Move at the "M". In the Hole tool "M" starts the thread size instead.
+#[test]
+fn an_m_typed_in_the_hole_tool_starts_a_thread_size_not_move() {
+    let mut app = KetchupApp::new();
+    app.dispatch_command(AppCommand::Hole);
+    let mut harness = shell(app);
+    harness.key_press(egui::Key::M);
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("M".into()));
+    harness.step();
+    assert_eq!(harness.state().active_tool, ActiveTool::Hole);
+    harness.step();
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("8 12".into()));
+    harness.step();
+    harness.step();
+    assert_eq!(harness.state().active_tool, ActiveTool::Hole);
+    assert_eq!(harness.state().value_input(), "M8 12");
+
+    // Elsewhere "M" is still Move.
+    press(&mut harness, egui::Key::Escape);
+    press(&mut harness, egui::Key::M);
+    assert_eq!(harness.state().active_tool, ActiveTool::Move);
+}
+
 #[test]
 fn drawing_plane_axis_keys_do_not_steal_foreign_text_focus() {
     let mut app = KetchupApp::new();
