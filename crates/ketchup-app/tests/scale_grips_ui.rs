@@ -1,6 +1,7 @@
 //! Scale grips on the selection box: a corner scales evenly, an edge along
 //! two axes and a face along one, each about the opposite grip or, with Ctrl,
-//! about the centre; click-move-click; typed factors per axis and lengths.
+//! about the centre; click-move-click; typed factors per axis and lengths;
+//! several selected parts and a part picked inside an opened group.
 
 use crate::harness::contract::{ToolGesture, assert_tool_contract};
 use crate::harness::{Shell, ctrl};
@@ -58,11 +59,19 @@ fn stretched_about(origin: Vec3, size: Vec3, pivot: Vec3, factors: [f64; 3]) -> 
 
 /// Waits until the one exact body on screen has the `expected` bounds.
 fn assert_exact_bounds(shell: &mut Shell, expected: [[f64; 3]; 2]) {
+    assert_exact_bodies(shell, &[expected]);
+}
+
+/// Waits until the exact bodies on screen have the `expected` bounds, in any order.
+fn assert_exact_bodies(shell: &mut Shell, expected: &[[[f64; 3]; 2]]) {
+    let close = |a: &[[f64; 3]; 2], b: &[[f64; 3]; 2]| {
+        (0..2).all(|corner| (0..3).all(|axis| (a[corner][axis] - b[corner][axis]).abs() < 1.0e-3))
+    };
     let matches = |actual: &[[[f64; 3]; 2]]| {
-        actual.len() == 1
-            && (0..2).all(|corner| {
-                (0..3).all(|axis| (actual[0][corner][axis] - expected[corner][axis]).abs() < 1.0e-3)
-            })
+        actual.len() == expected.len()
+            && expected
+                .iter()
+                .all(|bounds| actual.iter().any(|body| close(body, bounds)))
     };
     let arrived = shell.wait_until(|shell| {
         shell.step();
@@ -247,5 +256,91 @@ fn a_grip_click_move_click_keeps_the_tool_contract() {
         },
         AppCommand::Select,
         &|shell| assert!(shell.app_mut().create_box()),
+    );
+}
+
+/// Two boxes with an exact worker connected; returns each box's `origin` and `size`.
+fn two_box_shell() -> (Shell, [(Vec3, Vec3); 2]) {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    let boxes = [1, 2].map(|id| shell.app().occurrence_box_geometry(id).unwrap());
+    (shell, boxes)
+}
+
+fn type_factor(shell: &mut Shell, factor: &str) {
+    let undo = shell.app().undo_step_count();
+    shell.type_text(factor);
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo + 1,
+        "one typed Scale, one Undo step: {}",
+        shell.app().action_digest()
+    );
+}
+
+#[test]
+fn several_selected_parts_scale_about_their_shared_centre_in_one_undo_step() {
+    let (mut shell, boxes) = two_box_shell();
+    let low = Vec3::from(std::array::from_fn(|axis| {
+        boxes[0].0.to_array()[axis].min(boxes[1].0.to_array()[axis])
+    }));
+    let high = Vec3::from(std::array::from_fn(|axis| {
+        (boxes[0].0 + boxes[0].1).to_array()[axis].max((boxes[1].0 + boxes[1].1).to_array()[axis])
+    }));
+    let centre = (low + high) * 0.5;
+    // Exact bounds are in each part's own frame, whose origin is the box origin.
+    let local = |factor: f64| {
+        boxes.map(|(origin, size)| {
+            stretched_about(Vec3::new(0.0, 0.0, 0.0), size, centre - origin, [factor; 3])
+        })
+    };
+    let (unscaled, scaled) = (local(1.0), local(2.0));
+    assert_exact_bodies(&mut shell, &unscaled);
+
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    type_factor(&mut shell, "2");
+    assert_exact_bodies(&mut shell, &scaled);
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_exact_bodies(&mut shell, &unscaled);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_exact_bodies(&mut shell, &scaled);
+}
+
+#[test]
+fn a_part_picked_inside_an_opened_group_scales_alone_and_the_group_stays_open() {
+    let (mut shell, boxes) = two_box_shell();
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-model", AppCommand::Group);
+    shell.double_click_at(shell.top_face_centre(2));
+    assert_eq!(shell.app().edit_context_depth(), 1);
+    shell.click_at(shell.top_face_centre(2));
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    type_factor(&mut shell, "2");
+
+    // Exact bounds are in each part's own frame, whose origin is the box origin.
+    let zero = Vec3::new(0.0, 0.0, 0.0);
+    let [(_, first_size), (_, second_size)] = boxes;
+    let second_centre = box_point(zero, second_size, [0.0; 3]);
+    assert_exact_bodies(
+        &mut shell,
+        &[
+            stretched_about(zero, first_size, zero, [1.0; 3]),
+            stretched_about(zero, second_size, second_centre, [2.0; 3]),
+        ],
+    );
+    assert_eq!(
+        shell.app().edit_context_depth(),
+        1,
+        "{}",
+        shell.app().action_digest()
     );
 }
