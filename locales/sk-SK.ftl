@@ -619,6 +619,7 @@ command-unavailable-already-shaded = Teraz nedostupné: pohľad je už tieňovan
 command-unavailable-nothing-unused = Teraz nedostupné: nič nie je nepoužité.
 command-unavailable-two-solids = Teraz nedostupné: najprv vyber dve telesá.
 command-unavailable-selection = Teraz nedostupné: najprv vyber, s čím príkaz pracuje.
+command-unavailable-open-group = Vnútri otvorenej skupiny nedostupné: najprv ju opusti klávesom Esc.
 menu-command = { $label }    { $shortcut }
 file-new = Nový model
 file-open = Otvoriť…

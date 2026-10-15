@@ -619,6 +619,7 @@ command-unavailable-already-shaded = Not available now: the view is already shad
 command-unavailable-nothing-unused = Not available now: nothing is unused.
 command-unavailable-two-solids = Not available now: select two solids first.
 command-unavailable-selection = Not available now: select what the command works on first.
+command-unavailable-open-group = Not available inside an opened group: leave it with Esc first.
 menu-command = { $label }    { $shortcut }
 file-new = New model
 file-open = Open…

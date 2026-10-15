@@ -919,6 +919,20 @@ impl KetchupApp {
 
     /// Why a disabled command cannot run now, in the user's words.
     pub(crate) fn command_unavailable_reason(&self, id: AppCommand) -> String {
+        // An opened group or component edits its parts, not what it holds.
+        let changes_membership = match id {
+            AppCommand::Paste => !self.clipboard.occurrences.is_empty(),
+            AppCommand::Cut
+            | AppCommand::Duplicate
+            | AppCommand::Delete
+            | AppCommand::Ungroup
+            | AppCommand::MakeComponent
+            | AppCommand::HideOthers => !self.selected_instance_paths().is_empty(),
+            _ => false,
+        };
+        if changes_membership && !self.selection.edit_context.is_empty() {
+            return self.catalog.text("command-unavailable-open-group");
+        }
         let key = match id {
             AppCommand::Undo => "command-unavailable-nothing-to-undo",
             AppCommand::Redo => "command-unavailable-nothing-to-redo",

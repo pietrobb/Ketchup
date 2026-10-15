@@ -3259,6 +3259,12 @@ impl KetchupApp {
                 AppCommand::Paste if pasting_other_content => {
                     self.digest = self.catalog.text("digest-clipboard-holds-other-content");
                 }
+                // A disabled button cannot be pressed, but its shortcut can:
+                // say why nothing happened instead of staying silent. Select
+                // All with everything selected has nothing to explain.
+                command if command != AppCommand::SelectAll && !self.command_enabled(command) => {
+                    self.digest = self.command_unavailable_reason(command);
+                }
                 command => self.dispatch_command(command),
             }
         } else if cycle_overlap {

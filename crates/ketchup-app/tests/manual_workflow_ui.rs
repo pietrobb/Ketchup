@@ -6,10 +6,11 @@
 //! and Open.
 
 use crate::harness::contract::{DocumentState, assert_unchanged, save_open_dialogs};
-use crate::harness::{Shell, ctrl};
-use eframe::egui::{Key, Pos2};
+use crate::harness::{Shell, ctrl, ctrl_shift};
+use eframe::egui::{Key, Modifiers, Pos2};
 use ketchup_app::AppCommand;
 use ketchup_interaction::Vec3;
+use std::collections::BTreeMap;
 
 fn exact_worker_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
@@ -134,6 +135,119 @@ fn a_keyboard_driven_session_refuses_bad_values_and_walks_its_history_both_ways(
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
     shell.click_menu_command("menu-file", AppCommand::New);
     assert_ne!(shell.app().canonical_digest(), saved);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), saved);
+}
+
+/// Presses a shortcut whose command cannot run now and checks it says why
+/// without touching the document.
+fn shortcut_refused(shell: &mut Shell, key: Key, modifiers: Modifiers, reason_key: &str) {
+    let before = DocumentState::of(shell);
+    shell.key(key, modifiers);
+    assert_unchanged(
+        shell,
+        &before,
+        &format!("{key:?}"),
+        "an unavailable shortcut",
+    );
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text(reason_key)
+    );
+}
+
+/// Runs a shortcut and checks it made exactly one new Undo step.
+fn shortcut_applied(shell: &mut Shell, key: Key, modifiers: Modifiers, history: &mut Vec<String>) {
+    let undo = shell.app().undo_step_count();
+    shell.key(key, modifiers);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo + 1,
+        "{key:?}: one Undo step: {}",
+        shell.app().action_digest()
+    );
+    history.push(shell.app().canonical_digest());
+}
+
+#[test]
+fn a_group_is_built_opened_and_taken_apart_by_shortcuts() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("groups.ketchup");
+    let mut shell = Shell::with_dialogs(save_open_dialogs(&path));
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    let mut history = vec![shell.app().canonical_digest()];
+    shortcut_refused(
+        &mut shell,
+        Key::Z,
+        ctrl(),
+        "command-unavailable-nothing-to-undo",
+    );
+
+    // A copy of the box beside it, both grouped.
+    shell.click_at(shell.top_face_centre(1));
+    shortcut_applied(&mut shell, Key::D, ctrl(), &mut history);
+    shell.key(Key::Z, Modifiers::SHIFT);
+    shell.key(Key::A, ctrl());
+    shortcut_applied(&mut shell, Key::G, ctrl(), &mut history);
+    shell.press_key(Key::Escape);
+
+    // Once the exact faces are shown (one body, both parts share it) a click
+    // picks the part it lands on.
+    assert!(shell.wait_until(|shell| {
+        shell.step();
+        shell.app().exact_render_body_count() == 1
+    }));
+    shell.click_at(shell.top_face_centre(1));
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+    // Inside the opened group a click picks one part; changing what the group
+    // holds is refused by name until the group is left again.
+    shell.double_click_at(shell.top_face_centre(2));
+    assert_eq!(shell.app().edit_context_depth(), 1);
+    shell.click_at(shell.top_face_centre(2));
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
+    shortcut_refused(
+        &mut shell,
+        Key::Delete,
+        Modifiers::NONE,
+        "command-unavailable-open-group",
+    );
+    shortcut_refused(&mut shell, Key::D, ctrl(), "command-unavailable-open-group");
+    shell.press_key(Key::Escape);
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().edit_context_depth(), 0);
+    // A viewport click picks a part, so the group itself is picked in the
+    // outliner, then taken apart by its shortcut.
+    shell.click_row(&shell.catalog().format(
+        "outliner-group",
+        &BTreeMap::from([("name", "Group 1".to_owned()), ("count", "2".to_owned())]),
+    ));
+    shortcut_applied(&mut shell, Key::G, ctrl_shift(), &mut history);
+    assert_eq!(shell.app().group_count(), 0);
+    assert_eq!(shell.app().selected_occurrence_count(), 2);
+    shell.press_key(Key::Escape);
+    shell.click_at(shell.top_face_centre(2));
+    shortcut_applied(&mut shell, Key::Delete, Modifiers::NONE, &mut history);
+    assert_eq!(shell.app().occurrence_count(), 1);
+
+    for expected in history.iter().rev().skip(1) {
+        shell.key(Key::Z, ctrl());
+        assert_eq!(&shell.app().canonical_digest(), expected, "Undo walks back");
+    }
+    for expected in history.iter().skip(1) {
+        shell.key(Key::Y, ctrl());
+        assert_eq!(
+            &shell.app().canonical_digest(),
+            expected,
+            "Redo walks forward"
+        );
+    }
+    let saved = shell.app().canonical_digest();
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), saved);
 }
