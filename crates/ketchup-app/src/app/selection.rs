@@ -1138,10 +1138,14 @@ impl KetchupApp {
         true
     }
 
-    pub(crate) fn cancel_or_deselect(&mut self) {
-        // A value waiting for the evaluation is in progress too: Esc drops it,
-        // and with nothing else to cancel keeps the selection it was typed for.
-        let dropped_value = self.value_input_awaits_program.take().is_some();
+    pub(crate) fn cancel_or_deselect(&mut self, typing_value: bool) {
+        // A value being typed or waiting for the evaluation is in progress
+        // too: Esc drops it, and with nothing else to cancel keeps the
+        // selection it was typed for.
+        let dropped_value = self.value_input_awaits_program.take().is_some() || typing_value;
+        if typing_value {
+            self.value_box.input.clear();
+        }
         // So is a hole, draft or pattern still being checked, and those
         // confirmed after it: none of them is published.
         let cancelled_edit = self.live.edits.cancel();
@@ -1191,6 +1195,9 @@ impl KetchupApp {
         {
             self.clear_ephemeral_edit_state();
             self.cancel_rectangle_sketch();
+            // The value box showed the cancelled operation's distance or
+            // angle; it has nothing left to stand for.
+            self.value_box.input.clear();
             self.digest = self.catalog.text("digest-cancelled");
         } else if dropped_value || cancelled_edit {
             self.status_key = "status-ready";

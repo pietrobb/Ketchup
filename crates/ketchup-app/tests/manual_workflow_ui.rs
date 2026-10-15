@@ -251,3 +251,121 @@ fn a_group_is_built_opened_and_taken_apart_by_shortcuts() {
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), saved);
 }
+
+/// Starts one operation on the selected default box and leaves it half done:
+/// its preview showing and a value half typed.
+fn start_interrupted(shell: &mut Shell, tool: &str) {
+    let corner = Vec3::new(20.0, 20.0, 20.0);
+    let base = Vec3::new(80.0, 50.0, 20.0);
+    match tool {
+        "Move" => {
+            shell.press_key(Key::M);
+            shell.click_at(screen(shell, base));
+            shell.move_pointer(screen(shell, base + Vec3::new(40.0, 0.0, 0.0)));
+        }
+        "Rotate" => {
+            shell.press_key(Key::Q);
+            shell.click_at(screen(shell, base));
+            shell.click_at(screen(shell, base + Vec3::new(25.0, 0.0, 0.0)));
+            shell.move_pointer(screen(shell, base + Vec3::new(0.0, 25.0, 0.0)));
+        }
+        "Scale" => shell.click_menu_command("menu-tools", AppCommand::Scale),
+        "Rectangle" => {
+            shell.press_key(Key::R);
+            shell.click_at(screen(shell, corner));
+            shell.move_pointer(screen(shell, corner + Vec3::new(30.0, 10.0, 0.0)));
+        }
+        "Push/Pull" => {
+            shell.move_pointer(shell.top_face_centre(1));
+            shell.press_key(Key::P);
+            shell.click_at(shell.top_face_centre(1));
+            shell.move_pointer(screen(shell, Vec3::new(50.0, 30.0, 30.0)));
+        }
+        _ => unreachable!(),
+    }
+    type_value(shell, "4");
+}
+
+#[test]
+fn an_interrupted_operation_leaves_document_selection_and_history_as_they_were() {
+    let mut shell = Shell::new();
+    // One step to undo and one to redo, so an interruption that reaches the
+    // history shows.
+    shell.click_at(shell.top_face_centre(1));
+    shell.key(Key::D, ctrl());
+    shell.key(Key::D, ctrl());
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().undo_step_count(), 1);
+    assert_eq!(shell.app().redo_step_count(), 1);
+
+    let mut failures = Vec::new();
+    for tool in ["Move", "Rotate", "Scale", "Rectangle", "Push/Pull"] {
+        for how in ["Escape", "Ctrl+Z", "switching to Line"] {
+            shell.press_key(Key::Escape);
+            shell.press_key(Key::Escape);
+            shell.press_key(Key::Space);
+            shell.click_at(shell.top_face_centre(1));
+            let before = DocumentState::of(&shell);
+            start_interrupted(&mut shell, tool);
+            match how {
+                "Escape" => shell.press_key(Key::Escape),
+                "Ctrl+Z" => shell.key(Key::Z, ctrl()),
+                _ => shell.click_command(AppCommand::Line),
+            }
+            // Nothing of the interrupted operation is left to confirm.
+            shell.press_key(Key::Enter);
+            if DocumentState::of(&shell) != before {
+                failures.push(format!(
+                    "{tool} interrupted by {how} changed the document: {}",
+                    shell.app().action_digest()
+                ));
+                shell.press_key(Key::Escape);
+                while shell.app().undo_step_count() > before.undo_steps {
+                    shell.key(Key::Z, ctrl());
+                }
+                while shell.app().undo_step_count() < before.undo_steps {
+                    shell.key(Key::Y, ctrl());
+                }
+            } else if !shell.app().value_input().is_empty() {
+                failures.push(format!("{tool} interrupted by {how} kept the typed value"));
+            }
+            if how != "switching to Line"
+                && !(shell.app().selected_occurrence_count() == 1
+                    && shell
+                        .app()
+                        .occurrence_is_selected(ketchup_model::document::OccurrenceId(1)))
+            {
+                failures.push(format!("{tool} interrupted by {how} lost the selection"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+
+    // Copy changes nothing; Paste and Cut are one Undo step each, and Undo
+    // and Redo walk them both ways.
+    shell.press_key(Key::Escape);
+    shell.press_key(Key::Escape);
+    shell.press_key(Key::Space);
+    shell.click_at(shell.top_face_centre(1));
+    let parts = shell.app().occurrence_count();
+    let mut history = vec![shell.app().canonical_digest()];
+    let before = DocumentState::of(&shell);
+    shell.key(Key::C, ctrl());
+    assert_unchanged(&shell, &before, "Ctrl+C", "copying");
+    shortcut_applied(&mut shell, Key::V, ctrl(), &mut history);
+    assert_eq!(shell.app().occurrence_count(), parts + 1);
+    shortcut_applied(&mut shell, Key::X, ctrl(), &mut history);
+    assert_eq!(shell.app().occurrence_count(), parts);
+    for expected in history.iter().rev().skip(1) {
+        shell.key(Key::Z, ctrl());
+        assert_eq!(&shell.app().canonical_digest(), expected, "Undo walks back");
+    }
+    for expected in history.iter().skip(1) {
+        shell.key(Key::Y, ctrl());
+        assert_eq!(
+            &shell.app().canonical_digest(),
+            expected,
+            "Redo walks forward"
+        );
+    }
+}

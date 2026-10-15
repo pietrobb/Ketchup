@@ -3139,7 +3139,26 @@ impl KetchupApp {
                     matches!(event, egui::Event::Text(text) if text.starts_with(['M', 'm']))
                 })
             });
-        let command = context.input_mut(|input| keymap::pressed(input, typing || starts_thread));
+        // Esc or Ctrl+Z in a value being typed drop the value together with
+        // the operation it was typed for, as both do on the canvas; the field's
+        // own text undo would leave the value to be confirmed by the next Enter.
+        let value_field = egui::Id::new("value-box-input");
+        // egui takes the focus away on Esc before this frame's shortcuts run.
+        let typing_value = context.memory(|memory| {
+            memory.has_focus(value_field) || memory.had_focus_last_frame(value_field)
+        }) && !self.value_box.input.trim().is_empty();
+        let undo_typed_value = typing_value
+            && context.input_mut(|input| {
+                input.consume_shortcut(&egui::KeyboardShortcut::new(
+                    egui::Modifiers::COMMAND,
+                    egui::Key::Z,
+                ))
+            });
+        let command = if undo_typed_value {
+            Some(AppCommand::Deselect)
+        } else {
+            context.input_mut(|input| keymap::pressed(input, typing || starts_thread))
+        };
         let cycle_overlap = cycle_with_alt
             || (!typing
                 && context.input_mut(|input| input.consume_shortcut(&keymap::CYCLE_OVERLAP)));
@@ -3255,7 +3274,12 @@ impl KetchupApp {
             match command {
                 // Esc first cancels whatever is in progress; only with nothing
                 // left to cancel does it deselect.
-                AppCommand::Deselect => self.cancel_or_deselect(),
+                AppCommand::Deselect => {
+                    if typing_value {
+                        context.memory_mut(|memory| memory.surrender_focus(value_field));
+                    }
+                    self.cancel_or_deselect(typing_value);
+                }
                 AppCommand::Paste if pasting_other_content => {
                     self.digest = self.catalog.text("digest-clipboard-holds-other-content");
                 }

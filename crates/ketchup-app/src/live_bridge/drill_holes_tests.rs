@@ -673,7 +673,7 @@ fn quick_holes_are_all_drilled_and_esc_cancels_the_ones_not_published() {
         assert!(app.drill_hole_at_screen(point, rect), "{}", app.digest);
     }
     app.poll_window_edit(&egui::Context::default());
-    app.cancel_or_deselect();
+    app.cancel_or_deselect(false);
     app.finish_window_edit();
     assert_eq!(app.digest, app.catalog.text("digest-cancelled"));
     assert_eq!(app.undo_step_count(), undo);

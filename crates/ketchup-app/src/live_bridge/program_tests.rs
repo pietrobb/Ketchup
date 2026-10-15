@@ -1371,7 +1371,7 @@ fn a_value_waiting_for_the_evaluation_is_dropped_by_esc_and_by_another_pick() {
     assert!(app.prepare_general_finish(first.clone(), fillet, 5.0));
     assert!(!app.apply_value_input());
     assert_eq!(app.status_key, "status-program-planning");
-    app.cancel_or_deselect();
+    app.cancel_or_deselect(false);
     assert_eq!(app.digest, app.catalog.text("digest-cancelled"));
     held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
         .unwrap();
