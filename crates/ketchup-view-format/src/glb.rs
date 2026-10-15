@@ -295,6 +295,15 @@ fn accessor_data<'a>(
     accessor: &Accessor,
     binary: &'a [u8],
 ) -> Result<&'a [u8], Rejection> {
+    accessor_range(doc, accessor, binary).map(|range| &binary[range])
+}
+
+/// Where one accessor's bytes lie in the binary chunk, checked as [`accessor_data`].
+fn accessor_range(
+    doc: &Document,
+    accessor: &Accessor,
+    binary: &[u8],
+) -> Result<std::ops::Range<usize>, Rejection> {
     let element_bytes = match (accessor.component_type, accessor.kind.as_str()) {
         (5126, "VEC3") => 12,
         (5125, "SCALAR") => 4,
@@ -332,7 +341,10 @@ fn accessor_data<'a>(
         ));
     }
     let start = view.byte_offset + accessor.byte_offset;
-    Ok(&binary[start..start + len])
+    binary
+        .get(start..start + len)
+        .map(|_| start..start + len)
+        .ok_or_else(|| reject("glb.accessors", "Accessor exceeds the binary chunk."))
 }
 
 /// One primitive: supported mode, POSITION and u32 indices within range.

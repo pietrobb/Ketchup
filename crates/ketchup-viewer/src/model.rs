@@ -2,9 +2,9 @@
 //! placements, their owning components and bounds.
 
 use ketchup_rejection::{Rejection, RejectionPhase};
-use ketchup_view_format::{Geometry, Manifest, Package};
+use ketchup_view_format::{Geometry, Manifest, Package, PrimitiveTopology};
 use num_traits::ToPrimitive;
-use std::{collections::BTreeMap, io::Read};
+use std::{collections::BTreeMap, io::Read, ops::Range};
 
 /// `[min, max]` corners in source millimetres.
 type Bounds = [[f64; 3]; 2];
@@ -17,6 +17,9 @@ pub struct Model {
     pub bounds_mm: Bounds,
     /// Per manifest occurrence: column-major source Z-up/mm placement.
     pub occurrence_matrices_mm: Vec<[f64; 16]>,
+    /// Per mesh: where each triangle primitive's positions and indices lie in
+    /// the validated GLB, so picking reads them without validating it again.
+    triangles: Vec<Vec<(Range<usize>, Range<usize>)>>,
 }
 
 /// One mesh placed in the scene, with the component it belongs to.
@@ -107,11 +110,33 @@ impl Model {
                     .ok_or_else(|| invalid("occurrence", "A component has no geometry node."))
             })
             .collect::<Result<_, _>>()?;
+        let triangles = geometry
+            .meshes
+            .iter()
+            .map(|primitives| {
+                primitives
+                    .iter()
+                    .filter(|p| p.topology == PrimitiveTopology::Triangles)
+                    .map(|p| (p.position_range.clone(), p.index_range.clone()))
+                    .collect()
+            })
+            .collect();
         Ok(Self {
             package,
             bodies,
             bounds_mm: total_bounds,
             occurrence_matrices_mm,
+            triangles,
+        })
+    }
+
+    /// The position and index bytes of each triangle primitive of `mesh`.
+    pub fn triangle_buffers(&self, mesh: usize) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.triangles[mesh].iter().map(|(positions, indices)| {
+            (
+                &self.package.glb[positions.clone()],
+                &self.package.glb[indices.clone()],
+            )
         })
     }
 

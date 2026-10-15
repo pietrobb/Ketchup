@@ -268,20 +268,16 @@ fn render_viewer(path: &Path, output: &Path, name: &str) {
     let mut hit = None;
     'scan: for y in [0.0, 0.2, -0.2, 0.4, -0.4, 0.6, -0.6] {
         for x in [0.0, 0.2, -0.2, 0.4, -0.4, 0.6, -0.6] {
-            if let Some(index) = camera
-                .pick(
-                    &model,
-                    [x, y],
-                    rect.width() / rect.height(),
-                    &visible,
-                    scene.section.as_ref(),
-                )
-                .expect("pick")
-                && model.manifest().definitions.iter().any(|definition| {
-                    definition.id == model.manifest().occurrences[index].definition_id
-                        && definition.local_dimensions.is_some()
-                })
-            {
+            if let Some(index) = camera.pick(
+                &model,
+                [x, y],
+                rect.width() / rect.height(),
+                &visible,
+                scene.section.as_ref(),
+            ) && model.manifest().definitions.iter().any(|definition| {
+                definition.id == model.manifest().occurrences[index].definition_id
+                    && definition.local_dimensions.is_some()
+            }) {
                 hit = Some((index, [x, y]));
                 break 'scan;
             }

@@ -533,20 +533,18 @@ impl ViewerApp {
             && let Some(point) = response.interact_pointer_pos()
         {
             let at = ndc(rect, point);
-            match camera.pick_point(model, at, aspect, &self.visible, self.section.as_ref()) {
-                Ok(hit) => match &mut self.review {
-                    // While placing an arrow, clicks place its ends, not a selection.
-                    Some(review)
-                        if review
-                            .draft
-                            .as_ref()
-                            .is_some_and(|draft| draft.placing.is_some()) =>
-                    {
-                        review.place_arrow_end(model, hit, camera.point_on_view_plane(at, aspect));
-                    }
-                    _ => self.selected = hit.map(|(index, _)| index),
-                },
-                Err(error) => self.error = Some(error),
+            let hit = camera.pick_point(model, at, aspect, &self.visible, self.section.as_ref());
+            match &mut self.review {
+                // While placing an arrow, clicks place its ends, not a selection.
+                Some(review)
+                    if review
+                        .draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.placing.is_some()) =>
+                {
+                    review.place_arrow_end(model, hit, camera.point_on_view_plane(at, aspect));
+                }
+                _ => self.selected = hit.map(|(index, _)| index),
             }
         }
         if let (Some(state), Some(renderer)) = (&self.render_state, &self.renderer) {

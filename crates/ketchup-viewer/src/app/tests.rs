@@ -203,9 +203,7 @@ fn package_open_selection_and_scenes_preserve_source_data_and_failed_open_state(
     let camera = app.camera.as_ref().expect("camera");
     let point = camera.project([88.0, 208.0, 312.0], 1.0);
     assert_eq!(
-        camera
-            .pick(model, [point[0], point[1]], 1.0, &app.visible, None)
-            .expect("pick"),
+        camera.pick(model, [point[0], point[1]], 1.0, &app.visible, None),
         Some(0)
     );
     let mut harness = egui_kittest::Harness::builder()

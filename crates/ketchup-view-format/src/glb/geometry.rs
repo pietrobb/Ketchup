@@ -1,8 +1,9 @@
 //! Borrowed GPU-ready views of the validated GLB: shared buffers, the node tree
 //! with composed placements, and a parent-first traversal.
 
-use super::{Info, accessor_data, source_digest, validated_document};
+use super::{Info, accessor_range, source_digest, validated_document};
 use ketchup_rejection::Rejection;
+use std::ops::Range;
 
 /// Borrowed display buffers: instances and material variants never copy vertices.
 #[derive(Debug)]
@@ -35,6 +36,11 @@ pub enum PrimitiveTopology {
 pub struct GeometryPrimitive<'a> {
     pub position_accessor: usize,
     pub index_accessor: usize,
+    /// Where [`Self::position_bytes`] lie in the GLB, so a holder of the
+    /// validated GLB can read them again without decoding it.
+    pub position_range: Range<usize>,
+    /// Where [`Self::index_bytes`] lie in the GLB.
+    pub index_range: Range<usize>,
     positions: &'a [u8],
     indices: &'a [u8],
     pub topology: PrimitiveTopology,
@@ -72,6 +78,9 @@ impl GeometryPrimitive<'_> {
 /// Validate the GLB and borrow its geometry; nothing is copied.
 pub(crate) fn decode(bytes: &[u8]) -> Result<(Geometry<'_>, Info), Rejection> {
     let (doc, binary) = validated_document(bytes)?;
+    // The binary chunk runs to the end of the GLB.
+    let binary_start = bytes.len() - binary.len();
+    let in_glb = |range: Range<usize>| binary_start + range.start..binary_start + range.end;
     let meshes = doc
         .meshes
         .iter()
@@ -79,15 +88,23 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<(Geometry<'_>, Info), Rejection> {
             mesh.primitives
                 .iter()
                 .map(|primitive| {
+                    let position_range = in_glb(accessor_range(
+                        &doc,
+                        &doc.accessors[primitive.attributes.position],
+                        binary,
+                    )?);
+                    let index_range = in_glb(accessor_range(
+                        &doc,
+                        &doc.accessors[primitive.indices],
+                        binary,
+                    )?);
                     Ok(GeometryPrimitive {
                         position_accessor: primitive.attributes.position,
                         index_accessor: primitive.indices,
-                        positions: accessor_data(
-                            &doc,
-                            &doc.accessors[primitive.attributes.position],
-                            binary,
-                        )?,
-                        indices: accessor_data(&doc, &doc.accessors[primitive.indices], binary)?,
+                        positions: &bytes[position_range.clone()],
+                        indices: &bytes[index_range.clone()],
+                        position_range,
+                        index_range,
                         topology: if primitive.mode == 4 {
                             PrimitiveTopology::Triangles
                         } else {

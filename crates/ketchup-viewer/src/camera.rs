@@ -4,7 +4,7 @@
 use crate::model::{Model, source_point};
 use ketchup_geometry::linalg::{Affine3, Vec3};
 use ketchup_rejection::{Rejection, RejectionPhase};
-use ketchup_view_format::{PrimitiveTopology, Projection, Section};
+use ketchup_view_format::{Projection, Section};
 use num_traits::ToPrimitive;
 
 /// The fixed views offered next to the saved scenes.
@@ -312,10 +312,9 @@ impl Camera {
         aspect: f32,
         visible: &[bool],
         section: Option<&Section>,
-    ) -> Result<Option<usize>, Rejection> {
-        Ok(self
-            .pick_point(model, ndc, aspect, visible, section)?
-            .map(|(index, _)| index))
+    ) -> Option<usize> {
+        self.pick_point(model, ndc, aspect, visible, section)
+            .map(|(index, _)| index)
     }
 
     /// Like [`Camera::pick`], with the world point hit on that occurrence.
@@ -326,8 +325,21 @@ impl Camera {
         aspect: f32,
         visible: &[bool],
         section: Option<&Section>,
-    ) -> Result<Option<(usize, [f64; 3])>, Rejection> {
-        let geometry = model.geometry()?;
+    ) -> Option<(usize, [f64; 3])> {
+        self.pick_counted(model, ndc, aspect, visible, section).0
+    }
+
+    /// [`Camera::pick_point`] and how many triangles it tested: only bodies
+    /// whose bounds the ray crosses, from the buffers kept when the package
+    /// was opened.
+    fn pick_counted(
+        &self,
+        model: &Model,
+        ndc: [f32; 2],
+        aspect: f32,
+        visible: &[bool],
+        section: Option<&Section>,
+    ) -> (Option<(usize, [f64; 3])>, usize) {
         let (direction, right, up) = self.basis();
         let direction = Vec3::from(direction.map(f64::from));
         let right = Vec3::from(right.map(f64::from));
@@ -354,16 +366,15 @@ impl Camera {
             )
         };
         let mut nearest: Option<(usize, f32, [f64; 3])> = None;
+        let mut tested = 0;
         for body in &model.bodies {
-            if !visible[body.occurrence] {
+            if !visible[body.occurrence] || !ray_crosses(origin, ray, body.bounds_mm) {
                 continue;
             }
             let placement = Affine3::from_column_major(body.world_matrix_mm.map(f64::from));
-            for primitive in &geometry.meshes[body.mesh] {
-                if primitive.topology != PrimitiveTopology::Triangles {
-                    continue;
-                }
-                for triangle in primitive.index_bytes().chunks_exact(12) {
+            for (positions, indices) in model.triangle_buffers(body.mesh) {
+                for triangle in indices.chunks_exact(12) {
+                    tested += 1;
                     let points: [[f32; 3]; 3] = std::array::from_fn(|i| {
                         let index = u32::from_le_bytes(
                             triangle[i * 4..i * 4 + 4].try_into().expect("index"),
@@ -371,7 +382,7 @@ impl Camera {
                         let offset = usize::try_from(index).expect("bounded index") * 12;
                         let point = std::array::from_fn(|k| {
                             f32::from_le_bytes(
-                                primitive.position_bytes()[offset + k * 4..offset + k * 4 + 4]
+                                positions[offset + k * 4..offset + k * 4 + 4]
                                     .try_into()
                                     .expect("point"),
                             )
@@ -400,7 +411,7 @@ impl Camera {
                 }
             }
         }
-        Ok(nearest.map(|(index, _, point)| (index, point)))
+        (nearest.map(|(index, _, point)| (index, point)), tested)
     }
 
     /// The point on the plane through the orbit center facing the viewer
@@ -451,6 +462,29 @@ impl Camera {
     }
 }
 
+/// Whether the ray from `origin` along `ray` passes through `bounds`, padded
+/// for the single-precision points the triangles are tested with.
+fn ray_crosses(origin: Vec3, ray: Vec3, bounds: [[f64; 3]; 2]) -> bool {
+    let origin: [f64; 3] = origin.into();
+    let ray: [f64; 3] = ray.into();
+    let scale = bounds.iter().flatten().fold(1.0_f64, |m, v| m.max(v.abs()));
+    let pad = scale * f64::from(f32::EPSILON) * 16.0;
+    let (mut near, mut far) = (0.0_f64, f64::INFINITY);
+    for i in 0..3 {
+        let (min, max) = (bounds[0][i] - pad, bounds[1][i] + pad);
+        if ray[i] == 0.0 {
+            if origin[i] < min || origin[i] > max {
+                return false;
+            }
+            continue;
+        }
+        let (a, b) = ((min - origin[i]) / ray[i], (max - origin[i]) / ray[i]);
+        near = near.max(a.min(b));
+        far = far.min(a.max(b));
+    }
+    near <= far
+}
+
 /// Möller–Trumbore ray/triangle intersection point.
 fn ray_hit(origin: Vec3, ray: Vec3, points: [[f32; 3]; 3]) -> Option<Vec3> {
     let [a, b, c] = points.map(|p| Vec3::from(p.map(f64::from)));
@@ -499,9 +533,7 @@ mod tests {
             let point = camera.project([88.0, 208.0, 314.0], aspect);
             let ndc = [point[0], point[1]];
             assert_eq!(
-                camera
-                    .pick(&model, ndc, aspect, &[true, false], None)
-                    .expect("pick"),
+                camera.pick(&model, ndc, aspect, &[true, false], None),
                 Some(0)
             );
             let cut = Section {
@@ -509,9 +541,7 @@ mod tests {
                 offset_mm: 87.0,
             };
             assert_eq!(
-                camera
-                    .pick(&model, ndc, aspect, &[true, false], Some(&cut))
-                    .expect("pick"),
+                camera.pick(&model, ndc, aspect, &[true, false], Some(&cut)),
                 None
             );
             let cut = Section {
@@ -519,17 +549,10 @@ mod tests {
                 ..cut
             };
             assert_eq!(
-                camera
-                    .pick(&model, ndc, aspect, &[true, false], Some(&cut))
-                    .expect("pick"),
+                camera.pick(&model, ndc, aspect, &[true, false], Some(&cut)),
                 Some(0)
             );
-            assert_eq!(
-                camera
-                    .pick(&model, ndc, aspect, &[false, true], None)
-                    .expect("pick"),
-                None
-            );
+            assert_eq!(camera.pick(&model, ndc, aspect, &[false, true], None), None);
         }
         let source = ketchup_view_format::Camera {
             projection: Projection::Orthographic {
@@ -538,6 +561,31 @@ mod tests {
             ..source
         };
         assert!(Camera::from_scene(&model, &source).is_err());
+    }
+
+    #[test]
+    fn a_click_tests_only_the_triangles_of_bodies_under_the_pointer() {
+        let model = Model::from_package(crate::app::tests::scene_package()).expect("model");
+        let camera =
+            Camera::from_scene(&model, &model.manifest().scenes[0].camera).expect("camera");
+        let both = [true, true];
+        let point = camera.project([88.0, 208.0, 314.0], 1.0);
+        assert_eq!(
+            camera.pick_counted(&model, [point[0], point[1]], 1.0, &both, None),
+            (
+                camera.pick_point(&model, [point[0], point[1]], 1.0, &both, None),
+                1
+            )
+        );
+        assert_eq!(
+            camera.pick(&model, [point[0], point[1]], 1.0, &both, None),
+            Some(0)
+        );
+        let beside = camera.project([88.0, 1000.0, 314.0], 1.0);
+        assert_eq!(
+            camera.pick_counted(&model, [beside[0], beside[1]], 1.0, &both, None),
+            (None, 0)
+        );
     }
 
     #[test]
