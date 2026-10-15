@@ -135,7 +135,10 @@ impl KetchupApp {
         .map_err(session_error)?;
         self.finish_program_edit();
         if edit == ProgramEdit::Created {
+            // Framed quietly, as on opening a document: a fit that lands a few
+            // frames later must not replace the answer to what the user did since.
             self.camera.zoom_fit_pending = true;
+            self.camera.zoom_fit_pending_quiet = true;
         }
         Ok((edit, plan.evaluated))
     }

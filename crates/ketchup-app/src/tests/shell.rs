@@ -395,6 +395,45 @@ fn zoom_fit_before_first_layout_is_applied_on_the_first_frame() {
     );
 }
 
+/// The fit after a new program frames its parts once their exact bounds are
+/// known, but a message the user got in between stays on the status line.
+#[test]
+fn the_fit_after_a_new_program_frames_quietly() {
+    let worker = exact_worker_candidates()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .expect("build ketchup-exact-worker before this test");
+    let mut app = KetchupApp::new();
+    app.headless_force_exact_worker_path(worker);
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "board.star".into(),
+            source: "box(\"doska\", (600, 18, 400))\n".into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    assert!(app.camera.viewport_rect.is_none());
+    assert!(app.camera.zoom_fit_pending);
+    let zoom_before = app.camera.zoom;
+    app.digest = "the answer to the user's last action".to_owned();
+
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    step_until(
+        &mut harness,
+        Duration::from_secs(30),
+        "the new program's parts were never framed",
+        |app| !app.camera.zoom_fit_pending,
+    );
+    let app = harness.state();
+    assert_ne!(app.camera.zoom, zoom_before, "the parts must be framed");
+    assert_eq!(app.digest, "the answer to the user's last action");
+}
+
 #[test]
 fn every_view_switch_is_one_command_with_a_label_and_both_reports() {
     let catalog = ketchup_interaction::LocaleCatalog::english();
