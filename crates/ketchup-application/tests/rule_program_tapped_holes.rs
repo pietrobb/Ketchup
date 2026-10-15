@@ -38,7 +38,7 @@ fn a_panel_hole_and_a_later_hole_both_carry_their_thread() {
             program(&format!(
                 "{PLATE}hole(p,'z+',at=(10,10),depth=15,id='a',thread=('M5',10))\n\
                  push_pull(p,face='x+',distance=10,name='wider')\n\
-                 hole(p,'z+',at=(50,30),diameter=6.8,depth=15,id='b',thread=('M8',12))\n\
+                 hole(p,'z+',at=(50,30),diameter=6.8,depth=19,id='b',thread=('M8',12))\n\
                  hole(p,'z+',at=(30,20),diameter=5,depth=15,id='c')\n"
             )),
             false,
@@ -64,10 +64,10 @@ fn a_panel_hole_and_a_later_hole_both_carry_their_thread() {
 fn threads_run_from_each_hole_entry_and_along_each_bolt_shank() {
     let _turn = crate::integration_support::file_turn();
     let source = format!(
-        "{PLATE}hole(p,'z+',at=(10,10),diameter=6.8,depth=15,id='a',thread=('M8',10))\n\
+        "{PLATE}hole(p,'z+',at=(10,10),diameter=6.8,depth=17,id='a',thread=('M8',10))\n\
          hole(p,'x+',at=(10,10),diameter=5,depth=15,id='b')\n\
          push_pull(p,face='x+',distance=10,name='wider')\n\
-         hole(p,'y+',at=(30,10),diameter=4.2,depth=12,id='c',thread=('M5',8))\n\
+         hole(p,'y+',at=(30,10),diameter=4.2,depth=13,id='c',thread=('M5',8))\n\
          bolt('s','M8',40,at=(100,10,5),axis=(1,0,0))\n\
          nut('n','M8',at=(0,100,0))\n"
     );
@@ -167,13 +167,48 @@ fn an_iso_4014_bolt_is_threaded_b_from_its_tip_and_an_iso_4017_bolt_to_its_head(
     );
 }
 
+/// TH-3: a tap cannot cut thread to the bottom of a blind hole; DIN 76-1 e1
+/// (M8: 6.2 mm) is drilled below the thread. A through hole needs none.
+#[test]
+fn a_blind_tapped_hole_is_drilled_the_din_76_runout_below_its_thread() {
+    let _turn = crate::integration_support::file_turn();
+    let hole = |depth: &str, through: &str| {
+        program(&format!(
+            "{PLATE}hole(p,'z+',at=(10,10),depth={depth}{through},id='a',thread=('M8',12))\n"
+        ))
+    };
+    let shallow = DocumentSession::default()
+        .apply_rule_program(hole("18", ""), false)
+        .err()
+        .expect("an 18 mm blind hole is too shallow for an M8 thread 12 deep")
+        .to_string();
+    assert!(
+        shallow.contains("needs a blind hole at least 18.2 mm deep")
+            && shallow.contains("DIN 76-1"),
+        "{shallow}"
+    );
+    for (depth, through) in [("18.2", ""), ("20", ",through=True")] {
+        let applied = DocumentSession::default()
+            .apply_rule_program(hole(depth, through), false)
+            .unwrap();
+        assert_eq!(
+            threads(&applied.snapshot)
+                .into_iter()
+                .map(|(_, label)| label)
+                .collect::<Vec<_>>(),
+            ["M8×1.25 depth 12"],
+            "depth={depth}{through}"
+        );
+    }
+}
+
 #[test]
 fn changing_or_removing_a_thread_rerecords_it_and_undo_restores_it() {
     let _turn = crate::integration_support::file_turn();
     let mut session = DocumentSession::default();
     let hole = |thread: &str| {
         program(&format!(
-            "{PLATE}hole(p,'z+',at=(10,10),diameter=4.2,depth=15,id='a'{thread})\n"
+            "{PLATE}hole(p,'z+',at=(10,10),diameter=4.2,depth=17,id='a'{thread})\n"
         ))
     };
     let labels = |snapshot: &Snapshot| {

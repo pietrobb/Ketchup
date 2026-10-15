@@ -2416,11 +2416,13 @@ pub fn library_material_weights()
         .map_err(Clone::clone)
 }
 
-/// The coarse pitch P of an ISO metric thread and its tap drill, in mm.
+/// The coarse pitch P of an ISO metric thread, its tap drill and how much
+/// deeper than the thread a blind hole is drilled, in mm.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MetricThread {
     pub pitch_mm: f64,
     pub tap_drill_mm: f64,
+    pub blind_hole_runout_mm: f64,
 }
 
 /// How far a tapped hole may sit from its tap drill: half a 0.1 mm drill step,
@@ -2433,6 +2435,23 @@ impl MetricThread {
     #[must_use]
     pub fn fits_drill(&self, diameter_mm: f64, tolerance_mm: f64) -> bool {
         (diameter_mm - self.tap_drill_mm).abs() <= TAP_DRILL_STEP_TOLERANCE_MM + tolerance_mm
+    }
+
+    /// The deepest thread a hole `hole_depth_mm` deep takes: all of a
+    /// `through` hole, a blind one less the runout the tap needs below it.
+    #[must_use]
+    pub fn deepest_thread_mm(&self, hole_depth_mm: f64, through: bool) -> f64 {
+        if through {
+            hole_depth_mm
+        } else {
+            hole_depth_mm - self.blind_hole_runout_mm
+        }
+    }
+
+    /// The shallowest blind hole a thread `thread_depth_mm` deep takes, to the µm.
+    #[must_use]
+    pub fn blind_hole_depth_mm(&self, thread_depth_mm: f64) -> f64 {
+        ((thread_depth_mm + self.blind_hole_runout_mm) * 1000.0).round() / 1000.0
     }
 }
 
@@ -2450,20 +2469,24 @@ pub fn library_metric_threads() -> Result<&'static BTreeMap<String, MetricThread
         .get_or_init(|| {
             let table: BTreeMap<String, f64> = prelude_table("METRIC_COARSE_PITCH")?;
             let drills: BTreeMap<String, f64> = prelude_table("METRIC_TAP_DRILL")?;
+            let runouts: BTreeMap<String, f64> = prelude_table("METRIC_BLIND_HOLE_RUNOUT")?;
             table
                 .into_iter()
                 .map(|(size, pitch_mm)| {
-                    let tap_drill_mm = *drills.get(&size).ok_or_else(|| {
-                        evaluation_error(
-                            "prelude_invalid",
-                            format!("METRIC_TAP_DRILL has no drill for {size:?}"),
-                        )
-                    })?;
+                    let entry = |table: &BTreeMap<String, f64>, name: &str| {
+                        table.get(&size).copied().ok_or_else(|| {
+                            evaluation_error(
+                                "prelude_invalid",
+                                format!("{name} has no entry for {size:?}"),
+                            )
+                        })
+                    };
                     Ok((
-                        size,
+                        size.clone(),
                         MetricThread {
                             pitch_mm,
-                            tap_drill_mm,
+                            tap_drill_mm: entry(&drills, "METRIC_TAP_DRILL")?,
+                            blind_hole_runout_mm: entry(&runouts, "METRIC_BLIND_HOLE_RUNOUT")?,
                         },
                     ))
                 })

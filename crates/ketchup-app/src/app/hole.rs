@@ -5,7 +5,8 @@ use crate::*;
 use ketchup_assistant::sidecar::AssistantHoleThread;
 
 /// The hole the value box asks for: "6" (Ø6 through), "6 10" (Ø6, 10 deep) or
-/// "M8 12" (the fastener library's M8 tap drill, threaded and drilled 12 deep).
+/// "M8 12" (the fastener library's M8 tap drill, threaded 12 deep and drilled
+/// its blind-hole runout deeper, 18.2).
 #[derive(Debug, PartialEq)]
 pub(crate) struct HoleSpec {
     pub diameter_mm: f64,
@@ -27,14 +28,11 @@ pub(crate) fn hole_spec(input: &str) -> Option<HoleSpec> {
     }
     if size.starts_with(['M', 'm']) {
         let size = size.to_uppercase();
-        let diameter_mm = ketchup_program::library_metric_threads()
-            .ok()?
-            .get(&size)?
-            .tap_drill_mm;
+        let metric = *ketchup_program::library_metric_threads().ok()?.get(&size)?;
         let depth_mm = depth_mm?;
         return Some(HoleSpec {
-            diameter_mm,
-            depth_mm: Some(depth_mm),
+            diameter_mm: metric.tap_drill_mm,
+            depth_mm: Some(metric.blind_hole_depth_mm(depth_mm)),
             thread: Some(AssistantHoleThread {
                 size,
                 depth_mm,

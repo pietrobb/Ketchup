@@ -232,6 +232,19 @@ fn refused_holes_name_their_case_and_leave_the_document_untouched() {
             "planning_rejected",
             "planning.cad_hole_thread_unknown",
         ),
+        (
+            // DIN 76-1 e1: an M8 tap needs 6.2 mm below a 6 mm thread.
+            tap(
+                &top,
+                vec![[x + 20.0, y, z]],
+                6.8,
+                Some(12.0),
+                false,
+                Some(("M8", 6.0)),
+            ),
+            "planning_rejected",
+            "needs a blind hole at least 12.2 mm deep",
+        ),
     ] {
         assert_eq!(
             bridge.execute(&mut app, request, false),
@@ -276,7 +289,7 @@ fn a_tapped_hole_is_listed_for_machining_and_hardware_and_only_a_thread_is_saved
         .unwrap();
     assert!(saved(&app) == bytes);
 
-    let tapped = tap(&top, points(), 6.8, Some(15.0), false, Some(("M8", 12.0)));
+    let tapped = tap(&top, points(), 6.8, Some(19.0), false, Some(("M8", 12.0)));
     let applied = bridge.execute(&mut app, tapped, false).unwrap();
     assert_eq!(applied["published"], true, "{applied}");
     assert_eq!(app.undo_step_count(), undo + 1);
@@ -328,7 +341,7 @@ fn scale_refuses_a_tapped_part_and_a_thread_tapped_after_scale_keeps_its_size() 
             &top,
             vec![centroid(&top)],
             6.8,
-            Some(15.0),
+            Some(19.0),
             false,
             Some(("M8", 12.0)),
         );

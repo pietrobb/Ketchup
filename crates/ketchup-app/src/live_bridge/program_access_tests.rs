@@ -398,7 +398,7 @@ fn a_box_screwed_together_lists_its_screws_as_hardware_not_in_the_cut_list() {
          lid = box(\"lid\", (200, 200, 18), at = (0, 0, 40))\n\
          for i, (x, y) in enumerate([(20, 20), (180, 20), (20, 180), (180, 180)]):\n\
          \x20   hole(lid, \"z+\", world = (x, y, 58), diameter = 9, depth = 18, through = True)\n\
-         \x20   hole(base, \"z+\", world = (x, y, 40), depth = 25, thread = (\"M8\", 25))\n\
+         \x20   hole(base, \"z+\", world = (x, y, 40), depth = 32, thread = (\"M8\", 25))\n\
          \x20   bolt(\"screw %d\" % (i + 1), \"M8\", 40, at = (x, y, 58))\n";
     bridge
         .execute(&mut app, apply_source(source), false)

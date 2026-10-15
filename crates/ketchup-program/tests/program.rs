@@ -616,7 +616,7 @@ fn a_tapped_hole_drills_the_tap_drill_and_the_machining_report_names_the_thread(
         "tapped.star",
         "p = box(\"p\", (60, 40, 20))\n\
          hole(p, \"z+\", at = (10, 10), depth = 15, thread = (\"M5\", 10))\n\
-         hole(p, \"z+\", at = (30, 10), diameter = 6.8, depth = 15, thread = (\"M8\", 12))\n\
+         hole(p, \"z+\", at = (30, 10), diameter = 6.8, depth = 19, thread = (\"M8\", 12))\n\
          hole(p, \"z+\", at = (50, 30), diameter = 5, depth = 15)\n",
         &BTreeMap::new(),
     )
@@ -648,7 +648,7 @@ fn a_thread_that_does_not_fit_its_hole_is_refused_by_name() {
         ("depth = 15, thread = (\"M7\", 5)", "no thread \"M7\""),
         (
             "depth = 15, thread = (\"M5\", 20)",
-            "deeper than the 15 mm hole",
+            "needs a blind hole at least 24.2 mm deep",
         ),
         ("depth = 15", "give diameter="),
         (
@@ -676,7 +676,7 @@ fn screw_collisions(hole_thread: &str, thread_depth: &str, hole_at: &str) -> Vec
     let source = format!(
         "L = bolt_lengths(\"M5\", norm = \"ISO 4762\")[0]\n\
          p = box(\"p\", (40, 40, 30))\n\
-         hole(p, \"z+\", world = ({hole_at}, 30), depth = L + 3, thread = (\"{hole_thread}\", {thread_depth}))\n\
+         hole(p, \"z+\", world = ({hole_at}, 30), depth = L + 5, thread = (\"{hole_thread}\", {thread_depth}))\n\
          bolt(\"s\", \"M5\", L, norm = \"ISO 4762\", at = (20, 20, 30))\n"
     );
     let (_, report) =
@@ -696,7 +696,7 @@ fn a_screw_in_a_hole_tapped_with_its_thread_engages_it_instead_of_colliding() {
         "screw.star",
         "L = bolt_lengths(\"M5\", norm = \"ISO 4762\")[0]\n\
          p = box(\"p\", (40, 40, 30))\n\
-         hole(p, \"z+\", world = (20, 20, 30), depth = L, thread = (\"M5\", L))\n\
+         hole(p, \"z+\", world = (20, 20, 30), depth = L + 5, thread = (\"M5\", L))\n\
          bolt(\"s\", \"M5\", L, norm = \"ISO 4762\", at = (20, 20, 30))\n",
         &BTreeMap::new(),
     )
@@ -732,7 +732,7 @@ fn the_plain_shank_of_an_iso_4014_bolt_in_a_tapped_hole_collides() {
     let collisions = |norm: &str, depth: u32| {
         let source = format!(
             "p = box(\"p\", (40, 40, 40))\n\
-             hole(p, \"z+\", world = (20, 20, 40), diameter = 6.75, depth = {depth}, thread = (\"M8\", {depth}))\n\
+             hole(p, \"z+\", world = (20, 20, 40), diameter = 6.75, depth = {depth} + 6.2, thread = (\"M8\", {depth}))\n\
              bolt(\"s\", \"M8\", 80, norm = \"{norm}\", at = (20, 20, {}))\n",
             40 + 80 - depth
         );
@@ -756,7 +756,7 @@ fn a_screw_head_sunk_into_the_tapped_part_still_collides() {
         "screw.star",
         "L = bolt_lengths(\"M5\", norm = \"ISO 4762\")[0]\n\
          p = box(\"p\", (40, 40, 30))\n\
-         hole(p, \"z+\", world = (20, 20, 30), depth = L + 3, thread = (\"M5\", L + 3))\n\
+         hole(p, \"z+\", world = (20, 20, 30), depth = L + 8, thread = (\"M5\", L + 3))\n\
          bolt(\"s\", \"M5\", L, norm = \"ISO 4762\", at = (20, 20, 27))\n",
         &BTreeMap::new(),
     )

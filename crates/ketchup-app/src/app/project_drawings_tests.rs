@@ -245,7 +245,7 @@ fn large_house_the_house_sheet_has_plan_sections_and_elevations_of_the_visible_l
 
 /// A plate tapped M8 from its top and an M8 × 40 bolt lying along x.
 const BOLTED: &str = "p = box('plate', (60, 40, 20))\n\
-    hole(p, 'z+', at = (10, 10), diameter = 6.8, depth = 15, id = 'a', thread = ('M8', 10))\n\
+    hole(p, 'z+', at = (10, 10), diameter = 6.8, depth = 17, id = 'a', thread = ('M8', 10))\n\
     bolt('s', 'M8', 40, at = (100, 10, 5), axis = (1, 0, 0))\n";
 
 /// Threads reach the sheet as ISO 6410 lines: the tapped hole's root at its
@@ -310,7 +310,7 @@ fn tapped_holes_and_bolts_are_drawn_with_their_threads() {
 
 /// An M5 × 10 bolt 7.3 mm into a plate tapped M5 10 mm deep, turned 37°.
 const SCREWED: &str = "p = box('plate', (20, 20, 12))\n\
-    hole(p, 'z+', at = (10, 10), depth = 12, id = 'a', thread = ('M5', 10))\n\
+    hole(p, 'z+', at = (10, 10), depth = 12, through = True, id = 'a', thread = ('M5', 10))\n\
     s = bolt('s', 'M5', 10, at = (10, 10, 14.7))\n\
     place(s, origin = (10, 10, 14.7), z = (0, 0, 1), x = (0.7986355100472928, 0.6018150231520483, 0))\n";
 

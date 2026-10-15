@@ -567,6 +567,8 @@ def round_thread(radius, name = "thread"):
 #     thread=("M5", 10) taps an ISO metric coarse thread 10 mm deep (size from METRIC_COARSE_PITCH).
 #     The hole is then the tap drill METRIC_TAP_DRILL[size] (M8: 6.8; 6.75 is accepted too);
 #     omit diameter to drill it. The thread is listed in the machining report and the document.
+#     A blind hole is drilled METRIC_BLIND_HOLE_RUNOUT[size] deeper than its thread for the tap
+#     (DIN 76-1 e1; M8: 6.2): thread=("M8", 12) needs depth >= 18.2; a through hole needs none.
 #     depth is always explicit; through=True declares an intentional through bore, not a blind bore accidentally breaking out.
 #     Set depth to at least the part span along the drilling direction; a shorter through bore reports an error.
 #     Intent is retained in source, machining reports and canonical through cuts. Shallow through requests keep numeric geometry and report an error, not a silently deeper cut.
@@ -1264,7 +1266,8 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   Holes are not made for them: drill the parts (hole(..., through=True)) a little wider than
 #   the shank, and subtract() a bar or rod cast into concrete from the concrete.
 #   METRIC_COARSE_PITCH[size] is the ISO metric coarse pitch P, e.g. METRIC_COARSE_PITCH["M8"]
-#   = 1.25; a tapped hole is drilled with METRIC_TAP_DRILL[size] (M8: 6.8): hole(..., thread=("M8", 12)).
+#   = 1.25; a tapped hole is drilled with METRIC_TAP_DRILL[size] (M8: 6.8), a blind one
+#   METRIC_BLIND_HOLE_RUNOUT[size] deeper than its thread: hole(..., depth=19, thread=("M8", 12)).
 #   Example (an M12 bolt through two 10 mm plates; the full program with anchor rods and a
 #   rebar mesh in a footing is the example file anchored-beam.star):
 #     a = box("a", (100, 100, 10))
@@ -1311,6 +1314,8 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   METRIC_TAP_DRILL: de.wikipedia.org (Metrisches ISO-Gewinde, Kernlochbohrer column) and
 #     fullerfasteners.com agree M3-M24 except M8, where fullerfasteners gives D - P = 6.75 and
 #     the 6.8 drill of the German table is kept.
+#   METRIC_BLIND_HOLE_RUNOUT: DIN 76-1:2004-06 table 2 (thread runout of internal threads,
+#     e1 regular case, which applies unless a drawing says otherwise), read from the standard.
 #   B500B kg/m: reinforcing-bar.com (rebar sizes, metric table d6-d50), ulamex.com (ribbed bars
 #     B500B EN 10080, d6-d32: the formula d^2 x 0.006165 and d8/10/12/16/20/25/32),
 #     calcsteel.com (rebar weight calculator, EN 10080 d6-d40: the formula, d10/16/25). They
@@ -1413,6 +1418,13 @@ METRIC_COARSE_PITCH = {
 METRIC_TAP_DRILL = {
     "M3": 2.5, "M4": 3.3, "M5": 4.2, "M6": 5, "M8": 6.8, "M10": 8.5, "M12": 10.2, "M14": 12,
     "M16": 14, "M18": 15.5, "M20": 17.5, "M22": 19.5, "M24": 21,
+}
+
+# size: how much deeper than its thread a blind tapped hole is drilled, for the tap's lead
+# and the chips (DIN 76-1:2004 table 2, e1 regular case, by the pitch: 6.3 to 4 P).
+METRIC_BLIND_HOLE_RUNOUT = {
+    "M3": 2.8, "M4": 3.8, "M5": 4.2, "M6": 5.1, "M8": 6.2, "M10": 7.3, "M12": 8.3, "M14": 9.3,
+    "M16": 9.3, "M18": 11.2, "M20": 11.2, "M22": 11.2, "M24": 13.1,
 }
 
 _FASTENER_SOURCES = {

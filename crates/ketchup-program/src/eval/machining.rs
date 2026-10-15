@@ -37,7 +37,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             .transpose()?;
         let (diameter, thread) = match given(thread) {
             Some(thread) => {
-                let (diameter, thread) = tapped(thread, diameter, depth, heap)
+                let (diameter, thread) = tapped(thread, diameter, depth, through, heap)
                     .map_err(|error| anyhow::anyhow!("hole in {name:?}: {error}"))?;
                 (
                     diameter,
@@ -160,11 +160,13 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
 /// the hole's diameter, its tap drill when `diameter_mm` is not given. The
 /// same rule as the `drill_holes` operation: the size is in
 /// `METRIC_COARSE_PITCH`, the hole is its tap drill (`METRIC_TAP_DRILL`) within
-/// half a drill step, and the thread is at most as deep as the hole.
+/// half a drill step, and the thread is at most as deep as a `through` hole,
+/// or as a blind one less its runout (`METRIC_BLIND_HOLE_RUNOUT`).
 fn tapped<'v>(
     thread: Value<'v>,
     diameter_mm: Option<f64>,
     depth_mm: f64,
+    through: bool,
     heap: &'v Heap,
 ) -> anyhow::Result<(f64, HoleThread)> {
     let shape = "thread must be (size, depth), e.g. (\"M5\", 10)";
@@ -197,8 +199,19 @@ fn tapped<'v>(
             metric.tap_drill_mm
         );
     }
-    if thread_depth > depth_mm + TOLERANCE_MM {
-        anyhow::bail!("the thread is {thread_depth} mm deep, deeper than the {depth_mm} mm hole");
+    if thread_depth > metric.deepest_thread_mm(depth_mm, through) + TOLERANCE_MM {
+        if through {
+            anyhow::bail!(
+                "the thread is {thread_depth} mm deep, deeper than the {depth_mm} mm hole"
+            );
+        }
+        anyhow::bail!(
+            "a {thread_depth} mm deep {size} thread needs a blind hole at least {} mm deep: the \
+             tap needs {} mm below the thread (DIN 76-1 runout e1, METRIC_BLIND_HOLE_RUNOUT); \
+             this hole is {depth_mm} mm",
+            metric.blind_hole_depth_mm(thread_depth),
+            metric.blind_hole_runout_mm
+        );
     }
     Ok((
         diameter_mm,

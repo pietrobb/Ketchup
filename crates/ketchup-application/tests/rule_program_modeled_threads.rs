@@ -17,7 +17,7 @@ use std::time::Duration;
 fn source(bolt_option: &str) -> String {
     format!(
         "p = box('plate', (20, 20, 12))\n\
-         hole(p, 'z+', at = (10, 10), depth = 12, id = 'a', thread = ('M5', 10))\n\
+         hole(p, 'z+', at = (10, 10), depth = 12, through = True, id = 'a', thread = ('M5', 10))\n\
          s = bolt('s', 'M5', 10, at = (10, 10, 14.7){bolt_option})\n\
          place(s, origin = (10, 10, 14.7), z = (0, 0, 1), x = (0.7986355100472928, 0.6018150231520483, 0))\n"
     )

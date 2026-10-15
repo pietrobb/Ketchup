@@ -3,7 +3,7 @@
 use crate::*;
 
 const SOURCE: &str = "p = box('plate', (60, 40, 20))\n\
-    hole(p, 'z+', at = (10, 10), diameter = 6.8, depth = 15, id = 'a', thread = ('M8', 10))\n\
+    hole(p, 'z+', at = (10, 10), diameter = 6.8, depth = 17, id = 'a', thread = ('M8', 10))\n\
     hole(p, 'x+', at = (10, 10), diameter = 5, depth = 15, id = 'b')\n\
     bolt('s', 'M8', 40, at = (100, 10, 5), axis = (1, 0, 0))\n\
     nut('n', 'M8', at = (0, 100, 0))\n";
