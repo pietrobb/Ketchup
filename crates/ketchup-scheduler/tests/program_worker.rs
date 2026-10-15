@@ -1,7 +1,8 @@
-﻿//! Programs evaluated in the program worker: the review's runaway programs end
-//! with an error instead of taking the process down or running for minutes, and
-//! a normal program comes back bit for bit as it evaluates in process.
-use ketchup_program::{CancelToken, evaluate};
+﻿//! Programs evaluated and checked in the program worker: the review's runaway
+//! programs and models end with an error instead of taking the process down or
+//! running for minutes, and a normal program and its report come back bit for
+//! bit as in process.
+use ketchup_program::{CancelToken, evaluate, report};
 use ketchup_scheduler::program_worker::ProgramWorker;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -122,6 +123,36 @@ fn the_worker_stays_between_programs_and_is_replaced_after_a_kill() {
     assert_ne!(worker.process_id(), Some(first));
 }
 
+/// Checking 400 boxes that all overlap takes over a minute; the worker is
+/// stopped at its deadline and the next request starts a new one (review PRG-1).
+#[test]
+fn a_report_past_the_deadline_is_killed() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker().with_deadline(Duration::from_secs(2));
+    let evaluated = run(
+        &mut worker,
+        "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n",
+    )
+    .unwrap();
+    let started = Instant::now();
+    let error = worker
+        .report(&evaluated, &CancelToken::default())
+        .unwrap_err();
+    assert_eq!(error.code, "time_limit", "{error}");
+    assert!(
+        error.message.starts_with("checking the program's model"),
+        "{error}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(worker.process_id(), None);
+    let small = run(&mut worker, BOX).unwrap();
+    assert!(worker.report(&small, &CancelToken::default()).unwrap().ok);
+}
+
 const MOTION: &str = r#"
 p=param("position",40)
 a=box("anchor",(10,10,10),at=(-100,0,0))
@@ -240,6 +271,12 @@ fn assert_round_trip(programs: Vec<(String, String)>) {
         let isolated = worker.evaluate(&name, &source, &overrides, &CancelToken::default());
         // Debug spells out -0.0 and NaN, which PartialEq would let through.
         assert_eq!(format!("{isolated:?}"), format!("{local:?}"), "{name}");
-        assert!(local.is_ok(), "{name}: {local:?}");
+        let local = local.unwrap_or_else(|error| panic!("{name}: {error}"));
+        let checked = worker.report(&local, &CancelToken::default());
+        assert_eq!(
+            format!("{checked:?}"),
+            format!("{:?}", Ok::<_, ()>(report(&local))),
+            "{name}"
+        );
     }
 }

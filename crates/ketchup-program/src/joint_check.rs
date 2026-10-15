@@ -8,9 +8,9 @@
 use crate::loads::{JointLoad, LoadReport, Loads, Tension};
 use crate::member_check::{GAMMA_M_CONNECTION, action, kmod, ultimate};
 use crate::model::{Joint, JointRating, ProgramModel};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct JointCheck {
     pub joint: String,
     pub kind: String,
@@ -34,7 +34,8 @@ pub struct JointCheck {
     pub combination: Option<String>,
     /// "pass" or "fail" once a rating and the joint's complete load are both
     /// known, "not_verified" before.
-    pub status: &'static str,
+    #[serde(deserialize_with = "crate::wire_names::name")]
+    pub status: crate::wire_names::Name,
     /// Why the joint is not verified.
     pub missing: Vec<String>,
 }

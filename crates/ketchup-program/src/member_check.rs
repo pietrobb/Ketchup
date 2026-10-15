@@ -28,21 +28,23 @@ pub struct TimberClass {
     pub source: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Check {
     /// bending, shear, shear_notch, deflection_inst, deflection_fin, compression, bearing.
-    pub name: &'static str,
+    #[serde(deserialize_with = "crate::wire_names::name")]
+    pub name: crate::wire_names::Name,
     pub utilization: f64,
     pub combination: String,
     /// The span ("span 70-3068 mm") or the part it bears on / that bears on it.
     pub at: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct MemberCheck {
     pub part: String,
     /// "beam" or "column".
-    pub role: &'static str,
+    #[serde(deserialize_with = "crate::wire_names::name")]
+    pub role: crate::wire_names::Name,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strength_class: Option<String>,
     /// Width and depth (bending) or the two sides (column).
@@ -55,14 +57,30 @@ pub struct MemberCheck {
     pub governing: Option<String>,
     pub checks: Vec<Check>,
     /// "pass", "fail" (some check over 1 even with incomplete loads) or "not_verified".
-    pub status: &'static str,
+    #[serde(deserialize_with = "crate::wire_names::name")]
+    pub status: crate::wire_names::Name,
     pub missing: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct DesignReport {
+    #[serde(deserialize_with = "basis")]
     pub basis: Vec<&'static str>,
     pub members: Vec<MemberCheck>,
+}
+
+/// The basis comes back from the program worker as [`BASIS`] or empty.
+fn basis<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Vec<&'static str>, D::Error> {
+    let basis = Vec::<String>::deserialize(reader)?;
+    if basis.is_empty() {
+        Ok(Vec::new())
+    } else if basis.iter().map(String::as_str).eq(BASIS) {
+        Ok(BASIS.to_vec())
+    } else {
+        Err(serde::de::Error::custom(
+            "the design basis is not this build's",
+        ))
+    }
 }
 
 impl DesignReport {

@@ -43,6 +43,16 @@ impl std::fmt::Display for RuleProgramApplyError {
 
 impl std::error::Error for RuleProgramApplyError {}
 
+impl From<ketchup_program::ProgramError> for RuleProgramApplyError {
+    fn from(error: ketchup_program::ProgramError) -> Self {
+        Self::Program {
+            code: error.code.to_owned(),
+            message: error.message,
+            location: error.location,
+        }
+    }
+}
+
 impl From<SessionError> for RuleProgramApplyError {
     fn from(error: SessionError) -> Self {
         Self::Session(error)
@@ -204,11 +214,17 @@ pub struct RuleProgramPlan {
 }
 
 impl RuleProgramPlan {
-    /// Issues, relations and bill of materials of the planned program. On a large model
-    /// this costs far more than planning, so only callers that answer with it compute it.
-    #[must_use]
-    pub fn report(&self) -> Report {
-        ketchup_program::report(&self.evaluated)
+    /// Issues, relations and bill of materials of the planned program, from a
+    /// program worker. On a large model this costs far more than planning, so
+    /// only callers that answer with it compute it.
+    ///
+    /// # Errors
+    /// The checks did not finish within the worker's limits.
+    pub fn report(&self) -> Result<Report, RuleProgramApplyError> {
+        Ok(crate::program_isolation::report_program(
+            &self.evaluated,
+            &ketchup_program::CancelToken::default(),
+        )?)
     }
 }
 
@@ -276,7 +292,7 @@ impl DocumentSession {
         allow_replacement: bool,
     ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
         let plan = plan_rule_program(self.document_store(), &source)?;
-        let report = plan.report();
+        let report = plan.report()?;
         let RuleProgramPlan { evaluated, change } = plan;
         let snapshot = match change {
             RuleProgramChange::Unchanged => self.snapshot(),
@@ -535,11 +551,7 @@ fn evaluate(
         &source.overrides,
         &ketchup_program::CancelToken::default(),
     )
-    .map_err(|error| RuleProgramApplyError::Program {
-        code: error.code.to_owned(),
-        message: error.message,
-        location: error.location,
-    })
+    .map_err(RuleProgramApplyError::from)
 }
 
 fn append_removed_parts(
@@ -923,7 +935,7 @@ mod tests {
         let with_apron = program(format!("{TABLE}{APRON}"), &[]);
         let plan = plan_rule_program(session.document_store(), &with_apron).unwrap();
         assert!(matches!(plan.change, RuleProgramChange::Incremental(_)));
-        let report = plan.report();
+        let report = plan.report().unwrap();
         assert!(report.ok, "{:?}", report.issues);
         let added = session.apply_rule_program(with_apron, false).unwrap();
         assert!(!added.replaced_document);

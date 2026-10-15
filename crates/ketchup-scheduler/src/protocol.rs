@@ -11,7 +11,7 @@ use crate::{
 use ketchup_dwg::MAX_DWG_SOURCE_BYTES;
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_GRAPH_BYTES};
 use ketchup_model::graph::sha256_hex;
-use ketchup_program::{Evaluated, ProgramError, ProgramModel, SourceLines};
+use ketchup_program::{Evaluated, ProgramError, ProgramModel, Report, SourceLines};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -124,6 +124,10 @@ pub enum WorkerRequest {
     /// Runs a user's rule program. Only the program worker gets it: a process of
     /// its own in a job with a memory limit, killed on cancel and at the deadline.
     EvaluateProgram(ProgramInput),
+    /// Checks an evaluated program (collisions, relations, loads, bill of
+    /// materials). Only the program worker gets it: on a large model this costs
+    /// far more than the evaluation and has no bound of its own (review PRG-1).
+    ReportProgram(Box<EvaluatedProgram>),
     /// Reads a DWG file as DXF. Only the program worker gets it, for the same
     /// reason: the reader allocates what a damaged file declares.
     ConvertDwg(DwgInput),
@@ -161,6 +165,7 @@ pub enum WorkerReply {
     PairLoaded { slot: usize },
     Pair(PairMeasure),
     Program(Box<ProgramOutcome>),
+    Report(Box<ReportOutcome>),
     Dwg(Box<DwgOutcome>),
     Failure(WorkerFailure),
 }
@@ -313,30 +318,52 @@ pub struct ProgramInput {
     pub overrides: BTreeMap<String, f64>,
 }
 
-/// One evaluation with every field of [`Evaluated`]; its JSON form leaves the
-/// reference model out, the wire may not.
+/// Every field of [`Evaluated`]; its JSON form leaves the reference model out,
+/// the wire may not.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct EvaluatedProgram {
+    model: Box<ProgramModel>,
+    reference_model: Option<Box<ProgramModel>>,
+    log: Vec<String>,
+    unused_overrides: Vec<String>,
+    part_sources: BTreeMap<String, Vec<SourceLines>>,
+}
+
+impl From<Evaluated> for EvaluatedProgram {
+    fn from(evaluated: Evaluated) -> Self {
+        Self {
+            model: Box::new(evaluated.model),
+            reference_model: evaluated.reference_model.map(Box::new),
+            log: evaluated.log,
+            unused_overrides: evaluated.unused_overrides,
+            part_sources: evaluated.part_sources,
+        }
+    }
+}
+
+impl From<EvaluatedProgram> for Evaluated {
+    fn from(program: EvaluatedProgram) -> Self {
+        Self {
+            model: *program.model,
+            reference_model: program.reference_model.map(|model| *model),
+            log: program.log,
+            unused_overrides: program.unused_overrides,
+            part_sources: program.part_sources,
+        }
+    }
+}
+
+/// One evaluation.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum ProgramOutcome {
-    Evaluated {
-        model: Box<ProgramModel>,
-        reference_model: Option<Box<ProgramModel>>,
-        log: Vec<String>,
-        unused_overrides: Vec<String>,
-        part_sources: BTreeMap<String, Vec<SourceLines>>,
-    },
+    Evaluated(EvaluatedProgram),
     Failed(ProgramError),
 }
 
 impl From<Result<Evaluated, ProgramError>> for ProgramOutcome {
     fn from(result: Result<Evaluated, ProgramError>) -> Self {
         match result {
-            Ok(evaluated) => Self::Evaluated {
-                model: Box::new(evaluated.model),
-                reference_model: evaluated.reference_model.map(Box::new),
-                log: evaluated.log,
-                unused_overrides: evaluated.unused_overrides,
-                part_sources: evaluated.part_sources,
-            },
+            Ok(evaluated) => Self::Evaluated(evaluated.into()),
             Err(error) => Self::Failed(error),
         }
     }
@@ -345,22 +372,19 @@ impl From<Result<Evaluated, ProgramError>> for ProgramOutcome {
 impl From<ProgramOutcome> for Result<Evaluated, ProgramError> {
     fn from(outcome: ProgramOutcome) -> Self {
         match outcome {
-            ProgramOutcome::Evaluated {
-                model,
-                reference_model,
-                log,
-                unused_overrides,
-                part_sources,
-            } => Ok(Evaluated {
-                model: *model,
-                reference_model: reference_model.map(|model| *model),
-                log,
-                unused_overrides,
-                part_sources,
-            }),
+            ProgramOutcome::Evaluated(program) => Ok(program.into()),
             ProgramOutcome::Failed(error) => Err(error),
         }
     }
+}
+
+/// [`ketchup_program::report`] of one evaluation. The report leaves out the
+/// program lines of its parts; the caller has them in its evaluation.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum ReportOutcome {
+    Reported(Box<Report>),
+    /// The report did not fit its reply.
+    Failed(ProgramError),
 }
 
 /// Describes a display mesh written to the requested file.

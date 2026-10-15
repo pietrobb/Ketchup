@@ -56,7 +56,7 @@ fn check(
 ) -> Result<Checked, RuleProgramApplyError> {
     let started = Instant::now();
     let plan = ketchup_application::plan_rule_program(&document, source)?;
-    let mut report = plan.report();
+    let mut report = plan.report()?;
     let before = document.current();
     let (change, after) = match plan.change {
         RuleProgramChange::Unchanged => ("unchanged", before.clone()),

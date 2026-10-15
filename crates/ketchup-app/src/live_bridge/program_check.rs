@@ -18,7 +18,7 @@ fn plan_with_report(
     source: &RuleProgramSource,
 ) -> Result<(RuleProgramPlan, Report), RuleProgramApplyError> {
     let plan = ketchup_application::plan_rule_program(document, source)?;
-    let report = plan.report();
+    let report = plan.report()?;
     Ok((plan, report))
 }
 

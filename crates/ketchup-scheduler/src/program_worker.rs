@@ -12,13 +12,13 @@
 //! the DWG reader.
 pub use crate::protocol::DwgRefusal;
 use crate::protocol::{
-    DwgInput, Frame, MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, ProgramInput, WorkerFailure,
-    WorkerReply, WorkerRequest, protocol_identity, read_frame, write_frame,
+    DwgInput, Frame, MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, ProgramInput, ReportOutcome,
+    WorkerFailure, WorkerReply, WorkerRequest, protocol_identity, read_frame, write_frame,
 };
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
 use ketchup_dwg::{DwgDrawing, MAX_DWG_SOURCE_BYTES};
 use ketchup_program::{
-    CancelToken, EVALUATION_HEAP_BYTES, EVALUATION_TIME, Evaluated, ProgramError,
+    CancelToken, EVALUATION_HEAP_BYTES, EVALUATION_TIME, Evaluated, ProgramError, Report,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -35,6 +35,11 @@ pub const PROGRAM_WORKER_MEMORY_BYTES: usize = 2 * EVALUATION_HEAP_BYTES;
 /// The interpreter looks at its clock only between statements; one builtin call
 /// can run far past it, so the parent stops the worker a little later.
 const DEADLINE_MARGIN: Duration = Duration::from_secs(5);
+
+/// How long checking one evaluated model may take: the checks of the largest
+/// example program (1 854 parts) take far longer than its evaluation, 1.5 s in
+/// a release build and 28 s in a debug build.
+const REPORT_DEADLINE: Duration = Duration::from_secs(60);
 
 /// How long reading one DWG file may take.
 const DWG_DEADLINE: Duration = Duration::from_secs(60);
@@ -114,6 +119,7 @@ pub struct ProgramWorker {
     executable: PathBuf,
     executable_sha256: String,
     deadline: Duration,
+    report_deadline: Duration,
     running: Option<Running>,
 }
 
@@ -128,15 +134,17 @@ impl ProgramWorker {
             executable,
             executable_sha256,
             deadline: EVALUATION_TIME + DEADLINE_MARGIN,
+            report_deadline: REPORT_DEADLINE,
             running: None,
         })
     }
 
-    /// Stops an evaluation after `deadline` instead of the interpreter's limit
-    /// plus a margin; tests use it to reach the deadline quickly.
+    /// Stops an evaluation and a report after `deadline` instead of their own
+    /// limits; tests use it to reach the deadline quickly.
     #[must_use]
     pub fn with_deadline(mut self, deadline: Duration) -> Self {
         self.deadline = deadline;
+        self.report_deadline = deadline;
         self
     }
 
@@ -169,6 +177,31 @@ impl ProgramWorker {
         })
         .map_err(Stopped::program_error)?
         .into()
+    }
+
+    /// [`ketchup_program::report`] of `evaluated` in the worker, under the
+    /// memory limit of an evaluation and a deadline of its own: on a large model
+    /// the checks cost far more than the evaluation and have no bound of their own.
+    ///
+    /// # Errors
+    /// `report_too_large`, or `cancelled`, `time_limit`, `memory_limit` and
+    /// `worker_failed` when the worker was stopped or died.
+    pub fn report(
+        &mut self,
+        evaluated: &Evaluated,
+        cancel: &CancelToken,
+    ) -> Result<Report, ProgramError> {
+        let input = evaluated.clone().into();
+        let deadline = self.report_deadline;
+        let outcome = self
+            .call(cancel, |client| {
+                client.report_program(input, cancel.flag(), deadline)
+            })
+            .map_err(Stopped::report_error)?;
+        match outcome {
+            ReportOutcome::Reported(report) => Ok(report.with_part_sources(evaluated)),
+            ReportOutcome::Failed(error) => Err(error),
+        }
     }
 
     /// [`ketchup_dwg::dwg_to_dxf`] in the worker, for a file of at most
@@ -262,6 +295,10 @@ pub fn run_stdio() {
                         .into(),
                 ))
             }
+            Frame::Message(WorkerRequest::ReportProgram(input)) => {
+                let report = ketchup_program::report(&Evaluated::from(*input));
+                WorkerReply::Report(Box::new(ReportOutcome::Reported(Box::new(report))))
+            }
             Frame::Message(WorkerRequest::ConvertDwg(input)) => WorkerReply::Dwg(Box::new(
                 ketchup_dwg::dwg_to_dxf(
                     &input.dwg,
@@ -276,16 +313,32 @@ pub fn run_stdio() {
             Frame::Closed | Frame::TooLarge | Frame::Transport(_) => break,
         };
         let written = match write_frame(&mut stdout, &reply, MAX_REPLY_FRAME_BYTES) {
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => write_frame(
-                &mut stdout,
-                &WorkerReply::Failure(WorkerFailure::code("resource_limit")),
-                MAX_REPLY_FRAME_BYTES,
-            ),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                write_frame(&mut stdout, &too_large(&reply), MAX_REPLY_FRAME_BYTES)
+            }
             written => written,
         };
         if written.is_err() {
             break;
         }
+    }
+}
+
+/// What the worker answers instead of a reply larger than its frame.
+fn too_large(reply: &WorkerReply) -> WorkerReply {
+    match reply {
+        WorkerReply::Report(_) => {
+            WorkerReply::Report(Box::new(ReportOutcome::Failed(ProgramError {
+                code: "report_too_large",
+                message: format!(
+                    "the program's model has more issues and relations than one report of {} MiB \
+                 holds; fix the overlapping parts it reports in smaller groups",
+                    MAX_REPLY_FRAME_BYTES >> 20
+                ),
+                location: None,
+            })))
+        }
+        _ => WorkerReply::Failure(WorkerFailure::code("resource_limit")),
     }
 }
 
@@ -355,6 +408,26 @@ impl Stopped {
             code,
             message,
             location: None,
+        }
+    }
+
+    fn report_error(self) -> ProgramError {
+        let message = match &self {
+            Self::TimeLimit(after) => format!(
+                "checking the program's model (collisions, relations, loads) took longer than {} s \
+                 and was stopped; too many parts overlap or touch one another",
+                after.as_secs()
+            ),
+            Self::MemoryLimit => format!(
+                "checking the program's model (collisions, relations, loads) needed more than {} GiB \
+                 of memory and was stopped; too many parts overlap or touch one another",
+                PROGRAM_WORKER_MEMORY_BYTES >> 30
+            ),
+            Self::Cancelled | Self::Failed(_) => return self.program_error(),
+        };
+        ProgramError {
+            message,
+            ..self.program_error()
         }
     }
 

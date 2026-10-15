@@ -162,9 +162,9 @@ fn handle_request(
         WorkerRequest::PairQuery(query) => pairs.query(backend, &query),
         WorkerRequest::PairEnd => pairs.end(),
         // Programs and DWG files go to ketchup-program-worker.
-        WorkerRequest::EvaluateProgram(_) | WorkerRequest::ConvertDwg(_) => {
-            Err(WorkerFailure::invalid_request())
-        }
+        WorkerRequest::EvaluateProgram(_)
+        | WorkerRequest::ReportProgram(_)
+        | WorkerRequest::ConvertDwg(_) => Err(WorkerFailure::invalid_request()),
         WorkerRequest::Exception => match backend.exception_probe() {
             Ok(_) => Err(WorkerFailure::code("unexpected_success")),
             Err(error) => Err(WorkerFailure::code(error.code.as_str())),

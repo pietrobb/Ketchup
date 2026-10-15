@@ -61,6 +61,26 @@ impl<'de> Deserialize<'de> for Issue {
     }
 }
 
+/// The issues of a report from the program worker, of every kind the checks use.
+pub(crate) fn report_issues<'de, D: serde::Deserializer<'de>>(
+    reader: D,
+) -> Result<Vec<Issue>, D::Error> {
+    Vec::<DeclaredIssue>::deserialize(reader)?
+        .into_iter()
+        .map(|issue| {
+            Ok(Issue {
+                severity: issue.severity,
+                kind: crate::wire_names::known(issue.kind)?,
+                parts: issue.parts,
+                message: issue.message,
+                where_mm: issue.where_mm,
+                hint: issue.hint,
+                source_lines: issue.source_lines,
+            })
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Issue {
     pub severity: Severity,

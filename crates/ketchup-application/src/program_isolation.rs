@@ -1,7 +1,8 @@
-//! Every evaluation of a user's program in the editor, and every DWG file it
-//! reads, goes through here: they run in a program worker process (see
-//! `ketchup_scheduler::program_worker`), so a program that takes all the memory
-//! or never ends, or a damaged DWG file, cannot take the window down.
+//! Every evaluation of a user's program in the editor, every check of its model
+//! and every DWG file it reads go through here: they run in a program worker
+//! process (see `ketchup_scheduler::program_worker`), so a program that takes
+//! all the memory or never ends, a model too large to check, or a damaged DWG
+//! file cannot take the window down.
 use crate::evaluation::{configured_exact_worker, exact_worker_candidates};
 use ketchup_dwg::DwgDrawing;
 use ketchup_program::{CancelToken, Evaluated, ProgramError, Report};
@@ -37,18 +38,33 @@ pub fn evaluate_program(
     )
 }
 
-/// [`ketchup_program::run`] with the evaluation in a program worker; the report
-/// is derived here from the evaluated model.
+/// [`ketchup_program::report`] in a program worker, under its memory limit and
+/// a deadline of a minute (review PRG-1).
 ///
 /// # Errors
-/// As [`evaluate_program`].
+/// `report_too_large`, `time_limit`, `memory_limit` and `worker_failed`.
+pub fn report_program(evaluated: &Evaluated, cancel: &CancelToken) -> Result<Report, ProgramError> {
+    with_worker(|worker| worker.report(evaluated, cancel)).unwrap_or_else(|error| {
+        Err(ProgramError {
+            code: "worker_failed",
+            message: format!("programs cannot be checked: {error}"),
+            location: None,
+        })
+    })
+}
+
+/// [`ketchup_program::run`] with the evaluation and the report in a program worker.
+///
+/// # Errors
+/// As [`evaluate_program`] and [`report_program`].
 pub fn run_program(
     file_name: &str,
     source: &str,
     overrides: &BTreeMap<String, f64>,
 ) -> Result<(Evaluated, Report), ProgramError> {
-    let evaluated = evaluate_program(file_name, source, overrides, &CancelToken::default())?;
-    let report = ketchup_program::report(&evaluated);
+    let cancel = CancelToken::default();
+    let evaluated = evaluate_program(file_name, source, overrides, &cancel)?;
+    let report = report_program(&evaluated, &cancel)?;
     Ok((evaluated, report))
 }
 

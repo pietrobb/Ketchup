@@ -4,11 +4,11 @@ use crate::cut_list::plain_attribute;
 use crate::model::ProgramModel;
 use crate::table::{Cell, Table};
 use ketchup_model::document::HoleThread;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One cut-list row: identical parts (material and dimensions) grouped.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct CutListRow {
     pub material: String,
     /// Dimensions sorted from longest to shortest (length, width, thickness).
@@ -19,21 +19,21 @@ pub struct CutListRow {
 
 /// Bought items: a joint's named fasteners, and the parts ordered by their
 /// designation, grouped by designation and their other attributes.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct HardwareRow {
     pub item: String,
     pub count: usize,
     /// The designated parts this row counts.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<String>,
     /// Their program attributes besides the designation, e.g. the standard.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: BTreeMap<String, String>,
 }
 
 /// Bars cut (and bent) to length, e.g. reinforcement, ordered as pieces:
 /// identical pieces (grade, diameter, shape, cut length) are one position.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct BarRow {
     pub position: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,10 +52,11 @@ pub struct BarRow {
     pub parts: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Operation {
     pub id: String,
-    pub kind: &'static str,
+    #[serde(deserialize_with = "crate::wire_names::name")]
+    pub kind: crate::wire_names::Name,
     pub face: String,
     /// Holes: face coordinates of the centre. Pockets: (u_min, v_min, u_max, v_max).
     pub position_mm: Vec<f64>,
@@ -70,18 +71,18 @@ pub struct Operation {
     pub thread: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct PartMachining {
     pub part: String,
     pub size_mm: [f64; 3],
     pub operations: Vec<Operation>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Bom {
     pub cut_list: Vec<CutListRow>,
     pub hardware: Vec<HardwareRow>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bar_schedule: Vec<BarRow>,
     pub machining: Vec<PartMachining>,
     pub total_parts: usize,

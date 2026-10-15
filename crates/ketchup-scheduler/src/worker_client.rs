@@ -2,9 +2,10 @@
 //! each checked against the request that produced it.
 use super::*;
 use crate::protocol::{
-    DwgInput, DwgOutcome, ExportReceipt, Frame, GraphInput, MAX_REPLY_FRAME_BYTES,
-    MAX_REQUEST_FRAME_BYTES, MeshReceipt, ProgramInput, ProgramOutcome, SourceFile, WorkerFailure,
-    WorkerImportPart, WorkerReply, WorkerRequest, encode_frame, protocol_identity, read_frame,
+    DwgInput, DwgOutcome, EvaluatedProgram, ExportReceipt, Frame, GraphInput,
+    MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MeshReceipt, ProgramInput, ProgramOutcome,
+    ReportOutcome, SourceFile, WorkerFailure, WorkerImportPart, WorkerReply, WorkerRequest,
+    encode_frame, protocol_identity, read_frame,
 };
 
 pub(crate) struct WorkerWriteRequest {
@@ -670,6 +671,19 @@ impl ExactWorkerClient {
     ) -> Result<ProgramOutcome, WorkerError> {
         match self.call(&WorkerRequest::EvaluateProgram(input), cancelled, timeout)? {
             WorkerReply::Program(outcome) => Ok(*outcome),
+            reply => self.unexpected(reply),
+        }
+    }
+
+    pub(crate) fn report_program(
+        &mut self,
+        input: EvaluatedProgram,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<ReportOutcome, WorkerError> {
+        let request = WorkerRequest::ReportProgram(Box::new(input));
+        match self.call(&request, cancelled, timeout)? {
+            WorkerReply::Report(outcome) => Ok(*outcome),
             reply => self.unexpected(reply),
         }
     }

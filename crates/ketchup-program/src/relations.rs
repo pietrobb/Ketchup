@@ -10,12 +10,12 @@ use crate::frame::{self, Obb};
 use crate::model::{Part, ProgramBooleanKind, ProgramModel};
 use crate::validate::{self, COLLISION_UNVERIFIED, Issue};
 use ketchup_geometry::linalg::dot;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Parts closer than this are listed with their clearance.
 pub const GAP_LIMIT_MM: f64 = 20.0;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
     /// Faces touch over a patch of positive area.
@@ -29,7 +29,7 @@ pub enum RelationKind {
 }
 
 /// Why an overlap exists.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlapStatus {
     /// One part had the other subtracted: a socket, mortise or through hole.
@@ -50,7 +50,7 @@ pub enum OverlapStatus {
     BoxesOnly,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Relation {
     pub parts: [String; 2],
     pub kind: RelationKind,
@@ -79,7 +79,7 @@ pub struct Relation {
     pub joint: Option<String>,
     /// Measured on boxes although a part is not exactly its box (profile
     /// body, trim or intersect); the exact solid may differ.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approx: bool,
 }
 

@@ -61,7 +61,7 @@ pub struct AreaLoad {
 }
 
 /// A load spread evenly over `from_mm..to_mm` along a member (equal ends: a point load).
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Patch {
     pub from_mm: f64,
     pub to_mm: f64,
@@ -74,7 +74,7 @@ pub struct Patch {
 }
 
 /// What a member passes to one of its supports.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Reaction {
     pub part: String,
     pub at_mm: f64,
@@ -91,7 +91,7 @@ pub struct Reaction {
     pub lifted_off: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct MemberLoad {
     pub part: String,
     pub length_mm: f64,
@@ -105,7 +105,7 @@ pub struct MemberLoad {
     pub missing: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct JointLoad {
     pub loads_n: Loads,
     pub missing: Vec<String>,
@@ -116,7 +116,7 @@ pub struct JointLoad {
 
 /// The pull a joint takes holding a member down against lifting, in newtons
 /// (positive), each load kind counted apart on every stretch of the member.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Tension {
     /// For static equilibrium (EN 1990 A1.2(A)): permanent 0.9 where it holds
     /// the member down and 1.1 where it lifts it, variable loads 1.5 only where
@@ -141,7 +141,7 @@ impl Tension {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct LoadReport {
     pub members: Vec<MemberLoad>,
     /// Load passed through each bearing joint, and the pull of every joint

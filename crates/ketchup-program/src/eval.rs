@@ -64,7 +64,7 @@ impl std::error::Error for ProgramError {}
 
 /// Every [`ProgramError`] code. The last three come from the separate process
 /// that evaluates programs: it ran out of memory, ran past its time, or died.
-pub const ERROR_CODES: [&str; 8] = [
+pub const ERROR_CODES: [&str; 9] = [
     "syntax_error",
     "evaluation_error",
     "cancelled",
@@ -73,6 +73,7 @@ pub const ERROR_CODES: [&str; 8] = [
     "memory_limit",
     "time_limit",
     "worker_failed",
+    "report_too_large",
 ];
 
 #[derive(Deserialize)]
