@@ -561,3 +561,15 @@ fn metric_threads_give_the_coarse_pitch_and_the_tap_drill_of_the_shop() {
     ];
     assert!(threads.keys().eq(sizes.iter()), "{threads:?}");
 }
+
+/// Export checks a tapped hole against the geometry crate's table, which the
+/// manufacturing crate can reach; it must hold what the prelude holds.
+#[test]
+fn the_prelude_thread_tables_are_the_tapping_table_export_checks_against() {
+    let threads = ketchup_program::library_metric_threads().unwrap();
+    let table = ketchup_geometry::tapping::METRIC_COARSE_TAPPING;
+    assert_eq!(threads.len(), table.len());
+    for (size, tapping) in table {
+        assert_eq!(threads.get(size), Some(&tapping), "{size}");
+    }
+}

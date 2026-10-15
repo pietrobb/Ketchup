@@ -3,6 +3,7 @@ use crate::btlx_blank::{
     assert_btlx_machining_lies_in_its_blank_within, btlx_machining_overshoots,
 };
 use ketchup_geometry::prismatic::Aabb;
+use ketchup_geometry::tapping::TappedHoleMismatch;
 use ketchup_manufacturing::fabrication::{
     BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
     BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,
@@ -2104,7 +2105,7 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
 #[test]
 fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_and_woodwop_refuses_it()
  {
-    let mut document = circular_drill_document();
+    let mut document = tap_drill_document();
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetProductionCode {
@@ -2180,6 +2181,93 @@ fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_a
             .err(),
         refused
     );
+}
+
+/// A thread recorded on a hole that does not take it (set raw, or left from
+/// before the hole or the thread changed) is refused by name wherever it
+/// would reach the shop: machine files, the production job and the drawing.
+#[test]
+fn a_hole_that_does_not_take_its_thread_is_refused_by_name_at_every_export() {
+    let tapped = |document: DocumentStore, thread: HoleThread| {
+        let mut document = document;
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetProductionCode {
+                    instance_path: InstancePath::root(GRAPH_LEFT),
+                    code: Some("000000000046".to_owned()),
+                },
+                CanonicalCommand::SetProductionCode {
+                    instance_path: InstancePath::root(GRAPH_RIGHT),
+                    code: Some("000000000047".to_owned()),
+                },
+                CanonicalCommand::SetHoleThread {
+                    id: GRAPH_BOOLEAN,
+                    thread: Some(thread),
+                },
+            ]))
+            .unwrap();
+        exact_graph_document_fabrication_projection(
+            document,
+            "m17-circular-drill-result",
+            GRAPH_BOOLEAN,
+        )
+    };
+    let m12 = |pitch_mm: f64, depth_mm: f64| HoleThread {
+        size: "M12".to_owned(),
+        pitch_mm,
+        depth_mm,
+        modeled: None,
+    };
+    for (document, thread, mismatch) in [
+        // The 10 mm hole is not the M12 tap drill.
+        (
+            circular_drill_document(),
+            m12(1.75, 40.0),
+            TappedHoleMismatch::Drill {
+                tap_drill_mm: 10.2,
+                hole_diameter_mm: 10.0,
+            },
+        ),
+        // A 50 mm blind hole leaves the tap 8.3 mm below a 41.7 mm thread.
+        (
+            tap_drill_document(),
+            m12(1.75, 45.0),
+            TappedHoleMismatch::TooDeep {
+                deepest_thread_mm: 50.0 - 8.3,
+                hole_depth_mm: 50.0,
+            },
+        ),
+        // M12 is coarse 1.75; a raw command recorded another pitch.
+        (
+            tap_drill_document(),
+            m12(1.5, 40.0),
+            TappedHoleMismatch::Pitch {
+                coarse_pitch_mm: 1.75,
+            },
+        ),
+    ] {
+        let label = thread.label();
+        let (snapshot, projection) = tapped(document, thread);
+        let refused = GeneralFabricationError::TappedHoleInvalid {
+            part: "Timber with circular drilling".to_owned(),
+            thread: label.clone(),
+            mismatch,
+        };
+        assert_eq!(
+            projection.manufacturing_export(&snapshot).err(),
+            Some(refused.clone()),
+            "{label}"
+        );
+        assert_eq!(
+            projection.btlx_2_3_1_export(&snapshot).err(),
+            Some(refused.clone())
+        );
+        assert_eq!(
+            projection.production_job(&snapshot, &[]).err(),
+            Some(refused.clone())
+        );
+        assert_eq!(projection.drawing_svg(&snapshot).err(), Some(refused));
+    }
 }
 
 #[test]
@@ -2842,10 +2930,29 @@ fn circular_drill_document_at(center: [f64; 2]) -> DocumentStore {
 /// Timber stock of the given profile and length with one 10 mm hole, 50 mm
 /// deep, drilled into its start face at center.
 fn drilled_stock_document(stock: &[[f64; 2]], length_mm: &str, center: [f64; 2]) -> DocumentStore {
-    let east = [center[0] + 5.0, center[1]];
-    let north = [center[0], center[1] + 5.0];
-    let west = [center[0] - 5.0, center[1]];
-    let south = [center[0], center[1] - 5.0];
+    drilled_stock_document_with_radius(stock, length_mm, center, 5.0)
+}
+
+/// The circular drilling document with the 10.2 mm tap drill of an M12 thread.
+fn tap_drill_document() -> DocumentStore {
+    drilled_stock_document_with_radius(
+        &[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
+        "1000",
+        [50.0, 25.0],
+        5.1,
+    )
+}
+
+fn drilled_stock_document_with_radius(
+    stock: &[[f64; 2]],
+    length_mm: &str,
+    center: [f64; 2],
+    radius: f64,
+) -> DocumentStore {
+    let east = [center[0] + radius, center[1]];
+    let north = [center[0], center[1] + radius];
+    let west = [center[0] - radius, center[1]];
+    let south = [center[0], center[1] - radius];
     let arc = |start_mm, end_mm| ProfileSegment::CircularArc {
         start_mm,
         end_mm,

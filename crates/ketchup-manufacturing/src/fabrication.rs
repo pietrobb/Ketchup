@@ -1,5 +1,6 @@
 use ketchup_geometry::linalg::{cross, dot};
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
+use ketchup_geometry::tapping::TappedHoleMismatch;
 use ketchup_model::document::{
     CanonicalError, ClassificationError, DefinitionId, DocumentId, FeatureId, FeatureKind,
     HoleThread, InstancePath, InstancePathStep, OccurrenceId, ScaledPlacement, Snapshot,
@@ -27,6 +28,7 @@ use std::fmt;
 use std::num::TryFromIntError;
 
 pub mod production;
+mod taps;
 
 pub const FABRICATION_PROJECTION_V1: &str = "ketchup.fabrication-projection.v1";
 pub const BEAM_FABRICATION_EVALUATOR_V1: &str = "ketchup.beam-fabrication-evaluator.v1";
@@ -242,6 +244,14 @@ pub enum GeneralFabricationError {
         part: String,
         thread: String,
     },
+    /// A drilling of `part` does not take the `thread` recorded on its hole
+    /// (the hole or the thread changed after it was tapped), so no machine
+    /// file, job or drawing may name that thread.
+    TappedHoleInvalid {
+        part: String,
+        thread: String,
+        mismatch: TappedHoleMismatch,
+    },
 }
 
 impl GeneralFabricationError {
@@ -309,6 +319,14 @@ impl fmt::Display for GeneralFabricationError {
             Self::WoodwopTappedHole { part, thread } => write!(
                 formatter,
                 "part \"{part}\" has a tapped hole ({thread}) that a woodWOP program cannot tap: its drilling macro drills the core hole only, so the part would be made without the thread; export BTLx or the production job, which carry the thread, or remove the thread",
+            ),
+            Self::TappedHoleInvalid {
+                part,
+                thread,
+                mismatch,
+            } => write!(
+                formatter,
+                "part \"{part}\" has a hole that does not take its thread {thread}: {mismatch}; tap the hole again or change the thread",
             ),
         }
     }
@@ -722,6 +740,7 @@ impl GeneralFabricationProjection {
 
     pub fn drawing_svg(&self, snapshot: &Snapshot) -> Result<Vec<u8>, GeneralFabricationError> {
         self.bom_export(snapshot)?;
+        taps::check_tapped_holes(&self.manufacturing.operations, snapshot)?;
         if self.drawings.drawings.len() != self.bom.rows.len()
             || self
                 .drawings
@@ -898,6 +917,7 @@ impl GeneralFabricationProjection {
                 GeneralFabricationError::ExportBlocked.at_part(part.name())
             }));
         }
+        taps::check_tapped_holes(&self.manufacturing.operations, snapshot)?;
         let mut output = format!(
             "{GENERAL_MANUFACTURING_EXPORT_V2}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\n",
             self.manufacturing.envelope.document_id.0,
@@ -992,7 +1012,7 @@ impl GeneralFabricationProjection {
         }
         // One program machines every copy of the row.
         check_copies_share_machining(snapshot, row)?;
-        check_woodwop_taps_nothing(
+        taps::check_woodwop_taps_nothing(
             machining,
             snapshot
                 .definition(row.definition_id)
@@ -1108,7 +1128,7 @@ impl GeneralFabricationProjection {
                 {
                     return Err(GeneralFabricationError::ExportBlocked);
                 }
-                check_woodwop_taps_nothing(machining, part)?;
+                taps::check_woodwop_taps_nothing(machining, part)?;
                 let stock_frame = woodwop_stock_frame(&stock.machining)
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
                 for instance_path in &row.instances {
@@ -2182,24 +2202,6 @@ fn homag_code128_svg(program_name: &str) -> Option<Vec<u8>> {
         module_count / 2
     ));
     Some(svg.into_bytes())
-}
-
-/// Refuses a woodWOP program for `part` if one of its drillings is tapped:
-/// the drilling macro would make the core hole and lose the thread.
-fn check_woodwop_taps_nothing(
-    machining: &[&GeneralManufacturingOperation],
-    part: &str,
-) -> Result<(), GeneralFabricationError> {
-    match machining
-        .iter()
-        .find_map(|operation| operation.thread.as_ref())
-    {
-        Some(thread) => Err(GeneralFabricationError::WoodwopTappedHole {
-            part: part.to_owned(),
-            thread: thread.label(),
-        }),
-        None => Ok(()),
-    }
 }
 
 fn woodwop_drilling_macro(

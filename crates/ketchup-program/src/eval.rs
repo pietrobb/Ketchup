@@ -2416,44 +2416,7 @@ pub fn library_material_weights()
         .map_err(Clone::clone)
 }
 
-/// The coarse pitch P of an ISO metric thread, its tap drill and how much
-/// deeper than the thread a blind hole is drilled, in mm.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MetricThread {
-    pub pitch_mm: f64,
-    pub tap_drill_mm: f64,
-    pub blind_hole_runout_mm: f64,
-}
-
-/// How far a tapped hole may sit from its tap drill: half a 0.1 mm drill step,
-/// so a hole drilled D − P (M8: 6.75 for the 6.8 drill) still takes the thread.
-pub const TAP_DRILL_STEP_TOLERANCE_MM: f64 = 0.05;
-
-impl MetricThread {
-    /// Whether a `diameter_mm` hole takes this thread: its tap drill or one
-    /// within half a drill step of it, within the model `tolerance_mm`.
-    #[must_use]
-    pub fn fits_drill(&self, diameter_mm: f64, tolerance_mm: f64) -> bool {
-        (diameter_mm - self.tap_drill_mm).abs() <= TAP_DRILL_STEP_TOLERANCE_MM + tolerance_mm
-    }
-
-    /// The deepest thread a hole `hole_depth_mm` deep takes: all of a
-    /// `through` hole, a blind one less the runout the tap needs below it.
-    #[must_use]
-    pub fn deepest_thread_mm(&self, hole_depth_mm: f64, through: bool) -> f64 {
-        if through {
-            hole_depth_mm
-        } else {
-            hole_depth_mm - self.blind_hole_runout_mm
-        }
-    }
-
-    /// The shallowest blind hole a thread `thread_depth_mm` deep takes, to the µm.
-    #[must_use]
-    pub fn blind_hole_depth_mm(&self, thread_depth_mm: f64) -> f64 {
-        ((thread_depth_mm + self.blind_hole_runout_mm) * 1000.0).round() / 1000.0
-    }
-}
+pub use ketchup_geometry::tapping::{MetricTapping as MetricThread, TAP_DRILL_STEP_TOLERANCE_MM};
 
 /// `METRIC_COARSE_PITCH` and `METRIC_TAP_DRILL` of the prelude in use, size
 /// ("M8") → pitch and tap drill, read from the frozen library like
