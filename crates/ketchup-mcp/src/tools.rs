@@ -272,7 +272,7 @@ impl Tools {
             "export_variants" => self.send("export_program_variants", args, APPLY_PROGRAM_WAIT),
             "report" => {
                 args.entry("limit").or_insert(json!(50));
-                self.send("program_report", args, DEFAULT_WAIT)
+                self.send("program_report", args, APPLY_PROGRAM_WAIT)
             }
             "validate" => self.send("validate_program", args, APPLY_PROGRAM_WAIT),
             action @ ("apply" | "check") => {

@@ -1,5 +1,10 @@
 //! Small program reads, revision-bound source patches and complete report pages.
+use super::program_check::ProgramCheckJob;
 use super::*;
+use ketchup_model::document::RuleProgramSource;
+#[cfg(test)]
+#[path = "program_report_job_tests.rs"]
+mod report_job_tests;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -273,6 +278,8 @@ impl LiveBridge {
         )
     }
 
+    /// A report page, making the report again in this call when the cached
+    /// one is stale. The window answers through [`Self::start_queued_program_report`].
     pub(super) fn program_report_page(
         &mut self,
         app: &KetchupApp,
@@ -281,6 +288,25 @@ impl LiveBridge {
         offset: usize,
         limit: usize,
     ) -> Result<Value, &'static str> {
+        let source = match self.cached_report_page(app, &expected, section, offset, limit)? {
+            ReportPage::Ready(page) => return Ok(page),
+            ReportPage::Stale(source) => source,
+        };
+        let report = run_report(&source, &ketchup_program::CancelToken::default())
+            .map_err(|error| failed_because("program_rejected", error))?;
+        let page = report_page(&report, section, offset, limit, "program_evaluation");
+        self.program_report = Some((expected, report, "program_evaluation"));
+        page
+    }
+
+    fn cached_report_page(
+        &self,
+        app: &KetchupApp,
+        expected: &Stamp,
+        section: ReportSection,
+        offset: usize,
+        limit: usize,
+    ) -> Result<ReportPage, &'static str> {
         Self::guard(app, &Some(expected.clone()))?;
         if let ReportSection::MaterialTakeoff | ReportSection::SelectionTakeoff = section {
             check_page_limit(limit)?;
@@ -320,7 +346,8 @@ impl LiveBridge {
                     "excluded_parts": takeoff.excluded_parts, "exact_volume_parts": takeoff.exact_volume_parts,
                     "outside_program_parts": takeoff.outside_program_parts,
                     "hint": "Only visible program parts count: parts on hidden layers (tags) are excluded, and outside_program_parts visible parts not made by the program (drawn or imported) are not in the takeoff. Sizes are blanks; volume_basis says whether volume and area are the exact solid's or the blank's."}),
-            );
+            )
+            .map(ReportPage::Ready);
         }
         if self.program_check_job.is_some() {
             return Err(failure(
@@ -340,36 +367,146 @@ impl LiveBridge {
                 limit,
                 json!({"basis": "document_hole_threads",
                     "hint": "No program owns this document: the rows are the threads tapped into its drilled holes."}),
-            );
+            )
+            .map(ReportPage::Ready);
         }
-        if self
-            .program_report
-            .as_ref()
-            .is_none_or(|(stamp, _, _)| stamp != &expected)
+        if let Some((stamp, report, basis)) = self.program_report.as_ref()
+            && stamp == expected
         {
-            let source = app.document.current_rule_program().ok_or_else(|| {
+            return report_page(report, section, offset, limit, basis).map(ReportPage::Ready);
+        }
+        app.document
+            .current_rule_program()
+            .cloned()
+            .map(ReportPage::Stale)
+            .ok_or_else(|| {
                 invalid(
                     "source",
                     "No program owns this document.",
                     "Use inspect query for a detached document.",
                 )
-            })?;
-            let (_, report) = ketchup_application::program_isolation::run_program(
-                &source.file_name,
-                &source.source,
-                &source.overrides,
-            )
-            .map_err(|error| failed_because("program_rejected", error))?;
-            self.program_report = Some((expected.clone(), report, "program_evaluation"));
-        }
-        let Some((_, report, basis)) = self.program_report.as_ref() else {
-            return Err(invalid(
-                "report",
-                "No report is available.",
-                "Read the current program before requesting report pages.",
-            ));
+            })
+    }
+}
+
+/// A report page, or the program whose report must be made first.
+enum ReportPage {
+    Ready(Value),
+    Stale(RuleProgramSource),
+}
+
+fn run_report(
+    source: &RuleProgramSource,
+    cancel: &ketchup_program::CancelToken,
+) -> Result<ketchup_program::Report, ketchup_program::ProgramError> {
+    ketchup_application::program_isolation::run_program(
+        &source.file_name,
+        &source.source,
+        &source.overrides,
+        cancel,
+    )
+    .map(|(_, report)| report)
+}
+
+/// The page a `program_report` request asks for.
+pub(super) struct ReportPageRequest {
+    pub(super) expected: Stamp,
+    pub(super) section: ReportSection,
+    pub(super) offset: usize,
+    pub(super) limit: usize,
+}
+
+/// A report page whose report is being made in the program worker.
+pub(super) struct ProgramReportJob {
+    answer: program_dry_run::QueuedReply,
+    page: ReportPageRequest,
+    receiver: mpsc::Receiver<Result<ketchup_program::Report, ketchup_program::ProgramError>>,
+}
+
+impl LiveBridge {
+    /// Answers a report page in this frame when its report is at hand, and
+    /// otherwise makes the report on another thread (review PRG-1), so the
+    /// window's frame never waits for the program worker. The worker stops
+    /// when the client gives up the request.
+    pub(super) fn start_queued_program_report(
+        &mut self,
+        app: &KetchupApp,
+        context: &egui::Context,
+        answer: program_dry_run::QueuedReply,
+        page: ReportPageRequest,
+    ) {
+        take_error_details();
+        let source = match Self::require_request_authority(&answer.cancelled).and_then(|()| {
+            self.cached_report_page(app, &page.expected, page.section, page.offset, page.limit)
+        }) {
+            Ok(ReportPage::Stale(source)) => source,
+            Ok(ReportPage::Ready(page)) => {
+                Self::reply(app, answer.id, &answer.reply, Ok(page));
+                return;
+            }
+            Err(error) => {
+                Self::reply(app, answer.id, &answer.reply, Err(error));
+                return;
+            }
         };
-        report_page(report, section, offset, limit, basis)
+        let cancel = ketchup_program::CancelToken::from(Arc::clone(&answer.cancelled));
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let repaint = context.clone();
+        let spawn = std::thread::Builder::new()
+            .name("ketchup-program-report".into())
+            .spawn(move || {
+                let _ = sender.try_send(run_report(&source, &cancel));
+                repaint.request_repaint();
+            });
+        if let Err(error) = spawn {
+            Self::reply(
+                app,
+                answer.id,
+                &answer.reply,
+                Err(failed_because("job_worker_unavailable", error)),
+            );
+            return;
+        }
+        self.program_check_job = Some(ProgramCheckJob::Reporting(ProgramReportJob {
+            answer,
+            page,
+            receiver,
+        }));
+        context.request_repaint_after(Duration::from_millis(10));
+    }
+
+    pub(super) fn poll_program_report(
+        &mut self,
+        app: &KetchupApp,
+        context: &egui::Context,
+        job: ProgramReportJob,
+    ) {
+        take_error_details();
+        let result = if let Err(error) = Self::require_request_authority(&job.answer.cancelled) {
+            Err(error)
+        } else {
+            match job.receiver.try_recv() {
+                Ok(Ok(report)) => {
+                    let ReportPageRequest {
+                        expected,
+                        section,
+                        offset,
+                        limit,
+                    } = job.page;
+                    let page = report_page(&report, section, offset, limit, "program_evaluation");
+                    self.program_report = Some((expected, report, "program_evaluation"));
+                    page
+                }
+                Ok(Err(error)) => Err(failed_because("program_rejected", error)),
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.program_check_job = Some(ProgramCheckJob::Reporting(job));
+                    context.request_repaint_after(Duration::from_millis(10));
+                    return;
+                }
+                Err(error) => Err(failed_because("program_worker_disconnected", error)),
+            }
+        };
+        Self::reply(app, job.answer.id, &job.answer.reply, result);
     }
 }
 

@@ -96,6 +96,7 @@ fn validate(
         &source.file_name,
         &source.source,
         &source.overrides,
+        &ketchup_program::CancelToken::from(Arc::clone(&cancelled)),
     )?;
     let exact = verify_rule_program_all(
         &snapshot,

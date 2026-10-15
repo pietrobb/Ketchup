@@ -1298,6 +1298,26 @@ impl KetchupApp {
                     bridge.start_queued_check_program(self, context, queued, request, ui_busy);
                     continue;
                 }
+                Request::ProgramReport {
+                    expected,
+                    section,
+                    offset,
+                    limit,
+                } => {
+                    let queued = program_dry_run::QueuedReply {
+                        id,
+                        reply,
+                        cancelled,
+                    };
+                    let page = program_access::ReportPageRequest {
+                        expected,
+                        section,
+                        offset,
+                        limit,
+                    };
+                    bridge.start_queued_program_report(self, context, queued, page);
+                    continue;
+                }
                 request @ Request::ExportProgramVariants { .. } => {
                     let queued = program_dry_run::QueuedReply {
                         id,

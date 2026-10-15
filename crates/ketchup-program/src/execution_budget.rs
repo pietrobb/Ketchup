@@ -37,6 +37,13 @@ impl CancelToken {
     }
 }
 
+/// A token on a flag the caller already shares, such as a request's cancel flag.
+impl From<Arc<AtomicBool>> for CancelToken {
+    fn from(flag: Arc<AtomicBool>) -> Self {
+        Self(flag)
+    }
+}
+
 struct ExecutionBudget {
     statements: u64,
     max_statements: u64,

@@ -208,9 +208,10 @@ impl LiveBridge {
                         | program_check::ProgramCheckJob::PluginPreparing(_),
                     ) => "run_plugin",
                     Some(program_check::ProgramCheckJob::DwgImport(_)) => "import",
+                    Some(program_check::ProgramCheckJob::Reporting(_)) => "program_report",
                     _ => "program_apply",
                 },
-                "A program evaluation, geometry validation, plugin or DWG import is running.",
+                "A program evaluation, geometry validation, report, plugin or DWG import is running.",
             ),
         ] {
             if active {

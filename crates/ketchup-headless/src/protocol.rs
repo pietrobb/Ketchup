@@ -1292,6 +1292,7 @@ fn evaluate_program_source(
         &source.file_name,
         &source.source,
         &source.overrides,
+        &ketchup_program::CancelToken::default(),
     )
     .map_err(|error| Error {
         code: format!("program.{}", error.code),

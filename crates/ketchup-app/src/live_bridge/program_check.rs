@@ -66,6 +66,7 @@ pub(super) enum ProgramCheckJob {
     Plugin(super::plugin::PluginJob),
     VariantExport(super::program_variant_export::VariantExportJob),
     DwgImport(super::dwg_import::DwgImportJob),
+    Reporting(super::program_access::ProgramReportJob),
 }
 
 pub(super) struct ProgramPlanJob {
@@ -413,6 +414,10 @@ impl LiveBridge {
             }
             ProgramCheckJob::DwgImport(job) => {
                 self.poll_dwg_import(app, context, job);
+                return;
+            }
+            ProgramCheckJob::Reporting(job) => {
+                self.poll_program_report(app, context, job);
                 return;
             }
         };

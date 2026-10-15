@@ -53,7 +53,8 @@ pub fn report_program(evaluated: &Evaluated, cancel: &CancelToken) -> Result<Rep
     })
 }
 
-/// [`ketchup_program::run`] with the evaluation and the report in a program worker.
+/// [`ketchup_program::run`] with the evaluation and the report in a program
+/// worker; `cancel` stops either.
 ///
 /// # Errors
 /// As [`evaluate_program`] and [`report_program`].
@@ -61,10 +62,10 @@ pub fn run_program(
     file_name: &str,
     source: &str,
     overrides: &BTreeMap<String, f64>,
+    cancel: &CancelToken,
 ) -> Result<(Evaluated, Report), ProgramError> {
-    let cancel = CancelToken::default();
-    let evaluated = evaluate_program(file_name, source, overrides, &cancel)?;
-    let report = report_program(&evaluated, &cancel)?;
+    let evaluated = evaluate_program(file_name, source, overrides, cancel)?;
+    let report = report_program(&evaluated, cancel)?;
     Ok((evaluated, report))
 }
 
