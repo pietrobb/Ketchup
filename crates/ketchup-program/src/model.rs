@@ -1019,9 +1019,22 @@ impl Part {
     /// by every face a push_pull moves outward and every body joined in.
     #[must_use]
     pub fn local_bounds(&self) -> ([f64; 3], [f64; 3]) {
-        let (mut min, mut max) = self.body_bounds();
-        for tool in self.joined() {
+        self.piece_bounds()
+            .reduce(|(min, max), (piece_min, piece_max)| {
+                (
+                    std::array::from_fn(|axis| min[axis].min(piece_min[axis])),
+                    std::array::from_fn(|axis| max[axis].max(piece_max[axis])),
+                )
+            })
+            .unwrap_or_else(|| self.body_bounds())
+    }
+
+    /// Bounds in this part's frame of its own body and of each body joined in,
+    /// one by one (a bolt's head and its shank).
+    pub(crate) fn piece_bounds(&self) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_ {
+        std::iter::once(self.body_bounds()).chain(self.joined().map(|tool| {
             let (tool_min, tool_max) = tool.local_bounds();
+            let (mut min, mut max) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
             for corner in 0..8 {
                 let local: [f64; 3] = std::array::from_fn(|axis| {
                     if corner >> axis & 1 == 0 {
@@ -1036,8 +1049,8 @@ impl Part {
                     max[axis] = max[axis].max(point[axis]);
                 }
             }
-        }
-        (min, max)
+            (min, max)
+        }))
     }
 
     /// Bodies union() joined into this part.

@@ -137,9 +137,9 @@ pub(crate) fn contains(outer: ([f64; 3], [f64; 3]), inner: ([f64; 3], [f64; 3]))
 /// `thread_from_mm`/`thread_to_mm` (where the thread runs along that z), the
 /// other a hole tapped with that size on that axis, and the region runs
 /// along the axis from the hole's entry no deeper than the tapped thread and
-/// within the fastener's own thread. A fastener of another size, off the
-/// axis, reaching past the thread or with its head sunk into the tapped part
-/// still collides.
+/// within the fastener's own thread. A fastener of another size, thicker
+/// along its thread than the size it names, off the axis, reaching past the
+/// thread or with its head sunk into the tapped part still collides.
 pub(crate) fn threaded_into(a: &Part, b: &Part, region: ([f64; 3], [f64; 3])) -> bool {
     engages(a, b, region) || engages(b, a, region)
 }
@@ -172,6 +172,21 @@ fn engages(fastener: &Part, tapped: &Part, (min, max): ([f64; 3], [f64; 3])) -> 
     };
     let (own_low, own_high) = span(fastener.at_mm, axis);
     if own_low < thread_from - TOLERANCE_MM || own_high > thread_to + TOLERANCE_MM {
+        return false;
+    }
+    // The attributes name the size; along its thread the body must also be no
+    // thicker than it (a bolt's head lies outside the thread).
+    let Some(nominal_mm) = ketchup_model::document::metric_nominal_diameter(size) else {
+        return false;
+    };
+    let radial_mm = fastener
+        .piece_bounds()
+        .filter(|(min, max)| {
+            max[2] > thread_from + TOLERANCE_MM && min[2] < thread_to - TOLERANCE_MM
+        })
+        .flat_map(|(min, max)| [min[0], max[0], min[1], max[1]])
+        .fold(0.0_f64, |reach, value| reach.max(value.abs()));
+    if radial_mm > nominal_mm / 2.0 + TOLERANCE_MM {
         return false;
     }
     tapped

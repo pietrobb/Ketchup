@@ -811,6 +811,31 @@ fn a_screw_past_the_thread_of_another_size_or_off_its_axis_still_collides() {
     }
 }
 
+/// GE-N4: the thread attributes alone do not make a part a fastener of that
+/// size; a rod thicker than the thread it names still collides.
+#[test]
+fn a_rod_thicker_than_the_thread_it_names_still_collides_in_the_tapped_hole() {
+    let collisions = |radius: f64| {
+        let source = format!(
+            "p = box(\"p\", (40, 40, 30))\n\
+             hole(p, \"z+\", world = (20, 20, 30), depth = 25, thread = (\"M5\", 20))\n\
+             extrude(\"rod\", profile = [[\"c\", ({radius}, 0), (-{radius}, 0), {{\"center\": (0, 0)}}],\n\
+                 [\"c_back\", (-{radius}, 0), ({radius}, 0), {{\"center\": (0, 0)}}]],\n\
+                 distance = 30, at = (20, 20, 10), material = \"steel\",\n\
+                 attributes = {{\"thread\": \"M5\", \"thread_from_mm\": \"0\", \"thread_to_mm\": \"20\"}})\n"
+        );
+        let (_, report) =
+            run("rod.star", &source, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
+        report
+            .issues
+            .iter()
+            .filter(|issue| issue.kind.starts_with("collision"))
+            .count()
+    };
+    assert_eq!(collisions(2.5), 0, "an M5 rod engages the M5 thread");
+    assert_eq!(collisions(10.0), 1, "a 20 mm rod named M5 is no M5 screw");
+}
+
 #[test]
 fn the_plain_shank_of_an_iso_4014_bolt_in_a_tapped_hole_collides() {
     // M8x80 ISO 4014 is threaded b = 22 mm from the tip, ISO 4017 all 80 mm.
