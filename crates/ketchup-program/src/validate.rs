@@ -230,14 +230,15 @@ pub(crate) fn world_pockets(part: &Part) -> impl Iterator<Item = ([f64; 3], [f64
 
 /// False when `a`'s booleans certainly removed the volume it shares with `b`:
 /// `a` had `b` itself subtracted, or one subtracted plain box tool covers the
-/// whole shared volume, or an intersect tool leaves none of it.
+/// whole shared volume, or an intersect tool leaves none of it. A boolean a
+/// later mirror carried away from its tool proves nothing.
 pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
     if a.subtracts(b) {
         return false;
     }
     let shared = [a.obb(), b.obb()];
     let corners = frame::intersection_vertices(&shared, TOLERANCE_MM);
-    a.booleans().all(|boolean| {
+    a.booleans_in_place().all(|boolean| {
         let tool = &boolean.tool;
         match boolean.kind {
             // Only a plain box is exactly its bounding box; anything else
@@ -266,7 +267,7 @@ pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
 /// box then removes exactly everything beyond that face.
 fn kept_half_spaces(part: &Part) -> Vec<([f64; 3], f64)> {
     let corners = frame::intersection_vertices(&[part.obb()], TOLERANCE_MM);
-    part.booleans()
+    part.booleans_in_place()
         .filter(|boolean| {
             boolean.kind == ProgramBooleanKind::Subtract
                 && is_box(&boolean.tool)
@@ -349,10 +350,14 @@ pub(crate) fn is_box(part: &Part) -> bool {
 /// Two boxes overlap by a convex volume; one box tool subtracted from it or
 /// intersected with it leaves a decidable convex question, which
 /// `booleans_leave_overlap` already answered. Profile bodies, and two or more
-/// tools reaching into the shared volume, need the exact solids.
+/// tools reaching into the shared volume, or a boolean a later mirror moved
+/// away from its tool, need the exact solids.
 pub(crate) fn needs_exact_shapes(a: &Part, b: &Part) -> bool {
     if [a, b].iter().any(|part| {
-        !is_box(part) || part.holes().next().is_some() || part.pockets().next().is_some()
+        !is_box(part)
+            || part.holes().next().is_some()
+            || part.pockets().next().is_some()
+            || part.mirrors_a_boolean()
     }) {
         return true;
     }

@@ -1306,7 +1306,7 @@ impl Part {
     /// Whether the volume `other` occupies now was already subtracted from this part.
     #[must_use]
     pub fn subtracts(&self, other: &Self) -> bool {
-        self.booleans().any(|boolean| {
+        self.booleans_in_place().any(|boolean| {
             boolean.kind == ProgramBooleanKind::Subtract
                 && boolean.tool.name == other.name
                 && boolean.tool.body == other.body

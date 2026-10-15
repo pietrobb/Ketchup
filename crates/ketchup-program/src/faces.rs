@@ -758,6 +758,37 @@ impl Part {
         (point, direction)
     }
 
+    /// Index of the last mirror operation, after which nothing is moved again.
+    fn last_mirror(&self) -> Option<usize> {
+        self.operations
+            .iter()
+            .rposition(|operation| matches!(operation, ProgramOperation::Mirror(_)))
+    }
+
+    /// Whether a mirror written after a boolean carried its result away from
+    /// where the tool stands, so the tool's box no longer says what it removed,
+    /// kept or joined.
+    #[must_use]
+    pub fn mirrors_a_boolean(&self) -> bool {
+        self.last_mirror().is_some_and(|last| {
+            self.operations[..last]
+                .iter()
+                .any(|operation| matches!(operation, ProgramOperation::Boolean(_)))
+        })
+    }
+
+    /// The booleans whose result still lies where their tool stands: no mirror
+    /// is written after them.
+    pub fn booleans_in_place(&self) -> impl Iterator<Item = &ProgramBoolean> {
+        let first = self.last_mirror().map_or(0, |last| last + 1);
+        self.operations[first..]
+            .iter()
+            .filter_map(|operation| match operation {
+                ProgramOperation::Boolean(boolean) => Some(&**boolean),
+                _ => None,
+            })
+    }
+
     /// Each hole with its entry point and inward direction on the finished part.
     pub fn finished_holes(&self) -> impl Iterator<Item = (&Hole, Placement)> {
         self.operations

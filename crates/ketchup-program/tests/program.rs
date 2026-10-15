@@ -1333,6 +1333,37 @@ fn a_notch_cut_by_a_tool_makes_room_for_the_part_that_sits_in_it() {
     );
 }
 
+/// A notch cut before a mirror is mirrored with the part: the volume where
+/// the tool stood is solid again, so a part there is no longer let in; boxes
+/// cannot place the mirrored notch and leave it to the exact solids.
+#[test]
+fn a_notch_mirrored_after_its_cut_no_longer_makes_room_where_the_tool_stood() {
+    let notched = |extra: &str| {
+        format!(
+            "p = box(\"p\", (100, 20, 20))\n\
+             cut = box(\"cut\", (20, 20, 20), tool = True)\n\
+             subtract(p, cut)\n{extra}\
+             q = box(\"q\", (20, 20, 20))\n"
+        )
+    };
+    assert!(kinds(&notched("")).is_empty(), "q sits in the notch");
+    let mirrored = kinds(&notched("mirror(p, axis = \"x\")\n"));
+    assert!(
+        mirrored.contains(&COLLISION_UNVERIFIED) || mirrored.contains(&"collision"),
+        "the notch moved to x 80-100, q at x 0-20 is in solid wood: {mirrored:?}"
+    );
+    // A part in the mirrored notch is not called a collision by boxes.
+    let in_notch = notched("mirror(p, axis = \"x\")\n").replace(
+        "q = box(\"q\", (20, 20, 20))",
+        "q = box(\"q\", (20, 20, 20), at = (80, 0, 0))",
+    );
+    assert!(
+        !kinds(&in_notch).contains(&"collision"),
+        "{:?}",
+        kinds(&in_notch)
+    );
+}
+
 /// A side and a shelf doweled together, optionally turned as one unit.
 fn doweled_shelf(turn: bool) -> String {
     let mut source = String::from(
