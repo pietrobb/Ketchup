@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: checks the bytes an operation would build against the heap bound (Heap::set_allocation_limit) before allocating. See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: checks the bytes an operation would build against the heap bound (Heap::set_allocation_limit) before allocating, and stops building a repr past it. See PATCH.md.
 
 // Possible optimisations:
 // Avoid the Box duplication
@@ -1399,6 +1399,9 @@ impl<'v> ValueLike<'v> for Value<'v> {
     }
 
     fn collect_repr(self, collector: &mut String) {
+        if crate::values::layout::heap::heap_type::repr_limit_reached(collector.len()) {
+            return;
+        }
         match repr_stack_push(self) {
             Ok(_guard) => {
                 self.get_ref().collect_repr(collector);

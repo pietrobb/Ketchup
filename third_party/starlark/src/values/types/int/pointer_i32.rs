@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: checks int products like bigint.rs. See PATCH.md.
+
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Debug;
@@ -44,6 +46,7 @@ use crate::values::layout::pointer::RawPointer;
 use crate::values::layout::vtable::AValueDyn;
 use crate::values::layout::vtable::AValueVTable;
 use crate::values::layout::vtable::StarlarkValueRawPtr;
+use crate::values::types::bigint::check_product;
 use crate::values::types::bigint::StarlarkBigInt;
 use crate::values::types::int::inline_int::InlineInt;
 use crate::values::types::int::int_or_big::StarlarkInt;
@@ -175,8 +178,12 @@ impl<'v> StarlarkValue<'v> for PointerI32 {
         }
     }
     fn mul(&self, other: Value<'v>, heap: &'v Heap) -> Option<crate::Result<Value<'v>>> {
+        let other = other.unpack_num()?;
+        if let Err(error) = check_product(StarlarkIntRef::Small(self.get()), other, heap) {
+            return Some(Err(error));
+        }
         Some(Ok(heap.alloc(
-            NumRef::Int(StarlarkIntRef::Small(self.get())) * other.unpack_num()?,
+            NumRef::Int(StarlarkIntRef::Small(self.get())) * other,
         )))
     }
     fn div(&self, other: Value<'v>, heap: &'v Heap) -> crate::Result<Value<'v>> {

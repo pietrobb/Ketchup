@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: json.encode builds its text only within the heap bound (Heap::set_allocation_limit). See PATCH.md.
+
 // https://github.com/rust-lang/rust-clippy/issues/11142
 #![allow(clippy::needless_borrow)]
 
@@ -208,11 +210,41 @@ impl AllocFrozenValue for serde_json::Value {
     }
 }
 
+/// Ketchup patch: collects text while the heap bound allows it.
+struct HeapBoundWriter<'v> {
+    bytes: Vec<u8>,
+    heap: &'v Heap,
+}
+
+impl std::io::Write for HeapBoundWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.heap
+            .check_allocation(self.bytes.len().saturating_add(buf.len()), 1)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 pub(crate) fn json(globals: &mut GlobalsBuilder) {
     #[starlark_module]
     fn json_members(globals: &mut GlobalsBuilder) {
-        fn encode(#[starlark(require = pos)] x: Value) -> anyhow::Result<String> {
-            x.to_json()
+        fn encode<'v>(
+            #[starlark(require = pos)] x: Value<'v>,
+            heap: &'v Heap,
+        ) -> anyhow::Result<String> {
+            // Ketchup patch: a list repeating one long string is small on the
+            // heap, but its text is not, so the text grows only within the bound.
+            let mut text = HeapBoundWriter {
+                bytes: Vec::new(),
+                heap,
+            };
+            serde_json::to_writer(&mut text, &x)?;
+            Ok(String::from_utf8(text.bytes)?)
         }
 
         fn decode<'v>(

@@ -98,7 +98,7 @@ impl<'a, 'e: 'a> BeforeStmtFuncDyn<'a, 'e> for ExecutionBudget {
         if eval
             .heap()
             .allocation_limit()
-            .is_some_and(|limit| eval.heap().allocated_bytes() > limit)
+            .is_some_and(|limit| eval.heap().bounded_bytes() > limit)
         {
             return Err(starlark::Error::new_other(MemoryLimit));
         }
@@ -134,7 +134,7 @@ fn install_with(eval: &mut Evaluator<'_, '_, '_>, max_statements: u64, cancel: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use starlark::environment::{Globals, Module};
+    use starlark::environment::{Globals, GlobalsBuilder, LibraryExtension, Module};
     use starlark::syntax::{AstModule, Dialect};
 
     fn run(source: &str, max_statements: u64) -> starlark::Result<()> {
@@ -143,6 +143,16 @@ mod tests {
         let mut eval = Evaluator::new(&module);
         install_with(&mut eval, max_statements, &CancelToken::default());
         eval.eval_module(ast, &Globals::standard()).map(|_| ())
+    }
+
+    fn run_with_heap(source: &str, heap_bytes: usize) -> starlark::Result<()> {
+        let ast = AstModule::parse("budget.star", source.to_owned(), &Dialect::Extended).unwrap();
+        let module = Module::new();
+        let mut eval = Evaluator::new(&module);
+        install_with(&mut eval, MAX_STATEMENTS, &CancelToken::default());
+        eval.heap().set_allocation_limit(Some(heap_bytes));
+        let globals = GlobalsBuilder::extended_by(&[LibraryExtension::Json]).build();
+        eval.eval_module(ast, &globals).map(|_| ())
     }
 
     /// Iteration without a statement in its body (comprehension clauses, a `pass`
@@ -187,6 +197,52 @@ mod tests {
         }
         run(
             "x = \"a\" * 1000000\nn = len(list(range(100000)))",
+            MAX_STATEMENTS,
+        )
+        .unwrap();
+    }
+
+    /// Review 2026-10-15 PRG-6: these built their result in Rust memory past the
+    /// bound (100 MB on a 256 KB heap here, terabytes with larger inputs) and the
+    /// hook never saw it on the last statement; integers were not counted at all.
+    #[test]
+    fn amplifying_string_and_integer_operations_stop_at_the_heap_bound() {
+        let huge = [
+            "s = \"a\" * 10000\nx = s.replace(\"a\", s)",
+            "s = \"a\" * 10000\nx = (\"{0}\" * 10000).format(s)",
+            "s = \"a\" * 10000\nx = (\"%s\" * 10000) % ((s,) * 10000)",
+            "x = str([\"a\" * 10000] * 10000)",
+            "x = repr([\"a\" * 10000] * 10000)",
+            "x = json.encode([\"a\" * 10000] * 10000)",
+            "def f():\n    x = 1 << 100000\n    return [x + i for i in range(1000)]\nL = f()",
+        ];
+        for source in huge {
+            let error = run_with_heap(source, 1 << 18).unwrap_err();
+            assert!(
+                error.to_string().contains("memory limit exceeded"),
+                "{source}: {error}"
+            );
+        }
+        run_with_heap(
+            "s = \"a\" * 100\nx = s.replace(\"a\", s) + (\"{0}\" * 10).format(s) + str([s] * 10)\n\
+             y = json.encode([s] * 10)\nn = 3 * 3 * 3",
+            1 << 18,
+        )
+        .unwrap();
+    }
+
+    /// One multiplication of huge integers is uninterruptible work; products past
+    /// a million bits fail, like upstream's left shift past 100 000 bits.
+    #[test]
+    fn a_product_past_a_million_bits_fails_instead_of_running_uninterrupted() {
+        let error = run(
+            "x = 1 << 100000\nx = x * x\nx = x * x\nx = x * x\nx = x * x",
+            MAX_STATEMENTS,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("too large"), "{error}");
+        run(
+            "x = 1 << 100000\nx = x * x\nx = x * x\nx = x * x",
             MAX_STATEMENTS,
         )
         .unwrap();

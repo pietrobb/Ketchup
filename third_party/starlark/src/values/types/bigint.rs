@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: counts big integer digits against the heap bound and fails products past 2^20 bits. See PATCH.md.
+
 //! Outside of `i32` range int.
 
 mod convert;
@@ -143,8 +145,37 @@ impl Serialize for StarlarkBigInt {
 
 impl<'v> AllocValue<'v> for StarlarkBigInt {
     fn alloc_value(self, heap: &'v Heap) -> Value<'v> {
+        // Ketchup patch: the digits live outside the arena; the bound counts them.
+        heap.note_external_bytes(self.value.bits().div_ceil(8) as usize);
         heap.alloc_simple(self)
     }
+}
+
+/// Ketchup patch: one product of huge integers is work no statement check can
+/// interrupt, so like upstream's left shift past 100 000 bits it fails.
+const MAX_PRODUCT_BITS: u64 = 1 << 20;
+
+#[derive(Debug, thiserror::Error)]
+#[error("Integer product too large: it would have more than {MAX_PRODUCT_BITS} bits")]
+struct ProductTooLarge;
+
+/// Ketchup patch: whether `a * b` stays within [`MAX_PRODUCT_BITS`] and the heap bound.
+pub(crate) fn check_product(a: StarlarkIntRef, b: NumRef, heap: &Heap) -> crate::Result<()> {
+    let b = match (a, b) {
+        (StarlarkIntRef::Big(_), NumRef::Int(b)) | (_, NumRef::Int(b @ StarlarkIntRef::Big(_))) => {
+            b
+        }
+        _ => return Ok(()),
+    };
+    let bits = |x: StarlarkIntRef| match x {
+        StarlarkIntRef::Small(_) => 32,
+        StarlarkIntRef::Big(x) => x.value.bits(),
+    };
+    let product = bits(a) + bits(b);
+    if product > MAX_PRODUCT_BITS {
+        return Err(crate::Error::new_other(ProductTooLarge));
+    }
+    heap.check_allocation(product.div_ceil(8) as usize, 1)
 }
 
 impl AllocFrozenValue for StarlarkBigInt {
@@ -196,9 +227,13 @@ impl<'v> StarlarkValue<'v> for StarlarkBigInt {
     }
 
     fn mul(&self, other: Value<'v>, heap: &'v Heap) -> Option<crate::Result<Value<'v>>> {
-        Some(Ok(heap.alloc(
-            NumRef::Int(StarlarkIntRef::Big(self)) * other.unpack_num()?,
-        )))
+        let other = other.unpack_num()?;
+        if let Err(error) = check_product(StarlarkIntRef::Big(self), other, heap) {
+            return Some(Err(error));
+        }
+        Some(Ok(
+            heap.alloc(NumRef::Int(StarlarkIntRef::Big(self)) * other)
+        ))
     }
 
     fn div(&self, other: Value<'v>, heap: &'v Heap) -> crate::Result<Value<'v>> {

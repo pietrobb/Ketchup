@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: adds the heap bound (Heap::set_allocation_limit) and its error. See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: adds the heap bound (Heap::set_allocation_limit), its error and the bytes it counts outside the arena. See PATCH.md.
 
 use std::any;
 use std::cell::Cell;
@@ -114,6 +114,8 @@ pub struct Heap {
     peak_allocated: Cell<usize>,
     /// Ketchup patch: bytes the heap may hold before a large allocation fails.
     allocation_limit: Cell<Option<usize>>,
+    /// Ketchup patch: bytes values on this heap hold outside the arena (integer digits).
+    external_bytes: Cell<usize>,
     arena: FastCell<Arena<Bump>>,
     str_interner: RefCell<StringValueInterner<'static>>,
 }
@@ -129,6 +131,19 @@ impl fmt::Display for MemoryLimit {
 }
 
 impl std::error::Error for MemoryLimit {}
+
+thread_local! {
+    /// Ketchup patch: the bound of the heap last limited on this thread, for
+    /// `repr` building, which has no heap at hand.
+    static REPR_LIMIT: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// Ketchup patch: whether a `repr` being built into `len` bytes is past the bound
+/// set on this thread. Container `repr` then stops adding elements, and every
+/// caller that turns the text into a value checks it against the heap and fails.
+pub(crate) fn repr_limit_reached(len: usize) -> bool {
+    REPR_LIMIT.with(|limit| limit.get().is_some_and(|limit| len > limit))
+}
 
 impl Debug for Heap {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -627,8 +642,23 @@ impl Heap {
     /// Ketchup patch: bound the bytes this heap may hold. A single operation that
     /// would build a larger string, list or tuple fails before it allocates;
     /// `None` removes the bound.
+    /// `repr`/`str` of containers on this thread stop building past `bytes` too,
+    /// see [`repr_limit_reached`].
     pub fn set_allocation_limit(&self, bytes: Option<usize>) {
         self.allocation_limit.set(bytes);
+        REPR_LIMIT.with(|limit| limit.set(bytes));
+    }
+
+    /// Bytes the bound counts: [`Heap::allocated_bytes`] plus what values on this
+    /// heap hold outside it (the digits of big integers).
+    pub fn bounded_bytes(&self) -> usize {
+        self.allocated_bytes()
+            .saturating_add(self.external_bytes.get())
+    }
+
+    pub(crate) fn note_external_bytes(&self, bytes: usize) {
+        self.external_bytes
+            .set(self.external_bytes.get().saturating_add(bytes));
     }
 
     /// The bound set by [`Heap::set_allocation_limit`].
@@ -643,7 +673,7 @@ impl Heap {
         };
         match count
             .checked_mul(item_bytes)
-            .and_then(|bytes| bytes.checked_add(self.allocated_bytes()))
+            .and_then(|bytes| bytes.checked_add(self.bounded_bytes()))
         {
             Some(total) if total <= limit => Ok(()),
             _ => Err(crate::Error::new_other(MemoryLimit)),

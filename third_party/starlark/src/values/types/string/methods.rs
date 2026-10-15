@@ -770,6 +770,17 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = pos)] count: Option<i32>,
         heap: &'v Heap,
     ) -> anyhow::Result<StringValue<'v>> {
+        if new.len() > old.len() {
+            // A long `new` for each of many matches multiplies the string.
+            let replaced = this
+                .as_str()
+                .match_indices(old)
+                .take(count.map_or(usize::MAX, |count| count.max(0) as usize))
+                .count();
+            let grown = replaced.saturating_mul(new.len() - old.len());
+            heap.check_allocation(this.len().saturating_add(grown), 1)
+                .map_err(crate::Error::into_anyhow)?;
+        }
         match count {
             Some(count) if count >= 0 => {
                 Ok(heap.alloc_str(&this.replacen(old, new, count as usize)))

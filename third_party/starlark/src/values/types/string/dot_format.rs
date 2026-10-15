@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: str.format checks the text it builds against the heap bound (Heap::set_allocation_limit). See PATCH.md.
+
 use std::str::FromStr;
 
 use starlark_syntax::dot_format_parser::FormatConv;
@@ -152,6 +154,9 @@ pub(crate) fn format<'v>(
                 pos: _,
             } => format_capture(capture, conv, &mut args, &kwargs, &mut result)?,
         }
+        // One capture repeated many times (`"{0}" * n`) multiplies its argument.
+        heap.check_allocation(result.len(), 1)
+            .map_err(crate::Error::into_anyhow)?;
     }
     let r = heap.alloc_str(&result);
     string_pool.release(result);

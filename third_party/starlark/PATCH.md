@@ -12,14 +12,24 @@ fail with "program memory limit exceeded" before allocating. Evaluation runs ins
 Kečup window process, and one such line (`"a" * 1500000000`) took gigabytes before the
 `before_stmt` hook could see it. The hook checks the whole heap after every statement.
 
+The bound also covers operations that build their result outside the heap first (review
+2026-10-15 PRG-6): `str.replace` computes the size of its result before building it;
+`str.format`, `%`, `str()`, `repr()` and `json.encode` check the text as it grows, and a
+container `repr` stops adding elements once the text passes the bound of the heap last
+limited on the thread (`repr_limit_reached`). Big integers count their digits against the
+bound (`Heap::bounded_bytes`), and a product past 2^20 bits fails like upstream's left
+shift past 100 000 bits, since one such multiplication cannot be interrupted.
+
 `src/lib.rs` also allows two lints that newer rustc reports in the unchanged upstream
 code (`deprecated`, `mismatched_lifetime_syntaxes`), so the build stays quiet.
 
 Changed files, each marked with a "Modified for Kecup" line under its license header
 (Apache-2.0 §4(b)): `src/lib.rs`, `src/eval/bc/writer.rs`,
 `src/values/layout/heap/heap_type.rs`, `src/values/layout/value.rs`,
-`src/values/types/{list,tuple}/{globals,value}.rs` and
-`src/values/types/string/{methods,str_type}.rs`. `LICENSE` is the Apache License 2.0 the
+`src/values/types/{list,tuple}/{globals,value}.rs`,
+`src/values/types/string/{methods,str_type,dot_format,globals,interpolation}.rs`,
+`src/values/types/bigint.rs`, `src/values/types/int/pointer_i32.rs` and
+`src/stdlib/json.rs`. `LICENSE` is the Apache License 2.0 the
 upstream project (https://github.com/facebook/starlark-rust) is published under; the
 crates.io package does not carry it.
 

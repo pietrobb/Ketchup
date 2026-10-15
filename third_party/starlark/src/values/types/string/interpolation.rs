@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: % checks the text it builds against the heap bound (Heap::set_allocation_limit). See PATCH.md.
+
 //! String interpolation-related code.
 //! Based on <https://docs.python.org/3/library/stdtypes.html#printf-style-string-formatting>
 
@@ -190,7 +192,7 @@ impl<'a> Iterator for PercentFormatParser<'a> {
     }
 }
 
-pub(crate) fn percent(format: &str, value: Value) -> crate::Result<String> {
+pub(crate) fn percent(format: &str, value: Value, heap: &Heap) -> crate::Result<String> {
     // NOTE(nga): use could reuse `Evaluator::string_pool` here, but
     //   * we don't have access to `Evaluator` in `StarlarkValue::percent`
     //   * after single %s made intrinsic, this code is not that hot now
@@ -214,6 +216,8 @@ pub(crate) fn percent(format: &str, value: Value) -> crate::Result<String> {
     // because of the way format is defined, we can deal with it as bytes
     for item in (PercentFormatParser { rem: format }) {
         let item = item?;
+        // One tuple can repeat a long string many times (`(s,) * n`).
+        heap.check_allocation(res.len(), 1)?;
         res.push_str(item.literal);
         match item.format {
             None => {}
@@ -346,6 +350,7 @@ pub(crate) fn percent(format: &str, value: Value) -> crate::Result<String> {
             }
         }
     }
+    heap.check_allocation(res.len(), 1)?;
     if values.next().is_some() {
         Err(crate::Error::new_other(
             StringInterpolationError::TooManyParameters,

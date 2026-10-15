@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: str() and repr() check the text they build against the heap bound (Heap::set_allocation_limit). See PATCH.md.
+
 use starlark_derive::starlark_module;
 
 use crate as starlark;
@@ -111,9 +113,10 @@ pub(crate) fn register_str(globals: &mut GlobalsBuilder) {
     ) -> anyhow::Result<StringValue<'v>> {
         let mut s = eval.string_pool.alloc();
         a.collect_repr(&mut s);
-        let r = eval.heap().alloc_str(&s);
+        let checked = eval.heap().check_allocation(s.len(), 1);
+        let r = checked.map(|()| eval.heap().alloc_str(&s));
         eval.string_pool.release(s);
-        Ok(r)
+        r.map_err(crate::Error::into_anyhow)
     }
 
     /// [str](
@@ -142,9 +145,10 @@ pub(crate) fn register_str(globals: &mut GlobalsBuilder) {
         } else {
             let mut s = eval.string_pool.alloc();
             a.collect_repr(&mut s);
-            let r = eval.heap().alloc_str(&s);
+            let checked = eval.heap().check_allocation(s.len(), 1);
+            let r = checked.map(|()| eval.heap().alloc_str(&s));
             eval.string_pool.release(s);
-            Ok(r)
+            r.map_err(crate::Error::into_anyhow)
         }
     }
 }
