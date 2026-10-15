@@ -3195,6 +3195,7 @@ impl KetchupApp {
                 | ActiveTool::Arc
                 | ActiveTool::Polygon
                 | ActiveTool::Ellipse
+                | ActiveTool::Spline
         ) && (!context.wants_keyboard_input()
             || context.memory(|memory| memory.has_focus(egui::Id::new("value-box-input"))))
         {

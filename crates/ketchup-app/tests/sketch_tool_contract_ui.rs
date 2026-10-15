@@ -8,7 +8,7 @@ use crate::harness::contract::{
 };
 use eframe::egui::{Key, Modifiers, Pos2};
 use ketchup_app::AppCommand;
-use ketchup_interaction::Vec3;
+use ketchup_interaction::{SnapKind, Vec3};
 
 fn sketch_shell(dialogs: ketchup_app::dialogs::ScriptedFileDialogs) -> Shell {
     Shell::with_dialogs(dialogs)
@@ -302,4 +302,114 @@ fn a_typed_rectangle_size_takes_units_arithmetic_and_a_decimal_comma_per_side() 
             "{input:?} drew {size:?}, expected {expected:?}"
         );
     }
+}
+
+/// Every point of the newest drawn shape and the origin of its frame, in world
+/// coordinates; curves contribute their ends.
+fn latest_shape_points(shell: &Shell) -> (Vec3, Vec<Vec3>) {
+    use ketchup_model::document::ProfileSegment;
+    let (transform, segments) = shell.app().latest_profile().unwrap();
+    let world = |point: [f64; 2]| {
+        let [x, y, z] = transform.transform_point([point[0], point[1], 0.0]);
+        Vec3::new(x, y, z)
+    };
+    let points = segments
+        .iter()
+        .flat_map(|segment| match segment {
+            ProfileSegment::Line { start_mm, end_mm }
+            | ProfileSegment::CircularArc {
+                start_mm, end_mm, ..
+            }
+            | ProfileSegment::CubicBezier {
+                start_mm, end_mm, ..
+            } => vec![world(*start_mm), world(*end_mm)],
+            ProfileSegment::Spline { points_mm } => points_mm.iter().map(|p| world(*p)).collect(),
+        })
+        .collect();
+    (world([0.0, 0.0]), points)
+}
+
+#[test]
+fn every_sketch_tool_snaps_its_first_point_to_a_box_corner_and_draws_in_the_top_face() {
+    let corner = Vec3::new(0.0, 0.0, 20.0);
+    let top = |x: f64, y: f64| Vec3::new(x, y, 20.0);
+    for (tool, rest) in [
+        (AppCommand::Line, vec![top(60.0, 0.0)]),
+        (AppCommand::Rectangle, vec![top(60.0, 40.0)]),
+        (AppCommand::Circle, vec![top(30.0, 0.0)]),
+        (AppCommand::Polygon, vec![top(30.0, 0.0)]),
+        (AppCommand::Arc, vec![top(60.0, 0.0), top(30.0, 15.0)]),
+        (AppCommand::Ellipse, vec![top(40.0, 0.0), top(0.0, 15.0)]),
+        (
+            AppCommand::Spline,
+            vec![top(60.0, 0.0), top(60.0, 40.0), top(0.0, 40.0), corner],
+        ),
+    ] {
+        let mut shell = Shell::new();
+        shell.click_command(tool);
+        // A few pixels off the corner, toward the face, still lands on it.
+        let exact = shell.app().viewport_position(corner).unwrap();
+        let inside = shell.app().viewport_position(top(20.0, 12.0)).unwrap();
+        let near = exact + (inside - exact).normalized() * 3.0;
+        shell.move_pointer(near);
+        assert_eq!(
+            shell.app().hovered_snap_kind(),
+            Some(SnapKind::Endpoint),
+            "{tool:?} hovers the corner"
+        );
+        shell.click_at(near);
+        let revision = shell.app().document_revision();
+        for point in &rest {
+            let screen = shell.app().viewport_position(*point).unwrap();
+            // The spline closes on its first point, a little off it as a person clicks.
+            let screen = if *point == corner { near } else { screen };
+            shell.click_at(screen);
+        }
+        assert_eq!(
+            shell.app().document_revision(),
+            revision + 1,
+            "{tool:?}: {}",
+            shell.app().action_digest()
+        );
+        let (origin, points) = latest_shape_points(&shell);
+        assert!(
+            origin.distance(corner) < 1.0e-6,
+            "{tool:?} starts on the snapped corner, got {origin:?}"
+        );
+        assert!(
+            points.iter().all(|point| (point.z - 20.0).abs() < 1.0e-6),
+            "{tool:?} lies in the top face: {points:?}"
+        );
+    }
+}
+
+#[test]
+fn an_arrow_key_stands_the_spline_on_the_upright_plane_like_the_other_shapes() {
+    let mut shell = Shell::new();
+    shell.click_command(AppCommand::Spline);
+    // Left arrow picks the red-blue plane, upright across the green axis.
+    shell.press_key(Key::ArrowLeft);
+    click(&mut shell, 10.0, -40.0);
+    for [x, y] in [[50.0, -30.0], [50.0, -60.0], [10.0, -60.0]] {
+        click(&mut shell, x, y);
+    }
+    let revision = shell.app().document_revision();
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().document_revision(),
+        revision + 1,
+        "{}",
+        shell.app().action_digest()
+    );
+    let (origin, points) = latest_shape_points(&shell);
+    assert!(
+        points
+            .iter()
+            .all(|point| (point.y - origin.y).abs() < 1.0e-6),
+        "every point keeps the first point's green coordinate: {points:?}"
+    );
+    assert!(
+        points.iter().any(|point| (point.z - origin.z).abs() > 1.0),
+        "the spline stands up off the ground: {points:?}"
+    );
 }
