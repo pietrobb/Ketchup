@@ -99,7 +99,7 @@ impl GeneralFabricationProjection {
             .iter()
             .filter(|row| row.item_kind != GeneralBomItemKind::Purchased)
         {
-            let GeneralBodySource::Exact(source) = &row.source else {
+            let GeneralBodySource::Exact(_) = &row.source else {
                 return Err(GeneralFabricationError::ExportBlocked);
             };
             if row.quantity == 0 || row.quantity != row.instances.len() {
@@ -110,9 +110,7 @@ impl GeneralFabricationProjection {
                 .operations
                 .iter()
                 .enumerate()
-                .filter(|(_, operation)| {
-                    operation.definition_id == row.definition_id && operation.source == *source
-                })
+                .filter(|(_, operation)| is_row_operation(row, operation))
                 .collect::<Vec<_>>();
             let Some((_, stock)) = matching.first() else {
                 return Err(GeneralFabricationError::ExportBlocked);

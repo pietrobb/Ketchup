@@ -7,9 +7,9 @@ use ketchup_manufacturing::fabrication::{
     BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
     BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,
     GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
-    GeneralMachiningGeometry, GeneralManufacturingKind, MANUFACTURED_ITEM_ROLE_V1,
-    MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus, TIMBER_MATERIAL_V1,
-    TIMBER_MEMBER_ROLE_V1, project_general_fabrication, shown_parts,
+    GeneralMachiningFrame, GeneralMachiningGeometry, GeneralManufacturingKind,
+    MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus,
+    TIMBER_MATERIAL_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication, shown_parts,
 };
 use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
@@ -1534,6 +1534,76 @@ fn btlx_and_woodwop_reject_a_mirrored_copy_that_would_reuse_its_original_machini
     let mpr =
         String::from_utf8(projection.woodwop_mpr_4_0_drill_export(&snapshot).unwrap()).unwrap();
     assert!(mpr.contains("\\Bohr"), "{mpr}");
+}
+#[test]
+fn a_mirrored_copy_is_a_bom_row_and_drawing_of_its_own_with_mirrored_machining() {
+    let (snapshot, projection) =
+        transformed_production_fixture([-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], false);
+    let rows = &projection.bom.rows;
+    assert_eq!(rows.len(), 2, "{rows:#?}");
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.mirrored, row.quantity, row.instances.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (false, 1, vec![InstancePath::root(GRAPH_LEFT)]),
+            (true, 1, vec![InstancePath::root(GRAPH_RIGHT)]),
+        ]
+    );
+    assert_ne!(rows[0].stable_row_id, rows[1].stable_row_id);
+    let bom = String::from_utf8(projection.bom_export(&snapshot).unwrap()).unwrap();
+    assert_eq!(bom.matches(";hand=mirrored\n").count(), 1, "{bom}");
+
+    let drawings = &projection.drawings.drawings;
+    let drill = |index: usize| {
+        let operations = &drawings[index].machining_operations;
+        let [_, drill] = operations.as_slice() else {
+            panic!("expected stock and one drilling: {operations:#?}")
+        };
+        let GeneralMachiningGeometry::CircularDrill {
+            frame, center_mm, ..
+        } = drill.machining
+        else {
+            panic!("expected a drilling: {drill:#?}")
+        };
+        (drill.frame, frame, center_mm)
+    };
+    let (original_frame_name, original, original_center) = drill(0);
+    let (mirrored_frame_name, mirrored, mirrored_center) = drill(1);
+    assert_eq!(
+        (original_frame_name, mirrored_frame_name),
+        ("definition-local", "definition-local-mirrored")
+    );
+    let flip = |[x, y, z]: [f64; 3]| [if x == 0.0 { 0.0 } else { -x }, y, z];
+    assert_eq!(mirrored.origin_mm, flip(original.origin_mm));
+    assert_eq!(mirrored.normal, flip(original.normal));
+    // The hole sits on the other side of the part, not where the original has it.
+    let world = |frame: GeneralMachiningFrame, [u, v]: [f64; 2]| {
+        std::array::from_fn::<f64, 3, _>(|axis| {
+            frame.origin_mm[axis] + frame.x_axis[axis] * u + frame.y_axis[axis] * v
+        })
+    };
+    assert_eq!(
+        world(mirrored, mirrored_center),
+        flip(world(original, original_center))
+    );
+    let mut operation_ids = projection
+        .manufacturing
+        .operations
+        .iter()
+        .map(|operation| &operation.stable_operation_id)
+        .collect::<Vec<_>>();
+    operation_ids.sort();
+    operation_ids.dedup();
+    assert_eq!(
+        operation_ids.len(),
+        projection.manufacturing.operations.len()
+    );
+    let svg = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+    assert_eq!(
+        svg.matches("mirrored: opposite hand of the part").count(),
+        1
+    );
 }
 #[test]
 fn a_part_placed_scaled_is_refused_by_name_instead_of_a_generic_geometry_error() {

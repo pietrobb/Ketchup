@@ -357,6 +357,9 @@ pub struct GeneralBomRow {
     pub quantity: usize,
     pub dimensions: PieceDimensions,
     pub instances: Vec<InstancePath>,
+    /// The copies are placed mirrored: an opposite-hand part of its own, described
+    /// in the part's frame reflected across its local YZ plane (x → −x).
+    pub mirrored: bool,
     pub evidence_class: EvidenceClass,
     pub validation_state: ValidationState,
 }
@@ -396,6 +399,7 @@ pub struct GeneralPieceDrawing {
     pub material_key: String,
     pub quantity: usize,
     pub instances: Vec<InstancePath>,
+    pub mirrored: bool,
     pub projection_method: &'static str,
     pub views: Vec<GeneralDrawingView>,
     pub dimensions: Vec<GeneralDimensionCallout>,
@@ -696,6 +700,9 @@ impl GeneralFabricationProjection {
                 row.material_key,
                 evidence_token(&row.evidence_class)
             ));
+            if row.mirrored {
+                output.insert_str(output.len() - 1, ";hand=mirrored");
+            }
         }
         Ok(output.into_bytes())
     }
@@ -718,6 +725,7 @@ impl GeneralFabricationProjection {
                         || drawing.material_key != row.material_key
                         || drawing.quantity != row.quantity
                         || drawing.instances != row.instances
+                        || drawing.mirrored != row.mirrored
                         || drawing.evidence_class != row.evidence_class
                 })
         {
@@ -789,13 +797,18 @@ impl GeneralFabricationProjection {
                 drawing.stable_drawing_id
             ));
             svg.push_str(&format!(
-                "<text id=\"{}/bom-reference\" x=\"25\" y=\"{}\" fill=\"black\" stroke=\"none\">position: {}, quantity: {}, kind: {}, material: {}</text>\n",
+                "<text id=\"{}/bom-reference\" x=\"25\" y=\"{}\" fill=\"black\" stroke=\"none\">position: {}, quantity: {}, kind: {}, material: {}{}</text>\n",
                 drawing.stable_drawing_id,
                 format_number(y),
                 drawing.position,
                 drawing.quantity,
                 drawing.item_kind.token(),
-                xml_escape(&drawing.material_key)
+                xml_escape(&drawing.material_key),
+                if drawing.mirrored {
+                    ", mirrored: opposite hand of the part"
+                } else {
+                    ""
+                }
             ));
             y += 30.0;
             for view in &drawing.views {
@@ -917,6 +930,11 @@ impl GeneralFabricationProjection {
     ) -> Result<Vec<u8>, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         self.manufacturing_export(snapshot)?;
+        // One program machines every copy of the row, so a part with its mirrored
+        // copies, a row of their own, is refused as mirrored rather than as two rows.
+        for row in &self.bom.rows {
+            check_copies_share_machining(snapshot, row)?;
+        }
         let [row] = self.bom.rows.as_slice() else {
             return Err(GeneralFabricationError::ExportBlocked);
         };
@@ -926,16 +944,14 @@ impl GeneralFabricationProjection {
         {
             return Err(GeneralFabricationError::ExportBlocked);
         }
-        let GeneralBodySource::Exact(row_source) = &row.source else {
+        let GeneralBodySource::Exact(_) = &row.source else {
             return Err(GeneralFabricationError::ExportBlocked);
         };
         let matching = self
             .manufacturing
             .operations
             .iter()
-            .filter(|operation| {
-                operation.definition_id == row.definition_id && operation.source == *row_source
-            })
+            .filter(|operation| is_row_operation(row, operation))
             .collect::<Vec<_>>();
         if matching.len() != self.manufacturing.operations.len() {
             return Err(GeneralFabricationError::ExportBlocked);
@@ -1046,17 +1062,14 @@ impl GeneralFabricationProjection {
                 .definition(row.definition_id)
                 .map_or("", |definition| definition.name());
             let mut write_part = || -> Result<(), GeneralFabricationError> {
-                let GeneralBodySource::Exact(row_source) = &row.source else {
+                let GeneralBodySource::Exact(_) = &row.source else {
                     return Err(GeneralFabricationError::ExportBlocked);
                 };
                 let matching = self
                     .manufacturing
                     .operations
                     .iter()
-                    .filter(|operation| {
-                        operation.definition_id == row.definition_id
-                            && operation.source == *row_source
-                    })
+                    .filter(|operation| is_row_operation(row, operation))
                     .collect::<Vec<_>>();
                 let [stock, machining @ ..] = matching.as_slice() else {
                     return Err(GeneralFabricationError::ExportBlocked);
@@ -1180,17 +1193,14 @@ impl GeneralFabricationProjection {
                 .definition(row.definition_id)
                 .map_or("", |definition| definition.name());
             let mut write_part = || -> Result<(), GeneralFabricationError> {
-                let GeneralBodySource::Exact(row_source) = &row.source else {
+                let GeneralBodySource::Exact(_) = &row.source else {
                     return Err(GeneralFabricationError::ExportBlocked);
                 };
                 let matching = self
                     .manufacturing
                     .operations
                     .iter()
-                    .filter(|operation| {
-                        operation.definition_id == row.definition_id
-                            && operation.source == *row_source
-                    })
+                    .filter(|operation| is_row_operation(row, operation))
                     .collect::<Vec<_>>();
                 let Some((stock, machining)) = matching.split_first() else {
                     return Err(GeneralFabricationError::ExportBlocked);
@@ -2876,13 +2886,27 @@ pub fn project_general_fabrication(
         ProjectionStatus::Incomplete
     };
     let mut grouped = BTreeMap::<
-        (GeneralBodySource, [u64; 3], GeneralBomItemKind, String),
+        (
+            GeneralBodySource,
+            bool,
+            [u64; 3],
+            GeneralBomItemKind,
+            String,
+        ),
         Vec<&GeneralBodyParticipant>,
     >::new();
     for (participant, dimensions, metadata) in &accepted {
+        let mirrored = snapshot
+            .resolve_instance_path(participant.instance_path())
+            .map_err(GeneralFabricationError::UnresolvedInstance)?
+            .world_transform
+            .affine()
+            .determinant()
+            < 0.0;
         grouped
             .entry((
                 participant.source().clone(),
+                mirrored,
                 [
                     dimensions.length_mm.to_bits(),
                     dimensions.width_mm.to_bits(),
@@ -2895,7 +2919,7 @@ pub fn project_general_fabrication(
             .push(participant);
     }
     let mut rows = Vec::new();
-    for ((source, dimension_bits, item_kind, material_key), participants) in grouped {
+    for ((source, mirrored, dimension_bits, item_kind, material_key), participants) in grouped {
         let definition_id = source_definition_id(&source);
         let dimensions = PieceDimensions {
             length_mm: f64::from_bits(dimension_bits[0]),
@@ -2920,11 +2944,12 @@ pub fn project_general_fabrication(
         );
         rows.push(GeneralBomRow {
             stable_row_id: format!(
-                "definition-{}/source-{}/kind-{}/material-{}",
+                "definition-{}/source-{}/kind-{}/material-{}{}",
                 definition_id.0,
                 source_digest_token(&source),
                 item_kind.token(),
-                &sha256_hex(material_key.as_bytes())[..16]
+                &sha256_hex(material_key.as_bytes())[..16],
+                if mirrored { "/mirrored" } else { "" }
             ),
             position: rows.len() + 1,
             definition_id,
@@ -2934,6 +2959,7 @@ pub fn project_general_fabrication(
             quantity: instances.len(),
             dimensions,
             instances,
+            mirrored,
             evidence_class,
             validation_state,
         });
@@ -2976,7 +3002,11 @@ pub fn project_general_fabrication(
                     unresolved_sources.push(row.source.clone());
                     continue;
                 };
-                operations.extend(row_operations);
+                if row.mirrored {
+                    operations.extend(row_operations.into_iter().map(mirrored_operation));
+                } else {
+                    operations.extend(row_operations);
+                }
             }
             GeneralBodySource::CanonicalMesh { .. }
             | GeneralBodySource::CanonicalExtrusion { .. }
@@ -4288,6 +4318,96 @@ fn is_production_transform(transform: Transform) -> bool {
     transform.is_rigid() && (transform.affine().determinant() - 1.0).abs() <= ROUNDING
 }
 
+const MIRRORED_FRAME: &str = "definition-local-mirrored";
+
+/// `operation` machines the part of `row`: same body and the row's hand.
+fn is_row_operation(row: &GeneralBomRow, operation: &GeneralManufacturingOperation) -> bool {
+    operation.definition_id == row.definition_id
+        && GeneralBodySource::Exact(operation.source.clone()) == row.source
+        && (operation.frame == MIRRORED_FRAME) == row.mirrored
+}
+
+/// The operation of the opposite-hand part: its geometry reflected across the
+/// local YZ plane (x → −x). Each frame keeps its normal and stays right-handed by
+/// turning its y axis, so in-plane coordinates turn their v and arcs their sense.
+fn mirrored_operation(
+    mut operation: GeneralManufacturingOperation,
+) -> GeneralManufacturingOperation {
+    fn negated(value: f64) -> f64 {
+        if value == 0.0 { 0.0 } else { -value }
+    }
+    fn point([x, y, z]: [f64; 3]) -> [f64; 3] {
+        [negated(x), y, z]
+    }
+    fn frame(frame: GeneralMachiningFrame) -> GeneralMachiningFrame {
+        GeneralMachiningFrame {
+            origin_mm: point(frame.origin_mm),
+            x_axis: point(frame.x_axis),
+            y_axis: point(frame.y_axis).map(negated),
+            normal: point(frame.normal),
+        }
+    }
+    fn planar([u, v]: [f64; 2]) -> [f64; 2] {
+        [u, negated(v)]
+    }
+    fn segments(segments: &mut [GeneralMachiningSegment]) {
+        for segment in segments {
+            *segment = match *segment {
+                GeneralMachiningSegment::Line { start_mm, end_mm } => {
+                    GeneralMachiningSegment::Line {
+                        start_mm: planar(start_mm),
+                        end_mm: planar(end_mm),
+                    }
+                }
+                GeneralMachiningSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => GeneralMachiningSegment::CircularArc {
+                    start_mm: planar(start_mm),
+                    end_mm: planar(end_mm),
+                    center_mm: planar(center_mm),
+                    clockwise: !clockwise,
+                },
+            };
+        }
+    }
+    operation.stable_operation_id = operation.stable_operation_id.replacen('/', "/mirrored/", 1);
+    operation.frame = MIRRORED_FRAME;
+    match &mut operation.machining {
+        GeneralMachiningGeometry::PrismaticStock {
+            frame: stock_frame,
+            cross_section,
+            start_mm,
+            length_axis,
+            ..
+        } => {
+            *stock_frame = frame(*stock_frame);
+            segments(cross_section);
+            *start_mm = point(*start_mm);
+            *length_axis = point(*length_axis);
+        }
+        GeneralMachiningGeometry::ProfileCut {
+            frame: cut_frame,
+            segments: cut_segments,
+            ..
+        } => {
+            *cut_frame = frame(*cut_frame);
+            segments(cut_segments);
+        }
+        GeneralMachiningGeometry::CircularDrill {
+            frame: drill_frame,
+            center_mm,
+            ..
+        } => {
+            *drill_frame = frame(*drill_frame);
+            *center_mm = planar(*center_mm);
+        }
+    }
+    operation
+}
+
 /// Every copy in `row` is placed by a proper rigid motion. The copies of a row share
 /// one set of machining, so a mirrored copy would be machined as its original.
 fn check_copies_share_machining(
@@ -4462,6 +4582,7 @@ fn general_piece_drawing(
         material_key: row.material_key.clone(),
         quantity: row.quantity,
         instances: row.instances.clone(),
+        mirrored: row.mirrored,
         projection_method: "accepted-body-local-bounds",
         views: vec![
             view(
@@ -4494,9 +4615,7 @@ fn general_piece_drawing(
         machining_operations: operations
             .iter()
             .filter(|operation| {
-                row.item_kind == GeneralBomItemKind::Timber
-                    && operation.definition_id == row.definition_id
-                    && GeneralBodySource::Exact(operation.source.clone()) == row.source
+                row.item_kind == GeneralBomItemKind::Timber && is_row_operation(row, operation)
             })
             .cloned()
             .collect(),
