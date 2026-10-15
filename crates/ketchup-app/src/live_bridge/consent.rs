@@ -259,10 +259,7 @@ impl KetchupApp {
             &std::collections::BTreeMap::from([("path", path.display().to_string())]),
         );
         self.dialogs
-            .confirm_high_risk(HighRiskConfirmationRequest {
-                title: &title,
-                description: &description,
-            })
+            .confirm_high_risk(HighRiskConfirmationRequest::new(&title, [description]))
             .is_some()
     }
 

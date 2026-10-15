@@ -307,7 +307,7 @@ impl FileDialogs for DisconnectOnHighRisk {
         false
     }
 
-    fn confirm_high_risk(&mut self, _request: HighRiskConfirmationRequest<'_>) -> Option<u64> {
+    fn confirm_high_risk(&mut self, _request: HighRiskConfirmationRequest) -> Option<u64> {
         self.prompted.store(true, Ordering::Release);
         let mut stream = self.stream.lock().unwrap().take().unwrap();
         stream.shutdown(Shutdown::Write).unwrap();

@@ -392,17 +392,17 @@ impl KetchupApp {
                 payload,
             )
             .map_err(|error| failed("side_effect.prepare", error))?;
-        let description = format!(
-            "Risk: {risk}\nPath: {}\nDocument revision: {}\nPayload SHA-256: {}\nOperation digest: {}",
-            path.display(),
-            proposal.provenance_revision(),
-            proposal.payload_digest(),
-            proposal.operation_digest(),
-        );
-        let Some(approving_human) = self.dialogs.confirm_high_risk(HighRiskConfirmationRequest {
-            title,
-            description: &description,
-        }) else {
+        let lines = [
+            format!("Risk: {risk}"),
+            format!("Path: {}", path.display()),
+            format!("Document revision: {}", proposal.provenance_revision()),
+            format!("Payload SHA-256: {}", proposal.payload_digest()),
+            format!("Operation digest: {}", proposal.operation_digest()),
+        ];
+        let Some(approving_human) = self
+            .dialogs
+            .confirm_high_risk(HighRiskConfirmationRequest::new(title, lines))
+        else {
             return Err(
                 Rejection::new("side_effect.declined", RejectionPhase::Validation)
                     .reason(format!("authenticated human declined {risk}")),

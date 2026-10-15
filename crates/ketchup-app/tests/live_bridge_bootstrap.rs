@@ -937,6 +937,67 @@ fn attached_live_open_requires_explicit_consent_for_the_exact_path() {
     assert_eq!(probe.discard_prompts(), 1);
 }
 
+/// SEC-4 (review 2026-10-15): a path from the client is shown in every
+/// high-risk prompt with its bidirectional and control characters escaped, so
+/// it cannot reorder the text of the prompt or start a forged line.
+#[test]
+fn a_client_path_is_shown_escaped_in_the_open_and_overwrite_prompts() {
+    let directory = tempfile::tempdir().unwrap();
+    // Shown raw, U+202E (right-to-left override) makes the name read as ending in "html.ketchup".
+    let path = directory.path().join("invoice\u{202E}lmth.ketchup");
+    let mut source = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&path));
+    assert!(source.app_mut().create_box());
+    source.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(path.is_file());
+
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_refused_high_risk();
+    let probe = dialogs.clone();
+    let mut shell = Shell::with_dialogs(dialogs);
+    assert!(shell.app_mut().create_box());
+    shell.enable_live_consent_broker();
+    let consent_address = shell.app().live_consent_address().unwrap();
+    let bootstrap = bootstrap(&shell, None);
+    let attach =
+        std::thread::spawn(move || request_consent(consent_address, &"c".repeat(64), &bootstrap));
+    let allowed = finish_attach(&mut shell, attach);
+    let token = allowed["token"].as_str().unwrap();
+    let mut live = TcpStream::connect(allowed["live_bridge_address"].as_str().unwrap()).unwrap();
+    let text = path.to_string_lossy().into_owned();
+
+    let opened = call(
+        &mut shell,
+        &mut live,
+        token,
+        Request::Open {
+            expected: None,
+            path: text.clone(),
+        },
+    );
+    assert_eq!(opened.error.as_deref(), Some("open_declined"));
+    let saved = call(
+        &mut shell,
+        &mut live,
+        token,
+        Request::SaveAs {
+            expected: None,
+            path: text,
+        },
+    );
+    assert!(!saved.ok);
+
+    let prompts = probe.high_risk_prompts();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    for prompt in prompts {
+        assert!(!prompt.contains('\u{202E}'), "{prompt:?}");
+        assert!(
+            prompt.contains("invoice\\u{202e}lmth.ketchup"),
+            "{prompt:?}"
+        );
+    }
+}
+
 #[test]
 fn disconnected_attach_requester_cannot_leave_window_busy() {
     let mut shell = Shell::new();

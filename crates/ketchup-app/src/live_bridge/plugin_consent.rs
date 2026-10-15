@@ -186,48 +186,18 @@ fn listed(items: &BTreeSet<String>) -> String {
     if items.is_empty() {
         "—".to_owned()
     } else {
-        items
-            .iter()
-            .map(|item| shown(item))
-            .collect::<Vec<_>>()
-            .join(", ")
+        items.iter().cloned().collect::<Vec<_>>().join(", ")
     }
-}
-
-/// Text from a plugin as the prompt shows it (SEC-3): a line break, another
-/// control character or a bidirectional or invisible format character is shown
-/// as `\u{…}`, so a name or path can neither start a forged line nor reorder
-/// the text around it.
-fn shown(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        let format = matches!(
-            c,
-            '\u{061C}'
-                | '\u{180E}'
-                | '\u{200B}'..='\u{200F}'
-                | '\u{2028}'..='\u{202E}'
-                | '\u{2060}'..='\u{2069}'
-                | '\u{FEFF}'
-                | '\u{FFF9}'..='\u{FFFB}'
-        );
-        if c.is_control() || format {
-            out.push_str(&format!("\\u{{{:04x}}}", u32::from(c)));
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// A command-line word as shown: quoted when it is empty or holds a space or a
-/// quote, so the words of the command cannot be told apart wrongly.
+/// quote, so the words of the command cannot be told apart wrongly. The prompt
+/// escapes its control and format characters (`HighRiskConfirmationRequest`).
 fn shown_word(word: &str) -> String {
-    let text = shown(word);
     if word.is_empty() || word.chars().any(|c| c.is_whitespace() || c == '"') {
-        format!("\"{}\"", text.replace('"', "\\\""))
+        format!("\"{}\"", word.replace('"', "\\\""))
     } else {
-        text
+        word.to_owned()
     }
 }
 
@@ -246,13 +216,9 @@ impl KetchupApp {
         let mut lines = vec![text("live-plugin-consent-description")];
         if let Some(folder) = &wanted.folder {
             lines.extend([
-                format!(
-                    "{} {}",
-                    text("live-plugin-consent-name"),
-                    shown(&folder.name)
-                ),
+                format!("{} {}", text("live-plugin-consent-name"), folder.name),
                 text("live-plugin-consent-folder"),
-                shown(&folder.path.display().to_string()),
+                folder.path.display().to_string(),
                 format!("SHA-256 {} ({})", folder.sha256, folder.files.len()),
             ]);
         }
@@ -260,7 +226,7 @@ impl KetchupApp {
             lines.push(text("live-plugin-consent-files"));
         }
         for (path, sha256) in &wanted.files {
-            lines.push(shown(&path.display().to_string()));
+            lines.push(path.display().to_string());
             lines.push(format!("SHA-256 {sha256}"));
         }
         lines.extend([
@@ -290,14 +256,10 @@ impl KetchupApp {
                 listed(&wanted.operations)
             ),
         ]);
-        let description = lines.join("\n");
         let title = text("live-plugin-consent-title");
         if self
             .dialogs
-            .confirm_high_risk(HighRiskConfirmationRequest {
-                title: &title,
-                description: &description,
-            })
+            .confirm_high_risk(HighRiskConfirmationRequest::new(&title, lines))
             .is_none()
         {
             return Err(failure(

@@ -57,9 +57,61 @@ pub struct DiscardRequest<'a> {
     pub description: &'a str,
 }
 
-pub struct HighRiskConfirmationRequest<'a> {
-    pub title: &'a str,
-    pub description: &'a str,
+/// A high-risk confirmation as the window shows it (SEC-4). Each line is
+/// shown as one line: a line break, another control character or a
+/// bidirectional or invisible format character in it is shown as `\u{…}`, so
+/// a path, name or command from a client can neither start a forged line nor
+/// reorder the text around it, in every prompt.
+pub struct HighRiskConfirmationRequest {
+    title: String,
+    description: String,
+}
+
+impl HighRiskConfirmationRequest {
+    pub fn new<S: AsRef<str>>(title: &str, lines: impl IntoIterator<Item = S>) -> Self {
+        Self {
+            title: one_line(title),
+            description: lines
+                .into_iter()
+                .map(|line| one_line(line.as_ref()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    #[must_use]
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+/// `text` with every control character and every bidirectional or invisible
+/// format character shown as `\u{…}`.
+fn one_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let format = matches!(
+            c,
+            '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2069}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+        );
+        if c.is_control() || format {
+            out.push_str(&format!("\\u{{{:04x}}}", u32::from(c)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 pub struct HistoryTruncationRequest<'a> {
@@ -92,7 +144,7 @@ pub trait FileDialogs {
     fn confirm_history_truncation(&mut self, request: HistoryTruncationRequest<'_>) -> bool;
 
     /// Return the authenticated local human who approved the exact high-risk evidence.
-    fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest<'_>) -> Option<u64>;
+    fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest) -> Option<u64>;
 
     /// Show an existing folder in the system file manager.
     fn show_folder(&mut self, path: &Path) -> std::io::Result<()>;
@@ -239,12 +291,12 @@ impl FileDialogs for NativeFileDialogs {
             == rfd::MessageDialogResult::Yes
     }
 
-    fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest<'_>) -> Option<u64> {
+    fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest) -> Option<u64> {
         (self
             .message_dialog()
             .set_level(rfd::MessageLevel::Warning)
-            .set_title(request.title)
-            .set_description(request.description)
+            .set_title(request.title())
+            .set_description(request.description())
             .set_buttons(rfd::MessageButtons::YesNo)
             .show()
             == rfd::MessageDialogResult::Yes)
@@ -555,11 +607,11 @@ impl FileDialogs for ScriptedFileDialogs {
             .unwrap_or(false)
     }
 
-    fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest<'_>) -> Option<u64> {
+    fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest) -> Option<u64> {
         let mut state = self.state();
         state
             .high_risk_prompts
-            .push(format!("{}\n{}", request.title, request.description));
+            .push(format!("{}\n{}", request.title(), request.description()));
         let approval = state
             .high_risk_approvals
             .pop_front()
