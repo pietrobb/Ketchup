@@ -7,11 +7,10 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayDeque;
 
@@ -118,7 +117,7 @@ public class ViewerActivity extends NativeActivity {
             try (OutputStream out = new FileOutputStream(file)) {
                 out.write(data);
             }
-        } catch (Exception error) {
+        } catch (Throwable error) {
             lastError = error.toString();
             return false;
         }
@@ -143,47 +142,33 @@ public class ViewerActivity extends NativeActivity {
             if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) {
                 return cursor.getString(0);
             }
-        } catch (Exception error) {
+        } catch (Throwable error) {
             lastError = error.toString();
         }
         return "";
     }
 
-    /** The whole file, or null with {@link #lastError} set. */
-    public byte[] read(String uri) {
-        try (InputStream in = getContentResolver().openInputStream(Uri.parse(uri))) {
-            if (in == null) {
-                lastError = "The app holding the file returned no data";
-                return null;
+    /**
+     * A file descriptor of {@code uri} opened in {@code mode} ("r" to read,
+     * "wt" to replace), which native code reads or writes and closes; -1 with
+     * {@link #lastError} set. The file's bytes never pass through the Java
+     * heap, so a large package cannot run it out of memory.
+     */
+    public int openFile(String uri, String mode) {
+        try {
+            ParcelFileDescriptor file = getContentResolver().openFileDescriptor(Uri.parse(uri), mode);
+            if (file == null) {
+                lastError = "The app holding the file returned no file";
+                return -1;
             }
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-            byte[] buffer = new byte[64 * 1024];
-            for (int read; (read = in.read(buffer)) > 0; ) {
-                bytes.write(buffer, 0, read);
-            }
-            return bytes.toByteArray();
-        } catch (Exception error) {
+            return file.detachFd();
+        } catch (Throwable error) {
             lastError = error.toString();
-            return null;
+            return -1;
         }
     }
 
-    /** Replaces the file with {@code data}; false with {@link #lastError} set. */
-    public boolean write(String uri, byte[] data) {
-        try (OutputStream out = getContentResolver().openOutputStream(Uri.parse(uri), "wt")) {
-            if (out == null) {
-                lastError = "The app holding the file refused writing";
-                return false;
-            }
-            out.write(data);
-            return true;
-        } catch (Exception error) {
-            lastError = error.toString();
-            return false;
-        }
-    }
-
-    /** Why the last read, write or name lookup failed. */
+    /** Why the last open, share or name lookup failed. */
     public String lastError() {
         return lastError;
     }

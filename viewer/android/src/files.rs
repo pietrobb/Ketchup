@@ -3,8 +3,11 @@
 //! picker and the "save as" dialog all answer to the activity.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
+use std::os::fd::{FromRawFd, OwnedFd};
 
-use jni::objects::{JByteArray, JObject, JString};
+use jni::objects::{JObject, JString};
 use jni::{Env, jni_sig, jni_str};
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_view_format::Package;
@@ -13,6 +16,9 @@ use ketchup_viewer::review::Written;
 
 /// Request code ViewerActivity gives a file another app opened with the Viewer.
 const OPENED_BY_ANOTHER_APP: i32 = 0;
+
+/// Bytes read first to tell a package from a comments file.
+const SIGNATURE_BYTES: u64 = 64;
 
 fn request_code(request: FileRequest) -> i32 {
     match request {
@@ -173,14 +179,25 @@ impl Files {
             return Ok(());
         }
         let name = self.display_name(uri);
-        let bytes = self.read(uri, &name)?;
+        let target = if name.is_empty() { uri } else { &name };
+        let read_error =
+            |error: std::io::Error| android_error("viewer.android.read", target, error.to_string());
+        // The readers take only what the format allows, from the file itself:
+        // a large package never has to fit the Java heap (VW-6).
+        let mut file = self.open_file(uri, "r", target)?;
+        let mut start = Vec::new();
+        (&mut file)
+            .take(SIGNATURE_BYTES)
+            .read_to_end(&mut start)
+            .map_err(read_error)?;
+        let reader = BufReader::new(std::io::Cursor::new(start.as_slice()).chain(file));
         // Another app may hand over a file without a name, so its content decides.
         let comments = code == request_code(FileRequest::OpenComments)
-            || (code == OPENED_BY_ANOTHER_APP && !Package::has_signature(&bytes));
+            || (code == OPENED_BY_ANOTHER_APP && !Package::has_signature(&start));
         if comments {
-            app.open_comments(bytes.as_slice())
+            app.open_comments(reader)
         } else {
-            app.open(bytes.as_slice())?;
+            app.open(reader)?;
             self.model_name = (!name.is_empty()).then_some(name);
             Ok(())
         }
@@ -202,27 +219,38 @@ impl Files {
         .unwrap_or_default()
     }
 
-    fn read(&self, uri: &str, name: &str) -> Result<Vec<u8>, Rejection> {
-        let target = if name.is_empty() { uri } else { name };
-        with_activity(&self.android_app, |env, activity| {
+    /// The file behind `uri` opened in `mode` ("r" or "wt"), read and written
+    /// here so its bytes never pass through the Java heap.
+    fn open_file(&self, uri: &str, mode: &str, target: &str) -> Result<File, Rejection> {
+        let code = if mode == "r" {
+            "viewer.android.read"
+        } else {
+            "viewer.android.write"
+        };
+        let fd = with_activity(&self.android_app, |env, activity| {
             let uri = env.new_string(uri)?;
-            let bytes = env
+            let mode = env.new_string(mode)?;
+            let fd = env
                 .call_method(
                     activity,
-                    jni_str!("read"),
-                    jni_sig!("(Ljava/lang/String;)[B"),
-                    &[(&uri).into()],
+                    jni_str!("openFile"),
+                    jni_sig!("(Ljava/lang/String;Ljava/lang/String;)I"),
+                    &[(&uri).into(), (&mode).into()],
                 )?
-                .l()?;
-            if bytes.is_null() {
-                return Ok(Err(last_error(env, activity)?));
+                .i()?;
+            if fd < 0 {
+                return last_error(env, activity).map(Err);
             }
-            let bytes = env.cast_local::<JByteArray>(bytes)?;
-            env.convert_byte_array(&bytes).map(Ok)
+            Ok(Ok(fd))
         })
         .map_err(|error| error.to_string())
-        .and_then(|read| read)
-        .map_err(|detail| android_error("viewer.android.read", target, detail))
+        .and_then(|fd| fd)
+        .map_err(|detail| android_error(code, target, detail))?;
+        // SAFETY: `openFile` detached `fd` from its ParcelFileDescriptor, so
+        // nothing else owns or closes it.
+        #[allow(unsafe_code)]
+        let file = unsafe { File::from(OwnedFd::from_raw_fd(fd)) };
+        Ok(file)
     }
 
     /// Opens the share sheet with `bytes` as file `name`; the sheet needs no answer.
@@ -252,27 +280,14 @@ impl Files {
         .map_err(|detail| android_error("viewer.android.share", name, detail))
     }
 
+    /// Replaces the file with `bytes`; a commented copy of a large package
+    /// never has to fit the Java heap.
     fn write(&self, uri: &str, bytes: &[u8]) -> Result<(), Rejection> {
-        with_activity(&self.android_app, |env, activity| {
-            let target = env.new_string(uri)?;
-            let data = env.byte_array_from_slice(bytes)?;
-            let written = env
-                .call_method(
-                    activity,
-                    jni_str!("write"),
-                    jni_sig!("(Ljava/lang/String;[B)Z"),
-                    &[(&target).into(), (&data).into()],
-                )?
-                .z()?;
-            if written {
-                Ok(Ok(()))
-            } else {
-                last_error(env, activity).map(Err)
-            }
-        })
-        .map_err(|error| error.to_string())
-        .and_then(|written| written)
-        .map_err(|detail| android_error("viewer.android.write", uri, detail))
+        // A provider may hand out a pipe, which cannot be synced; the file
+        // is unbuffered and closing it hands every byte over.
+        let mut file = self.open_file(uri, "wt", uri)?;
+        file.write_all(bytes)
+            .map_err(|error| android_error("viewer.android.write", uri, error.to_string()))
     }
 }
 
