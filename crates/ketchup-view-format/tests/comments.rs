@@ -176,6 +176,53 @@ fn house() -> Package {
 }
 
 #[test]
+fn scattered_hidden_parts_of_a_hundred_thousand_check_and_restore_at_once() {
+    // Every other part hidden by the scene, every third by the comment: no
+    // assembly covers them, so each is its own path.
+    let mut package = package();
+    let manifest = &mut package.manifest;
+    let part = manifest.occurrences[0].clone();
+    manifest.occurrences = (1_000..101_000)
+        .map(|i| Occurrence {
+            path: path(i),
+            ..part.clone()
+        })
+        .collect();
+    manifest.scenes[0].id = 7;
+    manifest.scenes[0].hidden = (1_000..101_000).step_by(2).map(path).collect();
+    let mut comments = Comments::new(&package).expect("new");
+    let mut written = comment(comments.new_id());
+    written.view.scene = Some(7);
+    written.view.hidden = (1_000..101_000).step_by(3).map(path).collect();
+    written.selected = Some(path(1_001));
+    for anchor in written
+        .arrows
+        .iter_mut()
+        .flat_map(|a| [&mut a.tip, &mut a.tail])
+    {
+        anchor.occurrence = Some(path(1_001));
+    }
+    comments.comments.push(written);
+
+    let started = std::time::Instant::now();
+    let mut bytes = Vec::new();
+    comments.write(&mut bytes, &package).expect("write");
+    let read = Comments::read(bytes.as_slice(), &package).expect("read");
+    let visible = read.comments[0].view.visibility(&package.manifest);
+    let elapsed = started.elapsed();
+
+    assert!(
+        visible
+            .iter()
+            .enumerate()
+            .all(|(i, shown)| *shown == (i % 2 == 1 && i % 3 != 0)),
+        "the comment shows exactly the parts neither it nor its scene hides"
+    );
+    // Checking each hidden path against every part takes minutes here.
+    assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+}
+
+#[test]
 fn isolations_and_hidden_layers_stay_small_and_restore_exactly() {
     let package = house();
     let manifest = &package.manifest;
@@ -197,11 +244,7 @@ fn isolations_and_hidden_layers_stay_small_and_restore_exactly() {
     for (name, visible) in &views {
         let mut view = comment(1).view;
         view.set_visibility(manifest, visible);
-        let restored: Vec<bool> = manifest
-            .occurrences
-            .iter()
-            .map(|o| view.shows(manifest, &o.path))
-            .collect();
+        let restored = view.visibility(manifest);
         assert!(restored == *visible, "{name}: the view restores exactly");
         let paths = view.hidden.len() + view.shown.as_ref().map_or(0, Vec::len);
         assert!(paths <= 2, "{name}: {paths} paths, {view:?}");

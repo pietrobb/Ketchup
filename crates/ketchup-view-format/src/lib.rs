@@ -20,6 +20,7 @@ pub use container::{MAX_GLB_BYTES, MAX_MANIFEST_BYTES, Package};
 pub use glb::geometry::{Geometry, GeometryNode, GeometryPrimitive, PrimitiveTopology};
 use ketchup_rejection::{Rejection, RejectionPhase};
 pub use schema::*;
+pub use visibility::PathCover;
 
 pub(crate) fn reject(target: &str, reason: impl Into<String>) -> Rejection {
     Rejection::new("viewer.package.invalid", RejectionPhase::Request)

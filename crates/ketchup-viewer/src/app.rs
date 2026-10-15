@@ -11,7 +11,9 @@ use crate::{
 };
 use eframe::egui;
 use ketchup_rejection::{Rejection, RejectionPhase};
-use ketchup_view_format::{CommentView, DisplayStyle, InstancePath, LocalDimensions, Section};
+use ketchup_view_format::{
+    CommentView, DisplayStyle, InstancePath, LocalDimensions, PathCover, Section,
+};
 use num_traits::ToPrimitive;
 use std::{
     io::{Read, Write},
@@ -646,10 +648,7 @@ impl ViewerApp {
         };
         let camera = Camera::from_scene(model, &comment.view.camera)?;
         let occurrences = &model.manifest().occurrences;
-        self.visible = occurrences
-            .iter()
-            .map(|occurrence| comment.view.shows(model.manifest(), &occurrence.path))
-            .collect();
+        self.visible = comment.view.visibility(model.manifest());
         self.style = comment.view.style.clone();
         self.section = comment.view.section.clone();
         self.selected = comment
@@ -846,18 +845,12 @@ fn millimetres(value: f64) -> String {
 
 /// Per occurrence: visible unless the scene hides it or one of its ancestors.
 fn visibility(model: &Model, scene: Option<usize>) -> Vec<bool> {
+    let hidden = scene.map(|i| PathCover::new(&model.manifest().scenes[i].hidden));
     model
         .manifest()
         .occurrences
         .iter()
-        .map(|occurrence| {
-            scene.is_none_or(|i| {
-                !model.manifest().scenes[i].hidden.iter().any(|hidden| {
-                    hidden.root_occurrence_id == occurrence.path.root_occurrence_id
-                        && occurrence.path.steps.starts_with(&hidden.steps)
-                })
-            })
-        })
+        .map(|occurrence| hidden.as_ref().is_none_or(|h| !h.covers(&occurrence.path)))
         .collect()
 }
 

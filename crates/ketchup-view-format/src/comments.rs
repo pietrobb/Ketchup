@@ -260,14 +260,17 @@ impl Comments {
             .iter()
             .map(|o| &o.path)
             .collect();
+        // A hidden path may be an assembly above the bodies: any prefix of one.
+        let assemblies: BTreeSet<_> = paths
+            .iter()
+            .flat_map(|path| {
+                (0..=path.steps.len()).map(|depth| (path.root_occurrence_id, &path.steps[..depth]))
+            })
+            .collect();
         for comment in &self.comments {
             let view = &comment.view;
             for hidden in view.hidden.iter().chain(view.shown.iter().flatten()) {
-                // A hidden path may be an assembly above the bodies.
-                if !paths
-                    .iter()
-                    .any(|path| crate::visibility::covered(std::slice::from_ref(hidden), path))
-                {
+                if !assemblies.contains(&(hidden.root_occurrence_id, hidden.steps.as_slice())) {
                     return Err(unknown_path("comments.view.hidden"));
                 }
             }

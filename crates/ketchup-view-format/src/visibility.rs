@@ -2,32 +2,57 @@
 //! keeps the few parts still shown, a hidden layer names the scene that
 //! hides it, and a hidden assembly is one path instead of every part in it.
 
-use crate::{CommentView, InstancePath, Manifest};
+use crate::{CommentView, InstancePath, Manifest, PathStep};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Whether `path` lies under one of `prefixes`: a prefix may be an assembly
-/// above the bodies.
-pub(crate) fn covered(prefixes: &[InstancePath], path: &InstancePath) -> bool {
-    prefixes.iter().any(|prefix| {
-        prefix.root_occurrence_id == path.root_occurrence_id
-            && path.steps.starts_with(&prefix.steps)
-    })
+/// Paths that hide or show everything under them: a path may be an assembly
+/// above the bodies. Asking about a path looks up each of its own prefixes,
+/// so it costs its depth, not the number of paths.
+#[derive(Debug)]
+pub struct PathCover<'a>(BTreeSet<(u64, &'a [PathStep])>);
+
+impl<'a> PathCover<'a> {
+    pub fn new(prefixes: impl IntoIterator<Item = &'a InstancePath>) -> Self {
+        Self(
+            prefixes
+                .into_iter()
+                .map(|p| (p.root_occurrence_id, p.steps.as_slice()))
+                .collect(),
+        )
+    }
+
+    /// Whether `path` lies under one of the paths.
+    #[must_use]
+    pub fn covers(&self, path: &InstancePath) -> bool {
+        (0..=path.steps.len()).any(|depth| {
+            self.0
+                .contains(&(path.root_occurrence_id, &path.steps[..depth]))
+        })
+    }
 }
 
 impl CommentView {
-    /// Whether the occurrence at `path` of `manifest` is shown in this view.
+    /// Per occurrence of `manifest`: whether this view shows it.
     #[must_use]
-    pub fn shows(&self, manifest: &Manifest, path: &InstancePath) -> bool {
-        let base = match (&self.shown, self.scene) {
-            (Some(shown), _) => covered(shown, path),
-            (None, Some(id)) => manifest
-                .scenes
-                .iter()
-                .find(|scene| scene.id == id)
-                .is_none_or(|scene| !covered(&scene.hidden, path)),
-            (None, None) => true,
-        };
-        base && !covered(&self.hidden, path)
+    pub fn visibility(&self, manifest: &Manifest) -> Vec<bool> {
+        let hidden = PathCover::new(&self.hidden);
+        let shown = self.shown.as_ref().map(PathCover::new);
+        let scene_hidden = self
+            .scene
+            .and_then(|id| manifest.scenes.iter().find(|scene| scene.id == id))
+            .map(|scene| PathCover::new(&scene.hidden));
+        manifest
+            .occurrences
+            .iter()
+            .map(|o| {
+                let base = match (&shown, &scene_hidden) {
+                    (Some(shown), _) => shown.covers(&o.path),
+                    (None, Some(scene_hidden)) => !scene_hidden.covers(&o.path),
+                    (None, None) => true,
+                };
+                base && !hidden.covers(&o.path)
+            })
+            .collect()
     }
 
     /// Describe `visible`, one flag per occurrence of `manifest`, in the
@@ -43,10 +68,8 @@ impl CommentView {
             best = (shown.len() + 1, None, Vec::new(), Some(shown));
         }
         for scene in &manifest.scenes {
-            let in_scene: Vec<bool> = paths
-                .iter()
-                .map(|path| covered(&scene.hidden, path))
-                .collect();
+            let scene_hidden = PathCover::new(&scene.hidden);
+            let in_scene: Vec<bool> = paths.iter().map(|path| scene_hidden.covers(path)).collect();
             if in_scene
                 .iter()
                 .zip(visible)
