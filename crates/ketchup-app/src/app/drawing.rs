@@ -3015,22 +3015,27 @@ impl KetchupApp {
         frame
     }
 
+    /// The height of the upward face under the pointer, a box's top or a
+    /// face of an exact body, or the ground when there is none. Once the
+    /// exact body is shown the pick names its exact face, not the box's top,
+    /// so that plane comes from the surface hit.
     pub(crate) fn rectangle_plane_z(&self, pointer: Pos2, rect: Rect) -> f64 {
-        let Some(selection) = self.exact_pick_at_screen(pointer, rect) else {
-            return 0.0;
+        let top = ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
         };
-        if selection.element
-            != (ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Maximum,
-            })
+        if let Some(selection) = self.exact_pick_at_screen(pointer, rect)
+            && selection.element == top
+            && let Some(item) = self
+                .active_boxes()
+                .into_iter()
+                .find(|item| item.instance_path == selection.instance_path)
         {
-            return 0.0;
+            return item.origin_mm.z + item.size_mm.z;
         }
-        self.active_boxes()
-            .into_iter()
-            .find(|item| item.instance_path == selection.instance_path)
-            .map_or(0.0, |item| item.origin_mm.z + item.size_mm.z)
+        self.surface_hit_at_screen(pointer, rect)
+            .filter(|(_, normal)| normal.z >= 1.0 - ROUNDING)
+            .map_or(0.0, |(point, _)| point.z)
     }
 
     pub(crate) fn handle_shortcuts(&mut self, context: &egui::Context) {

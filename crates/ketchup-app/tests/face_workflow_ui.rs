@@ -1443,6 +1443,41 @@ fn rectangular_line_profile_negative_push_pull_creates_exact_through_cut_atomica
     ));
 }
 
+/// Lines clicked on the top face once its exact body is shown lie on that
+/// face, not on the ground under it, so pushing the closed shape cuts.
+#[test]
+fn line_profile_drawn_on_the_exact_top_face_cuts_into_it() {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for(&mut shell, "the exact body", |shell| {
+        shell.app().exact_render_body_count() > 0
+    });
+    let points = [
+        Vec3::new(10.0, 10.0, 20.0),
+        Vec3::new(25.0, 10.0, 20.0),
+        Vec3::new(25.0, 30.0, 20.0),
+        Vec3::new(10.0, 30.0, 20.0),
+    ]
+    .map(|point| shell.app().viewport_position(point).unwrap());
+    shell.click_command(AppCommand::Line);
+    for point in points.iter().chain([&points[0]]) {
+        shell.click_at(*point);
+    }
+    let result_definition = commit_drawn_shape_push_pull(&mut shell, "-20");
+    let snapshot = shell.app().document_snapshot();
+    let producer = *snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, result_definition, producer).unwrap();
+    assert!(cut_tool_profile_geometry(&graph).is_some());
+}
+
 #[test]
 fn triangular_line_profile_negative_push_pull_creates_exact_through_cut_atomically() {
     let directory = tempfile::tempdir().unwrap();
