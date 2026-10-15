@@ -25,6 +25,9 @@
 #     machine files (BTLx, woodWOP, fabrication CSV) count only parts carrying one of
 #     these tags, whether shown or hidden, so a concept body, furniture or a mattress
 #     never reaches the cut list. Hardware counts when one of the joined parts is made.
+#     Bought parts and bars (bolt(), nut(), rebar()...) are ordered only when they carry
+#     one of the tags too: tag() them; issue production_leaves_out_ordered_parts names
+#     those left out, production_tag_unused a tag no part carries (a misspelling).
 #     Without production() every part is made, while the takeoff and the machine files
 #     take the visible parts: hide a floor to export the other one alone.
 #   grain= of board() and member() is the attribute "grain": "x", "y" or "z"; the cut-list

@@ -197,6 +197,8 @@ topic it belongs to.
 | `param_out_of_range` | error | a parameter is outside its `min`/`max` |
 | `program_condition_failed` | error | `check(condition, message, parts=[...], hint=...)` found a library design problem; evaluation continues and the condition is returned |
 | `floating_part` | warning | a part touches nothing that rests on z = 0 |
+| `production_tag_unused` | error / warning | no part carries a tag of `production(tags=…)`; an error when therefore nothing is made, a warning when another tag still makes parts |
+| `production_leaves_out_ordered_parts` | warning | bought parts (`designation`) or bars (`cut_length_mm`) carry none of the `production()` tags, so they reach no hardware list or bar schedule; `tag()` them to order them |
 | `expectation_failed` | error | a stated condition (`expect*`) does not hold; the message gives the measured and the required value |
 | `collision_unverified` | warning | the boxes of two parts overlap, a part is not its box, and the exact solids were not measured |
 | `expectation_unverified` | warning | a condition needs the distance of two solids that are apart, but that distance was not measured |

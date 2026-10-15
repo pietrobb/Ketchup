@@ -767,6 +767,93 @@ fn support<'a>(
     }
 }
 
+/// What `production(tags=…)` leaves out without being told to: tags no part
+/// carries (an error when nothing is made at all) and bought parts and bars
+/// that carry none of its tags, which then reach no hardware list or bar
+/// schedule.
+fn production(model: &ProgramModel, issues: &mut Vec<Issue>) {
+    use std::collections::BTreeSet;
+    if model.production_scope.is_empty() {
+        return;
+    }
+    let carried = model
+        .parts
+        .iter()
+        .flat_map(|part| part.tags.iter().map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let quoted = |tags: &mut dyn Iterator<Item = &str>| {
+        tags.map(|tag| format!("{tag:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let made_any = model.parts.iter().any(|part| model.in_production(part));
+    let unused = quoted(
+        &mut model
+            .production_scope
+            .iter()
+            .map(String::as_str)
+            .filter(|tag| !carried.contains(tag)),
+    );
+    if !unused.is_empty() {
+        issues.push(Issue {
+            severity: if made_any {
+                Severity::Warning
+            } else {
+                Severity::Error
+            },
+            kind: "production_tag_unused",
+            parts: Vec::new(),
+            message: if made_any {
+                format!("production(tags=…): no part carries {unused}")
+            } else {
+                format!(
+                    "production(tags=…): no part carries {unused}, so nothing is made: \
+                     the cut list, hardware, bar schedule and takeoff are empty"
+                )
+            },
+            where_mm: None,
+            hint: if carried.is_empty() {
+                "No part carries a tag; tag the parts that are made with tag().".to_owned()
+            } else {
+                format!(
+                    "Check the spelling; the parts carry {}.",
+                    quoted(&mut carried.iter().copied())
+                )
+            },
+            source_lines: Vec::new(),
+        });
+    }
+    if !made_any {
+        return;
+    }
+    let left_out = model
+        .parts
+        .iter()
+        .filter(|part| !part.made() && !model.in_production(part))
+        .collect::<Vec<_>>();
+    if left_out.is_empty() {
+        return;
+    }
+    let bars = left_out
+        .iter()
+        .filter(|part| part.cut_length_mm().is_some())
+        .count();
+    issues.push(Issue {
+        severity: Severity::Warning,
+        kind: "production_leaves_out_ordered_parts",
+        parts: left_out.iter().map(|part| part.name.clone()).collect(),
+        message: format!(
+            "production(tags=…) leaves {} bought parts and {bars} bars out of the hardware \
+             list and the bar schedule: none carries one of its tags",
+            left_out.len() - bars
+        ),
+        where_mm: None,
+        hint: "Tag them with tag(parts, \"<tag>\") to order them, or leave them out on purpose."
+            .to_owned(),
+        source_lines: Vec::new(),
+    });
+}
+
 /// All generic checks on boxes. Errors first, then warnings; stable order.
 #[must_use]
 pub fn validate(model: &ProgramModel) -> Vec<Issue> {
@@ -788,6 +875,7 @@ pub(crate) fn validate_with_faces<'a>(
 ) -> Vec<Issue> {
     let mut issues = model.declared_issues.clone();
     params(model, &mut issues);
+    production(model, &mut issues);
     crate::motion::issues(model, &mut issues);
     collisions(model, exact, &mut issues);
     crate::clearance::issues(model, &mut issues);

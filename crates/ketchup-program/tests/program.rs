@@ -163,6 +163,91 @@ fn only_production_parts_reach_the_cut_list_hardware_machining_and_takeoff() {
     assert!(error.message.contains("name at least one tag"), "{error}");
 }
 
+/// Review 2026-10-14 (SCOPE-1): production(tags=) silently dropped the bought
+/// parts and bars that carry none of its tags (every rod, nut, washer and bar
+/// of the anchored beam), and a misspelled tag emptied the cut list without a
+/// word. Both are now issues; what is made does not change.
+#[test]
+fn a_production_scope_names_the_bought_parts_it_leaves_out_and_a_tag_no_part_carries() {
+    let beam = include_str!("../../../examples/programs/anchored-beam.star");
+    let issue = |issues: &[ketchup_program::Issue], kind: &str| {
+        issues
+            .iter()
+            .find(|issue| issue.kind == kind)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {kind} in {issues:#?}"))
+    };
+    let scoped = format!(
+        "{beam}tag([footing, plate, beam] + fins, \"construction\")\n\
+         production(tags = [\"construction\"])\n"
+    );
+    let (evaluated, report) = run("t.star", &scoped, &BTreeMap::new()).unwrap();
+    assert!(report.bom.hardware.is_empty(), "{:#?}", report.bom.hardware);
+    let left_out = issue(&report.issues, "production_leaves_out_ordered_parts");
+    assert_eq!(left_out.severity, Severity::Warning);
+    let ordered = evaluated
+        .model
+        .parts
+        .iter()
+        .filter(|part| !part.made())
+        .map(|part| part.name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(ordered.len(), 4 * 3 + 2 * 3 + 8, "{ordered:?}");
+    assert_eq!(left_out.parts, ordered);
+    assert!(
+        left_out.message.contains("18 bought parts") && left_out.message.contains("8 bars"),
+        "{}",
+        left_out.message
+    );
+    assert!(
+        report
+            .issues
+            .iter()
+            .all(|issue| issue.kind != "production_tag_unused")
+    );
+
+    // Tagged, they are ordered and nothing is reported.
+    let ordered_too = scoped.replace(
+        "production(",
+        &format!("tag({ordered:?}, \"construction\")\nproduction("),
+    );
+    let (_, report) = run("t.star", &ordered_too, &BTreeMap::new()).unwrap();
+    assert!(!report.bom.hardware.is_empty());
+    assert!(
+        report
+            .issues
+            .iter()
+            .all(|issue| !issue.kind.starts_with("production_")),
+        "{:#?}",
+        report.issues
+    );
+
+    // A misspelled tag: nothing is made, which is an error.
+    let misspelled = scoped.replace(
+        "production(tags = [\"construction\"])",
+        "production(tags = [\"construktion\"])",
+    );
+    let (_, report) = run("t.star", &misspelled, &BTreeMap::new()).unwrap();
+    assert_eq!(report.bom.total_parts, 0);
+    let unused = issue(&report.issues, "production_tag_unused");
+    assert_eq!(unused.severity, Severity::Error);
+    assert!(
+        unused.message.contains("\"construktion\"") && unused.hint.contains("\"construction\""),
+        "{unused:?}"
+    );
+    assert!(!report.ok);
+
+    // One of two tags misspelled: the other still makes parts, a warning.
+    let one_of_two = scoped.replace(
+        "production(tags = [\"construction\"])",
+        "production(tags = [\"construction\", \"hardwear\"])",
+    );
+    let (_, report) = run("t.star", &one_of_two, &BTreeMap::new()).unwrap();
+    let unused = issue(&report.issues, "production_tag_unused");
+    assert_eq!(unused.severity, Severity::Warning);
+    assert!(unused.message.contains("\"hardwear\""), "{unused:?}");
+}
+
 #[test]
 fn the_cut_list_gives_the_blank_a_push_pull_grew() {
     let (_, report) = run(
