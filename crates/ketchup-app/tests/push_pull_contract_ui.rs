@@ -229,3 +229,94 @@ fn a_push_through_the_whole_part_is_refused_by_name_whether_typed_or_dragged() {
         "the preview names why it cannot go through, not {refusal:?}"
     );
 }
+
+#[test]
+fn a_pull_of_a_shared_part_moves_every_copy_in_one_undo_step() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 0.0, 0.0)));
+    shell.settle();
+    shell.press_key(Key::Escape);
+    let undo = shell.app().undo_step_count();
+    start_pull(&mut shell);
+    type_value(&mut shell, "10");
+    shell.press_key(Key::Enter);
+    for id in [1, 2] {
+        let (_, size) = shell.app().occurrence_box_geometry(id).unwrap();
+        assert_eq!(size.z, 30.0, "copy {id} follows the shared part");
+    }
+    assert_eq!(shell.app().undo_step_count(), undo + 1);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    for id in [1, 2] {
+        let (_, size) = shell.app().occurrence_box_geometry(id).unwrap();
+        assert_eq!(size.z, 20.0, "Undo returns copy {id}");
+    }
+}
+
+fn exact_worker_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
+}
+
+/// Waits until the exact bodies on screen have the `expected` bounds, each in
+/// its own part's frame, in any order.
+fn assert_exact_bodies(shell: &mut Shell, expected: &[[[f64; 3]; 2]]) {
+    let close = |a: &[[f64; 3]; 2], b: &[[f64; 3]; 2]| {
+        (0..2).all(|corner| (0..3).all(|axis| (a[corner][axis] - b[corner][axis]).abs() < 1.0e-3))
+    };
+    let arrived = shell.wait_until(|shell| {
+        shell.step();
+        let actual = shell.app().exact_render_bounds();
+        actual.len() == expected.len()
+            && expected
+                .iter()
+                .all(|bounds| actual.iter().any(|body| close(body, bounds)))
+    });
+    assert!(
+        arrived,
+        "exact bounds {:?}, expected {expected:?}: {}",
+        shell.app().exact_render_bounds(),
+        shell.app().action_digest()
+    );
+}
+
+#[test]
+fn a_face_pulled_inside_an_opened_group_changes_that_part_alone_and_the_group_stays_open() {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-model", AppCommand::Group);
+    shell.double_click_at(shell.top_face_centre(2));
+    assert_eq!(shell.app().edit_context_depth(), 1);
+    let unpulled = [[[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]]; 2];
+    assert_exact_bodies(&mut shell, &unpulled);
+    let undo = shell.app().undo_step_count();
+
+    shell.move_pointer(shell.top_face_centre(2));
+    shell.press_key(Key::P);
+    shell.click_at(shell.top_face_centre(2));
+    type_value(&mut shell, "10");
+    shell.press_key(Key::Enter);
+
+    let pulled = [
+        [[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]],
+        [[0.0, 0.0, 0.0], [100.0, 60.0, 30.0]],
+    ];
+    assert_exact_bodies(&mut shell, &pulled);
+    assert_eq!(shell.app().undo_step_count(), undo + 1);
+    assert_eq!(
+        shell.app().edit_context_depth(),
+        1,
+        "{}",
+        shell.app().action_digest()
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_exact_bodies(&mut shell, &unpulled);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_exact_bodies(&mut shell, &pulled);
+}
