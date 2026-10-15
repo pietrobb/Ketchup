@@ -48,24 +48,6 @@ jobs:
           python -m pip install --quiet pytest openpyxl anthropic
           python -m pytest -q tests sdk/python/tests
 
-  rust:
-    name: format, clippy and tests
-    # The runner has the pinned OCCT build installed. Pull requests from forks
-    # never run on it.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Windows, X64, ketchup-occt-r0-v1]
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: rustfmt
-        run: cargo fmt --all -- --check
-      - name: clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: tests
-        run: cargo test --locked --workspace --all-targets --no-fail-fast -- --test-threads=2
-
   rust-without-occt:
     name: format, clippy and tests of the crates without OCCT
     # Runs for every pull request, forks included. ketchup-model needs OCCT
@@ -96,20 +78,21 @@ jobs:
         run: cargo test --locked $CRATES --no-fail-fast
 
   rust-required:
-    name: Windows build with OCCT passed
-    # A skipped job counts as passed for a required check, so a pull request
-    # from a fork, which never runs on the OCCT runner, would merge unbuilt.
-    # This job fails unless the full build ran and passed.
-    needs: rust
+    name: CI passed
+    # A skipped job counts as passed for a required check; this job fails
+    # unless every job it needs ran and passed.
+    needs: [checks, rust-without-occt]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: full Rust build result
+      - name: job results
         env:
-          RESULT: ${{ needs.rust.result }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          if [ "$RESULT" != "success" ]; then
-            echo "::error::The Windows build with OCCT did not pass ($RESULT). A pull request from a fork needs a maintainer to run it from a branch of this repository."
-            exit 1
-          fi
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "::error::A CI job did not pass ($RESULTS)."
+              exit 1
+            fi
+          done
