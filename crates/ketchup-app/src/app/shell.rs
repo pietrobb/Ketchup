@@ -1511,6 +1511,9 @@ fn apply_shell_style(context: &egui::Context, palette: Palette) {
     }
 
     let mut style = (*context.style()).clone();
+    // The shell sets colours, not cursor behaviour: whoever runs it (the test
+    // harness turns blinking off) keeps its cursor.
+    visuals.text_cursor = style.visuals.text_cursor.clone();
     style.text_styles = [
         (
             egui::TextStyle::Heading,

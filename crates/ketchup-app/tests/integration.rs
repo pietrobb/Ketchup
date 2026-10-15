@@ -24,6 +24,7 @@ mod live_bridge_bootstrap;
 mod live_bridge_image;
 mod live_bridge_transactions;
 mod manual_bottle_documentation;
+mod manual_workflow_ui;
 mod nested_transform_ui;
 mod occurrence_color_ui;
 mod performance_ai_house;

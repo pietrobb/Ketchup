@@ -230,6 +230,11 @@ impl Shell {
         // variable number of frames and every assertion becomes a race.
         harness.ctx.style_mut(|style| {
             style.animation_time = 0.0;
+            // A focused value field's blinking cursor asks for a frame at its
+            // next on/off switch; when the frozen shell clock stands just
+            // before one, the shell never settles. Whether it does depends on
+            // how many gestures came before, so a long session fails at random.
+            style.visuals.text_cursor.blink = false;
         });
         harness.run();
         let mut shell = Self {
