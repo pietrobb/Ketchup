@@ -4,6 +4,7 @@
 //! while the document is still at the revision the plugin read. It starts only
 //! after the user allowed it in the window (`plugin_consent`).
 use super::plugin_consent::PluginConsent;
+use super::plugin_files::HeldFiles;
 use super::*;
 use ketchup_assistant::extension::{PluginCapability, PluginGrant, PluginLimits};
 use ketchup_scheduler::plugin::{
@@ -75,6 +76,8 @@ struct PluginLaunch {
     command: PluginCommand,
     grant: PluginGrant,
     consent: PluginConsent,
+    /// The files the consent hashed, held until the process has ended.
+    held: HeldFiles,
 }
 
 fn invalid_params(reason: &str) -> &'static str {
@@ -107,6 +110,7 @@ fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'static str> {
                 )?,
                 command: folder.command,
                 consent: folder.consent,
+                held: folder.held,
             })
         }
         (None, Some(executable)) => {
@@ -123,12 +127,14 @@ fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'static str> {
                 &request.capabilities,
                 &request.allowed_operations,
             )?;
+            let mut held = HeldFiles::default();
             let consent = PluginConsent::of_command(
                 executable,
                 &request.arguments,
                 principal_id,
                 &request.capabilities,
                 &request.allowed_operations,
+                &mut held,
             )?;
             Ok(PluginLaunch {
                 command: PluginCommand {
@@ -138,6 +144,7 @@ fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'static str> {
                 },
                 grant,
                 consent,
+                held,
             })
         }
         _ => Err(invalid_params(
@@ -222,6 +229,7 @@ impl LiveBridge {
             command,
             grant,
             consent,
+            held,
         } = match Self::require_request_authority(&cancelled)
             .and_then(|()| self.prepare_plugin(app, &request, ui_busy))
         {
@@ -249,6 +257,7 @@ impl LiveBridge {
             .spawn(move || {
                 let result =
                     run_plugin_command(&command, &snapshot, grant, timeout, &thread_cancelled);
+                drop(held);
                 let _ = sender.try_send(result);
                 repaint.request_repaint();
             });

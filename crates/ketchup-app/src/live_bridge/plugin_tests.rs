@@ -462,6 +462,78 @@ fn a_plugin_folder_is_allowed_with_all_its_files_and_takes_inputs_only_by_protoc
     assert_eq!(wire.app.undo_step_count(), undo);
 }
 
+/// SEC-2: a plugin file changed while the consent prompt is open does not run;
+/// the folder's copy the prompt hashed does, and the changed folder asks again.
+#[test]
+fn a_plugin_folder_runs_the_files_the_user_allowed_not_files_changed_while_asking() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let swapped = FOLDER_PLUGIN.replace("inputs[\"height_mm\"]", "99");
+    let dialogs = ScriptedFileDialogs::new().queue_high_risk_approval_after_write_attempt(
+        1,
+        folder.join("plugin.py"),
+        swapped.clone(),
+    );
+    let probe = dialogs.clone();
+    let mut wire = plugin_wire_answering(dialogs);
+    let original = height(&wire.app);
+
+    let response = wire.call_within(
+        Request::RunPlugin(folder_request(&folder, json!({"height_mm": 35}))),
+        Duration::from_secs(120),
+    );
+    assert_eq!(response.result.unwrap()["published"], true);
+    // The folder's own file changed while asking, the allowed copy ran.
+    assert_eq!(probe.high_risk_write_attempts(), [true]);
+    assert_eq!(
+        std::fs::read_to_string(folder.join("plugin.py")).unwrap(),
+        swapped
+    );
+    assert_eq!(height(&wire.app), 35.0);
+    wire.call(Request::Undo { expected: None });
+
+    // The changed folder is not the allowed one.
+    assert_consent_required(&mut wire, folder_request(&folder, json!({"height_mm": 35})));
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert_eq!(height(&wire.app), original);
+}
+
+/// SEC-2: a script outside a plugin folder cannot be changed from its hash in
+/// the consent prompt until the plugin has ended; then it can again.
+#[cfg(windows)]
+#[test]
+fn a_plugin_script_cannot_change_between_its_consent_and_the_end_of_its_run() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let wrapper = directory.path().join("height_plugin.py");
+    let wrapped = |height: &str| {
+        format!(
+            "import runpy, sys\nsys.argv = [r\"{0}\", sys.argv[1], \"{height}\"]\nrunpy.run_path(r\"{0}\", run_name=\"__main__\")\n",
+            example_script().display()
+        )
+    };
+    std::fs::write(&wrapper, wrapped("35")).unwrap();
+    let dialogs = ScriptedFileDialogs::new().queue_high_risk_approval_after_write_attempt(
+        1,
+        &wrapper,
+        wrapped("99"),
+    );
+    let probe = dialogs.clone();
+    let mut wire = plugin_wire_answering(dialogs);
+    let request = plugin_request(vec![
+        wrapper.to_string_lossy().into_owned(),
+        EXTRUSION.to_string(),
+    ]);
+
+    let response = wire.call_within(Request::RunPlugin(request), Duration::from_secs(120));
+    assert_eq!(response.result.unwrap()["published"], true);
+    assert_eq!(probe.high_risk_write_attempts(), [false]);
+    assert_eq!(height(&wire.app), 35.0);
+    // Released with the run.
+    std::fs::write(&wrapper, wrapped("99")).unwrap();
+}
+
 /// A directory link: a junction on Windows (no privilege needed), a symlink elsewhere.
 fn link_directory(link: &Path, target: &Path) {
     #[cfg(windows)]

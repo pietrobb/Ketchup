@@ -2,9 +2,12 @@
 //! principal, the permissions and the typed inputs. The caller names the folder
 //! and gives input values, which reach the plugin only through the protocol
 //! (`QUERY\tINPUTS`), never as process arguments. The consent covers every file
-//! under the folder plus any file outside it the command line names.
+//! under the folder plus any file outside it the command line names. A run
+//! hashes and starts a staged copy of the folder (`plugin_files`), so what runs
+//! is what the user allowed.
 use super::drawings::local_absolute_path;
 use super::plugin_consent::{ConsentFolder, PluginConsent};
+use super::plugin_files::HeldFiles;
 use super::*;
 use ketchup_model::graph::{sha256_hex, sha256_reader_hex};
 use ketchup_scheduler::plugin::PluginCommand;
@@ -73,6 +76,8 @@ pub(super) struct FolderLaunch {
     pub capabilities: Vec<String>,
     pub allowed_operations: Vec<String>,
     pub consent: PluginConsent,
+    /// Held until the plugin process has ended.
+    pub held: HeldFiles,
 }
 
 fn invalid(reason: impl Into<String>) -> &'static str {
@@ -110,8 +115,8 @@ fn slashed(relative: &Path) -> String {
         .join("/")
 }
 
-/// Every file under `folder` with its SHA-256, by `/`-separated relative path.
-fn folder_files(folder: &Path) -> Result<Vec<(String, String)>, &'static str> {
+/// Every file under `folder` by relative path; a link or too much is refused.
+fn walk(folder: &Path) -> Result<Vec<PathBuf>, &'static str> {
     let mut files = Vec::new();
     let mut bytes = 0u64;
     let mut pending = vec![PathBuf::new()];
@@ -137,24 +142,61 @@ fn folder_files(folder: &Path) -> Result<Vec<(String, String)>, &'static str> {
                     MAX_FOLDER_BYTES / (1024 * 1024)
                 )));
             }
-            let sha256 = fs::File::open(entry.path())
-                .and_then(sha256_reader_hex)
-                .map_err(unreadable)?;
-            files.push((slashed(&relative), sha256));
+            files.push(relative);
         }
+    }
+    Ok(files)
+}
+
+/// Every file under `folder` with its SHA-256, by `/`-separated relative
+/// path; with `held`, each read through a handle held until the run ends.
+fn folder_files(
+    folder: &Path,
+    mut held: Option<&mut HeldFiles>,
+) -> Result<Vec<(String, String)>, &'static str> {
+    let mut files = Vec::new();
+    for relative in walk(folder)? {
+        let path = folder.join(&relative);
+        let sha256 = match held.as_deref_mut() {
+            Some(held) => held.hash(&path),
+            None => fs::File::open(&path).and_then(sha256_reader_hex),
+        }
+        .map_err(unreadable)?;
+        files.push((slashed(&relative), sha256));
     }
     files.sort();
     Ok(files)
 }
 
-fn read_manifest(folder: &Path) -> Result<(Manifest, String), &'static str> {
+/// Copies every file under `folder` into the stage of `held`.
+fn stage_folder(folder: &Path, held: &HeldFiles) -> Result<(), &'static str> {
+    let stage = held.stage().expect("a staged run has a stage");
+    for relative in walk(folder)? {
+        let target = stage.join(&relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(unreadable)?;
+        }
+        fs::copy(folder.join(&relative), target).map_err(unreadable)?;
+    }
+    Ok(())
+}
+
+fn read_manifest(
+    folder: &Path,
+    held: Option<&mut HeldFiles>,
+) -> Result<(Manifest, String), &'static str> {
     let path = folder.join(MANIFEST);
-    let file = fs::File::open(&path).map_err(unreadable)?;
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(
-        &mut std::io::Read::take(file, MAX_MANIFEST_BYTES + 1),
-        &mut bytes,
-    )
+    let bytes = match held {
+        Some(held) => held.read(&path, MAX_MANIFEST_BYTES),
+        None => fs::File::open(&path).and_then(|file| {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(
+                &mut std::io::Read::take(file, MAX_MANIFEST_BYTES + 1),
+                &mut bytes,
+            )
+            .map(|_| bytes)
+        }),
+    }
     .map_err(unreadable)?;
     if !u64::try_from(bytes.len()).is_ok_and(|length| length <= MAX_MANIFEST_BYTES) {
         return Err(invalid(format!(
@@ -184,12 +226,16 @@ fn plugin_folder(plugin: &str) -> Result<PathBuf, &'static str> {
     Ok(lexical(&std::path::absolute(folder).map_err(unreadable)?))
 }
 
-/// The executable and the arguments naming a file outside the folder, hashed.
+/// The executable, the arguments and every file outside the folder they name,
+/// hashed (with `held`, through handles held until the run ends). A relative
+/// argument naming a file outside the folder is given as its absolute path,
+/// so it names the same file wherever the process runs.
 fn outside_files(
     folder: &Path,
     manifest: &Manifest,
     files: &[(String, String)],
-) -> Result<(PathBuf, Vec<HashedFile>), &'static str> {
+    mut held: Option<&mut HeldFiles>,
+) -> Result<(PathBuf, Vec<String>, Vec<HashedFile>), &'static str> {
     let executable = Path::new(&manifest.executable);
     let executable = if executable.is_absolute() {
         if !local_absolute_path(&manifest.executable) {
@@ -215,14 +261,17 @@ fn outside_files(
         )));
     };
     let mut outside = Vec::new();
-    let candidates = std::iter::once(executable.clone()).chain(
+    let mut arguments = Vec::new();
+    let candidates = std::iter::once((None, executable.clone())).chain(
         manifest
             .arguments
             .iter()
-            .map(|argument| lexical(&folder.join(argument))),
+            .map(|argument| (Some(argument), lexical(&folder.join(argument)))),
     );
-    for candidate in candidates {
+    for (argument, candidate) in candidates {
+        let mut given = argument.cloned();
         if candidate.starts_with(folder) {
+            arguments.extend(given);
             continue;
         }
         // Before `is_file`: asking a network share whether a file exists
@@ -234,15 +283,20 @@ fn outside_files(
                 json!({"canonical_mutation": false}),
             ));
         }
-        if !candidate.is_file() {
-            continue;
-        }
-        let sha256 = fs::File::open(&candidate)
-            .and_then(sha256_reader_hex)
+        if candidate.is_file() {
+            let sha256 = match held.as_deref_mut() {
+                Some(held) => held.hash(&candidate),
+                None => fs::File::open(&candidate).and_then(sha256_reader_hex),
+            }
             .map_err(|error| failed_because("plugin_failed", error))?;
-        outside.push((candidate, sha256));
+            if let Some(given) = given.as_mut() {
+                *given = candidate.display().to_string();
+            }
+            outside.push((candidate, sha256));
+        }
+        arguments.extend(given);
     }
-    Ok((executable, outside))
+    Ok((executable, arguments, outside))
 }
 
 /// The declared inputs with `given` values or their defaults; an undeclared,
@@ -285,10 +339,15 @@ struct ReadFolder {
     manifest: Manifest,
     files: Vec<(String, String)>,
     executable: PathBuf,
+    arguments: Vec<String>,
     outside: Vec<HashedFile>,
+    /// For a run: the stage the folder was copied into and every hashed file.
+    held: Option<HeldFiles>,
 }
 
-fn read_folder(plugin: &str) -> Result<ReadFolder, &'static str> {
+/// Reads and hashes `plugin`; `staged` copies it into a stage first and
+/// hashes the copy, held until the run ends.
+fn read_folder(plugin: &str, staged: bool) -> Result<ReadFolder, &'static str> {
     let folder = plugin_folder(plugin)?;
     if fs::symlink_metadata(&folder)
         .map_err(unreadable)?
@@ -299,19 +358,34 @@ fn read_folder(plugin: &str) -> Result<ReadFolder, &'static str> {
             "the plugin folder is a link; a plugin folder holds its own files only",
         ));
     }
-    let (manifest, manifest_sha256) = read_manifest(&folder)?;
-    let files = folder_files(&folder)?;
+    let mut held = if staged {
+        let held = HeldFiles::staged().map_err(unreadable)?;
+        stage_folder(&folder, &held)?;
+        Some(held)
+    } else {
+        None
+    };
+    let root = held
+        .as_ref()
+        .and_then(HeldFiles::stage)
+        .unwrap_or(&folder)
+        .to_owned();
+    let files = folder_files(&root, held.as_mut())?;
+    let (manifest, manifest_sha256) = read_manifest(&root, held.as_mut())?;
     // The manifest read is the manifest hashed with the folder.
     if !files.contains(&(MANIFEST.to_owned(), manifest_sha256)) {
         return Err(invalid(format!("{MANIFEST} changed while it was read")));
     }
-    let (executable, outside) = outside_files(&folder, &manifest, &files)?;
+    let (executable, arguments, outside) =
+        outside_files(&folder, &manifest, &files, held.as_mut())?;
     Ok(ReadFolder {
         folder,
         manifest,
         files,
         executable,
+        arguments,
         outside,
+        held,
     })
 }
 
@@ -331,7 +405,7 @@ pub(super) struct Description {
 /// Reads the plugin folder exactly as a run does, so a folder that could not
 /// run is refused here with the same code and reason.
 pub(super) fn describe(folder: &Path) -> Result<Description, &'static str> {
-    let read = read_folder(&folder.to_string_lossy())?;
+    let read = read_folder(&folder.to_string_lossy(), false)?;
     Ok(Description {
         name: read.manifest.name,
         inputs: read
@@ -347,8 +421,9 @@ pub(super) fn describe(folder: &Path) -> Result<Description, &'static str> {
     })
 }
 
-/// Reads and hashes the plugin folder; `given` inputs are checked against
-/// the declared ones and are not part of the consent.
+/// Copies the plugin folder into a stage and hashes the copy, which is what
+/// runs; `given` inputs are checked against the declared ones and are not
+/// part of the consent.
 pub(super) fn load(
     plugin: &str,
     given: Option<&serde_json::Map<String, Value>>,
@@ -358,29 +433,43 @@ pub(super) fn load(
         manifest,
         files,
         executable,
+        arguments,
         outside,
-    } = read_folder(plugin)?;
+        held,
+    } = read_folder(plugin, true)?;
+    let held = held.expect("a run reads a staged folder");
+    let stage = held.stage().expect("a staged run has a stage").to_owned();
     let inputs = inputs(&manifest, given)?;
+    // The consent names the folder; the process runs its staged copy.
+    let in_stage = |path: &str| match Path::new(path).strip_prefix(&folder) {
+        Ok(relative) => OsString::from(stage.join(relative)),
+        Err(_) => OsString::from(path),
+    };
+    let command = PluginCommand {
+        executable: PathBuf::from(in_stage(&executable.display().to_string())),
+        arguments: arguments
+            .iter()
+            .map(|argument| in_stage(argument))
+            .collect(),
+        working_directory: Some(stage.clone()),
+        inputs,
+    };
     let consent = PluginConsent::of_folder(
-        ConsentFolder::new(manifest.name.clone(), folder.clone(), files),
+        ConsentFolder::new(manifest.name.clone(), folder, files),
         outside,
         std::iter::once(executable.display().to_string())
-            .chain(manifest.arguments.iter().cloned())
+            .chain(arguments)
             .collect(),
         manifest.principal_id,
         &manifest.capabilities,
         &manifest.allowed_operations,
     );
     Ok(FolderLaunch {
-        command: PluginCommand {
-            executable,
-            arguments: manifest.arguments.iter().map(OsString::from).collect(),
-            working_directory: Some(folder),
-            inputs,
-        },
+        command,
         principal_id: manifest.principal_id,
         capabilities: manifest.capabilities,
         allowed_operations: manifest.allowed_operations,
         consent,
+        held,
     })
 }

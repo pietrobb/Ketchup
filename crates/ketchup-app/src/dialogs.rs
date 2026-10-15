@@ -265,6 +265,15 @@ impl FileDialogs for NativeFileDialogs {
     }
 }
 
+/// A file another program writes while a high-risk prompt is open.
+#[derive(Debug)]
+struct ScriptedWrite {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    /// Whether a failed write fails the test; otherwise it is recorded.
+    must_succeed: bool,
+}
+
 #[derive(Debug, Default)]
 struct ScriptState {
     open_paths: VecDeque<Option<PathBuf>>,
@@ -274,7 +283,8 @@ struct ScriptState {
     discard: bool,
     history_truncation_approvals: VecDeque<bool>,
     high_risk_approvals: VecDeque<Option<u64>>,
-    high_risk_writes: VecDeque<Option<(PathBuf, Vec<u8>)>>,
+    high_risk_writes: VecDeque<Option<ScriptedWrite>>,
+    high_risk_write_attempts: Vec<std::io::Result<()>>,
     default_high_risk_approver: Option<u64>,
     suggested_names: Vec<String>,
     export_requests: Vec<ExportRequestRecord>,
@@ -393,11 +403,43 @@ impl ScriptedFileDialogs {
     ) -> Self {
         let mut state = self.state();
         state.high_risk_approvals.push_back(Some(human_id));
-        state
-            .high_risk_writes
-            .push_back(Some((path.into(), bytes.into())));
+        state.high_risk_writes.push_back(Some(ScriptedWrite {
+            path: path.into(),
+            bytes: bytes.into(),
+            must_succeed: true,
+        }));
         drop(state);
         self
+    }
+
+    /// Approve the next prompt after another program tried to write `bytes`
+    /// to `path` while it was open; the outcome is in `high_risk_write_attempts`.
+    #[must_use]
+    pub fn queue_high_risk_approval_after_write_attempt(
+        self,
+        human_id: u64,
+        path: impl Into<PathBuf>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Self {
+        let mut state = self.state();
+        state.high_risk_approvals.push_back(Some(human_id));
+        state.high_risk_writes.push_back(Some(ScriptedWrite {
+            path: path.into(),
+            bytes: bytes.into(),
+            must_succeed: false,
+        }));
+        drop(state);
+        self
+    }
+
+    /// Whether each attempted write during a prompt succeeded, in order.
+    #[must_use]
+    pub fn high_risk_write_attempts(&self) -> Vec<bool> {
+        self.state()
+            .high_risk_write_attempts
+            .iter()
+            .map(Result::is_ok)
+            .collect()
     }
 
     #[must_use]
@@ -522,8 +564,13 @@ impl FileDialogs for ScriptedFileDialogs {
             .high_risk_approvals
             .pop_front()
             .unwrap_or(state.default_high_risk_approver);
-        if let Some(Some((path, bytes))) = state.high_risk_writes.pop_front() {
-            std::fs::write(path, bytes).expect("the scripted external write succeeds");
+        if let Some(Some(write)) = state.high_risk_writes.pop_front() {
+            let written = std::fs::write(&write.path, &write.bytes);
+            if write.must_succeed {
+                written.expect("the scripted external write succeeds");
+            } else {
+                state.high_risk_write_attempts.push(written);
+            }
         }
         approval
     }

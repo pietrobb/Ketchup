@@ -26,7 +26,9 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
 ```
 
 - `executable` is an absolute path (an interpreter) or a file inside the folder;
-  the process runs in the folder with `arguments` and an empty environment.
+  the process runs in a copy of the folder (see Consent) with `arguments` and
+  an empty environment. A relative argument naming a file outside the folder
+  is passed as its absolute path.
 - MCP `run_plugin` takes `plugin` (the folder) and `inputs`; it cannot change
   or extend the command line or the permissions.
 - Inputs are `number`, `integer`, `boolean` or `string`. The plugin reads them
@@ -54,8 +56,15 @@ one SHA-256 over all its files, every file outside it the command line names
 capabilities and operations. The consent lasts while the window is open and
 holds for runs from the menu and from MCP alike. Any
 changed file, another command line or a further permission asks again; other
-input values do not. A Python plugin runs with `PYTHONDONTWRITEBYTECODE=1`, so
-it does not change its own folder.
+input values do not.
 
-Known limit: a file can still be replaced in the few milliseconds between
-hashing it and starting the process.
+What runs is what was allowed. Each run first copies the plugin folder into a
+private temporary folder, hashes that copy for the consent and starts the
+process there, in the copy; the copy is removed when the plugin has ended. A
+file changed or added in the plugin folder while the consent prompt is open, or
+during the run, is not run (the next run asks again). Files written by the
+plugin into its working folder are removed with the copy; a Python plugin runs
+with `PYTHONDONTWRITEBYTECODE=1`. Files outside the folder (the interpreter, a
+script named on the command line) are hashed through a handle kept open until
+the plugin has ended; on Windows nobody can write, rename or delete them
+meanwhile. On other systems only the folder copy protects the run.

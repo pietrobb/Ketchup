@@ -77,6 +77,7 @@ pub use program_access::{ReportSection, SourceEdit};
 mod measurement;
 mod plugin;
 pub(crate) mod plugin_consent;
+mod plugin_files;
 mod plugin_manifest;
 pub(crate) mod plugin_menu;
 pub use plugin::RunPluginRequest;

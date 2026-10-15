@@ -2,11 +2,13 @@
 //! absolute path and SHA-256, its command line, principal and permissions. A
 //! plugin folder is allowed with every file under it; its inputs are not part
 //! of the consent. A changed file, another command line or a permission not
-//! allowed before ask again.
+//! allowed before ask again. The hashed files are the files that run
+//! (`plugin_files`).
 use super::drawings::local_absolute_path;
+use super::plugin_files::HeldFiles;
 use super::*;
 use crate::dialogs::HighRiskConfirmationRequest;
-use ketchup_model::graph::{sha256_hex, sha256_reader_hex};
+use ketchup_model::graph::sha256_hex;
 use std::collections::BTreeSet;
 
 /// A plugin folder: every file under it by relative path and SHA-256.
@@ -48,16 +50,18 @@ pub(crate) struct PluginConsent {
 impl PluginConsent {
     /// A command line given by the caller: the executable and every argument
     /// naming a file are hashed, the arguments are part of the consent.
+    /// Each file is hashed through a handle `held` keeps until the run ends.
     pub(super) fn of_command(
         executable: &str,
         arguments: &[String],
         principal_id: u64,
         capabilities: &[String],
         operations: &[String],
+        held: &mut HeldFiles,
     ) -> Result<Self, &'static str> {
-        let hashed = |path: &Path| {
+        let mut hashed = |path: &Path| {
             let absolute = std::path::absolute(path)?;
-            let hash = std::fs::File::open(&absolute).and_then(sha256_reader_hex)?;
+            let hash = held.hash(&absolute)?;
             Ok::<_, std::io::Error>((absolute, hash))
         };
         // A network, device or stream path is refused before it is read.
