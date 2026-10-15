@@ -11,6 +11,8 @@ pub(crate) struct WindowRequest<A> {
     /// Boxed: a bridge is kilobytes, and the request is moved every frame.
     pub(super) runner: Box<LiveBridge>,
     receiver: mpsc::Receiver<Response>,
+    /// Set by `cancel`; the job answers `request_cancelled` at its next poll.
+    cancelled: Arc<AtomicBool>,
 }
 
 /// How a window action stands after one poll.
@@ -39,6 +41,7 @@ impl<A> WindowRequest<A> {
             reply,
             cancelled: Arc::new(AtomicBool::new(false)),
         };
+        let cancelled = Arc::clone(&queued.cancelled);
         let client_jobs = app
             .live
             .bridge
@@ -55,7 +58,13 @@ impl<A> WindowRequest<A> {
             action,
             runner,
             receiver,
+            cancelled,
         }
+    }
+
+    /// Cancels the action: it publishes nothing and answers `request_cancelled`.
+    pub(crate) fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 
     /// A request that stays running until the returned sender answers or drops.
@@ -66,6 +75,7 @@ impl<A> WindowRequest<A> {
             action,
             runner: Box::new(transport::local()),
             receiver,
+            cancelled: Arc::new(AtomicBool::new(false)),
         };
         (request, reply)
     }

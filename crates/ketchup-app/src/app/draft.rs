@@ -44,7 +44,8 @@ impl KetchupApp {
             neutral_face_reference_id: neutral.lineage_digest,
             angle_degrees,
         };
-        self.queue_window_edit(operation, "digest-draft-created")
+        self.queue_window_edit(operation, "digest-draft-created", None);
+        true
     }
 
     /// The current references of the selected faces, or `None` when nothing or

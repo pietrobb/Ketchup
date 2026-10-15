@@ -115,9 +115,7 @@ impl KetchupApp {
             plane_origin_mm: [point_mm.x, point_mm.y, point_mm.z],
             plane_normal: [normal.x, normal.y, normal.z],
         };
-        if !self.queue_window_edit(operation, "digest-mirror-created") {
-            return false;
-        }
+        self.queue_window_edit(operation, "digest-mirror-created", None);
         self.value_box.input.clear();
         true
     }

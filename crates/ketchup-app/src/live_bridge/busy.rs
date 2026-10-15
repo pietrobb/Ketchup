@@ -154,7 +154,11 @@ pub(super) fn blockers_for(app: &KetchupApp, requester: Requester) -> Vec<Blocke
         Requester::Window => blockers(app, false)
             .into_iter()
             .filter(|blocker| {
-                !matches!(blocker.target, "camera_drag" | "camera_wheel" | "value_box")
+                // `window_edit`: the window's own edits waiting behind this one.
+                !matches!(
+                    blocker.target,
+                    "camera_drag" | "camera_wheel" | "value_box" | "window_edit"
+                )
             })
             .collect(),
     }

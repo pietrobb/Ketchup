@@ -1,6 +1,7 @@
 //! Hole tool: a click on a planar face of an exact part drills one round hole
 //! there, the same `drill_holes` edit an MCP client sends.
 
+use crate::live_bridge::window_edit::Repick;
 use crate::*;
 use ketchup_assistant::sidecar::AssistantHoleThread;
 
@@ -55,11 +56,31 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-hole-invalid-size");
             return false;
         };
-        let Some((reference, point_local_mm)) = self.face_at_screen(pointer, rect) else {
+        let Some((ray, operation)) = self
+            .view_ray(pointer, rect)
+            .and_then(|ray| Some((ray, self.hole_on_ray(ray, &spec)?)))
+        else {
             self.digest = self.catalog.text("digest-hole-face-required");
             return false;
         };
-        let operation = AssistantCadEditOperation::DrillHoles {
+        self.queue_window_edit(
+            operation,
+            "digest-hole-created",
+            Some(Repick::Hole { ray, spec }),
+        );
+        true
+    }
+
+    /// The hole `spec` at the exact face `ray` hits first, as the document is
+    /// now. A hole clicked while an earlier one was checked is picked again on
+    /// the document that one left: its face then belongs to the new hole.
+    pub(crate) fn hole_on_ray(
+        &self,
+        ray: Ray,
+        spec: &HoleSpec,
+    ) -> Option<AssistantCadEditOperation> {
+        let (reference, point_local_mm) = self.face_on_ray(ray)?;
+        Some(AssistantCadEditOperation::DrillHoles {
             definition_id: reference.definition_id.0,
             name: self.catalog.text("model-hole-feature"),
             target_feature_id: reference.producer_feature_id.0,
@@ -68,9 +89,8 @@ impl KetchupApp {
             diameter_mm: spec.diameter_mm,
             depth_mm: spec.depth_mm,
             through: spec.depth_mm.is_none(),
-            thread: spec.thread,
-        };
-        self.queue_window_edit(operation, "digest-hole-created")
+            thread: spec.thread.clone(),
+        })
     }
 
     /// The exact face nearest along the view ray that the section keeps, and
@@ -80,7 +100,10 @@ impl KetchupApp {
         pointer: Pos2,
         rect: Rect,
     ) -> Option<(TopologicalElementRef, [f64; 3])> {
-        let ray = self.view_ray(pointer, rect)?;
+        self.face_on_ray(self.view_ray(pointer, rect)?)
+    }
+
+    fn face_on_ray(&self, ray: Ray) -> Option<(TopologicalElementRef, [f64; 3])> {
         let snapshot = self.document.current();
         let topology_results = self.topology_results_for_snapshot(&snapshot)?;
         let hit = ExactInteractionProjection::from_snapshot(&snapshot, topology_results)

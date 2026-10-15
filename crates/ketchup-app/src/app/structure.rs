@@ -2756,7 +2756,8 @@ impl KetchupApp {
         // operation; its preview holds no commands of its own.
         if let Some(operation) = operation {
             self.solid_tools.target = None;
-            return self.queue_window_edit(operation, preview.committed_digest_key);
+            self.queue_window_edit(operation, preview.committed_digest_key, None);
+            return true;
         }
         if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
             self.status_key = "error-preview-stale";

@@ -643,6 +643,76 @@ fn turning_the_camera_or_focusing_a_field_does_not_throw_away_a_window_edit() {
     assert_eq!(app.undo_step_count(), undo + 1);
 }
 
+/// Review 2026-10-14 (GX-12): a click while a hole was checked was dropped
+/// without a word (four quick holes gave one), and Esc left the running hole
+/// to be drilled. Clicks now wait their turn; Esc cancels them all.
+#[test]
+fn quick_holes_are_all_drilled_and_esc_cancels_the_ones_not_published() {
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let snapshot = app.document.current();
+    let occurrence = snapshot.occurrences().next().unwrap();
+    let part = occurrence.name().to_owned();
+    let world = snapshot
+        .world_transform_for_occurrence(occurrence.id())
+        .unwrap();
+    let solid = exact_volume(&app, &part);
+    let [x, y, z] = centroid(&face(&mut app, &mut bridge, "plane", [0.0, 0.0, 1.0]));
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0));
+    let click = |app: &KetchupApp, dx: f64, dy: f64| {
+        let [wx, wy, wz] = world.transform_point([x + dx, y + dy, z]);
+        app.project(Vec3::new(wx, wy, wz), rect)
+    };
+    let (stamp, undo) = (app.live_bridge_stamp(), app.undo_step_count());
+    app.dispatch_command(AppCommand::Hole);
+    app.value_box.input = "4 8".to_owned();
+
+    // Esc while one hole is checked and another waits: neither is drilled.
+    for (dx, dy) in [(10.0, 0.0), (-10.0, 0.0)] {
+        let point = click(&app, dx, dy);
+        assert!(app.drill_hole_at_screen(point, rect), "{}", app.digest);
+    }
+    app.poll_window_edit(&egui::Context::default());
+    app.cancel_or_deselect();
+    app.finish_window_edit();
+    assert_eq!(app.digest, app.catalog.text("digest-cancelled"));
+    assert_eq!(app.undo_step_count(), undo);
+    assert_eq!(
+        app.live_bridge_stamp().canonical_digest,
+        stamp.canonical_digest
+    );
+
+    // Four clicks before the first hole is published drill four holes, each
+    // its own Undo step.
+    app.dispatch_command(AppCommand::Hole);
+    app.value_box.input = "4 8".to_owned();
+    let points = [(10.0, 0.0), (-10.0, 0.0), (0.0, 10.0), (0.0, -10.0)];
+    for (dx, dy) in points {
+        let point = click(&app, dx, dy);
+        assert!(app.drill_hole_at_screen(point, rect), "{}", app.digest);
+    }
+    app.finish_window_edit();
+    assert_eq!(app.digest, app.catalog.text("digest-hole-created"));
+    assert_eq!(app.undo_step_count(), undo + 4);
+    evaluate_exact(&mut app);
+    let expected = solid - 4.0 * PI * 4.0 * 8.0;
+    let volume = exact_volume(&app, &part);
+    assert!(
+        (volume - expected).abs() <= 1e-6 * solid,
+        "{volume} != {expected}"
+    );
+
+    // A hole confirmed before an Undo the user made meanwhile is stale: it
+    // never lands on the document the Undo left.
+    let point = click(&app, 10.0, 10.0);
+    assert!(app.drill_hole_at_screen(point, rect));
+    app.dispatch_command(AppCommand::Undo);
+    assert_eq!(app.undo_step_count(), undo + 3);
+    app.finish_window_edit();
+    assert!(app.digest.starts_with("stale_document"), "{}", app.digest);
+    assert_eq!(app.undo_step_count(), undo + 3);
+}
+
 /// Review 2026-10-14 (GX-13): with a section open, Hole, Draft and Mirror
 /// reached the face the cut hides; they now take the first face it keeps.
 #[test]
