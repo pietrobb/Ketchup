@@ -49,6 +49,9 @@ fn harness() -> egui_kittest::Harness<'static, KetchupApp> {
             },
         ],
     );
+    // The board's exact solid is there before the first frame: arriving later
+    // it would add the mass rows above the buttons these tests click.
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
     let mut harness = egui_kittest::Harness::builder()
         .with_size(Vec2::new(1600.0, 1200.0))
         .with_step_dt(1.0 / 60.0)
