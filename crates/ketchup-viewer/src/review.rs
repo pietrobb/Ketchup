@@ -22,8 +22,17 @@ pub struct Review {
     pub draft: Option<Draft>,
     /// The comment whose view and arrows are shown.
     pub active: Option<u64>,
-    /// The customer was told that unsaved comments would be lost.
-    discard_warned: bool,
+    /// The work the customer was told would be lost; a later edit or more
+    /// writing warns again.
+    discard_warned: Option<Unkept>,
+}
+
+/// What a discard would lose: the comments' revision and the draft's text,
+/// author and arrows.
+#[derive(Clone, PartialEq)]
+struct Unkept {
+    revision: u64,
+    draft: Option<(String, String, Vec<Arrow>)>,
 }
 
 /// Comments written to bytes the host has still to keep in a file.
@@ -64,7 +73,7 @@ impl Review {
             saved_revision: revision,
             draft: None,
             active: None,
-            discard_warned: false,
+            discard_warned: None,
         }
     }
 
@@ -172,7 +181,6 @@ impl Review {
 
     fn changed(&mut self) {
         self.revision = next_revision();
-        self.discard_warned = false;
     }
 
     /// Remove comment `id`.
@@ -232,13 +240,55 @@ impl Review {
         }
     }
 
-    /// Whether unsaved comments may be dropped now: the first attempt only
-    /// warns, a repeated one proceeds.
+    /// A comment being written whose text, author or arrows differ from what
+    /// it started from, so closing it would lose them.
+    pub fn draft_changed(&self) -> bool {
+        let Some(draft) = &self.draft else {
+            return false;
+        };
+        let edited = draft
+            .editing
+            .and_then(|id| self.comments.comments.iter().find(|c| c.id == id));
+        match edited {
+            Some(comment) => {
+                draft.text.trim() != comment.text
+                    || draft.author.trim() != comment.author.as_deref().unwrap_or("")
+                    || draft.arrows != comment.arrows
+            }
+            None => !draft.text.trim().is_empty() || !draft.arrows.is_empty(),
+        }
+    }
+
+    /// Unsaved comments or a changed comment being written.
+    pub fn has_unkept_work(&self) -> bool {
+        self.unsaved() || self.draft_changed()
+    }
+
+    /// Whether unsaved comments and the comment being written may be dropped
+    /// now: the first attempt only warns, a repeated one proceeds unless the
+    /// customer changed something since the warning.
     pub fn may_discard(&mut self) -> bool {
-        if !self.unsaved() || self.discard_warned {
+        if !self.has_unkept_work() {
             return true;
         }
-        self.discard_warned = true;
+        let unkept = Unkept {
+            revision: self.revision,
+            draft: self
+                .draft
+                .as_ref()
+                .filter(|_| self.draft_changed())
+                .map(|draft| {
+                    (
+                        draft.text.clone(),
+                        draft.author.clone(),
+                        draft.arrows.clone(),
+                    )
+                }),
+        };
+        if self.discard_warned.as_ref() == Some(&unkept) {
+            return true;
+        }
+        self.discard_warned = Some(unkept);
         false
     }
 

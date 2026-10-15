@@ -149,7 +149,10 @@ impl ViewerApp {
                 ("viewer-comments-save", FileRequest::SaveComments),
                 ("viewer-comments-save-copy", FileRequest::SaveCommentedCopy),
             ] {
-                if ui.button(t(key)).clicked() {
+                // Opened comments replace the current ones.
+                if ui.button(t(key)).clicked()
+                    && (request != FileRequest::OpenComments || self.may_discard_comments())
+                {
                     self.request_file(request);
                 }
             }
@@ -174,6 +177,7 @@ impl ViewerApp {
         let t = |key| language.text(key);
         ui.horizontal_wrapped(|ui| {
             let result = if ui.button(t("viewer-comments-open")).clicked()
+                && self.may_discard_comments()
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter(t("viewer-comments-filter"), &["ketchup-comments"])
                     .pick_file()

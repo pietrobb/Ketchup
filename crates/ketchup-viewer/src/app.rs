@@ -718,20 +718,21 @@ impl ViewerApp {
         ])
     }
 
-    /// Unsaved comments would be lost by opening another package or closing.
+    /// Unsaved comments, or a changed comment being written, would be lost by
+    /// opening another package or comments file, or by closing.
     pub fn has_unsaved_comments(&self) -> bool {
-        self.review.as_ref().is_some_and(Review::unsaved)
+        self.review.as_ref().is_some_and(Review::has_unkept_work)
     }
 
-    /// Whether the opened comments may be replaced now; the first attempt
-    /// with unsaved comments only shows a warning.
+    /// Whether the opened comments and the one being written may be replaced
+    /// now; the first attempt with unsaved work only shows a warning.
     pub fn may_discard_comments(&mut self) -> bool {
         let allowed = self.review.as_mut().is_none_or(Review::may_discard);
         if !allowed {
             self.error = Some(
                 Rejection::new("viewer.comments.unsaved", RejectionPhase::Request)
-                    .reason("The comments have not been saved.")
-                    .fix_hint("Save the comments, or repeat the action to discard them."),
+                    .reason("The comments, or the comment being written, have not been saved.")
+                    .fix_hint("Save them, or repeat the action to discard them."),
             );
         }
         allowed

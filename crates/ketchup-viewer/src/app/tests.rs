@@ -857,6 +857,91 @@ fn web_host_downloads_comments_that_a_fresh_viewer_imports() {
     assert_eq!(imported.opened_counts().map(|[_, _, c]| c), Some(1));
 }
 
+/// VW-4 and VW-5: opening a comments file over unsaved comments, and leaving
+/// a comment half written, warn first like opening another model.
+#[test]
+fn opening_comments_or_a_model_over_unsaved_work_warns_first() {
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let app = customer_with_comment(&bytes, "Darker oak").with_language(Language::ENGLISH);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
+    harness.run();
+
+    // VW-4: unsaved comments; the first Open comments only warns.
+    harness.get_by_label("Open comments").click();
+    harness.run();
+    assert!(harness.state_mut().take_file_requests().is_empty());
+    assert_eq!(
+        harness.state().error.as_ref().map(Rejection::code),
+        Some("viewer.comments.unsaved")
+    );
+    harness.get_by_label("Open comments").click();
+    harness.run();
+    assert_eq!(
+        harness.state_mut().take_file_requests(),
+        [FileRequest::OpenComments]
+    );
+    let written = harness.state().save_comments(&mut Vec::new()).unwrap();
+    harness.state_mut().comments_written(written);
+    harness.state_mut().error = None;
+    harness.run();
+
+    // Saved comments open another file at once.
+    harness.get_by_label("Open comments").click();
+    harness.run();
+    assert_eq!(
+        harness.state_mut().take_file_requests(),
+        [FileRequest::OpenComments]
+    );
+
+    // VW-5: a comment being written counts as unsaved work.
+    harness.get_by_label("Add comment").click();
+    harness.run();
+    assert!(
+        !harness.state().has_unsaved_comments(),
+        "an empty new comment loses nothing"
+    );
+    harness.get_by_label("Comment").focus();
+    harness.run();
+    harness.get_by_label("Comment").type_text("Brass handles");
+    harness.run();
+    assert!(harness.state().has_unsaved_comments());
+    harness.get_by_label("Open model").click();
+    harness.run();
+    assert!(harness.state_mut().take_file_requests().is_empty());
+    // Writing on after the warning warns again before it is lost.
+    harness.get_by_label("Comment").focus();
+    harness.run();
+    harness.get_by_label("Comment").type_text(" too");
+    harness.run();
+    let draft = harness.state().review.as_ref().unwrap().draft.as_ref();
+    assert_eq!(draft.unwrap().text, "Brass handles too");
+    harness.get_by_label("Open model").click();
+    harness.run();
+    assert!(harness.state_mut().take_file_requests().is_empty());
+    harness.get_by_label("Open model").click();
+    harness.run();
+    assert_eq!(
+        harness.state_mut().take_file_requests(),
+        [FileRequest::OpenPackage]
+    );
+
+    // Editing a comment without changing it loses nothing.
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    harness.get_by_label("Edit").click();
+    harness.run();
+    assert!(!harness.state().has_unsaved_comments());
+    harness.get_by_label("Open model").click();
+    harness.run();
+    assert_eq!(
+        harness.state_mut().take_file_requests(),
+        [FileRequest::OpenPackage]
+    );
+}
+
 /// A customer's Viewer with one committed comment `text`.
 fn customer_with_comment(bytes: &[u8], text: &str) -> ViewerApp {
     let mut app = ViewerApp::new(None).with_host_files();
