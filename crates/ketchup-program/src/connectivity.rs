@@ -1,8 +1,8 @@
 //! Group connectivity is independent of grounding and declared joints.
-use crate::eval::TOLERANCE_MM;
 use crate::exact::{ExactShapes, box_is_solid};
 use crate::model::{Part, ProgramModel};
 use crate::validate::{Issue, Severity};
+use ketchup_model::tolerance::CONTACT_FIT_MM;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Unknown is not contact: a non-box pair needs the native solids to settle it.
@@ -10,7 +10,7 @@ fn touching(a: &Part, b: &Part, exact: &ExactShapes) -> Option<bool> {
     if let Some(pair) = exact.pair(&a.name, &b.name) {
         return Some(pair.penetrating() || pair.touching());
     }
-    let separated = a.obb().separation(&b.obb()) > TOLERANCE_MM;
+    let separated = a.obb().separation(&b.obb()) > CONTACT_FIT_MM;
     if separated || (box_is_solid(a) && box_is_solid(b)) {
         Some(!separated)
     } else {
@@ -77,7 +77,7 @@ pub(crate) fn issues(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec
         order.sort_by(|a, b| bounds[*a].0[0].total_cmp(&bounds[*b].0[0]));
         for (position, &left) in order.iter().enumerate() {
             for &right in &order[position + 1..] {
-                if bounds[right].0[0] > bounds[left].1[0] + TOLERANCE_MM {
+                if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
                     break;
                 }
                 let (a, b) = (members[left], members[right]);

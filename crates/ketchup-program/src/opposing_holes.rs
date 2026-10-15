@@ -1,8 +1,8 @@
 //! Clearance between parallel cylindrical bores entering from opposite sides.
-use crate::eval::TOLERANCE_MM;
 use crate::model::Part;
 use crate::validate::{Issue, Severity, THIN_WALL_MM};
 use ketchup_geometry::linalg::{dot, length};
+use ketchup_model::tolerance::CONTACT_FIT_MM;
 use ketchup_model::tolerance::ROUNDING;
 
 pub(crate) fn issues(part: &Part, issues: &mut Vec<Issue>) {
@@ -14,7 +14,7 @@ pub(crate) fn issues(part: &Part, issues: &mut Vec<Issue>) {
             }
             let delta = std::array::from_fn(|i| b_entry[i] - a_entry[i]);
             let span = dot(delta, *axis);
-            if span <= TOLERANCE_MM {
+            if span <= CONTACT_FIT_MM {
                 continue;
             }
             let radial: [f64; 3] = std::array::from_fn(|i| delta[i] - span * axis[i]);
@@ -24,7 +24,7 @@ pub(crate) fn issues(part: &Part, issues: &mut Vec<Issue>) {
             let radial_gap = (offset - a_radius - b_radius).max(0.);
             let axial_gap = (span - a.depth_mm - b.depth_mm).max(0.);
             let clearance = radial_gap.hypot(axial_gap);
-            if clearance >= THIN_WALL_MM - TOLERANCE_MM {
+            if clearance >= THIN_WALL_MM - CONTACT_FIT_MM {
                 continue;
             }
             // Closest points on two cylinders = closest points on their axial
@@ -56,7 +56,7 @@ pub(crate) fn issues(part: &Part, issues: &mut Vec<Issue>) {
             let first = point(a_z, a_r);
             let second = point(b_z, b_r);
             let round = |x: f64| (x * 1000.).round() / 1000.;
-            let meeting = clearance <= TOLERANCE_MM;
+            let meeting = clearance <= CONTACT_FIT_MM;
             issues.push(Issue {
                 source_lines: Vec::new(),
                 severity: if meeting { Severity::Error } else { Severity::Warning },

@@ -121,7 +121,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let [u_min, v_min, u_max, v_max] = rect_mm;
         let depth = number(depth, "depth")?;
         let id = text(id, "id")?;
-        if u_max - u_min <= TOLERANCE_MM || v_max - v_min <= TOLERANCE_MM || depth <= 0.0 {
+        if u_max - u_min <= CONTACT_FIT_MM || v_max - v_min <= CONTACT_FIT_MM || depth <= 0.0 {
             anyhow::bail!(
                 "pocket in {name:?}: rect must have positive width and height and depth must be positive"
             );
@@ -191,7 +191,7 @@ fn tapped<'v>(
         );
     };
     let diameter_mm = diameter_mm.unwrap_or(metric.tap_drill_mm);
-    if !metric.fits_drill(diameter_mm, TOLERANCE_MM) {
+    if !metric.fits_drill(diameter_mm, CONTACT_FIT_MM) {
         anyhow::bail!(
             "an {size} thread (pitch {}) is tapped into its {} mm tap drill hole; this hole is \
              {diameter_mm} mm (omit diameter to drill the tap drill)",
@@ -199,7 +199,7 @@ fn tapped<'v>(
             metric.tap_drill_mm
         );
     }
-    if thread_depth > metric.deepest_thread_mm(depth_mm, through) + TOLERANCE_MM {
+    if thread_depth > metric.deepest_thread_mm(depth_mm, through) + CONTACT_FIT_MM {
         if through {
             anyhow::bail!(
                 "the thread is {thread_depth} mm deep, deeper than the {depth_mm} mm hole"

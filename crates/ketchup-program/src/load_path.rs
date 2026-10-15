@@ -6,10 +6,10 @@
 //! carries nothing, and resting on one end only does not hold a beam.
 
 use crate::contact::ContactFaces;
-use crate::eval::TOLERANCE_MM;
 use crate::model::{Joint, Part, ProgramModel, ProgramPartBody};
 use crate::validate::{Issue, Severity};
 use ketchup_geometry::linalg::cross2;
+use ketchup_model::tolerance::CONTACT_FIT_MM;
 use ketchup_tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -122,12 +122,12 @@ fn over(p: [f64; 2], points: &[[f64; 3]]) -> bool {
     let hull = hull(points.iter().map(|point| [point[0], point[1]]).collect());
     match hull.len() {
         0 => false,
-        1 => segment_distance(p, hull[0], hull[0]) <= TOLERANCE_MM,
-        2 => segment_distance(p, hull[0], hull[1]) <= TOLERANCE_MM,
+        1 => segment_distance(p, hull[0], hull[0]) <= CONTACT_FIT_MM,
+        2 => segment_distance(p, hull[0], hull[1]) <= CONTACT_FIT_MM,
         count => {
             (0..count).all(|i| turn(hull[i], hull[(i + 1) % count], p) >= 0.0)
                 || (0..count)
-                    .any(|i| segment_distance(p, hull[i], hull[(i + 1) % count]) <= TOLERANCE_MM)
+                    .any(|i| segment_distance(p, hull[i], hull[(i + 1) % count]) <= CONTACT_FIT_MM)
         }
     }
 }
@@ -171,9 +171,9 @@ fn corners((min, max): ([f64; 3], [f64; 3])) -> Vec<[f64; 3]> {
 pub(crate) fn on_floor(part: &Part, floor: f64) -> bool {
     let (min, max) = part.world_bounds();
     if part.booleans().next().is_none() {
-        (min[2] - floor).abs() <= TOLERANCE_MM
+        (min[2] - floor).abs() <= CONTACT_FIT_MM
     } else {
-        min[2] <= floor + TOLERANCE_MM && max[2] > floor + TOLERANCE_MM
+        min[2] <= floor + CONTACT_FIT_MM && max[2] > floor + CONTACT_FIT_MM
     }
 }
 
@@ -202,14 +202,14 @@ pub(crate) fn issues<'a>(
     order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
     for (position, &left) in order.iter().enumerate() {
         for &right in &order[position + 1..] {
-            if bounds[right].0[0] > bounds[left].1[0] + TOLERANCE_MM {
+            if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
                 break;
             }
             let (a, b) = (&parts[left], &parts[right]);
             if model.are_alternatives(a, b)
                 || (0..3).any(|axis| {
-                    bounds[left].0[axis] > bounds[right].1[axis] + TOLERANCE_MM
-                        || bounds[right].0[axis] > bounds[left].1[axis] + TOLERANCE_MM
+                    bounds[left].0[axis] > bounds[right].1[axis] + CONTACT_FIT_MM
+                        || bounds[right].0[axis] > bounds[left].1[axis] + CONTACT_FIT_MM
                 })
             {
                 continue;

@@ -1,8 +1,8 @@
 //! Polygonal material shared by opposite coplanar faces.
-use crate::eval::TOLERANCE_MM;
 use crate::faces::{FaceFrame, FaceKind};
 use crate::model::Part;
 use ketchup_geometry::linalg::dot;
+use ketchup_model::tolerance::CONTACT_FIT_MM;
 use ketchup_model::tolerance::ROUNDING;
 
 #[path = "contact_polygon.rs"]
@@ -31,7 +31,7 @@ pub struct Contact {
 /// are not replaced with their bounding boxes. Curves use the face tessellation.
 #[must_use]
 pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
-    if a.obb().separation(&b.obb()) > TOLERANCE_MM {
+    if a.obb().separation(&b.obb()) > CONTACT_FIT_MM {
         return None;
     }
     contact_with_faces(a, b, &planar_faces(a), &planar_faces(b))
@@ -43,7 +43,7 @@ pub(crate) fn contact_of_frames(
     b: &Part,
     faces: impl Fn(&Part) -> std::rc::Rc<Vec<FaceFrame>>,
 ) -> Option<Contact> {
-    if a.obb().separation(&b.obb()) > TOLERANCE_MM {
+    if a.obb().separation(&b.obb()) > CONTACT_FIT_MM {
         return None;
     }
     let planar = |part| -> Vec<FaceFrame> {
@@ -103,7 +103,7 @@ fn contacts_with_faces(
                     face_a.normal,
                 )
                 .abs()
-                    > TOLERANCE_MM
+                    > CONTACT_FIT_MM
             {
                 continue;
             }
@@ -129,7 +129,7 @@ fn contacts_with_faces(
                 },
             );
             let longest = (max[0] - min[0]).max(max[1] - min[1]);
-            if longest <= TOLERANCE_MM || area <= TOLERANCE_MM * longest {
+            if longest <= CONTACT_FIT_MM || area <= CONTACT_FIT_MM * longest {
                 continue;
             }
             let axis = (0..3)
@@ -181,7 +181,7 @@ pub(crate) struct ContactFaces<'a> {
 }
 impl<'a> ContactFaces<'a> {
     fn cache(&mut self, a: &'a Part, b: &'a Part) -> bool {
-        if a.obb().separation(&b.obb()) > TOLERANCE_MM {
+        if a.obb().separation(&b.obb()) > CONTACT_FIT_MM {
             return false;
         }
         for part in [a, b] {

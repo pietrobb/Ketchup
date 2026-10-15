@@ -20,7 +20,7 @@ use crate::model::{
 };
 use ketchup_geometry::helix::Helix;
 use ketchup_geometry::linalg::normalize_within;
-use ketchup_model::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
+use ketchup_model::tolerance::{APPROXIMATION, CONTACT_FIT_MM, MAX_COORDINATE_MM};
 use ketchup_tolerance::limits;
 use serde::{Deserialize, Serialize};
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
@@ -35,8 +35,6 @@ use starlark::values::{Heap, UnpackValue, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Contact and fit tolerance in millimetres.
-pub const TOLERANCE_MM: f64 = 0.01;
 /// Upper bound on generated parts, so a runaway loop fails fast.
 pub const MAX_PARTS: usize = 20_000;
 /// Bodies one part may hold through its booleans, counting the tools' own
@@ -436,7 +434,7 @@ fn profile_arc<'v>(
     let (clockwise, large) = (flag("clockwise")?, flag("large")?);
     let chord = [end[0] - start[0], end[1] - start[1]];
     let half = chord[0].hypot(chord[1]) / 2.0;
-    if half <= TOLERANCE_MM {
+    if half <= CONTACT_FIT_MM {
         anyhow::bail!("an arc needs distinct start and end points (make a circle from two arcs)");
     }
     let middle = [(start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0];
@@ -456,7 +454,7 @@ fn profile_arc<'v>(
             }
             let p = numbers::<2>(through, heap, "arc through")?;
             let turn = (p[0] - start[0]) * (end[1] - p[1]) - (p[1] - start[1]) * (end[0] - p[0]);
-            if turn.abs() <= TOLERANCE_MM * half {
+            if turn.abs() <= CONTACT_FIT_MM * half {
                 anyhow::bail!("the through point lies on the line from start to end; use a line");
             }
             // Centre on the chord's bisector, equally far from start and p.
@@ -469,7 +467,7 @@ fn profile_arc<'v>(
         }
         (None, None, Some(radius)) => {
             let radius = number(radius, "arc radius")?;
-            if radius < half - TOLERANCE_MM {
+            if radius < half - CONTACT_FIT_MM {
                 anyhow::bail!(
                     "arc radius {radius} is smaller than half the {} mm chord",
                     2.0 * half
@@ -492,7 +490,7 @@ fn profile_arc<'v>(
         (start[0] - c[0]).hypot(start[1] - c[1]),
         (end[0] - c[0]).hypot(end[1] - c[1]),
     );
-    if (r_start - r_end).abs() > TOLERANCE_MM.max(APPROXIMATION * r_start) {
+    if (r_start - r_end).abs() > CONTACT_FIT_MM.max(APPROXIMATION * r_start) {
         anyhow::bail!(
             "start and end must lie equally far from the arc center ({r_start} mm vs {r_end} mm)"
         );
@@ -739,17 +737,17 @@ impl Relation {
         let (a, b) = (a.obb(), b.obb());
         let (direction, separation) = a.separating_axis(&b);
         Self {
-            distance: if separation > TOLERANCE_MM {
+            distance: if separation > CONTACT_FIT_MM {
                 a.distance(&b)
             } else {
                 0.0
             },
-            overlap: if separation < -TOLERANCE_MM {
+            overlap: if separation < -CONTACT_FIT_MM {
                 -separation
             } else {
                 0.0
             },
-            touching: separation.abs() <= TOLERANCE_MM,
+            touching: separation.abs() <= CONTACT_FIT_MM,
             direction,
         }
     }
@@ -1047,7 +1045,7 @@ fn insert_profile_part(
             std::array::from_fn(|axis| max[axis] - min[axis])
         }
     };
-    if size_mm.iter().any(|value| *value <= TOLERANCE_MM) {
+    if size_mm.iter().any(|value| *value <= CONTACT_FIT_MM) {
         anyhow::bail!("part {name:?}: profile and body dimensions must be positive");
     }
     insert_part(
@@ -1114,7 +1112,7 @@ fn sweep_path<'v>(
                 let mut start_mm = numbers::<3>(start, heap, &what)?;
                 // Endpoints typed twice may differ in the last digits.
                 if let Some(previous) = previous_end
-                    && (0..3).all(|axis| (previous[axis] - start_mm[axis]).abs() <= TOLERANCE_MM)
+                    && (0..3).all(|axis| (previous[axis] - start_mm[axis]).abs() <= CONTACT_FIT_MM)
                 {
                     start_mm = previous;
                 }
@@ -1167,7 +1165,7 @@ fn sweep_path<'v>(
 
 /// A sweep's fixed `up`, normalised, checked to stay off the path direction.
 fn sweep_up(path: &[ProgramPathSegment], up: [f64; 3]) -> anyhow::Result<[f64; 3]> {
-    let up = normalize_within(up, TOLERANCE_MM)
+    let up = normalize_within(up, CONTACT_FIT_MM)
         .ok_or_else(|| anyhow::anyhow!("up must be a non-zero direction"))?;
     crate::path::validate_up(path, up)?;
     Ok(up)
@@ -1175,7 +1173,7 @@ fn sweep_up(path: &[ProgramPathSegment], up: [f64; 3]) -> anyhow::Result<[f64; 3
 
 /// `helix` as path segments `[start, end, {"controls": [c1, c2]}]`.
 fn helix_path<'v>(helix: &Helix, heap: &'v Heap) -> anyhow::Result<Value<'v>> {
-    if helix.radius_mm <= TOLERANCE_MM || helix.pitch_mm <= TOLERANCE_MM || helix.turns <= 0.0 {
+    if helix.radius_mm <= CONTACT_FIT_MM || helix.pitch_mm <= CONTACT_FIT_MM || helix.turns <= 0.0 {
         anyhow::bail!("helix radius, pitch and turns must be positive");
     }
     let pieces = Helix::quarter_turns(helix.turns);
@@ -1220,7 +1218,7 @@ fn loft_sections<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Vec<Pro
         };
         let elevation_mm = number(z, &format!("{what} z"))?;
         if let Some(previous) = sections.last()
-            && elevation_mm <= previous.elevation_mm + TOLERANCE_MM
+            && elevation_mm <= previous.elevation_mm + CONTACT_FIT_MM
         {
             anyhow::bail!(
                 "{what} z = {elevation_mm} must be above the previous section's {}",
@@ -1331,7 +1329,7 @@ fn apply_named_edge_finish(
     if edges.is_empty() {
         anyhow::bail!("{operation} on {part_name:?}: edges must not be empty");
     }
-    if amount_mm <= TOLERANCE_MM {
+    if amount_mm <= CONTACT_FIT_MM {
         anyhow::bail!("{operation} on {part_name:?}: amount must be positive");
     }
     with_part(state, part_name, |part| {
@@ -1424,7 +1422,7 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
         let heap = eval.heap();
         let segments = profile_segments(profile, heap, "profile")?;
         let bend = given(bend).map(|bend| number(bend, "bend")).transpose()?;
-        if bend.is_some_and(|bend| bend <= TOLERANCE_MM) {
+        if bend.is_some_and(|bend| bend <= CONTACT_FIT_MM) {
             anyhow::bail!("bend must be a positive radius");
         }
         let path = sweep_path(path, bend, heap)?;
@@ -1534,7 +1532,7 @@ fn boolean_builtins(builder: &mut GlobalsBuilder) {
             }
             if let (Some(a), Some(b)) = (model.part(&target), model.part(&joined)) {
                 let apart = Relation::between(a, b).distance;
-                if apart > TOLERANCE_MM {
+                if apart > CONTACT_FIT_MM {
                     anyhow::bail!(
                         "union({target:?}, {joined:?}): the parts are {apart:.3} mm apart; they must touch or overlap to become one solid"
                     );
@@ -1615,7 +1613,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let heap = eval.heap();
         check_part_name(name)?;
         let size = numbers::<3>(size, heap, "size")?;
-        if let Some(axis) = size.iter().position(|value| *value <= TOLERANCE_MM) {
+        if let Some(axis) = size.iter().position(|value| *value <= CONTACT_FIT_MM) {
             anyhow::bail!(
                 "part {name:?}: size[{axis}] must be positive, got {}",
                 size[axis]
@@ -1650,7 +1648,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let heap = eval.heap();
         let segments = profile_segments(profile, heap, "profile")?;
         let distance_mm = number(distance, "distance")?;
-        if distance_mm <= TOLERANCE_MM {
+        if distance_mm <= CONTACT_FIT_MM {
             anyhow::bail!("distance must be positive");
         }
         let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
@@ -1790,7 +1788,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 anyhow::bail!("cut on {part_name:?}: give depth=, or through=True to cut through")
             }
         };
-        if depth_mm.is_some_and(|depth| depth <= TOLERANCE_MM) {
+        if depth_mm.is_some_and(|depth| depth <= CONTACT_FIT_MM) {
             anyhow::bail!("cut on {part_name:?}: depth must be positive");
         }
         check_name("cut name", name)?;
@@ -1800,7 +1798,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             reject_swept(part, "cut")?;
             let (min, max) = part.local_bounds();
             let thickness = max[2] - min[2];
-            if let Some(depth) = depth_mm.filter(|depth| *depth >= thickness - TOLERANCE_MM) {
+            if let Some(depth) = depth_mm.filter(|depth| *depth >= thickness - CONTACT_FIT_MM) {
                 anyhow::bail!(
                     "cut {name:?} on {part_name:?} is {depth} mm deep but the part is only \
                      {thickness} mm thick; a blind cut must leave a floor. Use through=True \
@@ -1830,7 +1828,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let heap = eval.heap();
         let part_name = part_name(part, heap)?;
         let distance_mm = number(distance, "distance")?;
-        if distance_mm.abs() <= TOLERANCE_MM {
+        if distance_mm.abs() <= CONTACT_FIT_MM {
             anyhow::bail!("push_pull on {part_name:?}: distance must be non-zero");
         }
         check_name("push_pull face", face)?;
@@ -1930,7 +1928,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             let thinnest = (0..3)
                 .map(|axis| max[axis] - min[axis])
                 .fold(f64::INFINITY, f64::min);
-            if thickness_mm <= TOLERANCE_MM || 2.0 * thickness_mm >= thinnest {
+            if thickness_mm <= CONTACT_FIT_MM || 2.0 * thickness_mm >= thinnest {
                 anyhow::bail!(
                     "shell({part_name:?}): thickness must be positive and under half the part's thinnest size {thinnest} mm, got {thickness_mm}"
                 );
@@ -2101,7 +2099,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let model = state.model.borrow();
         let part = known_part(&model, &part_name)?;
         Ok(part
-            .face_frame_at(part.to_local(point), TOLERANCE_MM)
+            .face_frame_at(part.to_local(point), CONTACT_FIT_MM)
             .map_or_else(Value::new_none, |face| face_value(part, &face, heap)))
     }
 

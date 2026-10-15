@@ -5,12 +5,12 @@
 //! does not hold is an error with the measured and required numbers.
 
 use crate::contact::contact;
-use crate::eval::TOLERANCE_MM;
 use crate::exact::ExactShapes;
 use crate::frame;
 use crate::model::{Part, ProgramModel};
 use crate::relations::polygon_area;
 use crate::validate::{Issue, Severity};
+use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
 
 /// A world direction, fixed or following a face of a part wherever the part
@@ -125,7 +125,7 @@ fn measure(model: &ProgramModel, exact: &ExactShapes, measure: &Measure) -> Opti
                 }
                 _ => {}
             }
-            if separation > TOLERANCE_MM {
+            if separation > CONTACT_FIT_MM {
                 box_a.distance(&box_b)
             } else {
                 separation.min(0.0)

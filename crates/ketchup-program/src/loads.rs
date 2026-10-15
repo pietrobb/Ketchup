@@ -12,10 +12,10 @@
 
 use crate::contact::ContactFaces;
 use crate::continuous_span::{self, Piece};
-use crate::eval::TOLERANCE_MM;
 use crate::load_path::{joint_points, on_floor};
 use crate::model::{Part, ProgramModel, ProgramPartBody};
 use ketchup_geometry::linalg::{self, cross, dot, length, sub};
+use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -379,7 +379,7 @@ fn material_at(points: &[[f64; 3]], frame: &Frame, across: [f64; 3], at: f64) ->
     crossings.sort_by(f64::total_cmp);
     crossings
         .chunks_exact(2)
-        .any(|pair| pair[1] - pair[0] > TOLERANCE_MM)
+        .any(|pair| pair[1] - pair[0] > CONTACT_FIT_MM)
 }
 
 /// The part of a contact polygon between `lo` and `hi` along `frame`.
@@ -815,14 +815,14 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     order.sort_by(|a, b| bounds[*a].0[0].total_cmp(&bounds[*b].0[0]));
     for (position, &left) in order.iter().enumerate() {
         for &right in &order[position + 1..] {
-            if bounds[right].0[0] > bounds[left].1[0] + TOLERANCE_MM {
+            if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
                 break;
             }
             let (a, b) = (&parts[left], &parts[right]);
             if model.are_alternatives(a, b)
                 || (0..3).any(|axis| {
-                    bounds[left].0[axis] > bounds[right].1[axis] + TOLERANCE_MM
-                        || bounds[right].0[axis] > bounds[left].1[axis] + TOLERANCE_MM
+                    bounds[left].0[axis] > bounds[right].1[axis] + CONTACT_FIT_MM
+                        || bounds[right].0[axis] > bounds[left].1[axis] + CONTACT_FIT_MM
                 })
             {
                 continue;

@@ -2,7 +2,6 @@
 //! reject the model. Production export decides whether issues block.
 
 use crate::contact::ContactFaces;
-use crate::eval::TOLERANCE_MM;
 use crate::exact::ExactShapes;
 use crate::faces::FaceKind;
 use crate::frame::{self, Obb};
@@ -10,6 +9,7 @@ use crate::model::{
     Part, ProgramBooleanKind, ProgramModel, ProgramPartBody, ProgramProfileSegment,
 };
 use ketchup_geometry::linalg::dot;
+use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
 
 /// Issue kind for a box overlap that only the exact solids can decide.
@@ -114,17 +114,17 @@ pub(crate) fn overlap(a: &Part, b: &Part) -> Option<([f64; 3], [f64; 3])> {
         let min: [f64; 3] = std::array::from_fn(|axis| f64::max(a_min[axis], b_min[axis]));
         let max: [f64; 3] = std::array::from_fn(|axis| f64::min(a_max[axis], b_max[axis]));
         (0..3)
-            .all(|axis| max[axis] - min[axis] > TOLERANCE_MM)
+            .all(|axis| max[axis] - min[axis] > CONTACT_FIT_MM)
             .then_some((min, max))
     };
     if let Some(b_local) = in_frame_of(a, b) {
         let (min, max) = intersect(a.local_bounds(), b_local)?;
         return Some(Obb::new(a.at_mm, &a.rotation, min, max).world_bounds());
     }
-    if a.obb().separation(&b.obb()) >= -TOLERANCE_MM {
+    if a.obb().separation(&b.obb()) >= -CONTACT_FIT_MM {
         return None;
     }
-    frame::common_region(&[a.obb(), b.obb()], TOLERANCE_MM)
+    frame::common_region(&[a.obb(), b.obb()], CONTACT_FIT_MM)
 }
 
 /// Smallest distance between two boxes (0 when they touch or overlap).
@@ -146,8 +146,8 @@ fn gap(a: &Part, b: &Part) -> f64 {
 
 pub(crate) fn contains(outer: ([f64; 3], [f64; 3]), inner: ([f64; 3], [f64; 3])) -> bool {
     (0..3).all(|axis| {
-        inner.0[axis] >= outer.0[axis] - TOLERANCE_MM
-            && inner.1[axis] <= outer.1[axis] + TOLERANCE_MM
+        inner.0[axis] >= outer.0[axis] - CONTACT_FIT_MM
+            && inner.1[axis] <= outer.1[axis] + CONTACT_FIT_MM
     })
 }
 
@@ -191,7 +191,7 @@ fn engages(fastener: &Part, tapped: &Part, (min, max): ([f64; 3], [f64; 3])) -> 
             })
     };
     let (own_low, own_high) = span(fastener.at_mm, axis);
-    if own_low < thread_from - TOLERANCE_MM || own_high > thread_to + TOLERANCE_MM {
+    if own_low < thread_from - CONTACT_FIT_MM || own_high > thread_to + CONTACT_FIT_MM {
         return false;
     }
     // The attributes name the size; along its thread the body must also be no
@@ -202,11 +202,11 @@ fn engages(fastener: &Part, tapped: &Part, (min, max): ([f64; 3], [f64; 3])) -> 
     let radial_mm = fastener
         .piece_bounds()
         .filter(|(min, max)| {
-            max[2] > thread_from + TOLERANCE_MM && min[2] < thread_to - TOLERANCE_MM
+            max[2] > thread_from + CONTACT_FIT_MM && min[2] < thread_to - CONTACT_FIT_MM
         })
         .flat_map(|(min, max)| [min[0], max[0], min[1], max[1]])
         .fold(0.0_f64, |reach, value| reach.max(value.abs()));
-    if radial_mm > nominal_mm / 2.0 + TOLERANCE_MM {
+    if radial_mm > nominal_mm / 2.0 + CONTACT_FIT_MM {
         return false;
     }
     tapped
@@ -224,12 +224,12 @@ fn engages(fastener: &Part, tapped: &Part, (min, max): ([f64; 3], [f64; 3])) -> 
                 .sum::<f64>()
                 .sqrt();
             if (dot(axis, inward).abs() - 1.0).abs() > ketchup_model::tolerance::ROUNDING
-                || off_axis > TOLERANCE_MM
+                || off_axis > CONTACT_FIT_MM
             {
                 return false;
             }
             let (low, high) = span(entry, inward);
-            low >= -TOLERANCE_MM && high <= thread.depth_mm + TOLERANCE_MM
+            low >= -CONTACT_FIT_MM && high <= thread.depth_mm + CONTACT_FIT_MM
         })
 }
 
@@ -238,7 +238,7 @@ fn engages(fastener: &Part, tapped: &Part, (min, max): ([f64; 3], [f64; 3])) -> 
 /// box, not its larger world bounds (review PRG-4). The shared volume is
 /// convex, so its vertices inside the pocket put all of it there.
 pub(crate) fn seated_in_pocket(a: &Part, b: &Part) -> bool {
-    let shared = frame::intersection_vertices(&[a.obb(), b.obb()], TOLERANCE_MM);
+    let shared = frame::intersection_vertices(&[a.obb(), b.obb()], CONTACT_FIT_MM);
     !shared.is_empty()
         && [a, b].into_iter().any(|part| {
             part.finished_pockets().any(|(_, corners)| {
@@ -254,7 +254,7 @@ pub(crate) fn seated_in_pocket(a: &Part, b: &Part) -> bool {
                 shared.iter().all(|vertex| {
                     let local = part.to_local(*vertex);
                     (0..3).all(|i| {
-                        local[i] >= min[i] - TOLERANCE_MM && local[i] <= max[i] + TOLERANCE_MM
+                        local[i] >= min[i] - CONTACT_FIT_MM && local[i] <= max[i] + CONTACT_FIT_MM
                     })
                 })
             })
@@ -270,7 +270,7 @@ pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
         return false;
     }
     let shared = [a.obb(), b.obb()];
-    let corners = frame::intersection_vertices(&shared, TOLERANCE_MM);
+    let corners = frame::intersection_vertices(&shared, CONTACT_FIT_MM);
     a.booleans_in_place().all(|boolean| {
         let tool = &boolean.tool;
         match boolean.kind {
@@ -282,12 +282,12 @@ pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
                     && !corners.is_empty()
                     && corners
                         .iter()
-                        .all(|corner| tool.obb().contains(*corner, TOLERANCE_MM)))
+                        .all(|corner| tool.obb().contains(*corner, CONTACT_FIT_MM)))
             }
             // The tool's box holds the whole tool, so no common volume with
             // the box means none with the tool.
             ProgramBooleanKind::Intersect => {
-                frame::common_region(&[shared[0], shared[1], tool.obb()], TOLERANCE_MM).is_some()
+                frame::common_region(&[shared[0], shared[1], tool.obb()], CONTACT_FIT_MM).is_some()
             }
             // Joining adds volume; it removes none.
             ProgramBooleanKind::Union => true,
@@ -299,7 +299,7 @@ pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
 /// subtracted from it crosses its box through one face only (a trim): the
 /// box then removes exactly everything beyond that face.
 fn kept_half_spaces(part: &Part) -> Vec<([f64; 3], f64)> {
-    let corners = frame::intersection_vertices(&[part.obb()], TOLERANCE_MM);
+    let corners = frame::intersection_vertices(&[part.obb()], CONTACT_FIT_MM);
     part.booleans_in_place()
         .filter(|boolean| {
             boolean.kind == ProgramBooleanKind::Subtract
@@ -316,7 +316,7 @@ fn kept_half_spaces(part: &Part) -> Vec<([f64; 3], f64)> {
                     .filter(|(normal, offset)| {
                         corners
                             .iter()
-                            .any(|corner| dot(*normal, *corner) > offset + TOLERANCE_MM)
+                            .any(|corner| dot(*normal, *corner) > offset + CONTACT_FIT_MM)
                     });
             match (crossing.next(), crossing.next()) {
                 (Some((normal, offset)), None) => Some((normal.map(|value| -value), -offset)),
@@ -343,7 +343,7 @@ fn trims_separate(a: &Part, b: &Part) -> bool {
         .chain(b.obb().planes())
         .chain(trims)
         .collect();
-    let vertices = frame::polytope_vertices(&planes, TOLERANCE_MM);
+    let vertices = frame::polytope_vertices(&planes, CONTACT_FIT_MM);
     vertices.is_empty()
         || planes.iter().any(|(normal, _)| {
             let along = vertices.iter().map(|vertex| dot(*normal, *vertex));
@@ -351,7 +351,7 @@ fn trims_separate(a: &Part, b: &Part) -> bool {
                 .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), value| {
                     (low.min(value), high.max(value))
                 });
-            high - low <= TOLERANCE_MM
+            high - low <= CONTACT_FIT_MM
         })
 }
 
@@ -370,7 +370,7 @@ pub(crate) fn is_box(part: &Part) -> bool {
                     .iter()
                     .map(|s| s.start_mm[0] * s.end_mm[1] - s.end_mm[0] * s.start_mm[1])
                     .sum();
-                (doubled_area.abs() / 2.0 - width * depth).abs() <= TOLERANCE_MM * (width + depth)
+                (doubled_area.abs() / 2.0 - width * depth).abs() <= CONTACT_FIT_MM * (width + depth)
             }
             ProgramPartBody::Extrusion { .. }
             | ProgramPartBody::Revolve { .. }
@@ -396,7 +396,7 @@ pub(crate) fn needs_exact_shapes(a: &Part, b: &Part) -> bool {
     }
     let shared = [a.obb(), b.obb()];
     let mut reaching = a.booleans().chain(b.booleans()).filter(|boolean| {
-        frame::common_region(&[shared[0], shared[1], boolean.tool.obb()], TOLERANCE_MM).is_some()
+        frame::common_region(&[shared[0], shared[1], boolean.tool.obb()], CONTACT_FIT_MM).is_some()
     });
     match (reaching.next(), reaching.next()) {
         (None, _) => false,
@@ -417,7 +417,7 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
         let a = &model.parts[left];
         for &right in &order[position + 1..] {
             let b = &model.parts[right];
-            if bounds[right].0[0] >= bounds[left].1[0] - TOLERANCE_MM {
+            if bounds[right].0[0] >= bounds[left].1[0] - CONTACT_FIT_MM {
                 break;
             }
             if model.are_alternatives(a, b) {
@@ -535,8 +535,8 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                         }
                     };
                     let inside = (0..2).all(|i| {
-                        at[i] - reach[i] >= face.min[i] - TOLERANCE_MM
-                            && at[i] + reach[i] <= face.max[i] + TOLERANCE_MM
+                        at[i] - reach[i] >= face.min[i] - CONTACT_FIT_MM
+                            && at[i] + reach[i] <= face.max[i] + CONTACT_FIT_MM
                     });
                     (inside, at, face)
                 });
@@ -561,7 +561,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                     hint: "Move the hole inside the face or enlarge the part.".to_owned(),
                 });
             }
-            if hole.through && hole.depth_mm < thickness - TOLERANCE_MM {
+            if hole.through && hole.depth_mm < thickness - CONTACT_FIT_MM {
                 issues.push(Issue {
                     source_lines: Vec::new(),
                     severity: Severity::Error,
@@ -578,7 +578,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                     hint: "Increase depth to cross the part, or use through=False for a blind hole."
                         .to_owned(),
                 });
-            } else if !hole.through && hole.depth_mm >= thickness - TOLERANCE_MM {
+            } else if !hole.through && hole.depth_mm >= thickness - CONTACT_FIT_MM {
                 issues.push(Issue {
                     source_lines: Vec::new(),
                     severity: Severity::Error,
@@ -596,7 +596,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                         "Reduce depth or increase thickness; use through=True only for an intentional through hole."
                             .to_owned(),
                 });
-            } else if !hole.through && thickness - hole.depth_mm < THIN_WALL_MM - TOLERANCE_MM {
+            } else if !hole.through && thickness - hole.depth_mm < THIN_WALL_MM - CONTACT_FIT_MM {
                 issues.push(Issue {
                     source_lines: Vec::new(),
                     severity: Severity::Warning,
@@ -637,15 +637,15 @@ fn joints<'a>(
         // `None`: apart by an unknown clearance above the contact tolerance.
         let apart = match exact.decides(a, b) {
             Some(pair) => pair.gap_mm().map_or(Some(None), |gap| {
-                (gap > joint.max_gap_mm + TOLERANCE_MM).then_some(Some(gap))
+                (gap > joint.max_gap_mm + CONTACT_FIT_MM).then_some(Some(gap))
             }),
             None => (faces.contact(a, b).is_none()
                 && overlap(a, b).is_none()
-                && gap(a, b) > joint.max_gap_mm + TOLERANCE_MM)
+                && gap(a, b) > joint.max_gap_mm + CONTACT_FIT_MM)
                 .then(|| Some(gap(a, b))),
         };
         if let Some(apart) = apart {
-            if apart.is_none() && joint.max_gap_mm > TOLERANCE_MM {
+            if apart.is_none() && joint.max_gap_mm > CONTACT_FIT_MM {
                 continue;
             }
             issues.push(Issue {
@@ -724,9 +724,9 @@ fn support<'a>(
             // although its uncut box reaches below.
             let (min, max) = part.world_bounds();
             if part.booleans().next().is_none() {
-                (min[2] - floor).abs() <= TOLERANCE_MM
+                (min[2] - floor).abs() <= CONTACT_FIT_MM
             } else {
-                min[2] <= floor + TOLERANCE_MM && max[2] > floor + TOLERANCE_MM
+                min[2] <= floor + CONTACT_FIT_MM && max[2] > floor + CONTACT_FIT_MM
             }
         })
         .collect();
@@ -741,12 +741,12 @@ fn support<'a>(
     order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
     for (position, &left) in order.iter().enumerate() {
         for &right in &order[position + 1..] {
-            if bounds[right].0[0] > bounds[left].1[0] + TOLERANCE_MM {
+            if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
                 break;
             }
             if (0..3).any(|axis| {
-                bounds[left].0[axis] > bounds[right].1[axis] + TOLERANCE_MM
-                    || bounds[right].0[axis] > bounds[left].1[axis] + TOLERANCE_MM
+                bounds[left].0[axis] > bounds[right].1[axis] + CONTACT_FIT_MM
+                    || bounds[right].0[axis] > bounds[left].1[axis] + CONTACT_FIT_MM
             }) {
                 continue;
             }
@@ -757,7 +757,7 @@ fn support<'a>(
                     faces.contact(part, other).is_some()
                         || overlap(part, other).is_some()
                         || ((part.is_rotated() || other.is_rotated())
-                            && gap(part, other) <= TOLERANCE_MM)
+                            && gap(part, other) <= CONTACT_FIT_MM)
                 }
             };
             if touching {
@@ -780,7 +780,7 @@ fn support<'a>(
             continue;
         };
         let (part, other) = (&model.parts[left], &model.parts[right]);
-        let reach = joint.max_gap_mm + TOLERANCE_MM;
+        let reach = joint.max_gap_mm + CONTACT_FIT_MM;
         if gap(part, other) <= reach
             && exact
                 .decides(part, other)

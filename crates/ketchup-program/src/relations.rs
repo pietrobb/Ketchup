@@ -4,12 +4,12 @@
 //! model against its intent without a picture.
 
 use crate::contact::{ContactFaces, contact};
-use crate::eval::TOLERANCE_MM;
 use crate::exact::{ExactPair, ExactShapes};
 use crate::frame::{self, Obb};
 use crate::model::{Part, ProgramBooleanKind, ProgramModel};
 use crate::validate::{self, COLLISION_UNVERIFIED, Issue};
 use ketchup_geometry::linalg::dot;
+use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
 
 /// Parts closer than this are listed with their clearance.
@@ -127,7 +127,7 @@ fn shared_volume(a: &Part, b: &Part) -> Vec<[f64; 3]> {
                 .flat_map(|boolean| boolean.tool.obb().planes()),
         )
         .collect();
-    let mut vertices = frame::polytope_vertices(&planes, TOLERANCE_MM);
+    let mut vertices = frame::polytope_vertices(&planes, CONTACT_FIT_MM);
     for boolean in booleans() {
         let tool = &boolean.tool;
         if boolean.kind != ProgramBooleanKind::Subtract
@@ -143,12 +143,12 @@ fn shared_volume(a: &Part, b: &Part) -> Vec<[f64; 3]> {
         let outside = |plane: &([f64; 3], f64)| {
             vertices
                 .iter()
-                .any(|point| dot(plane.0, *point) > plane.1 + TOLERANCE_MM)
+                .any(|point| dot(plane.0, *point) > plane.1 + CONTACT_FIT_MM)
         };
         let mut sticking_out = tool_planes.iter().filter(|plane| outside(plane));
         if let (Some(&(normal, offset)), None) = (sticking_out.next(), sticking_out.next()) {
             planes.push((normal.map(|value| -value), -offset));
-            vertices = frame::polytope_vertices(&planes, TOLERANCE_MM);
+            vertices = frame::polytope_vertices(&planes, CONTACT_FIT_MM);
         }
     }
     vertices
@@ -170,7 +170,7 @@ fn insertion(inserted: &Part, vertices: &[[f64; 3]]) -> (f64, [f64; 3]) {
                 });
             let extent = high - low;
             (
-                extent / (2.0 * obb.half[axis]).max(TOLERANCE_MM),
+                extent / (2.0 * obb.half[axis]).max(CONTACT_FIT_MM),
                 extent,
                 direction,
             )
@@ -237,13 +237,13 @@ fn relate<'a>(
         joint: joint.map(str::to_owned),
         approx: approximate(a) || approximate(b),
     };
-    if separation > TOLERANCE_MM {
+    if separation > CONTACT_FIT_MM {
         let gap = oa.distance(&ob);
         if gap > GAP_LIMIT_MM && joint.is_none() {
             return None;
         }
         relation.gap_mm = Some(round1(gap));
-    } else if separation >= -TOLERANCE_MM {
+    } else if separation >= -CONTACT_FIT_MM {
         match faces.contact(a, b) {
             Some(patch) => {
                 relation.kind = RelationKind::Contact;
@@ -277,7 +277,7 @@ fn relate<'a>(
         Some(pair)
             if !pair.penetrating()
                 && (!intended_overlap(&relation)
-                    || pair.gap_mm().is_some_and(|gap| gap > TOLERANCE_MM)) =>
+                    || pair.gap_mm().is_some_and(|gap| gap > CONTACT_FIT_MM)) =>
         {
             Some(exact_relation(a, b, relation, pair))
         }
@@ -308,7 +308,7 @@ fn exact_relation(a: &Part, b: &Part, mut relation: Relation, pair: ExactPair) -
     relation.status = None;
     relation.cut_in = None;
     relation.gap_mm = None;
-    if pair.contact_area_mm2 > TOLERANCE_MM * TOLERANCE_MM {
+    if pair.contact_area_mm2 > CONTACT_FIT_MM * CONTACT_FIT_MM {
         relation.kind = RelationKind::Contact;
         relation.area_mm2 = Some(pair.contact_area_mm2.round());
         if let Some(patch) = contact(a, b) {

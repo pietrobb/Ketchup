@@ -4,7 +4,8 @@
 Tolerances and model limits have one home: crates/ketchup-tolerance/src/lib.rs
 (the document's TolerancePolicy), handed to the exact kernel through its FFI,
 and crates/ketchup-tolerance/src/limits.rs. A literal such as 1.0e-9 anywhere
-else is a module-local tolerance. A length compared with a literal of 8 or more
+else is a module-local tolerance, and so is a named constant such as
+`const TOLERANCE_MM: f64 = 0.01;` that holds its own number. A length compared with a literal of 8 or more
 (`.len() > 64`, `(2..=16).contains(&x.len())`) is an unnamed size limit; it is
 counted as `<file> limit`.
 
@@ -28,6 +29,10 @@ SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/src/**/*.hx
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 HOME = "crates/ketchup-tolerance/src/lib.rs"
 LITERAL = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?:_f64)?[eE]-\d+")
+# A named tolerance holding its own number, `const FIT_TOLERANCE_MM: f64 = 0.01;`, is a
+# module-local tolerance as much as a literal 1e-7 is; one naming a home constant is not.
+NAMED = re.compile(r"\bconst\s+\w*(?:TOLERANCE|EPSILON|EPS)\w*\s*:\s*f(?:32|64)\s*=\s*-?\d",
+                   re.IGNORECASE)
 LIMIT_FLOOR = 8
 # `.len() <op> N` / `N <op> x.len()` and `(a..=N).contains(&x.len())` with a literal N.
 LEN_COMPARE = re.compile(r"\.len\(\)\s*(?:[<>]=?|[!=]=)\s*(\d[\d_]*)\b(?!\.)"
@@ -74,7 +79,7 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
                     or path.stem.endswith("tests")):
                 continue
             text = production_text(path)
-            found = len(LITERAL.findall(text))
+            found = len(LITERAL.findall(text)) + len(NAMED.findall(text))
             if found:
                 counts[key] = found
             limits = limit_literals(text)

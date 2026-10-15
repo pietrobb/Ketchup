@@ -52,6 +52,14 @@ pub const DRAFT_VERTICAL_TOLERANCE_DEGREES: f64 = 1.0e-6;
 /// against 6H), so a modelled bolt and its tapped hole stay clear of each other.
 pub const THREAD_APPROXIMATION_MM: f64 = 1.0e-4;
 
+/// Contact and fit tolerance of rule programs, in mm: two parts at most this far apart
+/// touch, and a part may stick out of the face or the part it fits by this much. Not the
+/// document's [`TolerancePolicy`], which decides coincidence for the exact kernel: program
+/// parts sit where rotated members and summed lengths put them, and at the policy's
+/// 1e-7 mm members seated on inclined members report their seats as overlaps (review
+/// PRG-8).
+pub const CONTACT_FIT_MM: f64 = 0.01;
+
 /// Chord error for material face boundaries used by planar contact queries, in mm.
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
 /// Smallest angular sampling step for a material boundary, in radians.

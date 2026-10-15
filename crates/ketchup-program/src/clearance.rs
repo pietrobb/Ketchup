@@ -4,13 +4,13 @@
 //! reaches into it is an error, like a collision; editing is never blocked.
 
 use crate::contact::polygon::{area, boolean};
-use crate::eval::TOLERANCE_MM;
 use crate::model::{
     Part, ProgramBooleanKind, ProgramModel, ProgramPartBody, ProgramProfileSegment,
 };
 use crate::validate::{
     Issue, Severity, booleans_leave_overlap, is_box, needs_exact_shapes, overlap,
 };
+use ketchup_model::tolerance::CONTACT_FIT_MM;
 use ketchup_tolerance::APPROXIMATION;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -77,7 +77,7 @@ fn reaches_in(zone: &Part, part: &Part) -> Option<bool> {
     if (volume(lo, hi) - volume(min, max)).abs() > APPROXIMATION * volume(min, max) {
         return None;
     }
-    if hi[2].min(*distance_mm) - lo[2].max(0.0) <= TOLERANCE_MM {
+    if hi[2].min(*distance_mm) - lo[2].max(0.0) <= CONTACT_FIT_MM {
         return Some(false);
     }
     let section = vec![segments.iter().map(|segment| segment.start_mm).collect()];
@@ -88,7 +88,7 @@ fn reaches_in(zone: &Part, part: &Part) -> Option<bool> {
         [lo[0], hi[1]],
     ]];
     let shared = area(&boolean(&section, &window, false));
-    if shared <= TOLERANCE_MM * ((hi[0] - lo[0]) + (hi[1] - lo[1])) {
+    if shared <= CONTACT_FIT_MM * ((hi[0] - lo[0]) + (hi[1] - lo[1])) {
         return Some(false);
     }
     // Holes, pockets and subtracted tools might still empty the shared volume.
