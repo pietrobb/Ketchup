@@ -212,10 +212,6 @@ pub(crate) struct ExactState {
     /// A box face the user clicked in the viewport before that body's exact
     /// result was shown; the selection moves to the exact face once it is.
     pub(crate) clicked_box_face: Option<ketchup_interaction::SelectionId>,
-    /// The box-face selection and exact contents (results, topology stamps)
-    /// last searched for the exact face to carry that selection to, so a side
-    /// without one face there is not searched again every frame.
-    pub(crate) carried_face_attempt: Option<(ketchup_interaction::SelectionId, u64, u64)>,
 }
 
 /// The material takeoff window and the takeoff it shows.

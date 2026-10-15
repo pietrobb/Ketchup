@@ -483,18 +483,12 @@ impl KetchupApp {
         }
     }
 
-    /// A face clicked before the body's exact result arrived names a side of
-    /// its box. Once the exact body is published the viewport draws and picks
-    /// its exact faces, so the selection moves to the one exact face lying on
-    /// that side's plane: it keeps its fill and Push/Pull offsets the exact
-    /// face. An ambiguous side (none or several faces there) stays as it was.
-    /// An open dialog, a live preview, a typed correction of the last Push/Pull
-    /// or another tool was planned from the selection as it is; changing it
-    /// under them would close the dialog, drop the preview or refuse the
-    /// correction, so the selection moves only once nothing depends on it.
-    /// Only a face clicked in the viewport moves; a part chosen in the outliner
-    /// or added with Shift stays a part. Called every frame; cheap unless such
-    /// a click is waiting.
+    /// A box face clicked in the viewport before the body's exact result moves,
+    /// once that result is published, to the one exact face on the same side's
+    /// plane, so it keeps its fill and Push/Pull offsets the exact face; an
+    /// ambiguous side stays as it was. It waits while a dialog, preview, drag,
+    /// typed correction or other tool depends on the selection as it is.
+    /// Called every frame: a lookup until the body is there, then one search.
     pub(crate) fn carry_box_face_selection_to_exact(&mut self) {
         let Some(primary) = self.exact.clicked_box_face.clone() else {
             return;
@@ -517,15 +511,17 @@ impl KetchupApp {
         {
             return;
         }
-        let attempt = (
-            primary.clone(),
-            self.exact.results.contents_stamp(),
-            self.exact.topology_results.contents_stamp(),
-        );
-        if self.exact.carried_face_attempt.as_ref() == Some(&attempt) {
+        let snapshot = self.document.current();
+        if self
+            .exact
+            .topology_results
+            .get_render(&snapshot, primary.definition_id)
+            .is_none()
+        {
             return;
         }
-        self.exact.carried_face_attempt = Some(attempt);
+        // The exact body is there: the side is looked up once, found or not.
+        self.exact.clicked_box_face = None;
         let Some(item) = self
             .active_boxes()
             .into_iter()
@@ -552,7 +548,6 @@ impl KetchupApp {
             .topological
             .push((selection.clone(), topological));
         self.selection.primary = Some(selection);
-        self.exact.clicked_box_face = None;
     }
 
     /// The one planar face of `target`'s exact body whose outward normal is
