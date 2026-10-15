@@ -134,6 +134,32 @@ pub(super) fn blockers(app: &KetchupApp, ui_busy: bool) -> Vec<Blocker> {
     out
 }
 
+/// Who an edit is checked and published for.
+#[derive(Clone, Copy)]
+pub(super) enum Requester {
+    /// An MCP client: refused while the user holds the pointer, types or has
+    /// unfinished work in the window.
+    Client { ui_busy: bool },
+    /// The window itself (a hole, draft or pattern the user confirmed): the
+    /// user's own edit, which turning the camera or focusing a field while it
+    /// is checked must not throw away. Unfinished work still refuses it.
+    Window,
+}
+
+/// The blockers for `requester`; looking around and a focused field change
+/// nothing in the document, so they never block the window's own edit.
+pub(super) fn blockers_for(app: &KetchupApp, requester: Requester) -> Vec<Blocker> {
+    match requester {
+        Requester::Client { ui_busy } => blockers(app, ui_busy),
+        Requester::Window => blockers(app, false)
+            .into_iter()
+            .filter(|blocker| {
+                !matches!(blocker.target, "camera_drag" | "camera_wheel" | "value_box")
+            })
+            .collect(),
+    }
+}
+
 pub(super) fn reject_if_busy(blockers: &[Blocker]) -> Result<(), &'static str> {
     let Some(first) = blockers.first() else {
         return Ok(());

@@ -1102,6 +1102,8 @@ pub(crate) struct LiveBridge {
     batch_job_key: RandomState,
     next_batch_job: u64,
     image: image::ImageState,
+    /// A bridge without a socket for the window's own edits (`transport::local`).
+    serves_window: bool,
 }
 impl Drop for LiveBridge {
     fn drop(&mut self) {
@@ -1401,11 +1403,24 @@ impl LiveBridge {
     }
 
     fn available(app: &KetchupApp, ui_busy: bool) -> Result<(), &'static str> {
+        Self::available_to(app, busy::Requester::Client { ui_busy })
+    }
+
+    const fn requester(&self, ui_busy: bool) -> busy::Requester {
+        if self.serves_window {
+            busy::Requester::Window
+        } else {
+            busy::Requester::Client { ui_busy }
+        }
+    }
+
+    fn available_to(app: &KetchupApp, requester: busy::Requester) -> Result<(), &'static str> {
         if app.file.review_candidate.is_some() {
             return Err("read_only_document");
         }
-        busy::reject_if_busy(&busy::blockers(app, ui_busy))
+        busy::reject_if_busy(&busy::blockers_for(app, requester))
     }
+
     /// Every document mutation (including Undo/Redo and Open) draws a fresh
     /// process-unique epoch, so the epoch alone detects any intervening change.
     fn guard(app: &KetchupApp, expected: &Option<Stamp>) -> Result<(), &'static str> {
@@ -1933,7 +1948,7 @@ impl LiveBridge {
     fn plan_apply_and_verify(
         app: &KetchupApp,
         request: ApplyAndVerifyRequest,
-        ui_busy: bool,
+        requester: busy::Requester,
         #[cfg(test)] fault: Option<ApplyAndVerifyFault>,
     ) -> Result<
         (
@@ -1974,7 +1989,7 @@ impl LiveBridge {
         };
         let validation_selection = Self::mandatory_validation_selection(&validators)?;
         Self::guard(app, &expected)?;
-        Self::available(app, ui_busy)?;
+        Self::available_to(app, requester)?;
         let selection = Self::selection_guard(app, selection)?;
         program
             .validate()
@@ -2041,7 +2056,7 @@ impl LiveBridge {
         let (plan, exact_selection, validation_selection) = match Self::plan_apply_and_verify(
             app,
             request,
-            ui_busy,
+            self.requester(ui_busy),
             #[cfg(test)]
             self.apply_and_verify_fault,
         ) {
@@ -2108,7 +2123,7 @@ impl LiveBridge {
         app: &mut KetchupApp,
         plan: &ApplyAndVerifyPlan,
         prepared: PreparedApplyAndVerify,
-        ui_busy: bool,
+        requester: busy::Requester,
         cancelled: &AtomicBool,
         #[cfg(test)] fault: Option<ApplyAndVerifyFault>,
     ) -> Result<Value, &'static str> {
@@ -2133,7 +2148,7 @@ impl LiveBridge {
         if app.document.mutation_epoch() != before.mutation_epoch {
             return Err("stale_document");
         }
-        Self::available(app, ui_busy)?;
+        Self::available_to(app, requester)?;
         Self::check_selection_guard(app, selection)?;
 
         let PreparedApplyAndVerify {
@@ -2286,7 +2301,7 @@ impl LiveBridge {
         let (plan, exact_selection, validation_selection) = Self::plan_apply_and_verify(
             app,
             request,
-            ui_busy,
+            busy::Requester::Client { ui_busy },
             #[cfg(test)]
             fault,
         )?;
@@ -2309,7 +2324,7 @@ impl LiveBridge {
             app,
             &plan,
             prepared,
-            ui_busy,
+            busy::Requester::Client { ui_busy },
             cancelled,
             #[cfg(test)]
             fault,
@@ -2365,7 +2380,7 @@ impl LiveBridge {
                     app,
                     &job.plan,
                     prepared,
-                    ui_busy,
+                    self.requester(ui_busy),
                     &job.cancelled,
                     #[cfg(test)]
                     self.apply_and_verify_fault,

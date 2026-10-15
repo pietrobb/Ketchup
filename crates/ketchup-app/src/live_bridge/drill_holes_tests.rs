@@ -593,6 +593,56 @@ fn the_hole_tool_drills_where_the_face_is_clicked_in_one_undo_step() {
     assert!(unchanged(&app));
 }
 
+/// Review 2026-10-14 (GX-11): a hole confirmed in the window was thrown away
+/// as `busy` when the user turned the camera or clicked into the value field
+/// while it was checked. The user's own edit now publishes; unfinished work
+/// such as a drawing gesture still refuses it, by name.
+#[test]
+fn turning_the_camera_or_focusing_a_field_does_not_throw_away_a_window_edit() {
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let snapshot = app.document.current();
+    let world = snapshot
+        .world_transform_for_occurrence(snapshot.occurrences().next().unwrap().id())
+        .unwrap();
+    let [x, y, z] = centroid(&face(&mut app, &mut bridge, "plane", [0.0, 0.0, 1.0]));
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0));
+    let [wx, wy, wz] = world.transform_point([x + 10.0, y, z]);
+    let click = app.project(Vec3::new(wx, wy, wz), rect);
+    let undo = app.undo_step_count();
+    app.dispatch_command(AppCommand::Hole);
+
+    app.value_box.input = "6 8".to_owned();
+    assert!(app.drill_hole_at_screen(click, rect), "{}", app.digest);
+    app.camera.drag_active = true;
+    app.camera.wheel_active = true;
+    app.value_box.focus = true;
+    app.finish_window_edit();
+    assert_eq!(app.digest, app.catalog.text("digest-hole-created"));
+    assert_eq!(app.undo_step_count(), undo + 1);
+    app.camera.drag_active = false;
+    app.camera.wheel_active = false;
+    app.value_box.focus = false;
+
+    // An unfinished drawing gesture is work the edit would land in the middle
+    // of: it is refused with that reason and nothing changes.
+    let stamp = app.live_bridge_stamp();
+    assert!(app.drill_hole_at_screen(click, rect), "{}", app.digest);
+    app.gesture.sketch.armed = true;
+    app.finish_window_edit();
+    assert!(
+        app.digest
+            .starts_with("busy: An unfinished drawing gesture"),
+        "{}",
+        app.digest
+    );
+    assert_eq!(
+        app.live_bridge_stamp().canonical_digest,
+        stamp.canonical_digest
+    );
+    assert_eq!(app.undo_step_count(), undo + 1);
+}
+
 /// Review 2026-10-14 (GX-13): with a section open, Hole, Draft and Mirror
 /// reached the face the cut hides; they now take the first face it keeps.
 #[test]

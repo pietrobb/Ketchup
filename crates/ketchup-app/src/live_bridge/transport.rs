@@ -121,7 +121,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
 /// plugin run from the Plugins menu.
 pub(super) fn local() -> LiveBridge {
     let (_sender, queue) = mpsc::sync_channel(1);
-    assemble(
+    let mut bridge = assemble(
         SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
         String::new(),
         Arc::new(AtomicBool::new(true)),
@@ -130,7 +130,9 @@ pub(super) fn local() -> LiveBridge {
         queue,
         #[cfg(test)]
         Arc::new(AtomicUsize::new(0)),
-    )
+    );
+    bridge.serves_window = true;
+    bridge
 }
 
 fn assemble(
@@ -166,6 +168,7 @@ fn assemble(
         batch_job_key: RandomState::new(),
         next_batch_job: 1,
         image: image::ImageState::default(),
+        serves_window: false,
     }
 }
 
