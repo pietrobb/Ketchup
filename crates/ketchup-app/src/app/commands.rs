@@ -686,6 +686,21 @@ impl KetchupApp {
             return applied;
         }
         if self.active_tool == ActiveTool::PushPull {
+            // An unreadable value is refused before the gesture or the Push/Pull
+            // it would correct is touched. Zero is refused too, except as a
+            // correction, which returns the face where it was, as with Rotate.
+            let corrects_last = self.current_last_push_pull().is_some_and(|last| {
+                self.selection
+                    .primary
+                    .as_ref()
+                    .is_none_or(|primary| *primary == last.selection)
+            });
+            if parse_distance_mm(&self.value_box.input)
+                .is_none_or(|distance| !corrects_last && distance.abs() <= limits::MIN_LENGTH_MM)
+            {
+                self.digest = self.catalog.text("digest-push-pull-invalid-distance");
+                return false;
+            }
             // A value typed right after an exact-face Push/Pull corrects that
             // face, whether the selection was cleared or still holds the pushed
             // face (re-bound by Undo and Redo, so its recorded binding is used).
@@ -704,10 +719,6 @@ impl KetchupApp {
                 self.digest = self.catalog.text("error-push-pull-selection-required");
                 return false;
             };
-            if parse_distance_mm(&self.value_box.input).is_none() {
-                self.digest = self.catalog.text("digest-nothing-to-apply");
-                return false;
-            }
             // A value typed straight after a Push/Pull is planned as an absolute
             // replacement against its guarded parent. The committed tip remains
             // untouched throughout chooser and preview interaction.

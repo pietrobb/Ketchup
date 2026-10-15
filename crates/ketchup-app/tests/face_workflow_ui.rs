@@ -1925,6 +1925,18 @@ fn circular_profile_positive_push_pull_creates_exact_extrusion_atomically() {
     );
 
     shell.click_command(AppCommand::PushPull);
+    // The refusals below only mean something once a valid depth previews,
+    // which needs the exact faces the profile lies on.
+    shell.app_mut().set_push_pull_distance_input("7");
+    assert!(
+        shell.wait_until(|shell| {
+            shell.step();
+            shell.app_mut().start_preview()
+        }),
+        "{}",
+        shell.app().action_digest()
+    );
+    shell.app_mut().cancel_preview();
     shell.app_mut().set_push_pull_distance_input("0");
     assert!(!shell.app_mut().start_preview());
     assert_eq!(shell.app().document_revision(), before.0);
@@ -2016,6 +2028,18 @@ fn semicircular_arc_profile_positive_push_pull_creates_exact_extrusion_atomicall
     );
 
     shell.click_command(AppCommand::PushPull);
+    // The refusals below only mean something once a valid depth previews,
+    // which needs the exact faces the profile lies on.
+    shell.app_mut().set_push_pull_distance_input("7");
+    assert!(
+        shell.wait_until(|shell| {
+            shell.step();
+            shell.app_mut().start_preview()
+        }),
+        "{}",
+        shell.app().action_digest()
+    );
+    shell.app_mut().cancel_preview();
     shell.app_mut().set_push_pull_distance_input("0");
     assert!(!shell.app_mut().start_preview());
     assert_eq!(shell.app().document_revision(), before.0);
