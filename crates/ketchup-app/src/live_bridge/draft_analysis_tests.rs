@@ -362,3 +362,53 @@ fn the_draft_analysis_view_colors_each_face_by_its_class_without_touching_the_do
     assert!(colors(&app).is_empty());
     assert!(saved(&app) == bytes);
 }
+
+/// GX-18: the GPU scene paints the draft colors from its cached geometry, so
+/// the view does not refill every face of every part on the CPU each frame.
+#[test]
+fn the_draft_analysis_view_is_painted_by_the_gpu_scene_not_face_by_face() {
+    use crate::ViewFlag;
+    use crate::renderer::linear_rgba;
+
+    let (mut app, _bridge) = setup();
+    evaluate_exact(&mut app);
+    app.enable_headless_instanced_scene();
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+    let snapshot = app.document.current();
+    let definition = snapshot.occurrences().next().unwrap().definition_id();
+    let package = Arc::clone(app.exact.results.get_render(&snapshot, definition).unwrap());
+    let triangle_colors = |app: &KetchupApp| {
+        let plan = app.render.plan.as_ref().expect("the GPU scene was planned");
+        assert_eq!(plan.batches().len(), 1);
+        plan.batches()[0]
+            .geometry
+            .triangle_colors()
+            .collect::<Vec<_>>()
+    };
+
+    app.dispatch_command(AppCommand::View(ViewFlag::DraftAnalysis));
+    let (faces, _) = app.projected_faces_and_edges(rect);
+    assert!(
+        faces.is_empty(),
+        "{} faces filled on the CPU instead of the GPU scene",
+        faces.len()
+    );
+    let expected = app.draft_face_colors(&package);
+    assert_eq!(expected.len(), 6);
+    let painted = triangle_colors(&app);
+    assert_eq!(painted.len(), package.triangles().len());
+    for (index, color) in painted.iter().enumerate() {
+        let ordinal = package.triangle_face_ordinal(index).unwrap();
+        assert_eq!(
+            *color,
+            Some(linear_rgba(
+                expected[&ordinal].to_array()[..3].try_into().unwrap()
+            )),
+            "triangle {index} of face {ordinal}"
+        );
+    }
+
+    app.dispatch_command(AppCommand::View(ViewFlag::DraftAnalysis));
+    let _ = app.projected_faces_and_edges(rect);
+    assert!(triangle_colors(&app).iter().all(Option::is_none));
+}

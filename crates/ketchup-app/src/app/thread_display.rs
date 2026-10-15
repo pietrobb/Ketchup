@@ -3,7 +3,7 @@
 //! geometry stays a plain cylinder.
 
 use crate::program_evaluation::Lookup;
-use crate::renderer::{DefinitionLines, single_precision};
+use crate::renderer::{DefinitionLines, FaceColors, single_precision};
 use crate::*;
 use ketchup_application::threads::{ThreadCylinder, modeled_threads_batch, thread_cylinders};
 use ketchup_geometry::linalg;
@@ -24,6 +24,9 @@ impl KetchupApp {
             snapshot,
             &self.exact.results,
             &lines,
+            self.view
+                .contains(ViewFlag::DraftAnalysis)
+                .then_some(super::draft::draft_face_rgb as FaceColors),
             &mut self.render.cache,
         ));
         self.render.plan = Some(Arc::clone(&plan));

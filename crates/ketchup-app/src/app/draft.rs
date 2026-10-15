@@ -72,19 +72,37 @@ impl KetchupApp {
     /// The draft analysis colors of `package`'s faces by face ordinal while the
     /// view shows them; a face that is not analyzed has none.
     pub(crate) fn draft_face_colors(&self, package: &ExactBodyPackage) -> BTreeMap<u32, Color32> {
-        let (true, ExactBodyPackage::Graph(package), Some(query)) = (
-            self.view.contains(ViewFlag::DraftAnalysis),
-            package,
-            DraftQuery::new(VIEW_PULL, None),
-        ) else {
+        if !self.view.contains(ViewFlag::DraftAnalysis) {
             return BTreeMap::new();
-        };
-        package
-            .face_evidence
-            .iter()
-            .filter_map(|evidence| {
-                Some((evidence.face_ordinal, draft_color(query.class(evidence)?)))
-            })
+        }
+        draft_classes(package)
+            .into_iter()
+            .map(|(ordinal, class)| (ordinal, draft_color(class)))
             .collect()
     }
+}
+
+/// The draft class of each analyzed face of `package` along the view's pull.
+fn draft_classes(package: &ExactBodyPackage) -> BTreeMap<u32, DraftClass> {
+    let (ExactBodyPackage::Graph(package), Some(query)) =
+        (package, DraftQuery::new(VIEW_PULL, None))
+    else {
+        return BTreeMap::new();
+    };
+    package
+        .face_evidence
+        .iter()
+        .filter_map(|evidence| Some((evidence.face_ordinal, query.class(evidence)?)))
+        .collect()
+}
+
+/// The draft analysis colors the GPU scene paints, as `FaceColors`.
+pub(crate) fn draft_face_rgb(package: &ExactBodyPackage) -> BTreeMap<u32, [u8; 3]> {
+    draft_classes(package)
+        .into_iter()
+        .map(|(ordinal, class)| {
+            let [red, green, blue, _] = draft_color(class).to_array();
+            (ordinal, [red, green, blue])
+        })
+        .collect()
 }

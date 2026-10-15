@@ -66,6 +66,8 @@ pub struct RenderInstance {
 struct RenderVertex {
     position: [f32; 3],
     normal: [f32; 3],
+    /// Linear RGBA painted over the part's own color; alpha 0 paints none.
+    color: [f32; 4],
 }
 
 /// One corner of the screen-space quad that draws a feature edge: both segment
@@ -101,6 +103,14 @@ impl RenderGeometry {
         self.indices.len()
     }
 
+    /// The color each triangle paints over its part's own, in linear RGBA.
+    pub fn triangle_colors(&self) -> impl Iterator<Item = Option<[f32; 4]>> + '_ {
+        self.vertices
+            .iter()
+            .step_by(3)
+            .map(|vertex| (vertex.color[3] > 0.0).then_some(vertex.color))
+    }
+
     /// Every line drawn with the faces: feature edges and decorations.
     pub fn edge_segments(&self) -> impl Iterator<Item = [[f32; 3]; 2]> + '_ {
         self.edge_vertices
@@ -126,6 +136,8 @@ pub struct InstancedRenderPlan {
     source_revision: u64,
     source_digest: String,
     exact_contents_stamp: u64,
+    /// Whether the exact faces were painted by `FaceColors`.
+    face_colored: bool,
     batches: Vec<RenderBatch>,
     /// The instance path of every instance, parallel to `batches`.
     instance_paths: Arc<Vec<Vec<InstancePath>>>,
@@ -140,20 +152,32 @@ fn next_plan_id() -> u64 {
 /// cosmetic threads on its cylinders.
 pub type DefinitionLines = BTreeMap<DefinitionId, Vec<[[f32; 3]; 2]>>;
 
+/// The sRGB color of an exact package's faces by face ordinal, painted over
+/// the part's own color; a face without one keeps it.
+pub type FaceColors = fn(&ExactBodyPackage) -> BTreeMap<u32, [u8; 3]>;
+
 impl InstancedRenderPlan {
     pub fn from_snapshot(
         snapshot: &Snapshot,
         exact_results: &ExactResultRegistry,
         cache: &mut DerivedRenderCache,
     ) -> Self {
-        Self::from_snapshot_with_lines(snapshot, exact_results, &DefinitionLines::new(), cache)
+        Self::from_snapshot_with_lines(
+            snapshot,
+            exact_results,
+            &DefinitionLines::new(),
+            None,
+            cache,
+        )
     }
 
-    /// The plan of `snapshot` whose definitions also draw their `lines`.
+    /// The plan of `snapshot` whose definitions also draw their `lines` and
+    /// whose exact faces are painted by `face_colors`.
     pub fn from_snapshot_with_lines(
         snapshot: &Snapshot,
         exact_results: &ExactResultRegistry,
         lines: &DefinitionLines,
+        face_colors: Option<FaceColors>,
         cache: &mut DerivedRenderCache,
     ) -> Self {
         let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
@@ -193,6 +217,7 @@ impl InstancedRenderPlan {
                         .map_or(&[][..], Vec::as_slice),
                     definition_id,
                     lines.get(&definition_id).map_or(&[][..], Vec::as_slice),
+                    face_colors,
                 );
                 if sources.is_empty() {
                     continue;
@@ -243,6 +268,7 @@ impl InstancedRenderPlan {
             source_revision: snapshot.revision_id(),
             source_digest: snapshot.canonical_digest(),
             exact_contents_stamp: exact_results.contents_stamp(),
+            face_colored: face_colors.is_some(),
             batches,
             instance_paths: Arc::new(instance_paths),
         }
@@ -310,6 +336,12 @@ impl InstancedRenderPlan {
         self.is_current(snapshot) && self.exact_contents_stamp == exact_results.contents_stamp()
     }
 
+    /// Whether this plan painted its exact faces by face colors.
+    #[must_use]
+    pub const fn face_colored(&self) -> bool {
+        self.face_colored
+    }
+
     #[must_use]
     pub fn batches(&self) -> &[RenderBatch] {
         &self.batches
@@ -341,6 +373,7 @@ fn geometry_sources(
     exact_packages: &[&Arc<ExactBodyPackage>],
     definition_id: DefinitionId,
     lines: &[[[f32; 3]; 2]],
+    face_colors: Option<FaceColors>,
 ) -> Vec<GeometrySource> {
     let exact = exact_packages
         .iter()
@@ -362,7 +395,24 @@ fn geometry_sources(
                 .map(|triangle| triangle.face_role)
                 .collect::<Vec<_>>();
             let lines = if index == 0 { lines } else { &[] };
-            build_render_geometry("exact", &positions, &triangles, &face_groups, lines)
+            let triangle_colors = face_colors.map_or_else(Vec::new, |face_colors| {
+                let colors = face_colors(package);
+                (0..triangles.len())
+                    .map(|triangle| {
+                        package
+                            .triangle_face_ordinal(triangle)
+                            .and_then(|ordinal| colors.get(&ordinal).copied())
+                    })
+                    .collect()
+            });
+            build_render_geometry(
+                "exact",
+                &positions,
+                &triangles,
+                &face_groups,
+                &triangle_colors,
+                lines,
+            )
         })
         .collect::<Vec<_>>();
     if !exact.is_empty() {
@@ -395,6 +445,7 @@ fn geometry_sources(
                 &positions,
                 &mesh.triangles,
                 &vec![None::<u8>; mesh.triangles.len()],
+                &[],
                 lines,
             )];
         }
@@ -411,6 +462,7 @@ fn geometry_sources(
             &positions,
             &triangles,
             &vec![None::<u8>; triangles.len()],
+            &[],
             lines,
         )];
     }
@@ -470,6 +522,7 @@ fn geometry_sources(
             Some(5),
             Some(5),
         ],
+        &[],
         lines,
     )]
 }
@@ -576,6 +629,7 @@ fn build_render_geometry<G: Copy + Ord>(
     positions: &[[f32; 3]],
     triangles: &[[u32; 3]],
     face_groups: &[Option<G>],
+    triangle_colors: &[Option<[u8; 3]>],
     lines: &[[[f32; 3]; 2]],
 ) -> GeometrySource {
     let feature_edges = feature_edges(positions, triangles, face_groups);
@@ -599,9 +653,17 @@ fn build_render_geometry<G: Copy + Ord>(
     }
 
     let mut vertices = Vec::with_capacity(triangles.len() * 3);
-    for ((triangle, face_group), face_normal) in
-        triangles.iter().zip(face_groups).zip(&face_normals)
+    for (triangle_index, ((triangle, face_group), face_normal)) in triangles
+        .iter()
+        .zip(face_groups)
+        .zip(&face_normals)
+        .enumerate()
     {
+        let color = triangle_colors
+            .get(triangle_index)
+            .copied()
+            .flatten()
+            .map_or([0.0; 4], linear_rgba);
         for index in triangle {
             let normal = face_group
                 .and_then(|group| grouped_vertex_normals.get(&(*index, group)).copied())
@@ -609,6 +671,7 @@ fn build_render_geometry<G: Copy + Ord>(
             vertices.push(RenderVertex {
                 position: positions[*index as usize],
                 normal,
+                color,
             });
         }
     }
@@ -711,6 +774,14 @@ fn geometry_fingerprint(
     }
     for index in indices {
         let _ = write!(fingerprint, ":{index:08x}");
+    }
+    if vertices.iter().any(|vertex| vertex.color[3] > 0.0) {
+        fingerprint.push_str(":colors");
+        for vertex in vertices.iter().step_by(3) {
+            for value in vertex.color {
+                let _ = write!(fingerprint, ":{:08x}", value.to_bits());
+            }
+        }
     }
     fingerprint.push_str(":edges");
     for edge in edge_vertices.iter().step_by(6) {
@@ -884,12 +955,13 @@ impl GpuInstancedRenderer {
             bind_group_layouts: &[&scene_bind_group_layout],
             push_constant_ranges: &[],
         });
-        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+        let vertex_attributes =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4];
         let edge_attributes =
             wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
         let instance_attributes = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
         let surface_layout = wgpu::VertexBufferLayout {
-            array_stride: 24,
+            array_stride: 40,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &vertex_attributes,
         };
@@ -1254,7 +1326,13 @@ impl CallbackTrait for ScenePaintCallback {
 fn vertex_bytes(vertices: &[RenderVertex]) -> Vec<u8> {
     vertices
         .iter()
-        .flat_map(|vertex| [vertex.position, vertex.normal].into_iter().flatten())
+        .flat_map(|vertex| {
+            vertex
+                .position
+                .into_iter()
+                .chain(vertex.normal)
+                .chain(vertex.color)
+        })
         .flat_map(f32::to_ne_bytes)
         .collect()
 }
@@ -1278,23 +1356,27 @@ fn instance_bytes(instances: &[RenderInstance]) -> Vec<u8> {
         .iter()
         .flat_map(|instance| {
             // Convert sRGB to linear exactly once per instance, not per vertex.
-            let color = instance.color.map_or([0.0; 4], |rgb| {
-                let linear = rgb.map(|byte| {
-                    let value = f32::from(byte) / 255.0;
-                    if value <= 0.04045 {
-                        value / 12.92
-                    } else {
-                        ((value + 0.055) / 1.055).powf(2.4)
-                    }
-                });
-                [linear[0], linear[1], linear[2], 1.0]
-            });
+            let color = instance.color.map_or([0.0; 4], linear_rgba);
             row_major_to_columns(instance.transform)
                 .into_iter()
                 .chain(color)
         })
         .flat_map(f32::to_ne_bytes)
         .collect()
+}
+
+/// Opaque sRGB bytes as the linear RGBA the scene shader blends.
+#[must_use]
+pub fn linear_rgba(rgb: [u8; 3]) -> [f32; 4] {
+    let [red, green, blue] = rgb.map(|byte| {
+        let value = f32::from(byte) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    [red, green, blue, 1.0]
 }
 
 fn row_major_to_columns(matrix: [f32; 16]) -> [f32; 16] {
@@ -1338,6 +1420,8 @@ var<storage, read_write> pixel_depths: array<atomic<u32>>;
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    // A face color over the part's own (draft analysis); alpha 0 is none.
+    @location(2) face_color: vec4<f32>,
     @location(4) model_0: vec4<f32>,
     @location(5) model_1: vec4<f32>,
     @location(6) model_2: vec4<f32>,
@@ -1360,7 +1444,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     output.clip_position = camera.world_to_clip * world_position;
     output.world_normal = normalize((model * vec4<f32>(input.normal, 0.0)).xyz);
-    output.color = input.color;
+    output.color = select(input.color, input.face_color, input.face_color.a > 0.0);
     output.view_depth = dot(camera.view_depth, world_position);
     output.world_position = world_position.xyz;
     return output;

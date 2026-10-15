@@ -2543,6 +2543,7 @@ impl KetchupApp {
                 Some(plan)
                     if plan.is_same_revision(&snapshot)
                         && plan.matches_exact_results(&snapshot, &self.exact.results)
+                        && plan.face_colored() == self.view.contains(ViewFlag::DraftAnalysis)
                         && !self.render_plan_misses_program() =>
                 {
                     Arc::clone(plan)
@@ -2948,10 +2949,8 @@ impl KetchupApp {
                             hovered.instance_path == occurrence.instance_path
                         })
                         || out_of_context);
-            // Draft analysis colors faces one by one, which only the CPU fill can.
-            let needs_cpu_fill = !use_wgpu_scene
-                || copy_transform.is_some()
-                || self.view.contains(ViewFlag::DraftAnalysis);
+            // The GPU scene paints draft analysis colors from its own geometry.
+            let needs_cpu_fill = !use_wgpu_scene || copy_transform.is_some();
             if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
                 continue;
             }

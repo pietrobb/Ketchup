@@ -547,6 +547,74 @@ fn z6_native_scene_callback_preserves_explicit_srgb_colors() {
     ));
 }
 
+/// GX-18: the GPU scene itself paints the draft analysis colors.
+#[test]
+fn the_native_scene_paints_draft_analysis_colors() {
+    let _gpu = gpu_test_guard();
+    let mut h = native_harness(1.0);
+    h.state_mut()
+        .apply_program_source(
+            ketchup_model::document::RuleProgramSource {
+                variants: Default::default(),
+                file_name: "draft.star".into(),
+                source: "box('block',(80,80,20),color=(40,128,220))".into(),
+                overrides: Default::default(),
+            },
+            true,
+        )
+        .unwrap();
+    h.state_mut().selection.clear();
+    h.state_mut().dispatch_command(AppCommand::ViewTop);
+    h.state_mut().dispatch_command(AppCommand::ZoomFit);
+    h.state_mut()
+        .dispatch_command(AppCommand::View(crate::ViewFlag::DraftAnalysis));
+    h.step();
+    settle_exact(&mut h);
+    for _ in 0..10 {
+        h.step();
+    }
+    assert!(h.state().render.plan.as_ref().unwrap().face_colored());
+    let rx = queue(&mut h, 52);
+    h.step();
+    assert_eq!(capture(&h).0.callbacks, 1);
+    render_private_capture(&mut h, "draft analysis colors");
+    let pixels = (0..250)
+        .find_map(|_| {
+            let result = capture(&h).1.take().expect("GPU readback");
+            if result.is_none() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result
+        })
+        .expect("private draft pixels");
+    let rect = capture(&h).0.rect;
+    let screen = h
+        .state()
+        .project_to_screen(crate::Vec3::new(40., 40., 20.), rect);
+    assert!(rect.shrink(4.).contains(screen));
+    let [red, green, blue, _] =
+        crate::app::draft::draft_color(ketchup_application::draft_analysis::DraftClass::Positive)
+            .to_array();
+    let (x, y) = (screen.x.floor() as usize, screen.y.floor() as usize);
+    for dy in y - 2..=y + 2 {
+        for dx in x - 2..=x + 2 {
+            let actual = pixels.image.pixels[dy * pixels.image.size[0] + dx].to_array();
+            assert!(
+                actual[..3]
+                    .iter()
+                    .zip([red, green, blue])
+                    .all(|(a, b)| a.abs_diff(b) <= 2),
+                "the top face is {actual:?}, not the positive draft color"
+            );
+        }
+    }
+    h.state_mut().live.bridge.as_mut().unwrap().image.revoke();
+    assert!(matches!(
+        rx.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    ));
+}
+
 #[test]
 fn native_scene_callback_draws_default_box_pixels() {
     let _gpu = gpu_test_guard();
