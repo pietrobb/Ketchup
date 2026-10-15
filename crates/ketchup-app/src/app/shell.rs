@@ -511,6 +511,9 @@ impl KetchupApp {
 
     pub(crate) fn ephemeral_edit_active(&self) -> bool {
         self.has_preview()
+            // A shape with nothing committed yet; a line chain's Undo takes
+            // back its last segment and ends the chain.
+            || (self.gesture.sketch.start.is_some() && self.gesture.sketch.chain_items.is_empty())
             || self.has_drawn_shape_preview()
             || self.has_occurrence_operation_preview()
             || self.solid_tools.target.is_some()

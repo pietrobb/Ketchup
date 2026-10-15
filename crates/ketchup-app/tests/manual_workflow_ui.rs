@@ -322,6 +322,34 @@ fn ctrl_shift_z_in_a_typed_value_keeps_the_value_and_its_operation() {
     shell.press_key(Key::Escape);
 }
 
+/// UI-4 (review 2026-10-15): Ctrl+Z while a shape is half drawn, with no value
+/// typed, drops the shape and leaves the document's last step alone; the next
+/// Ctrl+Z undoes that step.
+#[test]
+fn ctrl_z_during_a_half_drawn_shape_drops_the_shape_not_an_earlier_step() {
+    let corner = Vec3::new(20.0, 20.0, 20.0);
+    for (tool, command) in [
+        ("Rectangle", AppCommand::Rectangle),
+        ("Line", AppCommand::Line),
+        ("Circle", AppCommand::Circle),
+    ] {
+        let mut shell = Shell::new();
+        shell.click_at(shell.top_face_centre(1));
+        shell.key(Key::D, ctrl());
+        let before = DocumentState::of(&shell);
+        let undo = shell.app().undo_step_count();
+        shell.click_command(command);
+        shell.click_at(screen(&shell, corner));
+        shell.move_pointer(screen(&shell, corner + Vec3::new(30.0, 10.0, 0.0)));
+        // Nothing typed: the value box only shows the pointer's reading.
+        shell.key(Key::Z, ctrl());
+        assert!(DocumentState::of(&shell) == before, "{tool}");
+        assert_eq!(shell.app().undo_step_count(), undo, "{tool}");
+        shell.key(Key::Z, ctrl());
+        assert_eq!(shell.app().undo_step_count(), undo - 1, "{tool}");
+    }
+}
+
 #[test]
 fn an_interrupted_operation_leaves_document_selection_and_history_as_they_were() {
     let mut shell = Shell::new();
