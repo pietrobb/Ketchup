@@ -154,10 +154,7 @@ impl GeneralFabricationProjection {
             // axis then runs from the far edge, so the frame stays right-handed and a
             // postprocessor following it machines the part, not its mirror image.
             let [x, y, z] = stock_axes;
-            let determinant = x[0] * (y[1] * z[2] - y[2] * z[1])
-                - x[1] * (y[0] * z[2] - y[2] * z[0])
-                + x[2] * (y[0] * z[1] - y[1] * z[0]);
-            if determinant < 0.0 {
+            if dot(x, cross(y, z)) < 0.0 {
                 for axis in 0..3 {
                     origin_mm[axis] += stock_axes[1][axis] * dimensions_mm[1];
                     stock_axes[1][axis] = -stock_axes[1][axis];

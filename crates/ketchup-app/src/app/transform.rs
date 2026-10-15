@@ -1613,7 +1613,7 @@ impl KetchupApp {
         }
         // The value box shows the snapped distance, not the f64 rounding the
         // transforms of an exact face leave in it (40.00000000000006 for 40);
-        // a target given to 1e-9 mm (13.123456789) is met exactly.
+        // a target given to the nanometre (13.123456789 mm) is met exactly.
         let snapped = self.push_pull_snap_distance(drag).map(|value| {
             (value / ketchup_model::tolerance::ROUNDING).round()
                 * ketchup_model::tolerance::ROUNDING

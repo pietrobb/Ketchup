@@ -90,8 +90,7 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
     if crate::graph::sha256_bytes(payload) != checksum {
         return Err(PersistenceError::ChecksumMismatch);
     }
-    let invalid =
-        |error: &dyn std::fmt::Display| PersistenceError::InvalidPayload(error.to_string());
+    let invalid = |error: &dyn std::fmt::Display| invalid_payload(error);
     if format == SNAPSHOT_FORMAT {
         let decoded: DecodedSnapshot =
             ciborium::from_reader(payload).map_err(|error| invalid(&error))?;
@@ -140,6 +139,10 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
     })
 }
 
+fn invalid_payload(error: &dyn std::fmt::Display) -> PersistenceError {
+    PersistenceError::InvalidPayload(error.to_string())
+}
+
 /// Refuses a snapshot of the current format that holds fields this version does not
 /// know. Serde skips them, so the document would open without them and the next Save
 /// would drop them: a newer version wrote them, or the format policy was broken. A
@@ -161,12 +164,10 @@ fn refuse_unknown_fields(
     if known == payload {
         return Ok(());
     }
-    let invalid =
-        |error: &dyn std::fmt::Display| PersistenceError::InvalidPayload(error.to_string());
     let stored: ciborium::Value =
-        ciborium::from_reader(payload).map_err(|error| invalid(&error))?;
+        ciborium::from_reader(payload).map_err(|error| invalid_payload(&error))?;
     let known: ciborium::Value =
-        ciborium::from_reader(known.as_slice()).map_err(|error| invalid(&error))?;
+        ciborium::from_reader(known.as_slice()).map_err(|error| invalid_payload(&error))?;
     let mut unknown = Vec::new();
     unknown_fields(&stored, &known, &mut String::new(), &mut unknown);
     if unknown.is_empty() {

@@ -1836,9 +1836,8 @@ fn the_production_job_stock_frame_is_right_handed_and_the_woodwop_frame() {
     };
     let origin = vector(&part["stock_frame"]["origin_mm"]);
     let [x, y, z] = std::array::from_fn(|axis| vector(&part["stock_frame"]["axes"][axis]));
-    let determinant = x[0] * (y[1] * z[2] - y[2] * z[1]) - x[1] * (y[0] * z[2] - y[2] * z[0])
-        + x[2] * (y[0] * z[1] - y[1] * z[0]);
-    assert_eq!(determinant, 1.0, "{}", part["stock_frame"]);
+    let handedness = ketchup_geometry::linalg::dot(x, ketchup_geometry::linalg::cross(y, z));
+    assert_eq!(handedness, 1.0, "{}", part["stock_frame"]);
     // The hole's entry, in stock-frame coordinates, is where the woodWOP program drills.
     let entry = [20.0, 30.0, 1000.0];
     let [xa, ya, za] = [x, y, z].map(|axis| {

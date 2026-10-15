@@ -736,7 +736,7 @@ fn check_assembled(
     bytes: usize,
     budget: u64,
 ) -> Result<u64, PersistenceError> {
-    let total = assembled.saturating_add(bytes as u64);
+    let total = assembled.saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
     if total > budget {
         return Err(PersistenceError::TooLarge {
             entry: entry.to_owned(),
@@ -1824,15 +1824,12 @@ fn decode_revision_history(
                     Some(Arc::new(decode_rule_program(reader.take(length)?)?))
                 }
                 HISTORY_RULE_PROGRAM_IN_CHUNKS if schema >= 5 => {
-                    let program =
+                    let (length, checksum, numbers) =
                         read_chunk_list(&mut reader, crate::document::MAX_RULE_PROGRAM_BYTES)?;
-                    let HistorySnapshot::Chunks {
+                    let program = HistorySnapshot::Chunks {
                         length,
                         checksum,
                         numbers,
-                    } = program
-                    else {
-                        unreachable!("a chunk list")
                     };
                     // A program the history named before is the same one, held once.
                     if let Some(decoded) = programs.get(&(length, checksum, numbers)) {
@@ -2174,7 +2171,11 @@ fn read_history_snapshot<'a>(
         .try_into()
         .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
     if schema >= 4 {
-        return chunk_list(reader, length, checksum);
+        return Ok(HistorySnapshot::Chunks {
+            length,
+            checksum,
+            numbers: chunk_numbers(reader)?,
+        });
     }
     Ok(HistorySnapshot::Whole {
         bytes: reader.take(length)?,
@@ -2186,7 +2187,7 @@ fn read_history_snapshot<'a>(
 fn read_chunk_list<'a>(
     reader: &mut Reader<'a>,
     max_length: usize,
-) -> Result<HistorySnapshot<'a>, PersistenceError> {
+) -> Result<(usize, [u8; 32], &'a [u8]), PersistenceError> {
     let length = usize::try_from(reader.u64()?)
         .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
     if length > max_length {
@@ -2196,20 +2197,14 @@ fn read_chunk_list<'a>(
         .take(32)?
         .try_into()
         .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
-    chunk_list(reader, length, checksum)
+    Ok((length, checksum, chunk_numbers(reader)?))
 }
 
-fn chunk_list<'a>(
-    reader: &mut Reader<'a>,
-    length: usize,
-    checksum: [u8; 32],
-) -> Result<HistorySnapshot<'a>, PersistenceError> {
-    let count = reader.count_with_limit(MAX_COLLECTION_ITEMS)? as usize;
-    Ok(HistorySnapshot::Chunks {
-        length,
-        checksum,
-        numbers: reader.take(count * 4)?,
-    })
+/// The chunk numbers (`u32` each) of a chunk list.
+fn chunk_numbers<'a>(reader: &mut Reader<'a>) -> Result<&'a [u8], PersistenceError> {
+    let count = usize::try_from(reader.count_with_limit(MAX_COLLECTION_ITEMS)?)
+        .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+    reader.take(count * 4)
 }
 
 /// A revision's rule program from its JSON.
@@ -2894,7 +2889,7 @@ mod tests {
         assert_eq!(held.len(), 2, "programs held, one per distinct program");
 
         // The distinct programs count against their budget, alike on Save and opening.
-        let fits = 2 * program_bytes as u64;
+        let fits = 2 * u64::try_from(program_bytes).unwrap();
         let revisions = store.revision_history().collect::<Vec<_>>();
         let encode = |programs| {
             encode_history(

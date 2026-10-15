@@ -8,7 +8,7 @@
 //! The drawn shape is used up in the same Undo step.
 use super::*;
 use crate::program_evaluation::Lookup;
-use ketchup_geometry::linalg::{cross, dot, sub};
+use ketchup_geometry::linalg::{cross, dot, dot2, sub};
 use ketchup_model::document::{Occurrence, RuleProgramSource};
 use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
 
@@ -262,9 +262,12 @@ fn loop_polygon(segments: &[ProfileSegment]) -> Option<Vec<[f64; 2]>> {
                     (false, false) => ccw,
                     (false, true) => ccw - TAU,
                 };
-                let steps = (sweep.abs() / TAU * 1024.0).ceil().max(1.0) as usize;
+                // At most 1024 chords for the whole circle, at least one.
+                let steps = (1..=1024_u32)
+                    .find(|steps| f64::from(*steps) >= sweep.abs() / TAU * 1024.0)
+                    .unwrap_or(1024);
                 polygon.extend((0..steps).map(|step| {
-                    let at = from + sweep * step as f64 / steps as f64;
+                    let at = from + sweep * f64::from(step) / f64::from(steps);
                     [
                         center_mm[0] + radius * at.cos(),
                         center_mm[1] + radius * at.sin(),
@@ -296,9 +299,9 @@ fn within_loop(polygon: &[[f64; 2]], p: [f64; 2], tolerance: f64) -> bool {
     for &next in polygon {
         let edge = [next[0] - previous[0], next[1] - previous[1]];
         let to_p = [p[0] - previous[0], p[1] - previous[1]];
-        let length_squared = edge[0] * edge[0] + edge[1] * edge[1];
+        let length_squared = dot2(edge, edge);
         let t = if length_squared > 0.0 {
-            ((to_p[0] * edge[0] + to_p[1] * edge[1]) / length_squared).clamp(0.0, 1.0)
+            (dot2(to_p, edge) / length_squared).clamp(0.0, 1.0)
         } else {
             0.0
         };

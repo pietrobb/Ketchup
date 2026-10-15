@@ -274,6 +274,18 @@ fn native_harness_with_size(ppp: f32, size: egui::Vec2) -> Harness<'static, Ketc
     h
 }
 
+/// Waits up to 2.5 s for the GPU readback of the queued capture.
+fn readback_pixels(h: &Harness<'_, KetchupApp>, what: &str) -> target::Pixels {
+    let deadline = Instant::now() + Duration::from_millis(2500);
+    loop {
+        if let Some(pixels) = capture(h).1.take().expect("GPU readback") {
+            return pixels;
+        }
+        assert!(Instant::now() < deadline, "no {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn native_harness(ppp: f32) -> Harness<'static, KetchupApp> {
     native_harness_with_size(ppp, egui::vec2(1200.0, 800.0))
 }
@@ -512,15 +524,7 @@ fn z6_native_scene_callback_preserves_explicit_srgb_colors() {
     h.step();
     assert_eq!(capture(&h).0.callbacks, 1);
     render_private_capture(&mut h, "explicit part colors");
-    let pixels = (0..250)
-        .find_map(|_| {
-            let result = capture(&h).1.take().expect("GPU readback");
-            if result.is_none() {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            result
-        })
-        .expect("private color pixels");
+    let pixels = readback_pixels(&h, "private color pixels");
     let rect = capture(&h).0.rect;
     for (point, rgb) in [
         (crate::Vec3::new(30., 40., 20.), [40u8, 128, 220]),
@@ -578,15 +582,7 @@ fn the_native_scene_paints_draft_analysis_colors() {
     h.step();
     assert_eq!(capture(&h).0.callbacks, 1);
     render_private_capture(&mut h, "draft analysis colors");
-    let pixels = (0..250)
-        .find_map(|_| {
-            let result = capture(&h).1.take().expect("GPU readback");
-            if result.is_none() {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            result
-        })
-        .expect("private draft pixels");
+    let pixels = readback_pixels(&h, "private draft pixels");
     let rect = capture(&h).0.rect;
     let screen = h
         .state()
