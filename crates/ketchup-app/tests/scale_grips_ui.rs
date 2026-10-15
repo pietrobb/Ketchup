@@ -3,7 +3,9 @@
 //! about the centre; click-move-click; typed factors per axis and lengths;
 //! several selected parts and a part picked inside an opened group.
 
-use crate::harness::contract::{ToolGesture, assert_tool_contract};
+use crate::harness::contract::{
+    DocumentState, ToolGesture, assert_tool_contract, assert_unchanged,
+};
 use crate::harness::{Shell, ctrl};
 use eframe::egui::{Key, Modifiers, Pos2};
 use ketchup_app::AppCommand;
@@ -343,4 +345,29 @@ fn a_part_picked_inside_an_opened_group_scales_alone_and_the_group_stays_open() 
         "{}",
         shell.app().action_digest()
     );
+}
+
+#[test]
+fn a_grip_scale_with_a_half_typed_length_is_dropped_whole_by_esc_ctrl_z_or_a_tool_switch() {
+    for how in ["Escape", "Ctrl+Z", "switching to Move"] {
+        let (mut shell, origin, size) = armed_scale_shell();
+        let before = DocumentState::of(&shell);
+        let grip = box_point(origin, size, [1.0, 0.0, 0.0]);
+        shell.click_at(screen(&shell, grip));
+        shell.move_pointer(scaled_pointer(&shell, origin, grip, 0.8));
+        assert!(shell.app().scale_preview_factors().is_some());
+        shell.type_text("4");
+        assert_eq!(shell.app().value_input(), "4");
+        match how {
+            "Escape" => shell.press_key(Key::Escape),
+            "Ctrl+Z" => shell.key(Key::Z, ctrl()),
+            _ => shell.click_command(AppCommand::Move),
+        }
+        // Nothing of the dropped gesture is left for Enter to confirm.
+        shell.press_key(Key::Enter);
+        assert_unchanged(&shell, &before, "Scale grip", how);
+        assert!(shell.app().scale_preview_factors().is_none(), "{how}");
+        assert_eq!(shell.app().value_input(), "", "{how}");
+        assert_eq!(shell.app().selected_occurrence_count(), 1, "{how}");
+    }
 }

@@ -281,7 +281,22 @@ fn start_interrupted(shell: &mut Shell, tool: &str) {
             shell.click_at(shell.top_face_centre(1));
             shell.move_pointer(screen(shell, Vec3::new(50.0, 30.0, 30.0)));
         }
-        _ => unreachable!(),
+        sketch => {
+            shell.click_command(match sketch {
+                "Line" => AppCommand::Line,
+                "Circle" => AppCommand::Circle,
+                "Arc" => AppCommand::Arc,
+                "Polygon" => AppCommand::Polygon,
+                "Ellipse" => AppCommand::Ellipse,
+                "Spline" => AppCommand::Spline,
+                _ => unreachable!(),
+            });
+            shell.click_at(screen(shell, corner));
+            if matches!(sketch, "Arc" | "Spline") {
+                shell.click_at(screen(shell, corner + Vec3::new(30.0, 0.0, 0.0)));
+            }
+            shell.move_pointer(screen(shell, corner + Vec3::new(30.0, 10.0, 0.0)));
+        }
     }
     type_value(shell, "4");
 }
@@ -299,7 +314,19 @@ fn an_interrupted_operation_leaves_document_selection_and_history_as_they_were()
     assert_eq!(shell.app().redo_step_count(), 1);
 
     let mut failures = Vec::new();
-    for tool in ["Move", "Rotate", "Scale", "Rectangle", "Push/Pull"] {
+    for tool in [
+        "Move",
+        "Rotate",
+        "Scale",
+        "Rectangle",
+        "Push/Pull",
+        "Line",
+        "Circle",
+        "Arc",
+        "Polygon",
+        "Ellipse",
+        "Spline",
+    ] {
         for how in ["Escape", "Ctrl+Z", "switching to Line"] {
             shell.press_key(Key::Escape);
             shell.press_key(Key::Escape);
@@ -310,6 +337,7 @@ fn an_interrupted_operation_leaves_document_selection_and_history_as_they_were()
             match how {
                 "Escape" => shell.press_key(Key::Escape),
                 "Ctrl+Z" => shell.key(Key::Z, ctrl()),
+                _ if tool == "Line" => shell.click_command(AppCommand::Rectangle),
                 _ => shell.click_command(AppCommand::Line),
             }
             // Nothing of the interrupted operation is left to confirm.
