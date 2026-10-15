@@ -1409,6 +1409,7 @@ digest-scale-refused-shared = The part shares its definition with other copies; 
 digest-scale-refused-assembly = An assembly cannot be scaled; scale its parts instead
 digest-scale-refused-no-solid = Only parts with an exact solid can be scaled
 digest-scale-refused-thread = The part has a tapped hole or a modelled thread, and a scaled thread is no longer its standard size (M6 would not be M6); remove the thread or make it cosmetic first
+digest-scale-refused-sheet-metal = The part is sheet metal: its flat pattern and bend table come from its thickness, bends and radii, which a scale would not change; edit those instead
 digest-scale-refused-shear = Along this axis the turned part would be sheared; scale it evenly or along an axis the part is aligned with
 digest-copied-to-clipboard = Copied { $count } occurrence(s) to the clipboard
 digest-cut-to-clipboard = Cut { $count } occurrence(s) to the clipboard · 1 undo step

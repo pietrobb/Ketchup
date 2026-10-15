@@ -3023,6 +3023,12 @@ pub(crate) fn scale_feature_batch(
         {
             return Err("digest-scale-refused-thread");
         }
+        if snapshot.features().any(|feature| {
+            feature.definition_id() == part.definition_id
+                && matches!(feature.kind(), FeatureKind::SheetMetal(_))
+        }) {
+            return Err("digest-scale-refused-sheet-metal");
+        }
         if !part.transform.is_rigid() {
             return Err("digest-scale-refused-placement");
         }

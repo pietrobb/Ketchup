@@ -26,6 +26,7 @@ pub enum CanonicalError {
     InvalidTransform,
     InvalidScale,
     ScaledHoleThread(FeatureId),
+    ScaledSheetMetal(FeatureId),
     InvalidProfile,
     InvalidConstructionGeometry,
     Sketch(SketchError),
@@ -211,6 +212,7 @@ impl CanonicalError {
             Self::InvalidTransform => "canonical.invalid_transform",
             Self::InvalidScale => "canonical.invalid_scale",
             Self::ScaledHoleThread(..) => "canonical.scaled_hole_thread",
+            Self::ScaledSheetMetal(..) => "canonical.scaled_sheet_metal",
             Self::InvalidProfile => "canonical.invalid_profile",
             Self::InvalidConstructionGeometry => "canonical.invalid_construction_geometry",
             Self::Sketch(..) => "canonical.sketch",
@@ -464,6 +466,7 @@ impl fmt::Display for CanonicalError {
                 "feature {} carries a thread, and a scaled thread is no longer its standard size; remove the thread before scaling",
                 id.0
             ),
+            Self::ScaledSheetMetal(id) => write!(formatter, "sheet metal {} cannot be scaled", id.0),
             Self::InvalidProfile => {
                 formatter.write_str("profile must contain finite non-degenerate points")
             }

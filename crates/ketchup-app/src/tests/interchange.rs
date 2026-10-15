@@ -311,6 +311,76 @@ fn viewer_file_export_requires_saved_scene_current_geometry_and_correct_destinat
     assert!(script.high_risk_prompts().is_empty());
 }
 
+/// GE-N5: the flat pattern and bend table come from the sheet-metal record, so
+/// a Scale behind it is refused, in the Scale tool and in the document itself.
+#[test]
+fn a_sheet_metal_part_refuses_a_scale_its_flat_pattern_would_not_follow() {
+    use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
+    let mut app = KetchupApp::new();
+    let (definition_id, feature_id, occurrence_id) =
+        (DefinitionId(80), FeatureId(80), OccurrenceId(80));
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: "Sheet metal bracket".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: feature_id,
+                definition_id,
+                name: "Flange".into(),
+                kind: FeatureKind::SheetMetal(SheetMetalSpec {
+                    base_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
+                    thickness: Dimension::from_decimal("2").unwrap(),
+                    k_factor: 0.4,
+                    bends: vec![SheetMetalBend {
+                        parent: None,
+                        edge: 1,
+                        length: Dimension::from_decimal("30").unwrap(),
+                        angle_degrees: 90.0,
+                        inner_radius: Dimension::from_decimal("3").unwrap(),
+                    }],
+                }),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: occurrence_id,
+                definition_id,
+                name: "Bracket".to_owned(),
+                transform: Transform::from_translation(300.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let digest = app.document.current().canonical_digest();
+    let undo = app.undo_step_count();
+
+    assert!(app.headless_select_occurrence(occurrence_id));
+    assert!(!app.scale_selected(1.5));
+    assert_eq!(
+        app.action_digest(),
+        app.catalog.text("digest-scale-refused-sheet-metal")
+    );
+    assert_eq!(app.undo_step_count(), undo);
+
+    let error = app
+        .document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: FeatureId(81),
+            definition_id,
+            name: "Scale".to_owned(),
+            kind: FeatureKind::Scale {
+                target: feature_id,
+                origin_mm: [0.0; 3],
+                factors: [1.5; 3],
+            },
+        }]))
+        .err();
+    assert_eq!(error, Some(CanonicalError::ScaledSheetMetal(feature_id)));
+    assert_eq!(app.document.current().canonical_digest(), digest);
+}
+
 #[test]
 fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent() {
     use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};

@@ -1409,6 +1409,7 @@ digest-scale-refused-shared = Diel zdieľa definíciu s ďalšími kópiami; naj
 digest-scale-refused-assembly = Mierku zostavy nemožno meniť; zmeňte mierku jej dielov
 digest-scale-refused-no-solid = Mierku možno meniť len dielom s presným telesom
 digest-scale-refused-thread = Diel má dieru so závitom alebo modelovaný závit a závit po zmene mierky už nemá svoj normovaný rozmer (M6 nie je M6); najprv závit odstráňte alebo ho prepnite na kozmetický
+digest-scale-refused-sheet-metal = Diel je z plechu: rozvinutý tvar a tabuľka ohybov idú z jeho hrúbky, ohybov a polomerov, ktoré zmena mierky nezmení; upravte radšej tie
 digest-scale-refused-shear = Pozdĺž tejto osi by sa otočený diel skosil; zmeňte mierku rovnomerne alebo pozdĺž osi, s ktorou je diel zarovnaný
 digest-copied-to-clipboard = Do schránky skopírovaných výskytov: { $count }
 digest-cut-to-clipboard = Do schránky vystrihnutých výskytov: { $count } · 1 krok späť

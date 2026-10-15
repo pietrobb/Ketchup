@@ -199,28 +199,40 @@ fn validate_document_entries(
     // stop being; a hole tapped after a Scale is cut at its true size. A
     // modelled bolt thread is cut into the body before a Scale on it too.
     // Definitions are checked after this, so a missing entry is left to them.
+    let scaled_later = |id: &FeatureId| {
+        let Some(definition) = product
+            .features
+            .get(id)
+            .and_then(|feature| product.definitions.get(&feature.definition_id))
+        else {
+            return false;
+        };
+        definition
+            .feature_ids
+            .iter()
+            .skip_while(|candidate| *candidate != id)
+            .filter_map(|later| product.features.get(later))
+            .any(|later| matches!(later.kind, FeatureKind::Scale { .. }))
+    };
     if let Some(id) = product
         .hole_threads
         .keys()
         .chain(product.shaft_threads.keys())
         .copied()
-        .find(|id| {
-            let Some(definition) = product
-                .features
-                .get(id)
-                .and_then(|feature| product.definitions.get(&feature.definition_id))
-            else {
-                return false;
-            };
-            definition
-                .feature_ids
-                .iter()
-                .skip_while(|candidate| *candidate != id)
-                .filter_map(|later| product.features.get(later))
-                .any(|later| matches!(later.kind, FeatureKind::Scale { .. }))
-        })
+        .find(|id| scaled_later(id))
     {
         return Err(CanonicalError::ScaledHoleThread(id));
+    }
+    // The flat pattern and the bend table come from the sheet-metal record,
+    // which a Scale behind it would leave as it was.
+    if let Some(id) = product
+        .features
+        .iter()
+        .filter(|(_, feature)| matches!(feature.kind, FeatureKind::SheetMetal(_)))
+        .map(|(id, _)| *id)
+        .find(|id| scaled_later(id))
+    {
+        return Err(CanonicalError::ScaledSheetMetal(id));
     }
     if let Some(id) = product
         .grounded_occurrences
