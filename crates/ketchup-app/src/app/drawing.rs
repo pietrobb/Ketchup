@@ -3141,13 +3141,16 @@ impl KetchupApp {
             });
         // Esc or Ctrl+Z in a value being typed drop the value together with
         // the operation it was typed for, as both do on the canvas; the field's
-        // own text undo would leave the value to be confirmed by the next Enter.
+        // own text Undo would leave the value to be confirmed by the next Enter.
         let value_field = egui::Id::new("value-box-input");
         // egui takes the focus away on Esc before this frame's shortcuts run.
         let typing_value = context.memory(|memory| {
             memory.has_focus(value_field) || memory.had_focus_last_frame(value_field)
         }) && !self.value_box.input.trim().is_empty();
+        // Under Select with no edit in progress the value is for no operation,
+        // and the field keeps its own text Undo and Redo.
         let undo_typed_value = typing_value
+            && (self.active_tool != ActiveTool::Select || self.ephemeral_edit_active())
             && context.input_mut(|input| {
                 input.consume_shortcut(&egui::KeyboardShortcut::new(
                     egui::Modifiers::COMMAND,
