@@ -49,6 +49,13 @@ MAX_MODULE_LINES = 5_000
 
 OVERSIZED = {}
 
+# Modules AGENTS.md §6 forbids to grow, with their size: new code goes into new
+# modules, and an entry is lowered whenever its module shrinks (review UI-7).
+FROZEN_MODULES = {
+    "crates/ketchup-app/src/lib.rs": 2656,
+    "crates/ketchup-model/src/document.rs": 530,
+}
+
 MAX_FUNCTION_LINES = 400
 
 # Production functions that were already longer, with their length. They may
@@ -159,6 +166,19 @@ def oversized_modules(sizes, limit=MAX_MODULE_LINES, oversized=OVERSIZED):
             problems.append(f"{module}: fits {limit} lines now; remove it from OVERSIZED")
         elif sizes[module] < recorded:
             problems.append(f"{module}: shrank to {sizes[module]} lines; lower OVERSIZED to it")
+    return problems
+
+
+def grown_frozen_modules(sizes, frozen=FROZEN_MODULES):
+    problems = []
+    for module, recorded in frozen.items():
+        lines = sizes.get(module, 0)
+        if lines > recorded:
+            problems.append(
+                f"{module}: {lines} lines, frozen at {recorded}; put new code in a new module"
+            )
+        elif lines < recorded:
+            problems.append(f"{module}: shrank to {lines} lines; lower FROZEN_MODULES to it")
     return problems
 
 
@@ -488,7 +508,9 @@ def waiting_program_evaluations(root):
 def main():
     root = Path(__file__).resolve().parents[1]
     problems = violations(workspace_dependencies(root))
-    problems += oversized_modules(module_sizes(root))
+    sizes = module_sizes(root)
+    problems += oversized_modules(sizes)
+    problems += grown_frozen_modules(sizes)
     problems += oversized_functions(long_functions(root))
     problems += oversized_tests(long_tests(root))
     problems += milestone_named_tests(test_files(root))
