@@ -64,6 +64,34 @@ fn an_exact_gap_at_the_corner_leaves_the_round_seat_floating() {
     assert!(!relation.approx);
 }
 
+/// PRG-5 (review 2026-10-15): exact solids follow the boxes' contact rule.
+/// Sharing less volume than a `TOLERANCE_MM` slab across the face where
+/// their boxes overlap is touching, not a collision; more is a collision.
+#[test]
+fn a_sliver_of_common_volume_is_contact_like_a_sliver_of_box_overlap() {
+    let source = seat_on_leg(60.0).replace("(30, 30, 400)", "(30, 30, 400.5)");
+    let refined = |common_volume_mm3| {
+        let (evaluated, mut report) = checked(&source);
+        let mut exact = ExactShapes::default();
+        exact.insert(
+            "leg",
+            "seat",
+            ExactPair {
+                common_volume_mm3,
+                distance_mm: Some(0.0),
+                ..ExactPair::default()
+            },
+        );
+        report.refine(&evaluated.model, &exact);
+        report
+    };
+    // The boxes share a 30 x 30 face: up to 9 mm³ is a 0.01 mm slab.
+    let sliver = refined(0.45);
+    assert!(kinds(&sliver).is_empty(), "{:#?}", sliver.issues);
+    assert_eq!(sliver.relations[0].kind, RelationKind::Touch);
+    assert_eq!(kinds(&refined(450.0)), ["collision", "expectation_failed"]);
+}
+
 #[test]
 fn an_exact_contact_patch_reports_its_true_area() {
     let (evaluated, mut report) = checked(&seat_on_leg(60.0));

@@ -445,7 +445,7 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
             }
             let (min, max) = region;
             if needs_exact_shapes(a, b) {
-                match exact.pair(&a.name, &b.name) {
+                match exact.between(a, b) {
                     Some(pair) if pair.penetrating() => {
                         issues.push(Issue {
                             source_lines: Vec::new(),

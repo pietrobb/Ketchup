@@ -9,6 +9,7 @@
 
 use crate::eval::TOLERANCE_MM;
 use crate::expect::Measure;
+use crate::frame;
 use crate::model::{Part, ProgramModel};
 use crate::validate;
 use serde::Serialize;
@@ -83,13 +84,54 @@ impl ExactShapes {
         self.pairs.get(&key(a, b)).copied()
     }
 
+    /// The exact answer for two parts under the program's contact rule: see
+    /// [`within_contact`].
+    #[must_use]
+    pub fn between(&self, a: &Part, b: &Part) -> Option<ExactPair> {
+        self.pair(&a.name, &b.name)
+            .map(|pair| within_contact(pair, a, b))
+    }
+
     /// The exact answer when the boxes of `a` and `b` misstate their solids.
     #[must_use]
     pub fn decides(&self, a: &Part, b: &Part) -> Option<ExactPair> {
         if box_is_solid(a) && box_is_solid(b) {
             return None;
         }
-        self.pair(&a.name, &b.name)
+        self.between(a, b)
+    }
+}
+
+/// One contact rule for boxes and exact solids (review PRG-5): boxes that
+/// overlap by no more than [`TOLERANCE_MM`] touch, so solids sharing no more
+/// volume than a slab that thick across the face where their boxes overlap
+/// touch too. The face is measured in the frame of either part, whichever
+/// fits the overlap tighter.
+fn within_contact(pair: ExactPair, a: &Part, b: &Part) -> ExactPair {
+    if pair.common_volume_mm3 <= 0.0 {
+        return pair;
+    }
+    let shared = frame::intersection_vertices(&[a.obb(), b.obb()], TOLERANCE_MM);
+    let face_mm2 = [a, b]
+        .into_iter()
+        .map(|part| {
+            let mut extent: [f64; 3] = std::array::from_fn(|axis| {
+                let along = shared.iter().map(|vertex| part.to_local(*vertex)[axis]);
+                along.clone().fold(f64::NEG_INFINITY, f64::max)
+                    - along.fold(f64::INFINITY, f64::min)
+            });
+            extent.sort_by(f64::total_cmp);
+            extent[1] * extent[2]
+        })
+        .fold(f64::INFINITY, f64::min);
+    if face_mm2.is_finite() && pair.common_volume_mm3 <= TOLERANCE_MM * face_mm2 {
+        ExactPair {
+            common_volume_mm3: 0.0,
+            distance_mm: Some(0.0),
+            ..pair
+        }
+    } else {
+        pair
     }
 }
 
