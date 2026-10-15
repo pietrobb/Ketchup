@@ -710,6 +710,101 @@ fn a_program_of_the_maximum_part_count_keeps_part_names_unique() {
     }
 }
 
+/// Each operation joins the feature tree where a full rebuild lists it
+/// (operations in order, then the holes, then the pockets), whatever order
+/// the program writes them in.
+#[test]
+fn the_feature_tree_grown_one_operation_at_a_time_equals_a_rebuilt_one() {
+    let source = "p = box(\"p\", (200, 100, 30))\n\
+        hole(p, \"z+\", at = (20, 20), diameter = 5, depth = 8, id = \"a\")\n\
+        pocket(p, \"z+\", rect = (100, 10, 140, 40), depth = 5, id = \"q\")\n\
+        cut(p, profile = [(150, 60), (180, 60), (180, 90), (150, 90)], depth = 4, name = \"slot\")\n\
+        hole(p, \"z+\", at = (40, 20), diameter = 5, depth = 8, id = \"b\")\n\
+        fillet(p, edges = [[\"z+\", \"x+\"]], radius = 2, name = \"round\")\n\
+        push_pull(p, face = \"y+\", distance = 10, name = \"longer\")\n\
+        pocket(p, \"z+\", rect = (100, 50, 140, 70), depth = 5, id = \"r\")\n\
+        hole(p, \"z+\", at = (60, 20), diameter = 5, depth = 8, id = \"c\")\n\
+        mirror(p, axis = \"x\")\n\
+        chamfer(p, edges = [[\"z+\", \"y-\"]], distance = 1, name = \"bevel\")\n";
+    let evaluated = ketchup_program::evaluate("tree.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"));
+    let part = evaluated.model.part("p").expect("p");
+    let mut rebuilt = part.clone();
+    rebuilt.refresh_feature_tree();
+    assert_eq!(part.features, rebuilt.features);
+    let names = part
+        .features
+        .iter()
+        .map(|feature| feature.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "p transform",
+            "p sketch",
+            "p feature",
+            "slot sketch",
+            "slot",
+            "round",
+            "longer",
+            "bevel",
+            "p hole a workplane",
+            "p hole a",
+            "p hole a pocket",
+            "p hole b workplane",
+            "p hole b",
+            "p hole b pocket",
+            "p hole c workplane",
+            "p hole c",
+            "p hole c pocket",
+            "p pocket q workplane",
+            "p pocket q",
+            "p pocket q cut",
+            "p pocket r workplane",
+            "p pocket r",
+            "p pocket r cut",
+        ]
+    );
+}
+
+/// A board drilled 4000 times checks in moments: neither listing a hole nor
+/// checking it walks the holes before it (review PRG-7, where 1000 holes
+/// took minutes and 4000 never finished). The check still finds a hole off
+/// its face.
+#[test]
+fn a_board_with_thousands_of_holes_checks_in_linear_time() {
+    let holes = 4000;
+    let source = format!(
+        "p = box(\"p\", (4000, 4000, 18))\nfor i in range({holes}):\n    \
+         hole(p, \"z+\", at = (20 + (i % 190) * 20, 20 + (i // 190) * 20), diameter = 5, \
+         depth = 8, id = \"h%d\" % i)\n\
+         hole(p, \"z+\", at = (3998, 50), diameter = 10, depth = 8, id = \"edge\")\n"
+    );
+    let started = std::time::Instant::now();
+    let (evaluated, report) =
+        run("holes.star", &source, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
+    let elapsed = started.elapsed();
+    let part = evaluated.model.part("p").expect("p");
+    assert_eq!(part.holes().count(), holes + 1);
+    assert_eq!(part.features.len(), 3 + 3 * (holes + 1));
+    assert_eq!(
+        report
+            .issues
+            .iter()
+            .map(|issue| issue.kind)
+            .collect::<Vec<_>>(),
+        ["hole_outside_face"],
+        "{:?}",
+        report.issues
+    );
+    // Generous for an unoptimized build under load; before the fix the same
+    // check ran for over 25 minutes in a release build.
+    assert!(
+        elapsed < std::time::Duration::from_secs(30),
+        "{holes} holes took {elapsed:?}"
+    );
+}
+
 #[test]
 fn errors_name_the_line_and_the_cause() {
     let error = run(

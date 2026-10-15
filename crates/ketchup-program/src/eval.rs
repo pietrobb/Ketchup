@@ -1312,8 +1312,7 @@ fn add_operation(part: &mut Part, operation: ProgramOperation) -> anyhow::Result
             part.name
         );
     }
-    part.operations.push(operation);
-    part.refresh_feature_tree();
+    part.push_operation(operation);
     Ok(())
 }
 

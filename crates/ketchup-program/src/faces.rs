@@ -573,6 +573,12 @@ impl Part {
     pub fn face_frames(&self) -> Vec<FaceFrame> {
         self.face_frames_with_boundaries(true)
     }
+    /// [`Self::face_frames`] without the outlines holes, pockets and
+    /// subtractions trim out of them: the faces' spans only, which cost no
+    /// polygon booleans.
+    pub(crate) fn face_spans(&self) -> Vec<FaceFrame> {
+        self.face_frames_with_boundaries(false)
+    }
     fn face_frames_with_boundaries(&self, boundaries: bool) -> Vec<FaceFrame> {
         let mut faces = self.body_face_frames();
         self.apply_face_operations(&mut faces, &self.operations, boundaries);

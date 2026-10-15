@@ -1338,19 +1338,43 @@ impl Part {
                 self.revolve_support(axis) + self.revolve_support(axis.map(|v| -v))
             });
         }
-        let length = |path: &str, value| ProgramFeatureParameter {
-            path: path.to_owned(),
-            value_type: ProgramParameterValueType::Length,
-            value,
+        let mut features = self.body_features();
+        features.extend(self.operations.iter().flat_map(operation_features));
+        features.extend(self.holes().flat_map(|hole| self.hole_features(hole)));
+        features.extend(
+            self.pockets()
+                .flat_map(|pocket| self.pocket_features(pocket)),
+        );
+        self.features = features;
+    }
+
+    /// Appends `operation` and puts its entries where
+    /// [`Self::refresh_feature_tree`] lists them, without rebuilding the
+    /// entries already there, so a part drilled n times costs O(n), not O(n²).
+    pub fn push_operation(&mut self, operation: ProgramOperation) {
+        if self.features.is_empty() {
+            // Never listed yet: a listed tree always names the transform.
+            self.operations.push(operation);
+            self.refresh_feature_tree();
+            return;
+        }
+        let (entries, after) = match &operation {
+            ProgramOperation::Hole(hole) => (
+                self.hole_features(hole).to_vec(),
+                POCKET_FEATURES * self.pockets().count(),
+            ),
+            ProgramOperation::Pocket(pocket) => (self.pocket_features(pocket).to_vec(), 0),
+            other => (
+                operation_features(other),
+                HOLE_FEATURES * self.holes().count() + POCKET_FEATURES * self.pockets().count(),
+            ),
         };
-        let feature =
-            |name: String, kind: ProgramFeatureKind, parameters: Vec<ProgramFeatureParameter>| {
-                ProgramFeature {
-                    name,
-                    kind,
-                    parameters,
-                }
-            };
+        let at = self.features.len() - after;
+        self.features.splice(at..at, entries);
+        self.operations.push(operation);
+    }
+
+    fn body_features(&self) -> Vec<ProgramFeature> {
         let mut features = vec![feature(
             format!("{} transform", self.name),
             ProgramFeatureKind::Transform,
@@ -1360,31 +1384,6 @@ impl Part {
                 .map(|(path, value)| length(path, value))
                 .collect(),
         )];
-        let profile_parameters = |segments: &[ProgramProfileSegment]| {
-            let mut parameters = Vec::new();
-            for (index, segment) in segments.iter().enumerate() {
-                let center = segment.arc.map(|arc| ("center", arc.center_mm));
-                let controls = segment
-                    .bezier
-                    .into_iter()
-                    .flat_map(|[c1, c2]| [("control_1", c1), ("control_2", c2)]);
-                for (point, coordinates) in [("start", segment.start_mm), ("end", segment.end_mm)]
-                    .into_iter()
-                    .chain(center)
-                    .chain(controls)
-                {
-                    parameters.push(length(
-                        &format!("entities.{}.{point}.x", index + 1),
-                        coordinates[0],
-                    ));
-                    parameters.push(length(
-                        &format!("entities.{}.{point}.y", index + 1),
-                        coordinates[1],
-                    ));
-                }
-            }
-            parameters
-        };
         match &self.body {
             ProgramPartBody::Extrusion {
                 segments,
@@ -1451,37 +1450,93 @@ impl Part {
                 Vec::new(),
             )),
         }
-        for operation in &self.operations {
-            let cut = match operation {
-                ProgramOperation::Cut(cut) => cut,
-                ProgramOperation::Finish(fillet) => {
-                    features.push(feature(
-                        fillet.name.clone(),
-                        match fillet.kind {
-                            ProgramEdgeFinishKind::Fillet => ProgramFeatureKind::Fillet,
-                            ProgramEdgeFinishKind::Chamfer => ProgramFeatureKind::Chamfer,
-                        },
-                        vec![length("radius", fillet.radius_mm)],
-                    ));
-                    continue;
-                }
-                ProgramOperation::FaceOffset(offset) => {
-                    features.push(feature(
-                        offset.name.clone(),
-                        ProgramFeatureKind::FaceOffset,
-                        vec![length("distance", offset.distance_mm)],
-                    ));
-                    continue;
-                }
-                // A changed boolean, mirror or shell rebuilds the part; they
-                // have no parameters here.
-                ProgramOperation::Boolean(_)
-                | ProgramOperation::Mirror(_)
-                | ProgramOperation::Shell(_) => continue,
-                // Listed after the operations, as the document panel drills them.
-                ProgramOperation::Hole(_) | ProgramOperation::Pocket(_) => continue,
-            };
-            features.push(feature(
+        features
+    }
+
+    fn hole_features(&self, hole: &Hole) -> [ProgramFeature; HOLE_FEATURES] {
+        let prefix = format!("{} hole {}", self.name, hole.id);
+        let origin = hole.entry_mm;
+        [
+            feature(
+                format!("{prefix} workplane"),
+                ProgramFeatureKind::Workplane,
+                ["frame.origin.x", "frame.origin.y", "frame.origin.z"]
+                    .into_iter()
+                    .zip(origin)
+                    .map(|(path, value)| length(path, value))
+                    .collect(),
+            ),
+            feature(
+                prefix.clone(),
+                ProgramFeatureKind::Sketch,
+                vec![length("entities.1.radius", hole.diameter_mm * 0.5)],
+            ),
+            feature(
+                format!("{prefix} pocket"),
+                ProgramFeatureKind::Cut,
+                vec![length("extent.distance", hole.depth_mm)],
+            ),
+        ]
+    }
+
+    fn pocket_features(&self, pocket: &Pocket) -> [ProgramFeature; POCKET_FEATURES] {
+        let prefix = format!("{} pocket {}", self.name, pocket.id);
+        let [du, dv] = pocket.extent_mm();
+        let origin: [f64; 3] = std::array::from_fn(|i| {
+            pocket.corner_mm[i] + 0.5 * (pocket.u[i] * du + pocket.v[i] * dv)
+        });
+        // The planner's sketch x axis follows the next axis after the
+        // face normal's (x -> y -> z -> x); on a y face that is v.
+        let (u, v) = (du * 0.5, dv * 0.5);
+        let (x, y) = if pocket.inward[1].abs() > 0.5 {
+            (v, u)
+        } else {
+            (u, v)
+        };
+        let corners = [[-x, -y], [x, -y], [x, y], [-x, y]];
+        let mut parameters = Vec::new();
+        for index in 0..4 {
+            for (point, corner) in [("start", corners[index]), ("end", corners[(index + 1) % 4])] {
+                parameters.push(length(
+                    &format!("entities.{}.{point}.x", index + 1),
+                    corner[0],
+                ));
+                parameters.push(length(
+                    &format!("entities.{}.{point}.y", index + 1),
+                    corner[1],
+                ));
+            }
+        }
+        [
+            feature(
+                format!("{prefix} workplane"),
+                ProgramFeatureKind::Workplane,
+                ["frame.origin.x", "frame.origin.y", "frame.origin.z"]
+                    .into_iter()
+                    .zip(origin)
+                    .map(|(path, value)| length(path, value))
+                    .collect(),
+            ),
+            feature(prefix.clone(), ProgramFeatureKind::Sketch, parameters),
+            feature(
+                format!("{prefix} cut"),
+                ProgramFeatureKind::Cut,
+                vec![length("extent.distance", pocket.depth_mm)],
+            ),
+        ]
+    }
+}
+
+/// Feature tree entries of one hole and of one pocket.
+const HOLE_FEATURES: usize = 3;
+const POCKET_FEATURES: usize = 3;
+
+/// The entries an operation adds in program order; holes and pockets are
+/// listed after all operations, as the document panel drills them.
+fn operation_features(operation: &ProgramOperation) -> Vec<ProgramFeature> {
+    match operation {
+        ProgramOperation::Cut(cut) => vec![
+            feature(
                 format!("{} sketch", cut.name),
                 ProgramFeatureKind::Sketch,
                 profile_parameters(&cut.segments)
@@ -1501,90 +1556,81 @@ impl Part {
                         parameter
                     })
                     .collect(),
-            ));
-            features.push(feature(
+            ),
+            feature(
                 cut.name.clone(),
                 ProgramFeatureKind::Cut,
                 cut.depth_mm
                     .map(|depth| vec![length("extent.distance", depth)])
                     .unwrap_or_default(),
-            ));
+            ),
+        ],
+        ProgramOperation::Finish(fillet) => vec![feature(
+            fillet.name.clone(),
+            match fillet.kind {
+                ProgramEdgeFinishKind::Fillet => ProgramFeatureKind::Fillet,
+                ProgramEdgeFinishKind::Chamfer => ProgramFeatureKind::Chamfer,
+            },
+            vec![length("radius", fillet.radius_mm)],
+        )],
+        ProgramOperation::FaceOffset(offset) => vec![feature(
+            offset.name.clone(),
+            ProgramFeatureKind::FaceOffset,
+            vec![length("distance", offset.distance_mm)],
+        )],
+        // A changed boolean, mirror or shell rebuilds the part; they have no
+        // parameters here.
+        ProgramOperation::Boolean(_) | ProgramOperation::Mirror(_) | ProgramOperation::Shell(_) => {
+            Vec::new()
         }
-        for hole in self.holes() {
-            let prefix = format!("{} hole {}", self.name, hole.id);
-            let origin = hole.entry_mm;
-            features.push(feature(
-                format!("{prefix} workplane"),
-                ProgramFeatureKind::Workplane,
-                ["frame.origin.x", "frame.origin.y", "frame.origin.z"]
-                    .into_iter()
-                    .zip(origin)
-                    .map(|(path, value)| length(path, value))
-                    .collect(),
-            ));
-            features.push(feature(
-                prefix.clone(),
-                ProgramFeatureKind::Sketch,
-                vec![length("entities.1.radius", hole.diameter_mm * 0.5)],
-            ));
-            features.push(feature(
-                format!("{prefix} pocket"),
-                ProgramFeatureKind::Cut,
-                vec![length("extent.distance", hole.depth_mm)],
-            ));
-        }
-        for pocket in self.pockets() {
-            let prefix = format!("{} pocket {}", self.name, pocket.id);
-            let [du, dv] = pocket.extent_mm();
-            let origin: [f64; 3] = std::array::from_fn(|i| {
-                pocket.corner_mm[i] + 0.5 * (pocket.u[i] * du + pocket.v[i] * dv)
-            });
-            features.push(feature(
-                format!("{prefix} workplane"),
-                ProgramFeatureKind::Workplane,
-                ["frame.origin.x", "frame.origin.y", "frame.origin.z"]
-                    .into_iter()
-                    .zip(origin)
-                    .map(|(path, value)| length(path, value))
-                    .collect(),
-            ));
-            // The planner's sketch x axis follows the next axis after the
-            // face normal's (x -> y -> z -> x); on a y face that is v.
-            let (u, v) = (du * 0.5, dv * 0.5);
-            let (x, y) = if pocket.inward[1].abs() > 0.5 {
-                (v, u)
-            } else {
-                (u, v)
-            };
-            let corners = [[-x, -y], [x, -y], [x, y], [-x, y]];
-            let mut parameters = Vec::new();
-            for index in 0..4 {
-                for (point, corner) in
-                    [("start", corners[index]), ("end", corners[(index + 1) % 4])]
-                {
-                    parameters.push(length(
-                        &format!("entities.{}.{point}.x", index + 1),
-                        corner[0],
-                    ));
-                    parameters.push(length(
-                        &format!("entities.{}.{point}.y", index + 1),
-                        corner[1],
-                    ));
-                }
-            }
-            features.push(feature(
-                prefix.clone(),
-                ProgramFeatureKind::Sketch,
-                parameters,
-            ));
-            features.push(feature(
-                format!("{prefix} cut"),
-                ProgramFeatureKind::Cut,
-                vec![length("extent.distance", pocket.depth_mm)],
-            ));
-        }
-        self.features = features;
+        ProgramOperation::Hole(_) | ProgramOperation::Pocket(_) => Vec::new(),
     }
+}
+
+fn length(path: &str, value: f64) -> ProgramFeatureParameter {
+    ProgramFeatureParameter {
+        path: path.to_owned(),
+        value_type: ProgramParameterValueType::Length,
+        value,
+    }
+}
+
+fn feature(
+    name: String,
+    kind: ProgramFeatureKind,
+    parameters: Vec<ProgramFeatureParameter>,
+) -> ProgramFeature {
+    ProgramFeature {
+        name,
+        kind,
+        parameters,
+    }
+}
+
+fn profile_parameters(segments: &[ProgramProfileSegment]) -> Vec<ProgramFeatureParameter> {
+    let mut parameters = Vec::new();
+    for (index, segment) in segments.iter().enumerate() {
+        let center = segment.arc.map(|arc| ("center", arc.center_mm));
+        let controls = segment
+            .bezier
+            .into_iter()
+            .flat_map(|[c1, c2]| [("control_1", c1), ("control_2", c2)]);
+        for (point, coordinates) in [("start", segment.start_mm), ("end", segment.end_mm)]
+            .into_iter()
+            .chain(center)
+            .chain(controls)
+        {
+            parameters.push(length(
+                &format!("entities.{}.{point}.x", index + 1),
+                coordinates[0],
+            ));
+            parameters.push(length(
+                &format!("entities.{}.{point}.y", index + 1),
+                coordinates[1],
+            ));
+        }
+    }
+    parameters
 }
 
 /// An explicit operation identity, local to a part (never a geometric match).

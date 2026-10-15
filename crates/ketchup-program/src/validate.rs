@@ -514,7 +514,9 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
 fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
     for part in &model.parts {
         crate::opposing_holes::issues(part, issues);
-        let faces = part.holes().next().map(|_| part.face_frames());
+        // Only the faces' spans are read; trimming every hole out of every
+        // face first made a part with n holes cost O(n²) polygon booleans.
+        let faces = part.holes().next().map(|_| part.face_spans());
         for (hole, (local_entry, local_inward)) in part.finished_holes() {
             let radius = hole.diameter_mm / 2.0;
             let entry = part.to_world(local_entry);
