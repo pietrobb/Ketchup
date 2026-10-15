@@ -443,3 +443,70 @@ fn an_unreadable_typed_value_is_refused_by_a_reason_that_stays_readable_in_every
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// A distance typed during a Move gesture travels the way the pointer shows,
+/// not along x, and completes that gesture: the next click starts a new Move.
+#[test]
+fn a_typed_move_distance_follows_the_pointer_direction() {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    assert!(shell.wait_until(|shell| {
+        shell.step();
+        shell.app().exact_render_body_count() == 1
+    }));
+    let (origin, _) = shell.app().occurrence_box_geometry(1).unwrap();
+    let base = origin + Vec3::new(50.0, 30.0, 20.0);
+    shell.press_key(Key::Space);
+    shell.click_at(screen(&shell, base));
+    shell.press_key(Key::M);
+    shell.click_at(screen(&shell, base));
+    // Before the pointer shows a way, a distance has no direction.
+    refused(&mut shell, "Move without a direction", "150");
+    assert!(
+        shell.app().action_digest().contains("direction"),
+        "the refusal names the missing direction: {}",
+        shell.app().action_digest()
+    );
+    shell.move_pointer(screen(&shell, base + Vec3::new(0.0, 40.0, 0.0)));
+    let undo = shell.app().undo_step_count();
+    type_value(&mut shell, "150");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo + 1,
+        "{}",
+        shell.app().action_digest()
+    );
+    let (moved, _) = shell.app().occurrence_box_geometry(1).unwrap();
+    let travel = moved - origin;
+    assert!(
+        travel.x.abs() < 0.01 && (travel.y - 150.0).abs() < 0.01 && travel.z.abs() < 0.01,
+        "150 mm along +y, the way the pointer showed: {travel:?}"
+    );
+
+    // Diagonally the distance is measured along the shown direction, and the
+    // click that starts it is a new gesture, not the stale one.
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell.press_key(Key::M);
+    let base = moved + Vec3::new(50.0, 30.0, 20.0);
+    shell.click_at(screen(&shell, base));
+    shell.move_pointer(screen(&shell, base + Vec3::new(30.0, 30.0, 0.0)));
+    type_value(&mut shell, "100");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo + 2,
+        "{}",
+        shell.app().action_digest()
+    );
+    let (diagonal, _) = shell.app().occurrence_box_geometry(1).unwrap();
+    let travel = diagonal - moved;
+    let half = 100.0 / 2.0_f64.sqrt();
+    assert!(
+        (travel.x - half).abs() < 0.05 && (travel.y - half).abs() < 0.05 && travel.z.abs() < 0.01,
+        "100 mm along the diagonal: {travel:?}"
+    );
+}

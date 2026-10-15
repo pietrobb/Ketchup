@@ -830,6 +830,34 @@ impl KetchupApp {
                     return true;
                 }
             } else if let Some(distance_mm) = parse_distance_mm(&self.value_box.input) {
+                // A gesture in flight travels the typed distance the way the
+                // pointer shows; before the pointer shows a way there is none.
+                // A gesture the selection moved away from no longer applies.
+                if self
+                    .move_session()
+                    .is_some_and(|(drag, _)| !self.move_preview_is_current(drag))
+                {
+                    self.take_move_session(None);
+                }
+                if let Some((drag, _)) = self.move_session() {
+                    let shown_mm = length(drag.delta_mm);
+                    if shown_mm < 0.01 || distance_mm.abs() < 0.01 {
+                        self.digest = self.catalog.text("digest-move-direction-missing");
+                        return false;
+                    }
+                    let Some(mut drag) = self.take_move_session(None) else {
+                        return false;
+                    };
+                    drag.delta_mm = drag.delta_mm * (distance_mm / shown_mm);
+                    if self.commit_move_drag(&drag) {
+                        self.digest = self.catalog.format(
+                            "digest-exact-move-applied",
+                            &BTreeMap::from([("value", format_signed_mm(distance_mm))]),
+                        );
+                        return true;
+                    }
+                    return false;
+                }
                 if let Some((_, previous)) = self.current_move_copy_correction() {
                     let previous_distance_mm = length(previous.delta_mm);
                     if previous_distance_mm > 0.0

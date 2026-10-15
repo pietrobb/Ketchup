@@ -1390,6 +1390,7 @@ digest-rectangular-pattern-committed = Obdĺžnikový vzor presne potvrdený · 
 digest-circular-pattern-live = Náhľad kruhového vzoru — spolu { $count } · krok { $angle }° okolo osi { $axis } cez ({ $centre }) mm · zdieľaná definícia
 digest-circular-pattern-committed = Kruhový vzor presne potvrdený · zdieľaná definícia nezmenená · 1 krok späť
 digest-move-anchor-set = Kotva posunu nastavená — kliknite na cieľ alebo ťahajte z objektu
+digest-move-direction-missing = Najprv ukazovateľom ukážte smer posunu, potom napíšte vzdialenosť — alebo napíšte x;y;z
 digest-push-pull-anchor-set = Kotva Tlačiť/ťahať nastavená — pohnite kurzorom a potvrďte kliknutím
 digest-push-pull-exact-failed = Tlačiť/ťahať: presné vyhodnotenie zlyhalo, dokument je nezmenený: { $reason }
 digest-move-start-missed = Posun musí začať na výskyte — aktuálny výber zostal zachovaný

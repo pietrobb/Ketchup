@@ -1390,6 +1390,7 @@ digest-rectangular-pattern-committed = Rectangular pattern committed exactly · 
 digest-circular-pattern-live = Circular pattern preview — { $count } total · { $angle }° step about { $axis } through ({ $centre }) mm · shared definition
 digest-circular-pattern-committed = Circular pattern committed exactly · shared definition untouched · 1 undo step
 digest-move-anchor-set = Move anchor set — click the destination, or drag from the object
+digest-move-direction-missing = Point the direction of the move first, then type its distance — or type x;y;z
 digest-push-pull-anchor-set = Push/Pull anchor set — move the pointer, then click to confirm
 digest-push-pull-exact-failed = Push/Pull: the exact evaluation failed, document unchanged: { $reason }
 digest-move-start-missed = Move must start on an occurrence — the current selection was preserved
