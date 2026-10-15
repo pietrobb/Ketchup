@@ -1187,6 +1187,74 @@ fn multi_version_history_golden_migrates_losslessly_and_drops_corrupt_history() 
     );
 }
 
+/// PS-1: a small history whose 4 095 revisions all name the whole `document.bin`
+/// (≈ 2.4 GiB assembled) is refused before anything is assembled; the document
+/// opens without Undo at once.
+#[test]
+fn a_history_naming_gigabytes_through_shared_chunks_is_refused_before_it_is_assembled() {
+    let commands = (1..=600_u64)
+        .map(|id| CanonicalCommand::CreateEvaluatorNode {
+            id: NodeId(id),
+            name: format!("parameter-{id:03}-{}", unique_text(id, 1_024)),
+            dimension: Dimension::new(id.to_string(), id as f64).unwrap(),
+            dependencies: vec![],
+        })
+        .collect();
+    let mut store = DocumentStore::new();
+    store.apply_batch(&CommandBatch::new(commands)).unwrap();
+    let saved = persistence::save_document_store_current_snapshot(
+        &store,
+        &persistence::ContainerData::default(),
+    )
+    .unwrap();
+    let (_, offset, len) = container_entry_offsets(&saved, "document.bin");
+    let document = &saved[offset..offset + len];
+    let revisions = 4_096_u32;
+    assert!(u64::from(revisions - 1) * len as u64 > 2 * 1024 * 1024 * 1024);
+
+    let mut history = b"KETCHUPHST".to_vec();
+    history.extend_from_slice(&4_u16.to_le_bytes());
+    history.extend_from_slice(&revisions.to_le_bytes());
+    history.extend_from_slice(&(revisions - 1).to_le_bytes());
+    history.extend_from_slice(&(u64::from(revisions) + 1).to_le_bytes());
+    // One chunk: all of document.bin.
+    history.extend_from_slice(&1_u32.to_le_bytes());
+    history.push(1);
+    history.extend_from_slice(&0_u32.to_le_bytes());
+    history.extend_from_slice(&(len as u32).to_le_bytes());
+    let checksum = ketchup_model::graph::sha256_bytes(document);
+    for index in 0..revisions {
+        history.extend_from_slice(&(u64::from(index) + 1).to_le_bytes());
+        history.extend_from_slice(&0_u32.to_le_bytes()); // no batch digest
+        if index == 0 {
+            history.push(0); // initial
+        } else {
+            history.extend_from_slice(&[1, 0]); // the manual client
+        }
+        history.extend_from_slice(&[0, 0]); // no checkpoint, no program
+        if index + 1 == revisions {
+            history.push(0); // document.bin
+        } else {
+            history.push(1);
+            history.extend_from_slice(&(len as u64).to_le_bytes());
+            history.extend_from_slice(&checksum);
+            history.extend_from_slice(&1_u32.to_le_bytes());
+            history.extend_from_slice(&0_u32.to_le_bytes());
+        }
+    }
+    assert!(history.len() < 512 * 1024);
+    let bytes = ketchup_model::testing::save_with_history_entry(&store, history);
+
+    let started = std::time::Instant::now();
+    let reason = discarded_history(&bytes);
+    assert!(
+        reason.starts_with("the revisions of history.bin would be at least 2048.")
+            && reason.ends_with("the limit is 2048.0 MB"),
+        "{reason}"
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
 /// A document whose Undo history holds more bytes than a native file stores.
 fn oversized_history_document() -> DocumentStore {
     let commands = (1..=256_u64)
