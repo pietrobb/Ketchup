@@ -1802,6 +1802,57 @@ fn production_preserves_proper_rotations_and_translations() {
     }
 }
 #[test]
+fn the_production_job_stock_frame_is_right_handed_and_the_woodwop_frame() {
+    use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
+    // 50 wide, 100 high and 1000 long: sorting the axes by size reverses them.
+    let mut document = drilled_stock_document(
+        &[[0.0, 0.0], [50.0, 0.0], [50.0, 100.0], [0.0, 100.0]],
+        "1000",
+        [20.0, 30.0],
+    );
+    document
+        .apply_batch(&CommandBatch::new(
+            [(GRAPH_LEFT, "000000000046"), (GRAPH_RIGHT, "000000000047")]
+                .map(|(id, code)| CanonicalCommand::SetProductionCode {
+                    instance_path: InstancePath::root(id),
+                    code: Some(code.to_owned()),
+                })
+                .into(),
+        ))
+        .unwrap();
+    let (snapshot, projection) =
+        exact_graph_document_fabrication_projection(document, "mf-n6-stock-frame", GRAPH_BOOLEAN);
+    let homag = HomagWoodwopAdapter {
+        options: Default::default(),
+    };
+    let job = projection.production_job(&snapshot, &[&homag]).unwrap();
+    let part = &job["parts"][0];
+    assert_eq!(
+        part["dimensions_mm"],
+        serde_json::json!([1000.0, 100.0, 50.0])
+    );
+    let vector = |value: &serde_json::Value| -> [f64; 3] {
+        std::array::from_fn(|axis| value[axis].as_f64().unwrap())
+    };
+    let origin = vector(&part["stock_frame"]["origin_mm"]);
+    let [x, y, z] = std::array::from_fn(|axis| vector(&part["stock_frame"]["axes"][axis]));
+    let determinant = x[0] * (y[1] * z[2] - y[2] * z[1]) - x[1] * (y[0] * z[2] - y[2] * z[0])
+        + x[2] * (y[0] * z[1] - y[1] * z[0]);
+    assert_eq!(determinant, 1.0, "{}", part["stock_frame"]);
+    // The hole's entry, in stock-frame coordinates, is where the woodWOP program drills.
+    let entry = [20.0, 30.0, 1000.0];
+    let [xa, ya, za] = [x, y, z].map(|axis| {
+        (0..3)
+            .map(|index| (entry[index] - origin[index]) * axis[index])
+            .sum::<f64>()
+    });
+    let mpr = job["outputs"][homag.id()][0]["content"].as_str().unwrap();
+    assert!(
+        mpr.contains(&format!("XA=\"{xa}\"\nYA=\"{ya}\"\nZA=\"{za}\"")),
+        "XA={xa} YA={ya} ZA={za}\n{mpr}"
+    );
+}
+#[test]
 fn production_adapters_share_saved_codes_and_are_opt_in() {
     use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
     let (snapshot, projection) = circular_drill_fabrication_projection();

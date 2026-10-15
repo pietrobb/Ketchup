@@ -59,8 +59,9 @@ pub fn instance_path_value(path: &InstancePath) -> Value {
 impl GeneralFabricationProjection {
     /// One physical piece per entry, with definition-local machining coordinates.
     /// dimensions_mm are descending stock-frame bounding extents, not necessarily a cut piece.
-    /// stock_frame maps those axes and their minimum corner to definition-local mm;
-    /// its sorted axes may be left-handed. Only rectangular_prism denotes a rectangular blank.
+    /// stock_frame maps those axes and a corner of the blank to definition-local mm;
+    /// it is right-handed, the frame of the woodWOP programs. Only rectangular_prism
+    /// denotes a rectangular blank.
     /// Original profiles and machining frames remain unchanged in operations.
     /// Setup A initially groups all machining; only a chosen postprocessor can validate
     /// that it fits one fixture. No opposite-face orientation or toolpath is inferred.
@@ -145,9 +146,23 @@ impl GeneralFabricationProjection {
             let axes = [frame.x_axis, frame.y_axis, *length_axis];
             let minimum =
                 profile_minimum(cross_section).ok_or(GeneralFabricationError::ExportBlocked)?;
-            let origin_mm: [f64; 3] = std::array::from_fn(|axis| {
+            let mut origin_mm: [f64; 3] = std::array::from_fn(|axis| {
                 start_mm[axis] + frame.x_axis[axis] * minimum[0] + frame.y_axis[axis] * minimum[1]
             });
+            let mut stock_axes = order.map(|axis| axes[axis]);
+            // Sorting the axes may reflect them. Like the woodWOP program, the second
+            // axis then runs from the far edge, so the frame stays right-handed and a
+            // postprocessor following it machines the part, not its mirror image.
+            let [x, y, z] = stock_axes;
+            let determinant = x[0] * (y[1] * z[2] - y[2] * z[1])
+                - x[1] * (y[0] * z[2] - y[2] * z[0])
+                + x[2] * (y[0] * z[1] - y[1] * z[0]);
+            if determinant < 0.0 {
+                for axis in 0..3 {
+                    origin_mm[axis] += stock_axes[1][axis] * dimensions_mm[1];
+                    stock_axes[1][axis] = -stock_axes[1][axis];
+                }
+            }
             let stock_shape = if rectangular_stock_profile(
                 cross_section,
                 *length_mm,
@@ -209,7 +224,7 @@ impl GeneralFabricationProjection {
                     "code": code, "name": definition.name(),
                     "material_key": row.material_key,
                     "dimensions_mm": dimensions_mm,
-                    "stock_frame": {"origin_mm": origin_mm, "axes": order.map(|axis| axes[axis])},
+                    "stock_frame": {"origin_mm": origin_mm, "axes": stock_axes},
                     "stock_shape": stock_shape,
                     "coordinate_frame": "definition_local_mm",
                     "operations": operations,
