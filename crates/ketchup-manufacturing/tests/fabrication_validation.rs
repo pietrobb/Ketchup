@@ -14,8 +14,8 @@ use ketchup_manufacturing::fabrication::{
 use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
     ClassificationError, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, GroupId, InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
-    OccurrenceId, ProfileSegment, ScaledPlacement, Snapshot, Transform,
+    FeatureKind, GroupId, HoleThread, InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority,
+    MeshBodySpec, NodeId, OccurrenceId, ProfileSegment, ScaledPlacement, Snapshot, Transform,
 };
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::exact_product::{
@@ -2099,6 +2099,87 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     assert_eq!(
         sub_text_precision_tamper.manufacturing_export(&snapshot),
         Err(GeneralFabricationError::ExportBlocked)
+    );
+}
+
+#[test]
+fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_and_woodwop_refuses_it()
+ {
+    let mut document = circular_drill_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_LEFT),
+                code: Some("000000000046".to_owned()),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_RIGHT),
+                code: Some("000000000047".to_owned()),
+            },
+            CanonicalCommand::SetHoleThread {
+                id: GRAPH_BOOLEAN,
+                thread: Some(HoleThread {
+                    size: "M12".to_owned(),
+                    pitch_mm: 1.75,
+                    depth_mm: 40.0,
+                    modeled: None,
+                }),
+            },
+        ]))
+        .unwrap();
+    let (snapshot, projection) = exact_graph_document_fabrication_projection(
+        document,
+        "m17-circular-drill-result",
+        GRAPH_BOOLEAN,
+    );
+    let drill = &projection.manufacturing.operations[1];
+    assert_eq!(drill.kind, GeneralManufacturingKind::CircularDrill);
+    assert_eq!(
+        drill.thread.as_ref().map(HoleThread::label),
+        Some("M12×1.75 depth 40".to_owned())
+    );
+
+    let job = projection.production_job(&snapshot, &[]).unwrap();
+    for part in job["parts"].as_array().unwrap() {
+        let operation = &part["operations"][1];
+        assert_eq!(operation["kind"], "circular-drill");
+        assert_eq!(
+            operation["thread"],
+            serde_json::json!({"size": "M12", "pitch_mm": 1.75, "depth_mm": 40.0})
+        );
+    }
+
+    let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert_eq!(
+        btlx.matches("<UserAttribute Name=\"ThreadSize\" Value=\"M12\"/>")
+            .count(),
+        1
+    );
+    assert!(btlx.contains("<UserAttribute Name=\"ThreadPitch\" Value=\"1.75\" Type=\"real\"/>"));
+    assert!(btlx.contains("<UserAttribute Name=\"ThreadDepth\" Value=\"40\" Type=\"real\"/>"));
+    assert!(btlx.contains("Name=\"Ketchup tapped drilling\" Comment=\"M12×1.75 depth 40\""));
+
+    let export = String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
+    assert!(export.contains(":interval(-1000,-950):through(false);result_fingerprint=m17-circular-drill-result;thread=M12×1.75 depth 40\n"), "{export}");
+    let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+    assert!(
+        drawing.contains("depth=50 mm, thread M12×1.75 depth 40</text>"),
+        "{drawing}"
+    );
+
+    let refused = Some(GeneralFabricationError::WoodwopTappedHole {
+        part: "Timber with circular drilling".to_owned(),
+        thread: "M12×1.75 depth 40".to_owned(),
+    });
+    assert_eq!(
+        projection.woodwop_mpr_4_0_drill_export(&snapshot).err(),
+        refused
+    );
+    assert_eq!(
+        projection
+            .woodwop_mpr_4_0_setup_a_programs(&snapshot, Default::default())
+            .err(),
+        refused
     );
 }
 

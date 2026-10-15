@@ -2,8 +2,8 @@ use ketchup_geometry::linalg::{cross, dot};
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use ketchup_model::document::{
     CanonicalError, ClassificationError, DefinitionId, DocumentId, FeatureId, FeatureKind,
-    InstancePath, InstancePathStep, OccurrenceId, ScaledPlacement, Snapshot, SpatialPathSegment,
-    Transform, WeldmentJointPolicy, WeldmentJointPrimary,
+    HoleThread, InstancePath, InstancePathStep, OccurrenceId, ScaledPlacement, Snapshot,
+    SpatialPathSegment, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
 };
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepGraphError, ExactBRepLinearInterval,
@@ -236,6 +236,12 @@ pub enum GeneralFabricationError {
     PartExportBlocked {
         part: String,
     },
+    /// A woodWOP drilling macro drills the core hole only and cannot tap
+    /// the `thread` of a hole of `part`.
+    WoodwopTappedHole {
+        part: String,
+        thread: String,
+    },
 }
 
 impl GeneralFabricationError {
@@ -299,6 +305,10 @@ impl fmt::Display for GeneralFabricationError {
             Self::PartExportBlocked { part } => write!(
                 formatter,
                 "part \"{part}\" cannot be written to the machine file: its stock is not a rectangular box, a cut is not one the format describes, reaches outside the stock or starts inside the material (a cavity, or a cut that opens only to a side and is not rectangular), or its exact result is stale; let each cut tool reach past the face it enters, or evaluate the model again",
+            ),
+            Self::WoodwopTappedHole { part, thread } => write!(
+                formatter,
+                "part \"{part}\" has a tapped hole ({thread}) that a woodWOP program cannot tap: its drilling macro drills the core hole only, so the part would be made without the thread; export BTLx or the production job, which carry the thread, or remove the thread",
             ),
         }
     }
@@ -500,6 +510,9 @@ pub struct GeneralManufacturingOperation {
     pub bounds: PieceDimensions,
     pub machining: GeneralMachiningGeometry,
     pub source: ketchup_model::exact_product::ExactResultKey,
+    /// The thread tapped into the hole this drilling makes, as the document
+    /// records it on the hole's feature.
+    pub thread: Option<HoleThread>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -912,6 +925,9 @@ impl GeneralFabricationProjection {
                 machining_token(&operation.machining),
                 operation.source.result_fingerprint
             ));
+            if let Some(thread) = &operation.thread {
+                output.insert_str(output.len() - 1, &format!(";thread={}", thread.label()));
+            }
         }
         Ok(output.into_bytes())
     }
@@ -976,6 +992,12 @@ impl GeneralFabricationProjection {
         }
         // One program machines every copy of the row.
         check_copies_share_machining(snapshot, row)?;
+        check_woodwop_taps_nothing(
+            machining,
+            snapshot
+                .definition(row.definition_id)
+                .map_or("", |definition| definition.name()),
+        )?;
         let stock_frame =
             woodwop_stock_frame(&stock.machining).ok_or(GeneralFabricationError::ExportBlocked)?;
         let macros = machining
@@ -1086,6 +1108,7 @@ impl GeneralFabricationProjection {
                 {
                     return Err(GeneralFabricationError::ExportBlocked);
                 }
+                check_woodwop_taps_nothing(machining, part)?;
                 let stock_frame = woodwop_stock_frame(&stock.machining)
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
                 for instance_path in &row.instances {
@@ -1347,10 +1370,29 @@ impl BtlxProcessing {
 
     fn xml(&self, process_id: u32, reference_plane_id: u32) -> String {
         match self {
-            Self::Drilling(drilling) => format!(
-                "          <Drilling Name=\"Ketchup circular drilling\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\">\n            <StartX>{}</StartX>\n            <StartY>{}</StartY>\n            <Angle>0</Angle>\n            <Inclination>90</Inclination>\n            <DepthLimited>yes</DepthLimited>\n            <Depth>{}</Depth>\n            <Diameter>{}</Diameter>\n          </Drilling>\n",
-                drilling.start_x, drilling.start_y, drilling.depth, drilling.diameter
-            ),
+            Self::Drilling(drilling) => {
+                let (name, thread) = drilling.thread.as_ref().map_or_else(
+                    || ("Ketchup circular drilling\"".to_owned(), String::new()),
+                    |thread| {
+                        (
+                            format!(
+                                "Ketchup tapped drilling\" Comment=\"{}\"",
+                                xml_escape(&thread.label())
+                            ),
+                            format!(
+                                "            <UserAttributes>\n              <UserAttribute Name=\"ThreadSize\" Value=\"{}\"/>\n              <UserAttribute Name=\"ThreadPitch\" Value=\"{}\" Type=\"real\"/>\n              <UserAttribute Name=\"ThreadDepth\" Value=\"{}\" Type=\"real\"/>\n            </UserAttributes>\n",
+                                xml_escape(&thread.size),
+                                format_number(thread.pitch_mm),
+                                format_number(thread.depth_mm)
+                            ),
+                        )
+                    },
+                );
+                format!(
+                    "          <Drilling Name=\"{name} ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\">\n{thread}            <StartX>{}</StartX>\n            <StartY>{}</StartY>\n            <Angle>0</Angle>\n            <Inclination>90</Inclination>\n            <DepthLimited>yes</DepthLimited>\n            <Depth>{}</Depth>\n            <Diameter>{}</Diameter>\n          </Drilling>\n",
+                    drilling.start_x, drilling.start_y, drilling.depth, drilling.diameter
+                )
+            }
             Self::FreeContour(contour) => {
                 let mut xml = format!(
                     "          <FreeContour Name=\"Ketchup profile cut\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"yes\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n",
@@ -1401,6 +1443,9 @@ struct BtlxDrilling {
     start_y: String,
     depth: String,
     diameter: String,
+    /// BTLx has no tapping processing: the thread goes with the drilling as
+    /// its user attributes and comment.
+    thread: Option<HoleThread>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1462,7 +1507,12 @@ fn btlx_processings(
 ) -> Result<Vec<BtlxProcessing>, GeneralFabricationError> {
     match operation.kind {
         GeneralManufacturingKind::CircularDrill => btlx_drilling(&operation.machining, blank)
-            .map(|drilling| vec![BtlxProcessing::Drilling(drilling)])
+            .map(|drilling| {
+                vec![BtlxProcessing::Drilling(BtlxDrilling {
+                    thread: operation.thread.clone(),
+                    ..drilling
+                })]
+            })
             .ok_or(GeneralFabricationError::ExportBlocked),
         GeneralManufacturingKind::ThroughCut
         | GeneralManufacturingKind::ProfileCut
@@ -1631,6 +1681,7 @@ fn btlx_drilling(geometry: &GeneralMachiningGeometry, blank: StockBlank) -> Opti
         start_y: format_btlx_number_in_range(center_mm[1], -50_000.0, 50_000.0)?,
         depth: format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, 50_000.0)?,
         diameter: format_btlx_number_in_range(*diameter_mm, f64::MIN_POSITIVE, 50_000.0)?,
+        thread: None,
     })
 }
 
@@ -2109,6 +2160,24 @@ fn homag_code128_svg(program_name: &str) -> Option<Vec<u8>> {
         module_count / 2
     ));
     Some(svg.into_bytes())
+}
+
+/// Refuses a woodWOP program for `part` if one of its drillings is tapped:
+/// the drilling macro would make the core hole and lose the thread.
+fn check_woodwop_taps_nothing(
+    machining: &[&GeneralManufacturingOperation],
+    part: &str,
+) -> Result<(), GeneralFabricationError> {
+    match machining
+        .iter()
+        .find_map(|operation| operation.thread.as_ref())
+    {
+        Some(thread) => Err(GeneralFabricationError::WoodwopTappedHole {
+            part: part.to_owned(),
+            thread: thread.label(),
+        }),
+        None => Ok(()),
+    }
 }
 
 fn woodwop_drilling_macro(
@@ -2998,10 +3067,25 @@ pub fn project_general_fabrication(
                     }
                     ExactBodyPackage::Imported(_) => None,
                 };
-                let Some(row_operations) = row_operations else {
+                let Some(mut row_operations) = row_operations else {
                     unresolved_sources.push(row.source.clone());
                     continue;
                 };
+                // The thread goes with the drilling of its hole. A thread on a
+                // cut that is not a drilling has no machining to carry it.
+                let mut lost_thread = false;
+                for operation in &mut row_operations {
+                    operation.thread = snapshot
+                        .hole_threads()
+                        .find(|(id, _)| *id == operation.producer_feature_id)
+                        .map(|(_, thread)| thread.clone());
+                    lost_thread |= operation.thread.is_some()
+                        && operation.kind != GeneralManufacturingKind::CircularDrill;
+                }
+                if lost_thread {
+                    unresolved_sources.push(row.source.clone());
+                    continue;
+                }
                 if row.mirrored {
                     operations.extend(row_operations.into_iter().map(mirrored_operation));
                 } else {
@@ -3134,6 +3218,7 @@ fn machined_nodes(
             stock_interval,
         )?,
         source: source.clone(),
+        thread: None,
     }];
     if nodes.len() == 1 {
         return Some(operations);
@@ -3196,6 +3281,7 @@ fn machined_nodes(
             bounds: row.dimensions,
             machining,
             source: source.clone(),
+            thread: None,
         });
         previous = node;
     }
@@ -3277,6 +3363,7 @@ fn boolean_prism_cut<'graph>(
         bounds: row.dimensions,
         machining,
         source: source.clone(),
+        thread: None,
     };
     Some((operation, terminal))
 }
@@ -4046,8 +4133,14 @@ fn append_machining_detail(
             ..
         } => {
             let center = point(*center_mm);
+            let thread = operation
+                .thread
+                .as_ref()
+                .map_or_else(String::new, |thread| {
+                    format!(", thread {}", xml_escape(&thread.label()))
+                });
             svg.push_str(&format!(
-                "<circle id=\"{}/geometry\" cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"white\" />\n<text x=\"{}\" y=\"{}\" fill=\"black\" stroke=\"none\">circular-drill: center=({}, {}) mm, diameter={} mm, {}</text>\n",
+                "<circle id=\"{}/geometry\" cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"white\" />\n<text x=\"{}\" y=\"{}\" fill=\"black\" stroke=\"none\">circular-drill: center=({}, {}) mm, diameter={} mm, {}{thread}</text>\n",
                 operation.stable_operation_id,
                 format_number(center[0]),
                 format_number(center[1]),
@@ -4783,6 +4876,15 @@ fn general_manufacturing_bytes(
             &mut bytes,
             &GeneralBodySource::Exact(operation.source.clone()),
         );
+        match &operation.thread {
+            None => bytes.push(0),
+            Some(thread) => {
+                bytes.push(1);
+                push_projection_bytes(&mut bytes, thread.size.as_bytes());
+                bytes.extend_from_slice(&thread.pitch_mm.to_bits().to_le_bytes());
+                bytes.extend_from_slice(&thread.depth_mm.to_bits().to_le_bytes());
+            }
+        }
     }
     bytes.extend_from_slice(&(unresolved_sources.len() as u64).to_le_bytes());
     for source in unresolved_sources {

@@ -199,11 +199,18 @@ impl GeneralFabricationProjection {
                 let operations = matching
                     .iter()
                     .map(|(_, operation)| {
-                        json!({
+                        let mut value = json!({
                             "operation_id": operation.stable_operation_id,
                             "kind": operation.kind.token(),
                             "geometry": operation.machining,
-                        })
+                        });
+                        if let Some(thread) = &operation.thread {
+                            value["thread"] = json!({
+                                "size": thread.size, "pitch_mm": thread.pitch_mm,
+                                "depth_mm": thread.depth_mm,
+                            });
+                        }
+                        value
                     })
                     .collect::<Vec<_>>();
                 let holes = pins.remove(path).unwrap_or_default();
