@@ -65,3 +65,51 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: tests
         run: cargo test --locked --workspace --all-targets --no-fail-fast -- --test-threads=2
+
+  rust-without-occt:
+    name: format, clippy and tests of the crates without OCCT
+    # Runs for every pull request, forks included. ketchup-model needs OCCT
+    # only for its tests; the windowed crates need a platform winit.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CRATES: >-
+        -p ketchup-analysis -p ketchup-assistant -p ketchup-dwg -p ketchup-geometry
+        -p ketchup-interaction -p ketchup-manufacturing -p ketchup-mcp -p ketchup-pdm
+        -p ketchup-program -p ketchup-rejection -p ketchup-test-env -p ketchup-tolerance
+        -p ketchup-view-format
+      # The MCP discovery directory lives in the per-user runtime directory.
+      XDG_RUNTIME_DIR: /tmp/xdg-runtime
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: runtime directory
+        run: mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: |
+          cargo clippy --locked $CRATES --all-targets -- -D warnings
+          cargo clippy --locked -p ketchup-model --lib -- -D warnings
+      - name: tests
+        run: cargo test --locked $CRATES --no-fail-fast
+
+  rust-required:
+    name: Windows build with OCCT passed
+    # A skipped job counts as passed for a required check, so a pull request
+    # from a fork, which never runs on the OCCT runner, would merge unbuilt.
+    # This job fails unless the full build ran and passed.
+    needs: rust
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: full Rust build result
+        env:
+          RESULT: ${{ needs.rust.result }}
+        run: |
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::The Windows build with OCCT did not pass ($RESULT). A pull request from a fork needs a maintainer to run it from a branch of this repository."
+            exit 1
+          fi
