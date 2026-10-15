@@ -271,6 +271,15 @@ fn outside_files(
     for (argument, candidate) in candidates {
         let mut given = argument.cloned();
         if candidate.starts_with(folder) {
+            // Through `..` the text would lead out of the stage the process
+            // runs in; it gets the folder's file it names, which is staged.
+            if let Some(given) = given.as_mut()
+                && Path::new(given.as_str())
+                    .components()
+                    .any(|component| component == Component::ParentDir)
+            {
+                *given = candidate.display().to_string();
+            }
             arguments.extend(given);
             continue;
         }

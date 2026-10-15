@@ -660,3 +660,36 @@ fn a_plugin_argument_on_a_network_share_is_refused_without_a_prompt() {
     }
     assert!(probe.high_risk_prompts().is_empty());
 }
+
+/// SEC-1: an argument that leaves the folder and comes back into it names the
+/// folder's file the consent hashed, and the process gets that file's staged
+/// copy, not a path that leads out of the stage it runs in.
+#[test]
+fn a_plugin_argument_through_dot_dot_runs_the_staged_file_it_names() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    for argument in [
+        "../height/plugin.py".to_owned(),
+        folder.join("../height/plugin.py").display().to_string(),
+    ] {
+        manifest["arguments"] = json!([argument]);
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        let inputs = json!({"height_mm": 35});
+        let launch = crate::live_bridge::plugin_manifest::load(
+            &folder.to_string_lossy(),
+            inputs.as_object(),
+        )
+        .unwrap();
+        let stage = launch.command.working_directory.clone().unwrap();
+        let given = Path::new(&launch.command.arguments[0]);
+        assert!(
+            given
+                .components()
+                .all(|component| component != std::path::Component::ParentDir),
+            "{argument:?} reaches the process as {given:?}"
+        );
+        assert_eq!(stage.join(given), stage.join("plugin.py"), "{argument:?}");
+    }
+}
