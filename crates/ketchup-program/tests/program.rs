@@ -582,6 +582,26 @@ back = board(\"back\", (4, 4, 600), at = (10, 280, 0))
     assert_eq!(kinds(&unseated), vec!["collision_unverified"]);
 }
 
+/// PRG-4 (review 2026-10-15): the groove of a part turned 45° is a thin
+/// diagonal slot, not its world bounding box. A block in the solid wood
+/// beside it, inside that box, still collides; a part seated in the turned
+/// groove still does not.
+#[test]
+fn a_groove_of_a_turned_part_seats_only_what_lies_in_the_groove() {
+    let side = "\
+side = board(\"side\", (18, 300, 600))
+groove(side, \"x+\", along = \"z\", width = 4, depth = 8, offset = 280)
+rotate(side, axis = (0, 0, 1), angle = 45)
+";
+    let beside = format!("{side}box(\"pin\", (1.8, 1.8, 100), at = (-187.3, 205.3, 100))\n");
+    assert_eq!(kinds(&beside), vec!["collision_unverified"]);
+    let seated = format!(
+        "{side}back = board(\"back\", (4, 4, 600), at = (10, 280, 0))\n\
+         rotate(back, axis = (0, 0, 1), angle = 45)\n"
+    );
+    assert_eq!(kinds(&seated), Vec::<&str>::new());
+}
+
 #[test]
 fn a_joint_between_parts_that_do_not_touch_is_an_error() {
     let source = "\

@@ -194,10 +194,7 @@ fn overlap_status(model: &ProgramModel, a: &Part, b: &Part) -> (OverlapStatus, O
     let Some(region) = validate::overlap(a, b) else {
         return (OverlapStatus::BoxesOnly, None);
     };
-    if validate::world_pockets(a)
-        .chain(validate::world_pockets(b))
-        .any(|pocket| validate::contains(pocket, region))
-    {
+    if validate::seated_in_pocket(a, b) {
         return (OverlapStatus::Pocket, None);
     }
     let declared = model.joints.iter().any(|joint| {

@@ -233,19 +233,32 @@ fn engages(fastener: &Part, tapped: &Part, (min, max): ([f64; 3], [f64; 3])) -> 
         })
 }
 
-pub(crate) fn world_pockets(part: &Part) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_ {
-    part.finished_pockets().map(|(_, corners)| {
-        corners.iter().fold(
-            ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
-            |(min, max), corner| {
-                let point = part.to_world(*corner);
-                (
-                    std::array::from_fn(|i| min[i].min(point[i])),
-                    std::array::from_fn(|i| max[i].max(point[i])),
-                )
-            },
-        )
-    })
+/// True when the volume `a` and `b`'s boxes share lies in a pocket of either,
+/// tested in that part's own frame: the pocket of a turned part is a turned
+/// box, not its larger world bounds (review PRG-4). The shared volume is
+/// convex, so its vertices inside the pocket put all of it there.
+pub(crate) fn seated_in_pocket(a: &Part, b: &Part) -> bool {
+    let shared = frame::intersection_vertices(&[a.obb(), b.obb()], TOLERANCE_MM);
+    !shared.is_empty()
+        && [a, b].into_iter().any(|part| {
+            part.finished_pockets().any(|(_, corners)| {
+                let (min, max) = corners.iter().fold(
+                    ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+                    |(min, max), corner| {
+                        (
+                            std::array::from_fn(|i| min[i].min(corner[i])),
+                            std::array::from_fn(|i| max[i].max(corner[i])),
+                        )
+                    },
+                );
+                shared.iter().all(|vertex| {
+                    let local = part.to_local(*vertex);
+                    (0..3).all(|i| {
+                        local[i] >= min[i] - TOLERANCE_MM && local[i] <= max[i] + TOLERANCE_MM
+                    })
+                })
+            })
+        })
 }
 
 /// False when `a`'s booleans certainly removed the volume it shares with `b`:
@@ -419,9 +432,7 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
             {
                 continue;
             }
-            let seated = world_pockets(a)
-                .chain(world_pockets(b))
-                .any(|pocket| contains(pocket, region));
+            let seated = seated_in_pocket(a, b);
             let declared = model.joints.iter().any(|joint| {
                 joint.parts.contains(&a.name)
                     && joint.parts.contains(&b.name)
