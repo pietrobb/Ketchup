@@ -315,8 +315,8 @@ fn spline_takes_points_by_drag_click_or_typed_distance_and_closes_in_one_undo_st
     assert!(shell.app().closed_shape_preview_outline().is_none());
     assert_eq!(shell.app().canonical_digest(), first_digest);
 
-    // With enough points, Escape and Enter both close it.
-    for (finish, revision, y) in [(Key::Escape, 2, 15.0), (Key::Enter, 3, 25.0)] {
+    // With enough points Enter closes it, and Escape still drops it.
+    for (finish, revision, y) in [(Key::Escape, 1, 15.0), (Key::Enter, 2, 25.0)] {
         shell.click_command(AppCommand::Spline);
         for [x, dy] in [[15.0, 0.0], [30.0, 0.0], [30.0, 10.0], [15.0, 8.0]] {
             shell.click_at(at(&shell, x, y + dy));
@@ -325,7 +325,7 @@ fn spline_takes_points_by_drag_click_or_typed_distance_and_closes_in_one_undo_st
         assert_eq!(
             shell.app().document_revision(),
             before_revision + revision,
-            "{finish:?} closes the spline"
+            "revision after {finish:?}"
         );
         assert_eq!(latest_spline(&shell).len(), 4);
     }

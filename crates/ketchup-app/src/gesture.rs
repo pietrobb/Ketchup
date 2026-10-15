@@ -3,7 +3,9 @@
 //! drag. Pointer drags share one [`crate::slot::Slot`], so starting a zoom
 //! window, a selection window or a push/pull ends whichever drag was running.
 
-use super::{Axis, DefinitionId, OccurrenceId, Pos2, PushPullDrag, SelectionWindowDrag, Vec3};
+use super::{
+    Axis, DefinitionId, DocumentId, OccurrenceId, Pos2, PushPullDrag, SelectionWindowDrag, Vec3,
+};
 use crate::slot::slot_variants;
 
 #[derive(Default)]
@@ -33,6 +35,9 @@ pub(crate) struct SketchGesture {
     /// The drawing tool waits for points.
     pub(crate) armed: bool,
     pub(crate) start: Option<Vec3>,
+    /// The document and revision `start` was placed on; a commit against any
+    /// other is refused, like a stale transform preview.
+    pub(crate) source: Option<(DocumentId, u64)>,
     pub(crate) end: Option<Vec3>,
     pub(crate) cursor: Option<Vec3>,
     pub(crate) chain_origin: Option<Vec3>,

@@ -1583,6 +1583,9 @@ impl KetchupApp {
         default_name_key: &str,
         profile_name_key: &str,
     ) -> bool {
+        if self.sketch_source_is_stale() {
+            return false;
+        }
         let snapshot = self.document.current();
         let Some(definition_id) = snapshot
             .definitions()
@@ -1654,6 +1657,9 @@ impl KetchupApp {
     }
 
     pub(crate) fn create_profile_at(&mut self, origin_mm: Vec3, points_mm: Vec<[f64; 2]>) -> bool {
+        if self.sketch_source_is_stale() {
+            return false;
+        }
         let snapshot = self.document.current();
         let Some(definition_id) = snapshot
             .definitions()
@@ -2329,6 +2335,31 @@ impl KetchupApp {
         self.status_key = "status-ready";
     }
 
+    /// Records the current document as the one the shape in progress is drawn on.
+    fn mark_sketch_source(&mut self) {
+        let snapshot = self.document.current();
+        self.gesture.sketch.source = Some((snapshot.document_id(), snapshot.revision_id()));
+    }
+
+    /// Drops the shape in progress when the document changed since its last
+    /// point was placed: its points were picked against geometry that may be gone.
+    fn sketch_source_is_stale(&mut self) -> bool {
+        let snapshot = self.document.current();
+        let current = (snapshot.document_id(), snapshot.revision_id());
+        if self.gesture.sketch.start.is_none()
+            || self
+                .gesture
+                .sketch
+                .source
+                .is_none_or(|source| source == current)
+        {
+            return false;
+        }
+        self.cancel_rectangle_sketch();
+        self.digest = self.catalog.text("error-preview-stale");
+        true
+    }
+
     pub(crate) fn complete_line_sketch(&mut self, start: Vec3, end: Vec3) -> bool {
         if let Some(origin) = self.gesture.sketch.chain_origin {
             let close_distance = length(Vec3::new(
@@ -2368,6 +2399,7 @@ impl KetchupApp {
             self.gesture.sketch.chain_points.push(end);
             self.gesture.sketch.armed = true;
             self.gesture.sketch.start = Some(end);
+            self.mark_sketch_source();
             self.gesture.sketch.cursor = Some(end);
             self.value_box.input.clear();
             self.status_key = "status-line-end";
@@ -2380,6 +2412,9 @@ impl KetchupApp {
     }
 
     pub(crate) fn close_line_chain(&mut self) -> bool {
+        if self.sketch_source_is_stale() {
+            return false;
+        }
         let Some((transform, points)) =
             line_geometry::planar_points(&self.gesture.sketch.chain_points)
         else {
@@ -2594,6 +2629,7 @@ impl KetchupApp {
         let Some(start) = self.gesture.sketch.start else {
             self.gesture.sketch.start = Some(point);
             self.gesture.sketch.cursor = Some(point);
+            self.mark_sketch_source();
             if self.active_tool == ActiveTool::Line {
                 self.gesture.sketch.chain_origin = Some(point);
             }
@@ -2923,6 +2959,9 @@ impl KetchupApp {
     }
 
     pub(crate) fn complete_datum_rectangle(&mut self, start: Vec3, end: Vec3) -> bool {
+        if self.sketch_source_is_stale() {
+            return false;
+        }
         let Some(batch) = self.datum_rectangle_batch(start, end) else {
             return false;
         };

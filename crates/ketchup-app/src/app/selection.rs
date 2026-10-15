@@ -1145,10 +1145,6 @@ impl KetchupApp {
         // So is a hole, draft or pattern still being checked, and those
         // confirmed after it: none of them is published.
         let cancelled_edit = self.live.edits.cancel();
-        // Escape closes a spline that has enough points instead of dropping them.
-        if self.active_tool == ActiveTool::Spline && self.complete_spline() {
-            return;
-        }
         if matches!(
             self.active_tool,
             ActiveTool::Move | ActiveTool::Rotate | ActiveTool::Scale
