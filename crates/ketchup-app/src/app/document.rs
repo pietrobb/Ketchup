@@ -234,6 +234,9 @@ impl KetchupApp {
     ) -> bool {
         match result {
             Ok(loaded_file) => {
+                let unusable_work_recovery = loaded_file
+                    .unusable_work_recovery()
+                    .map(ToString::to_string);
                 let (outcome, effective_path, source, work_recovery_identity) =
                     loaded_file.into_parts();
                 if !outcome.is_editable() {
@@ -278,6 +281,18 @@ impl KetchupApp {
                     source_path: effective_path,
                 });
                 let history_discarded = outcome.audit().history_discarded.clone();
+                // A checkpoint this file cannot use would refuse every later one,
+                // so the first edit would fail; it is kept, under another name.
+                let work_recovery_set_aside = unusable_work_recovery.map(|reason| {
+                    let moved = recovery_lock
+                        .as_ref()
+                        .or(self.file.work_recovery_lock.as_ref())
+                        .map_or(
+                            Err(ketchup_model::persistence::FilePersistenceError::ExternalConflict),
+                            |lock| ketchup_model::persistence::set_aside_work_recovery(path, lock),
+                        );
+                    (reason, moved)
+                });
                 let Ok((mut document, container_data)) = outcome.into_editable_with_container()
                 else {
                     unreachable!("editable load outcome must contain an editable document");
@@ -312,6 +327,25 @@ impl KetchupApp {
                             ("requested", recovery.requested_path.display().to_string()),
                         ]),
                     );
+                } else if let Some((reason, moved)) = work_recovery_set_aside {
+                    self.digest = match moved {
+                        Ok(set_aside) => self.catalog.format(
+                            "digest-opened-work-recovery-set-aside",
+                            &BTreeMap::from([
+                                ("path", path.display().to_string()),
+                                ("reason", reason),
+                                ("set_aside", set_aside.display().to_string()),
+                            ]),
+                        ),
+                        Err(error) => self.catalog.format(
+                            "error-work-recovery-set-aside",
+                            &BTreeMap::from([
+                                ("path", path.display().to_string()),
+                                ("reason", reason),
+                                ("error", error.to_string()),
+                            ]),
+                        ),
+                    };
                 } else if let Some(reason) = history_discarded {
                     self.digest = self.catalog.format(
                         "digest-opened-without-history",

@@ -17,7 +17,7 @@ mod legacy;
 mod work_recovery;
 #[cfg(feature = "testing")]
 pub use work_recovery::headless_with_parent_sync_failure;
-pub use work_recovery::{WorkRecoveryLock, check_work_recovery_identity};
+pub use work_recovery::{WorkRecoveryLock, check_work_recovery_identity, set_aside_work_recovery};
 pub(crate) mod sheet_metal_v1;
 pub(crate) mod snapshot_codec;
 mod snapshot_encoding;
@@ -1429,72 +1429,120 @@ fn save_lock_path(path: &Path) -> PathBuf {
     PathBuf::from(lock)
 }
 
+/// What the open found at the work-recovery path of a file it read.
+enum WorkRecoveryRead {
+    Absent,
+    Loaded(Box<LoadedFile>),
+    Unusable(UnusableWorkRecovery),
+}
+
+/// Why a work-recovery checkpoint beside a file was not opened.
+#[derive(Debug)]
+pub enum UnusableWorkRecovery {
+    /// Larger than any checkpoint this version writes.
+    TooLarge,
+    /// Not a checkpoint format this version reads.
+    UnknownFormat,
+    /// Made from another version of the file than the one on disk.
+    OtherVersion,
+    /// Its framing is cut short or inconsistent.
+    Damaged,
+    /// The document in it does not open.
+    Document(PersistenceError),
+    /// It could not be read.
+    Unreadable(io::Error),
+}
+
+impl fmt::Display for UnusableWorkRecovery {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge => {
+                formatter.write_str("the checkpoint is larger than any this version writes")
+            }
+            Self::UnknownFormat => {
+                formatter.write_str("it is not a work-recovery checkpoint this version reads")
+            }
+            Self::OtherVersion => {
+                formatter.write_str("it was made from another version of the file")
+            }
+            Self::Damaged => formatter.write_str("the checkpoint is damaged"),
+            Self::Document(error) => write!(formatter, "its document does not open: {error}"),
+            Self::Unreadable(error) => write!(formatter, "it cannot be read: {error}"),
+        }
+    }
+}
+
 fn try_load_work_recovery(
     path: &Path,
     base_identity: FileIdentity,
-) -> Result<Option<LoadedFile>, FilePersistenceError> {
+) -> io::Result<WorkRecoveryRead> {
+    use WorkRecoveryRead::Unusable;
     let source_path = work_recovery_path(path);
     let mut file = match fs::File::open(&source_path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(FilePersistenceError::Io(error)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(WorkRecoveryRead::Absent);
+        }
+        Err(error) => return Ok(Unusable(UnusableWorkRecovery::Unreadable(error))),
     };
+    let damaged = || Unusable(UnusableWorkRecovery::Damaged);
     let wrapper_limit = MAX_NATIVE_DOCUMENT_BYTES as u64 + 60;
     if file.metadata()?.len() > wrapper_limit {
-        return Ok(None);
+        return Ok(Unusable(UnusableWorkRecovery::TooLarge));
     }
     let mut bytes = Vec::new();
     std::io::Read::by_ref(&mut file)
         .take(wrapper_limit + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > wrapper_limit {
-        return Ok(None);
+        return Ok(Unusable(UnusableWorkRecovery::TooLarge));
     }
     let mut reader = Reader::new(&bytes);
     if reader.take(WORK_RECOVERY_MAGIC.len()).ok() != Some(WORK_RECOVERY_MAGIC)
         || reader.u16().ok() != Some(WORK_RECOVERY_SCHEMA)
     {
-        return Ok(None);
+        return Ok(Unusable(UnusableWorkRecovery::UnknownFormat));
     }
     let Some(byte_len) = reader.u64().ok() else {
-        return Ok(None);
+        return Ok(damaged());
     };
     let Some(sha256) = reader.take(32).ok().and_then(|value| value.try_into().ok()) else {
-        return Ok(None);
+        return Ok(damaged());
     };
     if (FileIdentity { byte_len, sha256 }) != base_identity {
-        return Ok(None);
+        return Ok(Unusable(UnusableWorkRecovery::OtherVersion));
     }
     let Some(payload_len) = reader
         .u64()
         .ok()
         .and_then(|value| usize::try_from(value).ok())
     else {
-        return Ok(None);
+        return Ok(damaged());
     };
     if payload_len > MAX_NATIVE_DOCUMENT_BYTES {
-        return Ok(None);
+        return Ok(damaged());
     }
     let Some(payload) = reader.take(payload_len).ok() else {
-        return Ok(None);
+        return Ok(damaged());
     };
     if !reader.is_finished() {
-        return Ok(None);
+        return Ok(damaged());
     }
     let mut outcome = match load(payload) {
         Ok(outcome) => outcome,
-        Err(_) => return Ok(None),
+        Err(error) => return Ok(Unusable(UnusableWorkRecovery::Document(error))),
     };
     match &mut outcome {
         LoadOutcome::Editable { audit, .. } => audit.recovered_from_backup = true,
         LoadOutcome::ReviewOnly(candidate) => candidate.audit.recovered_from_backup = true,
     }
-    Ok(Some(LoadedFile {
+    Ok(WorkRecoveryRead::Loaded(Box::new(LoadedFile {
         outcome,
         source_path,
         source_bytes: payload.to_vec(),
         work_recovery_identity: Some(FileIdentity::from_bytes(&bytes)),
-    }))
+        unusable_work_recovery: None,
+    })))
 }
 
 pub struct LoadedFile {
@@ -1502,6 +1550,7 @@ pub struct LoadedFile {
     source_path: PathBuf,
     source_bytes: Vec<u8>,
     work_recovery_identity: Option<FileIdentity>,
+    unusable_work_recovery: Option<UnusableWorkRecovery>,
 }
 
 impl LoadedFile {
@@ -1525,6 +1574,15 @@ impl LoadedFile {
         self.work_recovery_identity
     }
 
+    /// Why a work-recovery checkpoint beside the file was not opened. While it
+    /// stays there, no session of this file can write its own; the caller that
+    /// holds the file's WorkRecoveryLock sets it aside with
+    /// [`set_aside_work_recovery`].
+    #[must_use]
+    pub fn unusable_work_recovery(&self) -> Option<&UnusableWorkRecovery> {
+        self.unusable_work_recovery.as_ref()
+    }
+
     #[must_use]
     pub fn into_parts(self) -> (LoadOutcome, PathBuf, Vec<u8>, Option<FileIdentity>) {
         (
@@ -1546,15 +1604,19 @@ pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FileP
         Ok(bytes) => match load(&bytes) {
             Ok(outcome) => {
                 let identity = FileIdentity::from_bytes(&bytes);
-                match try_load_work_recovery(path, identity) {
-                    Ok(Some(recovered)) => Ok(recovered),
-                    Ok(None) | Err(_) => Ok(LoadedFile {
-                        outcome,
-                        source_path: path.to_owned(),
-                        source_bytes: bytes,
-                        work_recovery_identity: None,
-                    }),
-                }
+                let unusable_work_recovery = match try_load_work_recovery(path, identity) {
+                    Ok(WorkRecoveryRead::Loaded(recovered)) => return Ok(*recovered),
+                    Ok(WorkRecoveryRead::Absent) => None,
+                    Ok(WorkRecoveryRead::Unusable(reason)) => Some(reason),
+                    Err(error) => Some(UnusableWorkRecovery::Unreadable(error)),
+                };
+                Ok(LoadedFile {
+                    outcome,
+                    source_path: path.to_owned(),
+                    source_bytes: bytes,
+                    work_recovery_identity: None,
+                    unusable_work_recovery,
+                })
             }
             // A file that needs migration or that a newer Kečup wrote is not
             // damaged; its older recovery would overwrite the newer work on Save.
@@ -1612,6 +1674,7 @@ fn try_load_recovery(path: &Path) -> Result<Option<LoadedFile>, FilePersistenceE
         source_path,
         source_bytes: bytes,
         work_recovery_identity: None,
+        unusable_work_recovery: None,
     }))
 }
 

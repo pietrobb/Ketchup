@@ -97,6 +97,7 @@ pub struct DocumentSession {
     full_exact_baseline: Option<ExactSource>,
     incremental_exact_plan: Option<IncrementalExactPlan>,
     history_discarded: Option<String>,
+    work_recovery_set_aside: Option<(String, PathBuf)>,
 }
 impl Default for DocumentSession {
     fn default() -> Self {
@@ -121,6 +122,7 @@ impl DocumentSession {
             full_exact_baseline: None,
             incremental_exact_plan: None,
             history_discarded: None,
+            work_recovery_set_aside: None,
         }
     }
     /// Why the Undo history of the opened file was not restored: the document
@@ -129,6 +131,14 @@ impl DocumentSession {
     pub fn history_discarded(&self) -> Option<&str> {
         self.history_discarded.as_deref()
     }
+    /// Why the work-recovery checkpoint beside the opened file could not be
+    /// used, and where it was moved so that this session can write its own.
+    #[must_use]
+    pub fn work_recovery_set_aside(&self) -> Option<(&str, &Path)> {
+        self.work_recovery_set_aside
+            .as_ref()
+            .map(|(reason, path)| (reason.as_str(), path.as_path()))
+    }
     /// Review-only and invalid input never replaces a live session.
     pub fn open(path: impl AsRef<Path>, settings: SessionSettings) -> Result<Self, SessionError> {
         let requested_path = path.as_ref();
@@ -136,6 +146,7 @@ impl DocumentSession {
             .map_err(SessionError::Persistence)?;
         let loaded = persistence::load_file_with_source(requested_path)
             .map_err(SessionError::Persistence)?;
+        let unusable_work_recovery = loaded.unusable_work_recovery().map(ToString::to_string);
         let (outcome, source_path, source_bytes, work_recovery_identity) = loaded.into_parts();
         let history_discarded = outcome.audit().history_discarded.clone();
         let (document, container_data) = outcome
@@ -145,6 +156,15 @@ impl DocumentSession {
             requested_path: requested_path.to_owned(),
             source_path,
         });
+        // A checkpoint this file cannot use would refuse every later one.
+        let work_recovery_set_aside = match unusable_work_recovery {
+            Some(reason) => Some((
+                reason,
+                persistence::set_aside_work_recovery(requested_path, &recovery_lock)
+                    .map_err(SessionError::Persistence)?,
+            )),
+            None => None,
+        };
         let saved_digest = Some(document.history_digest());
         Ok(Self {
             document,
@@ -164,6 +184,7 @@ impl DocumentSession {
             full_exact_baseline: None,
             incremental_exact_plan: None,
             history_discarded,
+            work_recovery_set_aside,
         })
     }
     /// No-clobber publication is atomic, including when another process creates the destination.

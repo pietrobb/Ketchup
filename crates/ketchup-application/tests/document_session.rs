@@ -390,6 +390,55 @@ fn unsaved_session_edit_recovers_with_history_and_requires_save_as() {
     );
 }
 
+/// A work-recovery checkpoint the file cannot use (made from another version
+/// of it, or damaged) is moved aside and named on open; the session then
+/// checkpoints its own edits instead of refusing every one of them.
+#[test]
+fn an_unusable_work_recovery_is_set_aside_and_edits_are_checkpointed_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("replaced.ketchup");
+    let recovery = persistence::work_recovery_path(&primary);
+    let mut author = DocumentSession::default();
+    author
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    author.save(&primary, SaveOptions::default()).unwrap();
+    drop(author);
+    // An edit that never got saved leaves a checkpoint of this version ...
+    let mut crashed = DocumentSession::open(&primary, SessionSettings::default()).unwrap();
+    crashed.set_grounded(OccurrenceId(1), true).unwrap();
+    drop(crashed);
+    let older_version = std::fs::read(&recovery).unwrap();
+    // ... and then another version replaces the file.
+    let mut other = DocumentSession::open(&primary, SessionSettings::default()).unwrap();
+    other.set_grounded(OccurrenceId(1), false).unwrap();
+    other
+        .save(&primary, SaveOptions { overwrite: true })
+        .unwrap();
+    drop(other);
+
+    let mut set_aside = Vec::new();
+    for (case, checkpoint) in [
+        ("another version", older_version),
+        ("damaged", b"KETCHUPWRK damaged".to_vec()),
+    ] {
+        std::fs::write(&recovery, &checkpoint).unwrap();
+        let mut session = DocumentSession::open(&primary, SessionSettings::default()).unwrap();
+        assert_eq!(session.path(), Some(primary.as_path()), "{case}");
+        let (reason, moved) = session.work_recovery_set_aside().expect(case);
+        assert!(!reason.is_empty(), "{case}");
+        assert_eq!(std::fs::read(moved).unwrap(), checkpoint, "{case}");
+        set_aside.push(moved.to_owned());
+        assert!(!recovery.exists(), "{case}");
+
+        session.set_grounded(OccurrenceId(1), true).unwrap();
+        assert!(recovery.is_file(), "{case}: the edit is checkpointed");
+        session.undo().unwrap();
+        assert!(!recovery.exists(), "{case}");
+    }
+    assert_ne!(set_aside[0], set_aside[1]);
+}
+
 #[test]
 fn exact_publication_failure_to_finalize_recovery_rolls_back_evidence_and_allows_retry() {
     let directory = tempfile::tempdir().unwrap();

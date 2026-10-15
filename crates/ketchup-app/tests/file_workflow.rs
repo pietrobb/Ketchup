@@ -1671,6 +1671,36 @@ fn dirty_gui_document_recovers_after_crash_and_requires_save_as() {
     assert!(!ketchup_model::persistence::work_recovery_path(&primary).exists());
 }
 
+/// A damaged work-recovery checkpoint beside the file is moved aside and named
+/// on open, and the first edit is checkpointed instead of being refused.
+#[test]
+fn gui_open_sets_an_unusable_work_recovery_aside_and_keeps_editing() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("damaged-checkpoint.ketchup");
+    let recovery = ketchup_model::persistence::work_recovery_path(&primary);
+    let mut author = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
+    author.click_menu_command("menu-file", AppCommand::Save);
+    drop(author);
+    std::fs::write(&recovery, b"KETCHUPWRK damaged").unwrap();
+
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_open(&primary));
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert!(digest_starts_like(
+        &shell,
+        "digest-opened-work-recovery-set-aside"
+    ));
+    let mut set_aside = recovery.as_os_str().to_owned();
+    set_aside.push(".stale");
+    assert_eq!(
+        std::fs::read(&set_aside).unwrap(),
+        b"KETCHUPWRK damaged".to_vec()
+    );
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    assert!(shell.app().is_dirty());
+    assert!(recovery.is_file());
+}
+
 #[test]
 fn gui_save_rejects_replaced_work_recovery_before_publication() {
     let directory = tempfile::tempdir().unwrap();

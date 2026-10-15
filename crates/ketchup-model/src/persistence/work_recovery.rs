@@ -63,6 +63,50 @@ pub fn check_work_recovery_identity(
     }
 }
 
+/// Moves a work-recovery checkpoint the open could not use (see
+/// [`LoadedFile::unusable_work_recovery`]) to the first free
+/// `<file>.work-recovery.stale`, `.stale-2`, ... and returns that path. The work
+/// in it stays on disk, and the session that holds `_owner` can write its own
+/// checkpoint again.
+pub fn set_aside_work_recovery(
+    path: &Path,
+    _owner: &WorkRecoveryLock,
+) -> Result<PathBuf, FilePersistenceError> {
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(save_lock_path(path))?;
+    lock_file.lock()?;
+    let source = work_recovery_path(path);
+    for index in 1..=1000_u32 {
+        let mut target = source.as_os_str().to_os_string();
+        target.push(if index == 1 {
+            ".stale".to_owned()
+        } else {
+            format!(".stale-{index}")
+        });
+        let target = PathBuf::from(target);
+        match fs::symlink_metadata(&target) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(FilePersistenceError::Io(error)),
+        }
+        fs::rename(&source, &target)?;
+        sync_parent_directory(
+            path.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )?;
+        return Ok(target);
+    }
+    Err(FilePersistenceError::Io(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "a thousand set-aside work-recovery checkpoints already exist",
+    )))
+}
+
 #[cfg(feature = "testing")]
 thread_local! {
     pub(super) static FAIL_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

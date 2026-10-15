@@ -923,14 +923,29 @@ impl Server {
                 self.revoke_jobs();
                 self.initial_placeholder = false;
                 let mut result = self.state_result();
+                let mut warnings = Vec::new();
                 if let Some(reason) = self.session.history_discarded() {
-                    result["warnings"] = json!([{
+                    warnings.push(json!({
                         "kind": "history_discarded",
                         "message": format!(
                             "the Undo history of this file could not be restored ({reason}); \
                              the document opened with its current revision only"
                         ),
-                    }]);
+                    }));
+                }
+                if let Some((reason, set_aside)) = self.session.work_recovery_set_aside() {
+                    warnings.push(json!({
+                        "kind": "work_recovery_set_aside",
+                        "message": format!(
+                            "the unsaved-work checkpoint beside this file could not be used \
+                             ({reason}); it was moved to {}",
+                            set_aside.display()
+                        ),
+                        "path": set_aside.display().to_string(),
+                    }));
+                }
+                if !warnings.is_empty() {
+                    result["warnings"] = Value::Array(warnings);
                 }
                 Ok(result)
             }
