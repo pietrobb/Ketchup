@@ -738,3 +738,39 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
         None
     );
 }
+
+/// The drawing's SVG arc is the arc BTLx machines, not its complement: its
+/// flags match the turn the BTLx points take, a quarter stays a quarter.
+#[test]
+fn svg_arc_flags_draw_the_arc_btlx_machines() {
+    let center = [30.0, 20.0];
+    let at = |degrees: f64| {
+        let radians = degrees.to_radians();
+        [
+            center[0] + 10.0 * radians.cos(),
+            center[1] + 10.0 * radians.sin(),
+        ]
+    };
+    for (from, to) in [(-90.0, 0.0), (0.0, 90.0), (-90.0, 180.0), (10.0, 200.0)] {
+        for clockwise in [false, true] {
+            let (start, end) = (at(from), at(to));
+            let points = btlx_arc_points(start, end, center, clockwise).unwrap();
+            let angle = |point: [f64; 2]| (point[1] - center[1]).atan2(point[0] - center[0]);
+            let mut previous = angle(start);
+            let mut turn = 0.0;
+            for point in points {
+                // BTLx steps at most 10°, so each step's turn is its wrapped angle.
+                let step = (angle(point) - previous + std::f64::consts::PI)
+                    .rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                turn += step;
+                previous = angle(point);
+            }
+            assert_eq!(
+                svg_arc_flags(start, end, center, clockwise),
+                (turn.abs() > std::f64::consts::PI, turn > 0.0),
+                "{from}° to {to}°, clockwise {clockwise}: BTLx turns {turn}"
+            );
+        }
+    }
+}

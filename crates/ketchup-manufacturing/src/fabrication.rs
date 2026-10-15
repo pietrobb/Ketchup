@@ -1685,6 +1685,28 @@ fn btlx_drilling(geometry: &GeneralMachiningGeometry, blank: StockBlank) -> Opti
     })
 }
 
+/// The SVG `large-arc` and `sweep` flags of an arc drawn in the part's own
+/// coordinates: the sheet keeps the model's y, so the SVG positive-angle
+/// direction is the model's anticlockwise one, and the sweep is the one
+/// `btlx_arc_points` machines.
+fn svg_arc_flags(
+    start: [f64; 2],
+    end: [f64; 2],
+    center: [f64; 2],
+    clockwise: bool,
+) -> (bool, bool) {
+    let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+    let mut sweep = (end[1] - center[1]).atan2(end[0] - center[0]) - start_angle;
+    if clockwise {
+        if sweep >= 0.0 {
+            sweep -= std::f64::consts::TAU;
+        }
+    } else if sweep <= 0.0 {
+        sweep += std::f64::consts::TAU;
+    }
+    (sweep.abs() > std::f64::consts::PI, !clockwise)
+}
+
 fn btlx_arc_points(
     start: [f64; 2],
     end: [f64; 2],
@@ -4087,24 +4109,13 @@ fn append_machining_detail(
                                 format_number(start[1])
                             ));
                         }
-                        let start_angle =
-                            (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
-                        let end_angle = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
-                        let mut sweep = end_angle - start_angle;
-                        if *clockwise {
-                            while sweep < 0.0 {
-                                sweep += std::f64::consts::TAU;
-                            }
-                        } else {
-                            while sweep > 0.0 {
-                                sweep -= std::f64::consts::TAU;
-                            }
-                        }
+                        let (large_arc, sweep_flag) =
+                            svg_arc_flags(*start_mm, *end_mm, *center_mm, *clockwise);
                         path.push_str(&format!(
                             "A {0} {0} 0 {1} {2} {3} {4} ",
                             format_number(radius),
-                            u8::from(sweep.abs() > std::f64::consts::PI),
-                            u8::from(*clockwise),
+                            u8::from(large_arc),
+                            u8::from(sweep_flag),
                             format_number(end[0]),
                             format_number(end[1])
                         ));
