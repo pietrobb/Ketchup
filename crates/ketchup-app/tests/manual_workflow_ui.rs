@@ -434,6 +434,11 @@ fn an_unreadable_typed_value_is_refused_by_a_reason_that_stays_readable_in_every
             failures.push(format!(
                 "{tool} refused \"4q\" without a reason; it still shows {live:?}"
             ));
+        } else if shell.app().value_input() != "4q" {
+            failures.push(format!(
+                "{tool} replaced the refused \"4q\" with {:?} while the pointer was still",
+                shell.app().value_input()
+            ));
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");

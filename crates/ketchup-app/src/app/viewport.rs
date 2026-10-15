@@ -2423,7 +2423,7 @@ impl KetchupApp {
                 && let (Some(start), Some(cursor)) =
                     (self.gesture.sketch.start, self.gesture.sketch.cursor)
             {
-                self.value_box.input = match self.active_tool {
+                let reading = match self.active_tool {
                     ActiveTool::Line => format_height(length(Vec3::new(
                         cursor.x - start.x,
                         cursor.y - start.y,
@@ -2469,6 +2469,13 @@ impl KetchupApp {
                         format_height((cursor.y - start.y).abs())
                     ),
                 };
+                // As with Move and Rotate, a still pointer has nothing new to
+                // show, so a refused typed value stays until the pointer moves.
+                let shown = (start, reading);
+                if self.gesture.sketch.shown_reading.as_ref() != Some(&shown) {
+                    self.value_box.input.clone_from(&shown.1);
+                    self.gesture.sketch.shown_reading = Some(shown);
+                }
             }
         }
         if self.active_tool == ActiveTool::Mirror

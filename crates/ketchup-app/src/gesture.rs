@@ -50,6 +50,10 @@ pub(crate) struct SketchGesture {
     /// The held press placed the first point; releasing it after a drag
     /// places the next point where the pointer is let go.
     pub(crate) dragging_first_point: bool,
+    /// The start point and pointer reading last written into the value box;
+    /// an unchanged reading of the same shape leaves the box alone, so a
+    /// refused typed value stays readable.
+    pub(crate) shown_reading: Option<(Vec3, String)>,
 }
 
 /// Corners of a polygon until the user types another count.
