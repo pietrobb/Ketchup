@@ -1484,6 +1484,20 @@ struct InteractionProjectionCache {
     snap_geometry: std::cell::OnceCell<scene_snapping::SceneSnapGeometry>,
 }
 
+/// A value typed while the program or an exact solid was still being
+/// evaluated, with the tool, value, document revision and selection it was
+/// typed for.
+#[derive(Debug, PartialEq)]
+struct AwaitedValue {
+    tool: ActiveTool,
+    input: String,
+    revision: u64,
+    occurrences: BTreeSet<InstancePath>,
+    primary: Option<SelectionId>,
+    topological: Vec<(SelectionId, SnapshotBoundTopologicalSelection)>,
+    selected_group: Option<GroupId>,
+}
+
 #[derive(Default)]
 struct SelectionState {
     occurrences: BTreeSet<InstancePath>,
@@ -2542,10 +2556,10 @@ pub struct KetchupApp {
     feature_history: feature_history_ui::FeatureHistoryUiState,
     push_pull: app_state::PushPullState,
     program_evaluations: program_evaluation::ProgramEvaluations,
-    /// The tool whose typed value waits for the program evaluation or a
-    /// part's exact solid; it is applied when that is ready if that tool is
-    /// still active.
-    value_input_awaits_program: Option<ActiveTool>,
+    /// A typed value that waits for the program evaluation or a part's exact
+    /// solid; it is applied when that is ready only if nothing it was typed for
+    /// changed meanwhile, and Esc drops it (GX-1).
+    value_input_awaits_program: Option<AwaitedValue>,
     solid_tools: app_state::SolidToolInputs,
     helix_tool: helix_ui::HelixUiState,
     parameter: app_state::ParameterEditor,

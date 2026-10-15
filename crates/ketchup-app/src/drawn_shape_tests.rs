@@ -382,7 +382,12 @@ fn enter_before_the_parts_exact_solid_arrives_waits_and_mills_the_pocket() {
     app.value_box.input = "-5".into();
     assert!(!app.apply_value_input(), "{}", app.digest);
     assert_eq!(app.status_key, "status-exact-pending");
-    assert_eq!(app.value_input_awaits_program, Some(ActiveTool::PushPull));
+    assert_eq!(
+        app.value_input_awaits_program
+            .as_ref()
+            .map(|awaited| awaited.tool),
+        Some(ActiveTool::PushPull)
+    );
     assert_eq!(app.document_revision(), revision);
 
     let task = app.exact.task.take().unwrap();
@@ -396,7 +401,9 @@ fn enter_before_the_parts_exact_solid_arrives_waits_and_mills_the_pocket() {
     )
     .unwrap();
     app.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
-    // The frame that finds the solid applies the waiting value.
+    // The solid arriving changes nothing the value was typed for, so the frame
+    // that finds it applies the waiting value.
+    assert_eq!(app.value_input_awaits_program, Some(app.awaited_value()));
     assert!(app.apply_value_input(), "{}", app.digest);
     assert_eq!(app.document.current().occurrences().count(), 1);
     evaluate_exact(&mut app);

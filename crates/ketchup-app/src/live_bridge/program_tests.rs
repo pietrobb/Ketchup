@@ -1338,6 +1338,62 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
     assert_eq!(app.program_evaluations.on_ui_thread(), 0);
 }
 
+/// GX-1: a Fillet typed while the program is still evaluated is not written
+/// once the evaluation arrives after Esc, nor on an edge picked meanwhile.
+#[test]
+fn a_value_waiting_for_the_evaluation_is_dropped_by_esc_and_by_another_pick() {
+    const BLOCK: &str = "box(\"block\", (100, 60, 40))\n";
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(BLOCK, true), false).unwrap();
+    evaluate_exact(&mut app);
+    let _ = picks(&mut app, &mut bridge, "block", TopologicalElementKind::Edge);
+    let snapshot = app.document.current();
+    let occurrence = snapshot.occurrences().next().unwrap();
+    let edge = |ordinal| ketchup_interaction::exact_projection::TopologicalPickLocator {
+        instance_path: InstancePath::root(occurrence.id()),
+        producer_feature_id: app
+            .exact
+            .topology_results
+            .get_render(&snapshot, occurrence.definition_id())
+            .unwrap()
+            .producer_feature_id(),
+        kind: TopologicalElementKind::Edge,
+        ordinal,
+    };
+    let (first, second) = (edge(0), edge(1));
+    let program = app.document.current_rule_program().unwrap().clone();
+    let context = egui::Context::default();
+    let fillet = ketchup_application::topology::GeneralFinishKind::Fillet;
+    let source = |app: &KetchupApp| app.document.current_rule_program().unwrap().source.clone();
+
+    // Fillet 5, Esc while it waits: "Cancelled" means nothing is written.
+    let held = app.program_evaluations.hold(&program);
+    assert!(app.prepare_general_finish(first.clone(), fillet, 5.0));
+    assert!(!app.apply_value_input());
+    assert_eq!(app.status_key, "status-program-planning");
+    app.cancel_or_deselect();
+    assert_eq!(app.digest, app.catalog.text("digest-cancelled"));
+    held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
+        .unwrap();
+    for _ in 0..2 {
+        let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    }
+    assert_eq!(source(&app), BLOCK, "{}", app.digest);
+
+    // Fillet 5 on one edge, then another edge picked while it waits: the
+    // value was typed for the first edge and is not put on the second.
+    let held = app.program_evaluations.hold(&program);
+    assert!(app.prepare_general_finish(first, fillet, 5.0));
+    assert!(!app.apply_value_input());
+    assert!(app.prepare_general_finish(second, fillet, 5.0));
+    held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
+        .unwrap();
+    for _ in 0..2 {
+        let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    }
+    assert_eq!(source(&app), BLOCK, "{}", app.digest);
+}
+
 #[test]
 fn a_fillet_on_a_program_that_no_longer_evaluates_says_why() {
     let (mut app, mut bridge) = setup();

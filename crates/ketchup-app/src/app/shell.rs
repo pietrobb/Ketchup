@@ -1335,12 +1335,13 @@ impl KetchupApp {
         } else {
             self.program_evaluations.forget();
         }
-        if let Some(tool) = self.value_input_awaits_program
+        if self.value_input_awaits_program.is_some()
             && !self.program_is_planning()
             && !(self.status_key == "status-exact-pending" && self.exact.task.is_some())
         {
-            self.value_input_awaits_program = None;
-            if tool == self.active_tool {
+            // Another tool, value, selection or revision (Undo) means the user
+            // moved on; the value is not applied to what they did since.
+            if self.value_input_awaits_program.take() == Some(self.awaited_value()) {
                 self.apply_value_input();
             }
         }

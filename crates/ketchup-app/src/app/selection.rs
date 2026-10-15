@@ -1139,6 +1139,9 @@ impl KetchupApp {
     }
 
     pub(crate) fn cancel_or_deselect(&mut self) {
+        // A value waiting for the evaluation is in progress too: Esc drops it,
+        // and with nothing else to cancel keeps the selection it was typed for.
+        let dropped_value = self.value_input_awaits_program.take().is_some();
         // Escape closes a spline that has enough points instead of dropping them.
         if self.active_tool == ActiveTool::Spline && self.complete_spline() {
             return;
@@ -1189,6 +1192,9 @@ impl KetchupApp {
         {
             self.clear_ephemeral_edit_state();
             self.cancel_rectangle_sketch();
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if dropped_value {
+            self.status_key = "status-ready";
             self.digest = self.catalog.text("digest-cancelled");
         } else if self.selection_count() > 0 {
             self.dispatch_command(AppCommand::Deselect);

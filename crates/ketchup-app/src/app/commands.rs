@@ -574,7 +574,20 @@ impl KetchupApp {
             self.status_key,
             "status-program-planning" | "status-exact-pending"
         ) {
-            self.value_input_awaits_program = Some(self.active_tool);
+            self.value_input_awaits_program = Some(self.awaited_value());
+        }
+    }
+
+    /// What a value typed now is typed for.
+    pub(crate) fn awaited_value(&self) -> AwaitedValue {
+        AwaitedValue {
+            tool: self.active_tool,
+            input: self.value_box.input.clone(),
+            revision: self.document_revision(),
+            occurrences: self.selection.occurrences.clone(),
+            primary: self.selection.primary.clone(),
+            topological: self.selection.topological.clone(),
+            selected_group: self.selection.selected_group,
         }
     }
 
