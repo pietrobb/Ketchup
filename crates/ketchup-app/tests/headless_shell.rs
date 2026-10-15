@@ -13604,7 +13604,10 @@ fn uniform_scale_drag_grows_the_part_about_its_centre_in_one_undo_step() {
     shell.click_at(shell.top_face_centre(1));
     let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
     let centre_screen = shell.app().project_to_screen(origin + size * 0.5, rect);
-    let from = shell.top_face_centre(1);
+    // The top face centre is a grip; off every grip a drag scales evenly
+    // about the centre.
+    let quarter = Vec3::new(size.x * 0.75, size.y * 0.75, size.z);
+    let from = shell.app().project_to_screen(origin + quarter, rect);
     let to = centre_screen + (from - centre_screen) * 1.5;
     let (_, digest, undo, _) = scale_untouched_state(&shell);
 

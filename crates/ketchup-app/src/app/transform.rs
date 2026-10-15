@@ -145,14 +145,14 @@ impl KetchupApp {
     pub(crate) fn move_session(&self) -> Option<(&MoveDrag, ToolSessionPhase)> {
         match self.transform_tool.session.as_ref()? {
             ToolSession::Move { phase, drag } => Some((drag, *phase)),
-            ToolSession::Rotate { .. } | ToolSession::Scale(_) => None,
+            ToolSession::Rotate { .. } | ToolSession::Scale { .. } => None,
         }
     }
 
     pub(crate) fn move_session_mut(&mut self) -> Option<&mut MoveDrag> {
         match self.transform_tool.session.as_mut()? {
             ToolSession::Move { drag, .. } => Some(drag),
-            ToolSession::Rotate { .. } | ToolSession::Scale(_) => None,
+            ToolSession::Rotate { .. } | ToolSession::Scale { .. } => None,
         }
     }
 
@@ -179,14 +179,14 @@ impl KetchupApp {
     pub(crate) fn rotate_session(&self) -> Option<(&RotateDrag, ToolSessionPhase)> {
         match self.transform_tool.session.as_ref()? {
             ToolSession::Rotate { phase, drag } => Some((drag, *phase)),
-            ToolSession::Move { .. } | ToolSession::Scale(_) => None,
+            ToolSession::Move { .. } | ToolSession::Scale { .. } => None,
         }
     }
 
     pub(crate) fn rotate_session_mut(&mut self) -> Option<&mut RotateDrag> {
         match self.transform_tool.session.as_mut()? {
             ToolSession::Rotate { drag, .. } => Some(drag),
-            ToolSession::Move { .. } | ToolSession::Scale(_) => None,
+            ToolSession::Move { .. } | ToolSession::Scale { .. } => None,
         }
     }
 
@@ -210,27 +210,33 @@ impl KetchupApp {
         }
     }
 
-    pub(crate) fn scale_session(&self) -> Option<&ScaleDrag> {
+    pub(crate) fn scale_session(&self) -> Option<(&ScaleDrag, ToolSessionPhase)> {
         match self.transform_tool.session.as_ref()? {
-            ToolSession::Scale(drag) => Some(drag),
+            ToolSession::Scale { phase, drag } => Some((drag, *phase)),
             ToolSession::Move { .. } | ToolSession::Rotate { .. } => None,
         }
     }
 
     pub(crate) fn scale_session_mut(&mut self) -> Option<&mut ScaleDrag> {
         match self.transform_tool.session.as_mut()? {
-            ToolSession::Scale(drag) => Some(drag),
+            ToolSession::Scale { drag, .. } => Some(drag),
             ToolSession::Move { .. } | ToolSession::Rotate { .. } => None,
         }
     }
 
-    pub(crate) fn set_scale_session(&mut self, drag: ScaleDrag) {
-        self.transform_tool.session = Some(ToolSession::Scale(drag));
+    pub(crate) fn set_scale_session(&mut self, phase: ToolSessionPhase, drag: ScaleDrag) {
+        self.transform_tool.session = Some(ToolSession::Scale { phase, drag });
     }
 
-    pub(crate) fn take_scale_session(&mut self) -> Option<ScaleDrag> {
+    pub(crate) fn take_scale_session(
+        &mut self,
+        phase: Option<ToolSessionPhase>,
+    ) -> Option<ScaleDrag> {
         match self.transform_tool.session.take() {
-            Some(ToolSession::Scale(drag)) => Some(drag),
+            Some(ToolSession::Scale {
+                phase: actual,
+                drag,
+            }) if phase.is_none_or(|expected| expected == actual) => Some(drag),
             session => {
                 self.transform_tool.session = session;
                 None
@@ -739,17 +745,17 @@ impl KetchupApp {
         true
     }
 
-    pub(crate) fn correct_last_scale(&mut self, factor: f64) -> bool {
+    pub(crate) fn correct_last_scale(&mut self, input: ScaleInput) -> bool {
         let Some((selection, previous)) = self.current_scale_correction() else {
             return false;
         };
-        if previous.axis != self.gesture.transform.scale_axis_lock
-            || !factor.is_finite()
-            || factor <= 0.0
-            || factor > 1_000.0
-        {
-            return false;
-        }
+        let factors = match input.factors(previous.drives, previous.extent_mm) {
+            Ok(factors) => factors,
+            Err(key) => {
+                self.digest = self.catalog.text(key);
+                return false;
+            }
+        };
         let Ok(parent) = self.document.tip_replacement_parent() else {
             return false;
         };
@@ -768,14 +774,13 @@ impl KetchupApp {
                 scale_applies(base, BTreeSet::new(), Some(*group_id))
             }
         };
-        let batch =
-            match scale_feature_batch(base, &applies, previous.centre_mm, factor, previous.axis) {
-                Ok(batch) => batch,
-                Err(key) => {
-                    self.digest = self.catalog.text(key);
-                    return false;
-                }
-            };
+        let batch = match scale_feature_batch(base, &applies, previous.centre_mm, factors) {
+            Ok(batch) => batch,
+            Err(key) => {
+                self.digest = self.catalog.text(key);
+                return false;
+            }
+        };
         if !self.commit_transform_correction(&parent, batch) {
             return false;
         }
@@ -783,14 +788,7 @@ impl KetchupApp {
         self.status_key = "status-object-scaled";
         self.digest = self.catalog.format(
             "digest-scale-committed",
-            &BTreeMap::from([
-                ("factor", format_scale_factor(factor)),
-                (
-                    "axis",
-                    self.catalog
-                        .text(previous.axis.map_or("axis-name-uniform", axis_name_key)),
-                ),
-            ]),
+            &self.scale_digest_arguments(factors),
         );
         true
     }
@@ -1805,7 +1803,7 @@ impl KetchupApp {
             &drag.selection,
             &drag.occurrence_paths,
             drag.group_id,
-            world_scale_transform(drag.centre_mm, drag.factor, drag.axis).ok()?,
+            world_scale_transform(drag.centre_mm, drag.factors).ok()?,
         )?;
         TransformPlan::prepare(&self.document.current(), request)
     }
@@ -2362,7 +2360,9 @@ impl KetchupApp {
         }
         self.gesture.transform.scale_axis_lock = axis;
         if let Some(drag) = self.scale_session_mut() {
-            drag.axis = axis;
+            let factor = drag.scalar();
+            drag.drives = axis_drives(axis);
+            drag.drive(factor);
         }
         self.digest = self.catalog.format(
             "digest-scale-axis-locked",
@@ -2380,42 +2380,77 @@ impl KetchupApp {
 
     pub(crate) fn scale_preview_transform_overrides(&self) -> BTreeMap<InstancePath, Transform> {
         self.scale_session()
-            .and_then(|drag| self.scale_transform_plan(drag))
+            .and_then(|(drag, _)| self.scale_transform_plan(drag))
             .map(|plan| plan.preview_overrides().clone())
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub(crate) fn scale_selected(&mut self, factor: f64) -> bool {
+        self.scale_selected_by(ScaleInput::Factor(factor))
+    }
+
+    /// Commits `input` about the centre of the selection, along the axis lock.
+    pub(crate) fn scale_selected_by(&mut self, input: ScaleInput) -> bool {
         let Some(selection) = self.selected_move_reference() else {
             self.digest = self.catalog.text("digest-scale-start-missed");
             return false;
         };
+        let Some(mut drag) = self.new_scale_drag(
+            selection,
+            axis_drives(self.gesture.transform.scale_axis_lock),
+        ) else {
+            return false;
+        };
+        match input.factors(drag.drives, drag.extent_mm) {
+            Ok(factors) => drag.factors = factors,
+            Err(key) => {
+                self.digest = self.catalog.text(key);
+                return false;
+            }
+        }
+        self.commit_scale_drag(&drag)
+    }
+
+    /// A Scale of the current selection about its centre driving `drives`,
+    /// or `None` after naming why no factor could commit one.
+    fn new_scale_drag(&mut self, selection: SelectionId, drives: [bool; 3]) -> Option<ScaleDrag> {
         let snapshot = self.document.current();
         let group_id = self.selection.selected_group;
         let occurrence_paths = self.selected_instance_paths();
         let applies = scale_applies(&snapshot, occurrence_paths.clone(), group_id);
-        if self.refuse_unscalable(&snapshot, &applies) {
-            return false;
+        let probe = drives.map(|driven| if driven { 2.0 } else { 1.0 });
+        if let Err(key) = scale_feature_batch(&snapshot, &applies, Vec3::ZERO, probe) {
+            self.digest = self.catalog.text(key);
+            return None;
         }
-        let Some(centre_mm) = self.rotation_centre_for(&applies) else {
-            return false;
-        };
-        let drag = ScaleDrag {
+        let [minimum, maximum] = self.rotation_bounds_for(&applies)?;
+        Some(ScaleDrag {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
             selection,
             occurrence_paths,
             group_id,
-            centre_mm,
+            centre_mm: (minimum + maximum) * 0.5,
             centre_screen: Pos2::ZERO,
-            reference_radius_points: 1.0,
-            axis: self.gesture.transform.scale_axis_lock,
-            factor,
-        };
-        self.commit_scale_drag(&drag)
+            reference_screen: Vec2::ZERO,
+            along_reference: false,
+            drives,
+            factors: [1.0; 3],
+            extent_mm: (maximum - minimum).to_array(),
+        })
     }
 
-    pub(crate) fn begin_scale_drag_at(&mut self, pointer: Pos2, rect: Rect) -> bool {
+    /// Starts a Scale gesture at `pointer`: from a grip about the opposite
+    /// grip, or the centre for `about_centre`; elsewhere about the selection
+    /// centre along the axis lock.
+    pub(crate) fn begin_scale_drag_at(
+        &mut self,
+        pointer: Pos2,
+        rect: Rect,
+        about_centre: bool,
+    ) -> bool {
+        let grip = self.scale_grip_at(pointer, rect);
         let selected = self.selected_move_reference();
         let Some(selection) = selected.clone().or_else(|| {
             self.hover
@@ -2429,57 +2464,43 @@ impl KetchupApp {
         if selected.is_none() {
             self.select_from_viewport(Some(selection.clone()), false);
         }
-        let snapshot = self.document.current();
-        let group_id = self.selection.selected_group;
-        let occurrence_paths = self.selected_instance_paths();
-        let applies = scale_applies(&snapshot, occurrence_paths.clone(), group_id);
-        if self.refuse_unscalable(&snapshot, &applies) {
-            return false;
-        }
-        let Some(centre_mm) = self.rotation_centre_for(&applies) else {
+        let drives = grip.map_or_else(
+            || axis_drives(self.gesture.transform.scale_axis_lock),
+            |(grip, _)| grip.drives(),
+        );
+        let Some(mut drag) = self.new_scale_drag(selection, drives) else {
             return false;
         };
-        let centre_screen = self.project(centre_mm, rect);
-        let reference_radius_points = pointer.distance(centre_screen);
-        if reference_radius_points < 2.0 {
+        let reference = match grip {
+            Some((grip, bounds)) => {
+                drag.centre_mm = grip.pivot(bounds, about_centre);
+                drag.along_reference = true;
+                self.project(grip.point(bounds), rect)
+            }
+            None => pointer,
+        };
+        drag.centre_screen = self.project(drag.centre_mm, rect);
+        drag.reference_screen = reference - drag.centre_screen;
+        if drag.reference_screen.length() < 2.0 {
             self.digest = self.catalog.text("digest-scale-start-too-close");
             return false;
         }
         self.value_box.input = "1".to_owned();
-        self.set_scale_session(ScaleDrag {
-            source_document_id: snapshot.document_id(),
-            source_revision: snapshot.revision_id(),
-            selection,
-            occurrence_paths,
-            group_id,
-            centre_mm,
-            centre_screen,
-            reference_radius_points,
-            axis: self.gesture.transform.scale_axis_lock,
-            factor: 1.0,
-        });
-        true
-    }
-
-    /// Refuses up front, naming why, a Scale no factor could commit along the
-    /// current axis lock; the commit checks again with the final factor.
-    fn refuse_unscalable(
-        &mut self,
-        snapshot: &Snapshot,
-        applies: &dyn Fn(&InstancePath) -> bool,
-    ) -> bool {
-        let axis = self.gesture.transform.scale_axis_lock;
-        let Err(key) = scale_feature_batch(snapshot, applies, Vec3::ZERO, 2.0, axis) else {
-            return false;
-        };
-        self.digest = self.catalog.text(key);
+        self.set_scale_session(ToolSessionPhase::Gesture, drag);
         true
     }
 
     pub(crate) fn advance_scale(drag: &mut ScaleDrag, pointer: Pos2) {
-        let factor = f64::from(pointer.distance(drag.centre_screen) / drag.reference_radius_points);
+        let offset = pointer - drag.centre_screen;
+        let reference = drag.reference_screen;
+        let factor = if drag.along_reference {
+            offset.dot(reference) / reference.length_sq()
+        } else {
+            offset.length() / reference.length()
+        };
+        let factor = f64::from(factor);
         if factor.is_finite() {
-            drag.factor = factor.clamp(0.01, 1_000.0);
+            drag.drive(factor.clamp(0.01, 1_000.0));
         }
     }
 
@@ -2488,18 +2509,12 @@ impl KetchupApp {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
         }
-        if !scale_is_meaningful(drag.factor) {
+        if !scale_is_meaningful(drag.factors) {
             return false;
         }
         let snapshot = self.document.current();
         let applies = scale_applies(&snapshot, drag.occurrence_paths.clone(), drag.group_id);
-        let batch = match scale_feature_batch(
-            &snapshot,
-            &applies,
-            drag.centre_mm,
-            drag.factor,
-            drag.axis,
-        ) {
+        let batch = match scale_feature_batch(&snapshot, &applies, drag.centre_mm, drag.factors) {
             Ok(batch) => batch,
             Err(key) => {
                 self.digest = self.catalog.text(key);
@@ -2531,30 +2546,55 @@ impl KetchupApp {
             selection,
             CorrectionOperation::Scale(ScaleCorrection {
                 centre_mm: drag.centre_mm,
-                axis: drag.axis,
+                drives: drag.drives,
+                extent_mm: drag.extent_mm,
             }),
         );
         self.status_key = "status-object-scaled";
         self.digest = self.catalog.format(
             "digest-scale-committed",
-            &BTreeMap::from([
-                ("factor", format_scale_factor(drag.factor)),
-                (
-                    "axis",
-                    self.catalog
-                        .text(drag.axis.map_or("axis-name-uniform", axis_name_key)),
-                ),
-            ]),
+            &self.scale_digest_arguments(drag.factors),
         );
         true
+    }
+
+    /// The `factor` and `axis` a Scale digest names for `factors`: one value
+    /// when they are even or change one axis, `x;y;z` otherwise.
+    pub(crate) fn scale_digest_arguments(
+        &self,
+        factors: [f64; 3],
+    ) -> BTreeMap<&'static str, String> {
+        let shown = factors.map(format_scale_factor);
+        let changed: Vec<usize> = (0..3).filter(|axis| shown[*axis] != "1").collect();
+        let (factor, axis) = if shown.iter().all(|value| *value == shown[0]) {
+            (shown[0].clone(), "axis-name-uniform")
+        } else if let [axis] = changed[..] {
+            (
+                shown[axis].clone(),
+                axis_name_key([Axis::X, Axis::Y, Axis::Z][axis]),
+            )
+        } else {
+            (shown.join(";"), "axis-name-per-axis")
+        };
+        BTreeMap::from([("factor", factor), ("axis", self.catalog.text(axis))])
     }
 
     #[doc(hidden)]
     #[must_use]
     pub fn scale_preview_factor(&self) -> Option<f64> {
+        self.scale_preview_factors()
+            .and_then(|_| self.scale_session())
+            .map(|(drag, _)| drag.scalar())
+    }
+
+    /// The world factors a current Scale preview shows, one per axis.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn scale_preview_factors(&self) -> Option<[f64; 3]> {
         self.scale_session()
+            .map(|(drag, _)| drag)
             .filter(|drag| self.scale_preview_is_current(drag))
-            .map(|drag| drag.factor)
+            .map(|drag| drag.factors)
     }
 
     /// The Rotate gesture currently driving a preview, if any.
@@ -2929,20 +2969,11 @@ pub(crate) fn world_rotation_transform(
     world_axis_rotation_transform(centre_mm, axis_direction(axis), angle_degrees)
 }
 
-fn world_scale_transform(
-    centre_mm: Vec3,
-    factor: f64,
-    axis: Option<Axis>,
-) -> Result<Transform, CanonicalError> {
-    if !factor.is_finite() || factor <= 0.0 || factor > 1_000.0 {
+fn world_scale_transform(centre_mm: Vec3, factors: [f64; 3]) -> Result<Transform, CanonicalError> {
+    if !factors.into_iter().all(scale_factor_in_range) {
         return Err(CanonicalError::InvalidTransform);
     }
-    let [scale_x, scale_y, scale_z] = match axis {
-        Some(Axis::X) => [factor, 1.0, 1.0],
-        Some(Axis::Y) => [1.0, factor, 1.0],
-        Some(Axis::Z) => [1.0, 1.0, factor],
-        None => [factor; 3],
-    };
+    let [scale_x, scale_y, scale_z] = factors;
     Transform::from_matrix([
         scale_x,
         0.0,
@@ -2964,7 +2995,7 @@ fn world_scale_transform(
 }
 
 /// The Scale features that grow every visible part `applies` picks about
-/// `centre_mm` by `factor`, evenly or along world `axis`. Each part stretches
+/// `centre_mm` by the world `factors`, one per axis. Each part stretches
 /// its own definition along that definition's axes, so its placement still
 /// only moves and turns it. Refuses, naming why by catalog key, a part whose
 /// definition other copies share, an assembly, a part without an exact solid,
@@ -2974,22 +3005,23 @@ pub(crate) fn scale_feature_batch(
     snapshot: &Snapshot,
     applies: &dyn Fn(&InstancePath) -> bool,
     centre_mm: Vec3,
-    factor: f64,
-    axis: Option<Axis>,
+    world: [f64; 3],
 ) -> Result<CommandBatch, &'static str> {
     use ketchup_model::exact_product::{exact_body_terminal_features, producer_exact_graph};
-    if !factor.is_finite() || factor <= 0.0 {
+    if !world
+        .iter()
+        .all(|factor| factor.is_finite() && *factor > 0.0)
+    {
         return Err("digest-scale-invalid-factor");
     }
-    let world = match axis {
-        Some(Axis::X) => [factor, 1.0, 1.0],
-        Some(Axis::Y) => [1.0, factor, 1.0],
-        Some(Axis::Z) => [1.0, 1.0, factor],
-        None => [factor; 3],
-    };
+    let change = world
+        .iter()
+        .map(|factor| (factor - 1.0).abs())
+        .fold(0.0, f64::max);
     let snap = |value: f64| {
-        [factor, 1.0]
+        world
             .into_iter()
+            .chain([1.0])
             .find(|exact| (value - exact).abs() <= ROUNDING * exact)
             .unwrap_or(value)
     };
@@ -3043,7 +3075,7 @@ pub(crate) fn scale_feature_batch(
                 let value: f64 = (0..3).map(|k| r(k, i) * world[k] * r(k, j)).sum();
                 if i == j {
                     *local = snap(value);
-                } else if value.abs() > APPROXIMATION * (factor - 1.0).abs() {
+                } else if value.abs() > APPROXIMATION * change {
                     return Err("digest-scale-refused-shear");
                 }
             }
@@ -3101,9 +3133,15 @@ pub(crate) fn scale_applies(
     }
 }
 
-pub(crate) fn scale_is_meaningful(factor: f64) -> bool {
-    // not a tolerance: a smaller change is below the input resolution.
-    factor.is_finite() && factor > 0.0 && factor <= 1_000.0 && (factor - 1.0).abs() >= 1.0e-4
+/// A factor Scale accepts: positive and at most the drag's upper bound.
+pub(crate) fn scale_factor_in_range(factor: f64) -> bool {
+    factor.is_finite() && factor > 0.0 && factor <= 1_000.0
+}
+
+pub(crate) fn scale_is_meaningful(factors: [f64; 3]) -> bool {
+    factors.into_iter().all(scale_factor_in_range)
+        // not a tolerance: a smaller change is below the input resolution.
+        && factors.iter().any(|factor| (factor - 1.0).abs() >= 1.0e-4)
 }
 
 pub(crate) fn format_scale_factor(factor: f64) -> String {
@@ -3560,4 +3598,18 @@ pub(crate) fn resize_box_from_face(
     }
     *extent = new_extent_mm;
     Some(item)
+}
+
+impl ScaleDrag {
+    /// The factor the pointer drives: that of the first axis it stretches.
+    fn scalar(&self) -> f64 {
+        (0..3)
+            .find(|axis| self.drives[*axis])
+            .map_or(self.factors[0], |axis| self.factors[axis])
+    }
+
+    /// Sets every driven axis to `factor` and leaves the others at 1.
+    fn drive(&mut self, factor: f64) {
+        self.factors = self.drives.map(|driven| if driven { factor } else { 1.0 });
+    }
 }

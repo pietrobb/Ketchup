@@ -63,6 +63,7 @@ mod push_pull_house_tests;
 pub(crate) mod received_comments;
 mod save_activity;
 pub(crate) mod saved_views;
+mod scale_grips;
 #[cfg(test)]
 #[path = "app/scene_tabs_tests.rs"]
 mod scene_tabs_tests;
@@ -99,6 +100,7 @@ mod viewport_paint;
 pub(crate) use commands::*;
 pub(crate) use document::SaveFailure;
 pub(crate) use drawing::*;
+pub(crate) use scale_grips::{ScaleInput, axis_drives};
 #[cfg(test)]
 pub(crate) use section::SECTION_COLOR;
 pub(crate) use section::{plane_at, section_json};

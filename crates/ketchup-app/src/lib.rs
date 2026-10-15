@@ -428,11 +428,13 @@ struct MoveDrag {
     copy: bool,
 }
 
-/// One in-progress Rotate gesture.
+/// One in-progress Scale gesture about the pivot `centre_mm`.
 ///
-/// The rotation happens in the plane through `centre_mm` whose normal is
-/// `axis`, so the live angle is read from where the pointer meets that plane
-/// rather than from raw screen motion.
+/// The pointer drives one factor: from a grip, along the screen line from the
+/// pivot to the grip; elsewhere, by its distance from the pivot. `drives`
+/// names the world axes that factor stretches, the others stay at 1; a typed
+/// `x;y;z` sets each axis on its own. `extent_mm` is the selection's world
+/// size, which turns a typed length into a factor.
 #[derive(Clone)]
 struct ScaleDrag {
     source_document_id: DocumentId,
@@ -442,11 +444,18 @@ struct ScaleDrag {
     group_id: Option<GroupId>,
     centre_mm: Vec3,
     centre_screen: Pos2,
-    reference_radius_points: f32,
-    axis: Option<Axis>,
-    factor: f64,
+    reference_screen: Vec2,
+    along_reference: bool,
+    drives: [bool; 3],
+    factors: [f64; 3],
+    extent_mm: [f64; 3],
 }
 
+/// One in-progress Rotate gesture.
+///
+/// The rotation happens in the plane through `centre_mm` whose normal is
+/// `axis`, so the live angle is read from where the pointer meets that plane
+/// rather than from raw screen motion.
 #[derive(Clone)]
 struct RotateDrag {
     source_document_id: DocumentId,
@@ -531,7 +540,10 @@ enum ToolSession {
         phase: ToolSessionPhase,
         drag: RotateDrag,
     },
-    Scale(ScaleDrag),
+    Scale {
+        phase: ToolSessionPhase,
+        drag: ScaleDrag,
+    },
 }
 
 /// The on-screen protractor a frame draws for the Rotate tool.
@@ -605,7 +617,8 @@ struct RotateCorrection {
 #[derive(Clone)]
 struct ScaleCorrection {
     centre_mm: Vec3,
-    axis: Option<Axis>,
+    drives: [bool; 3],
+    extent_mm: [f64; 3],
 }
 
 #[derive(Clone)]

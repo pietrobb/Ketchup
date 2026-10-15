@@ -607,28 +607,31 @@ impl KetchupApp {
             return self.set_polygon_sides_from_value_box();
         }
         if self.active_tool == ActiveTool::Scale {
-            let Some(factor) = crate::length_input::parse_decimal(&self.value_box.input)
-                .filter(|factor| factor.is_finite() && *factor > 0.0 && *factor <= 1_000.0)
-            else {
+            let Some(input) = ScaleInput::parse(&self.value_box.input) else {
                 self.digest = self.catalog.text("digest-scale-invalid-factor");
                 return false;
             };
-            if let Some(mut drag) = self.take_scale_session() {
-                drag.factor = factor;
+            if let Some((drag, _)) = self.scale_session() {
+                let mut drag = drag.clone();
+                // A refused value leaves the gesture open for another try.
+                match input.factors(drag.drives, drag.extent_mm) {
+                    Ok(factors) => drag.factors = factors,
+                    Err(key) => {
+                        self.digest = self.catalog.text(key);
+                        return false;
+                    }
+                }
+                self.take_scale_session(None);
                 return self.commit_scale_drag(&drag);
             }
             if self.current_scale_correction().is_some() {
-                if self.correct_last_scale(factor) {
+                if self.correct_last_scale(input) {
                     return true;
                 }
                 self.end_transform_correction();
                 return false;
             }
-            if !scale_is_meaningful(factor) {
-                self.digest = self.catalog.text("digest-scale-invalid-factor");
-                return false;
-            }
-            return self.scale_selected(factor);
+            return self.scale_selected_by(input);
         }
         if self.active_tool == ActiveTool::Rotate {
             let Some(angle_degrees) =

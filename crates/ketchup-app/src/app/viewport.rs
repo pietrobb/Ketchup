@@ -2037,7 +2037,16 @@ impl KetchupApp {
                 self.begin_rotate_drag_at(pointer, response.rect, copy_requested);
             }
         } else if self.active_tool == ActiveTool::Scale {
-            self.begin_scale_drag_at(pointer, response.rect);
+            if let Some(mut anchor) = self.take_scale_session(Some(ToolSessionPhase::Anchor)) {
+                Self::advance_scale(&mut anchor, pointer);
+                self.commit_scale_drag(&anchor);
+            } else {
+                self.begin_scale_drag_at(
+                    pointer,
+                    response.rect,
+                    ui.input(|input| input.modifiers.command),
+                );
+            }
         } else if self.active_tool == ActiveTool::Mirror {
             self.gesture.mirror = self.mirror_plane_at_screen(pointer, response.rect);
             self.commit_mirror();
@@ -2145,6 +2154,17 @@ impl KetchupApp {
                     ("axis", self.catalog.text(axis_name_key(axis))),
                 ]),
             );
+        }
+
+        if self.active_tool == ActiveTool::Scale
+            && let Some(anchor) = self
+                .scale_session()
+                .and_then(|(drag, phase)| (phase == ToolSessionPhase::Anchor).then(|| drag.clone()))
+            && self.scale_preview_is_current(&anchor)
+            && let Some(pointer) = response.hover_pos()
+        {
+            let typing = self.value_box_is_being_typed_into(ui.ctx());
+            self.advance_scale_session(ToolSessionPhase::Anchor, anchor, pointer, typing);
         }
 
         if self.active_tool == ActiveTool::PushPull
@@ -2263,26 +2283,13 @@ impl KetchupApp {
                         ("axis", self.catalog.text(axis_name_key(axis))),
                     ]),
                 );
-            } else if let (Some(mut drag), Some(pointer)) = (
-                self.scale_session().cloned(),
+            } else if let (Some(drag), Some(pointer)) = (
+                self.scale_session().and_then(|(drag, phase)| {
+                    (phase == ToolSessionPhase::Gesture).then(|| drag.clone())
+                }),
                 response.interact_pointer_pos(),
             ) {
-                Self::advance_scale(&mut drag, pointer);
-                let factor = drag.factor;
-                let axis = drag.axis;
-                self.set_scale_session(drag);
-                self.value_box.input = format_scale_factor(factor);
-                self.digest = self.catalog.format(
-                    "digest-scale-live",
-                    &BTreeMap::from([
-                        ("factor", format_scale_factor(factor)),
-                        (
-                            "axis",
-                            self.catalog
-                                .text(axis.map_or("axis-name-uniform", axis_name_key)),
-                        ),
-                    ]),
-                );
+                self.advance_scale_session(ToolSessionPhase::Gesture, drag, pointer, false);
             } else if let (Some(drag), Some(pointer)) = (
                 self.gesture.drag.get::<PushPullDrag>().cloned(),
                 response.interact_pointer_pos(),
@@ -2358,8 +2365,15 @@ impl KetchupApp {
                     self.set_rotate_session(ToolSessionPhase::Anchor, drag);
                     self.digest = self.catalog.text("digest-rotate-anchor-set");
                 }
-            } else if let Some(drag) = self.take_scale_session() {
-                self.commit_scale_drag(&drag);
+            } else if let Some(drag) = self.take_scale_session(Some(ToolSessionPhase::Gesture)) {
+                // A click that did not move leaves the pivot set: the next
+                // click, or a typed value, completes the Scale.
+                if !self.scale_preview_is_current(&drag) || scale_is_meaningful(drag.factors) {
+                    self.commit_scale_drag(&drag);
+                } else {
+                    self.set_scale_session(ToolSessionPhase::Anchor, drag);
+                    self.digest = self.catalog.text("digest-scale-anchor-set");
+                }
             } else if let Some(drag) = self.gesture.drag.remove::<PushPullDrag>() {
                 if self.has_preview()
                     || self.has_occurrence_operation_preview()
@@ -3533,6 +3547,7 @@ impl KetchupApp {
 
         self.paint_origin_snap(painter, response.hover_pos(), response.rect);
         self.paint_rotation_guide(painter, response.rect);
+        self.paint_scale_grips(painter, response.rect, response.hover_pos());
         self.paint_mirror_preview(painter, response.rect);
         self.paint_received_comment(painter, response.rect);
 
