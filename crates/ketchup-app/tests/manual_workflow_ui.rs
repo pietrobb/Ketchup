@@ -397,3 +397,44 @@ fn an_interrupted_operation_leaves_document_selection_and_history_as_they_were()
         );
     }
 }
+
+#[test]
+fn an_unreadable_typed_value_is_refused_by_a_reason_that_stays_readable_in_every_tool() {
+    let mut shell = Shell::new();
+    let mut failures = Vec::new();
+    for tool in [
+        "Move",
+        "Rotate",
+        "Scale",
+        "Rectangle",
+        "Push/Pull",
+        "Line",
+        "Circle",
+        "Arc",
+        "Polygon",
+        "Ellipse",
+        "Spline",
+    ] {
+        shell.press_key(Key::Escape);
+        shell.press_key(Key::Escape);
+        shell.press_key(Key::Space);
+        shell.click_at(shell.top_face_centre(1));
+        let before = DocumentState::of(&shell);
+        start_interrupted(&mut shell, tool);
+        shell.type_text("q");
+        let live = shell.app().action_digest().to_owned();
+        shell.press_key(Key::Enter);
+        // A few more frames with the pointer still: the reason must not be
+        // replaced by the live reading it refused.
+        shell.step();
+        shell.step();
+        if DocumentState::of(&shell) != before {
+            failures.push(format!("{tool} applied the unreadable value \"4q\""));
+        } else if shell.app().action_digest() == live {
+            failures.push(format!(
+                "{tool} refused \"4q\" without a reason; it still shows {live:?}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

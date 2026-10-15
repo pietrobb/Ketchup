@@ -2089,6 +2089,7 @@ impl KetchupApp {
             && self.move_preview_is_current(&anchor)
             && let Some(pointer) = response.hover_pos()
         {
+            let shown = (anchor.delta_mm, anchor.copy);
             self.advance_move(
                 &mut anchor,
                 pointer,
@@ -2102,20 +2103,24 @@ impl KetchupApp {
             // While an anchor waits, the pointer only proposes a value. Typing
             // one is the stronger statement, so the live reading must not
             // overwrite what is being entered.
-            if !self.value_box_is_being_typed_into(ui.ctx()) {
+            if !self.value_box_is_being_typed_into(ui.ctx()) && (delta_mm, copy) != shown {
                 self.value_box.input = format_height(distance);
             }
-            self.digest = self.catalog.format(
-                if copy {
-                    "digest-copy-live"
-                } else {
-                    "digest-move-live"
-                },
-                &BTreeMap::from([
-                    ("distance", format_height(distance)),
-                    ("vector", format_vector_mm(delta_mm)),
-                ]),
-            );
+            // A still pointer has nothing new to show, so the reason a typed
+            // value was refused stays readable until the pointer moves.
+            if (delta_mm, copy) != shown {
+                self.digest = self.catalog.format(
+                    if copy {
+                        "digest-copy-live"
+                    } else {
+                        "digest-move-live"
+                    },
+                    &BTreeMap::from([
+                        ("distance", format_height(distance)),
+                        ("vector", format_vector_mm(delta_mm)),
+                    ]),
+                );
+            }
         }
 
         if self.active_tool == ActiveTool::Rotate
@@ -2125,35 +2130,48 @@ impl KetchupApp {
             && self.rotate_preview_is_current(&anchor)
             && let Some(pointer) = response.hover_pos()
         {
+            let reading = |drag: &crate::RotateDrag| {
+                (
+                    drag.angle_degrees,
+                    drag.axis,
+                    drag.copy,
+                    drag.reference_mm.is_some(),
+                )
+            };
+            let shown = reading(&anchor);
             self.advance_rotation(
                 &mut anchor,
                 pointer,
                 response.rect,
                 ui.input(|input| input.modifiers.shift),
             );
+            let changed = reading(&anchor) != shown;
             let angle = anchor.angle_degrees;
             let axis = anchor.axis;
             let copy = anchor.copy;
             self.set_rotate_session(ToolSessionPhase::Anchor, anchor);
-            if !self.value_box_is_being_typed_into(ui.ctx()) {
+            if !self.value_box_is_being_typed_into(ui.ctx()) && changed {
                 self.value_box.input = format_angle(angle);
             }
-            self.digest = self.catalog.format(
-                if self
-                    .active_rotate_gesture()
-                    .is_some_and(|drag| drag.reference_mm.is_none())
-                {
-                    "digest-rotate-anchor-set"
-                } else if copy {
-                    "digest-rotate-copy-live"
-                } else {
-                    "digest-rotate-live"
-                },
-                &BTreeMap::from([
-                    ("angle", format_angle(angle)),
-                    ("axis", self.catalog.text(axis_name_key(axis))),
-                ]),
-            );
+            // As with Move, a still pointer leaves a refusal readable.
+            if changed {
+                self.digest = self.catalog.format(
+                    if self
+                        .active_rotate_gesture()
+                        .is_some_and(|drag| drag.reference_mm.is_none())
+                    {
+                        "digest-rotate-anchor-set"
+                    } else if copy {
+                        "digest-rotate-copy-live"
+                    } else {
+                        "digest-rotate-live"
+                    },
+                    &BTreeMap::from([
+                        ("angle", format_angle(angle)),
+                        ("axis", self.catalog.text(axis_name_key(axis))),
+                    ]),
+                );
+            }
         }
 
         if self.active_tool == ActiveTool::Scale
