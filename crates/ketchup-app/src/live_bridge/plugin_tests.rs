@@ -661,6 +661,58 @@ fn a_plugin_argument_on_a_network_share_is_refused_without_a_prompt() {
     assert!(probe.high_risk_prompts().is_empty());
 }
 
+/// SEC-2 (review 2026-10-15): Windows starts `tool.exe` for `tool`, so that is
+/// the file hashed and shown; an executable that is no `.exe` file, or no file
+/// at all, is refused before anyone is asked.
+#[cfg(windows)]
+#[test]
+fn a_windows_plugin_executable_is_the_exe_file_that_starts() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let decoy = directory.path().join("tool");
+    let started = directory.path().join("tool.exe");
+    std::fs::write(&decoy, "the file a reviewer would read").unwrap();
+    std::fs::write(&started, "the program Windows starts").unwrap();
+    let started_hash = ketchup_model::graph::sha256_hex(b"the program Windows starts");
+    let script = directory.path().join("tool.cmd");
+    std::fs::write(&script, "@exit 0\n").unwrap();
+    let missing = directory.path().join("missing.exe");
+    // Every prompt is refused: nothing here may start.
+    let dialogs = ScriptedFileDialogs::new();
+    let probe = dialogs.clone();
+    let mut wire = plugin_wire_answering(dialogs);
+    let command = |executable: &Path| RunPluginRequest {
+        executable: Some(executable.display().to_string()),
+        ..plugin_request(Vec::new())
+    };
+    let (folder, _) = height_folder(directory.path());
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    let mut from_folder = |executable: &Path| {
+        manifest["executable"] = json!(executable.display().to_string());
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        folder_request(&folder, json!({"height_mm": 35}))
+    };
+
+    for request in [command(&decoy), from_folder(&decoy)] {
+        let evidence = assert_consent_required(&mut wire, request);
+        let shown = json!({"path": started.display().to_string(), "sha256": started_hash});
+        assert!(
+            evidence["files"].as_array().unwrap().contains(&shown),
+            "{evidence}"
+        );
+        assert_eq!(evidence["command"][0], json!(started.display().to_string()));
+        let prompt = probe.high_risk_prompts().pop().unwrap();
+        assert!(prompt.contains(&started.display().to_string()), "{prompt}");
+    }
+    let asked = probe.high_risk_prompts().len();
+    for executable in [&script, &missing, &directory.path().join("absent")] {
+        assert_refused_without_prompt(&mut wire, command(executable), "invalid_path", &probe);
+        let request = from_folder(executable);
+        assert_refused_without_prompt(&mut wire, request, "invalid_path", &probe);
+    }
+    assert_eq!(probe.high_risk_prompts().len(), asked);
+}
+
 /// SEC-1: an argument that leaves the folder and comes back into it names the
 /// folder's file the consent hashed, and the process gets that file's staged
 /// copy, not a path that leads out of the stage it runs in.

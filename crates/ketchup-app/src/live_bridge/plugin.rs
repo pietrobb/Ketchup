@@ -138,7 +138,7 @@ fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'static str> {
             )?;
             Ok(PluginLaunch {
                 command: PluginCommand {
-                    executable: PathBuf::from(executable),
+                    executable: PathBuf::from(consent.executable()),
                     arguments: request.arguments.iter().map(OsString::from).collect(),
                     ..PluginCommand::default()
                 },

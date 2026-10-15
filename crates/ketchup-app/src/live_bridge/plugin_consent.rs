@@ -47,6 +47,37 @@ pub(crate) struct PluginConsent {
     operations: BTreeSet<String>,
 }
 
+/// The file a plugin process starts from `path`, by `is_file`. On Windows
+/// `Command` starts `<path>.exe` for a path without that extension whenever
+/// `<path>.exe` exists, and another file does not start as a program; there
+/// the executable is the `.exe` file. This is the file hashed and started, so
+/// a path naming no such file is refused.
+pub(super) fn started_executable(
+    path: &Path,
+    is_file: impl Fn(&Path) -> bool,
+) -> Result<PathBuf, &'static str> {
+    let exe = |path: &Path| {
+        path.extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    };
+    let started = if cfg!(windows) && !exe(path) {
+        let mut appended = path.as_os_str().to_owned();
+        appended.push(".exe");
+        PathBuf::from(appended)
+    } else {
+        path.to_owned()
+    };
+    if is_file(&started) {
+        Ok(started)
+    } else {
+        Err(failure(
+            "invalid_path",
+            "The plugin executable names an existing file; on Windows an .exe file, which is the file that starts.",
+            json!({"canonical_mutation": false}),
+        ))
+    }
+}
+
 impl PluginConsent {
     /// A command line given by the caller: the executable and every argument
     /// naming a file are hashed, the arguments are part of the consent.
@@ -73,10 +104,9 @@ impl PluginConsent {
                 json!({"canonical_mutation": false}),
             ));
         }
-        let mut files = vec![
-            hashed(Path::new(executable))
-                .map_err(|error| failed_because("plugin_failed", error))?,
-        ];
+        let executable = started_executable(Path::new(executable), Path::is_file)?;
+        let mut files =
+            vec![hashed(&executable).map_err(|error| failed_because("plugin_failed", error))?];
         for argument in arguments {
             let path = Path::new(argument);
             if path.is_file() {
@@ -86,7 +116,7 @@ impl PluginConsent {
         Ok(Self {
             folder: None,
             files,
-            command: std::iter::once(executable.to_owned())
+            command: std::iter::once(executable.display().to_string())
                 .chain(arguments.iter().cloned())
                 .collect(),
             principal_id,
@@ -111,6 +141,11 @@ impl PluginConsent {
             capabilities: capabilities.iter().cloned().collect(),
             operations: operations.iter().cloned().collect(),
         }
+    }
+
+    /// The executable that starts, as the consent names it.
+    pub(super) fn executable(&self) -> &str {
+        &self.command[0]
     }
 
     /// The same files, command line and principal, asking for no more than allowed.

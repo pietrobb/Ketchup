@@ -6,7 +6,7 @@
 //! hashes and starts a staged copy of the folder (`plugin_files`), so what runs
 //! is what the user allowed.
 use super::drawings::local_absolute_path;
-use super::plugin_consent::{ConsentFolder, PluginConsent};
+use super::plugin_consent::{ConsentFolder, PluginConsent, started_executable};
 use super::plugin_files::HeldFiles;
 use super::*;
 use ketchup_model::graph::{sha256_hex, sha256_reader_hex};
@@ -245,15 +245,13 @@ fn outside_files(
                 json!({"canonical_mutation": false}),
             ));
         }
-        lexical(executable)
+        started_executable(&lexical(executable), Path::is_file)?
     } else if executable
         .components()
         .all(|component| matches!(component, Component::Normal(_)))
-        && files
-            .iter()
-            .any(|(relative, _)| *relative == slashed(executable))
     {
-        folder.join(executable)
+        let in_folder = |path: &Path| files.iter().any(|(relative, _)| *relative == slashed(path));
+        folder.join(started_executable(executable, in_folder)?)
     } else {
         return Err(invalid(format!(
             "executable {:?} is neither an absolute path nor a file inside the plugin folder",
