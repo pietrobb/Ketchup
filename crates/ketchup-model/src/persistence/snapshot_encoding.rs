@@ -87,6 +87,7 @@ mod tests {
             container_data,
             BTreeSet::new(),
             Some(history),
+            encoded_program(document.current_rule_program()).unwrap(),
         )
         .unwrap()
     }

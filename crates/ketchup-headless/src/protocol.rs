@@ -922,7 +922,17 @@ impl Server {
                 self.session = next;
                 self.revoke_jobs();
                 self.initial_placeholder = false;
-                Ok(self.state_result())
+                let mut result = self.state_result();
+                if let Some(reason) = self.session.history_discarded() {
+                    result["warnings"] = json!([{
+                        "kind": "history_discarded",
+                        "message": format!(
+                            "the Undo history of this file could not be restored ({reason}); \
+                             the document opened with its current revision only"
+                        ),
+                    }]);
+                }
+                Ok(result)
             }
             "save" => {
                 self.session.save(

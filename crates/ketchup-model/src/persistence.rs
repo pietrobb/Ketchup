@@ -27,6 +27,8 @@ pub use legacy::LegacyError;
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
 const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
 const CONTAINER_SCHEMA: u16 = 1;
+/// Container entry holding the JSON of the program that owns the current revision.
+const PROGRAM_ENTRY: &str = "program.json";
 const HISTORY_MAGIC: &[u8; 10] = b"KETCHUPHST";
 const HISTORY_SCHEMA: u16 = 5;
 const WORK_RECOVERY_MAGIC: &[u8; 10] = b"KETCHUPWRK";
@@ -532,7 +534,14 @@ fn write_revision_header(bytes: &mut Vec<u8>, revision: &Revision) {
 
 /// The program JSON of `revision`, within the limit a reader accepts.
 fn encoded_rule_program(revision: &Revision) -> Result<Option<Vec<u8>>, PersistenceError> {
-    let Some(source) = revision.rule_program() else {
+    encoded_program(revision.rule_program())
+}
+
+/// The JSON of `source`, within the limit a reader accepts.
+fn encoded_program(
+    source: Option<&crate::document::RuleProgramSource>,
+) -> Result<Option<Vec<u8>>, PersistenceError> {
+    let Some(source) = source else {
         return Ok(None);
     };
     let encoded = serde_json::to_vec(source).map_err(|error| {
@@ -778,6 +787,7 @@ pub fn save_container(
         container_data,
         imported_source_blob_hashes(snapshot),
         None,
+        None,
     )
 }
 
@@ -796,6 +806,7 @@ pub fn save_document_store(
         container_data,
         imported_sources,
         Some(encode_revision_history(document, &document_bin)?),
+        encoded_program(document.current_rule_program())?,
     )
 }
 
@@ -810,6 +821,7 @@ pub fn save_document_store_current_snapshot(
         container_data,
         imported_source_blob_hashes(&snapshot),
         Some(encode_current_revision_history(document, &document_bin)?),
+        encoded_program(document.current_rule_program())?,
     )
 }
 
@@ -821,6 +833,7 @@ pub(crate) fn save_with_history_entry(document: &DocumentStore, history: Vec<u8>
         &ContainerData::default(),
         BTreeSet::new(),
         Some(history),
+        encoded_program(document.current_rule_program()).expect("a bound program encodes"),
     )
     .expect("a test document fits the container")
 }
@@ -830,6 +843,7 @@ fn save_container_entries(
     container_data: &ContainerData,
     imported_sources: BTreeSet<String>,
     revision_history: Option<Vec<u8>>,
+    program: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, PersistenceError> {
     let mut entries = BTreeMap::<String, (bool, Vec<u8>)>::new();
     entries.insert(
@@ -838,6 +852,11 @@ fn save_container_entries(
     );
     if let Some(revision_history) = revision_history {
         entries.insert("history.bin".to_owned(), (true, revision_history));
+    }
+    // The program that owns the current revision belongs to the document, not
+    // to its Undo steps: a history that no longer opens must not take it along.
+    if let Some(program) = program {
+        entries.insert(PROGRAM_ENTRY.to_owned(), (true, program));
     }
     if imported_sources
         .iter()
@@ -1645,6 +1664,11 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         Some((false, _)) => return Err(PersistenceError::HistoryEntryNotRequired),
         None => None,
     };
+    let program = match entries.remove(PROGRAM_ENTRY) {
+        Some((true, content)) => Some(Arc::new(decode_rule_program(&content)?)),
+        Some((false, _)) => return Err(PersistenceError::ProgramEntryNotRequired),
+        None => None,
+    };
     let mut container_data = ContainerData::default();
     for (path, (required, content)) in entries {
         if let Some(hash) = path.strip_prefix("blobs/") {
@@ -1678,6 +1702,9 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         extensions: BTreeMap::new(),
     };
     let mut outcome = load_document(&document, container_data, &mut BTreeMap::new())?;
+    if let (Some(program), LoadOutcome::Editable { document, .. }) = (&program, &mut outcome) {
+        document.restore_opened_rule_program(Arc::clone(program));
+    }
     if let Some(revision_history) = revision_history {
         // The current revision was verified on its own; a history that no longer
         // decodes (a writer that changed the snapshot form without a new format, a
@@ -1693,6 +1720,14 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             // A program the file holds but that breaks its rules is refused by
             // name; dropping the history would silently drop the program too.
             (_, Err(error @ PersistenceError::InvalidRuleProgram(_))) => return Err(error),
+            // The history must end at the program the file stores beside the
+            // document; one that ends elsewhere is not this document's history.
+            (LoadOutcome::Editable { audit, .. }, Ok(restored))
+                if program.is_some() && restored.current_rule_program() != program.as_deref() =>
+            {
+                audit.history_discarded =
+                    Some(PersistenceError::InvalidRevisionHistory.to_string());
+            }
             (LoadOutcome::Editable { document, .. }, Ok(restored)) => *document = restored,
             (LoadOutcome::Editable { audit, .. }, Err(error)) => {
                 audit.history_discarded = Some(error.to_string());
@@ -2478,6 +2513,7 @@ pub enum PersistenceError {
     MissingDocumentEntry,
     DocumentEntryNotRequired,
     HistoryEntryNotRequired,
+    ProgramEntryNotRequired,
     DuplicateContainerEntry,
     InvalidContainerPath(String),
     UnsupportedContainerEntry(String),
@@ -2541,6 +2577,9 @@ impl fmt::Display for PersistenceError {
             }
             Self::HistoryEntryNotRequired => {
                 formatter.write_str("container history.bin must be required")
+            }
+            Self::ProgramEntryNotRequired => {
+                formatter.write_str("container program.json must be required")
             }
             Self::DuplicateContainerEntry => formatter.write_str("container repeats an entry"),
             Self::InvalidContainerPath(path) => {

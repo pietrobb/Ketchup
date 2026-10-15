@@ -53,6 +53,44 @@ fn evaluation_retry_distinguishes_failed_topology_from_unsupported_topology() {
     assert!(report.needs_retry());
 }
 
+/// A file whose Undo history no longer opens opens with its program, says why
+/// the history is gone, and the next Save keeps the program.
+#[test]
+fn an_unreadable_history_is_reported_and_its_program_survives_the_next_save() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("programmed.ketchup");
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetFloorHeight {
+            z_mm: Some(250.),
+        }]))
+        .unwrap();
+    let program = RuleProgramSource {
+        file_name: "shelf.star".into(),
+        source: "w = param('width', 600)\n".into(),
+        overrides: Default::default(),
+        variants: Default::default(),
+    };
+    document.bind_rule_program(program.clone()).unwrap();
+    let unreadable_history = b"KETCHUPHST\x06\x00".to_vec();
+    std::fs::write(
+        &path,
+        ketchup_model::testing::save_with_history_entry(&document, unreadable_history),
+    )
+    .unwrap();
+
+    let mut session = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    assert!(session.history_discarded().is_some());
+    assert_eq!(session.rule_program(), Some(&program));
+    session
+        .save(&path, SaveOptions { overwrite: true })
+        .unwrap();
+    drop(session);
+    let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    assert_eq!(reopened.history_discarded(), None);
+    assert_eq!(reopened.rule_program(), Some(&program));
+}
+
 #[test]
 fn published_checkpoint_sync_failure_keeps_apply_undo_redo_and_reopen_consistent() {
     let directory = tempfile::tempdir().unwrap();

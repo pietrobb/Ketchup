@@ -323,6 +323,13 @@ impl DocumentStore {
         }
     }
 
+    /// Gives the one revision of a store just opened without its history the
+    /// program the file stores beside the document.
+    pub(crate) fn restore_opened_rule_program(&mut self, source: Arc<RuleProgramSource>) {
+        debug_assert_eq!(self.revisions.len(), 1);
+        Arc::make_mut(&mut self.revisions[self.cursor]).rule_program = Some(source);
+    }
+
     /// Associates the source with the current newly committed revision, within the same transaction.
     /// A later manual revision does not inherit it.
     pub fn bind_rule_program(&mut self, source: RuleProgramSource) -> Result<(), CanonicalError> {

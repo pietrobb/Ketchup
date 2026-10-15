@@ -96,6 +96,7 @@ pub struct DocumentSession {
     topology_results: ExactResultRegistry,
     full_exact_baseline: Option<ExactSource>,
     incremental_exact_plan: Option<IncrementalExactPlan>,
+    history_discarded: Option<String>,
 }
 impl Default for DocumentSession {
     fn default() -> Self {
@@ -119,7 +120,14 @@ impl DocumentSession {
             topology_results: ExactResultRegistry::default(),
             full_exact_baseline: None,
             incremental_exact_plan: None,
+            history_discarded: None,
         }
+    }
+    /// Why the Undo history of the opened file was not restored: the document
+    /// opened with its current revision only.
+    #[must_use]
+    pub fn history_discarded(&self) -> Option<&str> {
+        self.history_discarded.as_deref()
     }
     /// Review-only and invalid input never replaces a live session.
     pub fn open(path: impl AsRef<Path>, settings: SessionSettings) -> Result<Self, SessionError> {
@@ -129,6 +137,7 @@ impl DocumentSession {
         let loaded = persistence::load_file_with_source(requested_path)
             .map_err(SessionError::Persistence)?;
         let (outcome, source_path, source_bytes, work_recovery_identity) = loaded.into_parts();
+        let history_discarded = outcome.audit().history_discarded.clone();
         let (document, container_data) = outcome
             .into_editable_with_container()
             .map_err(|candidate| SessionError::ReviewOnly(Box::new(candidate.audit().clone())))?;
@@ -154,6 +163,7 @@ impl DocumentSession {
             topology_results: ExactResultRegistry::default(),
             full_exact_baseline: None,
             incremental_exact_plan: None,
+            history_discarded,
         })
     }
     /// No-clobber publication is atomic, including when another process creates the destination.

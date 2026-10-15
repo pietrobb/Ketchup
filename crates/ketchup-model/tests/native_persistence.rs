@@ -1649,6 +1649,74 @@ fn corrupt_or_incompatible_revision_history_opens_only_the_current_revision() {
     );
 }
 
+/// The program that owns the document is part of the document, not of its Undo
+/// steps: a history that no longer opens costs the steps, and the program
+/// survives the open and the next Save.
+#[test]
+fn a_discarded_history_keeps_the_current_program_through_open_and_save() {
+    let store = programmed_history_document();
+    let program = store.current_rule_program().cloned().expect("bound");
+    let encoded =
+        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
+    let (checksum_offset, history_offset, history_len) =
+        container_entry_offsets(&encoded, "history.bin");
+    let mut incompatible = encoded;
+    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&6_u16.to_le_bytes());
+    rehash_container_entry(
+        &mut incompatible,
+        checksum_offset,
+        history_offset,
+        history_len,
+    );
+    assert_eq!(
+        discarded_history(&incompatible),
+        PersistenceError::UnsupportedHistorySchema(6).to_string()
+    );
+    let (reopened, data) = persistence::load(&incompatible)
+        .unwrap()
+        .into_editable_with_container()
+        .unwrap_or_else(|_| panic!("expected editable"));
+    assert_eq!(reopened.current_rule_program(), Some(&program));
+    for resaved in [
+        persistence::save_document_store(&reopened, &data).unwrap(),
+        persistence::save_document_store_current_snapshot(&reopened, &data).unwrap(),
+    ] {
+        let (again, _) = persistence::load(&resaved)
+            .unwrap()
+            .into_editable_with_container()
+            .unwrap_or_else(|_| panic!("expected editable"));
+        assert_eq!(again.current_rule_program(), Some(&program));
+    }
+
+    // A history that ends at another program than the document's is not its
+    // history: the document keeps its own program and loses the Undo steps.
+    let mut elsewhere =
+        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
+    let (checksum_offset, program_offset, program_len) =
+        container_entry_offsets(&elsewhere, "program.json");
+    let json = &mut elsewhere[program_offset..program_offset + program_len];
+    let width = json
+        .windows(3)
+        .position(|window| window == b"900")
+        .expect("the program names its width");
+    json[width + 2] = b'1';
+    rehash_container_entry(&mut elsewhere, checksum_offset, program_offset, program_len);
+    assert_eq!(
+        discarded_history(&elsewhere),
+        PersistenceError::InvalidRevisionHistory.to_string()
+    );
+    let (reopened, _) = persistence::load(&elsewhere)
+        .unwrap()
+        .into_editable_with_container()
+        .unwrap_or_else(|_| panic!("expected editable"));
+    assert_eq!(
+        reopened
+            .current_rule_program()
+            .map(|program| &*program.source),
+        Some("w = param('width', 901)\n")
+    );
+}
+
 #[test]
 fn revision_catalog_checkpoint_diff_and_rollback_are_auditable_and_persistent() {
     let mut store = graph_document();
