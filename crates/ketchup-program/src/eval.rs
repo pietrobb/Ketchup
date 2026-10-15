@@ -39,6 +39,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const TOLERANCE_MM: f64 = 0.01;
 /// Upper bound on generated parts, so a runaway loop fails fast.
 pub const MAX_PARTS: usize = 20_000;
+/// Bodies one part may hold through its booleans, counting the tools' own
+/// booleans: each boolean records a copy of its tool, so parts that cut each
+/// other in turn would otherwise grow exponentially (review PRG-3).
+pub const MAX_BOOLEAN_BODIES: usize = 10_000;
 /// The program library: domain helpers and their documentation, split into
 /// topics by `#@topic id: title` lines.
 pub const PRELUDE: &str = include_str!("../library/prelude.star");
@@ -1261,7 +1265,14 @@ fn apply_boolean<'v>(
     }
     let requested = text(name, "name")?;
     record_source(eval, &state, &[&target]);
+    let tool_bodies = boolean_bodies(&tool_part);
     with_part(&state, &target, |part| {
+        let bodies = boolean_bodies(part) + tool_bodies;
+        if bodies > MAX_BOOLEAN_BODIES {
+            anyhow::bail!(
+                "{operation}({target:?}, {tool:?}): {target:?} would hold {bodies} bodies through its booleans, more than {MAX_BOOLEAN_BODIES}; parts that cut each other in turn copy each other's whole history, so cut from a tool body instead"
+            );
+        }
         let name = requested.unwrap_or_else(|| format!("{operation} {tool}"));
         check_part_name(&name)?;
         add_operation(
@@ -1274,6 +1285,18 @@ fn apply_boolean<'v>(
         )?;
         Ok(part_value(part, heap))
     })
+}
+
+/// The part itself and every body its booleans recorded, nested ones too.
+fn boolean_bodies(part: &Part) -> usize {
+    1 + part
+        .operations
+        .iter()
+        .map(|operation| match operation {
+            ProgramOperation::Boolean(boolean) => boolean_bodies(&boolean.tool),
+            _ => 0,
+        })
+        .sum::<usize>()
 }
 
 /// Appends one operation to a part, keeping operation names unique.

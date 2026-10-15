@@ -631,6 +631,29 @@ fn params_take_overrides_report_unknown_ones_and_check_ranges() {
     );
 }
 
+/// PRG-3 (review 2026-10-15): a boolean records a copy of its tool with the
+/// tool's own booleans, so two parts cutting each other in turn double in
+/// size like a Fibonacci series. The copy is refused at a named bound long
+/// before it can exhaust memory; the part as it was stays usable.
+#[test]
+fn parts_cutting_each_other_in_turn_stop_at_the_boolean_body_bound() {
+    let source = "box(\"a\", (40, 40, 10))\nbox(\"b\", (40, 40, 10), at = (20, 0, 0))\n\
+                  for i in range(12):\n    subtract(\"a\", \"b\", name = \"a%d\" % i)\n    \
+                  subtract(\"b\", \"a\", name = \"b%d\" % i)\n";
+    let Err(error) = ketchup_program::evaluate("feud.star", source, &BTreeMap::new()) else {
+        panic!("the alternating booleans must be refused");
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains(&ketchup_program::eval::MAX_BOOLEAN_BODIES.to_string()),
+        "{message}"
+    );
+
+    let few = source.replace("range(12)", "range(3)");
+    ketchup_program::evaluate("feud.star", &few, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
 /// A program at the part limit still evaluates and still refuses a name
 /// that a part, a tool or a group already has, at any position.
 #[test]
