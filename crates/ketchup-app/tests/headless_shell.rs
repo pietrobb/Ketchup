@@ -13753,6 +13753,44 @@ fn a_typed_scale_factor_grows_the_part_and_a_second_one_replaces_it() {
 }
 
 #[test]
+fn a_refused_scale_correction_keeps_the_correction_and_one_takes_the_scale_back() {
+    let mut shell = scale_shell();
+    shell.click_at(shell.top_face_centre(1));
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let (_, _, undo, _) = scale_untouched_state(&shell);
+
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    enter_value(&mut shell, "2");
+    assert_exact_bounds(&mut shell, &[stretched(origin, size, [2.0; 3])]);
+    enter_value(&mut shell, "0");
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("digest-scale-invalid-factor")
+    );
+    // The refused value leaves ×2 open to correction: 3 replaces it.
+    enter_value(&mut shell, "3");
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo + 1,
+        "{}",
+        shell.app().action_digest()
+    );
+    assert_exact_bounds(&mut shell, &[stretched(origin, size, [3.0; 3])]);
+    // 1 corrects the step back to the part's own size and stays open.
+    enter_value(&mut shell, "1");
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo + 1,
+        "{}",
+        shell.app().action_digest()
+    );
+    assert_exact_bounds(&mut shell, &[stretched(origin, size, [1.0; 3])]);
+    enter_value(&mut shell, "1,5");
+    assert_eq!(shell.app().undo_step_count(), undo + 1);
+    assert_exact_bounds(&mut shell, &[stretched(origin, size, [1.5; 3])]);
+}
+
+#[test]
 fn a_typed_scale_factor_of_zero_or_less_or_not_finite_is_refused() {
     let mut shell = Shell::new();
     shell.click_at(shell.top_face_centre(1));

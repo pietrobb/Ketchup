@@ -41,6 +41,21 @@ impl ScaleInput {
         drives: [bool; 3],
         extent_mm: [f64; 3],
     ) -> Result<[f64; 3], &'static str> {
+        let factors = self.correction_factors(drives, extent_mm)?;
+        if scale_is_meaningful(factors) {
+            Ok(factors)
+        } else {
+            Err("digest-scale-invalid-factor")
+        }
+    }
+
+    /// As [`Self::factors`], but the identity too: correcting the last Scale
+    /// to `1` takes the part back to its own size.
+    pub(crate) fn correction_factors(
+        self,
+        drives: [bool; 3],
+        extent_mm: [f64; 3],
+    ) -> Result<[f64; 3], &'static str> {
         let factors = match self {
             Self::Factor(factor) => drives.map(|driven| if driven { factor } else { 1.0 }),
             Self::PerAxis(factors) => factors,
@@ -54,7 +69,7 @@ impl ScaleInput {
                 factors
             }
         };
-        if scale_is_meaningful(factors) {
+        if factors.into_iter().all(scale_factor_in_range) {
             Ok(factors)
         } else {
             Err("digest-scale-invalid-factor")

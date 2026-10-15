@@ -624,12 +624,9 @@ impl KetchupApp {
                 self.take_scale_session(None);
                 return self.commit_scale_drag(&drag);
             }
+            // A refused correction leaves the last step open for another value.
             if self.current_scale_correction().is_some() {
-                if self.correct_last_scale(input) {
-                    return true;
-                }
-                self.end_transform_correction();
-                return false;
+                return self.correct_last_scale(input);
             }
             return self.scale_selected_by(input);
         }

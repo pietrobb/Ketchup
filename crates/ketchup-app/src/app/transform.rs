@@ -749,7 +749,7 @@ impl KetchupApp {
         let Some((selection, previous)) = self.current_scale_correction() else {
             return false;
         };
-        let factors = match input.factors(previous.drives, previous.extent_mm) {
+        let factors = match input.correction_factors(previous.drives, previous.extent_mm) {
             Ok(factors) => factors,
             Err(key) => {
                 self.digest = self.catalog.text(key);
@@ -3081,7 +3081,7 @@ pub(crate) fn scale_feature_batch(
                 let value: f64 = (0..3).map(|k| r(k, i) * world[k] * r(k, j)).sum();
                 if i == j {
                     *local = snap(value);
-                } else if value.abs() > APPROXIMATION * change {
+                } else if change > 0.0 && value.abs() > APPROXIMATION * change {
                     return Err("digest-scale-refused-shear");
                 }
             }
