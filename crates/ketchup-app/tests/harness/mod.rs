@@ -279,10 +279,16 @@ impl Shell {
 
     /// Like `Harness::run`, but a shell still repainting for background work (an exact
     /// preview being evaluated on a loaded machine) gets until [`WAIT_DEADLINE`] instead
-    /// of a fixed frame count.
+    /// of a fixed frame count. A value waiting for an exact solid or the program is
+    /// waited for too: the window applies it when the worker's result wakes it, a wake-up
+    /// the harness only sees by running frames.
     fn run_idle(&mut self) {
         let mut last_error = String::new();
         let idle = self.wait_until(|shell| match shell.harness.try_run() {
+            Ok(_) if shell.app().value_awaits_evaluation() => {
+                last_error = "a typed or dragged value still waits for evaluation".to_owned();
+                false
+            }
             Ok(_) => true,
             Err(error) => {
                 last_error = error.to_string();

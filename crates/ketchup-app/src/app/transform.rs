@@ -1645,6 +1645,34 @@ impl KetchupApp {
         }
     }
 
+    /// Ends a Push/Pull drag at its release: commits its preview, or after a
+    /// press that did not move waits for the second click. A drag refused only
+    /// because the program or a part's exact solid was still being evaluated
+    /// keeps its distance, which the frame that finds them ready applies like a
+    /// typed value; before, the release read as a click and the drag was lost.
+    pub(crate) fn finish_push_pull_drag(&mut self, drag: PushPullDrag) {
+        if self.has_preview()
+            || self.has_occurrence_operation_preview()
+            || self.has_drawn_shape_preview()
+        {
+            self.confirm_push_pull_preview();
+        } else if !self.push_pull_gesture_is_current(&drag) {
+        } else if matches!(
+            self.status_key,
+            "status-program-planning" | "status-exact-pending"
+        ) && parse_distance_mm(&self.push_pull.distance_input)
+            .is_some_and(|distance| distance.abs() >= 0.01)
+        {
+            // The drag adds a step, as its preview did; it does not correct the last one.
+            self.push_pull.last = None;
+            self.value_box.input = self.push_pull.distance_input.clone();
+            self.await_program_if_planning();
+        } else {
+            self.gesture.drag.open(PushPullAnchor(drag));
+            self.digest = self.catalog.text("digest-push-pull-anchor-set");
+        }
+    }
+
     #[must_use]
     pub fn push_pull_click_anchor_active(&self) -> bool {
         self.gesture.drag.get::<PushPullAnchor>().is_some()

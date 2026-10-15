@@ -410,6 +410,80 @@ fn enter_before_the_parts_exact_solid_arrives_waits_and_mills_the_pocket() {
     assert_volume(volume(&app, block), VOLUME - 20.0 * 20.0 * 5.0);
 }
 
+/// A Push/Pull drag released while a part's exact solid is still being
+/// evaluated is applied when the solid arrives, as Enter is; before, the
+/// release read as a click and the dragged distance was lost.
+#[test]
+fn a_drag_released_before_the_parts_exact_solid_arrives_waits_and_mills_the_pocket() {
+    let mut app = KetchupApp::new();
+    let [block] = place_blocks(&mut app, &[placement(0.0, [0.0; 3])])[..] else {
+        unreachable!()
+    };
+    let shape = draw(
+        &mut app,
+        [0.0, 0.0, 40.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        rectangle([10.0, 10.0], [30.0, 30.0]),
+    );
+    let worker = exact_worker_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+        .expect("build ketchup-exact-worker alongside the app tests");
+    app.headless_force_exact_worker_path(&worker);
+    let snapshot = app.document.current();
+    app.exact.task = Some(ketchup_application::evaluation::start_exact_evaluation(
+        snapshot.clone(),
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
+        Some(worker),
+        || {},
+    ));
+    let revision = app.document_revision();
+    app.active_tool = ActiveTool::PushPull;
+    // Pressed on the shape, dragged 5 mm down the screen, against its normal.
+    let drag = PushPullDrag {
+        source_document_id: snapshot.document_id(),
+        source_revision: snapshot.revision_id(),
+        source_digest: snapshot.canonical_digest(),
+        selection: shape,
+        pointer_start: Pos2::ZERO,
+        extent_start_mm: 0.0,
+        screen_normal: Vec2::new(0.0, -1.0),
+        pixels_per_mm: 1.0,
+    };
+    app.update_push_pull_gesture(&drag, Pos2::new(0.0, 5.0));
+    assert_eq!(app.status_key, "status-exact-pending");
+    assert_eq!(app.value_input(), "-5");
+    app.finish_push_pull_drag(drag);
+    assert!(!app.push_pull_click_anchor_active(), "{}", app.digest);
+    assert_eq!(
+        app.value_input_awaits_program
+            .as_ref()
+            .map(|awaited| (awaited.tool, awaited.input.as_str())),
+        Some((ActiveTool::PushPull, "-5"))
+    );
+    assert_eq!(app.document_revision(), revision);
+
+    let task = app.exact.task.take().unwrap();
+    let products = task.wait(Duration::from_secs(60)).unwrap();
+    ketchup_application::evaluation::publish_exact_products(
+        &mut app.document,
+        &mut app.exact.results,
+        &mut app.exact.topology_results,
+        &task,
+        products,
+    )
+    .unwrap();
+    app.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+    assert_eq!(app.value_input_awaits_program, Some(app.awaited_value()));
+    assert!(app.apply_value_input(), "{}", app.digest);
+    assert_eq!(app.document_revision(), revision + 1);
+    evaluate_exact(&mut app);
+    assert_volume(volume(&app, block), VOLUME - 20.0 * 20.0 * 5.0);
+}
+
 #[test]
 fn a_shape_off_every_face_is_left_to_the_other_push_pull_paths() {
     let mut app = KetchupApp::new();

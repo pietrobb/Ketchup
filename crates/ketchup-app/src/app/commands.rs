@@ -569,13 +569,20 @@ impl KetchupApp {
 
     /// A typed value refused because the program or a part's exact solid is
     /// still being evaluated is applied by the frame that finds it ready.
-    fn await_program_if_planning(&mut self) {
+    pub(crate) fn await_program_if_planning(&mut self) {
         if matches!(
             self.status_key,
             "status-program-planning" | "status-exact-pending"
         ) {
             self.value_input_awaits_program = Some(self.awaited_value());
         }
+    }
+
+    /// A typed or dragged value is waiting for the program or an exact solid,
+    /// to be applied by the frame that finds them ready.
+    #[must_use]
+    pub fn value_awaits_evaluation(&self) -> bool {
+        self.value_input_awaits_program.is_some()
     }
 
     /// What a value typed now is typed for.

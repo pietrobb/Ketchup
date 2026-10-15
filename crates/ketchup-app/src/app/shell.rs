@@ -1338,6 +1338,9 @@ impl KetchupApp {
         } else {
             self.program_evaluations.forget();
         }
+        self.refresh_exact_products(context);
+        // After the exact products are polled, so the frame that publishes the
+        // awaited solid applies the value instead of waiting for another wake-up.
         if self.value_input_awaits_program.is_some()
             && !self.program_is_planning()
             && !(self.status_key == "status-exact-pending" && self.exact.task.is_some())
@@ -1346,9 +1349,10 @@ impl KetchupApp {
             // moved on; the value is not applied to what they did since.
             if self.value_input_awaits_program.take() == Some(self.awaited_value()) {
                 self.apply_value_input();
+                // The next frame starts the exact evaluation of what it changed.
+                context.request_repaint();
             }
         }
-        self.refresh_exact_products(context);
         let palette = self.palette();
         apply_shell_style(context, palette);
         self.handle_shortcuts(context);

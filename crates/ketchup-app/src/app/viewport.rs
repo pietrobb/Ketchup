@@ -2393,15 +2393,7 @@ impl KetchupApp {
                     self.digest = self.catalog.text("digest-scale-anchor-set");
                 }
             } else if let Some(drag) = self.gesture.drag.remove::<PushPullDrag>() {
-                if self.has_preview()
-                    || self.has_occurrence_operation_preview()
-                    || self.has_drawn_shape_preview()
-                {
-                    self.confirm_push_pull_preview();
-                } else if self.push_pull_gesture_is_current(&drag) {
-                    self.gesture.drag.open(PushPullAnchor(drag));
-                    self.digest = self.catalog.text("digest-push-pull-anchor-set");
-                }
+                self.finish_push_pull_drag(drag);
             }
         }
         if self.gesture.sketch.armed
