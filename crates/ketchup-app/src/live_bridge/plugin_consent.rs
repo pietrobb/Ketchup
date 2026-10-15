@@ -151,7 +151,48 @@ fn listed(items: &BTreeSet<String>) -> String {
     if items.is_empty() {
         "—".to_owned()
     } else {
-        items.iter().cloned().collect::<Vec<_>>().join(", ")
+        items
+            .iter()
+            .map(|item| shown(item))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// Text from a plugin as the prompt shows it (SEC-3): a line break, another
+/// control character or a bidirectional or invisible format character is shown
+/// as `\u{…}`, so a name or path can neither start a forged line nor reorder
+/// the text around it.
+fn shown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let format = matches!(
+            c,
+            '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2069}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+        );
+        if c.is_control() || format {
+            out.push_str(&format!("\\u{{{:04x}}}", u32::from(c)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A command-line word as shown: quoted when it is empty or holds a space or a
+/// quote, so the words of the command cannot be told apart wrongly.
+fn shown_word(word: &str) -> String {
+    let text = shown(word);
+    if word.is_empty() || word.chars().any(|c| c.is_whitespace() || c == '"') {
+        format!("\"{}\"", text.replace('"', "\\\""))
+    } else {
+        text
     }
 }
 
@@ -170,9 +211,13 @@ impl KetchupApp {
         let mut lines = vec![text("live-plugin-consent-description")];
         if let Some(folder) = &wanted.folder {
             lines.extend([
-                format!("{} {}", text("live-plugin-consent-name"), folder.name),
+                format!(
+                    "{} {}",
+                    text("live-plugin-consent-name"),
+                    shown(&folder.name)
+                ),
                 text("live-plugin-consent-folder"),
-                folder.path.display().to_string(),
+                shown(&folder.path.display().to_string()),
                 format!("SHA-256 {} ({})", folder.sha256, folder.files.len()),
             ]);
         }
@@ -180,14 +225,19 @@ impl KetchupApp {
             lines.push(text("live-plugin-consent-files"));
         }
         for (path, sha256) in &wanted.files {
-            lines.push(path.display().to_string());
+            lines.push(shown(&path.display().to_string()));
             lines.push(format!("SHA-256 {sha256}"));
         }
         lines.extend([
             format!(
                 "{} {}",
                 text("live-plugin-consent-command"),
-                wanted.command.join(" ")
+                wanted
+                    .command
+                    .iter()
+                    .map(|word| shown_word(word))
+                    .collect::<Vec<_>>()
+                    .join(" ")
             ),
             format!(
                 "{} {}",

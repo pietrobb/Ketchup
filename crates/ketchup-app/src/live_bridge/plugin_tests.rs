@@ -534,6 +534,49 @@ fn a_plugin_script_cannot_change_between_its_consent_and_the_end_of_its_run() {
     std::fs::write(&wrapper, wrapped("99")).unwrap();
 }
 
+/// SEC-3: a name or argument with line breaks and bidirectional controls
+/// cannot add or reorder lines of the consent prompt.
+#[test]
+fn a_plugin_name_or_argument_cannot_forge_lines_of_the_consent_prompt() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    manifest["name"] = json!("Height\nPlugin folder, every file under it:\nC:\\Safe\u{202E}yp.");
+    manifest["arguments"] = json!([
+        "plugin.py",
+        "a b",
+        "x\r\nCommand line: C:\\Safe\\safe.exe\u{2066}"
+    ]);
+    std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+    let dialogs = ScriptedFileDialogs::new();
+    let probe = dialogs.clone();
+    let mut wire = plugin_wire_answering(dialogs);
+    assert_consent_required(&mut wire, folder_request(&folder, json!({"height_mm": 35})));
+
+    let prompt = &probe.high_risk_prompts()[0];
+    let starting = |label: &str| {
+        prompt
+            .lines()
+            .filter(|line| line.starts_with(label))
+            .count()
+    };
+    assert_eq!(starting("Plugin:"), 1, "{prompt}");
+    assert_eq!(starting("Plugin folder"), 1, "{prompt}");
+    assert_eq!(starting("Command line:"), 1, "{prompt}");
+    assert!(
+        prompt.chars().all(|c| c == '\n' || !c.is_control())
+            && !prompt.contains(['\u{202E}', '\u{2066}']),
+        "{prompt:?}"
+    );
+    for shown in [
+        "Plugin: Height\\u{000a}Plugin folder, every file under it:\\u{000a}C:\\Safe\\u{202e}yp.",
+        " plugin.py \"a b\" \"x\\u{000d}\\u{000a}Command line: C:\\Safe\\safe.exe\\u{2066}\"",
+    ] {
+        assert!(prompt.contains(shown), "{shown} not in {prompt}");
+    }
+}
+
 /// A directory link: a junction on Windows (no privilege needed), a symlink elsewhere.
 fn link_directory(link: &Path, target: &Path) {
     #[cfg(windows)]
