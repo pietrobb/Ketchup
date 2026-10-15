@@ -1955,6 +1955,50 @@ fn a_primary_from_a_newer_format_is_refused_and_never_replaced_by_its_recovery()
     }
 }
 
+/// A program a newer Kečup stored with a field this version does not know is
+/// refused like such a document field: opened without it, the next Save would
+/// drop it, and the older `.recovery` must not open in its place either.
+#[test]
+fn a_program_with_a_field_from_a_newer_writer_is_refused_and_never_replaced_by_its_recovery() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("programmed.ketchup");
+    let data = persistence::ContainerData::default();
+    let mut program = program_with_variants();
+    program.file_name = format!("{}.star", "p".repeat(24));
+    let mut store = graph_document();
+    store.bind_rule_program(program.clone()).unwrap();
+    persistence::save_atomic_document_store_with_container(&path, &store, &data).unwrap();
+    program.overrides.insert("width".to_owned(), 900.0);
+    store.replace_rule_program_source(program.clone()).unwrap();
+    persistence::save_atomic_document_store_with_container(&path, &store, &data).unwrap();
+    assert!(path.with_extension("ketchup.recovery").is_file());
+
+    // The same entry length, so only the program's content changes.
+    let mut newer = std::fs::read(&path).unwrap();
+    let (checksum_offset, program_offset, program_len) =
+        container_entry_offsets(&newer, "program.json");
+    let old = format!(r#""file_name":"{}""#, program.file_name);
+    let prefix = r#""file_name":"p.star","units":""#;
+    let new = format!(r#"{prefix}{}""#, "m".repeat(old.len() - prefix.len() - 1));
+    let json = &mut newer[program_offset..program_offset + program_len];
+    let at = json
+        .windows(old.len())
+        .position(|window| window == old.as_bytes())
+        .expect("the entry names the program file");
+    json[at..at + old.len()].copy_from_slice(new.as_bytes());
+    rehash_container_entry(&mut newer, checksum_offset, program_offset, program_len);
+    std::fs::write(&path, newer).unwrap();
+
+    let Err(persistence::FilePersistenceError::Format(error)) = persistence::load_file(&path)
+    else {
+        panic!("a program with a newer field must not open without it");
+    };
+    assert_eq!(
+        error,
+        PersistenceError::UnknownFields(vec!["program.units".to_owned()])
+    );
+}
+
 #[test]
 fn conditional_save_rejects_external_replacement_without_touching_primary_or_recovery() {
     let directory = tempfile::tempdir().unwrap();

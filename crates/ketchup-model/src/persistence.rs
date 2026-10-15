@@ -2315,10 +2315,26 @@ fn chunk_numbers<'a>(reader: &mut Reader<'a>) -> Result<&'a [u8], PersistenceErr
 fn decode_rule_program(
     json: &[u8],
 ) -> Result<crate::document::RuleProgramSource, PersistenceError> {
+    /// Every field a program has ever stored; its other maps are keyed by
+    /// parameter and variant names.
+    const FIELDS: [&str; 4] = ["file_name", "source", "overrides", "variants"];
+    let invalid = |error: serde_json::Error| {
+        PersistenceError::InvalidPayload(format!("revision rule program: {error}"))
+    };
+    let stored: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(json).map_err(invalid)?;
+    // Serde skips a field it does not know, so the program would open without
+    // it and the next Save would drop what a newer version wrote.
+    let unknown: Vec<String> = stored
+        .keys()
+        .filter(|key| !FIELDS.contains(&key.as_str()))
+        .map(|key| format!("program.{key}"))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(PersistenceError::UnknownFields(unknown));
+    }
     let source: crate::document::RuleProgramSource =
-        serde_json::from_slice(json).map_err(|error| {
-            PersistenceError::InvalidPayload(format!("revision rule program: {error}"))
-        })?;
+        serde_json::from_value(serde_json::Value::Object(stored)).map_err(invalid)?;
     source
         .validate()
         .map_err(PersistenceError::InvalidRuleProgram)?;
