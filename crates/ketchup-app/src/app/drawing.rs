@@ -3485,22 +3485,23 @@ pub(crate) fn create_box_batch(
     ])
 }
 
+/// Width and depth typed as two lengths, each with units, arithmetic and a
+/// decimal comma like any length: `80;60`, `8 cm x 6 cm`, or `80,60` when no
+/// other separator leaves the comma free.
 pub(crate) fn parse_rectangle_dimensions(input: &str) -> Option<[f64; 2]> {
-    let values = input
-        .split([',', ';', 'x', 'X', '*'])
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::parse::<f64>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    match values.as_slice() {
-        [width, depth]
-            if width.is_finite() && depth.is_finite() && *width > 0.01 && *depth > 0.01 =>
-        {
-            Some([*width, *depth])
-        }
-        _ => None,
-    }
+    let separator: &[char] = if input.contains(';') {
+        &[';']
+    } else if input.contains(['x', 'X']) {
+        &['x', 'X']
+    } else {
+        &[',']
+    };
+    let mut sides = input.split(separator);
+    let (Some(width), Some(depth), None) = (sides.next(), sides.next(), sides.next()) else {
+        return None;
+    };
+    let side = |text: &str| parse_distance_mm(text).filter(|side| *side > limits::MIN_LENGTH_MM);
+    Some([side(width)?, side(depth)?])
 }
 
 fn exact_arc_profile_geometry(

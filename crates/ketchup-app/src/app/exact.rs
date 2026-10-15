@@ -995,13 +995,22 @@ impl KetchupApp {
         )
     }
 
+    /// The length typed for the shape in progress, or `None` with the refusal
+    /// named when it is not a length greater than zero.
+    fn typed_sketch_length_mm(&mut self) -> Option<f64> {
+        let length_mm = parse_distance_mm(&self.value_box.input)
+            .filter(|length_mm| *length_mm > limits::MIN_LENGTH_MM);
+        if length_mm.is_none() {
+            self.digest = self.catalog.text("digest-sketch-invalid-length");
+        }
+        length_mm
+    }
+
     pub(crate) fn complete_exact_line(&mut self) -> bool {
         let Some(start) = self.gesture.sketch.start else {
             return false;
         };
-        let Some(length_mm) =
-            parse_distance_mm(&self.value_box.input).filter(|value| *value > 0.01)
-        else {
+        let Some(length_mm) = self.typed_sketch_length_mm() else {
             return false;
         };
         let direction = self
@@ -1027,9 +1036,7 @@ impl KetchupApp {
         let Some(center) = self.gesture.sketch.start else {
             return false;
         };
-        let Some(radius_mm) =
-            parse_distance_mm(&self.value_box.input).filter(|radius| *radius > 0.01)
-        else {
+        let Some(radius_mm) = self.typed_sketch_length_mm() else {
             return false;
         };
         let direction = self
@@ -1045,9 +1052,7 @@ impl KetchupApp {
         let Some(center) = self.gesture.sketch.start else {
             return false;
         };
-        let Some(radius_mm) = parse_distance_mm(&self.value_box.input)
-            .filter(|radius| *radius > limits::MIN_LENGTH_MM)
-        else {
+        let Some(radius_mm) = self.typed_sketch_length_mm() else {
             return false;
         };
         let direction = self
@@ -1064,9 +1069,7 @@ impl KetchupApp {
         let Some(center) = self.gesture.sketch.start else {
             return false;
         };
-        let Some(radius_mm) = parse_distance_mm(&self.value_box.input)
-            .filter(|radius| *radius > limits::MIN_LENGTH_MM)
-        else {
+        let Some(radius_mm) = self.typed_sketch_length_mm() else {
             return false;
         };
         let Some(major_end) = self.gesture.sketch.end else {
@@ -1094,9 +1097,7 @@ impl KetchupApp {
         ) else {
             return false;
         };
-        let Some(distance_mm) = parse_distance_mm(&self.value_box.input)
-            .filter(|distance| *distance > limits::MIN_LENGTH_MM)
-        else {
+        let Some(distance_mm) = self.typed_sketch_length_mm() else {
             return false;
         };
         let direction = self
@@ -1116,9 +1117,11 @@ impl KetchupApp {
         let (Some(start), Some(end)) = (self.gesture.sketch.start, self.gesture.sketch.end) else {
             return false;
         };
-        let Some(bulge_mm) =
-            parse_distance_mm(&self.value_box.input).filter(|value| value.abs() > 0.01)
+        // A negative bulge bows the arc to the other side of the pointer.
+        let Some(bulge_mm) = parse_distance_mm(&self.value_box.input)
+            .filter(|value| value.abs() > limits::MIN_LENGTH_MM)
         else {
+            self.digest = self.catalog.text("digest-sketch-invalid-length");
             return false;
         };
         let chord = end - start;
@@ -1155,6 +1158,7 @@ impl KetchupApp {
             return false;
         };
         let Some([width, depth]) = parse_rectangle_dimensions(&self.value_box.input) else {
+            self.digest = self.catalog.text("digest-rectangle-invalid-size");
             return false;
         };
         let frame = self.drawing_frame(Some(start));
