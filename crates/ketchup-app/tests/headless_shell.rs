@@ -232,6 +232,26 @@ fn wait_for_one_exact_body(shell: &mut Shell) {
     wait_for_exact_bodies(shell, 1);
 }
 
+/// Types a Push/Pull depth for the selected drawn shape and waits until it is
+/// applied. While a part's exact solid is still on its way the shape may be
+/// drawn on it, so Enter waits ("Computing exact result…") and the frame the
+/// solid arrives in applies the value; a next action taken before that drops
+/// the waiting value, as it does for the user.
+fn push_pull_typed_depth(shell: &mut Shell, depth: &str) {
+    let revision = shell.app().document_revision();
+    shell.type_text(depth);
+    shell.press_key(Key::Enter);
+    let applied = shell.wait_until(|shell| {
+        shell.settle();
+        shell.app().document_revision() > revision
+    });
+    assert!(
+        applied,
+        "Push/Pull {depth} was not applied: {}",
+        shell.app().action_digest()
+    );
+}
+
 /// Points the window at a file that is no exact worker, so no exact body is
 /// published until the test connects the real worker: the test decides when
 /// the exact result arrives instead of the speed of the machine.
@@ -11345,12 +11365,16 @@ fn shift_drag_selection_adds_without_forgetting_the_primary_face() {
     shell.click_at(shell.viewport_rect().center());
     assert!(shell.app_mut().copy_selected(Vec3::new(180.0, 0.0, 0.0)));
     shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    // Picked before the solid arrives, the box face would become its exact
+    // face when the solid lands, during the drag or not, by machine speed.
+    wait_for_one_exact_body(&mut shell);
     shell.click_command(AppCommand::Select);
     shell.click_at(shell.top_face_centre(1));
     let primary = shell
         .app()
         .selected_reference()
         .expect("the first click must retain an exact primary face");
+    assert!(matches!(primary.element, ElementId::TopologicalFace(_)));
 
     let (origin, size) = shell.app().occurrence_box_geometry(2).unwrap();
     let second = [
@@ -13971,8 +13995,7 @@ fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_linea
     shell.click_at(shell.app().viewport_position(end).unwrap());
     shell.click_at(shell.app().viewport_position(bulge).unwrap());
     shell.click_command(AppCommand::PushPull);
-    shell.type_text("20");
-    shell.press_key(Key::Enter);
+    push_pull_typed_depth(&mut shell, "20");
     assert!(shell.app_mut().move_selected(Vec3::new(-100.0, 0.0, 0.0)));
     shell.settle();
     assert_eq!(shell.app().active_box_count(), 2);
@@ -14162,14 +14185,8 @@ fn d_profile_solid_union_preserves_review_lifecycle_exact_mesh_and_arc_lineage()
     shell.click_at(shell.app().viewport_position(end).unwrap());
     shell.click_at(shell.app().viewport_position(bulge).unwrap());
     shell.click_command(AppCommand::PushPull);
-    shell.type_text("20");
-    shell.press_key(Key::Enter);
-    // On the profile's exact face Enter commits once its exact offset is evaluated.
-    let extruded = shell.wait_until(|shell| {
-        shell.step();
-        shell.app().active_box_count() == 2
-    });
-    assert!(extruded, "{}", shell.app().action_digest());
+    push_pull_typed_depth(&mut shell, "20");
+    assert_eq!(shell.app().active_box_count(), 2);
 
     let before_revision = shell.app().document_revision();
     let before_undo = shell.app().undo_step_count();
@@ -14361,8 +14378,7 @@ fn d_profile_solid_split_preserves_review_lifecycle_partition_mesh_and_arc_linea
     shell.click_at(shell.app().viewport_position(end).unwrap());
     shell.click_at(shell.app().viewport_position(bulge).unwrap());
     shell.click_command(AppCommand::PushPull);
-    shell.type_text("20");
-    shell.press_key(Key::Enter);
+    push_pull_typed_depth(&mut shell, "20");
     assert!(shell.app_mut().move_selected(Vec3::new(-100.0, 0.0, 0.0)));
     shell.settle();
 
@@ -14567,8 +14583,7 @@ fn solid_subtract_previews_consumes_the_tool_and_undo_restores_both_solids() {
     shell.type_text("30,20");
     shell.press_key(Key::Enter);
     shell.click_command(AppCommand::PushPull);
-    shell.type_text("20");
-    shell.press_key(Key::Enter);
+    push_pull_typed_depth(&mut shell, "20");
     assert!(shell.app_mut().move_selected(Vec3::new(-95.0, -5.0, 0.0)));
     shell.settle();
     assert_eq!(shell.app().occurrence_box_geometry(2).unwrap().1.z, 20.0);
@@ -14635,8 +14650,7 @@ fn solid_trim_subtracts_the_overlap_and_keeps_the_cutter() {
     shell.type_text("30,20");
     shell.press_key(Key::Enter);
     shell.click_command(AppCommand::PushPull);
-    shell.type_text("20");
-    shell.press_key(Key::Enter);
+    push_pull_typed_depth(&mut shell, "20");
     assert!(shell.app_mut().move_selected(Vec3::new(-95.0, -5.0, 0.0)));
     shell.settle();
     let before_revision = shell.app().document_revision();

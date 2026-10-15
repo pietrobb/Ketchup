@@ -227,7 +227,7 @@ fn wait_for(shell: &mut Shell, what: &str, mut done: impl FnMut(&Shell) -> bool)
 enum ExactGeometry {
     /// The exact body is published first, so the pick lands on an exact face.
     BeforePick,
-    /// No exact body is ever published, so the pick lands on the box face.
+    /// No exact worker serves the window, so the pick lands on the box face.
     Never,
 }
 
@@ -251,9 +251,13 @@ fn serial_rectangle_push_pull(exact: ExactGeometry) {
     let mut shell =
         Shell::with_catalog_and_dialogs(ketchup_interaction::LocaleCatalog::slovak(), dialogs);
     if let ExactGeometry::Never = exact {
+        // A file that is no exact worker: connecting it also drops a body the
+        // discovered worker published during the first frames, which a warm
+        // worker does when those frames run slowly under load.
         shell
             .app_mut()
-            .headless_force_exact_worker_path(directory.path().join("missing-exact-worker.exe"));
+            .connect_exact_worker(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .unwrap();
     }
     open_face_workflow(&mut shell);
     let initial_revision = shell.app().document_revision();
@@ -1163,6 +1167,11 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     );
     // A bare line outline pulls to either side, like any other polygon profile:
     // beside the part a negative distance previews a new body below, unapplied.
+    // Whether it is beside the part is read from the part's exact solid; until
+    // that arrives the preview waits for it.
+    wait_for(&mut shell, "the part's exact solid", |shell| {
+        shell.app().exact_render_body_count() == 1
+    });
     shell.app_mut().set_push_pull_distance_input("-20");
     assert!(shell.app_mut().start_preview());
     assert_eq!(shell.app().document_revision(), before_push.0);
