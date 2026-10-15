@@ -2814,7 +2814,9 @@ mod tests {
     /// budget Save and opening keep alike.
     #[test]
     fn opening_a_history_holds_each_distinct_program_once() {
-        use crate::document::{CanonicalCommand, CommandBatch, NodeId, RuleProgramSource};
+        use crate::document::{
+            CanonicalCommand, CommandBatch, NodeId, OccurrenceId, RuleProgramSource,
+        };
         use ketchup_geometry::dimension::Dimension;
         let program = |name: &str| RuleProgramSource {
             file_name: "model.star".into(),
@@ -2832,9 +2834,33 @@ mod tests {
                     dimension: Dimension::new("1", 1.0).unwrap(),
                     dependencies: vec![],
                 },
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "part".into(),
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(2),
+                    definition_id: DefinitionId(1),
+                    name: "part".into(),
+                    transform: crate::document::Transform::identity(),
+                    parent: None,
+                    tags: Default::default(),
+                    visible: true,
+                },
             ]))
             .unwrap();
         store.bind_rule_program(a.clone()).unwrap();
+        // View-only edits keep the program: written as "same as the previous".
+        for edit in 0..16 {
+            store
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::SetOccurrenceVisibility {
+                        id: OccurrenceId(2),
+                        visible: edit % 2 == 1,
+                    },
+                ]))
+                .unwrap();
+        }
         for edit in 0..64 {
             let next = if edit % 2 == 0 { &b } else { &a };
             store.replace_rule_program_source(next.clone()).unwrap();
@@ -2842,7 +2868,7 @@ mod tests {
         let document_bin = encoded_snapshot(&store.current());
         let history = encode_revision_history(&store, &document_bin).unwrap();
         let program_bytes = serde_json::to_vec(&a).unwrap().len();
-        // 65 programs of 240 KB, two of them distinct.
+        // 81 programs of 240 KB, two of them distinct.
         assert!(history.len() < 3 * program_bytes, "{}", history.len());
 
         let outcome = load(&save(&store.current())).unwrap();
@@ -2864,7 +2890,7 @@ mod tests {
             .filter_map(|revision| revision.rule_program())
             .map(|program| program.source.as_ptr())
             .collect::<BTreeSet<_>>();
-        assert_eq!(opened.revision_count(), 66);
+        assert_eq!(opened.revision_count(), 82);
         assert_eq!(held.len(), 2, "programs held, one per distinct program");
 
         // The distinct programs count against their budget, alike on Save and opening.
@@ -2888,7 +2914,7 @@ mod tests {
             Err(PersistenceError::TooLarge { entry, bytes, .. })
                 if entry == HISTORY_PROGRAMS_ENTRY && bytes == fits
         ));
-        assert_eq!(decode(&history, fits).unwrap().revision_count(), 66);
+        assert_eq!(decode(&history, fits).unwrap().revision_count(), 82);
         assert!(matches!(
             decode(&history, fits - 1),
             Err(PersistenceError::TooLarge { entry, bytes, .. })
