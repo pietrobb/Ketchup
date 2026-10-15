@@ -199,16 +199,27 @@ fn unknown_fields(
         };
     match (stored, known) {
         (ciborium::Value::Map(stored), ciborium::Value::Map(known)) => {
+            // Text and integer keys are looked up by hash; a map of a few hundred
+            // thousand entries scanned per key would never finish (review PS-4).
+            let mut index = std::collections::HashMap::with_capacity(known.len());
+            for (key, value) in known {
+                if let Some(key) = MapKey::of(key) {
+                    index.entry(key).or_insert(value);
+                }
+            }
             for (key, value) in stored {
                 let segment = match key {
                     ciborium::Value::Text(name) => name.clone(),
                     ciborium::Value::Integer(number) => i128::from(*number).to_string(),
                     other => format!("{other:?}"),
                 };
-                let counterpart = known
-                    .iter()
-                    .find(|(candidate, _)| candidate == key)
-                    .map(|(_, value)| value);
+                let counterpart = match MapKey::of(key) {
+                    Some(key) => index.get(&key).copied(),
+                    None => known
+                        .iter()
+                        .find(|(candidate, _)| candidate == key)
+                        .map(|(_, value)| value),
+                };
                 descend(segment, value, counterpart);
             }
         }
@@ -223,6 +234,23 @@ fn unknown_fields(
             unknown_fields(stored, known, path, unknown);
         }
         _ => {}
+    }
+}
+
+/// A CBOR map key that hashes: the text and integer keys the product model writes.
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+enum MapKey<'a> {
+    Text(&'a str),
+    Integer(i128),
+}
+
+impl<'a> MapKey<'a> {
+    fn of(key: &'a ciborium::Value) -> Option<Self> {
+        match key {
+            ciborium::Value::Text(text) => Some(Self::Text(text)),
+            ciborium::Value::Integer(number) => Some(Self::Integer(i128::from(*number))),
+            _ => None,
+        }
     }
 }
 
@@ -740,6 +768,49 @@ mod tests {
         let mut body = crate::graph::sha256_bytes(&payload).to_vec();
         body.extend_from_slice(&payload);
         (body, writer_digest)
+    }
+
+    /// Review PS-4: each stored key looked its counterpart up by scanning the known map,
+    /// so an edited file with a map of a few hundred thousand entries never opened.
+    #[test]
+    fn unknown_fields_of_a_large_map_are_found_in_linear_time() {
+        const ENTRIES: u64 = 200_000;
+        let entry = |key: u64| {
+            (
+                ciborium::Value::Integer(key.into()),
+                ciborium::Value::Map(vec![(
+                    ciborium::Value::Text("name".into()),
+                    ciborium::Value::Text(format!("Part {key}")),
+                )]),
+            )
+        };
+        let known = ciborium::Value::Map((0..ENTRIES).map(entry).collect());
+        // Stored in reverse, so no entry sits where the known map has it.
+        let mut stored: Vec<_> = (0..ENTRIES).rev().map(entry).collect();
+        stored.push((
+            ciborium::Value::Text("finish".into()),
+            ciborium::Value::Text("oiled".into()),
+        ));
+        if let (_, ciborium::Value::Map(fields)) = &mut stored[1] {
+            fields.push((
+                ciborium::Value::Text("grain".into()),
+                ciborium::Value::Integer(90.into()),
+            ));
+        }
+        let started = std::time::Instant::now();
+        let mut unknown = Vec::new();
+        unknown_fields(
+            &ciborium::Value::Map(stored),
+            &known,
+            &mut String::new(),
+            &mut unknown,
+        );
+        let elapsed = started.elapsed();
+        assert_eq!(unknown, [format!("{}.grain", ENTRIES - 2), "finish".into()]);
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "{ENTRIES} keys took {elapsed:?}"
+        );
     }
 
     #[test]
