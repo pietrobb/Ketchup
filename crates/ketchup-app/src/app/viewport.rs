@@ -4557,13 +4557,27 @@ fn republished_overlap_index(
     if overlap_index == 0 && front_is_new {
         return 0;
     }
+    // Renamed faces (box faces replaced by exact ones) keep their place among
+    // the faces of their part: the line through the model enters and leaves
+    // each part, and a choice of the face it leaves stays on that face.
+    let same_part = |candidate: &&SelectionId| candidate.instance_path == chosen.instance_path;
+    let rank = previous
+        .and_then(|previous| {
+            let index = previous.iter().position(|candidate| candidate == chosen)?;
+            Some(previous[..index].iter().filter(same_part).count())
+        })
+        .unwrap_or(0);
     current
         .iter()
         .position(|candidate| candidate == chosen)
         .or_else(|| {
-            current
+            let faces = current
                 .iter()
-                .position(|candidate| candidate.instance_path == chosen.instance_path)
+                .enumerate()
+                .filter(|(_, candidate)| same_part(candidate))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            faces.get(rank).or(faces.first()).copied()
         })
         .unwrap_or(0)
 }
