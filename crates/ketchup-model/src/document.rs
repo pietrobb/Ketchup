@@ -254,8 +254,8 @@ const fn is_default_modeled_threads(modeled: &bool) -> bool {
 pub(crate) struct ExactGraphCache {
     pub(crate) graphs: std::sync::Mutex<ExactGraphsByProducer>,
     pub(crate) dependencies: OnceLock<Result<Arc<FeatureDependencyGraph>, CanonicalError>>,
-    /// Snapshot encoding with its SHA-256, for the revision id it was encoded under.
-    pub(crate) encoded: OnceLock<(u64, Arc<EncodedSnapshot>)>,
+    /// Snapshot encodings with their SHA-256, by revision id: revisions share products.
+    pub(crate) encoded: std::sync::Mutex<BTreeMap<u64, Arc<EncodedSnapshot>>>,
     /// Graphs of the revision before a view-only change, rebased to this revision
     /// on first use instead of compiled again.
     pub(crate) inherited:
@@ -288,7 +288,7 @@ impl ExactGraphCache {
                     .unwrap_or_default(),
             ),
             dependencies: self.dependencies.clone(),
-            encoded: OnceLock::new(),
+            encoded: std::sync::Mutex::default(),
             inherited: std::sync::Mutex::new(
                 self.inherited
                     .lock()

@@ -449,10 +449,13 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
 /// write re-encodes the whole undo history, and a toggle must not cost all of it.
 fn encoded_snapshot(snapshot: &Snapshot) -> Arc<crate::document::EncodedSnapshot> {
     let cache = &snapshot.product().exact_graphs.encoded;
-    if let Some((revision_id, encoded)) = cache.get()
-        && *revision_id == snapshot.revision_id()
+    let revision_id = snapshot.revision_id();
+    if let Some(encoded) = cache
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&revision_id).cloned())
     {
-        return Arc::clone(encoded);
+        return encoded;
     }
     let bytes = save(snapshot);
     let encoded = Arc::new(crate::document::EncodedSnapshot {
@@ -460,7 +463,14 @@ fn encoded_snapshot(snapshot: &Snapshot) -> Arc<crate::document::EncodedSnapshot
         bytes,
         chunks: std::sync::OnceLock::new(),
     });
-    let _ = cache.set((snapshot.revision_id(), Arc::clone(&encoded)));
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(revision_id, Arc::clone(&encoded));
+        // A store holds at most this many revisions; the oldest ids are those it
+        // dropped, so the product keeps no more encodings than revisions sharing it.
+        while cache.len() > 2 * crate::tolerance::limits::UNDO_REVISIONS + 1 {
+            cache.pop_first();
+        }
+    }
     encoded
 }
 
@@ -2179,14 +2189,16 @@ fn load_history_snapshot(
     if source_schema == CURRENT_SCHEMA {
         match snapshot_encoding::compare(&snapshot, encoded)? {
             snapshot_encoding::Encoding::Canonical(canonical) => {
-                let _ = snapshot.product().exact_graphs.encoded.set((
-                    snapshot.revision_id(),
-                    Arc::new(crate::document::EncodedSnapshot {
-                        sha256: crate::graph::sha256_bytes(&canonical),
-                        bytes: canonical,
-                        chunks: std::sync::OnceLock::new(),
-                    }),
-                ));
+                if let Ok(mut cache) = snapshot.product().exact_graphs.encoded.lock() {
+                    cache.insert(
+                        snapshot.revision_id(),
+                        Arc::new(crate::document::EncodedSnapshot {
+                            sha256: crate::graph::sha256_bytes(&canonical),
+                            bytes: canonical,
+                            chunks: std::sync::OnceLock::new(),
+                        }),
+                    );
+                }
             }
             snapshot_encoding::Encoding::Equivalent => {}
             snapshot_encoding::Encoding::Different => {
@@ -2926,6 +2938,57 @@ mod tests {
             decode(fits - 1),
             Err(PersistenceError::TooLarge { bytes, .. }) if bytes == fits
         ));
+    }
+
+    /// PS-5: revisions that share one product (a program source edit, a rollback)
+    /// are each encoded once, not again on every history write.
+    #[test]
+    fn revisions_sharing_a_product_are_each_encoded_once() {
+        use crate::document::{CanonicalCommand, CommandBatch, NodeId, RuleProgramSource};
+        use ketchup_geometry::dimension::Dimension;
+        let program = |name: &str| RuleProgramSource {
+            file_name: "model.star".into(),
+            source: format!("# {name}\n"),
+            overrides: BTreeMap::new(),
+            variants: BTreeMap::new(),
+        };
+        let mut store = DocumentStore::new();
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateEvaluatorNode {
+                    id: NodeId(1),
+                    name: "parameter".into(),
+                    dimension: Dimension::new("1", 1.0).unwrap(),
+                    dependencies: vec![],
+                },
+            ]))
+            .unwrap();
+        store.bind_rule_program(program("0")).unwrap();
+        for edit in 1..=4 {
+            store
+                .replace_rule_program_source(program(&edit.to_string()))
+                .unwrap();
+        }
+        let revisions = store.revision_history().skip(1).collect::<Vec<_>>();
+        assert_eq!(revisions.len(), 5);
+        assert!(
+            revisions.windows(2).all(|pair| std::ptr::eq(
+                pair[0].snapshot().product(),
+                pair[1].snapshot().product()
+            ))
+        );
+        let first = revisions
+            .iter()
+            .map(|revision| encoded_snapshot(revision.snapshot()))
+            .collect::<Vec<_>>();
+        for (revision, encoded) in revisions.iter().zip(&first) {
+            assert_eq!(encoded.bytes, save(revision.snapshot()));
+            assert!(
+                Arc::ptr_eq(encoded, &encoded_snapshot(revision.snapshot())),
+                "revision {} encoded again",
+                revision.id()
+            );
+        }
     }
 
     /// PS-2 review 52: programs that chunks of a small `history.bin` name are held
