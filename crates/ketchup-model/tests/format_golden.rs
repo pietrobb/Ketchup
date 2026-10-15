@@ -172,7 +172,18 @@ fn a_format_103_file_with_history_opens_with_every_revision_and_saves_the_same_b
     assert_eq!(revision_digests(&document), REVISION_DIGESTS);
     assert_eq!(
         persistence::save_document_store(&document, &ContainerData::default()).unwrap(),
-        bytes,
+        with_current_history_format(bytes),
         "the saved form changed; see the module comment"
     );
+}
+
+/// The fixture as it saves now: `history.bin` of a history without programs only
+/// numbers format 5 (PS-2, programs as chunks) where the fixture has format 4.
+fn with_current_history_format(mut bytes: Vec<u8>) -> Vec<u8> {
+    use crate::native_persistence::{container_entry_offsets, rehash_container_entry};
+    let (checksum, offset, len) = container_entry_offsets(&bytes, "history.bin");
+    assert_eq!(bytes[offset + 10..offset + 12], 4_u16.to_le_bytes());
+    bytes[offset + 10..offset + 12].copy_from_slice(&5_u16.to_le_bytes());
+    rehash_container_entry(&mut bytes, checksum, offset, len);
+    bytes
 }

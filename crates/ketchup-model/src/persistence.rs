@@ -28,7 +28,7 @@ const MAGIC: &[u8; 10] = b"KETCHUPDOC";
 const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
 const CONTAINER_SCHEMA: u16 = 1;
 const HISTORY_MAGIC: &[u8; 10] = b"KETCHUPHST";
-const HISTORY_SCHEMA: u16 = 4;
+const HISTORY_SCHEMA: u16 = 5;
 const WORK_RECOVERY_MAGIC: &[u8; 10] = b"KETCHUPWRK";
 const WORK_RECOVERY_SCHEMA: u16 = 1;
 /// Most revisions a native file's history may hold. Files written before the shared
@@ -500,14 +500,13 @@ fn write_revision_origin(bytes: &mut Vec<u8>, origin: RevisionOrigin) {
 
 /// The revision's rule program is the one of the revision before it (format 4).
 const HISTORY_RULE_PROGRAM_AS_PREVIOUS: u8 = 2;
+/// The revision's rule program JSON as chunk numbers, like a snapshot (format 5,
+/// PS-2): a program edit stores only the chunks around the change, not the whole
+/// program again.
+const HISTORY_RULE_PROGRAM_IN_CHUNKS: u8 = 3;
 
-/// `previous` is the revision written before this one in a format-4 history, whose
-/// rule program this one may name instead of storing it again.
-fn write_revision_metadata(
-    bytes: &mut Vec<u8>,
-    revision: &Revision,
-    previous: Option<&Revision>,
-) -> Result<(), PersistenceError> {
+/// Revision id, batch digest, origin and checkpoint.
+fn write_revision_header(bytes: &mut Vec<u8>, revision: &Revision) {
     push_u64(bytes, revision.id());
     push_string(bytes, revision.batch_digest());
     write_revision_origin(bytes, revision.origin());
@@ -517,24 +516,81 @@ fn write_revision_metadata(
     } else {
         push_u8(bytes, 0);
     }
-    if revision.rule_program().is_some()
-        && previous.is_some_and(|previous| previous.rule_program() == revision.rule_program())
-    {
-        push_u8(bytes, HISTORY_RULE_PROGRAM_AS_PREVIOUS);
-    } else if let Some(source) = revision.rule_program() {
+}
+
+/// The program JSON of `revision`, within the limit a reader accepts.
+fn encoded_rule_program(revision: &Revision) -> Result<Option<Vec<u8>>, PersistenceError> {
+    let Some(source) = revision.rule_program() else {
+        return Ok(None);
+    };
+    let encoded = serde_json::to_vec(source).map_err(|error| {
+        PersistenceError::InvalidPayload(format!("revision rule program: {error}"))
+    })?;
+    if encoded.len() > crate::document::MAX_RULE_PROGRAM_BYTES {
+        return Err(PersistenceError::ResourceLimit);
+    }
+    Ok(Some(encoded))
+}
+
+/// A revision's metadata as format 3 wrote it, its program stored whole.
+#[cfg(test)]
+fn write_format_3_revision_metadata(
+    bytes: &mut Vec<u8>,
+    revision: &Revision,
+) -> Result<(), PersistenceError> {
+    write_revision_header(bytes, revision);
+    if let Some(encoded) = encoded_rule_program(revision)? {
         push_u8(bytes, 1);
-        let encoded = serde_json::to_vec(source).map_err(|error| {
-            PersistenceError::InvalidPayload(format!("revision rule program: {error}"))
-        })?;
-        if encoded.len() > crate::document::MAX_RULE_PROGRAM_BYTES {
-            return Err(PersistenceError::ResourceLimit);
-        }
         push_u32(bytes, encoded.len() as u32);
         bytes.extend_from_slice(&encoded);
     } else {
         push_u8(bytes, 0);
     }
     Ok(())
+}
+
+/// The distinct chunks of a history, numbered in the order they are written.
+#[derive(Default)]
+struct ChunkTable {
+    numbers: BTreeMap<[u8; 32], u32>,
+    bytes: Vec<u8>,
+}
+
+impl ChunkTable {
+    fn add_document_chunk(&mut self, chunk: &history_chunks::Chunk) {
+        let next = self.numbers.len() as u32;
+        self.numbers.entry(chunk.sha256).or_insert_with(|| {
+            push_u8(&mut self.bytes, HISTORY_CHUNK_IN_DOCUMENT);
+            push_u32(&mut self.bytes, chunk.range.start as u32);
+            push_u32(&mut self.bytes, chunk.range.len() as u32);
+            next
+        });
+    }
+
+    /// `bytes` into `record` as its length, SHA-256 and chunk numbers; a chunk
+    /// not in the table yet is stored in it.
+    fn write(
+        &mut self,
+        record: &mut Vec<u8>,
+        bytes: &[u8],
+        sha256: &[u8; 32],
+        chunks: &[history_chunks::Chunk],
+    ) {
+        push_u64(record, bytes.len() as u64);
+        record.extend_from_slice(sha256);
+        push_u32(record, chunks.len() as u32);
+        for chunk in chunks {
+            let next = self.numbers.len() as u32;
+            let number = *self.numbers.entry(chunk.sha256).or_insert_with(|| {
+                let bytes = &bytes[chunk.range.clone()];
+                push_u8(&mut self.bytes, HISTORY_CHUNK_INLINE);
+                push_u32(&mut self.bytes, bytes.len() as u32);
+                self.bytes.extend_from_slice(bytes);
+                next
+            });
+            push_u32(record, number);
+        }
+    }
 }
 
 /// A history revision whose snapshot is the container's `document.bin`.
@@ -546,9 +602,10 @@ const HISTORY_CHUNK_INLINE: u8 = 0;
 /// A history chunk that is a byte range of `document.bin`.
 const HISTORY_CHUNK_IN_DOCUMENT: u8 = 1;
 
-/// Format 4: the distinct chunks of all revision snapshots once (those the current
-/// snapshot has as ranges of `document.bin`), then every revision with its snapshot
-/// as chunk numbers; the current revision names `document.bin`.
+/// Format 5: the distinct chunks of all revision snapshots and programs once (those
+/// the current snapshot has as ranges of `document.bin`), then every revision with
+/// its program and snapshot as chunk numbers; the current revision names
+/// `document.bin`, a program equal to the one before is named as such.
 fn encode_history(
     revisions: &[&Revision],
     cursor: usize,
@@ -561,25 +618,34 @@ fn encode_history(
     if count == 0 || count > FILE_HISTORY_REVISIONS || cursor >= revisions.len() {
         return Err(PersistenceError::ResourceLimit);
     }
-    let mut chunk_numbers = BTreeMap::<[u8; 32], u32>::new();
-    let mut chunk_table = Vec::new();
+    let mut table = ChunkTable::default();
     for chunk in document_bin
         .chunks
         .get_or_init(|| history_chunks::chunks(&document_bin.bytes))
     {
-        let next = chunk_numbers.len() as u32;
-        chunk_numbers.entry(chunk.sha256).or_insert_with(|| {
-            push_u8(&mut chunk_table, HISTORY_CHUNK_IN_DOCUMENT);
-            push_u32(&mut chunk_table, chunk.range.start as u32);
-            push_u32(&mut chunk_table, chunk.range.len() as u32);
-            next
-        });
+        table.add_document_chunk(chunk);
     }
     let mut records = Vec::new();
     let mut assembled = 0u64;
     for (index, revision) in revisions.iter().enumerate() {
         let previous = index.checked_sub(1).map(|previous| revisions[previous]);
-        write_revision_metadata(&mut records, revision, previous)?;
+        write_revision_header(&mut records, revision);
+        if revision.rule_program().is_some()
+            && previous.is_some_and(|previous| previous.rule_program() == revision.rule_program())
+        {
+            push_u8(&mut records, HISTORY_RULE_PROGRAM_AS_PREVIOUS);
+        } else if let Some(encoded) = encoded_rule_program(revision)? {
+            assembled = check_assembled(assembled, encoded.len(), assembled_budget)?;
+            push_u8(&mut records, HISTORY_RULE_PROGRAM_IN_CHUNKS);
+            table.write(
+                &mut records,
+                &encoded,
+                &crate::graph::sha256_bytes(&encoded),
+                &history_chunks::chunks(&encoded),
+            );
+        } else {
+            push_u8(&mut records, 0);
+        }
         if index == cursor {
             push_u8(&mut records, HISTORY_SNAPSHOT_IS_DOCUMENT);
             continue;
@@ -590,30 +656,17 @@ fn encode_history(
             .chunks
             .get_or_init(|| history_chunks::chunks(&snapshot.bytes));
         push_u8(&mut records, HISTORY_SNAPSHOT_IN_CHUNKS);
-        push_u64(&mut records, snapshot.bytes.len() as u64);
-        records.extend_from_slice(&snapshot.sha256);
-        push_u32(&mut records, chunks.len() as u32);
-        for chunk in chunks {
-            let next = chunk_numbers.len() as u32;
-            let number = *chunk_numbers.entry(chunk.sha256).or_insert_with(|| {
-                let bytes = &snapshot.bytes[chunk.range.clone()];
-                push_u8(&mut chunk_table, HISTORY_CHUNK_INLINE);
-                push_u32(&mut chunk_table, bytes.len() as u32);
-                chunk_table.extend_from_slice(bytes);
-                next
-            });
-            push_u32(&mut records, number);
-        }
-        check_entry_size("history.bin", chunk_table.len() + records.len())?;
+        table.write(&mut records, &snapshot.bytes, &snapshot.sha256, chunks);
+        check_entry_size("history.bin", table.bytes.len() + records.len())?;
     }
-    let mut bytes = Vec::with_capacity(chunk_table.len() + records.len() + 32);
+    let mut bytes = Vec::with_capacity(table.bytes.len() + records.len() + 32);
     bytes.extend_from_slice(HISTORY_MAGIC);
     push_u16(&mut bytes, HISTORY_SCHEMA);
     push_u32(&mut bytes, count);
     push_u32(&mut bytes, cursor as u32);
     push_u64(&mut bytes, next_revision_id);
-    push_u32(&mut bytes, chunk_numbers.len() as u32);
-    bytes.extend_from_slice(&chunk_table);
+    push_u32(&mut bytes, table.numbers.len() as u32);
+    bytes.extend_from_slice(&table.bytes);
     bytes.extend_from_slice(&records);
     check_entry_size("history.bin", bytes.len())?;
     Ok(bytes)
@@ -1734,16 +1787,14 @@ fn decode_revision_history(
                     if length > crate::document::MAX_RULE_PROGRAM_BYTES {
                         return Err(PersistenceError::ResourceLimit);
                     }
-                    let source: crate::document::RuleProgramSource =
-                        serde_json::from_slice(reader.take(length)?).map_err(|error| {
-                            PersistenceError::InvalidPayload(format!(
-                                "revision rule program: {error}"
-                            ))
-                        })?;
-                    source
-                        .validate()
-                        .map_err(PersistenceError::InvalidRuleProgram)?;
-                    Some(source)
+                    Some(decode_rule_program(reader.take(length)?)?)
+                }
+                HISTORY_RULE_PROGRAM_IN_CHUNKS if schema >= 5 => {
+                    let program =
+                        read_chunk_list(&mut reader, crate::document::MAX_RULE_PROGRAM_BYTES)?;
+                    assembled =
+                        check_assembled(assembled, program.assembled_len(), assembled_budget)?;
+                    Some(decode_rule_program(&program.assemble(&chunks)?)?)
                 }
                 HISTORY_RULE_PROGRAM_AS_PREVIOUS if schema >= 4 => Some(
                     records
@@ -2069,17 +2120,56 @@ fn read_history_snapshot<'a>(
         .try_into()
         .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
     if schema >= 4 {
-        let count = reader.count_with_limit(MAX_COLLECTION_ITEMS)? as usize;
-        return Ok(HistorySnapshot::Chunks {
-            length,
-            checksum,
-            numbers: reader.take(count * 4)?,
-        });
+        return chunk_list(reader, length, checksum);
     }
     Ok(HistorySnapshot::Whole {
         bytes: reader.take(length)?,
         checksum,
     })
+}
+
+/// Length, SHA-256 and chunk numbers of at most `max_length` bytes.
+fn read_chunk_list<'a>(
+    reader: &mut Reader<'a>,
+    max_length: usize,
+) -> Result<HistorySnapshot<'a>, PersistenceError> {
+    let length = usize::try_from(reader.u64()?)
+        .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+    if length > max_length {
+        return Err(PersistenceError::ResourceLimit);
+    }
+    let checksum: [u8; 32] = reader
+        .take(32)?
+        .try_into()
+        .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
+    chunk_list(reader, length, checksum)
+}
+
+fn chunk_list<'a>(
+    reader: &mut Reader<'a>,
+    length: usize,
+    checksum: [u8; 32],
+) -> Result<HistorySnapshot<'a>, PersistenceError> {
+    let count = reader.count_with_limit(MAX_COLLECTION_ITEMS)? as usize;
+    Ok(HistorySnapshot::Chunks {
+        length,
+        checksum,
+        numbers: reader.take(count * 4)?,
+    })
+}
+
+/// A revision's rule program from its JSON.
+fn decode_rule_program(
+    json: &[u8],
+) -> Result<crate::document::RuleProgramSource, PersistenceError> {
+    let source: crate::document::RuleProgramSource =
+        serde_json::from_slice(json).map_err(|error| {
+            PersistenceError::InvalidPayload(format!("revision rule program: {error}"))
+        })?;
+    source
+        .validate()
+        .map_err(PersistenceError::InvalidRuleProgram)?;
+    Ok(source)
 }
 
 fn load_document(

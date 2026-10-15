@@ -72,7 +72,7 @@ mod tests {
         push_u32(&mut history, document.history_cursor() as u32);
         push_u64(&mut history, document.next_revision_id());
         for (index, revision) in document.revision_history().enumerate() {
-            write_revision_metadata(&mut history, revision, None).unwrap();
+            write_format_3_revision_metadata(&mut history, revision).unwrap();
             let bytes = if index == document.history_cursor() {
                 snapshot.to_vec()
             } else {

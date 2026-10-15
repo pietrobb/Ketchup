@@ -198,11 +198,23 @@ fn with_program_json(document: &DocumentStore, bytes: &[u8], json: &str) -> Vec<
         .windows(br#"{"file_name""#.len())
         .position(|window| window == br#"{"file_name""#)
         .expect("the history holds the program");
+    // A program this small is one inline chunk; its revision names the chunk's
+    // length and SHA-256.
     let old_len = u32::from_le_bytes(history[start - 4..start].try_into().unwrap()) as usize;
+    let old_checksum = ketchup_model::graph::sha256_bytes(&history[start..start + old_len]);
     let mut patched = history[..start - 4].to_vec();
     patched.extend_from_slice(&(json.len() as u32).to_le_bytes());
     patched.extend_from_slice(json.as_bytes());
+    let records_start = patched.len();
     patched.extend_from_slice(&history[start + old_len..]);
+    let checksum = records_start
+        + patched[records_start..]
+            .windows(32)
+            .position(|window| window == old_checksum)
+            .expect("the revision names the program's checksum");
+    patched[checksum - 8..checksum].copy_from_slice(&(json.len() as u64).to_le_bytes());
+    patched[checksum..checksum + 32]
+        .copy_from_slice(&ketchup_model::graph::sha256_bytes(json.as_bytes()));
     ketchup_model::testing::save_with_history_entry(document, patched)
 }
 
@@ -311,7 +323,7 @@ fn discarded_history(bytes: &[u8]) -> String {
     audit.history_discarded.expect("discard reason")
 }
 
-fn container_entry_offsets(bytes: &[u8], target: &str) -> (usize, usize, usize) {
+pub(crate) fn container_entry_offsets(bytes: &[u8], target: &str) -> (usize, usize, usize) {
     let mut cursor = 16;
     let count = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
     for _ in 0..count {
@@ -333,7 +345,7 @@ fn container_entry_offsets(bytes: &[u8], target: &str) -> (usize, usize, usize) 
     panic!("container entry {target:?} was not found");
 }
 
-fn rehash_container_entry(
+pub(crate) fn rehash_container_entry(
     bytes: &mut [u8],
     checksum_offset: usize,
     content_offset: usize,
@@ -1255,6 +1267,132 @@ fn a_history_naming_gigabytes_through_shared_chunks_is_refused_before_it_is_asse
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
 
+/// Programs as the window writes them: bound with a model change, the same program
+/// again with the next model change, then a source-only edit.
+fn programmed_history_document() -> DocumentStore {
+    use ketchup_model::document::RuleProgramSource;
+    let program = |source: &str| RuleProgramSource {
+        file_name: "shelf.star".into(),
+        source: source.into(),
+        overrides: std::collections::BTreeMap::from([("width".into(), 800.0)]),
+        variants: Default::default(),
+    };
+    let mut document = graph_document();
+    document
+        .bind_rule_program(program("w = param('width', 600)\n"))
+        .unwrap();
+    for (id, source) in [
+        (900, "w = param('width', 700)\n"),
+        (901, "w = param('width', 700)\n"),
+    ] {
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateEvaluatorNode {
+                    id: NodeId(id),
+                    name: format!("depth-{id}"),
+                    dimension: Dimension::new("400", 400.0).unwrap(),
+                    dependencies: vec![],
+                },
+            ]))
+            .unwrap();
+        document.bind_rule_program(program(source)).unwrap();
+    }
+    document
+        .replace_rule_program_source(program("w = param('width', 900)\n"))
+        .unwrap();
+    document
+}
+
+fn history_schema(bytes: &[u8]) -> u16 {
+    let (_, offset, _) = container_entry_offsets(bytes, "history.bin");
+    u16::from_le_bytes(bytes[offset + 10..offset + 12].try_into().unwrap())
+}
+
+fn revision_programs(
+    document: &DocumentStore,
+) -> Vec<Option<ketchup_model::document::RuleProgramSource>> {
+    document
+        .revision_history()
+        .map(|revision| revision.rule_program().cloned())
+        .collect()
+}
+
+fn reopened(bytes: &[u8]) -> DocumentStore {
+    persistence::load(bytes)
+        .unwrap()
+        .into_editable_with_container()
+        .unwrap_or_else(|_| panic!("expected editable roundtrip"))
+        .0
+}
+
+/// PS-2: a history format 4 wrote (each program whole, or named as the one
+/// before) opens with every revision's program and saves again as format 5.
+#[test]
+fn a_format_4_history_opens_with_the_program_of_every_revision() {
+    let golden = include_bytes!("fixtures/persistence/legacy/history-format4-programs.bin");
+    assert_eq!(history_schema(golden), 4);
+    let (_, offset, len) = container_entry_offsets(golden, "history.bin");
+    assert_eq!(
+        golden[offset..offset + len]
+            .windows(br#"{"file_name""#.len())
+            .filter(|window| *window == br#"{"file_name""#)
+            .count(),
+        3,
+        "the repeated program is named as the one before"
+    );
+    let expected = revision_programs(&programmed_history_document());
+    assert_eq!(expected.iter().flatten().count(), 4);
+
+    let document = reopened(golden);
+    assert_eq!(revision_programs(&document), expected);
+    let resaved =
+        persistence::save_document_store(&document, &persistence::ContainerData::default())
+            .unwrap();
+    assert_eq!(history_schema(&resaved), 5);
+    assert_eq!(revision_programs(&reopened(&resaved)), expected);
+}
+
+/// PS-2: a program near the window's 690 KB house edited 60 times. Stored whole
+/// in every revision it passed `history.bin`'s 32 MB after ≈ 47 edits, so Save
+/// offered to drop Undo; as chunks each edit stores only those around it.
+#[test]
+fn a_program_edit_stores_only_the_chunks_around_the_change() {
+    let line = |index: u64, value: u64| {
+        format!(
+            "p{index:05} = param('p{index:05}', {value})  # {}\n",
+            unique_text(index, 40)
+        )
+    };
+    let mut lines = (0..10_000_u64)
+        .map(|index| line(index, index))
+        .collect::<Vec<_>>();
+    let program = |lines: &[String]| ketchup_model::document::RuleProgramSource {
+        file_name: "house.star".into(),
+        source: lines.concat(),
+        overrides: Default::default(),
+        variants: Default::default(),
+    };
+    let mut document = graph_document();
+    document.bind_rule_program(program(&lines)).unwrap();
+    let program_len = serde_json::to_vec(&program(&lines)).unwrap().len();
+    assert!(program_len > 690 * 1024, "{program_len}");
+    for edit in 1..=60_u64 {
+        let index = edit * 160;
+        lines[index as usize] = line(index, index + 1);
+        document
+            .replace_rule_program_source(program(&lines))
+            .unwrap();
+    }
+
+    let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
+        .unwrap();
+    let (_, _, history_len) = container_entry_offsets(&bytes, "history.bin");
+    assert!(history_len < 3 * program_len, "{history_len} bytes");
+    let reopened = reopened(&bytes);
+    assert_eq!(reopened.revision_count(), document.revision_count());
+    assert_eq!(revision_programs(&reopened), revision_programs(&document));
+}
+
 /// A document whose Undo history holds more bytes than a native file stores.
 fn oversized_history_document() -> DocumentStore {
     let commands = (1..=256_u64)
@@ -1455,7 +1593,7 @@ fn corrupt_or_incompatible_revision_history_opens_only_the_current_revision() {
     );
 
     let mut incompatible = encoded;
-    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&5_u16.to_le_bytes());
+    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&6_u16.to_le_bytes());
     rehash_container_entry(
         &mut incompatible,
         checksum_offset,
@@ -1464,7 +1602,7 @@ fn corrupt_or_incompatible_revision_history_opens_only_the_current_revision() {
     );
     assert_eq!(
         discarded_history(&incompatible),
-        PersistenceError::UnsupportedHistorySchema(5).to_string()
+        PersistenceError::UnsupportedHistorySchema(6).to_string()
     );
 }
 
