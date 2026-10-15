@@ -726,6 +726,67 @@ fn mass_weighs_parts_with_a_cited_density_and_marks_the_sum_partial() {
     assert_eq!(app.undo_step_count(), undo, "weighing changes nothing");
 }
 
+/// MASS-1: a hidden part is not weighed, but it is named as missing and the sum
+/// is partial, both for the whole model and when the hidden part is asked for.
+#[test]
+fn mass_names_hidden_parts_as_missing_instead_of_reporting_complete() {
+    let (mut app, mut bridge) = setup();
+    let source = "box(\"stĺp\", (100, 50, 20), material = \"steel\", tags = [\"nosné\"])\n\
+        box(\"skica\", (100, 50, 20), at = (200, 0, 0), material = \"steel\", tags = [\"koncept\"])\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let mass = |app: &mut KetchupApp, bridge: &mut LiveBridge, ids: Option<Vec<u64>>| {
+        let expected = Some(app.live_bridge_stamp());
+        bridge
+            .execute(
+                app,
+                Request::Mass {
+                    expected,
+                    occurrence_ids: ids,
+                },
+                false,
+            )
+            .unwrap()
+    };
+    let shown = mass(&mut app, &mut bridge, None);
+    assert_eq!(shown["assembly"]["status"], "complete", "{shown}");
+    let sketch = shown["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|part| part["name"] == "skica")
+        .unwrap()["occurrence_id"]
+        .as_u64()
+        .unwrap();
+    let concept = app
+        .document
+        .current()
+        .tags()
+        .find(|tag| tag.name() == "koncept")
+        .unwrap()
+        .id();
+    assert!(app.set_tag_visibility(concept, false));
+
+    for ids in [None, Some(vec![sketch])] {
+        let report = mass(&mut app, &mut bridge, ids.clone());
+        let assembly = &report["assembly"];
+        let missing = assembly["missing"].as_array().unwrap();
+        assert_eq!(missing.len(), 1, "{ids:?}: {report}");
+        assert_eq!(missing[0]["name"], "skica");
+        assert_eq!(missing[0]["status"], "hidden");
+        assert!(
+            assembly["status"] != "complete",
+            "{ids:?}: a hidden part left out is not complete: {report}"
+        );
+    }
+    let whole = mass(&mut app, &mut bridge, None);
+    assert_eq!(whole["assembly"]["status"], "partial");
+    assert_eq!(whole["assembly"]["parts_counted"], 1);
+    assert!((whole["assembly"]["mass_kg"].as_f64().unwrap() - 0.785).abs() < 1.0e-9);
+}
+
 /// #2476 step 4: without material_weight in the program the density comes
 /// from the prelude's MATERIAL_WEIGHTS with its citation verbatim; an
 /// `estimate:` entry, a weight per area and a material the table lacks stay

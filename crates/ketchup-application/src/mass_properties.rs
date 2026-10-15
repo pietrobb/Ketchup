@@ -109,7 +109,7 @@ fn mass_json(mass: &Mass) -> Value {
 }
 
 /// Mass properties of the visible parts (or of those under `scope`) and of
-/// them together. `exact` is the registry bound to `snapshot`, `program` the
+/// them together. Hidden parts are listed as missing, so the sum is then partial. `exact` is the registry bound to `snapshot`, `program` the
 /// evaluated program when one owns the document.
 #[must_use]
 pub fn mass_report(
@@ -124,18 +124,27 @@ pub fn mass_report(
     let mut counted = Vec::new();
     let mut missing = Vec::new();
     for occurrence in snapshot.scene_query().into_iter().filter(|occurrence| {
-        occurrence.visible
-            && scope.is_none_or(|scope| {
-                scope.iter().any(|path| {
-                    *path == occurrence.instance_path
-                        || (path.steps().is_empty()
-                            && path.root_occurrence() == occurrence.instance_path.root_occurrence())
-                })
+        scope.is_none_or(|scope| {
+            scope.iter().any(|path| {
+                *path == occurrence.instance_path
+                    || (path.steps().is_empty()
+                        && path.root_occurrence() == occurrence.instance_path.root_occurrence())
             })
+        })
     }) {
         let material = materials.get(&occurrence.instance_path.root_occurrence());
         let mut row = json!({"occurrence_id": occurrence.instance_path.root_occurrence().0,
             "name": occurrence.occurrence_name, "material": material});
+        // A hidden part is not weighed, but it is named: leaving it out silently
+        // would make the sum of the rest look like the whole.
+        if !occurrence.visible {
+            let reason = "the part is hidden (itself or its layer): show it to weigh it";
+            missing.push(
+                json!({"occurrence_id": row["occurrence_id"], "name": row["name"],
+                "status": "hidden", "reason": reason}),
+            );
+            continue;
+        }
         let package = exact.and_then(|exact| exact.get_render(snapshot, occurrence.definition_id));
         let solid = match package.map(AsRef::as_ref) {
             None => Err((
@@ -220,5 +229,5 @@ pub fn mass_report(
             .extend(fields);
     }
     json!({"convention": CONVENTION, "assembly": assembly, "parts": parts,
-        "hint": "Only status complete is the whole selection; partial sums the counted parts only and lists the missing ones with the reason."})
+        "hint": "Only status complete is the whole selection; partial sums the counted parts only and lists the missing ones (hidden parts too) with the reason."})
 }
