@@ -9637,6 +9637,8 @@ fn push_pull_drag_is_continuous_between_grid_inference_targets() {
 #[test]
 fn circle_push_pull_drag_renders_a_curved_solid_preview_and_commits_once() {
     let mut shell = Shell::new();
+    // The circle is pulled from the box's exact top face.
+    wait_for_one_exact_body(&mut shell);
     let center = Vec3::new(75.0, 25.0, 20.0);
     shell.click_command(AppCommand::Circle);
     shell.click_at(shell.app().viewport_position(center).unwrap());

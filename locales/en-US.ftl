@@ -1368,6 +1368,7 @@ digest-push-pull-committed-height = Committed — Push/Pull { $distance }; heigh
 digest-push-pull-committed-profile = Committed — profile edge { $distance } · 1 undo step
 digest-exact-value-applied = Exact Push/Pull applied — { $value }
 digest-push-pull-invalid-distance = Type a distance other than zero, such as 25 to pull, -10 to push or 2.5 cm
+digest-push-pull-not-possible = Push/Pull { $distance } is not possible: the face cannot move that far, for example through the whole part; nothing changed
 digest-move-live = Move { $distance } mm · { $vector }
 digest-copy-live = Copy { $distance } mm · { $vector } · shared definition
 digest-move-committed = Moved { $distance } mm · occurrence transform only · 1 undo step

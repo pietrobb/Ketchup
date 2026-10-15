@@ -161,3 +161,71 @@ fn a_typed_depth_of_zero_or_unreadable_is_refused_by_name_and_keeps_the_gesture(
     );
     assert_eq!(shell.app().action_digest(), shell.catalog().text(refused));
 }
+
+#[test]
+fn a_pull_snaps_to_the_height_of_a_face_on_another_part() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 0.0, 40.0)));
+    shell.settle();
+    shell.click_menu_command("menu-model", AppCommand::MakeUnique);
+    shell.click_command(AppCommand::ZoomFit);
+    shell.press_key(Key::Escape);
+    let other_top = shell
+        .app()
+        .viewport_position(Vec3::new(200.0, 30.0, 60.0))
+        .unwrap();
+    arm(&mut shell);
+    shell.click_at(shell.top_face_centre(1));
+    shell.move_pointer(other_top);
+    shell.click_at(other_top);
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    assert_eq!(
+        (origin.z, size.z),
+        (0.0, 60.0),
+        "the top face lands level with the other part's top"
+    );
+}
+
+/// Whether `digest` is the refusal of a Push/Pull that cannot go so far,
+/// whatever distance it names.
+fn names_the_refusal(shell: &Shell, digest: &str) -> bool {
+    let marker = "\u{1}";
+    let text = shell.catalog().format(
+        "digest-push-pull-not-possible",
+        &std::collections::BTreeMap::from([("distance", marker.to_owned())]),
+    );
+    let (prefix, suffix) = text.split_once(marker).unwrap();
+    digest.starts_with(prefix) && digest.ends_with(suffix) && digest.len() > text.len()
+}
+
+#[test]
+fn a_push_through_the_whole_part_is_refused_by_name_whether_typed_or_dragged() {
+    for input in ["-20", "-25"] {
+        let mut shell = Shell::new();
+        start_pull(&mut shell);
+        let before = DocumentState::of(&shell);
+        type_value(&mut shell, input);
+        shell.press_key(Key::Enter);
+        let what = format!("Push/Pull typed {input:?}");
+        assert_unchanged(&shell, &before, &what, "a push through the part");
+        assert!(
+            names_the_refusal(&shell, shell.app().action_digest()),
+            "{what} is refused by name, not {:?}",
+            shell.app().action_digest()
+        );
+    }
+
+    let mut shell = Shell::new();
+    arm(&mut shell);
+    shell.click_at(shell.top_face_centre(1));
+    let before = DocumentState::of(&shell);
+    shell.move_pointer(pulled(&shell, -300.0));
+    let refusal = shell.app().action_digest().to_owned();
+    shell.click_at(pulled(&shell, -300.0));
+    assert_unchanged(&shell, &before, "Push/Pull dragged through", "the click");
+    assert!(
+        names_the_refusal(&shell, &refusal),
+        "the preview names why it cannot go through, not {refusal:?}"
+    );
+}

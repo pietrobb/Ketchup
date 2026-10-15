@@ -749,6 +749,8 @@ impl KetchupApp {
                 return false;
             }
             self.await_program_if_planning();
+            // The failed preview already named why nothing was applied.
+            return false;
         }
         if self.active_tool == ActiveTool::Move {
             let value = self.value_box.input.trim();

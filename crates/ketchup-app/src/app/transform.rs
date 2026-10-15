@@ -1368,6 +1368,12 @@ impl KetchupApp {
             &distance_expression,
             distance_mm,
         ) else {
+            // The source was read from this document just now, so the face
+            // itself cannot go so far, e.g. through the whole part.
+            self.digest = self.catalog.format(
+                "digest-push-pull-not-possible",
+                &BTreeMap::from([("distance", format_signed_mm(distance_mm))]),
+            );
             return false;
         };
         let new_extent_mm = f64::from_bits(plan.new_extent_mm_bits);
