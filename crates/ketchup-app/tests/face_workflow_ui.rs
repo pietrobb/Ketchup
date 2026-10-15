@@ -222,6 +222,10 @@ fn wait_for(shell: &mut Shell, what: &str, mut done: impl FnMut(&Shell) -> bool)
     assert!(reached, "{what} timed out: {}", shell.app().action_digest());
 }
 
+fn one_exact_body(shell: &Shell) -> bool {
+    shell.app().exact_render_body_count() == 1
+}
+
 /// When the top face is picked relative to the box's exact geometry arriving.
 #[derive(Clone, Copy)]
 enum ExactGeometry {
@@ -1165,13 +1169,8 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         shell.app().canonical_digest(),
         shell.app().undo_step_count(),
     );
-    // A bare line outline pulls to either side, like any other polygon profile:
-    // beside the part a negative distance previews a new body below, unapplied.
-    // Whether it is beside the part is read from the part's exact solid; until
-    // that arrives the preview waits for it.
-    wait_for(&mut shell, "the part's exact solid", |shell| {
-        shell.app().exact_render_body_count() == 1
-    });
+    // Beside the part (known from its exact solid) a line outline pulls -20 below.
+    wait_for(&mut shell, "the part's exact solid", one_exact_body);
     shell.app_mut().set_push_pull_distance_input("-20");
     assert!(shell.app_mut().start_preview());
     assert_eq!(shell.app().document_revision(), before_push.0);
