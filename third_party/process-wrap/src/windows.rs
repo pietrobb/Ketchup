@@ -25,7 +25,7 @@ use windows::{
 				SetInformationJobObject, TerminateJobObject,
 			},
 			Threading::{
-				CREATE_SUSPENDED, GetProcessId, INFINITE, OpenThread, PROCESS_CREATION_FLAGS,
+				GetProcessId, INFINITE, OpenThread, PROCESS_CREATION_FLAGS,
 				ResumeThread, THREAD_SUSPEND_RESUME,
 			},
 		},
@@ -56,25 +56,30 @@ pub(crate) struct JobCreationFlags {
 	pub resume_after_assignment: bool,
 }
 
+/// Ketchup patch: the child is no longer created suspended. Resuming it needed `resume_threads`,
+/// a snapshot of every thread in the system per spawn; concurrent spawns made those snapshots take
+/// minutes (PATCH.md). The process is assigned to its job right after `CreateProcess` instead.
 pub(crate) fn job_creation_flags(user_flags: PROCESS_CREATION_FLAGS) -> JobCreationFlags {
 	JobCreationFlags {
-		flags: user_flags | CREATE_SUSPENDED,
-		resume_after_assignment: !user_flags.contains(CREATE_SUSPENDED),
+		flags: user_flags,
+		resume_after_assignment: false,
 	}
 }
 
 #[cfg(test)]
 mod creation_flag_tests {
-	use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
+	use windows::Win32::System::Threading::{
+		CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+	};
 
 	use super::*;
 
 	#[test]
-	fn adds_suspension_without_losing_user_flags() {
+	fn keeps_user_flags_without_suspension() {
 		let user_flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
 		let policy = job_creation_flags(user_flags);
-		assert_eq!(policy.flags, user_flags | CREATE_SUSPENDED);
-		assert!(policy.resume_after_assignment);
+		assert_eq!(policy.flags, user_flags);
+		assert!(!policy.resume_after_assignment);
 	}
 
 	#[test]

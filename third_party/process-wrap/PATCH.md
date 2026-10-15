@@ -1,8 +1,8 @@
 # process-wrap 10.0.0, patched for Ketchup
 
 Unmodified copy of `process-wrap` 10.0.0 from crates.io (Apache-2.0 OR MIT, see the license
-files) except two changes: the std API gets the `KillOnDrop` wrapper that the Tokio API already
-has, and a `JobMemoryLimit` wrapper (below). The upstream `tests/` directory is left out; this
+files) except three changes: the std API gets the `KillOnDrop` wrapper that the Tokio API already
+has, a `JobMemoryLimit` wrapper, and its job object starts the child without suspending it (below). The upstream `tests/` directory is left out; this
 workspace never builds a dependency's tests.
 
 - `src/std/kill_on_drop.rs` (new): `KillOnDrop` marker wrapper. `std::process::Command` has no
@@ -39,6 +39,26 @@ heap limit does not see every allocation (`str.replace`, dict copies, big intege
 could take all the memory of the computer and an allocation failure aborted the editor window. In
 a job with a memory limit the allocation fails in the worker only; the editor sees the worker die
 and reports a memory limit.
+
+## No suspended start
+
+- `src/windows.rs` (`job_creation_flags`): the std `JobObject` no longer adds `CREATE_SUSPENDED`
+  and never resumes the child itself; the process is assigned to its job right after
+  `CreateProcess`. An explicit `CREATE_SUSPENDED` from `CreationFlags` is kept and the process stays
+  suspended, as upstream.
+- `src/lib.rs`: documentation of the creation flags.
+
+Why: upstream resumes the suspended child with `resume_threads`, which takes a
+`CreateToolhelp32Snapshot` of every thread in the system for each spawn. With many processes
+starting at once (the UI test suite starts several hundred exact workers) those snapshots
+serialised: measured median 218 s, max 278 s from spawn to resume, so every exact evaluation in
+the suite missed its deadline (TST-4; the same suite without the job object ran in 16 s). The
+cost of not suspending: the child runs for the few microseconds between `CreateProcess` and
+`AssignProcessToJobObject` outside its job. Ketchup's workers send nothing and allocate nothing
+before their first request, which is written only after the spawn returns, and they start no
+processes of their own, so the memory limit and kill-on-close still cover all their work.
+std's `ChildExt::main_thread_handle` and `spawn_with_attributes` (job list attribute) would
+avoid that window, but both are nightly-only.
 
 Remove this copy and the `[patch.crates-io]` entry in the root `Cargo.toml` once an upstream
 release offers kill-on-close for the std `JobObject`. The change is self-contained and suitable for

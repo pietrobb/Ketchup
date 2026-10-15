@@ -110,10 +110,10 @@
 //! command.wrap(CreationFlags(CREATE_NO_WINDOW));
 //! ```
 //!
-//! Internally the `JobObject` wrapper always sets the `CREATE_SUSPENDED` flag, but as it is able to
-//! access the `CreationFlags` value it will either resume the process after setting up, or leave it
-//! suspended if `CREATE_SUSPENDED` was explicitly set. `CreationFlags` and `JobObject` may be
-//! registered in either order.
+//! In this patched copy the `JobObject` wrapper does not add `CREATE_SUSPENDED`: it assigns the
+//! process to its job right after creation, and a process created with an explicit
+//! `CREATE_SUSPENDED` stays suspended. `CreationFlags` and `JobObject` may be registered in either
+//! order.
 //!
 //! # Extension
 //!
