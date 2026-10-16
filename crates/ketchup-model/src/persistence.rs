@@ -1899,10 +1899,11 @@ fn load_container(bytes: &[u8], with_history: bool) -> Result<LoadOutcome, Persi
                 Ok(Err(current)) => return Err(current),
                 // The current program cannot be read apart from the steps, so
                 // one that breaks its rules may be the current one.
-                Err(_) if matches!(error, PersistenceError::InvalidRuleProgram(_)) => {
-                    return restored.map(|_| unreachable!("the history did not open"));
+                Err(_) => {
+                    if let PersistenceError::InvalidRuleProgram(invalid) = error {
+                        return Err(PersistenceError::InvalidRuleProgram(invalid.clone()));
+                    }
                 }
-                Err(_) => {}
             }
         }
         match (&mut outcome, restored) {

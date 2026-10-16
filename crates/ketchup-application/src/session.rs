@@ -97,7 +97,7 @@ pub struct DocumentSession {
     full_exact_baseline: Option<ExactSource>,
     incremental_exact_plan: Option<IncrementalExactPlan>,
     history_discarded: Option<String>,
-    work_recovery_set_aside: Option<(String, Result<PathBuf, String>)>,
+    work_recovery_set_aside: Option<(String, Result<PathBuf, persistence::FilePersistenceError>)>,
 }
 impl Default for DocumentSession {
     fn default() -> Self {
@@ -135,10 +135,12 @@ impl DocumentSession {
     /// used, and where it was moved so that this session can write its own, or
     /// why it could not be moved.
     #[must_use]
-    pub fn work_recovery_set_aside(&self) -> Option<(&str, Result<&Path, &str>)> {
+    pub fn work_recovery_set_aside(
+        &self,
+    ) -> Option<(&str, Result<&Path, &persistence::FilePersistenceError>)> {
         self.work_recovery_set_aside
             .as_ref()
-            .map(|(reason, moved)| (reason.as_str(), moved.as_deref().map_err(String::as_str)))
+            .map(|(reason, moved)| (reason.as_str(), moved.as_deref()))
     }
     /// Review-only and invalid input never replaces a live session.
     pub fn open(path: impl AsRef<Path>, settings: SessionSettings) -> Result<Self, SessionError> {
@@ -163,8 +165,7 @@ impl DocumentSession {
         let work_recovery_set_aside = unusable_work_recovery.map(|reason| {
             (
                 reason,
-                persistence::set_aside_work_recovery(requested_path, &recovery_lock)
-                    .map_err(|error| error.to_string()),
+                persistence::set_aside_work_recovery(requested_path, &recovery_lock),
             )
         });
         let saved_digest = Some(document.history_digest());

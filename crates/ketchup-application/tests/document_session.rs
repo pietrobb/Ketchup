@@ -72,7 +72,8 @@ fn an_unreadable_history_is_reported_and_its_program_survives_the_next_save() {
         variants: Default::default(),
     };
     document.bind_rule_program(program.clone()).unwrap();
-    let unreadable_history = b"KETCHUPHST\x06\x00".to_vec();
+    // This writer's history format, cut short; a newer format refuses the file.
+    let unreadable_history = b"KETCHUPHST\x05\x00".to_vec();
     std::fs::write(
         &path,
         ketchup_model::testing::save_with_history_entry(&document, unreadable_history),
@@ -503,7 +504,10 @@ fn an_unusable_work_recovery_is_set_aside_and_edits_are_checkpointed_again() {
     assert_eq!(session.path(), Some(primary.as_path()));
     let (reason, moved) = session.work_recovery_set_aside().unwrap();
     assert!(!reason.is_empty());
-    assert!(moved.unwrap_err().contains("a thousand"), "{moved:?}");
+    assert!(
+        moved.unwrap_err().to_string().contains("a thousand"),
+        "{moved:?}"
+    );
     assert_eq!(std::fs::read(&recovery).unwrap(), b"KETCHUPWRK damaged");
 }
 
