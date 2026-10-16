@@ -249,6 +249,15 @@ fn plugin_folder(plugin: &str) -> Result<PathBuf, &'static str> {
     Ok(lexical(&std::path::absolute(folder).map_err(unreadable)?))
 }
 
+/// Whether `..` ends a part of the argument without being that whole part
+/// (`--script=../x`, `-s..`): the plugin splits the option off itself and
+/// resolves the rest against its stage, outside the files that were hashed.
+fn embeds_parent_dir(argument: &str) -> bool {
+    argument
+        .split(['/', '\\'])
+        .any(|part| part != ".." && part.ends_with(".."))
+}
+
 /// The executable, the arguments and every file outside the folder they name,
 /// hashed (with `held`, through handles held until the run ends). A relative
 /// argument naming a file outside the folder is given as its absolute path,
@@ -290,6 +299,13 @@ fn outside_files(
             .map(|argument| (Some(argument), lexical(&folder.join(argument)))),
     );
     for (argument, candidate) in candidates {
+        if let Some(argument) = argument
+            && embeds_parent_dir(argument)
+        {
+            return Err(invalid(format!(
+                "argument {argument:?} joins `..` to an option; give the path as its own argument"
+            )));
+        }
         let mut given = argument.cloned();
         if candidate.starts_with(folder) {
             // Through `..` the text would lead out of the stage the process

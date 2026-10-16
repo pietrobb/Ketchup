@@ -859,6 +859,46 @@ fn a_plugin_argument_through_dot_dot_runs_the_staged_file_it_names() {
     }
 }
 
+/// Review 2026-10-15 N-8: `..` joined to an option (`--script=../x`) is no
+/// path component of the argument, so it is not resolved to a hashed file;
+/// the plugin would open whatever it names outside its stage. It is refused.
+#[test]
+fn a_dot_dot_joined_to_a_plugin_option_is_refused() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    for argument in [
+        "--script=../height/plugin.py",
+        "--script=..\\height\\plugin.py",
+        "-s../height/plugin.py",
+        "--dir=..",
+    ] {
+        manifest["arguments"] = json!(["plugin.py", argument]);
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        let inputs = json!({"height_mm": 35});
+        let launch = crate::live_bridge::plugin_manifest::load(
+            &folder.to_string_lossy(),
+            inputs.as_object(),
+        );
+        assert_eq!(
+            launch.err(),
+            Some("plugin_manifest_invalid"),
+            "{argument:?}"
+        );
+    }
+    for argument in ["--range=1..5", "--script=plugin.py"] {
+        manifest["arguments"] = json!(["plugin.py", argument]);
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        let inputs = json!({"height_mm": 35});
+        let launch = crate::live_bridge::plugin_manifest::load(
+            &folder.to_string_lossy(),
+            inputs.as_object(),
+        );
+        assert!(launch.is_ok(), "{argument:?}");
+    }
+}
+
 /// SEC-6: a file the command line names outside the folder that does not exist
 /// yet is allowed only as absent; one created while the user is asked does not
 /// let the plugin run, and the prompt shows the path as absent.
