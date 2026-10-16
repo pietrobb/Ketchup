@@ -195,8 +195,10 @@ fn unknown_fields(
         };
     match (stored, known) {
         (ciborium::Value::Map(stored), ciborium::Value::Map(known)) => {
-            // Text and integer keys are looked up by hash; a map of a few hundred
-            // thousand entries scanned per key would never finish (review PS-4).
+            // Keys are looked up by hash; a map of a few hundred thousand entries
+            // scanned per key would never finish (review PS-4). Only a key the hash
+            // misses is compared with every known key, so that keys equal as values
+            // but written differently (0.0 and -0.0 inside a key) still match.
             let mut index = std::collections::HashMap::with_capacity(known.len());
             for (key, value) in known {
                 if let Some(key) = MapKey::of(key) {
@@ -209,13 +211,14 @@ fn unknown_fields(
                     ciborium::Value::Integer(number) => i128::from(*number).to_string(),
                     other => format!("{other:?}"),
                 };
-                let counterpart = match MapKey::of(key) {
-                    Some(key) => index.get(&key).copied(),
-                    None => known
-                        .iter()
-                        .find(|(candidate, _)| candidate == key)
-                        .map(|(_, value)| value),
-                };
+                let counterpart = MapKey::of(key)
+                    .and_then(|key| index.get(&key).copied())
+                    .or_else(|| {
+                        known
+                            .iter()
+                            .find(|(candidate, _)| candidate == key)
+                            .map(|(_, value)| value)
+                    });
                 descend(segment, value, counterpart);
             }
         }
@@ -233,11 +236,14 @@ fn unknown_fields(
     }
 }
 
-/// A CBOR map key that hashes: the text and integer keys the product model writes.
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+/// A CBOR map key that hashes: text and integer keys as they are, and the
+/// structured keys of the product model (an instance path, a local occurrence
+/// key) as their CBOR encoding.
+#[derive(Hash, PartialEq, Eq)]
 enum MapKey<'a> {
     Text(&'a str),
     Integer(i128),
+    Encoded(Vec<u8>),
 }
 
 impl<'a> MapKey<'a> {
@@ -245,7 +251,11 @@ impl<'a> MapKey<'a> {
         match key {
             ciborium::Value::Text(text) => Some(Self::Text(text)),
             ciborium::Value::Integer(number) => Some(Self::Integer(i128::from(*number))),
-            _ => None,
+            other => {
+                let mut bytes = Vec::new();
+                ciborium::into_writer(other, &mut bytes).ok()?;
+                Some(Self::Encoded(bytes))
+            }
         }
     }
 }
@@ -806,6 +816,62 @@ mod tests {
             elapsed < std::time::Duration::from_secs(30),
             "{ENTRIES} keys took {elapsed:?}"
         );
+    }
+
+    /// Review 2026-10-15 status PS-4: maps keyed by a structure (an instance path, a
+    /// local occurrence key) were still scanned per key.
+    #[test]
+    fn unknown_fields_of_a_large_map_with_structured_keys_are_found_in_linear_time() {
+        const ENTRIES: u64 = 100_000;
+        let entry = |key: u64| {
+            (
+                ciborium::Value::Array(vec![
+                    ciborium::Value::Integer((key / 100).into()),
+                    ciborium::Value::Integer((key % 100).into()),
+                ]),
+                ciborium::Value::Map(vec![(
+                    ciborium::Value::Text("x".into()),
+                    ciborium::Value::Float(1.0),
+                )]),
+            )
+        };
+        let known = ciborium::Value::Map((0..ENTRIES).map(entry).collect());
+        let mut stored: Vec<_> = (0..ENTRIES).rev().map(entry).collect();
+        if let (_, ciborium::Value::Map(fields)) = &mut stored[1] {
+            fields.push((
+                ciborium::Value::Text("grain".into()),
+                ciborium::Value::Integer(90.into()),
+            ));
+        }
+        let started = std::time::Instant::now();
+        let mut unknown = Vec::new();
+        unknown_fields(
+            &ciborium::Value::Map(stored),
+            &known,
+            &mut String::new(),
+            &mut unknown,
+        );
+        let elapsed = started.elapsed();
+        assert_eq!(unknown.len(), 1, "{unknown:?}");
+        assert!(unknown[0].ends_with(".grain"), "{unknown:?}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "{ENTRIES} keys took {elapsed:?}"
+        );
+    }
+
+    /// A key equal as a value but written with other bytes still finds its counterpart.
+    #[test]
+    fn a_structured_key_with_negative_zero_matches_its_known_key() {
+        let map = |zero: f64| {
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Array(vec![ciborium::Value::Float(zero)]),
+                ciborium::Value::Text("part".into()),
+            )])
+        };
+        let mut unknown = Vec::new();
+        unknown_fields(&map(-0.0), &map(0.0), &mut String::new(), &mut unknown);
+        assert!(unknown.is_empty(), "{unknown:?}");
     }
 
     #[test]
