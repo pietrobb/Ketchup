@@ -323,6 +323,80 @@ pub struct ExactOpOutput {
     pub history_confidence: HistoryConfidence,
 }
 
+/// What the native shape of one face is charged in memory: its surface, wires,
+/// parameter curves and a display triangulation once one was made.
+const NATIVE_BYTES_PER_FACE: usize = 16 * 1024;
+/// What the native shape of one edge is charged: its 3D curve and the
+/// parameter curves on its faces.
+const NATIVE_BYTES_PER_EDGE: usize = 2 * 1024;
+const NATIVE_BYTES_PER_VERTEX: usize = 256;
+
+impl ExactOpOutput {
+    /// The memory a kept output is charged: its evidence as allocated plus
+    /// its native shape at a fixed charge per face, edge and vertex. Not a
+    /// measurement; it grows with the body, so a cache of outputs can hold a
+    /// byte budget instead of only a count.
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        let topology = &self.body.topology;
+        let faces: usize = topology
+            .faces
+            .iter()
+            .map(|face| {
+                size_of::<FaceEvidence>()
+                    + face.surface_kind.capacity()
+                    + face.geometric_fingerprint.capacity()
+                    + face.edge_ordinals.capacity() * size_of::<u32>()
+            })
+            .sum();
+        let edges: usize = topology
+            .edges
+            .iter()
+            .map(|edge| {
+                size_of::<EdgeEvidence>()
+                    + edge.curve_kind.capacity()
+                    + edge.adjacent_face_ordinals.capacity() * size_of::<u32>()
+            })
+            .sum();
+        let history: usize = self
+            .topology_history
+            .iter()
+            .map(|entry| {
+                size_of::<HistoryEvidence>()
+                    + entry.semantic_role.as_ref().map_or(0, String::capacity)
+                    + entry.relation.capacity()
+                    + entry.source_element_id.capacity()
+            })
+            .sum();
+        let diagnostics: usize = self
+            .diagnostics
+            .iter()
+            .map(|diagnostic| size_of::<GeometryDiagnostic>() + diagnostic.message.capacity())
+            .sum();
+        let native = usize::try_from(topology.face_count)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(NATIVE_BYTES_PER_FACE)
+            .saturating_add(
+                usize::try_from(topology.edge_count)
+                    .unwrap_or(usize::MAX)
+                    .saturating_mul(NATIVE_BYTES_PER_EDGE),
+            )
+            .saturating_add(
+                usize::try_from(topology.vertex_count)
+                    .unwrap_or(usize::MAX)
+                    .saturating_mul(NATIVE_BYTES_PER_VERTEX),
+            );
+        (size_of::<Self>()
+            + self.body.result_fingerprint.capacity()
+            + self.input_digest.capacity()
+            + faces
+            + edges
+            + history
+            + diagnostics)
+            .saturating_add(native)
+    }
+}
+
 impl fmt::Debug for ExactOpOutput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter

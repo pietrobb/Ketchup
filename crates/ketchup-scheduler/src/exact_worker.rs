@@ -54,6 +54,7 @@ use std::time::Duration;
 
 type WorkerResult = Result<WorkerReply, WorkerFailure>;
 
+mod output_cache;
 #[path = "bin/pair_query/mod.rs"]
 mod pair_query;
 
@@ -931,18 +932,9 @@ fn simulate_cam_geometry(
 }
 
 // Terminal outputs of validated graphs, keyed by the recomputed graph digest
-// (which covers imported source hashes). Only read-only consumers use it:
-// topology evidence and non-destructive pair queries.
-const MAX_CACHED_GRAPH_OUTPUTS: usize = 512;
-
-#[derive(Default)]
-struct GraphOutputCache {
-    order: std::collections::VecDeque<String>,
-    outputs: BTreeMap<String, std::rc::Rc<ExactOpOutput>>,
-}
-
+// (which covers imported source hashes).
 thread_local! {
-    static GRAPH_OUTPUT_CACHE: std::cell::RefCell<GraphOutputCache> =
+    static GRAPH_OUTPUT_CACHE: std::cell::RefCell<output_cache::OutputCache<ExactOpOutput>> =
         std::cell::RefCell::default();
 }
 
@@ -951,23 +943,17 @@ fn evaluate_exact_brep_graph_cached(
     graph: &ExactBRepGraph,
     imported_sources: &[(String, tempfile::NamedTempFile)],
 ) -> Result<std::rc::Rc<ExactOpOutput>, ketchup_exact::GeometryError> {
-    if let Some(output) =
-        GRAPH_OUTPUT_CACHE.with(|cache| cache.borrow().outputs.get(&graph.graph_digest).cloned())
-    {
+    if let Some(output) = GRAPH_OUTPUT_CACHE.with(|cache| cache.borrow().get(&graph.graph_digest)) {
         return Ok(output);
     }
     let output = std::rc::Rc::new(evaluate_exact_brep_graph(backend, graph, imported_sources)?);
+    let bytes = output.retained_bytes();
     GRAPH_OUTPUT_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.order.len() >= MAX_CACHED_GRAPH_OUTPUTS
-            && let Some(oldest) = cache.order.pop_front()
-        {
-            cache.outputs.remove(&oldest);
-        }
-        cache.order.push_back(graph.graph_digest.clone());
-        cache
-            .outputs
-            .insert(graph.graph_digest.clone(), std::rc::Rc::clone(&output));
+        cache.borrow_mut().insert(
+            graph.graph_digest.clone(),
+            std::rc::Rc::clone(&output),
+            bytes,
+        );
     });
     Ok(output)
 }
