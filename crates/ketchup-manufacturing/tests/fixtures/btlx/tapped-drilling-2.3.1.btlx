@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<BTLx xmlns="https://www.design2machine.com" Version="2.3.1" Language="en">
+  <Project Name="Ketchup">
+    <Parts>
+      <Part Count="2" Length="1000" Width="100" Height="50" SingleMemberNumber="1" Designation="Timber with circular drilling" Material="ketchup.material.timber.unspecified.v1">
+        <UserReferencePlanes>
+          <UserReferencePlane ID="100">
+            <Position>
+              <ReferencePoint X="1000" Y="0" Z="0"/>
+              <XVector X="0" Y="1" Z="0"/>
+              <YVector X="0" Y="0" Z="-1"/>
+            </Position>
+          </UserReferencePlane>
+        </UserReferencePlanes>
+        <Processings>
+          <Drilling Name="Ketchup tapped drilling" Comment="M12×1.75 depth 40" ProcessID="1" ReferencePlaneID="100">
+            <UserAttributes>
+              <UserAttribute Name="ThreadSize" Value="M12"/>
+              <UserAttribute Name="ThreadPitch" Value="1.75" Type="real"/>
+              <UserAttribute Name="ThreadDepth" Value="40" Type="real"/>
+            </UserAttributes>
+            <StartX>50</StartX>
+            <StartY>-25</StartY>
+            <Angle>0</Angle>
+            <Inclination>90</Inclination>
+            <DepthLimited>yes</DepthLimited>
+            <Depth>50</Depth>
+            <Diameter>10.2</Diameter>
+          </Drilling>
+        </Processings>
+      </Part>
+    </Parts>
+  </Project>
+</BTLx>

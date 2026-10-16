@@ -2153,6 +2153,7 @@ fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_a
     }
 
     let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert_btlx_golden(btlx.as_bytes(), "tapped-drilling-2.3.1.btlx");
     assert_eq!(
         btlx.matches("<UserAttribute Name=\"ThreadSize\" Value=\"M12\"/>")
             .count(),
