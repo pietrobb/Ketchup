@@ -603,14 +603,15 @@ fn a_decimal_comma_on_a_pinned_axis_is_one_distance_not_a_vector() {
 }
 
 /// UI-6 (review 2026-10-15): each value of a typed Move vector is a length
-/// like any other, with units, arithmetic and a decimal comma.
+/// like any other, with units, arithmetic and a decimal comma. Text that reads
+/// as one length (`10+5,20`, `30*20`) is a distance, not a vector (N-10).
 #[test]
 fn a_typed_move_vector_reads_each_value_as_a_length() {
     for (input, expected) in [
         ("12,5;0", Vec3::new(12.5, 0.0, 0.0)),
         ("1cm;2cm;0,5", Vec3::new(10.0, 20.0, 0.5)),
-        ("10+5,20", Vec3::new(15.0, 20.0, 0.0)),
-        ("30*20", Vec3::new(30.0, 20.0, 0.0)),
+        ("10+5;20", Vec3::new(15.0, 20.0, 0.0)),
+        ("30;2*10", Vec3::new(30.0, 20.0, 0.0)),
         ("10,20,0 mm", Vec3::new(10.0, 20.0, 0.0)),
         ("-5x7", Vec3::new(-5.0, 7.0, 0.0)),
     ] {
@@ -624,6 +625,20 @@ fn a_typed_move_vector_reads_each_value_as_a_length() {
             app.occurrence_box_geometry(1).unwrap().0,
             initial_origin + expected,
             "{input:?}"
+        );
+    }
+    for (input, distance) in [("10+5,20", 15.2), ("30*20", 600.0)] {
+        let mut app = KetchupApp::new();
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
+        app.dispatch_command(AppCommand::Move);
+        app.value_box.input = input.to_owned();
+        app.apply_value_input();
+        let travel = app.occurrence_box_geometry(1).unwrap().0 - initial_origin;
+        assert!(
+            (travel.length() - distance).abs() < 0.01,
+            "{input:?} moved {travel:?}: {}",
+            app.digest
         );
     }
 }

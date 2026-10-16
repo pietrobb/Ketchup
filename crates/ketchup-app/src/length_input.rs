@@ -30,7 +30,8 @@ pub fn parse_length_mm(input: &str) -> Option<f64> {
 /// vector, each one a full length expression. The values are split at `;`
 /// when there is one (so `12,5;0` keeps its decimal comma), else at `x`, else
 /// at commas, and only then at one `*` or `×` between two values (`80*60`).
-/// `None` unless the number of values is in `counts`.
+/// With one `*` or `×` a comma is decimal, as with `x`: `12,5*3` is 12.5 and
+/// 3, not 12 and 15. `None` unless the number of values is in `counts`.
 #[must_use]
 pub fn parse_length_list(input: &str, counts: RangeInclusive<usize>) -> Option<Vec<f64>> {
     let split = |separators: &[char]| -> Option<Vec<f64>> {
@@ -44,12 +45,10 @@ pub fn parse_length_list(input: &str, counts: RangeInclusive<usize>) -> Option<V
         split(&[';'])
     } else if input.contains(['x', 'X']) {
         split(&['x', 'X'])
+    } else if input.matches(['*', '×']).count() == 1 {
+        split(&['*', '×'])
     } else {
-        split(&[',']).or_else(|| {
-            (input.matches(['*', '×']).count() == 1)
-                .then(|| split(&['*', '×']))
-                .flatten()
-        })
+        split(&[','])
     }
 }
 
@@ -345,6 +344,8 @@ mod tests {
         assert_eq!(list("80*60"), Some(vec![80.0, 60.0]));
         assert_eq!(list("80×60"), Some(vec![80.0, 60.0]));
         assert_eq!(list("2*20;12,5"), Some(vec![40.0, 12.5]));
+        assert_eq!(list("12,5*3"), Some(vec![12.5, 3.0]));
+        assert_eq!(list("12,5×3"), list("12,5x3"));
         for input in ["80", "1;2;3;4", "1*2*3", "1m*1m;2", "a;b", ""] {
             assert_eq!(list(input), None, "{input:?}");
         }

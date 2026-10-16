@@ -1532,8 +1532,13 @@ fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
         .then_some((mode, count))
 }
 
-/// A typed Move vector: two or three lengths read like any other length.
+/// A typed Move vector: two or three lengths read like any other length. Text
+/// that reads as one length (`12,5`, `2*20`) is a distance along the shown
+/// way, never a vector; `12;5` is the vector.
 fn parse_move_vector(input: &str) -> Option<Vec3> {
+    if crate::length_input::parse_length_mm(input).is_some() {
+        return None;
+    }
     let values = crate::length_input::parse_length_list(input, 2..=3)?;
     let vector = match values.as_slice() {
         [x, y] => Vec3::new(*x, *y, 0.0),

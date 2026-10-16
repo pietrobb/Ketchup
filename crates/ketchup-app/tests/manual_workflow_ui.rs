@@ -594,3 +594,43 @@ fn a_typed_move_distance_follows_the_pointer_direction() {
         "100 mm along the diagonal: {travel:?}"
     );
 }
+
+/// Review 2026-10-15 status N-10: while the gesture showed a way, `12,5` moved by
+/// the vector (12, 5, 0) and `2*20` by (2, 20, 0) instead of 12.5 and 40 mm
+/// that way. A vector still needs `;`.
+#[test]
+fn one_typed_length_during_a_move_gesture_is_a_distance_not_a_vector() {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    assert!(shell.wait_until(|shell| {
+        shell.step();
+        shell.app().exact_render_body_count() == 1
+    }));
+    let (mut origin, _) = shell.app().occurrence_box_geometry(1).unwrap();
+    shell.press_key(Key::Space);
+    shell.click_at(screen(&shell, origin + Vec3::new(50.0, 30.0, 20.0)));
+    for (input, expected) in [
+        ("12,5", Vec3::new(0.0, 12.5, 0.0)),
+        ("2*20", Vec3::new(0.0, 40.0, 0.0)),
+        ("12;5", Vec3::new(12.0, 5.0, 0.0)),
+    ] {
+        shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        shell.press_key(Key::M);
+        let base = origin + Vec3::new(50.0, 30.0, 20.0);
+        shell.click_at(screen(&shell, base));
+        shell.move_pointer(screen(&shell, base + Vec3::new(0.0, 40.0, 0.0)));
+        type_value(&mut shell, input);
+        shell.press_key(Key::Enter);
+        let (moved, _) = shell.app().occurrence_box_geometry(1).unwrap();
+        let travel = moved - origin;
+        assert!(
+            (travel - expected).length() < 0.01,
+            "{input:?} moved {travel:?}, not {expected:?}: {}",
+            shell.app().action_digest()
+        );
+        origin = moved;
+    }
+}
