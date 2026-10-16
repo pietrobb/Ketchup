@@ -27,6 +27,36 @@ fn a_program_past_the_memory_limit_is_refused_and_the_session_lives_on() {
     }
 }
 
+/// Review 2026-10-15 N-7: a boolean keeps a copy of its tool with the tool's
+/// own booleans, so a chain of parts each cut by the one before nests one level
+/// per part. The model at the depth bound comes back from the worker; one
+/// level deeper is refused by name, not as a worker frame that does not decode.
+#[test]
+fn a_boolean_chain_past_the_depth_bound_is_refused_by_name() {
+    let _turn = crate::integration_support::file_turn();
+    let chain = |depth: usize| {
+        source(&format!(
+            "box(\"p0\", (10, 10, 10))\nfor i in range(1, {}):\n    \
+             box(\"p%d\" % i, (10, 10, 10), at = (20 * i, 0, 0))\n    \
+             subtract(\"p%d\" % i, \"p%d\" % (i - 1))\n",
+            depth + 1
+        ))
+    };
+    let bound = ketchup_program::eval::MAX_BOOLEAN_DEPTH;
+    let mut session = DocumentSession::new(SessionSettings::default());
+    if let Err(error) = session.apply_rule_program(chain(bound), false) {
+        panic!("{error}");
+    }
+    let Err(error) = session.apply_rule_program(chain(bound + 1), false) else {
+        panic!("the chain past the bound must be refused");
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("nest") && message.contains(&bound.to_string()),
+        "{message}"
+    );
+}
+
 fn source(program: &str) -> RuleProgramSource {
     RuleProgramSource {
         variants: Default::default(),

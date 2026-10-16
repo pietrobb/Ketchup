@@ -41,6 +41,11 @@ pub const MAX_PARTS: usize = 20_000;
 /// booleans: each boolean records a copy of its tool, so parts that cut each
 /// other in turn would otherwise grow exponentially (review PRG-3).
 pub const MAX_BOOLEAN_BODIES: usize = 10_000;
+/// Booleans one part may nest through its tools' own booleans. The model
+/// crosses the worker boundary as CBOR, decoded recursively: past about 45
+/// levels a debug build overflows a 1 MB stack, past about 85 a release build
+/// meets the decoder's own limit (review 2026-10-15 N-7).
+pub const MAX_BOOLEAN_DEPTH: usize = 32;
 /// The program library: domain helpers and their documentation, split into
 /// topics by `#@topic id: title` lines.
 pub const PRELUDE: &str = include_str!("../library/prelude.star");
@@ -1265,11 +1270,17 @@ fn apply_boolean<'v>(
     let requested = text(name, "name")?;
     record_source(eval, &state, &[&target]);
     let tool_bodies = boolean_bodies(&tool_part);
+    let tool_depth = 1 + boolean_depth(&tool_part);
     with_part(&state, &target, |part| {
         let bodies = boolean_bodies(part) + tool_bodies;
         if bodies > MAX_BOOLEAN_BODIES {
             anyhow::bail!(
                 "{operation}({target:?}, {tool:?}): {target:?} would hold {bodies} bodies through its booleans, more than {MAX_BOOLEAN_BODIES}; parts that cut each other in turn copy each other's whole history, so cut from a tool body instead"
+            );
+        }
+        if tool_depth > MAX_BOOLEAN_DEPTH {
+            anyhow::bail!(
+                "{operation}({target:?}, {tool:?}): {target:?} would nest {tool_depth} booleans through its tools' own booleans, more than {MAX_BOOLEAN_DEPTH}; a part cut by a part that was itself cut keeps that whole history, so cut from tool bodies that have no booleans instead"
             );
         }
         let name = requested.unwrap_or_else(|| format!("{operation} {tool}"));
@@ -1296,6 +1307,18 @@ fn boolean_bodies(part: &Part) -> usize {
             _ => 0,
         })
         .sum::<usize>()
+}
+
+/// How many booleans deep the part's tools nest, counting their own booleans.
+fn boolean_depth(part: &Part) -> usize {
+    part.operations
+        .iter()
+        .map(|operation| match operation {
+            ProgramOperation::Boolean(boolean) => 1 + boolean_depth(&boolean.tool),
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Appends one operation to a part, keeping operation names unique.

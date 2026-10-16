@@ -674,6 +674,32 @@ fn parts_cutting_each_other_in_turn_stop_at_the_boolean_body_bound() {
         .unwrap_or_else(|error| panic!("{error}"));
 }
 
+/// Review 2026-10-15 N-7: a chain of parts each cut by the one before nests
+/// one boolean per part; past the depth bound it is refused by name.
+#[test]
+fn a_boolean_chain_stops_at_the_depth_bound() {
+    let bound = ketchup_program::eval::MAX_BOOLEAN_DEPTH;
+    let chain = |depth: usize| {
+        format!(
+            "box(\"p0\", (10, 10, 10))\nfor i in range(1, {}):\n    \
+             box(\"p%d\" % i, (10, 10, 10), at = (20 * i, 0, 0))\n    \
+             subtract(\"p%d\" % i, \"p%d\" % (i - 1))\n",
+            depth + 1
+        )
+    };
+    let Err(error) = ketchup_program::evaluate("chain.star", &chain(bound + 1), &BTreeMap::new())
+    else {
+        panic!("the chain past the bound must be refused");
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("nest") && message.contains(&bound.to_string()),
+        "{message}"
+    );
+    ketchup_program::evaluate("chain.star", &chain(bound), &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
 /// A program at the part limit still evaluates and still refuses a name
 /// that a part, a tool or a group already has, at any position.
 #[test]
