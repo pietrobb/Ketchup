@@ -858,3 +858,101 @@ fn a_plugin_argument_through_dot_dot_runs_the_staged_file_it_names() {
         assert_eq!(stage.join(given), stage.join("plugin.py"), "{argument:?}");
     }
 }
+
+/// SEC-6: a file the command line names outside the folder that does not exist
+/// yet is allowed only as absent; one created while the user is asked does not
+/// let the plugin run, and the prompt shows the path as absent.
+#[test]
+fn a_plugin_path_created_after_it_was_allowed_as_absent_stops_the_run() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let later = directory.path().join("later.py");
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    manifest["arguments"] = json!(["plugin.py", later.display().to_string()]);
+    std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_high_risk_approval_after_write_attempt(1, &later, "x = 1\n");
+    let probe = dialogs.clone();
+    let mut wire = plugin_wire_answering(dialogs);
+    let original = height(&wire.app);
+    let undo = wire.app.undo_step_count();
+
+    let response = wire.answer_within(
+        Request::RunPlugin(folder_request(&folder, json!({"height_mm": 35}))),
+        Duration::from_secs(120),
+    );
+    assert_eq!(probe.high_risk_write_attempts(), [true]);
+    assert_eq!(
+        response.error.as_deref(),
+        Some("plugin_failed"),
+        "{:?}",
+        response.result
+    );
+    let causes = response.result.unwrap()["causes"].to_string();
+    assert!(causes.contains("later.py was created"), "{causes}");
+    let prompt = &probe.high_risk_prompts()[0];
+    assert!(
+        prompt.contains(&format!(
+            "{}\n{}",
+            later.display(),
+            wire.app.catalog.text("live-plugin-consent-absent")
+        )),
+        "{prompt}"
+    );
+    assert_eq!(height(&wire.app), original);
+    assert_eq!(wire.app.undo_step_count(), undo);
+}
+
+/// SEC-6: a folder outside the plugin folder named on the command line could
+/// gain files nobody hashed; it is refused before anyone is asked.
+#[test]
+fn a_plugin_argument_naming_a_folder_outside_is_refused_without_a_prompt() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let modules = directory.path().join("modules");
+    std::fs::create_dir(&modules).unwrap();
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    manifest["arguments"] = json!(["plugin.py", modules.display().to_string()]);
+    std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+    let dialogs = ScriptedFileDialogs::new().always_confirm_high_risk_as(1);
+    let probe = dialogs.clone();
+    let mut wire = plugin_wire_answering(dialogs);
+    let request = folder_request(&folder, json!({"height_mm": 35}));
+    assert_refused_without_prompt(&mut wire, request, "invalid_path", &probe);
+
+    let command = plugin_request(vec![
+        example_script().to_string_lossy().into_owned(),
+        modules.display().to_string(),
+    ]);
+    assert_refused_without_prompt(&mut wire, command, "invalid_path", &probe);
+    assert!(probe.high_risk_prompts().is_empty());
+}
+
+/// SEC-6: files are held, but a file can still be added to the stage's
+/// folders; a stage that no longer holds exactly the hashed files does not run.
+#[test]
+fn a_file_added_to_a_plugin_stage_after_hashing_stops_the_run() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let inputs = json!({"height_mm": 35});
+    for planted in ["json.py", "ketchup_sdk/json.py"] {
+        let launch = crate::live_bridge::plugin_manifest::load(
+            &folder.to_string_lossy(),
+            inputs.as_object(),
+        )
+        .unwrap();
+        launch.held.unchanged().unwrap();
+        let stage = launch.command.working_directory.clone().unwrap();
+        std::fs::write(stage.join(planted), "raise SystemExit\n").unwrap();
+        let error = launch.held.unchanged().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("was added to the plugin's files"),
+            "{planted}: {error}"
+        );
+    }
+}

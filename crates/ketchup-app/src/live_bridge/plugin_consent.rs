@@ -39,8 +39,9 @@ impl ConsentFolder {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PluginConsent {
     folder: Option<ConsentFolder>,
-    /// Files outside a plugin folder the command line names, with SHA-256.
-    files: Vec<(PathBuf, String)>,
+    /// Files outside a plugin folder the command line names, with SHA-256;
+    /// none for a path allowed only while no file is there.
+    files: Vec<(PathBuf, Option<String>)>,
     command: Vec<String>,
     principal_id: u64,
     capabilities: BTreeSet<String>,
@@ -90,10 +91,10 @@ impl PluginConsent {
         operations: &[String],
         held: &mut HeldFiles,
     ) -> Result<Self, &'static str> {
-        let mut hashed = |path: &Path| {
+        let hashed = |path: &Path, held: &mut HeldFiles| {
             let absolute = std::path::absolute(path)?;
             let hash = held.hash(&absolute)?;
-            Ok::<_, std::io::Error>((absolute, hash))
+            Ok::<_, std::io::Error>((absolute, Some(hash)))
         };
         // A network, device or stream path is refused before it is read.
         let remote = |path: &str| Path::new(path).is_absolute() && !local_absolute_path(path);
@@ -105,12 +106,19 @@ impl PluginConsent {
             ));
         }
         let executable = started_executable(Path::new(executable), Path::is_file)?;
-        let mut files =
-            vec![hashed(&executable).map_err(|error| failed_because("plugin_failed", error))?];
+        let mut files = vec![
+            hashed(&executable, held).map_err(|error| failed_because("plugin_failed", error))?,
+        ];
         for argument in arguments {
             let path = Path::new(argument);
             if path.is_file() {
-                files.push(hashed(path).map_err(|error| failed_because("plugin_failed", error))?);
+                files.push(
+                    hashed(path, held).map_err(|error| failed_because("plugin_failed", error))?,
+                );
+            } else if path.is_absolute() {
+                // Allowed only while nothing is there; a folder is refused.
+                super::plugin_manifest::outside_absent(path, Some(held))?;
+                files.push((path.to_owned(), None));
             }
         }
         Ok(Self {
@@ -127,7 +135,7 @@ impl PluginConsent {
 
     pub(super) fn of_folder(
         folder: ConsentFolder,
-        outside: Vec<(PathBuf, String)>,
+        outside: Vec<(PathBuf, Option<String>)>,
         command: Vec<String>,
         principal_id: u64,
         capabilities: &[String],
@@ -227,7 +235,10 @@ impl KetchupApp {
         }
         for (path, sha256) in &wanted.files {
             lines.push(path.display().to_string());
-            lines.push(format!("SHA-256 {sha256}"));
+            lines.push(match sha256 {
+                Some(sha256) => format!("SHA-256 {sha256}"),
+                None => text("live-plugin-consent-absent"),
+            });
         }
         lines.extend([
             format!(

@@ -60,7 +60,14 @@ pub(super) struct PluginJob {
     before: Stamp,
     validators: Vec<String>,
     strict: bool,
-    receiver: mpsc::Receiver<Result<PluginRunResult, PluginHostError>>,
+    receiver: mpsc::Receiver<Result<PluginRunResult, RunFailure>>,
+}
+
+/// Why a plugin run ended without its result.
+enum RunFailure {
+    /// The allowed files changed between the consent and the start; nothing ran.
+    Changed(std::io::Error),
+    Host(PluginHostError),
 }
 
 /// What preparing a run ends with: the launch, or the refusal with its cause.
@@ -204,11 +211,14 @@ fn grant(
 }
 
 /// A failed plugin run with its original cause.
-fn host_failure(error: PluginHostError) -> &'static str {
+fn host_failure(error: RunFailure) -> &'static str {
     match error {
-        PluginHostError::Cancelled => "request_cancelled",
-        PluginHostError::Gateway(_) => failed_because("plugin_refused", error),
-        error => failed_because("plugin_failed", error),
+        RunFailure::Changed(error) => failed_because("plugin_failed", error),
+        RunFailure::Host(PluginHostError::Cancelled) => "request_cancelled",
+        RunFailure::Host(error @ PluginHostError::Gateway(_)) => {
+            failed_because("plugin_refused", error)
+        }
+        RunFailure::Host(error) => failed_because("plugin_failed", error),
     }
 }
 
@@ -344,8 +354,14 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-plugin".into())
             .spawn(move || {
-                let result =
-                    run_plugin_command(&command, &snapshot, grant, timeout, &thread_cancelled);
+                // The consent prompt may have been open for minutes.
+                let result = held
+                    .unchanged()
+                    .map_err(RunFailure::Changed)
+                    .and_then(|()| {
+                        run_plugin_command(&command, &snapshot, grant, timeout, &thread_cancelled)
+                            .map_err(RunFailure::Host)
+                    });
                 drop(held);
                 let _ = sender.try_send(result);
                 repaint.request_repaint();

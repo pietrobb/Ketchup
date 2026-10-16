@@ -6,9 +6,10 @@
 //! hash until the plugin process has ended; on Windows without write or delete
 //! sharing, so nobody can change, replace or rename it meanwhile. Elsewhere the
 //! files are only staged and hashed.
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Opens `path` for reading; on Windows nobody may write, rename or delete
 /// it while the handle is open. Only a regular file opens (`open_regular`).
@@ -48,10 +49,16 @@ fn open_checked(path: &Path, mut options: fs::OpenOptions) -> io::Result<File> {
 }
 
 /// What a plugin run holds until its process has ended: the hashed files,
-/// then the stage they were copied into, removed last.
+/// then the stage they were copied into, removed last. A file can be added to
+/// a folder however its other files are held, so before the process starts
+/// the stage must still hold exactly the hashed files and every path the
+/// consent names as absent must still be absent (`unchanged`).
 #[derive(Debug, Default)]
 pub(super) struct HeldFiles {
     files: Vec<File>,
+    /// The stage's files by relative path, with the SHA-256 the consent shows.
+    staged: BTreeMap<PathBuf, String>,
+    absent: Vec<PathBuf>,
     stage: Option<tempfile::TempDir>,
 }
 
@@ -59,12 +66,12 @@ impl HeldFiles {
     /// A new private stage for a plugin folder's copy.
     pub(super) fn staged() -> io::Result<Self> {
         Ok(Self {
-            files: Vec::new(),
             stage: Some(
                 tempfile::Builder::new()
                     .prefix("ketchup-plugin-")
                     .tempdir()?,
             ),
+            ..Self::default()
         })
     }
 
@@ -77,7 +84,68 @@ impl HeldFiles {
         let file = open_held(path)?;
         let sha256 = ketchup_model::graph::sha256_reader_hex(&file)?;
         self.files.push(file);
+        if let Some(relative) = self.stage().and_then(|stage| path.strip_prefix(stage).ok()) {
+            self.staged.insert(relative.to_owned(), sha256.clone());
+        }
         Ok(sha256)
+    }
+
+    /// Records that the consent allows `path` only while no file is there.
+    pub(super) fn expect_absent(&mut self, path: &Path) {
+        self.absent.push(path.to_owned());
+    }
+
+    /// The stage holds exactly the files hashed in it, with the same bytes,
+    /// and no path expected absent exists: nothing was added or changed since
+    /// the consent was asked for.
+    pub(super) fn unchanged(&self) -> io::Result<()> {
+        let changed = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
+        for path in &self.absent {
+            if fs::symlink_metadata(path).is_ok() {
+                return Err(changed(format!(
+                    "{} was created after the plugin was allowed without it",
+                    path.display()
+                )));
+            }
+        }
+        let Some(stage) = self.stage() else {
+            return Ok(());
+        };
+        let mut found = Vec::new();
+        let mut pending = vec![PathBuf::new()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(stage.join(&directory))? {
+                let entry = entry?;
+                let relative = directory.join(entry.file_name());
+                if fs::symlink_metadata(entry.path())?.is_dir() {
+                    pending.push(relative);
+                } else if self.staged.contains_key(&relative) {
+                    found.push(relative);
+                } else {
+                    return Err(changed(format!(
+                        "{} was added to the plugin's files after they were allowed",
+                        relative.display()
+                    )));
+                }
+            }
+        }
+        if found.len() != self.staged.len() {
+            return Err(changed(
+                "a file of the plugin was removed after it was allowed".to_owned(),
+            ));
+        }
+        // Elsewhere a held file is not locked: its bytes are hashed again.
+        #[cfg(not(windows))]
+        for (relative, sha256) in &self.staged {
+            let file = open_regular(&stage.join(relative))?;
+            if ketchup_model::graph::sha256_reader_hex(&file)? != *sha256 {
+                return Err(changed(format!(
+                    "{} changed after it was allowed",
+                    relative.display()
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Opens `path` held and returns at most `limit + 1` of its bytes.

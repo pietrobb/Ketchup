@@ -20,8 +20,9 @@ const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_FOLDER_FILES: usize = 1_000;
 const MAX_FOLDER_BYTES: u64 = 256 * 1024 * 1024;
 
-/// An absolute file path and its SHA-256.
-type HashedFile = (PathBuf, String);
+/// An absolute file path and its SHA-256, or none for a path allowed only
+/// while no file is there.
+type HashedFile = (PathBuf, Option<String>);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -323,11 +324,48 @@ fn outside_files(
             if let Some(given) = given.as_mut() {
                 *given = candidate.display().to_string();
             }
-            outside.push((candidate, sha256));
+            outside.push((candidate, Some(sha256)));
+        } else {
+            outside_absent(&candidate, held.as_deref_mut())?;
+            // Through `..` the text would name a path next to the stage.
+            if let Some(given) = given.as_mut()
+                && Path::new(given.as_str())
+                    .components()
+                    .any(|component| component == Component::ParentDir)
+            {
+                *given = candidate.display().to_string();
+            }
+            outside.push((candidate, None));
         }
         arguments.extend(given);
     }
     Ok((executable, arguments, outside))
+}
+
+/// A path outside the folder the command line names that is no file: a
+/// folder is refused, since files could be added to it unhashed; a path where
+/// nothing is yet is allowed only while it stays so (`HeldFiles::unchanged`).
+pub(super) fn outside_absent(
+    path: &Path,
+    held: Option<&mut HeldFiles>,
+) -> Result<(), &'static str> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(held) = held {
+                held.expect_absent(path);
+            }
+            Ok(())
+        }
+        Err(error) => Err(unreadable(error)),
+        Ok(_) => Err(failure(
+            "invalid_path",
+            format!(
+                "{} is no file; a plugin's command line names files, and the files of a folder outside the plugin folder would run unhashed",
+                path.display()
+            ),
+            json!({"canonical_mutation": false}),
+        )),
+    }
 }
 
 /// The declared inputs with `given` values or their defaults; an undeclared,
