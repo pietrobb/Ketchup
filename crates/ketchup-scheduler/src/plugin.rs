@@ -566,26 +566,22 @@ mod tests {
             None,
         )
         .unwrap();
+        let mut reader = BufReader::new(child.stdout().take().unwrap());
         let mut line = String::new();
-        BufReader::new(child.stdout().take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let started = line.trim().to_owned();
-        assert!(started.parse::<u32>().is_ok(), "{line:?}");
+        reader.read_line(&mut line).unwrap();
+        assert!(line.trim().parse::<u32>().is_ok(), "{line:?}");
         terminate(child.as_mut()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Command::new("kill")
-            .args(["-0", &started])
-            .stderr(Stdio::null())
-            .status()
-            .unwrap()
-            .success()
-        {
-            assert!(
-                Instant::now() < deadline,
-                "the plugin's process {started} outlived it"
-            );
-            std::thread::sleep(POLL_INTERVAL);
-        }
+        // The started process holds the plugin's stdout too: the pipe ends
+        // only once it has stopped as well.
+        let (ended, end) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rest = Vec::new();
+            let _ = ended.send(io::Read::read_to_end(&mut reader, &mut rest).map(|_| rest));
+        });
+        let rest = end
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the plugin's process outlived it")
+            .unwrap();
+        assert!(rest.is_empty());
     }
 }
