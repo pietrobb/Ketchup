@@ -1,0 +1,1097 @@
+{
+  "bom": {
+    "bar_schedule": [
+      {
+        "count": 8,
+        "cut_length_mm": 700.0,
+        "diameter_mm": 12.0,
+        "grade": "B500B",
+        "mass_kg": 4.968,
+        "parts": [
+          "bar x1",
+          "bar y1",
+          "bar x2",
+          "bar y2",
+          "bar x3",
+          "bar y3",
+          "bar x4",
+          "bar y4"
+        ],
+        "position": 1,
+        "shape": "straight",
+        "total_length_m": 5.6
+      }
+    ],
+    "cut_list": [
+      {
+        "count": 1,
+        "dimensions_mm": [
+          1000.0,
+          140.0,
+          80.0
+        ],
+        "material": "KVH C24",
+        "parts": [
+          "beam"
+        ]
+      },
+      {
+        "count": 1,
+        "dimensions_mm": [
+          800.0,
+          800.0,
+          400.0
+        ],
+        "material": "concrete C25/30",
+        "parts": [
+          "footing"
+        ]
+      },
+      {
+        "count": 2,
+        "dimensions_mm": [
+          200.0,
+          150.0,
+          10.0
+        ],
+        "material": "steel S235",
+        "parts": [
+          "fin plate -1",
+          "fin plate 1"
+        ]
+      },
+      {
+        "count": 1,
+        "dimensions_mm": [
+          200.0,
+          200.0,
+          20.0
+        ],
+        "material": "steel S235",
+        "parts": [
+          "base plate"
+        ]
+      }
+    ],
+    "hardware": [
+      {
+        "attributes": {
+          "mass_basis": "simplified solid x 7850 kg/m3 (no thread or chamfers), not a catalogue weight",
+          "source": "fasteners.eu, boltport.com (catalogue tables, not the standard text)",
+          "standard": "DIN 975",
+          "thread": "M12",
+          "thread_from_mm": "0.0",
+          "thread_to_mm": "400.0"
+        },
+        "count": 4,
+        "item": "DIN 975 M12x400",
+        "parts": [
+          "anchor -1 -1",
+          "anchor -1 1",
+          "anchor 1 -1",
+          "anchor 1 1"
+        ]
+      },
+      {
+        "attributes": {
+          "mass_basis": "simplified solid x 7850 kg/m3 (no thread or chamfers), not a catalogue weight",
+          "source": "heads fasteners.eu, fullerfasteners.com, intafast.com; lengths engineersedge.com, intafast.com (catalogue tables, not the standard text)",
+          "standard": "ISO 4014",
+          "thread": "M12",
+          "thread_from_mm": "-120.0",
+          "thread_to_mm": "-90.0"
+        },
+        "count": 2,
+        "item": "ISO 4014 M12x120",
+        "parts": [
+          "bolt -50",
+          "bolt 50"
+        ]
+      },
+      {
+        "attributes": {
+          "mass_basis": "simplified solid x 7850 kg/m3 (no thread or chamfers), not a catalogue weight",
+          "source": "fasteners.eu, wermac.org, engineersedge.com (catalogue tables, not the standard text)",
+          "standard": "ISO 4032"
+        },
+        "count": 6,
+        "item": "ISO 4032 M12",
+        "parts": [
+          "anchor nut -1 -1",
+          "anchor nut -1 1",
+          "anchor nut 1 -1",
+          "anchor nut 1 1",
+          "bolt nut -50",
+          "bolt nut 50"
+        ]
+      },
+      {
+        "attributes": {
+          "mass_basis": "simplified solid x 7850 kg/m3 (no thread or chamfers), not a catalogue weight",
+          "source": "itpbolt.com, engineersedge.com, fasteners.eu (catalogue tables, not the standard text)",
+          "standard": "ISO 7089"
+        },
+        "count": 6,
+        "item": "ISO 7089 M12",
+        "parts": [
+          "anchor washer -1 -1",
+          "anchor washer -1 1",
+          "anchor washer 1 -1",
+          "anchor washer 1 1",
+          "bolt washer -50",
+          "bolt washer 50"
+        ]
+      }
+    ],
+    "machining": [
+      {
+        "operations": [
+          {
+            "depth_mm": 20.0,
+            "diameter_mm": 14.0,
+            "face": "z+",
+            "id": "h1",
+            "kind": "drill",
+            "position_mm": [
+              20.0,
+              25.0
+            ],
+            "through": true
+          },
+          {
+            "depth_mm": 20.0,
+            "diameter_mm": 14.0,
+            "face": "z+",
+            "id": "h2",
+            "kind": "drill",
+            "position_mm": [
+              20.0,
+              175.0
+            ],
+            "through": true
+          },
+          {
+            "depth_mm": 20.0,
+            "diameter_mm": 14.0,
+            "face": "z+",
+            "id": "h3",
+            "kind": "drill",
+            "position_mm": [
+              180.0,
+              25.0
+            ],
+            "through": true
+          },
+          {
+            "depth_mm": 20.0,
+            "diameter_mm": 14.0,
+            "face": "z+",
+            "id": "h4",
+            "kind": "drill",
+            "position_mm": [
+              180.0,
+              175.0
+            ],
+            "through": true
+          }
+        ],
+        "part": "base plate",
+        "size_mm": [
+          200.0,
+          200.0,
+          20.0
+        ]
+      },
+      {
+        "operations": [
+          {
+            "depth_mm": 80.0,
+            "diameter_mm": 13.0,
+            "face": "x+",
+            "id": "h1",
+            "kind": "drill",
+            "position_mm": [
+              450.0,
+              70.0
+            ],
+            "through": true
+          },
+          {
+            "depth_mm": 80.0,
+            "diameter_mm": 13.0,
+            "face": "x+",
+            "id": "h2",
+            "kind": "drill",
+            "position_mm": [
+              550.0,
+              70.0
+            ],
+            "through": true
+          }
+        ],
+        "part": "beam",
+        "size_mm": [
+          80.0,
+          1000.0,
+          140.0
+        ]
+      },
+      {
+        "operations": [
+          {
+            "depth_mm": 10.0,
+            "diameter_mm": 13.0,
+            "face": "x+",
+            "id": "h1",
+            "kind": "drill",
+            "position_mm": [
+              50.0,
+              70.0
+            ],
+            "through": true
+          },
+          {
+            "depth_mm": 10.0,
+            "diameter_mm": 13.0,
+            "face": "x+",
+            "id": "h2",
+            "kind": "drill",
+            "position_mm": [
+              150.0,
+              70.0
+            ],
+            "through": true
+          }
+        ],
+        "part": "fin plate -1",
+        "size_mm": [
+          10.0,
+          200.0,
+          150.0
+        ]
+      },
+      {
+        "operations": [
+          {
+            "depth_mm": 10.0,
+            "diameter_mm": 13.0,
+            "face": "x+",
+            "id": "h1",
+            "kind": "drill",
+            "position_mm": [
+              50.0,
+              70.0
+            ],
+            "through": true
+          },
+          {
+            "depth_mm": 10.0,
+            "diameter_mm": 13.0,
+            "face": "x+",
+            "id": "h2",
+            "kind": "drill",
+            "position_mm": [
+              150.0,
+              70.0
+            ],
+            "through": true
+          }
+        ],
+        "part": "fin plate 1",
+        "size_mm": [
+          10.0,
+          200.0,
+          150.0
+        ]
+      }
+    ],
+    "total_parts": 31
+  },
+  "errors": 0,
+  "issues": [
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of base plate and anchor -1 -1 overlap by 12 x 12 x 20 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "base plate",
+        "anchor -1 -1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 35,
+          "last": 35
+        }
+      ],
+      "where_mm": [
+        [
+          -86.0,
+          -81.0,
+          0.0
+        ],
+        [
+          -74.0,
+          -69.0,
+          20.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of base plate and anchor -1 1 overlap by 12 x 12 x 20 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "base plate",
+        "anchor -1 1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 35,
+          "last": 35
+        }
+      ],
+      "where_mm": [
+        [
+          -86.0,
+          69.0,
+          0.0
+        ],
+        [
+          -74.0,
+          81.0,
+          20.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of base plate and anchor 1 -1 overlap by 12 x 12 x 20 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "base plate",
+        "anchor 1 -1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 35,
+          "last": 35
+        }
+      ],
+      "where_mm": [
+        [
+          74.0,
+          -81.0,
+          0.0
+        ],
+        [
+          86.0,
+          -69.0,
+          20.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of base plate and anchor 1 1 overlap by 12 x 12 x 20 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "base plate",
+        "anchor 1 1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 35,
+          "last": 35
+        }
+      ],
+      "where_mm": [
+        [
+          74.0,
+          69.0,
+          0.0
+        ],
+        [
+          86.0,
+          81.0,
+          20.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of anchor washer -1 -1 and anchor -1 -1 overlap by 12 x 12 x 2.5 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "anchor washer -1 -1",
+        "anchor -1 -1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 36,
+          "last": 36
+        }
+      ],
+      "where_mm": [
+        [
+          -86.0,
+          -81.0,
+          20.0
+        ],
+        [
+          -74.0,
+          -69.0,
+          22.5
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of anchor washer -1 1 and anchor -1 1 overlap by 12 x 12 x 2.5 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "anchor washer -1 1",
+        "anchor -1 1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 36,
+          "last": 36
+        }
+      ],
+      "where_mm": [
+        [
+          -86.0,
+          69.0,
+          20.0
+        ],
+        [
+          -74.0,
+          81.0,
+          22.5
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of anchor nut -1 -1 and anchor -1 -1 overlap by 12 x 12 x 10.8 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "anchor nut -1 -1",
+        "anchor -1 -1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 37,
+          "last": 37
+        }
+      ],
+      "where_mm": [
+        [
+          -86.0,
+          -81.0,
+          22.5
+        ],
+        [
+          -74.0,
+          -69.0,
+          33.3
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of anchor nut -1 1 and anchor -1 1 overlap by 12 x 12 x 10.8 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "anchor nut -1 1",
+        "anchor -1 1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 37,
+          "last": 37
+        }
+      ],
+      "where_mm": [
+        [
+          -86.0,
+          69.0,
+          22.5
+        ],
+        [
+          -74.0,
+          81.0,
+          33.3
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of bolt -50 and fin plate -1 overlap by 10 x 20.785 x 18 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "bolt -50",
+        "fin plate -1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 51,
+          "last": 51
+        },
+        {
+          "first": 52,
+          "last": 52
+        }
+      ],
+      "where_mm": [
+        [
+          -50.0,
+          -60.392,
+          81.0
+        ],
+        [
+          -40.0,
+          -39.608,
+          99.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of bolt -50 and beam overlap by 80 x 20.785 x 18 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "bolt -50",
+        "beam"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 51,
+          "last": 51
+        },
+        {
+          "first": 52,
+          "last": 52
+        }
+      ],
+      "where_mm": [
+        [
+          -40.0,
+          -60.392,
+          81.0
+        ],
+        [
+          40.0,
+          -39.608,
+          99.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of bolt -50 and fin plate 1 overlap by 10 x 20.785 x 18 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "bolt -50",
+        "fin plate 1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 51,
+          "last": 51
+        },
+        {
+          "first": 52,
+          "last": 52
+        }
+      ],
+      "where_mm": [
+        [
+          40.0,
+          -60.392,
+          81.0
+        ],
+        [
+          50.0,
+          -39.608,
+          99.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of bolt -50 and bolt washer -50 overlap by 2.5 x 20.785 x 18 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "bolt -50",
+        "bolt washer -50"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 52,
+          "last": 52
+        },
+        {
+          "first": 53,
+          "last": 53
+        }
+      ],
+      "where_mm": [
+        [
+          50.0,
+          -60.392,
+          81.0
+        ],
+        [
+          52.5,
+          -39.608,
+          99.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of bolt -50 and bolt nut -50 overlap by 10.8 x 20.785 x 18 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "bolt -50",
+        "bolt nut -50"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 52,
+          "last": 52
+        },
+        {
+          "first": 54,
+          "last": 54
+        }
+      ],
+      "where_mm": [
+        [
+          52.5,
+          -60.392,
+          81.0
+        ],
+        [
+          63.3,
+          -39.608,
+          99.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of bolt 50 and fin plate -1 overlap by 10 x 20.785 x 18 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "bolt 50",
+        "fin plate -1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 51,
+          "last": 51
+        },
+        {
+          "first": 52,
+          "last": 52
+        }
+      ],
+      "where_mm": [
+        [
+          -50.0,
+          39.608,
+          81.0
+        ],
+        [
+          -40.0,
+          60.392,
+          99.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of bolt 50 and beam overlap by 80 x 20.785 x 18 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "bolt 50",
+        "beam"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 51,
+          "last": 51
+        },
+        {
+          "first": 52,
+          "last": 52
+        }
+      ],
+      "where_mm": [
+        [
+          -40.0,
+          39.608,
+          81.0
+        ],
+        [
+          40.0,
+          60.392,
+          99.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of bolt 50 and fin plate 1 overlap by 10 x 20.785 x 18 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "bolt 50",
+        "fin plate 1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 51,
+          "last": 51
+        },
+        {
+          "first": 52,
+          "last": 52
+        }
+      ],
+      "where_mm": [
+        [
+          40.0,
+          39.608,
+          81.0
+        ],
+        [
+          50.0,
+          60.392,
+          99.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of bolt 50 and bolt washer 50 overlap by 2.5 x 20.785 x 18 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "bolt 50",
+        "bolt washer 50"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 52,
+          "last": 52
+        },
+        {
+          "first": 53,
+          "last": 53
+        }
+      ],
+      "where_mm": [
+        [
+          50.0,
+          39.608,
+          81.0
+        ],
+        [
+          52.5,
+          60.392,
+          99.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of bolt 50 and bolt nut 50 overlap by 10.8 x 20.785 x 18 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "bolt 50",
+        "bolt nut 50"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 52,
+          "last": 52
+        },
+        {
+          "first": 54,
+          "last": 54
+        }
+      ],
+      "where_mm": [
+        [
+          52.5,
+          39.608,
+          81.0
+        ],
+        [
+          63.3,
+          60.392,
+          99.0
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of anchor washer 1 -1 and anchor 1 -1 overlap by 12 x 12 x 2.5 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "anchor washer 1 -1",
+        "anchor 1 -1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 36,
+          "last": 36
+        }
+      ],
+      "where_mm": [
+        [
+          74.0,
+          -81.0,
+          20.0
+        ],
+        [
+          86.0,
+          -69.0,
+          22.5
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of anchor washer 1 1 and anchor 1 1 overlap by 12 x 12 x 2.5 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "anchor washer 1 1",
+        "anchor 1 1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 36,
+          "last": 36
+        }
+      ],
+      "where_mm": [
+        [
+          74.0,
+          69.0,
+          20.0
+        ],
+        [
+          86.0,
+          81.0,
+          22.5
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of anchor nut 1 -1 and anchor 1 -1 overlap by 12 x 12 x 10.8 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "anchor nut 1 -1",
+        "anchor 1 -1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 37,
+          "last": 37
+        }
+      ],
+      "where_mm": [
+        [
+          74.0,
+          -81.0,
+          22.5
+        ],
+        [
+          86.0,
+          -69.0,
+          33.3
+        ]
+      ]
+    },
+    {
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "kind": "collision_unverified",
+      "message": "the bounding boxes of anchor nut 1 1 and anchor 1 1 overlap by 12 x 12 x 10.8 mm; whether the solids themselves overlap needs the exact shapes",
+      "parts": [
+        "anchor nut 1 1",
+        "anchor 1 1"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 37,
+          "last": 37
+        }
+      ],
+      "where_mm": [
+        [
+          74.0,
+          69.0,
+          22.5
+        ],
+        [
+          86.0,
+          81.0,
+          33.3
+        ]
+      ]
+    }
+  ],
+  "log": [],
+  "ok": true,
+  "params": [
+    {
+      "default": 1000.0,
+      "doc": "length of the beam along y",
+      "max": 3000.0,
+      "min": 400.0,
+      "name": "beam_length",
+      "value": 1000.0
+    },
+    {
+      "default": 800.0,
+      "doc": "side of the square footing",
+      "max": 1500.0,
+      "min": 500.0,
+      "name": "footing",
+      "value": 800.0
+    },
+    {
+      "default": 12.0,
+      "doc": "B500B bars of the bottom mesh",
+      "max": 40.0,
+      "min": 6.0,
+      "name": "bar_diameter",
+      "value": 12.0
+    }
+  ],
+  "relations": {
+    "count": 95,
+    "kinds": {
+      "contact": 18,
+      "gap": 27,
+      "overlap": 34,
+      "touch": 16
+    },
+    "sha256": "daeadde27bdb32ff99da503efbb31ea3b55254df8a5757401c76020381a75296"
+  },
+  "unused_overrides": [],
+  "warnings": 22
+}

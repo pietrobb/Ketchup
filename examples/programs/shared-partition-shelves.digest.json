@@ -1,0 +1,272 @@
+{
+  "bom": {
+    "cut_list": [
+      {
+        "count": 2,
+        "dimensions_mm": [
+          400.0,
+          300.0,
+          18.0
+        ],
+        "material": "board",
+        "parts": [
+          "left shelf",
+          "right shelf"
+        ]
+      },
+      {
+        "count": 1,
+        "dimensions_mm": [
+          600.0,
+          400.0,
+          18.0
+        ],
+        "material": "board",
+        "parts": [
+          "partition"
+        ]
+      }
+    ],
+    "hardware": [
+      {
+        "count": 4,
+        "item": "dowel 8x35"
+      }
+    ],
+    "machining": [
+      {
+        "operations": [
+          {
+            "depth_mm": 12.0,
+            "diameter_mm": 8.0,
+            "face": "x-",
+            "id": "dowel:left shelf:1",
+            "kind": "drill",
+            "position_mm": [
+              50.0,
+              249.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 12.0,
+            "diameter_mm": 8.0,
+            "face": "x-",
+            "id": "dowel:left shelf:2",
+            "kind": "drill",
+            "position_mm": [
+              350.0,
+              249.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 12.0,
+            "diameter_mm": 8.0,
+            "face": "x+",
+            "id": "dowel:right shelf:1",
+            "kind": "drill",
+            "position_mm": [
+              61.0,
+              249.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 12.0,
+            "diameter_mm": 8.0,
+            "face": "x+",
+            "id": "dowel:right shelf:2",
+            "kind": "drill",
+            "position_mm": [
+              361.0,
+              249.0
+            ],
+            "through": false
+          }
+        ],
+        "part": "partition",
+        "size_mm": [
+          18.0,
+          400.0,
+          600.0
+        ]
+      },
+      {
+        "operations": [
+          {
+            "depth_mm": 26.0,
+            "diameter_mm": 8.0,
+            "face": "x+",
+            "id": "dowel:partition:1",
+            "kind": "drill",
+            "position_mm": [
+              50.0,
+              9.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 26.0,
+            "diameter_mm": 8.0,
+            "face": "x+",
+            "id": "dowel:partition:2",
+            "kind": "drill",
+            "position_mm": [
+              350.0,
+              9.0
+            ],
+            "through": false
+          }
+        ],
+        "part": "left shelf",
+        "size_mm": [
+          300.0,
+          400.0,
+          18.0
+        ]
+      },
+      {
+        "operations": [
+          {
+            "depth_mm": 26.0,
+            "diameter_mm": 8.0,
+            "face": "x-",
+            "id": "dowel:partition:1",
+            "kind": "drill",
+            "position_mm": [
+              61.0,
+              9.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 26.0,
+            "diameter_mm": 8.0,
+            "face": "x-",
+            "id": "dowel:partition:2",
+            "kind": "drill",
+            "position_mm": [
+              361.0,
+              9.0
+            ],
+            "through": false
+          }
+        ],
+        "part": "right shelf",
+        "size_mm": [
+          300.0,
+          400.0,
+          18.0
+        ]
+      }
+    ],
+    "total_parts": 3
+  },
+  "errors": 0,
+  "issues": [
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group fixed shelves has 3 sets without verified contact: [left shelf]; [partition]; [right shelf]",
+      "parts": [
+        "left shelf",
+        "partition",
+        "right shelf"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 3,
+          "last": 3
+        },
+        {
+          "first": 4,
+          "last": 4
+        },
+        {
+          "first": 5,
+          "last": 5
+        },
+        {
+          "first": 6,
+          "last": 6
+        },
+        {
+          "first": 7,
+          "last": 7
+        }
+      ],
+      "where_mm": [
+        [
+          -300.0,
+          0.0,
+          0.0
+        ],
+        [
+          318.0,
+          400.0,
+          600.0
+        ]
+      ]
+    }
+  ],
+  "log": [
+    "dowels(partition, right shelf): explicit row offset 11 mm; world centres [(18.0, 61.0, 249.0), (18.0, 361.0, 249.0)]; check validation issues for bore clearance"
+  ],
+  "ok": true,
+  "params": [],
+  "relations": [
+    {
+      "area_mm2": 7100.0,
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "faces": [
+        "x-",
+        "x+"
+      ],
+      "joint": "dowel:partition+left shelf",
+      "kind": "contact",
+      "parts": [
+        "partition",
+        "left shelf"
+      ]
+    },
+    {
+      "area_mm2": 7100.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "faces": [
+        "x+",
+        "x-"
+      ],
+      "joint": "dowel:partition+right shelf",
+      "kind": "contact",
+      "parts": [
+        "partition",
+        "right shelf"
+      ]
+    },
+    {
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "gap_mm": 18.0,
+      "kind": "gap",
+      "parts": [
+        "left shelf",
+        "right shelf"
+      ]
+    }
+  ],
+  "unused_overrides": [],
+  "warnings": 1
+}

@@ -1,136 +1,14 @@
 {
-  "ok": true,
-  "errors": 0,
-  "warnings": 0,
-  "issues": [],
-  "relations": [
-    {
-      "parts": [
-        "table/top",
-        "table/leg-front-left"
-      ],
-      "kind": "contact",
-      "faces": [
-        "z-",
-        "z+"
-      ],
-      "area_mm2": 4800.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ],
-      "joint": "dowel:table/top+table/leg-front-left"
-    },
-    {
-      "parts": [
-        "table/top",
-        "table/leg-front-right"
-      ],
-      "kind": "contact",
-      "faces": [
-        "z-",
-        "z+"
-      ],
-      "area_mm2": 4800.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ],
-      "joint": "dowel:table/top+table/leg-front-right"
-    },
-    {
-      "parts": [
-        "table/top",
-        "table/leg-back-left"
-      ],
-      "kind": "contact",
-      "faces": [
-        "z-",
-        "z+"
-      ],
-      "area_mm2": 4800.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ],
-      "joint": "dowel:table/top+table/leg-back-left"
-    },
-    {
-      "parts": [
-        "table/top",
-        "table/leg-back-right"
-      ],
-      "kind": "contact",
-      "faces": [
-        "z-",
-        "z+"
-      ],
-      "area_mm2": 4800.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ],
-      "joint": "dowel:table/top+table/leg-back-right"
-    }
-  ],
-  "params": [
-    {
-      "name": "width",
-      "value": 1200.0,
-      "default": 1200.0,
-      "min": 600.0,
-      "max": 2400.0
-    },
-    {
-      "name": "depth",
-      "value": 700.0,
-      "default": 700.0,
-      "min": 400.0,
-      "max": 1200.0
-    },
-    {
-      "name": "height",
-      "value": 720.0,
-      "default": 720.0,
-      "min": 400.0,
-      "max": 1100.0
-    },
-    {
-      "name": "top_thickness",
-      "value": 25.0,
-      "default": 25.0,
-      "min": 15.0,
-      "max": 60.0
-    },
-    {
-      "name": "leg_size",
-      "value": 70.0,
-      "default": 70.0,
-      "min": 40.0,
-      "max": 120.0
-    },
-    {
-      "name": "leg_inset",
-      "value": 45.0,
-      "default": 45.0,
-      "min": 20.0,
-      "max": 150.0
-    }
-  ],
   "bom": {
     "cut_list": [
       {
-        "material": "board",
+        "count": 4,
         "dimensions_mm": [
           720.0,
           70.0,
           70.0
         ],
-        "count": 4,
+        "material": "board",
         "parts": [
           "table/leg-front-left",
           "table/leg-front-right",
@@ -139,13 +17,13 @@
         ]
       },
       {
-        "material": "board",
+        "count": 1,
         "dimensions_mm": [
           1200.0,
           700.0,
           25.0
         ],
-        "count": 1,
+        "material": "board",
         "parts": [
           "table/top"
         ]
@@ -153,256 +31,378 @@
     ],
     "hardware": [
       {
-        "item": "dowel 8x40",
-        "count": 8
+        "count": 8,
+        "item": "dowel 8x40"
       }
     ],
     "machining": [
       {
+        "operations": [
+          {
+            "depth_mm": 16.5,
+            "diameter_mm": 8.0,
+            "face": "z-",
+            "id": "dowel:table/leg-front-left:1",
+            "kind": "drill",
+            "position_mm": [
+              60.0,
+              80.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 16.5,
+            "diameter_mm": 8.0,
+            "face": "z-",
+            "id": "dowel:table/leg-front-left:2",
+            "kind": "drill",
+            "position_mm": [
+              100.0,
+              80.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 16.5,
+            "diameter_mm": 8.0,
+            "face": "z-",
+            "id": "dowel:table/leg-front-right:1",
+            "kind": "drill",
+            "position_mm": [
+              1100.0,
+              80.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 16.5,
+            "diameter_mm": 8.0,
+            "face": "z-",
+            "id": "dowel:table/leg-front-right:2",
+            "kind": "drill",
+            "position_mm": [
+              1140.0,
+              80.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 16.5,
+            "diameter_mm": 8.0,
+            "face": "z-",
+            "id": "dowel:table/leg-back-left:1",
+            "kind": "drill",
+            "position_mm": [
+              60.0,
+              620.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 16.5,
+            "diameter_mm": 8.0,
+            "face": "z-",
+            "id": "dowel:table/leg-back-left:2",
+            "kind": "drill",
+            "position_mm": [
+              100.0,
+              620.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 16.5,
+            "diameter_mm": 8.0,
+            "face": "z-",
+            "id": "dowel:table/leg-back-right:1",
+            "kind": "drill",
+            "position_mm": [
+              1100.0,
+              620.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 16.5,
+            "diameter_mm": 8.0,
+            "face": "z-",
+            "id": "dowel:table/leg-back-right:2",
+            "kind": "drill",
+            "position_mm": [
+              1140.0,
+              620.0
+            ],
+            "through": false
+          }
+        ],
         "part": "table/top",
         "size_mm": [
           1200.0,
           700.0,
           25.0
-        ],
-        "operations": [
-          {
-            "id": "dowel:table/leg-front-left:1",
-            "kind": "drill",
-            "face": "z-",
-            "position_mm": [
-              60.0,
-              80.0
-            ],
-            "diameter_mm": 8.0,
-            "depth_mm": 16.5,
-            "through": false
-          },
-          {
-            "id": "dowel:table/leg-front-left:2",
-            "kind": "drill",
-            "face": "z-",
-            "position_mm": [
-              100.0,
-              80.0
-            ],
-            "diameter_mm": 8.0,
-            "depth_mm": 16.5,
-            "through": false
-          },
-          {
-            "id": "dowel:table/leg-front-right:1",
-            "kind": "drill",
-            "face": "z-",
-            "position_mm": [
-              1100.0,
-              80.0
-            ],
-            "diameter_mm": 8.0,
-            "depth_mm": 16.5,
-            "through": false
-          },
-          {
-            "id": "dowel:table/leg-front-right:2",
-            "kind": "drill",
-            "face": "z-",
-            "position_mm": [
-              1140.0,
-              80.0
-            ],
-            "diameter_mm": 8.0,
-            "depth_mm": 16.5,
-            "through": false
-          },
-          {
-            "id": "dowel:table/leg-back-left:1",
-            "kind": "drill",
-            "face": "z-",
-            "position_mm": [
-              60.0,
-              620.0
-            ],
-            "diameter_mm": 8.0,
-            "depth_mm": 16.5,
-            "through": false
-          },
-          {
-            "id": "dowel:table/leg-back-left:2",
-            "kind": "drill",
-            "face": "z-",
-            "position_mm": [
-              100.0,
-              620.0
-            ],
-            "diameter_mm": 8.0,
-            "depth_mm": 16.5,
-            "through": false
-          },
-          {
-            "id": "dowel:table/leg-back-right:1",
-            "kind": "drill",
-            "face": "z-",
-            "position_mm": [
-              1100.0,
-              620.0
-            ],
-            "diameter_mm": 8.0,
-            "depth_mm": 16.5,
-            "through": false
-          },
-          {
-            "id": "dowel:table/leg-back-right:2",
-            "kind": "drill",
-            "face": "z-",
-            "position_mm": [
-              1140.0,
-              620.0
-            ],
-            "diameter_mm": 8.0,
-            "depth_mm": 16.5,
-            "through": false
-          }
         ]
       },
       {
+        "operations": [
+          {
+            "depth_mm": 26.5,
+            "diameter_mm": 8.0,
+            "face": "z+",
+            "id": "dowel:table/top:1",
+            "kind": "drill",
+            "position_mm": [
+              15.0,
+              35.0
+            ],
+            "through": false
+          },
+          {
+            "depth_mm": 26.5,
+            "diameter_mm": 8.0,
+            "face": "z+",
+            "id": "dowel:table/top:2",
+            "kind": "drill",
+            "position_mm": [
+              55.0,
+              35.0
+            ],
+            "through": false
+          }
+        ],
         "part": "table/leg-front-left",
         "size_mm": [
           70.0,
           70.0,
           720.0
-        ],
+        ]
+      },
+      {
         "operations": [
           {
+            "depth_mm": 26.5,
+            "diameter_mm": 8.0,
+            "face": "z+",
             "id": "dowel:table/top:1",
             "kind": "drill",
-            "face": "z+",
             "position_mm": [
               15.0,
               35.0
             ],
-            "diameter_mm": 8.0,
-            "depth_mm": 26.5,
             "through": false
           },
           {
+            "depth_mm": 26.5,
+            "diameter_mm": 8.0,
+            "face": "z+",
             "id": "dowel:table/top:2",
             "kind": "drill",
-            "face": "z+",
             "position_mm": [
               55.0,
               35.0
             ],
-            "diameter_mm": 8.0,
-            "depth_mm": 26.5,
             "through": false
           }
-        ]
-      },
-      {
+        ],
         "part": "table/leg-front-right",
         "size_mm": [
           70.0,
           70.0,
           720.0
-        ],
+        ]
+      },
+      {
         "operations": [
           {
+            "depth_mm": 26.5,
+            "diameter_mm": 8.0,
+            "face": "z+",
             "id": "dowel:table/top:1",
             "kind": "drill",
-            "face": "z+",
             "position_mm": [
               15.0,
               35.0
             ],
-            "diameter_mm": 8.0,
-            "depth_mm": 26.5,
             "through": false
           },
           {
+            "depth_mm": 26.5,
+            "diameter_mm": 8.0,
+            "face": "z+",
             "id": "dowel:table/top:2",
             "kind": "drill",
-            "face": "z+",
             "position_mm": [
               55.0,
               35.0
             ],
-            "diameter_mm": 8.0,
-            "depth_mm": 26.5,
             "through": false
           }
-        ]
-      },
-      {
+        ],
         "part": "table/leg-back-left",
         "size_mm": [
           70.0,
           70.0,
           720.0
-        ],
+        ]
+      },
+      {
         "operations": [
           {
+            "depth_mm": 26.5,
+            "diameter_mm": 8.0,
+            "face": "z+",
             "id": "dowel:table/top:1",
             "kind": "drill",
-            "face": "z+",
             "position_mm": [
               15.0,
               35.0
             ],
-            "diameter_mm": 8.0,
-            "depth_mm": 26.5,
             "through": false
           },
           {
+            "depth_mm": 26.5,
+            "diameter_mm": 8.0,
+            "face": "z+",
             "id": "dowel:table/top:2",
             "kind": "drill",
-            "face": "z+",
             "position_mm": [
               55.0,
               35.0
             ],
-            "diameter_mm": 8.0,
-            "depth_mm": 26.5,
             "through": false
           }
-        ]
-      },
-      {
+        ],
         "part": "table/leg-back-right",
         "size_mm": [
           70.0,
           70.0,
           720.0
-        ],
-        "operations": [
-          {
-            "id": "dowel:table/top:1",
-            "kind": "drill",
-            "face": "z+",
-            "position_mm": [
-              15.0,
-              35.0
-            ],
-            "diameter_mm": 8.0,
-            "depth_mm": 26.5,
-            "through": false
-          },
-          {
-            "id": "dowel:table/top:2",
-            "kind": "drill",
-            "face": "z+",
-            "position_mm": [
-              55.0,
-              35.0
-            ],
-            "diameter_mm": 8.0,
-            "depth_mm": 26.5,
-            "through": false
-          }
         ]
       }
     ],
     "total_parts": 5
   },
+  "errors": 0,
+  "issues": [],
   "log": [],
-  "unused_overrides": []
+  "ok": true,
+  "params": [
+    {
+      "default": 1200.0,
+      "max": 2400.0,
+      "min": 600.0,
+      "name": "width",
+      "value": 1200.0
+    },
+    {
+      "default": 700.0,
+      "max": 1200.0,
+      "min": 400.0,
+      "name": "depth",
+      "value": 700.0
+    },
+    {
+      "default": 720.0,
+      "max": 1100.0,
+      "min": 400.0,
+      "name": "height",
+      "value": 720.0
+    },
+    {
+      "default": 25.0,
+      "max": 60.0,
+      "min": 15.0,
+      "name": "top_thickness",
+      "value": 25.0
+    },
+    {
+      "default": 70.0,
+      "max": 120.0,
+      "min": 40.0,
+      "name": "leg_size",
+      "value": 70.0
+    },
+    {
+      "default": 45.0,
+      "max": 150.0,
+      "min": 20.0,
+      "name": "leg_inset",
+      "value": 45.0
+    }
+  ],
+  "relations": [
+    {
+      "area_mm2": 4800.0,
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "faces": [
+        "z-",
+        "z+"
+      ],
+      "joint": "dowel:table/top+table/leg-front-left",
+      "kind": "contact",
+      "parts": [
+        "table/top",
+        "table/leg-front-left"
+      ]
+    },
+    {
+      "area_mm2": 4800.0,
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "faces": [
+        "z-",
+        "z+"
+      ],
+      "joint": "dowel:table/top+table/leg-front-right",
+      "kind": "contact",
+      "parts": [
+        "table/top",
+        "table/leg-front-right"
+      ]
+    },
+    {
+      "area_mm2": 4800.0,
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "faces": [
+        "z-",
+        "z+"
+      ],
+      "joint": "dowel:table/top+table/leg-back-left",
+      "kind": "contact",
+      "parts": [
+        "table/top",
+        "table/leg-back-left"
+      ]
+    },
+    {
+      "area_mm2": 4800.0,
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "faces": [
+        "z-",
+        "z+"
+      ],
+      "joint": "dowel:table/top+table/leg-back-right",
+      "kind": "contact",
+      "parts": [
+        "table/top",
+        "table/leg-back-right"
+      ]
+    }
+  ],
+  "unused_overrides": [],
+  "warnings": 0
 }

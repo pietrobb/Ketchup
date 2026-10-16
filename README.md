@@ -22,7 +22,7 @@
 Ketchup is an AI-native desktop modeler for creating, editing, assembling, validating, and exporting real geometry. Manual tools and AI clients connected over MCP share the same canonical command path: every accepted model change is validated, revision-bound, atomic, and undoable.
 
 <p align="center">
-  <img src="pic/ketchup-modeler.png" alt="Ketchup desktop prototype showing a 480-occurrence timber scene" width="100%">
+  <img src="https://raw.githubusercontent.com/pietrobb/Ketchup/f21e891/pic/ketchup-modeler.png" alt="Ketchup desktop prototype showing a 480-occurrence timber scene" width="100%">
 </p>
 
 ## Download and try it
@@ -56,7 +56,7 @@ The [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketch
 | [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) | The drawer assembly described above, with joints, travel limits, and a motion study. |
 | [`table.ketchup`](examples/programs/table.ketchup) | A small table driven by a rule program ([`table.star`](examples/programs/table.star)). It is a good first model to edit by hand or with AI. |
 | [`wardrobe-chair-table.ketchup`](examples/wardrobe-chair-table.ketchup) | Furniture with 82 bodies and hundreds of drilled holes. |
-| [`tiny-house.ketchup`](examples/tiny-house.ketchup) | A timber-frame house of about 750 parts, with studs, noggins, and insulation. You can try layers, material takeoff (**Tools**), and project drawings. |
+| [`tiny-house.ketchup`](https://github.com/pietrobb/Ketchup/releases/download/sample-files/tiny-house.ketchup) | A timber-frame house of about 750 parts, with studs, noggins, and insulation, generated from [`tiny-house.star`](examples/programs/tiny-house.star). You can try layers, material takeoff (**Tools**), and project drawings. A 25 MB download from the [sample files](https://github.com/pietrobb/Ketchup/releases/tag/sample-files) release. |
 | [`house-project.ketchup`](examples/house-project.ketchup) | A larger house generated from [`house-project.star`](examples/programs/house-project.star). |
 | [`garden-studio-colored.ketchup`](examples/garden-studio-colored.ketchup) | A colored garden studio built from exact solids. |
 | [`grooved-beam-array.ketchup`](examples/grooved-beam-array.ketchup) | A 480-occurrence timber stress scene with 24 shared definitions. Use it to test the viewport, selection, the Outliner, and instancing. |

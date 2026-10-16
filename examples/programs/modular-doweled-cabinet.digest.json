@@ -1,0 +1,1117 @@
+{
+  "bom": {
+    "cut_list": [
+      {
+        "count": 12,
+        "dimensions_mm": [
+          434.0,
+          80.0,
+          18.0
+        ],
+        "material": "board",
+        "parts": [
+          "lower 0 plinth support 0",
+          "lower 0 plinth support 1",
+          "lower 0 plinth support 2",
+          "lower 1 plinth support 0",
+          "lower 1 plinth support 1",
+          "lower 1 plinth support 2",
+          "lower 2 plinth support 0",
+          "lower 2 plinth support 1",
+          "lower 2 plinth support 2",
+          "lower 3 plinth support 0",
+          "lower 3 plinth support 1",
+          "lower 3 plinth support 2"
+        ]
+      },
+      {
+        "count": 8,
+        "dimensions_mm": [
+          839.0,
+          80.0,
+          18.0
+        ],
+        "material": "board",
+        "parts": [
+          "lower 0 plinth front",
+          "lower 0 plinth rear",
+          "lower 1 plinth front",
+          "lower 1 plinth rear",
+          "lower 2 plinth front",
+          "lower 2 plinth rear",
+          "lower 3 plinth front",
+          "lower 3 plinth rear"
+        ]
+      },
+      {
+        "count": 20,
+        "dimensions_mm": [
+          839.0,
+          150.0,
+          18.0
+        ],
+        "material": "board",
+        "parts": [
+          "lower 0 brace 0",
+          "lower 0 brace 1",
+          "lower 0 brace 2",
+          "upper 0 brace 0",
+          "upper 0 brace 1",
+          "lower 1 brace 0",
+          "lower 1 brace 1",
+          "lower 1 brace 2",
+          "upper 1 brace 0",
+          "upper 1 brace 1",
+          "lower 2 brace 0",
+          "lower 2 brace 1",
+          "lower 2 brace 2",
+          "upper 2 brace 0",
+          "upper 2 brace 1",
+          "lower 3 brace 0",
+          "lower 3 brace 1",
+          "lower 3 brace 2",
+          "upper 3 brace 0",
+          "upper 3 brace 1"
+        ]
+      },
+      {
+        "count": 28,
+        "dimensions_mm": [
+          839.0,
+          520.0,
+          18.0
+        ],
+        "material": "board",
+        "parts": {
+          "count": 28,
+          "sha256": "98611560a60244005acad18d1a789a8bef44c87e569189db09e1d6bf9c8cb195"
+        }
+      },
+      {
+        "count": 4,
+        "dimensions_mm": [
+          875.0,
+          520.0,
+          18.0
+        ],
+        "material": "board",
+        "parts": [
+          "upper 0 top",
+          "upper 1 top",
+          "upper 2 top",
+          "upper 3 top"
+        ]
+      },
+      {
+        "count": 8,
+        "dimensions_mm": [
+          1242.0,
+          520.0,
+          18.0
+        ],
+        "material": "board",
+        "parts": [
+          "upper 0 left",
+          "upper 0 right",
+          "upper 1 left",
+          "upper 1 right",
+          "upper 2 left",
+          "upper 2 right",
+          "upper 3 left",
+          "upper 3 right"
+        ]
+      },
+      {
+        "count": 8,
+        "dimensions_mm": [
+          1260.0,
+          520.0,
+          18.0
+        ],
+        "material": "board",
+        "parts": [
+          "lower 0 left",
+          "lower 0 right",
+          "lower 1 left",
+          "lower 1 right",
+          "lower 2 left",
+          "lower 2 right",
+          "lower 3 left",
+          "lower 3 right"
+        ]
+      }
+    ],
+    "hardware": [
+      {
+        "count": 368,
+        "item": "dowel 8x35"
+      }
+    ],
+    "machining": {
+      "count": 88,
+      "sha256": "0ae90675eb0ac805b6ad77c3c1b936e85a23fbb7f0c94e8b595d4d5aa69818b5"
+    },
+    "total_parts": 88
+  },
+  "errors": 0,
+  "issues": [
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group lower 0 has 14 sets without verified contact: [lower 0 bottom]; [lower 0 brace 0]; [lower 0 brace 1]; [lower 0 brace 2]; [lower 0 high shelf]; [lower 0 left]; [lower 0 low shelf]; [lower 0 plinth front]; [lower 0 plinth rear]; [lower 0 plinth support 0]; [lower 0 plinth support 1]; [lower 0 plinth support 2]; [lower 0 right]; [lower 0 top]",
+      "parts": [
+        "lower 0 bottom",
+        "lower 0 brace 0",
+        "lower 0 brace 1",
+        "lower 0 brace 2",
+        "lower 0 high shelf",
+        "lower 0 left",
+        "lower 0 low shelf",
+        "lower 0 plinth front",
+        "lower 0 plinth rear",
+        "lower 0 plinth support 0",
+        "lower 0 plinth support 1",
+        "lower 0 plinth support 2",
+        "lower 0 right",
+        "lower 0 top"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        }
+      ],
+      "where_mm": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          875.0,
+          520.0,
+          1340.0
+        ]
+      ]
+    },
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group upper 0 has 8 sets without verified contact: [upper 0 bottom]; [upper 0 brace 0]; [upper 0 brace 1]; [upper 0 high shelf]; [upper 0 left]; [upper 0 low shelf]; [upper 0 right]; [upper 0 top]",
+      "parts": [
+        "upper 0 bottom",
+        "upper 0 brace 0",
+        "upper 0 brace 1",
+        "upper 0 high shelf",
+        "upper 0 left",
+        "upper 0 low shelf",
+        "upper 0 right",
+        "upper 0 top"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ],
+      "where_mm": [
+        [
+          0.0,
+          0.0,
+          1340.0
+        ],
+        [
+          875.0,
+          520.0,
+          2600.0
+        ]
+      ]
+    },
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group lower 1 has 14 sets without verified contact: [lower 1 bottom]; [lower 1 brace 0]; [lower 1 brace 1]; [lower 1 brace 2]; [lower 1 high shelf]; [lower 1 left]; [lower 1 low shelf]; [lower 1 plinth front]; [lower 1 plinth rear]; [lower 1 plinth support 0]; [lower 1 plinth support 1]; [lower 1 plinth support 2]; [lower 1 right]; [lower 1 top]",
+      "parts": [
+        "lower 1 bottom",
+        "lower 1 brace 0",
+        "lower 1 brace 1",
+        "lower 1 brace 2",
+        "lower 1 high shelf",
+        "lower 1 left",
+        "lower 1 low shelf",
+        "lower 1 plinth front",
+        "lower 1 plinth rear",
+        "lower 1 plinth support 0",
+        "lower 1 plinth support 1",
+        "lower 1 plinth support 2",
+        "lower 1 right",
+        "lower 1 top"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        }
+      ],
+      "where_mm": [
+        [
+          875.0,
+          0.0,
+          0.0
+        ],
+        [
+          1750.0,
+          520.0,
+          1340.0
+        ]
+      ]
+    },
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group upper 1 has 8 sets without verified contact: [upper 1 bottom]; [upper 1 brace 0]; [upper 1 brace 1]; [upper 1 high shelf]; [upper 1 left]; [upper 1 low shelf]; [upper 1 right]; [upper 1 top]",
+      "parts": [
+        "upper 1 bottom",
+        "upper 1 brace 0",
+        "upper 1 brace 1",
+        "upper 1 high shelf",
+        "upper 1 left",
+        "upper 1 low shelf",
+        "upper 1 right",
+        "upper 1 top"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ],
+      "where_mm": [
+        [
+          875.0,
+          0.0,
+          1340.0
+        ],
+        [
+          1750.0,
+          520.0,
+          2600.0
+        ]
+      ]
+    },
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group lower 2 has 14 sets without verified contact: [lower 2 bottom]; [lower 2 brace 0]; [lower 2 brace 1]; [lower 2 brace 2]; [lower 2 high shelf]; [lower 2 left]; [lower 2 low shelf]; [lower 2 plinth front]; [lower 2 plinth rear]; [lower 2 plinth support 0]; [lower 2 plinth support 1]; [lower 2 plinth support 2]; [lower 2 right]; [lower 2 top]",
+      "parts": [
+        "lower 2 bottom",
+        "lower 2 brace 0",
+        "lower 2 brace 1",
+        "lower 2 brace 2",
+        "lower 2 high shelf",
+        "lower 2 left",
+        "lower 2 low shelf",
+        "lower 2 plinth front",
+        "lower 2 plinth rear",
+        "lower 2 plinth support 0",
+        "lower 2 plinth support 1",
+        "lower 2 plinth support 2",
+        "lower 2 right",
+        "lower 2 top"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        }
+      ],
+      "where_mm": [
+        [
+          1750.0,
+          0.0,
+          0.0
+        ],
+        [
+          2625.0,
+          520.0,
+          1340.0
+        ]
+      ]
+    },
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group upper 2 has 8 sets without verified contact: [upper 2 bottom]; [upper 2 brace 0]; [upper 2 brace 1]; [upper 2 high shelf]; [upper 2 left]; [upper 2 low shelf]; [upper 2 right]; [upper 2 top]",
+      "parts": [
+        "upper 2 bottom",
+        "upper 2 brace 0",
+        "upper 2 brace 1",
+        "upper 2 high shelf",
+        "upper 2 left",
+        "upper 2 low shelf",
+        "upper 2 right",
+        "upper 2 top"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ],
+      "where_mm": [
+        [
+          1750.0,
+          0.0,
+          1340.0
+        ],
+        [
+          2625.0,
+          520.0,
+          2600.0
+        ]
+      ]
+    },
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group lower 3 has 14 sets without verified contact: [lower 3 bottom]; [lower 3 brace 0]; [lower 3 brace 1]; [lower 3 brace 2]; [lower 3 high shelf]; [lower 3 left]; [lower 3 low shelf]; [lower 3 plinth front]; [lower 3 plinth rear]; [lower 3 plinth support 0]; [lower 3 plinth support 1]; [lower 3 plinth support 2]; [lower 3 right]; [lower 3 top]",
+      "parts": [
+        "lower 3 bottom",
+        "lower 3 brace 0",
+        "lower 3 brace 1",
+        "lower 3 brace 2",
+        "lower 3 high shelf",
+        "lower 3 left",
+        "lower 3 low shelf",
+        "lower 3 plinth front",
+        "lower 3 plinth rear",
+        "lower 3 plinth support 0",
+        "lower 3 plinth support 1",
+        "lower 3 plinth support 2",
+        "lower 3 right",
+        "lower 3 top"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        }
+      ],
+      "where_mm": [
+        [
+          2625.0,
+          0.0,
+          0.0
+        ],
+        [
+          3500.0,
+          520.0,
+          1340.0
+        ]
+      ]
+    },
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group upper 3 has 8 sets without verified contact: [upper 3 bottom]; [upper 3 brace 0]; [upper 3 brace 1]; [upper 3 high shelf]; [upper 3 left]; [upper 3 low shelf]; [upper 3 right]; [upper 3 top]",
+      "parts": [
+        "upper 3 bottom",
+        "upper 3 brace 0",
+        "upper 3 brace 1",
+        "upper 3 high shelf",
+        "upper 3 left",
+        "upper 3 low shelf",
+        "upper 3 right",
+        "upper 3 top"
+      ],
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ],
+      "where_mm": [
+        [
+          2625.0,
+          0.0,
+          1340.0
+        ],
+        [
+          3500.0,
+          520.0,
+          2600.0
+        ]
+      ]
+    },
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group lower modules has 56 sets without verified contact: [lower 0 bottom]; [lower 0 brace 0]; [lower 0 brace 1]; [lower 0 brace 2]; [lower 0 high shelf]; [lower 0 left]; [lower 0 low shelf]; [lower 0 plinth front]; [lower 0 plinth rear]; [lower 0 plinth support 0]; [lower 0 plinth support 1]; [lower 0 plinth support 2]; [lower 0 right]; [lower 0 top]; [lower 1 bottom]; [lower 1 brace 0]; [lower 1 brace 1]; [lower 1 brace 2]; [lower 1 high shelf]; [lower 1 left]; [lower 1 low shelf]; [lower 1 plinth front]; [lower 1 plinth rear]; [lower 1 plinth support 0]; [lower 1 plinth support 1]; [lower 1 plinth support 2]; [lower 1 right]; [lower 1 top]; [lower 2 bottom]; [lower 2 brace 0]; [lower 2 brace 1]; [lower 2 brace 2]; [lower 2 high shelf]; [lower 2 left]; [lower 2 low shelf]; [lower 2 plinth front]; [lower 2 plinth rear]; [lower 2 plinth support 0]; [lower 2 plinth support 1]; [lower 2 plinth support 2]; [lower 2 right]; [lower 2 top]; [lower 3 bottom]; [lower 3 brace 0]; [lower 3 brace 1]; [lower 3 brace 2]; [lower 3 high shelf]; [lower 3 left]; [lower 3 low shelf]; [lower 3 plinth front]; [lower 3 plinth rear]; [lower 3 plinth support 0]; [lower 3 plinth support 1]; [lower 3 plinth support 2]; [lower 3 right]; [lower 3 top]",
+      "parts": {
+        "count": 56,
+        "sha256": "87f2a21d29d0cab24a0ce4ab44109a46e4c73c83bd20a9b500f5323cb9d047bf"
+      },
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        }
+      ],
+      "where_mm": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          3500.0,
+          520.0,
+          1340.0
+        ]
+      ]
+    },
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group upper modules has 32 sets without verified contact: [upper 0 bottom]; [upper 0 brace 0]; [upper 0 brace 1]; [upper 0 high shelf]; [upper 0 left]; [upper 0 low shelf]; [upper 0 right]; [upper 0 top]; [upper 1 bottom]; [upper 1 brace 0]; [upper 1 brace 1]; [upper 1 high shelf]; [upper 1 left]; [upper 1 low shelf]; [upper 1 right]; [upper 1 top]; [upper 2 bottom]; [upper 2 brace 0]; [upper 2 brace 1]; [upper 2 high shelf]; [upper 2 left]; [upper 2 low shelf]; [upper 2 right]; [upper 2 top]; [upper 3 bottom]; [upper 3 brace 0]; [upper 3 brace 1]; [upper 3 high shelf]; [upper 3 left]; [upper 3 low shelf]; [upper 3 right]; [upper 3 top]",
+      "parts": {
+        "count": 32,
+        "sha256": "482c9501129dbc5688726640cd67fd641166f9c601eced17c11373f19c46e547"
+      },
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ],
+      "where_mm": [
+        [
+          0.0,
+          0.0,
+          1340.0
+        ],
+        [
+          3500.0,
+          520.0,
+          2600.0
+        ]
+      ]
+    },
+    {
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "kind": "group_contact_unverified",
+      "message": "group cabinet has 88 sets without verified contact: [lower 0 bottom]; [lower 0 brace 0]; [lower 0 brace 1]; [lower 0 brace 2]; [lower 0 high shelf]; [lower 0 left]; [lower 0 low shelf]; [lower 0 plinth front]; [lower 0 plinth rear]; [lower 0 plinth support 0]; [lower 0 plinth support 1]; [lower 0 plinth support 2]; [lower 0 right]; [lower 0 top]; [lower 1 bottom]; [lower 1 brace 0]; [lower 1 brace 1]; [lower 1 brace 2]; [lower 1 high shelf]; [lower 1 left]; [lower 1 low shelf]; [lower 1 plinth front]; [lower 1 plinth rear]; [lower 1 plinth support 0]; [lower 1 plinth support 1]; [lower 1 plinth support 2]; [lower 1 right]; [lower 1 top]; [lower 2 bottom]; [lower 2 brace 0]; [lower 2 brace 1]; [lower 2 brace 2]; [lower 2 high shelf]; [lower 2 left]; [lower 2 low shelf]; [lower 2 plinth front]; [lower 2 plinth rear]; [lower 2 plinth support 0]; [lower 2 plinth support 1]; [lower 2 plinth support 2]; [lower 2 right]; [lower 2 top]; [lower 3 bottom]; [lower 3 brace 0]; [lower 3 brace 1]; [lower 3 brace 2]; [lower 3 high shelf]; [lower 3 left]; [lower 3 low shelf]; [lower 3 plinth front]; [lower 3 plinth rear]; [lower 3 plinth support 0]; [lower 3 plinth support 1]; [lower 3 plinth support 2]; [lower 3 right]; [lower 3 top]; [upper 0 bottom]; [upper 0 brace 0]; [upper 0 brace 1]; [upper 0 high shelf]; [upper 0 left]; [upper 0 low shelf]; [upper 0 right]; [upper 0 top]; [upper 1 bottom]; [upper 1 brace 0]; [upper 1 brace 1]; [upper 1 high shelf]; [upper 1 left]; [upper 1 low shelf]; [upper 1 right]; [upper 1 top]; [upper 2 bottom]; [upper 2 brace 0]; [upper 2 brace 1]; [upper 2 high shelf]; [upper 2 left]; [upper 2 low shelf]; [upper 2 right]; [upper 2 top]; [upper 3 bottom]; [upper 3 brace 0]; [upper 3 brace 1]; [upper 3 high shelf]; [upper 3 left]; [upper 3 low shelf]; [upper 3 right]; [upper 3 top]",
+      "parts": {
+        "count": 88,
+        "sha256": "9589ea72126767da7cb2a118b4663adcf24a004b7931a7ad03a82e39c2e1bf71"
+      },
+      "severity": "warning",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ],
+      "where_mm": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          3500.0,
+          520.0,
+          2600.0
+        ]
+      ]
+    }
+  ],
+  "log": [],
+  "ok": true,
+  "params": [],
+  "relations": {
+    "count": 359,
+    "kinds": {
+      "contact": 189,
+      "gap": 118,
+      "touch": 52
+    },
+    "sha256": "e89fe615a968bec6b0c376c945f1a7a8c6dadfea328fbc50025fb298fa6e614a"
+  },
+  "unused_overrides": [],
+  "warnings": 11
+}

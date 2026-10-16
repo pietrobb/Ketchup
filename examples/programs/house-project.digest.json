@@ -1,0 +1,34 @@
+{
+  "bom": {
+    "cut_list": {
+      "count": 376,
+      "sha256": "71c9140a1370e1350e63724c194316420e553763629a2e4bc85064bfd591707f"
+    },
+    "hardware": [],
+    "machining": [],
+    "total_parts": 1854
+  },
+  "errors": 0,
+  "issues": {
+    "count": 163,
+    "kinds": {
+      "collision_unverified": 163
+    },
+    "sha256": "99c2e43aff31e1fbf78a6374b790fec6fd25fdeaaa9d5999d232485161b95486"
+  },
+  "log": [],
+  "ok": true,
+  "params": [],
+  "relations": {
+    "count": 5419,
+    "kinds": {
+      "contact": 2178,
+      "gap": 469,
+      "overlap": 2650,
+      "touch": 122
+    },
+    "sha256": "13824c145c870ca2bbe9f5ac356c055a9a230b3c4f9a34a0592f02b065d00c0d"
+  },
+  "unused_overrides": [],
+  "warnings": 163
+}
