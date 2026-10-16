@@ -64,7 +64,7 @@ pub fn check_work_recovery_identity(
 }
 
 /// Moves a work-recovery checkpoint the open could not use (see
-/// [`LoadedFile::unusable_work_recovery`]) to the first free
+/// [`LoadNotice::WorkRecoveryUnusable`](super::LoadNotice)) to the first free
 /// `<file>.work-recovery.stale`, `.stale-2`, ... and returns that path. The work
 /// in it stays on disk, and the session that holds `_owner` can write its own
 /// checkpoint again.

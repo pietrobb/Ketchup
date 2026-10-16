@@ -234,7 +234,7 @@ fn a_file_whose_history_does_not_decode_opens_without_undo_and_says_so() {
     else {
         panic!("editable document")
     };
-    assert_eq!(audit.history_discarded, None);
+    assert_eq!(audit.history_discarded(), None);
     assert_eq!(document.visible_undo_steps(), 1);
 }
 

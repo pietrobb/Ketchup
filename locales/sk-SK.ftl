@@ -1259,6 +1259,7 @@ hint-zoom-window = Potiahnite obdĺžnik okolo oblasti, ktorú chcete zarámova�
 digest-new-document = Nový model je pripravený
 digest-opened-document = Otvorené „{ $path }“ — kanonická identita obnovená
 digest-opened-recovery = Varovanie: zdroj obnovy „{ $source }“ bol otvorený, pretože „{ $requested }“ je nedostupný alebo poškodený. Obnovený dokument nie je uložený; bezpečne ho zachovajte cez Uložiť ako.
+digest-opened-work-recovery = Upozornenie: neuložená práca „{ $path }“ bola obnovená z kontrolného bodu „{ $source }“. Obnovený dokument nie je uložený; zachovajte ho cez Uložiť ako.
 digest-opened-without-history = Upozornenie: „{ $path }“ sa otvoril bez histórie Undo ({ $reason }). Model je celý; ďalšie uloženie začne novú históriu odtiaľto.
 digest-opened-work-recovery-set-aside = Upozornenie: „{ $path }“ sa otvoril. Jeho záznam neuloženej práce sa nedal použiť ({ $reason }), preto sa presunul do „{ $set_aside }“; úpravy sa odtiaľto znova zaznamenávajú.
 error-work-recovery-set-aside = Upozornenie: „{ $path }“ sa otvoril, ale jeho záznam neuloženej práce sa nedal použiť ({ $reason }) ani odsunúť ({ $error }). Úpravy sa nedajú zachovať, kým sa ten súbor nepresunie alebo nezmaže.

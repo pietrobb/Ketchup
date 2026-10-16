@@ -1201,6 +1201,31 @@ fn save_writes_to_the_known_path_without_asking_again() {
     assert!(!shell.app().is_dirty());
 }
 
+/// An open from the `.recovery` backup whose Undo history no longer opens
+/// names both (review 2026-10-15 S1).
+#[test]
+fn gui_open_of_a_backup_without_its_history_warns_of_both() {
+    let directory = tempfile::tempdir().unwrap();
+    let requested = directory.path().join("damaged.ketchup");
+    let backup = requested.with_extension("ketchup.recovery");
+    let unreadable_history = b"KETCHUPHST\x05\x00".to_vec();
+    std::fs::write(
+        &backup,
+        ketchup_model::testing::save_with_history_entry(
+            &ketchup_model::document::DocumentStore::new(),
+            unreadable_history,
+        ),
+    )
+    .unwrap();
+    std::fs::write(&requested, b"corrupt primary").unwrap();
+
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_open(&requested));
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert!(digest_starts_like(&shell, "digest-opened-recovery"));
+    assert!(digest_has(&shell, "digest-opened-without-history"));
+    assert_eq!(shell.app().recovery_source_path(), Some(backup.as_path()));
+}
+
 #[test]
 fn dirty_gui_document_recovers_after_crash_and_requires_save_as() {
     let directory = tempfile::tempdir().unwrap();
@@ -1228,6 +1253,13 @@ fn dirty_gui_document_recovers_after_crash_and_requires_save_as() {
     assert_eq!(recovered.app().undo_step_count(), dirty_undo);
     assert_eq!(recovered.app().document_path(), None);
     assert!(recovered.app().is_dirty());
+    // The file is intact: the warning names the unsaved work it restored, not a
+    // damaged file (review 2026-10-15 S1).
+    assert!(digest_starts_like(
+        &recovered,
+        "digest-opened-work-recovery"
+    ));
+    assert!(!digest_has(&recovered, "digest-opened-recovery"));
     assert_eq!(
         recovered.app().recovery_source_path(),
         Some(ketchup_model::persistence::work_recovery_path(&primary).as_path())

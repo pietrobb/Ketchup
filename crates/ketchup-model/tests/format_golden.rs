@@ -140,7 +140,7 @@ fn a_format_102_file_with_history_opens_with_every_revision_it_was_written_with(
         panic!("the golden is editable")
     };
     assert_eq!(audit.source_schema, 102);
-    assert_eq!(audit.history_discarded, None);
+    assert_eq!(audit.history_discarded(), None);
     // A release recorded under this digest must still verify (FMT-1).
     assert_eq!(
         audit.source_canonical_digest,
@@ -168,7 +168,7 @@ fn a_format_103_file_with_history_opens_with_every_revision_and_saves_the_same_b
         panic!("the golden is editable")
     };
     assert_eq!(audit.source_schema, persistence::CURRENT_SCHEMA);
-    assert_eq!(audit.history_discarded, None);
+    assert_eq!(audit.history_discarded(), None);
     assert_eq!(revision_digests(&document), REVISION_DIGESTS);
     assert_eq!(
         persistence::save_document_store(&document, &ContainerData::default()).unwrap(),

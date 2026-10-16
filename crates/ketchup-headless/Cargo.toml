@@ -21,6 +21,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 [dev-dependencies]
+ketchup-model = { path = "../ketchup-model", features = ["testing"] }
 tempfile = "3.10"
 
 [lints]

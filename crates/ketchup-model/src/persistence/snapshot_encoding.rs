@@ -122,7 +122,7 @@ mod tests {
             panic!("editable document")
         };
         assert_eq!(document.revision_count(), 1);
-        assert_eq!(audit.history_discarded.as_deref(), Some(reason));
+        assert_eq!(audit.history_discarded(), Some(reason));
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
         };
         assert_eq!(save(candidate.snapshot()), save(&document.current()));
         assert_eq!(
-            candidate.audit.history_discarded.as_deref(),
+            candidate.audit.history_discarded(),
             Some(PersistenceError::ChecksumMismatch.to_string().as_str())
         );
     }

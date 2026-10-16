@@ -96,8 +96,8 @@ pub struct DocumentSession {
     topology_results: ExactResultRegistry,
     full_exact_baseline: Option<ExactSource>,
     incremental_exact_plan: Option<IncrementalExactPlan>,
-    history_discarded: Option<String>,
-    work_recovery_set_aside: Option<(String, Result<PathBuf, persistence::FilePersistenceError>)>,
+    load_notices: Vec<persistence::LoadNotice>,
+    work_recovery_set_aside: Option<Result<PathBuf, persistence::FilePersistenceError>>,
 }
 impl Default for DocumentSession {
     fn default() -> Self {
@@ -121,26 +121,25 @@ impl DocumentSession {
             topology_results: ExactResultRegistry::default(),
             full_exact_baseline: None,
             incremental_exact_plan: None,
-            history_discarded: None,
+            load_notices: Vec::new(),
             work_recovery_set_aside: None,
         }
     }
-    /// Why the Undo history of the opened file was not restored: the document
-    /// opened with its current revision only.
+    /// Everything the open of this session's file did other than read the file
+    /// as it is, in order.
     #[must_use]
-    pub fn history_discarded(&self) -> Option<&str> {
-        self.history_discarded.as_deref()
+    pub fn load_notices(&self) -> &[persistence::LoadNotice] {
+        &self.load_notices
     }
-    /// Why the work-recovery checkpoint beside the opened file could not be
-    /// used, and where it was moved so that this session can write its own, or
-    /// why it could not be moved.
+    /// Where the unusable work-recovery checkpoint beside the opened file was
+    /// moved so that this session can write its own, or why it could not be.
     #[must_use]
     pub fn work_recovery_set_aside(
         &self,
-    ) -> Option<(&str, Result<&Path, &persistence::FilePersistenceError>)> {
+    ) -> Option<Result<&Path, &persistence::FilePersistenceError>> {
         self.work_recovery_set_aside
             .as_ref()
-            .map(|(reason, moved)| (reason.as_str(), moved.as_deref()))
+            .map(|moved| moved.as_deref())
     }
     /// Review-only and invalid input never replaces a live session.
     pub fn open(path: impl AsRef<Path>, settings: SessionSettings) -> Result<Self, SessionError> {
@@ -149,9 +148,8 @@ impl DocumentSession {
             .map_err(SessionError::Persistence)?;
         let loaded = persistence::load_file_with_source(requested_path)
             .map_err(SessionError::Persistence)?;
-        let unusable_work_recovery = loaded.unusable_work_recovery().map(ToString::to_string);
         let (outcome, source_path, source_bytes, work_recovery_identity) = loaded.into_parts();
-        let history_discarded = outcome.audit().history_discarded.clone();
+        let load_notices = outcome.audit().notices.clone();
         let (document, container_data) = outcome
             .into_editable_with_container()
             .map_err(|candidate| SessionError::ReviewOnly(Box::new(candidate.audit().clone())))?;
@@ -162,12 +160,10 @@ impl DocumentSession {
         // A checkpoint this file cannot use would refuse every later one. One
         // that cannot be moved aside does not stop the file from opening, as in
         // the window: the edits are refused until it is gone, and it is named.
-        let work_recovery_set_aside = unusable_work_recovery.map(|reason| {
-            (
-                reason,
-                persistence::set_aside_work_recovery(requested_path, &recovery_lock),
-            )
-        });
+        let work_recovery_set_aside = load_notices
+            .iter()
+            .any(|notice| matches!(notice, persistence::LoadNotice::WorkRecoveryUnusable { .. }))
+            .then(|| persistence::set_aside_work_recovery(requested_path, &recovery_lock));
         let saved_digest = Some(document.history_digest());
         Ok(Self {
             document,
@@ -186,7 +182,7 @@ impl DocumentSession {
             topology_results: ExactResultRegistry::default(),
             full_exact_baseline: None,
             incremental_exact_plan: None,
-            history_discarded,
+            load_notices,
             work_recovery_set_aside,
         })
     }

@@ -67,7 +67,7 @@ fn editable(bytes: &[u8]) -> (DocumentStore, persistence::LoadAudit) {
 fn format_102_rule_joints_open_unchanged_in_every_revision_and_save_as_format_103() {
     let (mut document, audit) = editable(&std::fs::read(FIXTURE).unwrap());
     assert_eq!(audit.source_schema, 102);
-    assert_eq!(audit.history_discarded, None);
+    assert_eq!(audit.history_discarded(), None);
     assert_eq!(audit.source_canonical_digest, WRITER_DIGEST);
 
     let expected = written_revisions();
@@ -84,7 +84,7 @@ fn format_102_rule_joints_open_unchanged_in_every_revision_and_save_as_format_10
     let saved = persistence::save_document_store(&document, &ContainerData::default()).unwrap();
     let (mut reopened, audit) = editable(&saved);
     assert_eq!(audit.source_schema, persistence::CURRENT_SCHEMA);
-    assert_eq!(audit.history_discarded, None);
+    assert_eq!(audit.history_discarded(), None);
     assert_eq!(&joints(&reopened), expected.last().unwrap());
     reopened.undo().unwrap();
     assert_eq!(joints(&reopened), expected[expected.len() - 2]);

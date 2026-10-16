@@ -81,15 +81,43 @@ fn an_unreadable_history_is_reported_and_its_program_survives_the_next_save() {
     .unwrap();
 
     let mut session = DocumentSession::open(&path, SessionSettings::default()).unwrap();
-    assert!(session.history_discarded().is_some());
+    assert!(matches!(
+        session.load_notices(),
+        [persistence::LoadNotice::HistoryDiscarded { .. }]
+    ));
     assert_eq!(session.rule_program(), Some(&program));
     session
         .save(&path, SaveOptions { overwrite: true })
         .unwrap();
     drop(session);
     let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
-    assert_eq!(reopened.history_discarded(), None);
+    assert_eq!(reopened.load_notices(), []);
     assert_eq!(reopened.rule_program(), Some(&program));
+}
+
+/// An open from the `.recovery` backup whose Undo history no longer opens
+/// names both, the backup first (review 2026-10-15 S1).
+#[test]
+fn an_open_from_the_backup_without_its_history_notices_both() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("damaged.ketchup");
+    let backup = path.with_extension("ketchup.recovery");
+    let unreadable_history = b"KETCHUPHST\x05\x00".to_vec();
+    std::fs::write(
+        &backup,
+        ketchup_model::testing::save_with_history_entry(&DocumentStore::new(), unreadable_history),
+    )
+    .unwrap();
+    std::fs::write(&path, b"corrupt primary").unwrap();
+
+    let session = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    match session.load_notices() {
+        [
+            persistence::LoadNotice::OpenedBackup { path: opened },
+            persistence::LoadNotice::HistoryDiscarded { .. },
+        ] => assert_eq!(opened, &backup),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
@@ -470,9 +498,8 @@ fn an_unusable_work_recovery_is_set_aside_and_edits_are_checkpointed_again() {
         std::fs::write(&recovery, &checkpoint).unwrap();
         let mut session = DocumentSession::open(&primary, SessionSettings::default()).unwrap();
         assert_eq!(session.path(), Some(primary.as_path()), "{case}");
-        let (reason, moved) = session.work_recovery_set_aside().expect(case);
-        assert!(!reason.is_empty(), "{case}");
-        let moved = moved.unwrap();
+        assert!(!unusable_reason(&session).is_empty(), "{case}");
+        let moved = session.work_recovery_set_aside().expect(case).unwrap();
         assert_eq!(std::fs::read(moved).unwrap(), checkpoint, "{case}");
         set_aside.push(moved.to_owned());
         assert!(!recovery.exists(), "{case}");
@@ -502,13 +529,20 @@ fn an_unusable_work_recovery_is_set_aside_and_edits_are_checkpointed_again() {
     std::fs::write(&recovery, b"KETCHUPWRK damaged").unwrap();
     let session = DocumentSession::open(&primary, SessionSettings::default()).unwrap();
     assert_eq!(session.path(), Some(primary.as_path()));
-    let (reason, moved) = session.work_recovery_set_aside().unwrap();
-    assert!(!reason.is_empty());
+    assert!(!unusable_reason(&session).is_empty());
+    let moved = session.work_recovery_set_aside().unwrap();
     assert!(
         moved.unwrap_err().to_string().contains("a thousand"),
         "{moved:?}"
     );
     assert_eq!(std::fs::read(&recovery).unwrap(), b"KETCHUPWRK damaged");
+}
+
+fn unusable_reason(session: &DocumentSession) -> &str {
+    match session.load_notices() {
+        [persistence::LoadNotice::WorkRecoveryUnusable { reason }] => reason,
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

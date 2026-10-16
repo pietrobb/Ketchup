@@ -336,7 +336,10 @@ fn discarded_history(bytes: &[u8]) -> String {
         panic!("a damaged history must not stop the current revision from opening")
     };
     assert_eq!(document.revision_count(), 1);
-    audit.history_discarded.expect("discard reason")
+    audit
+        .history_discarded()
+        .expect("discard reason")
+        .to_owned()
 }
 
 pub(crate) fn container_entry_offsets(bytes: &[u8], target: &str) -> (usize, usize, usize) {
@@ -1474,7 +1477,7 @@ fn a_file_without_program_json_keeps_the_current_program_when_an_older_step_is_d
             panic!("{name}: a damaged older step must not refuse the file");
         };
         assert_eq!(document.revision_count(), 1, "{name}");
-        assert!(audit.history_discarded.is_some(), "{name}");
+        assert!(audit.history_discarded().is_some(), "{name}");
         assert_eq!(document.current_rule_program(), Some(&current), "{name}");
     }
 
@@ -2007,7 +2010,10 @@ fn interrupted_or_corrupt_primary_recovers_the_last_verified_container() {
     std::fs::write(&path, b"interrupted replacement").unwrap();
     let recovered = persistence::load_file(&path).unwrap();
     assert_eq!(recovered.snapshot().canonical_digest(), first_digest);
-    assert!(recovered.audit().recovered_from_backup);
+    assert!(matches!(
+        recovered.audit().notices.as_slice(),
+        [persistence::LoadNotice::OpenedBackup { .. }]
+    ));
 }
 
 /// Review PS-8: when the file and its `.recovery` backup both fail to open, the answer
@@ -2318,7 +2324,10 @@ fn dirty_work_recovery_is_bound_to_the_primary_and_corruption_is_ignored() {
         recovered.outcome().snapshot().canonical_digest(),
         dirty_digest
     );
-    assert!(recovered.outcome().audit().recovered_from_backup);
+    assert!(matches!(
+        recovered.outcome().audit().notices.as_slice(),
+        [persistence::LoadNotice::OpenedWorkRecovery { .. }]
+    ));
 
     std::fs::write(&work_recovery, b"interrupted checkpoint").unwrap();
     let clean = persistence::load_file_with_source(&path).unwrap();

@@ -62,7 +62,11 @@ impl KetchupApp {
             .ok_or(MigrationError::NotReviewCandidate)?;
         let snapshot = candidate.snapshot();
         let mut audit = candidate.audit().clone();
-        audit.recovered_from_backup = false;
+        // Where the file opened from is not part of what is migrated.
+        use ketchup_model::persistence::LoadNotice::HistoryDiscarded;
+        audit
+            .notices
+            .retain(|notice| matches!(notice, HistoryDiscarded { .. }));
         let container =
             ketchup_model::persistence::save_container(snapshot, candidate.container_data())
                 .map_err(MigrationError::failed)?;

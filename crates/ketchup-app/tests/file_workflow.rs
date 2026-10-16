@@ -67,6 +67,16 @@ fn digest_starts_like(shell: &Shell, key: &str) -> bool {
     !prefix.trim().is_empty() && shell.app().action_digest().starts_with(prefix.trim_end())
 }
 
+/// Whether the digest contains every literal part of the `key` message.
+fn digest_has(shell: &Shell, key: &str) -> bool {
+    let template = shell.catalog().text(key);
+    let digest = shell.app().action_digest();
+    template
+        .split(['{', '}'])
+        .step_by(2)
+        .all(|literal| digest.contains(literal))
+}
+
 fn wait_for_visible_label(shell: &mut Shell, label: &str) {
     assert!(
         shell.wait_until(|shell| {

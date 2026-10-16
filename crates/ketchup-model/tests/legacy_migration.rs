@@ -77,7 +77,7 @@ fn every_committed_document_migrates_to_the_current_schema_without_change() {
             .unwrap_or_else(|error| panic!("{} does not open: {error}", path.display()));
         let source_schema = loaded.source_schema();
         assert_eq!(
-            loaded.audit().history_discarded,
+            loaded.audit().history_discarded(),
             None,
             "{} lost its Undo history",
             path.display()

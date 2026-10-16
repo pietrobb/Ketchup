@@ -243,10 +243,37 @@ pub struct LoadAudit {
     pub override_health: Vec<OverrideHealthAudit>,
     pub feature_parameter_freshness: Vec<FeatureParameterFreshnessAudit>,
     pub unknown_extensions: Vec<ExtensionAudit>,
-    pub recovered_from_backup: bool,
-    /// Why the saved Undo history was not restored; the document opened with only its
-    /// current revision.
-    pub history_discarded: Option<String>,
+    /// Everything the open did other than read the file as it is, in order; the
+    /// window and the session show each one.
+    pub notices: Vec<LoadNotice>,
+}
+
+/// What an open did in place of reading the file as it is (review 2026-10-15 S1).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LoadNotice {
+    /// The file failed; its `.recovery` backup at `path` opened in its place.
+    OpenedBackup { path: PathBuf },
+    /// The unsaved work of the checkpoint at `path` beside the file opened.
+    OpenedWorkRecovery { path: PathBuf },
+    /// The saved Undo history was not restored; the document opened with its
+    /// current revision only.
+    HistoryDiscarded { reason: String },
+    /// The work-recovery checkpoint beside the file could not be used. While it
+    /// stays there no session of the file can write its own; the caller that
+    /// holds the file's WorkRecoveryLock sets it aside with
+    /// [`set_aside_work_recovery`].
+    WorkRecoveryUnusable { reason: String },
+}
+
+impl LoadAudit {
+    /// Why the saved Undo history was not restored.
+    #[must_use]
+    pub fn history_discarded(&self) -> Option<&str> {
+        self.notices.iter().find_map(|notice| match notice {
+            LoadNotice::HistoryDiscarded { reason } => Some(reason.as_str()),
+            _ => None,
+        })
+    }
 }
 
 pub struct ReviewCandidate {
@@ -397,6 +424,13 @@ impl LoadOutcome {
         match self {
             Self::Editable { audit, .. } => audit,
             Self::ReviewOnly(candidate) => candidate.audit(),
+        }
+    }
+    /// Where the document came from is said before what decoding it found.
+    fn notice(&mut self, notice: LoadNotice) {
+        match self {
+            Self::Editable { audit, .. } => audit.notices.insert(0, notice),
+            Self::ReviewOnly(candidate) => candidate.audit.notices.insert(0, notice),
         }
     }
     #[must_use]
@@ -1373,7 +1407,7 @@ enum WorkRecoveryRead {
 
 /// Why a work-recovery checkpoint beside a file was not opened.
 #[derive(Debug)]
-pub enum UnusableWorkRecovery {
+enum UnusableWorkRecovery {
     /// Larger than any checkpoint this version writes.
     TooLarge,
     /// Not a checkpoint format this version reads.
@@ -1467,16 +1501,14 @@ fn try_load_work_recovery(
         Ok(outcome) => outcome,
         Err(error) => return Ok(Unusable(UnusableWorkRecovery::Document(error))),
     };
-    match &mut outcome {
-        LoadOutcome::Editable { audit, .. } => audit.recovered_from_backup = true,
-        LoadOutcome::ReviewOnly(candidate) => candidate.audit.recovered_from_backup = true,
-    }
+    outcome.notice(LoadNotice::OpenedWorkRecovery {
+        path: source_path.clone(),
+    });
     Ok(WorkRecoveryRead::Loaded(Box::new(LoadedFile {
         outcome,
         source_path,
         source_bytes: payload.to_vec(),
         work_recovery_identity: Some(FileIdentity::from_bytes(&bytes)),
-        unusable_work_recovery: None,
     })))
 }
 
@@ -1485,7 +1517,6 @@ pub struct LoadedFile {
     source_path: PathBuf,
     source_bytes: Vec<u8>,
     work_recovery_identity: Option<FileIdentity>,
-    unusable_work_recovery: Option<UnusableWorkRecovery>,
 }
 
 impl LoadedFile {
@@ -1509,15 +1540,6 @@ impl LoadedFile {
         self.work_recovery_identity
     }
 
-    /// Why a work-recovery checkpoint beside the file was not opened. While it
-    /// stays there, no session of this file can write its own; the caller that
-    /// holds the file's WorkRecoveryLock sets it aside with
-    /// [`set_aside_work_recovery`].
-    #[must_use]
-    pub fn unusable_work_recovery(&self) -> Option<&UnusableWorkRecovery> {
-        self.unusable_work_recovery.as_ref()
-    }
-
     #[must_use]
     pub fn into_parts(self) -> (LoadOutcome, PathBuf, Vec<u8>, Option<FileIdentity>) {
         (
@@ -1537,20 +1559,24 @@ pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FileP
     let path = path.as_ref();
     match read_native_document_file(path) {
         Ok(bytes) => match load(&bytes) {
-            Ok(outcome) => {
+            Ok(mut outcome) => {
                 let identity = FileIdentity::from_bytes(&bytes);
-                let unusable_work_recovery = match try_load_work_recovery(path, identity) {
+                let unusable = match try_load_work_recovery(path, identity) {
                     Ok(WorkRecoveryRead::Loaded(recovered)) => return Ok(*recovered),
                     Ok(WorkRecoveryRead::Absent) => None,
                     Ok(WorkRecoveryRead::Unusable(reason)) => Some(reason),
                     Err(error) => Some(UnusableWorkRecovery::Unreadable(error)),
                 };
+                if let Some(reason) = unusable {
+                    outcome.notice(LoadNotice::WorkRecoveryUnusable {
+                        reason: reason.to_string(),
+                    });
+                }
                 Ok(LoadedFile {
                     outcome,
                     source_path: path.to_owned(),
                     source_bytes: bytes,
                     work_recovery_identity: None,
-                    unusable_work_recovery,
                 })
             }
             // A file that needs migration or that a newer Kečup wrote is not
@@ -1582,18 +1608,14 @@ fn open_backup(
     let backup = match read_native_document_file(&backup_path) {
         Ok(bytes) => match load(&bytes) {
             Ok(mut outcome) => {
-                match &mut outcome {
-                    LoadOutcome::Editable { audit, .. } => audit.recovered_from_backup = true,
-                    LoadOutcome::ReviewOnly(candidate) => {
-                        candidate.audit.recovered_from_backup = true;
-                    }
-                }
+                outcome.notice(LoadNotice::OpenedBackup {
+                    path: backup_path.clone(),
+                });
                 return Ok(LoadedFile {
                     outcome,
                     source_path: backup_path,
                     source_bytes: bytes,
                     work_recovery_identity: None,
-                    unusable_work_recovery: None,
                 });
             }
             Err(error) => FilePersistenceError::Format(error),
@@ -1775,6 +1797,7 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
                 }
             }
         }
+        let discarded = |reason: String| LoadNotice::HistoryDiscarded { reason };
         match (&mut outcome, restored) {
             // A history a newer Kečup wrote is not damaged: opened without it,
             // the next Save would overwrite its steps with this one revision.
@@ -1788,16 +1811,19 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             (LoadOutcome::Editable { audit, .. }, Ok(restored))
                 if program.is_some() && restored.current_rule_program() != program.as_deref() =>
             {
-                audit.history_discarded =
-                    Some(PersistenceError::InvalidRevisionHistory.to_string());
+                audit.notices.push(discarded(
+                    PersistenceError::InvalidRevisionHistory.to_string(),
+                ));
             }
             (LoadOutcome::Editable { document, .. }, Ok(restored)) => *document = restored,
             (LoadOutcome::Editable { audit, .. }, Err(error)) => {
-                audit.history_discarded = Some(error.to_string());
+                audit.notices.push(discarded(error.to_string()));
             }
             // A review never restores Undo steps, so only the reason is kept.
             (LoadOutcome::ReviewOnly(candidate), restored) => {
-                candidate.audit.history_discarded = restored.err().map(|error| error.to_string());
+                if let Err(error) = restored {
+                    candidate.audit.notices.push(discarded(error.to_string()));
+                }
             }
         }
     }
@@ -2569,8 +2595,7 @@ fn load_document(
                 required: entry.required(),
             })
             .collect(),
-        recovered_from_backup: false,
-        history_discarded: None,
+        notices: Vec::new(),
     };
     let loaded_snapshot = document.current();
     let imported_sources = loaded_snapshot

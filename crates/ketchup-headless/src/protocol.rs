@@ -271,6 +271,62 @@ type Result<T> = std::result::Result<T, Error>;
 
 /// A Save refused because the Undo history is past what a file stores or a
 /// reader accepts; the current revision still saves with `discard_history`.
+/// The warning `open` answers for one thing the open did other than read the
+/// file as it is.
+fn load_warning(
+    notice: &ketchup_model::persistence::LoadNotice,
+    set_aside: Option<
+        std::result::Result<&Path, &ketchup_model::persistence::FilePersistenceError>,
+    >,
+) -> Value {
+    use ketchup_model::persistence::LoadNotice;
+    match (notice, set_aside) {
+        (LoadNotice::OpenedBackup { path }, _) => json!({
+            "kind": "opened_backup",
+            "message": format!(
+                "this file could not be opened; its backup {} opened in its place and must be \
+                 saved under a new path",
+                path.display()
+            ),
+            "path": path.display().to_string(),
+        }),
+        (LoadNotice::OpenedWorkRecovery { path }, _) => json!({
+            "kind": "opened_work_recovery",
+            "message": format!(
+                "the unsaved work of the checkpoint {} opened; save it under a new path to keep it",
+                path.display()
+            ),
+            "path": path.display().to_string(),
+        }),
+        (LoadNotice::HistoryDiscarded { reason }, _) => json!({
+            "kind": "history_discarded",
+            "message": format!(
+                "the Undo history of this file could not be restored ({reason}); \
+                 the document opened with its current revision only"
+            ),
+        }),
+        (LoadNotice::WorkRecoveryUnusable { reason }, Some(Ok(moved))) => json!({
+            "kind": "work_recovery_set_aside",
+            "message": format!(
+                "the unsaved-work checkpoint beside this file could not be used \
+                 ({reason}); it was moved to {}",
+                moved.display()
+            ),
+            "path": moved.display().to_string(),
+        }),
+        // Edits are refused while it stays there.
+        (LoadNotice::WorkRecoveryUnusable { reason }, moved) => json!({
+            "kind": "work_recovery_not_set_aside",
+            "message": format!(
+                "the unsaved-work checkpoint beside this file could not be used \
+                 ({reason}) and could not be moved aside ({}); the document \
+                 cannot be edited until that checkpoint is moved or removed",
+                moved.and_then(std::result::Result::err).map(ToString::to_string).unwrap_or_default()
+            ),
+        }),
+    }
+}
+
 fn history_too_large(error: SessionError) -> Error {
     use ketchup_model::persistence::{FilePersistenceError, PersistenceError};
     let too_large = matches!(
@@ -946,37 +1002,12 @@ impl Server {
                 self.revoke_jobs();
                 self.initial_placeholder = false;
                 let mut result = self.state_result();
-                let mut warnings = Vec::new();
-                if let Some(reason) = self.session.history_discarded() {
-                    warnings.push(json!({
-                        "kind": "history_discarded",
-                        "message": format!(
-                            "the Undo history of this file could not be restored ({reason}); \
-                             the document opened with its current revision only"
-                        ),
-                    }));
-                }
-                match self.session.work_recovery_set_aside() {
-                    Some((reason, Ok(set_aside))) => warnings.push(json!({
-                        "kind": "work_recovery_set_aside",
-                        "message": format!(
-                            "the unsaved-work checkpoint beside this file could not be used \
-                             ({reason}); it was moved to {}",
-                            set_aside.display()
-                        ),
-                        "path": set_aside.display().to_string(),
-                    })),
-                    // Edits are refused while it stays there.
-                    Some((reason, Err(error))) => warnings.push(json!({
-                        "kind": "work_recovery_not_set_aside",
-                        "message": format!(
-                            "the unsaved-work checkpoint beside this file could not be used \
-                             ({reason}) and could not be moved aside ({error}); the document \
-                             cannot be edited until that checkpoint is moved or removed"
-                        ),
-                    })),
-                    None => {}
-                }
+                let warnings: Vec<Value> = self
+                    .session
+                    .load_notices()
+                    .iter()
+                    .map(|notice| load_warning(notice, self.session.work_recovery_set_aside()))
+                    .collect();
                 if !warnings.is_empty() {
                     result["warnings"] = Value::Array(warnings);
                 }
@@ -1808,6 +1839,44 @@ mod tests {
             .unwrap()
             .as_bytes(),
         )
+    }
+
+    /// Review 2026-10-15 S1: an open from the `.recovery` backup whose Undo
+    /// history no longer opens warns of both, not only of the lost history.
+    #[test]
+    fn an_open_from_the_backup_without_its_history_warns_of_both() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("damaged.ketchup");
+        let backup = path.with_extension("ketchup.recovery");
+        let unreadable_history = b"KETCHUPHST\x05\x00".to_vec();
+        std::fs::write(
+            &backup,
+            ketchup_model::testing::save_with_history_entry(
+                &ketchup_model::document::DocumentStore::new(),
+                unreadable_history,
+            ),
+        )
+        .unwrap();
+        std::fs::write(&path, b"corrupt primary").unwrap();
+
+        let mut server = Server::new(SessionSettings::default());
+        let state = server.state_result();
+        let opened = request(
+            &mut server,
+            "open",
+            json!({
+                "path": path,
+                "expected_revision": state["state"]["revision"],
+                "expected_digest": state["state"]["canonical_digest"],
+            }),
+        );
+        let warnings = opened["result"]["warnings"].as_array().expect("warnings");
+        let kinds: Vec<&str> = warnings
+            .iter()
+            .filter_map(|warning| warning["kind"].as_str())
+            .collect();
+        assert_eq!(kinds, ["opened_backup", "history_discarded"], "{opened}");
+        assert_eq!(warnings[0]["path"], backup.display().to_string());
     }
 
     /// PS-9 follow-up: an agent whose Undo history is past what a file stores

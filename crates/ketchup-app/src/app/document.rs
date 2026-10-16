@@ -1,6 +1,7 @@
 //! New, open and save, work recovery, revisions, undo and redo.
 
 use crate::*;
+use ketchup_model::persistence::LoadNotice;
 
 /// Why a save wrote nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,9 +235,6 @@ impl KetchupApp {
     ) -> bool {
         match result {
             Ok(loaded_file) => {
-                let unusable_work_recovery = loaded_file
-                    .unusable_work_recovery()
-                    .map(ToString::to_string);
                 let (outcome, effective_path, source, work_recovery_identity) =
                     loaded_file.into_parts();
                 if !outcome.is_editable() {
@@ -280,19 +278,21 @@ impl KetchupApp {
                     requested_path: path.to_owned(),
                     source_path: effective_path,
                 });
-                let history_discarded = outcome.audit().history_discarded.clone();
+                let notices = outcome.audit().notices.clone();
                 // A checkpoint this file cannot use would refuse every later one,
                 // so the first edit would fail; it is kept, under another name.
-                let work_recovery_set_aside = unusable_work_recovery.map(|reason| {
-                    let moved = recovery_lock
-                        .as_ref()
-                        .or(self.file.work_recovery_lock.as_ref())
-                        .map_or(
-                            Err(ketchup_model::persistence::FilePersistenceError::ExternalConflict),
-                            |lock| ketchup_model::persistence::set_aside_work_recovery(path, lock),
-                        );
-                    (reason, moved)
-                });
+                let set_aside = notices
+                    .iter()
+                    .any(|notice| matches!(notice, LoadNotice::WorkRecoveryUnusable { .. }))
+                    .then(|| {
+                        recovery_lock
+                            .as_ref()
+                            .or(self.file.work_recovery_lock.as_ref())
+                            .map_or(
+                                Err(ketchup_model::persistence::FilePersistenceError::ExternalConflict),
+                                |lock| ketchup_model::persistence::set_aside_work_recovery(path, lock),
+                            )
+                    });
                 let Ok((mut document, container_data)) = outcome.into_editable_with_container()
                 else {
                     unreachable!("editable load outcome must contain an editable document");
@@ -318,44 +318,55 @@ impl KetchupApp {
                 self.reset_document_presentation();
                 self.camera.zoom_fit_pending = true;
                 self.camera.zoom_fit_pending_quiet = true;
-                // Every warning of the open is shown, not only the first.
-                let mut warnings = Vec::new();
-                if let Some(recovery) = &self.file.recovery_open {
+                if self.file.recovery_open.is_some() {
                     self.status_key = "status-recovery";
-                    warnings.push(self.catalog.format(
-                        "digest-opened-recovery",
-                        &BTreeMap::from([
-                            ("source", recovery.source_path.display().to_string()),
-                            ("requested", recovery.requested_path.display().to_string()),
-                        ]),
-                    ));
                 }
-                if let Some((reason, moved)) = work_recovery_set_aside {
-                    warnings.push(match moved {
-                        Ok(set_aside) => self.catalog.format(
-                            "digest-opened-work-recovery-set-aside",
-                            &BTreeMap::from([
-                                ("path", path.display().to_string()),
-                                ("reason", reason),
-                                ("set_aside", set_aside.display().to_string()),
-                            ]),
-                        ),
-                        Err(error) => self.catalog.format(
-                            "error-work-recovery-set-aside",
-                            &BTreeMap::from([
-                                ("path", path.display().to_string()),
-                                ("reason", reason),
-                                ("error", error.to_string()),
-                            ]),
-                        ),
-                    });
-                }
-                if let Some(reason) = history_discarded {
-                    warnings.push(self.catalog.format(
-                        "digest-opened-without-history",
-                        &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
-                    ));
-                }
+                // Every warning of the open is shown, not only the first.
+                let requested = path.display().to_string();
+                let warnings: Vec<String> = notices
+                    .into_iter()
+                    .map(|notice| {
+                        let (key, mut args) = match notice {
+                            LoadNotice::OpenedBackup { path } => (
+                                "digest-opened-recovery",
+                                vec![("source", path.display().to_string())],
+                            ),
+                            LoadNotice::OpenedWorkRecovery { path } => (
+                                "digest-opened-work-recovery",
+                                vec![("source", path.display().to_string())],
+                            ),
+                            LoadNotice::HistoryDiscarded { reason } => {
+                                ("digest-opened-without-history", vec![("reason", reason)])
+                            }
+                            LoadNotice::WorkRecoveryUnusable { reason } => match &set_aside {
+                                Some(Ok(moved)) => (
+                                    "digest-opened-work-recovery-set-aside",
+                                    vec![
+                                        ("reason", reason),
+                                        ("set_aside", moved.display().to_string()),
+                                    ],
+                                ),
+                                moved => (
+                                    "error-work-recovery-set-aside",
+                                    vec![
+                                        ("reason", reason),
+                                        (
+                                            "error",
+                                            moved
+                                                .iter()
+                                                .flat_map(|m| m.as_ref().err())
+                                                .map(ToString::to_string)
+                                                .collect(),
+                                        ),
+                                    ],
+                                ),
+                            },
+                        };
+                        args.push(("path", requested.clone()));
+                        args.push(("requested", requested.clone()));
+                        self.catalog.format(key, &args.into_iter().collect())
+                    })
+                    .collect();
                 self.digest = if warnings.is_empty() {
                     self.catalog.format(
                         "digest-opened-document",
