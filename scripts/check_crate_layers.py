@@ -48,15 +48,10 @@ LAYERS = {
 
 MAX_MODULE_LINES = 5_000
 
-# Integration-test files that were already larger (review TST-1); new tests go
-# into a file named after the behavior they check.
-OVERSIZED = {
-    "crates/ketchup-app/tests/file_workflow.rs": 5412,
-    "crates/ketchup-app/tests/headless_shell.rs": 14931,
-    "crates/ketchup-application/tests/cad_program.rs": 5526,
-    "crates/ketchup-model/tests/product_document.rs": 5247,
-    "crates/ketchup-scheduler/tests/exact_brep_graph.rs": 7364,
-}
+# Integration-test files that were already larger (review TST-1). The last five
+# were split into child modules by theme; new tests go into a file named after
+# the behavior they check.
+OVERSIZED = {}
 
 # Modules AGENTS.md §6 forbids to grow, with their size: new code goes into new
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
@@ -105,18 +100,18 @@ LONG_TESTS = {
     "crates/ketchup-app/tests/capstone_chain.rs::empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence": 305,
     "crates/ketchup-app/tests/capstone_chain.rs::the_manual_capstone_runs_end_to_end_through_the_designed_shell": 346,
     "crates/ketchup-app/tests/face_workflow_ui.rs::line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical": 419,
-    "crates/ketchup-app/tests/file_workflow.rs::file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscreen": 471,
-    "crates/ketchup-app/tests/file_workflow.rs::file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscreen": 344,
+    "crates/ketchup-app/tests/file_workflow/cad_imports.rs::file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscreen": 471,
+    "crates/ketchup-app/tests/file_workflow/cad_imports.rs::file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscreen": 344,
     "crates/ketchup-app/tests/instanced_rendering.rs::garden_studio_hardware_gpu_camera_frames": 337,
-    "crates/ketchup-application/tests/cad_program.rs::one_physical_pin_joint_operation_creates_both_hole_rows_atomically": 305,
-    "crates/ketchup-application/tests/cad_program.rs::public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact": 371,
+    "crates/ketchup-application/tests/cad_program/joints_patterns_and_targets.rs::one_physical_pin_joint_operation_creates_both_hole_rows_atomically": 305,
+    "crates/ketchup-application/tests/cad_program/profiles_and_construction.rs::public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact": 371,
     "crates/ketchup-application/tests/evaluation_deadline.rs::physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence": 389,
     "crates/ketchup-application/tests/workflow_trace.rs::original_shared_side_make_unique_preserves_physical_holes_and_recipe": 332,
     "crates/ketchup-model/tests/pad_pocket.rs::face_supported_pocket_and_topology_history_make_unique_losslessly": 453,
     "crates/ketchup-model/tests/workplane_sketch.rs::all_principal_planes_and_one_resolved_planar_face_support_are_canonical": 310,
-    "crates/ketchup-scheduler/tests/exact_brep_graph.rs::through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies": 336,
-    "crates/ketchup-scheduler/tests/exact_brep_graph.rs::worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh": 375,
-    "crates/ketchup-scheduler/tests/exact_brep_graph.rs::worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance": 376,
+    "crates/ketchup-scheduler/tests/exact_brep_graph/exchange_booleans_and_lofts.rs::worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh": 375,
+    "crates/ketchup-scheduler/tests/exact_brep_graph/surfaces_offsets_and_finishes.rs::through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies": 336,
+    "crates/ketchup-scheduler/tests/exact_brep_graph/surfaces_offsets_and_finishes.rs::worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance": 376,
 }
 
 
