@@ -332,7 +332,7 @@ accent washes rgba(240,78,35,.10 / .12 / .14 / .16) and border rgba(240,78,35,.2
 None external. All icons are inline stroke SVG authored in the prototype (select, line, rectangle, push/pull, move, measure, orbit, pan, trash, definition cube, send arrow) — reimplement with the codebase's icon system, keeping the 18px/1.6 stroke weight. Fonts are IBM Plex Sans + IBM Plex Mono (Google Fonts, SIL OFL) — self-host them in the desktop build.
 
 ## Files
-- **`Ketchup Modeler (standalone, open this).html`** — the prototype as one self-contained offline file. **Open this one in a browser to try the design.** No server, no dependencies.
+- **`ketchup-modeler-standalone.html`** — the prototype as one self-contained offline file. **Open this one in a browser to try the design.** No server, no dependencies.
 - `Ketchup Modeler.dc.html` + `support.js` — the readable source of the same prototype (markup and logic separated by the runtime in `support.js`). Keep the two files side by side; opening the `.dc.html` without `support.js` in the same folder shows raw `{{ placeholders }}` instead of values.
 - `Ketchup Modeler.dc.html` — the full prototype (template markup + logic class in one file; open directly in a browser). Layout, copy and tokens live in the markup; camera math, picking, snapping, tools, history and the proposal planner live in the logic class.
 - `AGENTS.md` and `docs/adr` hold the binding rules. Where the prototype and the rules disagree, **the rules win**: preview is not a promise of exact geometry, only validated command batches mutate the document, and no user-facing string may be hard-coded in a widget.
