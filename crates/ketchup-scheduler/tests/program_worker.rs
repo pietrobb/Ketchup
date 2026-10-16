@@ -261,8 +261,7 @@ fn evaluation_report_and_refine_share_one_deadline() {
         .unwrap();
     let error = worker
         .refine(&evaluated.model, &ExactShapes::default(), deadline, &cancel)
-        .err()
-        .expect("the refine stops at the deadline of the report");
+        .expect_err("the refine stops at the deadline of the report");
     let elapsed = started.elapsed();
     assert_eq!(error.code, "time_limit", "{error}");
     let seconds = format!("longer than {} s", total.as_secs());
