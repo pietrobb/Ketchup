@@ -994,6 +994,79 @@ fn a_dot_dot_joined_to_an_option_of_a_command_line_is_refused() {
     }
 }
 
+/// Review 2026-10-16 R-2: an absolute path joined to an option
+/// (`--require=/x.js`, `-r/x.js`, `--x=C:\x.js`) has no root component of its
+/// own, so it stayed "inside" the folder, or all-normal on a command line, and
+/// reached the process as given; an interpreter then opened a file outside the
+/// stage that nobody hashed or showed. It is refused from a plugin folder and
+/// from a command line, before anyone is asked.
+#[test]
+fn an_absolute_path_joined_to_a_plugin_option_is_refused() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let outside = directory.path().join("outside.js");
+    std::fs::write(&outside, "// outside the stage\n").unwrap();
+    let outside = outside.display().to_string();
+    let mut joined = vec![
+        format!("--require={outside}"),
+        format!("-r{outside}"),
+        format!("--x=a={outside}"),
+        "--require=/tmp/x.js".to_owned(),
+        "-r/tmp/x.js".to_owned(),
+    ];
+    if cfg!(windows) {
+        joined.extend([
+            "--x=C:\\evil.js".to_owned(),
+            "--x=C:evil.js".to_owned(),
+            "-rC:\\evil.js".to_owned(),
+            "--x=\\\\server\\share\\evil.js".to_owned(),
+        ]);
+    }
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    let script = example_script().to_string_lossy().into_owned();
+    for argument in &joined {
+        manifest["arguments"] = json!(["plugin.py", argument]);
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        let inputs = json!({"height_mm": 35});
+        let launch = crate::live_bridge::plugin_manifest::load(
+            &folder.to_string_lossy(),
+            inputs.as_object(),
+        );
+        assert_eq!(
+            launch.err(),
+            Some("plugin_manifest_invalid"),
+            "{argument:?}"
+        );
+        let request = plugin_request(vec![script.clone(), argument.clone()]);
+        assert_eq!(
+            crate::live_bridge::plugin::launch(&request).err(),
+            Some("invalid_path"),
+            "{argument:?}"
+        );
+    }
+    for argument in [
+        "--script=plugin.py",
+        "--script=sub/plugin.py",
+        "--size=1x2",
+        "-v",
+    ] {
+        manifest["arguments"] = json!(["plugin.py", argument]);
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        let inputs = json!({"height_mm": 35});
+        let launch = crate::live_bridge::plugin_manifest::load(
+            &folder.to_string_lossy(),
+            inputs.as_object(),
+        );
+        assert!(launch.is_ok(), "{argument:?}");
+        let request = plugin_request(vec![script.clone(), argument.to_owned()]);
+        assert!(
+            crate::live_bridge::plugin::launch(&request).is_ok(),
+            "{argument:?}"
+        );
+    }
+}
+
 /// `path` relative to `base`, through `..` where it must.
 fn pathdiff_relative(path: &Path, base: &Path) -> PathBuf {
     let path = std::path::absolute(path).unwrap();

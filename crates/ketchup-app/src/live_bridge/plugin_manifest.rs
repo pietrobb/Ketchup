@@ -257,6 +257,21 @@ fn embeds_parent_dir(argument: &str) -> bool {
         .any(|part| part != ".." && part.ends_with(".."))
 }
 
+/// Whether an absolute path starts inside the argument (`--require=/x.js`,
+/// `x=/x.js`, `-r/x.js`, `--x=C:\x.js`): the plugin splits the option off
+/// itself and opens that path, which is no path of the argument, so it was
+/// neither staged nor hashed. A long option or a word splits only after `=`;
+/// a short option may take its value anywhere after its letter.
+fn embeds_rooted_path(argument: &str) -> bool {
+    let short_option = argument.starts_with('-') && !argument.starts_with("--");
+    argument.char_indices().skip(1).any(|(index, _)| {
+        let path = Path::new(&argument[index..]);
+        let splits = (short_option && index >= 2) || argument[..index].ends_with('=');
+        splits
+            && (path.has_root() || matches!(path.components().next(), Some(Component::Prefix(_))))
+    })
+}
+
 /// One argument of a plugin's command line, resolved once into the text the
 /// process gets and the consent shows, and the file outside `folder` it
 /// names, hashed with `held` (left unhashed without it: a listing does not
@@ -267,7 +282,7 @@ fn embeds_parent_dir(argument: &str) -> bool {
 /// file outside is given by its absolute path; an argument naming no file
 /// reaches the process as given only when it cannot leave the run's private
 /// directory. `refuse` gives the caller's refusal for an argument that joins
-/// `..` to an option.
+/// `..` or an absolute path to an option.
 pub(super) fn resolve_argument(
     argument: &str,
     base: &Path,
@@ -278,6 +293,11 @@ pub(super) fn resolve_argument(
     if embeds_parent_dir(argument) {
         return Err(refuse(format!(
             "argument {argument:?} joins `..` to an option; give the path as its own argument"
+        )));
+    }
+    if embeds_rooted_path(argument) {
+        return Err(refuse(format!(
+            "argument {argument:?} joins an absolute path to an option; give the path as its own argument"
         )));
     }
     let candidate = lexical(&base.join(argument));
