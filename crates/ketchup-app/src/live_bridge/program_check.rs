@@ -19,7 +19,7 @@ fn plan_with_report(
 ) -> Result<(RuleProgramPlan, Report), RuleProgramApplyError> {
     let deadline = ketchup_application::program_isolation::CheckDeadline::start();
     let plan = ketchup_application::plan_rule_program(document, source)?;
-    let report = plan.report(deadline)?;
+    let report = plan.report(deadline);
     Ok((plan, report))
 }
 

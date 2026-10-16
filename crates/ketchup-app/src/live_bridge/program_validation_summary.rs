@@ -99,7 +99,7 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
             "not_evaluated": exact.map(|value| &value["not_evaluated"])
         },
         "collisions": {
-            "state": if collision_count > 0 { "failed" } else if exact_complete && !has("collision_unverified") { "passed" } else { "incomplete" },
+            "state": if collision_count > 0 { "failed" } else if exact_complete && !has("collision_unverified") && !has(ketchup_program::CHECKS_UNVERIFIED) { "passed" } else { "incomplete" },
             "count": collision_count,
             "scope": "program_parts_and_requested_exact_pairs"
         },

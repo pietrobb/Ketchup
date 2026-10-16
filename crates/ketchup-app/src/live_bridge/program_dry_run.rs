@@ -57,7 +57,7 @@ fn check(
     let deadline =
         ketchup_application::program_isolation::CheckDeadline::after(PROGRAM_EXACT_TIMEOUT);
     let plan = ketchup_application::plan_rule_program(&document, source)?;
-    let mut report = plan.report(deadline)?;
+    let mut report = plan.report(deadline);
     let before = document.current();
     let (change, after) = match plan.change {
         RuleProgramChange::Unchanged => ("unchanged", before.clone()),

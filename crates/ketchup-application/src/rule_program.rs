@@ -217,19 +217,17 @@ impl RuleProgramPlan {
     /// Issues, relations and bill of materials of the planned program, from a
     /// program worker, by `deadline` (started before planning, so it covers the
     /// evaluation too). On a large model this costs far more than planning, so
-    /// only callers that answer with it compute it.
-    ///
-    /// # Errors
-    /// The checks did not finish within the worker's limits.
-    pub fn report(
-        &self,
-        deadline: crate::program_isolation::CheckDeadline,
-    ) -> Result<Report, RuleProgramApplyError> {
-        Ok(crate::program_isolation::report_program(
+    /// only callers that answer with it compute it. Checks that do not finish
+    /// within the worker's limits give a report that says so (review
+    /// 2026-10-16 N-12): validation reports and does not block the edit.
+    #[must_use]
+    pub fn report(&self, deadline: crate::program_isolation::CheckDeadline) -> Report {
+        crate::program_isolation::report_program(
             &self.evaluated,
             deadline,
             &ketchup_program::CancelToken::default(),
-        )?)
+        )
+        .unwrap_or_else(|stopped| Report::unfinished(&self.evaluated, &stopped))
     }
 }
 
@@ -333,7 +331,7 @@ impl DocumentSession {
         deadline: crate::program_isolation::CheckDeadline,
     ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
         let plan = plan_rule_program_by(self.document_store(), &source, deadline)?;
-        let report = plan.report(deadline)?;
+        let report = plan.report(deadline);
         let RuleProgramPlan { evaluated, change } = plan;
         let snapshot = match change {
             RuleProgramChange::Unchanged => self.snapshot(),
@@ -985,7 +983,7 @@ mod tests {
         let deadline = crate::program_isolation::CheckDeadline::start();
         let plan = plan_rule_program(session.document_store(), &with_apron).unwrap();
         assert!(matches!(plan.change, RuleProgramChange::Incremental(_)));
-        let report = plan.report(deadline).unwrap();
+        let report = plan.report(deadline);
         assert!(report.ok, "{:?}", report.issues);
         let added = session.apply_rule_program(with_apron, false).unwrap();
         assert!(!added.replaced_document);

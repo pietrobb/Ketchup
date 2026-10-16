@@ -50,7 +50,9 @@ pub use model::{
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,
 };
 pub use relations::{OverlapStatus, Relation, RelationKind, relations, relations_with};
-pub use validate::{COLLISION_UNVERIFIED, Issue, Severity, validate, validate_with};
+pub use validate::{
+    CHECKS_UNVERIFIED, COLLISION_UNVERIFIED, Issue, Severity, validate, validate_with,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -113,6 +115,42 @@ impl Report {
     pub fn with_part_sources(mut self, evaluated: &Evaluated) -> Self {
         self.part_sources.clone_from(&evaluated.part_sources);
         self
+    }
+
+    /// The report of `evaluated` whose checks stopped at `stopped` (a limit of
+    /// the program worker): its parameters, bill of materials and log, and one
+    /// issue saying that no collision, relation, joint or load was checked.
+    /// Validation reports and does not block editing, so the edit stands.
+    #[must_use]
+    pub fn unfinished(evaluated: &Evaluated, stopped: &ProgramError) -> Self {
+        let mut report = Self {
+            ok: true,
+            errors: 0,
+            warnings: 0,
+            issues: Vec::new(),
+            relations: Vec::new(),
+            params: evaluated.model.params.clone(),
+            bom: bom(&evaluated.model),
+            joints: Vec::new(),
+            loads: loads::LoadReport::default(),
+            design: member_check::DesignReport::default(),
+            log: evaluated.log.clone(),
+            unused_overrides: evaluated.unused_overrides.clone(),
+            part_sources: evaluated.part_sources.clone(),
+        };
+        report.set_issues(vec![Issue {
+            severity: Severity::Warning,
+            kind: CHECKS_UNVERIFIED,
+            parts: Vec::new(),
+            message: format!(
+                "The checks of the program did not finish ({}: {}); the edit was applied, but no collision, relation, joint or load was checked.",
+                stopped.code, stopped.message
+            ),
+            where_mm: None,
+            hint: "Ask for the report again, or check fewer parts at a time.".to_owned(),
+            source_lines: Vec::new(),
+        }]);
+        report
     }
 
     /// Takes the issues and relations [`refine`] re-derived.

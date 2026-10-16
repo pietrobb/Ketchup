@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 /// Issue kind for a box overlap that only the exact solids can decide.
 pub const COLLISION_UNVERIFIED: &str = "collision_unverified";
 
+/// Issue kind of a report whose checks did not finish within the program
+/// worker's limits: nothing was checked, and nothing was found to pass.
+pub const CHECKS_UNVERIFIED: &str = "checks_unverified";
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {

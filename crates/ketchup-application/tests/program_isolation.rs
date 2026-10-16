@@ -2,7 +2,7 @@
 //! takes all the memory is refused with `memory_limit` and the session that
 //! applied it (the window) keeps working (review PRG-M1). The checks of its
 //! model run there too, under the same limits (review PRG-1).
-use crate::operations_support::{BLOCK, apply_error, session};
+use crate::operations_support::{BLOCK, session};
 use ketchup_application::{DocumentSession, RuleProgramApplyError, SessionSettings};
 use ketchup_model::document::RuleProgramSource;
 use std::collections::BTreeMap;
@@ -68,18 +68,36 @@ fn source(program: &str) -> RuleProgramSource {
 
 /// 400 boxes that all overlap evaluate in a fraction of a second, but checking
 /// their 79 800 pairs takes over two minutes in a debug build: the caller waits
-/// no longer than the worker's 60 s deadline for a report.
+/// no longer than the worker's 60 s deadline for a report. The report is no
+/// gate (review 2026-10-16 N-12, AGENTS.md §3): the model is applied and its
+/// report says that its checks did not finish.
 #[test]
-fn a_model_too_large_to_check_is_refused_at_the_deadline_and_the_session_lives_on() {
+fn a_model_too_large_to_check_is_applied_with_an_unfinished_report_and_the_session_lives_on() {
     let _turn = crate::integration_support::file_turn();
     let started = Instant::now();
-    let error = apply_error(
-        "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n",
-    );
+    let mut window = DocumentSession::new(SessionSettings::default());
+    let applied = window
+        .apply_rule_program(
+            source("for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n"),
+            false,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(applied.snapshot.occurrences().count(), 400);
+    let unfinished = applied
+        .report
+        .issues
+        .iter()
+        .filter(|issue| issue.kind == ketchup_program::CHECKS_UNVERIFIED)
+        .map(|issue| issue.message.as_str())
+        .collect::<Vec<_>>();
     assert!(
-        error.contains("checking the program's model") && error.contains("was stopped"),
-        "{error}"
+        matches!(unfinished.as_slice(), [message] if message.contains("checking the program's model") && message.contains("was stopped")),
+        "{:?}",
+        applied.report.issues
     );
+    assert_eq!(applied.report.issues.len(), 1);
+    assert!(applied.report.relations.is_empty());
+    assert_eq!(applied.report.bom, ketchup_program::bom(&applied.model));
     assert!(
         started.elapsed() < Duration::from_secs(80),
         "{:?}",
