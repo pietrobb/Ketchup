@@ -54,9 +54,10 @@ fn check(
     worker_path: Option<PathBuf>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<Checked, RuleProgramApplyError> {
-    let started = Instant::now();
+    let deadline =
+        ketchup_application::program_isolation::CheckDeadline::after(PROGRAM_EXACT_TIMEOUT);
     let plan = ketchup_application::plan_rule_program(&document, source)?;
-    let mut report = plan.report()?;
+    let mut report = plan.report(deadline)?;
     let before = document.current();
     let (change, after) = match plan.change {
         RuleProgramChange::Unchanged => ("unchanged", before.clone()),
@@ -85,7 +86,7 @@ fn check(
             &mut report,
             container,
             worker_path,
-            PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+            deadline,
             cancelled,
         )
     };

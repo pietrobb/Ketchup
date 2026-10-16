@@ -25,7 +25,7 @@ fn checked(source: String) -> (ketchup_program::Report, serde_json::Value) {
         &mut report,
         &ContainerData::default(),
         None,
-        Duration::from_secs(120),
+        ketchup_application::program_isolation::CheckDeadline::after(Duration::from_secs(120)),
         Arc::new(AtomicBool::new(false)),
     )
     .expect("declared clearance must be measured");

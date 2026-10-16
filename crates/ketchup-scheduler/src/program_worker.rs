@@ -28,7 +28,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ChildStderr;
 use std::sync::mpsc::{self, Receiver};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Memory one program worker may commit: the interpreter's own heap limit, and
 /// as much again for the library, the model and its copy on the wire.
@@ -38,10 +38,60 @@ pub const PROGRAM_WORKER_MEMORY_BYTES: usize = 2 * EVALUATION_HEAP_BYTES;
 /// can run far past it, so the parent stops the worker a little later.
 const DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 
-/// How long checking one evaluated model may take: the checks of the largest
-/// example program (1 854 parts) take far longer than its evaluation, 1.5 s in
-/// a release build and 28 s in a debug build.
-const REPORT_DEADLINE: Duration = Duration::from_secs(60);
+/// How long evaluating a program and every check of its model may take
+/// together: the checks of the largest example program (1 854 parts) take far
+/// longer than its evaluation, 1.5 s in a release build and 28 s in a debug build.
+pub const PROGRAM_CHECK_TIME: Duration = Duration::from_secs(60);
+
+/// One deadline for evaluating a program, its report, the exact check and the
+/// refined report: each step gets only the time the earlier ones left, so a
+/// program that is cheap to evaluate but costly to check still stops at one
+/// predictable time (review 2026-10-15 S3).
+#[derive(Clone, Copy, Debug)]
+pub struct CheckDeadline {
+    until: Instant,
+    total: Duration,
+}
+
+impl CheckDeadline {
+    /// [`PROGRAM_CHECK_TIME`] from now.
+    #[must_use]
+    pub fn start() -> Self {
+        Self::after(PROGRAM_CHECK_TIME)
+    }
+
+    #[must_use]
+    pub fn after(total: Duration) -> Self {
+        Self {
+            until: Instant::now() + total,
+            total,
+        }
+    }
+
+    /// Time left; zero once the deadline has passed.
+    #[must_use]
+    pub fn remaining(self) -> Duration {
+        self.until.saturating_duration_since(Instant::now())
+    }
+
+    /// The time a request may take, or the stop when none is left.
+    fn request_time(self) -> Result<Duration, Stopped> {
+        let left = self.remaining();
+        if left.is_zero() {
+            Err(Stopped::TimeLimit(self.total))
+        } else {
+            Ok(left)
+        }
+    }
+
+    /// A request stopped at the time left was stopped at the whole deadline.
+    fn stopped(self, stopped: Stopped) -> Stopped {
+        match stopped {
+            Stopped::TimeLimit(_) => Stopped::TimeLimit(self.total),
+            other => other,
+        }
+    }
+}
 
 /// How long reading one DWG file may take.
 const DWG_DEADLINE: Duration = Duration::from_secs(60);
@@ -121,7 +171,6 @@ pub struct ProgramWorker {
     executable: PathBuf,
     executable_sha256: String,
     deadline: Duration,
-    report_deadline: Duration,
     running: Option<Running>,
 }
 
@@ -136,17 +185,15 @@ impl ProgramWorker {
             executable,
             executable_sha256,
             deadline: EVALUATION_TIME + DEADLINE_MARGIN,
-            report_deadline: REPORT_DEADLINE,
             running: None,
         })
     }
 
-    /// Stops an evaluation and a report after `deadline` instead of their own
-    /// limits; tests use it to reach the deadline quickly.
+    /// Stops an evaluation after `deadline` instead of its own limit; tests use
+    /// it to reach the deadline quickly.
     #[must_use]
     pub fn with_deadline(mut self, deadline: Duration) -> Self {
         self.deadline = deadline;
-        self.report_deadline = deadline;
         self
     }
 
@@ -168,22 +215,53 @@ impl ProgramWorker {
         overrides: &BTreeMap<String, f64>,
         cancel: &CancelToken,
     ) -> Result<Evaluated, ProgramError> {
+        self.evaluate_within(file_name, source, overrides, self.deadline, cancel)
+    }
+
+    fn evaluate_within(
+        &mut self,
+        file_name: &str,
+        source: &str,
+        overrides: &BTreeMap<String, f64>,
+        time: Duration,
+        cancel: &CancelToken,
+    ) -> Result<Evaluated, ProgramError> {
         let input = ProgramInput {
             file_name: file_name.to_owned(),
             source: source.to_owned(),
             overrides: overrides.clone(),
         };
-        let deadline = self.deadline;
         self.call(cancel, |client| {
-            client.evaluate_program(input, cancel.flag(), deadline)
+            client.evaluate_program(input, cancel.flag(), time)
         })
         .map_err(Stopped::program_error)?
         .into()
     }
 
+    /// Evaluates and reports like [`ketchup_program::run`], in the worker: the
+    /// evaluation keeps its own limit, and both end by `deadline`.
+    ///
+    /// # Errors
+    /// As [`Self::evaluate`] and [`Self::report`].
+    pub fn run(
+        &mut self,
+        file_name: &str,
+        source: &str,
+        overrides: &BTreeMap<String, f64>,
+        deadline: CheckDeadline,
+        cancel: &CancelToken,
+    ) -> Result<(Evaluated, Report), ProgramError> {
+        let time = self
+            .deadline
+            .min(deadline.request_time().map_err(Stopped::program_error)?);
+        let evaluated = self.evaluate_within(file_name, source, overrides, time, cancel)?;
+        let report = self.report(&evaluated, deadline, cancel)?;
+        Ok((evaluated, report))
+    }
+
     /// [`ketchup_program::report`] of `evaluated` in the worker, under the
-    /// memory limit of an evaluation and a deadline of its own: on a large model
-    /// the checks cost far more than the evaluation and have no bound of their own.
+    /// memory limit of an evaluation, by `deadline`: on a large model the checks
+    /// cost far more than the evaluation and have no bound of their own.
     ///
     /// # Errors
     /// `report_too_large`, or `cancelled`, `time_limit`, `memory_limit` and
@@ -191,13 +269,13 @@ impl ProgramWorker {
     pub fn report(
         &mut self,
         evaluated: &Evaluated,
+        deadline: CheckDeadline,
         cancel: &CancelToken,
     ) -> Result<Report, ProgramError> {
         let input = evaluated.clone().into();
-        let deadline = self.report_deadline;
         let outcome = self
-            .call(cancel, |client| {
-                client.report_program(input, cancel.flag(), deadline)
+            .call_by(deadline, cancel, |client, time| {
+                client.report_program(input, cancel.flag(), time)
             })
             .map_err(Stopped::report_error)?;
         match outcome {
@@ -206,7 +284,8 @@ impl ProgramWorker {
         }
     }
 
-    /// [`ketchup_program::refine`] in the worker, under the limits of a report.
+    /// [`ketchup_program::refine`] in the worker, under the memory limit of a
+    /// report and by the deadline of the report it refines.
     ///
     /// # Errors
     /// As [`Self::report`].
@@ -214,16 +293,16 @@ impl ProgramWorker {
         &mut self,
         model: &ProgramModel,
         exact: &ExactShapes,
+        deadline: CheckDeadline,
         cancel: &CancelToken,
     ) -> Result<Refined, ProgramError> {
         let input = RefineInput {
             model: model.clone(),
             exact: exact.clone(),
         };
-        let deadline = self.report_deadline;
         let outcome = self
-            .call(cancel, |client| {
-                client.refine_report(input, cancel.flag(), deadline)
+            .call_by(deadline, cancel, |client, time| {
+                client.refine_report(input, cancel.flag(), time)
             })
             .map_err(Stopped::report_error)?;
         match outcome {
@@ -260,6 +339,18 @@ impl ProgramWorker {
             })
             .map_err(Stopped::dwg_error)?;
         Result::from(outcome).map_err(DwgConversionError::Refused)
+    }
+
+    /// [`Self::call`] with the time `deadline` has left.
+    fn call_by<T>(
+        &mut self,
+        deadline: CheckDeadline,
+        cancel: &CancelToken,
+        request: impl FnOnce(&mut ExactWorkerClient, Duration) -> Result<T, WorkerError>,
+    ) -> Result<T, Stopped> {
+        let time = deadline.request_time()?;
+        self.call(cancel, |client| request(client, time))
+            .map_err(|stopped| deadline.stopped(stopped))
     }
 
     /// Sends one request to the running worker, starting one if none runs.

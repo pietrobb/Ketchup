@@ -3,12 +3,16 @@
 //! running for minutes, and a normal program and its report come back bit for
 //! bit as in process.
 use ketchup_program::{CancelToken, ExactPair, ExactShapes, evaluate, refine, report};
-use ketchup_scheduler::program_worker::ProgramWorker;
+use ketchup_scheduler::program_worker::{CheckDeadline, ProgramWorker};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 const BOX: &str = "box(\"a\", (10, 20, 30))\n";
+
+fn checks() -> CheckDeadline {
+    CheckDeadline::start()
+}
 
 fn worker() -> ProgramWorker {
     ProgramWorker::new(env!("CARGO_BIN_EXE_ketchup-program-worker")).unwrap()
@@ -146,15 +150,16 @@ fn the_worker_stays_between_programs_and_is_replaced_after_a_kill() {
 #[test]
 fn a_report_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
-    let mut worker = worker().with_deadline(Duration::from_secs(2));
+    let mut worker = worker();
     let evaluated = run(
         &mut worker,
         "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n",
     )
     .unwrap();
     let started = Instant::now();
+    let deadline = CheckDeadline::after(Duration::from_secs(2));
     let error = worker
-        .report(&evaluated, &CancelToken::default())
+        .report(&evaluated, deadline, &CancelToken::default())
         .unwrap_err();
     assert_eq!(error.code, "time_limit", "{error}");
     assert!(
@@ -168,7 +173,12 @@ fn a_report_past_the_deadline_is_killed() {
     );
     assert_eq!(worker.process_id(), None);
     let small = run(&mut worker, BOX).unwrap();
-    assert!(worker.report(&small, &CancelToken::default()).unwrap().ok);
+    assert!(
+        worker
+            .report(&small, checks(), &CancelToken::default())
+            .unwrap()
+            .ok
+    );
 }
 
 /// Refining a report with exact answers repeats its checks, so it is stopped
@@ -176,17 +186,19 @@ fn a_report_past_the_deadline_is_killed() {
 #[test]
 fn a_refine_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
-    let mut worker = worker().with_deadline(Duration::from_secs(2));
+    let mut worker = worker();
     let evaluated = run(
         &mut worker,
         "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n",
     )
     .unwrap();
     let started = Instant::now();
+    let deadline = CheckDeadline::after(Duration::from_secs(2));
     let error = worker
         .refine(
             &evaluated.model,
             &ExactShapes::default(),
+            deadline,
             &CancelToken::default(),
         )
         .unwrap_err();
@@ -206,10 +218,63 @@ fn a_refine_past_the_deadline_is_killed() {
         .refine(
             &small.model,
             &ExactShapes::default(),
+            checks(),
             &CancelToken::default(),
         )
         .unwrap();
     assert_eq!(refined, refine(&small.model, &ExactShapes::default()));
+}
+
+/// Evaluation, report and refine of one program share one deadline: a model
+/// that is cheap to evaluate but costly to check stops at one predictable time,
+/// not after a fresh deadline for every step (review 2026-10-15 S3).
+#[test]
+fn evaluation_report_and_refine_share_one_deadline() {
+    let _turn = crate::integration_support::file_turn();
+    let overlapping = |count: usize| {
+        format!(
+            "for i in range({count}):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n"
+        )
+    };
+    // Checks long enough that the time the worker adds does not matter.
+    let mut count = 20;
+    let (source, checking) = loop {
+        let source = overlapping(count);
+        let evaluated = evaluate("test.star", &source, &BTreeMap::new()).unwrap();
+        let started = Instant::now();
+        let _ = report(&evaluated);
+        let checking = started.elapsed();
+        if checking >= Duration::from_millis(800) {
+            break (source, checking);
+        }
+        count = count * 3 / 2;
+    };
+    // Room for one round of checks, not for two.
+    let total = checking * 8 / 5;
+    let mut worker = worker();
+    run(&mut worker, BOX).unwrap();
+    let cancel = CancelToken::default();
+    let started = Instant::now();
+    let deadline = CheckDeadline::after(total);
+    let (evaluated, _) = worker
+        .run("test.star", &source, &BTreeMap::new(), deadline, &cancel)
+        .unwrap();
+    let error = worker
+        .refine(&evaluated.model, &ExactShapes::default(), deadline, &cancel)
+        .err()
+        .expect("the refine stops at the deadline of the report");
+    let elapsed = started.elapsed();
+    assert_eq!(error.code, "time_limit", "{error}");
+    let seconds = format!("longer than {} s", total.as_secs());
+    assert!(error.message.contains(&seconds), "{error}");
+    assert!(
+        elapsed < total + Duration::from_secs(1),
+        "{elapsed:?} for a deadline of {total:?}"
+    );
+    // Nothing is left of a passed deadline: the next step is refused at once.
+    let error = worker.report(&evaluated, deadline, &cancel).unwrap_err();
+    assert_eq!(error.code, "time_limit", "{error}");
+    assert!(started.elapsed() < total + Duration::from_secs(1));
 }
 
 const MOTION: &str = r#"
@@ -331,7 +396,7 @@ fn assert_round_trip(programs: Vec<(String, String)>) {
         // Debug spells out -0.0 and NaN, which PartialEq would let through.
         assert_eq!(format!("{isolated:?}"), format!("{local:?}"), "{name}");
         let local = local.unwrap_or_else(|error| panic!("{name}: {error}"));
-        let checked = worker.report(&local, &CancelToken::default());
+        let checked = worker.report(&local, checks(), &CancelToken::default());
         assert_eq!(
             format!("{checked:?}"),
             format!("{:?}", Ok::<_, ()>(report(&local))),
@@ -346,7 +411,7 @@ fn assert_round_trip(programs: Vec<(String, String)>) {
             };
             exact.insert(&a.name, &b.name, touching);
         }
-        let refined = worker.refine(&local.model, &exact, &CancelToken::default());
+        let refined = worker.refine(&local.model, &exact, checks(), &CancelToken::default());
         assert_eq!(
             format!("{refined:?}"),
             format!("{:?}", Ok::<_, ()>(refine(&local.model, &exact))),

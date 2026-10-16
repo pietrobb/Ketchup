@@ -215,14 +215,19 @@ pub struct RuleProgramPlan {
 
 impl RuleProgramPlan {
     /// Issues, relations and bill of materials of the planned program, from a
-    /// program worker. On a large model this costs far more than planning, so
+    /// program worker, by `deadline` (started before planning, so it covers the
+    /// evaluation too). On a large model this costs far more than planning, so
     /// only callers that answer with it compute it.
     ///
     /// # Errors
     /// The checks did not finish within the worker's limits.
-    pub fn report(&self) -> Result<Report, RuleProgramApplyError> {
+    pub fn report(
+        &self,
+        deadline: crate::program_isolation::CheckDeadline,
+    ) -> Result<Report, RuleProgramApplyError> {
         Ok(crate::program_isolation::report_program(
             &self.evaluated,
+            deadline,
             &ketchup_program::CancelToken::default(),
         )?)
     }
@@ -291,8 +296,9 @@ impl DocumentSession {
         source: RuleProgramSource,
         allow_replacement: bool,
     ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
+        let deadline = crate::program_isolation::CheckDeadline::start();
         let plan = plan_rule_program(self.document_store(), &source)?;
-        let report = plan.report()?;
+        let report = plan.report(deadline)?;
         let RuleProgramPlan { evaluated, change } = plan;
         let snapshot = match change {
             RuleProgramChange::Unchanged => self.snapshot(),
@@ -933,9 +939,10 @@ mod tests {
         assert_eq!(original.len(), 5);
 
         let with_apron = program(format!("{TABLE}{APRON}"), &[]);
+        let deadline = crate::program_isolation::CheckDeadline::start();
         let plan = plan_rule_program(session.document_store(), &with_apron).unwrap();
         assert!(matches!(plan.change, RuleProgramChange::Incremental(_)));
-        let report = plan.report().unwrap();
+        let report = plan.report(deadline).unwrap();
         assert!(report.ok, "{:?}", report.issues);
         let added = session.apply_rule_program(with_apron, false).unwrap();
         assert!(!added.replaced_document);

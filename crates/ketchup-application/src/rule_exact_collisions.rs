@@ -1,6 +1,6 @@
 //! Exact collision and distance answers for applied program solids.
 use crate::collision::{CollisionScope, ExactPairFacts, scoped_exact_pairs_with_worker};
-use crate::program_isolation::refine_report;
+use crate::program_isolation::{CheckDeadline, refine_report};
 use ketchup_model::document::{InstancePath, Snapshot};
 use ketchup_model::persistence::ContainerData;
 use ketchup_program::{
@@ -10,7 +10,6 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, atomic::AtomicBool};
-use std::time::Duration;
 
 /// Most declared distance measurements a report lists in full.
 const REPORTED_MEASUREMENTS: usize = 40;
@@ -53,8 +52,8 @@ pub fn apply_exact_pairs(
     model: &ProgramModel,
     names: &BTreeMap<InstancePath, String>,
     checked: &BTreeSet<InstancePath>,
-    exact: &Value,
-    facts: &ExactPairFacts,
+    (exact, facts): &(Value, ExactPairFacts),
+    deadline: CheckDeadline,
     cancel: &CancelToken,
 ) -> Value {
     let mut complete = exact["complete"].as_bool() == Some(true);
@@ -74,7 +73,7 @@ pub fn apply_exact_pairs(
         count(report, COLLISION_UNVERIFIED),
         count(report, "collision"),
     );
-    match refine_report(model, &shapes, cancel) {
+    match refine_report(model, &shapes, deadline, cancel) {
         Ok(refined) => report.apply_refined(refined),
         Err(error) => {
             complete = false;
@@ -124,7 +123,7 @@ pub fn verify_rule_program_exact(
     report: &mut Report,
     container: &ContainerData,
     worker_path: Option<PathBuf>,
-    timeout: Duration,
+    deadline: CheckDeadline,
     cancelled: Arc<AtomicBool>,
 ) -> Option<Value> {
     verify_candidates(
@@ -133,7 +132,7 @@ pub fn verify_rule_program_exact(
         report,
         container,
         worker_path,
-        timeout,
+        deadline,
         cancelled,
         exact_candidates(model),
     )
@@ -146,7 +145,7 @@ pub fn verify_rule_program_all(
     report: &mut Report,
     container: &ContainerData,
     worker_path: Option<PathBuf>,
-    timeout: Duration,
+    deadline: CheckDeadline,
     cancelled: Arc<AtomicBool>,
 ) -> Option<Value> {
     let candidates = model.parts.iter().map(|part| part.name.clone()).collect();
@@ -156,7 +155,7 @@ pub fn verify_rule_program_all(
         report,
         container,
         worker_path,
-        timeout,
+        deadline,
         cancelled,
         candidates,
     )
@@ -169,7 +168,7 @@ fn verify_candidates(
     report: &mut Report,
     container: &ContainerData,
     worker_path: Option<PathBuf>,
-    timeout: Duration,
+    deadline: CheckDeadline,
     cancelled: Arc<AtomicBool>,
     candidates: BTreeSet<String>,
 ) -> Option<Value> {
@@ -207,15 +206,15 @@ fn verify_candidates(
     let scope = CollisionScope::bind(snapshot, checked.iter().map(InstancePath::root_occurrence))
         .measuring_pairs(requested);
     let cancel = CancelToken::from(Arc::clone(&cancelled));
-    let (exact, facts) = scoped_exact_pairs_with_worker(
+    let answer = scoped_exact_pairs_with_worker(
         snapshot,
         container,
         worker_path,
-        timeout,
+        deadline.remaining(),
         &scope,
         cancelled,
     );
     Some(apply_exact_pairs(
-        report, model, &names, &checked, &exact, &facts, &cancel,
+        report, model, &names, &checked, &answer, deadline, &cancel,
     ))
 }

@@ -403,6 +403,7 @@ fn run_report(
         &source.file_name,
         &source.source,
         &source.overrides,
+        ketchup_application::program_isolation::CheckDeadline::start(),
         cancel,
     )
     .map(|(_, report)| report)

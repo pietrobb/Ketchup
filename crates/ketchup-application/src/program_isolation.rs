@@ -9,6 +9,7 @@ use ketchup_program::{
     CancelToken, Evaluated, ExactShapes, ProgramError, ProgramModel, Refined, Report,
 };
 use ketchup_scheduler::WorkerError;
+pub use ketchup_scheduler::program_worker::CheckDeadline;
 use ketchup_scheduler::program_worker::{DwgConversionError, ProgramWorker};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -41,12 +42,16 @@ pub fn evaluate_program(
 }
 
 /// [`ketchup_program::report`] in a program worker, under its memory limit and
-/// a deadline of a minute (review PRG-1).
+/// by `deadline` (review PRG-1).
 ///
 /// # Errors
 /// `report_too_large`, `time_limit`, `memory_limit` and `worker_failed`.
-pub fn report_program(evaluated: &Evaluated, cancel: &CancelToken) -> Result<Report, ProgramError> {
-    with_worker(|worker| worker.report(evaluated, cancel)).unwrap_or_else(|error| {
+pub fn report_program(
+    evaluated: &Evaluated,
+    deadline: CheckDeadline,
+    cancel: &CancelToken,
+) -> Result<Report, ProgramError> {
+    with_worker(|worker| worker.report(evaluated, deadline, cancel)).unwrap_or_else(|error| {
         Err(ProgramError {
             code: "worker_failed",
             message: format!("programs cannot be checked: {error}"),
@@ -56,16 +61,18 @@ pub fn report_program(evaluated: &Evaluated, cancel: &CancelToken) -> Result<Rep
 }
 
 /// [`ketchup_program::refine`] in a program worker, under the limits of a
-/// report: it repeats the checks of the report (review 2026-10-15 N-4).
+/// report and by its deadline: it repeats the checks of the report (review
+/// 2026-10-15 N-4).
 ///
 /// # Errors
 /// As [`report_program`].
 pub fn refine_report(
     model: &ProgramModel,
     exact: &ExactShapes,
+    deadline: CheckDeadline,
     cancel: &CancelToken,
 ) -> Result<Refined, ProgramError> {
-    with_worker(|worker| worker.refine(model, exact, cancel)).unwrap_or_else(|error| {
+    with_worker(|worker| worker.refine(model, exact, deadline, cancel)).unwrap_or_else(|error| {
         Err(ProgramError {
             code: "worker_failed",
             message: format!("programs cannot be checked: {error}"),
@@ -74,8 +81,8 @@ pub fn refine_report(
     })
 }
 
-/// [`ketchup_program::run`] with the evaluation and the report in a program
-/// worker; `cancel` stops either.
+/// [`ketchup_program::run`] with the evaluation and the report in one program
+/// worker, both by `deadline`; `cancel` stops either.
 ///
 /// # Errors
 /// As [`evaluate_program`] and [`report_program`].
@@ -83,11 +90,18 @@ pub fn run_program(
     file_name: &str,
     source: &str,
     overrides: &BTreeMap<String, f64>,
+    deadline: CheckDeadline,
     cancel: &CancelToken,
 ) -> Result<(Evaluated, Report), ProgramError> {
-    let evaluated = evaluate_program(file_name, source, overrides, cancel)?;
-    let report = report_program(&evaluated, cancel)?;
-    Ok((evaluated, report))
+    with_worker(|worker| worker.run(file_name, source, overrides, deadline, cancel)).unwrap_or_else(
+        |error| {
+            Err(ProgramError {
+                code: "worker_failed",
+                message: format!("programs cannot be evaluated: {error}"),
+                location: None,
+            })
+        },
+    )
 }
 
 /// [`ketchup_dwg::dwg_to_dxf`] in a program worker.

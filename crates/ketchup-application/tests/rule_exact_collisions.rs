@@ -28,7 +28,7 @@ fn verified(source: String) -> (ketchup_program::Report, serde_json::Value) {
         &mut report,
         &ContainerData::default(),
         None,
-        Duration::from_secs(120),
+        ketchup_application::program_isolation::CheckDeadline::after(Duration::from_secs(120)),
         Arc::new(AtomicBool::new(false)),
     )
     .expect("the program left overlaps for the exact check");

@@ -32,7 +32,7 @@ fn checked(source: String, cancelled: bool) -> (Report, serde_json::Value) {
         &mut report,
         &ContainerData::default(),
         None,
-        Duration::from_secs(120),
+        ketchup_application::program_isolation::CheckDeadline::after(Duration::from_secs(120)),
         Arc::new(AtomicBool::new(cancelled)),
     )
     .expect("non-box pairs require exact validation");

@@ -33,7 +33,7 @@ fn the_demo_house_has_no_collisions_in_the_exact_check() {
         &mut report,
         &ContainerData::default(),
         None,
-        BUDGET,
+        ketchup_application::program_isolation::CheckDeadline::after(BUDGET),
         Arc::new(AtomicBool::new(false)),
     )
     .expect("the house has a collision summary");

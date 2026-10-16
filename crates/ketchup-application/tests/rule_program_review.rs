@@ -99,7 +99,7 @@ fn revolve_lower_wall_collision_is_confirmed_by_exact_solids_after_placement() {
             &mut report,
             &ContainerData::default(),
             None,
-            Duration::from_secs(120),
+            ketchup_application::program_isolation::CheckDeadline::after(Duration::from_secs(120)),
             Arc::new(AtomicBool::new(false)),
         )
         .expect("exact candidates retained");

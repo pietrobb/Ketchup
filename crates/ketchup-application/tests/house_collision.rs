@@ -37,7 +37,7 @@ fn the_whole_house_is_checked_for_collisions_exactly_and_in_time() {
         &mut report,
         &ContainerData::default(),
         None,
-        BUDGET,
+        ketchup_application::program_isolation::CheckDeadline::after(BUDGET),
         Arc::new(AtomicBool::new(false)),
     )
     .expect("the house has a collision summary");

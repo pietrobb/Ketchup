@@ -167,7 +167,9 @@ group("cabinet",[group("lower",[a,b,c,v]),group("upper",[u0,u1,u2,u3])])
         &mut report,
         &ketchup_model::persistence::ContainerData::default(),
         None,
-        std::time::Duration::from_secs(60),
+        ketchup_application::program_isolation::CheckDeadline::after(
+            std::time::Duration::from_secs(60),
+        ),
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )
     .unwrap();

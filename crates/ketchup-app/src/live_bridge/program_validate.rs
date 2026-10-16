@@ -91,11 +91,13 @@ fn validate(
     stamp: Stamp,
     options: ValidationOptions,
 ) -> Result<(Value, ketchup_program::Report), ketchup_program::ProgramError> {
-    let started = Instant::now();
+    let deadline =
+        ketchup_application::program_isolation::CheckDeadline::after(PROGRAM_EXACT_TIMEOUT);
     let (evaluated, mut report) = ketchup_application::program_isolation::run_program(
         &source.file_name,
         &source.source,
         &source.overrides,
+        deadline,
         &ketchup_program::CancelToken::from(Arc::clone(&cancelled)),
     )?;
     let exact = verify_rule_program_all(
@@ -104,7 +106,7 @@ fn validate(
         &mut report,
         &container,
         worker_path.clone(),
-        PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+        deadline,
         cancelled.clone(),
     );
     let mut result = program_edit_result(
@@ -121,7 +123,7 @@ fn validate(
             &snapshot,
             &evaluated.model,
             worker_path.clone(),
-            PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+            deadline.remaining(),
             cancelled.clone(),
         );
         merge_check(&mut result, "assembly_path", check);
@@ -131,7 +133,7 @@ fn validate(
             &snapshot,
             &evaluated.model,
             worker_path.clone(),
-            PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+            deadline.remaining(),
             cancelled.clone(),
         );
         merge_check(&mut result, "tool_access", check);
@@ -142,7 +144,7 @@ fn validate(
             &evaluated.model,
             &motion,
             worker_path.clone(),
-            PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+            deadline.remaining(),
             cancelled.clone(),
         );
         merge_check(&mut result, "motion", check);
@@ -155,7 +157,7 @@ fn validate(
                 &selection,
                 &container,
                 worker_path,
-                PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+                deadline.remaining(),
                 cancelled,
             );
         let state = if result["validation"]["state"] == "failed" || checks["state"] == "failed" {

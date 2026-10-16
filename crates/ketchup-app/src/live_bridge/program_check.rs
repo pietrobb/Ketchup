@@ -17,8 +17,9 @@ fn plan_with_report(
     document: &DocumentStore,
     source: &RuleProgramSource,
 ) -> Result<(RuleProgramPlan, Report), RuleProgramApplyError> {
+    let deadline = ketchup_application::program_isolation::CheckDeadline::start();
     let plan = ketchup_application::plan_rule_program(document, source)?;
-    let report = plan.report()?;
+    let report = plan.report(deadline)?;
     Ok((plan, report))
 }
 
@@ -351,7 +352,9 @@ impl LiveBridge {
                     &mut report,
                     &container,
                     worker_path,
-                    PROGRAM_EXACT_TIMEOUT,
+                    ketchup_application::program_isolation::CheckDeadline::after(
+                        PROGRAM_EXACT_TIMEOUT,
+                    ),
                     thread_cancelled,
                 );
                 let _ = sender.try_send((report, exact));
