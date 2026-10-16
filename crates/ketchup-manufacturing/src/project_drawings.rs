@@ -571,8 +571,10 @@ const FLOOR_SHARE_OF_LARGEST_LEVEL: f64 = 0.5;
 const VIEW_PAD_MM: f64 = 22.0;
 pub const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
 
+// not a tolerance: the pen width of a visible edge on the sheet.
 const EDGE_STROKE_MM: f64 = 0.18;
 const EDGE_COLOR: [u8; 3] = [34, 34, 34];
+// not a tolerance: the pen width of a cut edge on the sheet.
 const CUT_STROKE_MM: f64 = 0.5;
 const DIMENSION_TEXT_MM: f64 = 2.5;
 const VIEW_TITLE_MM: f64 = 4.0;

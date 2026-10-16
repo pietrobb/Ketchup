@@ -5,7 +5,8 @@ Tolerances and model limits have one home: crates/ketchup-tolerance/src/lib.rs
 (the document's TolerancePolicy), handed to the exact kernel through its FFI,
 and crates/ketchup-tolerance/src/limits.rs. A literal such as 1.0e-9 anywhere
 else is a module-local tolerance, and so is a named constant such as
-`const TOLERANCE_MM: f64 = 0.01;` that holds its own number. A length compared with a literal of 8 or more
+`const TOLERANCE_MM: f64 = 0.01;` that holds its own number, and a constant `*_MM` below a
+millimetre under any name. A length compared with a literal of 8 or more
 (`.len() > 64`, `(2..=16).contains(&x.len())`) is an unnamed size limit; it is
 counted as `<file> limit`.
 
@@ -28,10 +29,13 @@ BASELINE_NAME = "scripts/tolerance_literals_baseline.txt"
 SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/src/**/*.hxx", "crates/*/include/**/*.hxx"]
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 HOME = "crates/ketchup-tolerance/src/lib.rs"
+HOMES = {HOME, "crates/ketchup-tolerance/src/limits.rs"}
 LITERAL = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?:_f64)?[eE]-\d+")
 # A named tolerance holding its own number, `const FIT_TOLERANCE_MM: f64 = 0.01;`, is a
 # module-local tolerance as much as a literal 1e-7 is; one naming a home constant is not.
-NAMED = re.compile(r"\bconst\s+\w*(?:TOLERANCE|EPSILON|EPS)\w*\s*:\s*f(?:32|64)\s*=\s*-?\d",
+# A length below a millimetre is one under any name (`const TOUCH_MM: f64 = 0.01;`).
+NAMED = re.compile(r"\bconst\s+(?:\w*(?:TOLERANCE|EPSILON|EPS)\w*\s*:\s*f(?:32|64)\s*=\s*-?\d"
+                   r"|\w*_MM\w*\s*:\s*f(?:32|64)\s*=\s*0?\.\d)",
                    re.IGNORECASE)
 LIMIT_FLOOR = 8
 # `.len() <op> N` / `N <op> x.len()` and `(a..=N).contains(&x.len())` with a literal N.
@@ -75,7 +79,7 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
         for path in sorted(root.glob(pattern)):
             relative = path.relative_to(root)
             key = relative.as_posix()
-            if (key == HOME or EXCLUDED_PARTS & set(relative.parts[:-1])
+            if (key in HOMES or EXCLUDED_PARTS & set(relative.parts[:-1])
                     or path.stem.endswith("tests")):
                 continue
             text = production_text(path)

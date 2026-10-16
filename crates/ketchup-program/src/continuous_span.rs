@@ -8,8 +8,7 @@ use ketchup_tolerance::ROUNDING;
 /// A force spread evenly over [a, b] (a == b: a point load), newtons.
 pub(crate) type Piece = (f64, f64, f64);
 
-/// Point loads closer than this to a support act on it directly, mm.
-const AT_SUPPORT_MM: f64 = 0.5;
+use ketchup_model::tolerance::LOAD_AT_SUPPORT_MM as AT_SUPPORT_MM;
 
 /// Length of a bedded span in the moment equations, relative to the longest
 /// span: short enough to clamp its neighbours, long enough to keep the

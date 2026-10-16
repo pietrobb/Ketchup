@@ -60,6 +60,15 @@ pub const THREAD_APPROXIMATION_MM: f64 = 1.0e-4;
 /// PRG-8).
 pub const CONTACT_FIT_MM: f64 = 0.01;
 
+/// Agreement between a vertex of a picked face's display mesh and the program shape it
+/// was built from (a hole's wall or bottom), in mm. The mesh puts its vertices on the
+/// exact surface, so only rounding separates them.
+pub const PICK_MATCH_MM: f64 = 0.001;
+
+/// Distance within which a point load stands on a support of a continuous span, in mm:
+/// it then goes straight into that support instead of loading the span.
+pub const LOAD_AT_SUPPORT_MM: f64 = 0.5;
+
 /// Chord error for material face boundaries used by planar contact queries, in mm.
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
 /// Smallest angular sampling step for a material boundary, in radians.

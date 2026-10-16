@@ -3,7 +3,7 @@ use super::*;
 use ketchup_geometry::linalg::dot;
 use ketchup_program::model::{Hole, ProgramModel};
 
-const MATCH_MM: f64 = 0.001;
+use ketchup_model::tolerance::PICK_MATCH_MM as MATCH_MM;
 
 fn drilling(part: &Part, hole: &Hole, entry: [f64; 3], inward: [f64; 3]) -> Value {
     json!({

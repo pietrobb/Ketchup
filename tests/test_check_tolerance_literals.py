@@ -53,6 +53,23 @@ def test_documented_exceptions_are_not_counted(tmp_path):
     assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs": 2}
 
 
+def test_named_tolerances_count_by_name_and_by_a_length_below_a_millimetre(tmp_path):
+    # Review 2026-10-15 status PRG-8: `TOUCH_MM` and `MATCH_MM` held their own
+    # tolerance under a name the check did not know.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "const FIT_TOLERANCE_MM: f64 = 0.01;\n"
+        "const TOUCH_MM: f64 = 0.01;\n"
+        "const MATCH_MM: f32 = .001;\n"
+        "const WALL_MM: f64 = 12.0;\n"
+        "const SNAP: f64 = MATCH_MM;\n"
+        "// not a tolerance: the pen width of an edge.\nconst STROKE_MM: f64 = 0.18;\n",
+    )
+    write(tmp_path, "crates/ketchup-tolerance/src/limits.rs", "pub const MIN_LENGTH_MM: f64 = 0.01;\n")
+    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs": 3}
+
+
 def test_counts_size_limits_written_as_literals_next_to_a_length(tmp_path):
     write(
         tmp_path,

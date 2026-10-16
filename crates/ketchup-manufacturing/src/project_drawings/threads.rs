@@ -28,6 +28,7 @@ pub struct DrawingThread {
 }
 
 /// ISO 128-20's thinnest line: the thread root, thinner than the edges.
+// not a tolerance: a pen width on the sheet.
 const ROOT_STROKE_MM: f64 = 0.13;
 /// Straight pieces of a drawn quarter circle.
 const CHORDS_PER_QUARTER: u32 = 8;

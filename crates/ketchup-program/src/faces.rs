@@ -16,7 +16,7 @@ use crate::model::{
 };
 use boundary::{extrusion_section, profile_outline};
 use ketchup_geometry::linalg::{cross, dot, length};
-use ketchup_model::tolerance::APPROXIMATION;
+use ketchup_model::tolerance::{APPROXIMATION, CONTACT_FIT_MM};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
@@ -50,9 +50,6 @@ pub struct FaceFrame {
     /// Actual planar boundary rings; None denotes the rectangular span.
     pub boundary: Option<crate::contact::polygon::Rings>,
 }
-
-/// How close, in mm, a neighbour's edge must lie to a pulled face to follow it.
-const TOUCH_MM: f64 = 0.01;
 
 fn unit(axis: usize) -> [f64; 3] {
     std::array::from_fn(|index| if index == axis { 1.0 } else { 0.0 })
@@ -285,7 +282,8 @@ impl FaceFrame {
                 .iter()
                 .map(|at| at[axis])
                 .fold(f64::NEG_INFINITY, f64::max);
-            low <= moved.max[axis] + TOUCH_MM && high >= moved.min[axis] - TOUCH_MM
+            // A neighbour touching the pulled face follows it.
+            low <= moved.max[axis] + CONTACT_FIT_MM && high >= moved.min[axis] - CONTACT_FIT_MM
         });
         if edge.len() > 1 && !overlaps {
             return;
