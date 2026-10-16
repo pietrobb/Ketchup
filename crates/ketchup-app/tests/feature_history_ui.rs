@@ -15,8 +15,8 @@ use ketchup_model::assembly::{
 };
 use ketchup_model::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, OccurrenceId, ProfileSegment, ProposalPrincipal, RevisionOrigin, Snapshot,
-    Transform,
+    FeatureKind, HoleThread, OccurrenceId, ProfileSegment, ProposalPrincipal, RevisionOrigin,
+    Snapshot, Transform,
 };
 use ketchup_model::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
 use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
@@ -1743,4 +1743,177 @@ fn general_revolve_parameter_previews_confirms_and_undoes_through_headless_histo
     assert_eq!(shell.app().canonical_digest(), before.1);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(shell.app().canonical_digest(), edited_digest);
+}
+
+const TAPPED_POCKET: FeatureId = FeatureId(15);
+
+/// A 40 x 30 x 10 panel with one M8 tap drill hole, 8 deep, threaded 6.
+fn write_tapped_hole_fixture(path: &Path) {
+    let (center, radius) = ([20.0, 15.0], 3.4);
+    let point = |dx: f64, dy: f64| [center[0] + dx * radius, center[1] + dy * radius];
+    let arc = |start_mm, end_mm| ProfileSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm: center,
+        clockwise: false,
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Tapped panel".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(12),
+                definition_id: DEFINITION,
+                name: "Panel outline".to_owned(),
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(13),
+                definition_id: DEFINITION,
+                name: "10 mm panel".to_owned(),
+                kind: FeatureKind::extrusion(FeatureId(12), Dimension::from_decimal("10").unwrap()),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(14),
+                definition_id: DEFINITION,
+                name: "Tap drill circle".to_owned(),
+                kind: FeatureKind::Profile {
+                    segments: vec![
+                        arc(point(1.0, 0.0), point(0.0, 1.0)),
+                        arc(point(0.0, 1.0), point(-1.0, 0.0)),
+                        arc(point(-1.0, 0.0), point(0.0, -1.0)),
+                        arc(point(0.0, -1.0), point(1.0, 0.0)),
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: TAPPED_POCKET,
+                definition_id: DEFINITION,
+                name: "M8 hole".to_owned(),
+                kind: FeatureKind::pocket(
+                    FeatureId(13),
+                    FeatureId(14),
+                    Dimension::from_decimal("8").unwrap(),
+                ),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DEFINITION,
+                name: "Tapped panel".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetHoleThread {
+            id: TAPPED_POCKET,
+            thread: Some(HoleThread {
+                size: "M8".to_owned(),
+                pitch_mm: 1.25,
+                depth_mm: 6.0,
+                modeled: None,
+            }),
+        }]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
+fn replace_thread(shell: &mut Shell, value: &str) {
+    let label = shell.catalog().text("feature-history-thread");
+    shell.focus_text_input(&label);
+    shell.key(Key::A, ctrl());
+    shell.type_text(value);
+}
+
+fn hole_thread(shell: &Shell) -> Option<HoleThread> {
+    shell
+        .app()
+        .document_snapshot()
+        .hole_threads()
+        .find(|(id, _)| *id == TAPPED_POCKET)
+        .map(|(_, thread)| thread.clone())
+}
+
+/// The thread of a tapped hole is changed or removed in the feature history,
+/// one undo step each; a thread the hole does not take is refused by name and
+/// leaves the document as it was.
+#[test]
+fn a_tapped_holes_thread_is_changed_refused_and_removed_in_the_feature_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("tapped-hole.ketchup");
+    write_tapped_hole_fixture(&fixture);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&fixture)
+        .always_discard();
+    let mut shell =
+        Shell::with_catalog_and_dialogs(ketchup_interaction::LocaleCatalog::english(), dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    open_history(&mut shell);
+    shell.click_role_and_label(Role::Button, &feature_label(&shell, TAPPED_POCKET));
+    let field = shell.catalog().text("feature-history-thread");
+    let change = shell.catalog().text("feature-history-change-thread");
+    let remove = shell.catalog().text("feature-history-remove-thread");
+    assert!(shell.has_role_and_label(Role::TextInput, &field));
+    let original = hole_thread(&shell).unwrap();
+
+    let before = stamp(&shell);
+    replace_thread(&mut shell, "M8 4");
+    shell.click_button_label(&change);
+    assert_eq!(shell.app().undo_step_count(), before.2 + 1);
+    assert_eq!(
+        hole_thread(&shell),
+        Some(HoleThread {
+            depth_mm: 4.0,
+            ..original.clone()
+        })
+    );
+    assert!(
+        shell.app().action_digest().contains("M8×1.25 depth 4"),
+        "{}",
+        shell.app().action_digest()
+    );
+
+    // The 6.8 mm hole is not the M10 tap drill: nothing changes.
+    let changed = stamp(&shell);
+    replace_thread(&mut shell, "M10 4");
+    shell.click_button_label(&change);
+    assert_eq!(stamp(&shell), changed);
+    assert!(
+        shell.app().action_digest().contains("8.5 mm tap drill"),
+        "{}",
+        shell.app().action_digest()
+    );
+    replace_thread(&mut shell, "M8");
+    shell.click_button_label(&change);
+    assert_eq!(stamp(&shell), changed);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("digest-hole-thread-invalid")
+    );
+
+    shell.click_button_label(&remove);
+    assert_eq!(shell.app().undo_step_count(), changed.2 + 1);
+    assert_eq!(hole_thread(&shell), None);
+    assert!(
+        shell
+            .app()
+            .document_snapshot()
+            .feature(TAPPED_POCKET)
+            .is_some()
+    );
+    assert!(!shell.has_role_and_label(Role::Button, &remove));
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), changed.1);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.1);
+    assert_eq!(hole_thread(&shell), Some(original));
 }

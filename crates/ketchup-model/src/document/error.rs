@@ -551,11 +551,7 @@ impl fmt::Display for CanonicalError {
             Self::InvalidHoleThread(id) | Self::InvalidShaftThread(id) => {
                 write_invalid_thread(formatter, self, *id)
             }
-            Self::HoleThreadMismatch { id, mismatch } => write!(
-                formatter,
-                "the hole of feature {} does not take its thread: {mismatch}",
-                id.0
-            ),
+            Self::HoleThreadMismatch { id, mismatch } => write_thread_mismatch(formatter, *id, mismatch),
             Self::DraftAngleOutOfRange => write!(
                 formatter,
                 "a draft angle must be between {MIN_DRAFT_ANGLE_DEGREES} and \
@@ -835,6 +831,18 @@ impl fmt::Display for CanonicalError {
             Self::Caused { error, cause } => write!(formatter, "{error}: {cause}"),
         }
     }
+}
+
+fn write_thread_mismatch(
+    formatter: &mut fmt::Formatter<'_>,
+    id: FeatureId,
+    mismatch: &ketchup_geometry::tapping::TappedHoleMismatch,
+) -> fmt::Result {
+    write!(
+        formatter,
+        "the hole of feature {} does not take its thread: {mismatch}",
+        id.0
+    )
 }
 
 /// What a hole's or a shaft's thread `error` on feature `id` lacks.

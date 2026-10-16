@@ -22,6 +22,8 @@ use ketchup_model::shared_change::{
 };
 use ketchup_model::tolerance::ROUNDING;
 
+mod thread;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum FeatureHistoryPreviewKind {
     ExactEdit,
@@ -231,6 +233,8 @@ pub(super) struct FeatureHistoryUiState {
     parameter_source: Option<(u64, ExactParameterEditTarget)>,
     value_input: String,
     move_input: String,
+    thread_input: String,
+    thread_source: Option<(u64, FeatureId)>,
     change_scope: FeatureHistoryChangeScope,
     replacement_target: Option<DefinitionId>,
     preview: Option<FeatureHistoryUiPreview>,
@@ -253,8 +257,37 @@ enum FeatureHistoryUiAction {
     PreviewCreateSketchConstraint,
     PreviewReplaceSketchConstraint,
     PreviewDeleteSketchConstraint,
+    SetHoleThread { feature_id: FeatureId, remove: bool },
     Confirm,
     Cancel,
+}
+
+/// Whether `feature_id` is a profile some cut removes: a hole or slot the
+/// history can move.
+fn is_cut_profile(snapshot: &Snapshot, feature_id: FeatureId) -> bool {
+    let is_profile = snapshot.feature(feature_id).is_some_and(|feature| {
+        matches!(
+            feature.kind(),
+            FeatureKind::Sketch(_) | FeatureKind::Profile { .. }
+        )
+    });
+    is_profile
+        && snapshot.features().any(|feature| match feature.kind() {
+            FeatureKind::Pad(spec) if spec.operation.target().is_some() => {
+                spec.profile.feature_id() == feature_id
+            }
+            FeatureKind::Boolean {
+                operation: BooleanOperation::Cut,
+                tool,
+                ..
+            } => snapshot.feature(*tool).is_some_and(|tool| {
+                matches!(
+                    tool.kind(),
+                    FeatureKind::Pad(spec) if spec.profile.feature_id() == feature_id
+                )
+            }),
+            _ => false,
+        })
 }
 
 fn ids(values: &[FeatureId]) -> String {
@@ -2681,30 +2714,7 @@ impl KetchupApp {
                     }
                 }
             }
-            let is_profile = snapshot.feature(feature_id).is_some_and(|feature| {
-                matches!(
-                    feature.kind(),
-                    FeatureKind::Sketch(_) | FeatureKind::Profile { .. }
-                )
-            });
-            let is_cut_profile = is_profile
-                && snapshot.features().any(|feature| match feature.kind() {
-                    FeatureKind::Pad(spec) if spec.operation.target().is_some() => {
-                        spec.profile.feature_id() == feature_id
-                    }
-                    FeatureKind::Boolean {
-                        operation: BooleanOperation::Cut,
-                        tool,
-                        ..
-                    } => snapshot.feature(*tool).is_some_and(|tool| {
-                        matches!(
-                            tool.kind(),
-                            FeatureKind::Pad(spec) if spec.profile.feature_id() == feature_id
-                        )
-                    }),
-                    _ => false,
-                });
-            if is_cut_profile {
+            if is_cut_profile(&snapshot, feature_id) {
                 if self.feature_history.move_input.is_empty() {
                     self.feature_history.move_input = "0, 0".to_owned();
                 }
@@ -2722,6 +2732,9 @@ impl KetchupApp {
                 {
                     action = Some(FeatureHistoryUiAction::PreviewMove);
                 }
+            }
+            if let Some(thread_action) = self.hole_thread_editor(ui, &snapshot, feature_id) {
+                action = Some(thread_action);
             }
             let choices = self.feature_parameter_choices(&snapshot, feature_id);
             if self
@@ -2874,6 +2887,9 @@ impl KetchupApp {
             }
             Some(FeatureHistoryUiAction::PreviewDeleteSketchConstraint) => {
                 self.prepare_delete_sketch_constraint();
+            }
+            Some(FeatureHistoryUiAction::SetHoleThread { feature_id, remove }) => {
+                self.set_hole_thread(feature_id, remove);
             }
             Some(FeatureHistoryUiAction::Confirm) => {
                 self.confirm_feature_history_preview();
