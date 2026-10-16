@@ -113,7 +113,7 @@ jobs:
           persist-credentials: false
       - name: OCCT from the cache
         id: occt
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: third_party/occt-install-r0-v1
           key: occt-8.0.1-b8f597c6-windows-${{ hashFiles('scripts/windows/build-occt.ps1') }}
@@ -123,6 +123,14 @@ jobs:
         run: |
           git -c advice.detachedHead=false clone --quiet --depth 1 --branch V8_0_1 https://github.com/Open-Cascade-SAS/OCCT.git third_party/occt-src
           ./scripts/windows/build-occt.ps1 -RunnerToolchain -ParallelJobs 4
+      # Saved right after the build, so an hour of OCCT is kept even when a
+      # later step fails (the cache action alone saves only after success).
+      - name: OCCT into the cache
+        if: steps.occt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/occt-install-r0-v1
+          key: ${{ steps.occt.outputs.cache-primary-key }}
       - name: clippy
         run: cargo clippy --locked $env:CRATES.Split(' ') --all-targets -- -D warnings
       - name: workers for the tests
@@ -131,7 +139,12 @@ jobs:
         env:
           # Two OCCT test threads fit the runner's memory.
           RUST_TEST_THREADS: 2
-        run: cargo test --locked $env:CRATES.Split(' ') --no-fail-fast
+        # The runner has no GPU, only the WARP software adapter; the two
+        # proofs on a hardware DX12 adapter run on a developer machine.
+        run: >-
+          cargo test --locked $env:CRATES.Split(' ') --no-fail-fast --
+          --skip instanced_rendering::real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw
+          --skip instanced_rendering::garden_studio_hardware_gpu_camera_frames
 
   viewer-targets:
     name: clippy of the phone and browser Viewers
