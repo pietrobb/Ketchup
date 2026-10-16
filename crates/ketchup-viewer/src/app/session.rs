@@ -89,11 +89,16 @@ impl ViewerApp {
             write_durably(&dir.join(PACKAGE), |writer| model.export().write(writer))?;
         }
         if mark.unsaved {
-            std::fs::write(&marker, b"").map_err(|error| session_error(&marker, error))?;
+            // On disk, name included, before the comments it marks.
+            std::fs::File::create(&marker)
+                .and_then(|file| file.sync_all())
+                .and_then(|()| sync_directory(dir))
+                .map_err(|error| session_error(&marker, error))?;
         }
         write_durably(&comments, |writer| review.save(writer, model).map(drop))?;
         if !mark.unsaved {
             remove_if_present(&marker)?;
+            sync_directory(dir).map_err(|error| session_error(dir, error))?;
         }
         Ok(Some(mark))
     }
@@ -149,12 +154,24 @@ fn write_durably(
                 .map_err(|error| session_error(&temporary, error))
         })
         .and_then(|()| {
-            std::fs::rename(&temporary, path).map_err(|error| session_error(path, error))
+            std::fs::rename(&temporary, path)
+                .and_then(|()| sync_directory(path.parent().unwrap_or(Path::new("."))))
+                .map_err(|error| session_error(path, error))
         });
     if written.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
     written
+}
+
+/// A rename, creation or removal in `dir` survives a power loss only once the
+/// directory itself is synced; elsewhere there is no such call.
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 fn remove_if_present(path: &Path) -> Result<(), Rejection> {
