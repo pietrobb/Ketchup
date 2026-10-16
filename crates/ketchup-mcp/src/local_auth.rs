@@ -1,9 +1,65 @@
 //! OS-protected bootstrap files. No secret is written before permissions are sealed.
+//!
+//! The bootstrap itself never crosses the attach socket: the client and the
+//! window each prove they know it (`attach_proof`), so a program that took the
+//! address of a closed window learns nothing and cannot pass for the window.
+use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{self, Read},
     path::Path,
 };
+
+/// The attach request's proof: bound to the window it is for and the request's nonce.
+#[must_use]
+pub fn client_attach_proof(bootstrap: &str, instance_id: &str, nonce: &str) -> String {
+    attach_proof(bootstrap, "client", &[instance_id, nonce])
+}
+
+/// The window's proof with its attach answer, over the instance id, nonce,
+/// status, bridge address and token it answers (empty when absent).
+#[must_use]
+pub fn window_attach_proof(bootstrap: &str, answer: &[&str; 5]) -> String {
+    attach_proof(bootstrap, "window", answer)
+}
+
+/// HMAC-SHA256 (RFC 2104) keyed with `bootstrap` over `role` and the
+/// newline-separated `fields`, in lower hex.
+fn attach_proof(bootstrap: &str, role: &str, fields: &[&str]) -> String {
+    const BLOCK: usize = 64;
+    let mut key = [0_u8; BLOCK];
+    if bootstrap.len() > BLOCK {
+        key[..32].copy_from_slice(&Sha256::digest(bootstrap.as_bytes()));
+    } else {
+        key[..bootstrap.len()].copy_from_slice(bootstrap.as_bytes());
+    }
+    let mut inner = Sha256::new();
+    inner.update(key.map(|byte| byte ^ 0x36));
+    inner.update(role.as_bytes());
+    for field in fields {
+        inner.update(b"\n");
+        inner.update(field.as_bytes());
+    }
+    let mut outer = Sha256::new();
+    outer.update(key.map(|byte| byte ^ 0x5c));
+    outer.update(inner.finalize());
+    outer
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Whether `supplied` is `expected`, compared in time independent of where they differ.
+#[must_use]
+pub fn proofs_match(supplied: &str, expected: &str) -> bool {
+    supplied.len() == expected.len()
+        && supplied
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0_u8, |diff, (a, b)| diff | (a ^ b))
+            == 0
+}
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -90,6 +146,26 @@ mod tests {
         assert_eq!(read_private(file.path()).unwrap(), b"private bootstrap");
         file.write_all(&[0; 513]).unwrap();
         assert!(read_private(file.path()).is_err());
+    }
+
+    #[test]
+    fn attach_proof_is_hmac_sha256_of_role_and_fields() {
+        // RFC 4231, test case 2.
+        assert_eq!(
+            attach_proof("Jefe", "what do ya want for nothing?", &[]),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        let proof = attach_proof(&"b".repeat(64), "client", &["id", "nonce"]);
+        assert_eq!(
+            proof,
+            attach_proof(&"b".repeat(64), "client\nid\nnonce", &[])
+        );
+        assert_ne!(
+            proof,
+            attach_proof(&"b".repeat(64), "window", &["id", "nonce"])
+        );
+        assert!(proofs_match(&proof, &proof.clone()));
+        assert!(!proofs_match(&proof[..63], &proof));
     }
     #[cfg(unix)]
     #[test]

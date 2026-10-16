@@ -4,6 +4,7 @@
 //! in the per-user discovery directory. One line of JSON asks the window to
 //! `list` itself (document name, whether a client is attached) or to `attach`,
 //! which returns the live bridge address and a fresh credential.
+use crate::local_auth::{client_attach_proof, proofs_match, window_attach_proof};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -216,7 +217,7 @@ fn exchange(
     stream.set_read_timeout(Some(timeout))?;
     let mut request = json!({"version": 1, "action": action, "nonce": nonce});
     if let Some(bootstrap) = bootstrap {
-        request["bootstrap"] = Value::String(bootstrap.to_owned());
+        request["proof"] = client_attach_proof(bootstrap, instance_id, &nonce).into();
     }
     let mut line = request.to_string();
     line.push('\n');
@@ -232,7 +233,32 @@ fn exchange(
             "attach endpoint answered for another request or window",
         ));
     }
+    if let Some(bootstrap) = bootstrap
+        && !reply["proof"]
+            .as_str()
+            .is_some_and(|proof| proofs_match(proof, &window_proof(bootstrap, &reply)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the attach endpoint did not prove it is the window: the window may have closed and another program now holds its address; list the windows again",
+        ));
+    }
     Ok(reply)
+}
+
+/// The proof a window gives with `reply` (`local_auth::window_attach_proof`).
+pub(crate) fn window_proof(bootstrap: &str, reply: &Value) -> String {
+    let field = |name: &str| reply[name].as_str().unwrap_or("");
+    window_attach_proof(
+        bootstrap,
+        &[
+            field("instance_id"),
+            field("nonce"),
+            field("status"),
+            field("live_bridge_address"),
+            field("token"),
+        ],
+    )
 }
 
 pub(crate) fn nonce() -> io::Result<String> {

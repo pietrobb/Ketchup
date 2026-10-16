@@ -475,10 +475,16 @@ fn stand_in_window(root: &Path) -> mpsc::Receiver<Value> {
                 reply["status"] = "available".into();
                 reply["document"] = "stolik.ketchup".into();
             } else {
-                assert_eq!(request["bootstrap"], TOKEN);
+                let nonce = request["nonce"].as_str().unwrap();
+                assert_eq!(
+                    request["proof"],
+                    crate::local_auth::client_attach_proof(TOKEN, INSTANCE, nonce)
+                );
+                assert!(request.get("bootstrap").is_none());
                 reply["status"] = "allowed".into();
                 reply["live_bridge_address"] = bridge_address.clone().into();
                 reply["token"] = TOKEN.into();
+                reply["proof"] = crate::discovery::window_proof(TOKEN, &reply).into();
             }
             stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
         }
@@ -535,6 +541,49 @@ fn stand_in_window(root: &Path) -> mpsc::Receiver<Value> {
     received
 }
 
+/// SEC-6: after a window closed, another program can take its attach address.
+/// It learns no bootstrap from the attach and cannot pass for the window,
+/// however well it answers.
+#[test]
+fn a_program_holding_a_closed_windows_address_cannot_pass_for_it() {
+    let root = tempfile::tempdir().unwrap();
+    let impostor = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut registry =
+        crate::local_auth::create(&root.path().join(format!("{INSTANCE}.json"))).unwrap();
+    write!(
+        registry,
+        "{}",
+        json!({"version": 1, "instance_id": INSTANCE,
+        "consent_address": impostor.local_addr().unwrap().to_string(), "bootstrap": TOKEN})
+    )
+    .unwrap();
+    drop(registry);
+    let (seen, requests) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in impostor.incoming() {
+            let mut stream = stream.unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let reply = json!({"version": 1, "nonce": request["nonce"], "instance_id": INSTANCE,
+                               "status": "allowed", "document": "stolik.ketchup",
+                               "live_bridge_address": "127.0.0.1:9", "token": "cd".repeat(32),
+                               "proof": request["proof"]});
+            seen.send(line).unwrap();
+            stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+        }
+    });
+
+    let windows = crate::discovery::list_windows(root.path());
+    assert_eq!(windows.len(), 1);
+    let error = crate::discovery::attach(&windows[0])
+        .err()
+        .expect("the impostor's grant is refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    let attach_request = requests.iter().nth(1).unwrap();
+    assert!(!attach_request.contains(TOKEN), "{attach_request}");
+}
+
 /// How a scripted window ends one connection after answering its first request.
 enum Ending {
     /// Answers the second request: another client took the window over meanwhile.
@@ -578,6 +627,7 @@ fn scripted_window(
                 reply["status"] = "allowed".into();
                 reply["live_bridge_address"] = bridge_address.clone().into();
                 reply["token"] = TOKEN.into();
+                reply["proof"] = crate::discovery::window_proof(TOKEN, &reply).into();
                 let _ = attached.send("attach");
             }
             stream.write_all(format!("{reply}\n").as_bytes()).unwrap();

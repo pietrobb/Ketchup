@@ -430,7 +430,7 @@ fn request_broker_authenticated(
     address: std::net::SocketAddr,
     action: &str,
     nonce: &str,
-    bootstrap: &str,
+    proof: &str,
 ) -> serde_json::Value {
     let mut stream = TcpStream::connect(address).unwrap();
     stream
@@ -440,7 +440,7 @@ fn request_broker_authenticated(
         "version": 1,
         "action": action,
         "nonce": nonce,
-        "bootstrap": bootstrap,
+        "proof": proof,
     });
     let mut bytes = serde_json::to_vec(&request).unwrap();
     bytes.push(b'\n');
@@ -460,12 +460,26 @@ fn request_broker_authenticated(
 fn request_consent(
     address: std::net::SocketAddr,
     nonce: &str,
-    bootstrap: &str,
+    bootstrap: &Bootstrap,
 ) -> serde_json::Value {
-    request_broker_authenticated(address, "attach", nonce, bootstrap)
+    request_broker_authenticated(address, "attach", nonce, &bootstrap.proof(nonce))
 }
 
-fn bootstrap(shell: &Shell, root: Option<&std::path::Path>) -> String {
+/// A window's registry entry as the MCP server reads it: the bootstrap stays
+/// here, the attach request carries only a proof of it.
+#[derive(Clone)]
+struct Bootstrap {
+    instance_id: String,
+    secret: String,
+}
+
+impl Bootstrap {
+    fn proof(&self, nonce: &str) -> String {
+        ketchup_mcp::local_auth::client_attach_proof(&self.secret, &self.instance_id, nonce)
+    }
+}
+
+fn bootstrap(shell: &Shell, root: Option<&std::path::Path>) -> Bootstrap {
     let default = std::env::var_os(if cfg!(windows) {
         "LOCALAPPDATA"
     } else {
@@ -481,7 +495,10 @@ fn bootstrap(shell: &Shell, root: Option<&std::path::Path>) -> String {
         ));
     let entry: serde_json::Value =
         serde_json::from_slice(&ketchup_mcp::local_auth::read_private(&path).unwrap()).unwrap();
-    entry["bootstrap"].as_str().unwrap().to_owned()
+    Bootstrap {
+        instance_id: entry["instance_id"].as_str().unwrap().to_owned(),
+        secret: entry["bootstrap"].as_str().unwrap().to_owned(),
+    }
 }
 
 fn finish_attach(
@@ -839,9 +856,10 @@ fn local_attach_is_granted_without_prompt_and_disconnect_revokes_the_credential(
 
     // A new attach takes the window over even though the first client never
     // disconnected (it may be gone or forgotten); the old credential dies.
-    // Missing and wrong bootstrap cannot revoke the active credential.
+    // A missing or wrong proof, or the bootstrap itself sent in its place,
+    // cannot revoke the active credential.
     let mut active = TcpStream::connect(address).unwrap();
-    for wrong in ["", &"0".repeat(64)] {
+    for wrong in ["", &"0".repeat(64), &bootstrap.secret] {
         let denied =
             request_broker_authenticated(consent_address, "attach", &"f".repeat(64), wrong);
         assert_eq!(denied["status"], "rejected");
@@ -1012,7 +1030,7 @@ fn disconnected_attach_requester_cannot_leave_window_busy() {
             "version": 1,
             "action": "attach",
             "nonce": "a".repeat(64),
-            "bootstrap": bootstrap,
+            "proof": bootstrap.proof(&"a".repeat(64)),
         })
     )
     .unwrap();

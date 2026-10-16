@@ -84,8 +84,10 @@ struct AttachRequest {
     version: u32,
     action: String,
     nonce: String,
+    /// `local_auth::client_attach_proof`: the client knows the bootstrap,
+    /// which itself never crosses the socket.
     #[serde(default)]
-    bootstrap: String,
+    proof: String,
 }
 
 #[derive(Serialize)]
@@ -98,6 +100,7 @@ struct AttachResponse<'a> {
     live_bridge_address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     token: Option<&'a str>,
+    proof: &'a str,
 }
 
 #[derive(Serialize)]
@@ -530,19 +533,13 @@ fn serve(
                 .clone();
             return write_list_response(&mut stream, &nonce, instance_id, &state, stop);
         }
-        if !valid_nonce(&request.bootstrap)
-            || request
-                .bootstrap
-                .as_bytes()
-                .iter()
-                .zip(bootstrap.bytes())
-                .fold(0u8, |diff, (a, b)| diff | (a ^ b))
-                != 0
-        {
+        let expected = ketchup_mcp::local_auth::client_attach_proof(bootstrap, instance_id, &nonce);
+        if !ketchup_mcp::local_auth::proofs_match(&request.proof, &expected) {
             return write_response(
                 &mut stream,
                 &nonce,
                 instance_id,
+                bootstrap,
                 ConsentDecision::Reject,
                 stop,
             );
@@ -558,6 +555,7 @@ fn serve(
                 &mut stream,
                 &nonce,
                 instance_id,
+                bootstrap,
                 ConsentDecision::Busy,
                 stop,
             );
@@ -591,7 +589,7 @@ fn serve(
         };
         stream.set_nonblocking(false)?;
         let allowed = matches!(decision, ConsentDecision::Allow { .. });
-        let result = write_response(&mut stream, &nonce, instance_id, decision, stop);
+        let result = write_response(&mut stream, &nonce, instance_id, bootstrap, decision, stop);
         if allowed {
             let _ = delivery_sender.send(result.is_ok());
             context.request_repaint();
@@ -709,34 +707,41 @@ fn write_list_response(
     )
 }
 
+/// Answers an attach with `decision` and the window's proof that it knows the
+/// bootstrap, so the client never takes another program for this window.
 fn write_response(
     stream: &mut TcpStream,
     nonce: &str,
     instance_id: &str,
+    bootstrap: &str,
     decision: ConsentDecision,
     stop: &AtomicBool,
 ) -> io::Result<()> {
-    let response = match &decision {
-        ConsentDecision::Allow { address, token } => AttachResponse {
-            version: 1,
-            nonce,
-            status: "allowed",
+    let (status, live_bridge_address, token) = match &decision {
+        ConsentDecision::Allow { address, token } => {
+            ("allowed", Some(address.to_string()), Some(token.as_str()))
+        }
+        ConsentDecision::Busy => ("busy", None, None),
+        ConsentDecision::Reject => ("rejected", None, None),
+    };
+    let proof = ketchup_mcp::local_auth::window_attach_proof(
+        bootstrap,
+        &[
             instance_id,
-            live_bridge_address: Some(address.to_string()),
-            token: Some(token),
-        },
-        ConsentDecision::Reject | ConsentDecision::Busy => AttachResponse {
-            version: 1,
             nonce,
-            status: if matches!(decision, ConsentDecision::Busy) {
-                "busy"
-            } else {
-                "rejected"
-            },
-            instance_id,
-            live_bridge_address: None,
-            token: None,
-        },
+            status,
+            live_bridge_address.as_deref().unwrap_or(""),
+            token.unwrap_or(""),
+        ],
+    );
+    let response = AttachResponse {
+        version: 1,
+        nonce,
+        status,
+        instance_id,
+        live_bridge_address,
+        token,
+        proof: &proof,
     };
     write_json_line(stream, &response, stop)
 }
@@ -782,6 +787,18 @@ fn write_json_line(
 mod tests {
     use super::*;
 
+    /// An attach request as the MCP server sends it: proving it knows the
+    /// registry's bootstrap without sending it.
+    fn attach_line(registry: &serde_json::Value, nonce: impl AsRef<str>) -> serde_json::Value {
+        let nonce = nonce.as_ref();
+        let proof = ketchup_mcp::local_auth::client_attach_proof(
+            registry["bootstrap"].as_str().unwrap(),
+            registry["instance_id"].as_str().unwrap(),
+            nonce,
+        );
+        serde_json::json!({"version": 1, "action": "attach", "nonce": nonce, "proof": proof})
+    }
+
     #[test]
     fn registry_destination_is_invisible_until_complete() {
         let directory = tempfile::tempdir().unwrap();
@@ -822,7 +839,7 @@ mod tests {
             &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
         )
         .unwrap();
-        writeln!(attach, "{}", serde_json::json!({"version":1,"action":"attach","nonce":"0".repeat(64),"bootstrap":registry["bootstrap"]})).unwrap();
+        writeln!(attach, "{}", attach_line(&registry, "0".repeat(64))).unwrap();
         let pending = broker
             .requests
             .recv_timeout(Duration::from_secs(1))
@@ -860,7 +877,7 @@ mod tests {
         .unwrap();
         let attach = |nonce: &str| {
             let mut stream = TcpStream::connect(broker.address).unwrap();
-            writeln!(stream, "{}", serde_json::json!({"version":1,"action":"attach","nonce":nonce,"bootstrap":registry["bootstrap"]})).unwrap();
+            writeln!(stream, "{}", attach_line(&registry, nonce)).unwrap();
             stream
         };
         // The UI thread (held by a dialog or a long load) takes neither request:
@@ -890,6 +907,52 @@ mod tests {
         let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
         assert_eq!(response["status"], "busy");
         assert!(response.get("token").is_none());
+        // The window proves it knows the bootstrap, bound to this answer.
+        let field = |name: &str| response[name].as_str().unwrap_or("").to_owned();
+        assert_eq!(
+            field("proof"),
+            ketchup_mcp::local_auth::window_attach_proof(
+                registry["bootstrap"].as_str().unwrap(),
+                &[&field("instance_id"), &field("nonce"), "busy", "", ""],
+            )
+        );
+    }
+
+    /// SEC-6: the bootstrap never crosses the socket, and a request that
+    /// sends it instead of a proof is not let in.
+    #[test]
+    fn an_attach_sending_the_bootstrap_itself_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let broker = start(
+            egui::Context::default(),
+            directory.path(),
+            "Untitled".to_owned(),
+            true,
+        )
+        .unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(
+            &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
+        )
+        .unwrap();
+        let mut stream = TcpStream::connect(broker.address).unwrap();
+        writeln!(
+            stream,
+            "{}",
+            serde_json::json!({"version": 1, "action": "attach", "nonce": "7".repeat(64),
+                               "proof": registry["bootstrap"]})
+        )
+        .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["status"], "rejected");
+        assert!(
+            broker.requests.try_recv().is_err(),
+            "the UI was never asked"
+        );
     }
 
     #[test]
@@ -907,7 +970,7 @@ mod tests {
         .unwrap();
         let attach = |nonce: &str| {
             let mut stream = TcpStream::connect(address).unwrap();
-            writeln!(stream, "{}", serde_json::json!({"version":1,"action":"attach","nonce":nonce,"bootstrap":registry["bootstrap"]})).unwrap();
+            writeln!(stream, "{}", attach_line(&registry, nonce)).unwrap();
             stream
         };
         let take_request = |app: &KetchupApp| {
@@ -965,7 +1028,7 @@ mod tests {
             &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
         )
         .unwrap();
-        writeln!(attach, "{}", serde_json::json!({"version":1,"action":"attach","nonce":"2".repeat(64),"bootstrap":registry["bootstrap"]})).unwrap();
+        writeln!(attach, "{}", attach_line(&registry, "2".repeat(64))).unwrap();
         let pending = broker
             .requests
             .recv_timeout(Duration::from_secs(1))
