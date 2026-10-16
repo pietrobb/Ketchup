@@ -4,6 +4,7 @@ import android.app.NativeActivity;
 import android.content.ClipData;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.UriPermission;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
@@ -13,6 +14,9 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.util.ArrayDeque;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
 
 /**
  * The Viewer's NativeActivity plus the file traffic native code cannot do on
@@ -24,6 +28,8 @@ public class ViewerActivity extends NativeActivity {
     private static final int OPENED_BY_ANOTHER_APP = 0;
 
     private final ArrayDeque<String> results = new ArrayDeque<>();
+    /** The grants a dialog offered to keep across starts, by uri; taken only while a save needs them. */
+    private final HashMap<String, Integer> offered = new HashMap<>();
     private volatile String lastError = "";
 
     @Override
@@ -59,13 +65,9 @@ public class ViewerActivity extends NativeActivity {
         super.onActivityResult(code, result, data);
         Uri uri = result == RESULT_OK && data != null ? data.getData() : null;
         if (uri != null && (data.getFlags() & Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) != 0) {
-            // A save Android cuts off by ending the app is undone at the next
-            // start, which needs the grant to write the document again.
-            try {
-                getContentResolver().takePersistableUriPermission(uri, data.getFlags()
+            synchronized (this) {
+                offered.put(uri.toString(), data.getFlags()
                         & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
-            } catch (Throwable error) {
-                lastError = error.toString();
             }
         }
         push(code, uri);
@@ -175,6 +177,50 @@ public class ViewerActivity extends NativeActivity {
         } catch (Throwable error) {
             lastError = error.toString();
             return -1;
+        }
+    }
+
+    /**
+     * Keeps the grant to write {@code uri} across starts while a save to it
+     * runs: a save Android cuts off by ending the app is undone at the next
+     * start, which writes the document again. False with {@link #lastError}
+     * set when it could not be kept; a uri no dialog offered to keep has
+     * nothing to keep.
+     */
+    public boolean holdGrant(String uri) {
+        Integer flags;
+        synchronized (this) {
+            flags = offered.get(uri);
+        }
+        if (flags == null) {
+            return true;
+        }
+        try {
+            getContentResolver().takePersistableUriPermission(Uri.parse(uri), flags);
+            return true;
+        } catch (Throwable error) {
+            lastError = error.toString();
+            return false;
+        }
+    }
+
+    /**
+     * Gives back every grant kept across starts except those for the
+     * {@code keep} uris, one per line: Android allows an app only so many.
+     */
+    public void releaseGrantsExcept(String keep) {
+        HashSet<String> kept = new HashSet<>(Arrays.asList(keep.split("\n")));
+        try {
+            for (UriPermission grant : getContentResolver().getPersistedUriPermissions()) {
+                if (kept.contains(grant.getUri().toString())) {
+                    continue;
+                }
+                int flags = (grant.isReadPermission() ? Intent.FLAG_GRANT_READ_URI_PERMISSION : 0)
+                        | (grant.isWritePermission() ? Intent.FLAG_GRANT_WRITE_URI_PERMISSION : 0);
+                getContentResolver().releasePersistableUriPermission(grant.getUri(), flags);
+            }
+        } catch (Throwable error) {
+            lastError = error.toString();
         }
     }
 

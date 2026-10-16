@@ -14,7 +14,9 @@ use ketchup_view_format::Package;
 use ketchup_viewer::app::{FileRequest, ViewerApp};
 use ketchup_viewer::review::Written;
 
-use crate::replace::{Interrupted, ReplaceFailure, recover_interrupted, replace_keeping_original};
+use crate::replace::{
+    Interrupted, ReplaceFailure, pending_targets, recover_interrupted, replace_keeping_original,
+};
 
 /// Request code ViewerActivity gives a file another app opened with the Viewer.
 const OPENED_BY_ANOTHER_APP: i32 = 0;
@@ -299,7 +301,14 @@ impl Files {
             self.open_file(uri, "wt", uri)
                 .map_err(std::io::Error::other)
         };
-        replace_keeping_original(original, open_write, uri, &backup, bytes).map_err(|failure| {
+        // Without the grant a save cut off now is still put back in this
+        // process, just not at the next start.
+        if let Err(error) = self.hold_grant(uri) {
+            log::error!("{error}");
+        }
+        let replaced = replace_keeping_original(original, open_write, uri, &backup, bytes);
+        self.release_grants_except(&pending_targets(&private));
+        replaced.map_err(|failure| {
             match failure {
                 ReplaceFailure::Unchanged(error) => failed()
                     .caused_by(error)
@@ -362,6 +371,47 @@ impl Files {
                     ))
                     .fix_hint("Check the file, and save again if it should hold your comments."),
             });
+        }
+        // Also gives back the grants earlier versions kept for every file.
+        self.release_grants_except(&pending_targets(&private));
+    }
+
+    /// Keeps the grant to write `uri` across starts while a save to it runs.
+    fn hold_grant(&self, uri: &str) -> Result<(), Rejection> {
+        let held = with_activity(&self.android_app, |env, activity| {
+            let uri = env.new_string(uri)?;
+            let held = env
+                .call_method(
+                    activity,
+                    jni_str!("holdGrant"),
+                    jni_sig!("(Ljava/lang/String;)Z"),
+                    &[(&uri).into()],
+                )?
+                .z()?;
+            if held {
+                Ok(Ok(()))
+            } else {
+                last_error(env, activity).map(Err)
+            }
+        });
+        answered("viewer.android.grant", uri, held)
+    }
+
+    /// Gives back every write grant kept across starts but those of the
+    /// documents in `pending`: Android allows an app only so many.
+    fn release_grants_except(&self, pending: &[String]) {
+        let released = with_activity(&self.android_app, |env, activity| {
+            let keep = env.new_string(pending.join("\n"))?;
+            env.call_method(
+                activity,
+                jni_str!("releaseGrantsExcept"),
+                jni_sig!("(Ljava/lang/String;)V"),
+                &[(&keep).into()],
+            )
+            .map(drop)
+        });
+        if let Err(error) = released {
+            log::error!("Giving back file grants failed: {error}");
         }
     }
 }

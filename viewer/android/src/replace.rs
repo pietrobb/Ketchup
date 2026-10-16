@@ -294,6 +294,26 @@ pub(crate) fn recover_interrupted<R: Read, W: Write>(
     outcomes
 }
 
+/// The documents a replacement in `private` still has to finish at a start:
+/// the only ones whose write grant is to be kept across starts.
+pub(crate) fn pending_targets(private: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(private) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == RECORD)
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("replacing-"))
+        })
+        .filter_map(|path| Record::parse(&std::fs::read_to_string(path).ok()?))
+        .map(|record| record.target)
+        .collect()
+}
+
 fn recover<R: Read, W: Write>(
     record: &Record,
     backup: &Path,
@@ -764,7 +784,11 @@ mod tests {
                 assert_eq!(write.kind(), io::ErrorKind::StorageFull);
                 assert_eq!(restore.kind(), io::ErrorKind::StorageFull);
                 assert_eq!(std::fs::read(&kept).unwrap(), b"the original");
-                std::fs::remove_file(kept).unwrap();
+                // Its write grant is kept for the next start, and only its.
+                let private = kept.parent().unwrap();
+                assert_eq!(pending_targets(private), [TARGET]);
+                assert!(document.recover(private).len() == 1);
+                assert!(pending_targets(private).is_empty());
             }
             other => panic!("{other:?}"),
         }
