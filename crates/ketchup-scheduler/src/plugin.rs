@@ -3,6 +3,8 @@ use ketchup_assistant::extension::{
     PluginLimits, PluginManifest, PluginProgram, PluginRequest, PluginResponse,
 };
 use ketchup_model::document::Snapshot;
+#[cfg(unix)]
+use process_wrap::std::ProcessGroup;
 use process_wrap::std::{ChildWrapper, CommandWrap};
 #[cfg(windows)]
 use process_wrap::std::{JobObject, KillOnDrop};
@@ -42,6 +44,10 @@ pub(crate) fn spawn_plugin_process(
     // Kill-on-close job: the plugin dies with the host process, see spawn_exact_worker_command.
     #[cfg(windows)]
     command.wrap(KillOnDrop).wrap(JobObject);
+    // Its own process group: stopping the plugin signals the group, so a
+    // process the plugin started does not outlive it (SEC-6).
+    #[cfg(unix)]
+    command.wrap(ProcessGroup::leader());
     command
         .spawn()
         .map_err(|error| PluginHostError::Spawn(error.to_string()))
@@ -547,5 +553,39 @@ mod tests {
             .and_then(|inner| inner.downcast_ref::<std::str::Utf8Error>())
             .expect("the UTF-8 decoding error is the cause");
         assert_eq!(cause.valid_up_to(), 5);
+    }
+
+    /// SEC-6: on Unix the plugin runs in its own process group, so stopping
+    /// it also stops a process it started (Windows: the job object does).
+    #[cfg(unix)]
+    #[test]
+    fn stopping_a_plugin_also_stops_the_process_it_started() {
+        let mut child = spawn_plugin_process(
+            Path::new("/bin/sh"),
+            &["-c".into(), "/bin/sleep 60 & echo $!; wait".into()],
+            None,
+        )
+        .unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout().take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let started = line.trim().to_owned();
+        assert!(started.parse::<u32>().is_ok(), "{line:?}");
+        terminate(child.as_mut()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Command::new("kill")
+            .args(["-0", &started])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the plugin's process {started} outlived it"
+            );
+            std::thread::sleep(POLL_INTERVAL);
+        }
     }
 }
