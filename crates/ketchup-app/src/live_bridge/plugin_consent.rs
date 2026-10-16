@@ -10,7 +10,6 @@ use super::*;
 use crate::dialogs::HighRiskConfirmationRequest;
 use ketchup_model::graph::sha256_hex;
 use std::collections::BTreeSet;
-use std::path::Component;
 
 /// A plugin folder: every file under it by relative path and SHA-256.
 #[derive(Clone, Debug, Eq, PartialEq)]
