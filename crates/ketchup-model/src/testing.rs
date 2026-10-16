@@ -159,7 +159,17 @@ pub fn rewrite_saved_snapshot(saved: &[u8], edit: impl FnOnce(&mut ciborium::Val
 /// is `history`, so a test can hand the loader an Undo history no writer produced.
 #[must_use]
 pub fn save_with_history_entry(document: &DocumentStore, history: Vec<u8>) -> Vec<u8> {
-    crate::persistence::save_with_history_entry(document, history)
+    crate::persistence::save_with_history_entry(document, history, None)
+}
+
+/// As [`save_with_history_entry`], with `program` as the file's `program.json`.
+#[must_use]
+pub fn save_with_program_entry(
+    document: &DocumentStore,
+    history: Vec<u8>,
+    program: Vec<u8>,
+) -> Vec<u8> {
+    crate::persistence::save_with_history_entry(document, history, Some(program))
 }
 
 /// Returns the entry of a CBOR map by text key or integer key.

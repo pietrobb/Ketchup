@@ -219,7 +219,7 @@ fn with_program_json(document: &DocumentStore, bytes: &[u8], json: &str) -> Vec<
 }
 
 #[test]
-fn a_file_with_an_invalid_variant_is_refused_by_name_and_never_opened_without_it() {
+fn an_invalid_variant_is_refused_by_name_in_program_json_and_costs_the_history_in_an_undo_step() {
     use ketchup_model::document::{MAX_RULE_PROGRAM_VARIANTS, RuleProgramError};
     let mut document = graph_document();
     let program = program_with_variants();
@@ -267,8 +267,24 @@ fn a_file_with_an_invalid_variant_is_refused_by_name_and_never_opened_without_it
             },
         ),
     ] {
+        // Review 2026-10-15 status N-5: the file stores the document's program
+        // in program.json, so a bad program of an Undo step costs the steps,
+        // with the reason, and not the file.
         let damaged = with_program_json(&document, &bytes, &program_json(&variants));
-        let error = load_error(&damaged);
+        let reason = discarded_history(&damaged);
+        assert!(
+            reason.contains(&expected.to_string()),
+            "{variants}: {reason}"
+        );
+
+        // The program the file stores beside the document is refused by name.
+        let (_, offset, len) = container_entry_offsets(&bytes, "history.bin");
+        let refused = ketchup_model::testing::save_with_program_entry(
+            &document,
+            bytes[offset..offset + len].to_vec(),
+            program_json(&variants).into_bytes(),
+        );
+        let error = load_error(&refused);
         assert_eq!(
             error,
             PersistenceError::InvalidRuleProgram(expected.clone()),

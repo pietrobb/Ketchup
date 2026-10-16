@@ -910,15 +910,22 @@ pub fn headless_count_history_encodes<T>(operation: impl FnOnce() -> T) -> (T, u
     (result, HISTORY_ENCODES.get() - before)
 }
 
-/// The current revision of `document` saved with `history` as its `history.bin`.
+/// The current revision of `document` saved with `history` as its `history.bin`
+/// and `program` as its `program.json`, else the document's own program.
 #[cfg(feature = "testing")]
-pub(crate) fn save_with_history_entry(document: &DocumentStore, history: Vec<u8>) -> Vec<u8> {
+pub(crate) fn save_with_history_entry(
+    document: &DocumentStore,
+    history: Vec<u8>,
+    program: Option<Vec<u8>>,
+) -> Vec<u8> {
     save_container_entries(
         &encoded_snapshot(&document.current()),
         &ContainerData::default(),
         BTreeSet::new(),
         Some(history),
-        encoded_program(document.current_rule_program()).expect("a bound program encodes"),
+        program.or_else(|| {
+            encoded_program(document.current_rule_program()).expect("a bound program encodes")
+        }),
     )
     .expect("a test document fits the container")
 }
@@ -1868,9 +1875,13 @@ fn load_container(bytes: &[u8], with_history: bool) -> Result<LoadOutcome, Persi
             HISTORY_BUDGET,
         );
         match (&mut outcome, restored) {
-            // A program the file holds but that breaks its rules is refused by
-            // name; dropping the history would silently drop the program too.
-            (_, Err(error @ PersistenceError::InvalidRuleProgram(_))) => return Err(error),
+            // Without program.json the history is the program's only home, so a
+            // program that breaks its rules is refused by name; dropping the
+            // history would silently drop the program too. With it, a bad
+            // program of an Undo step costs the steps, not the file (N-5).
+            (_, Err(error @ PersistenceError::InvalidRuleProgram(_))) if program.is_none() => {
+                return Err(error);
+            }
             // A history a newer Kečup wrote is not damaged: opened without it,
             // the next Save would overwrite its steps with this one revision.
             (_, Err(error @ PersistenceError::UnsupportedHistorySchema(schema)))
@@ -1972,7 +1983,7 @@ fn decode_revision_history(
 
     let mut records = Vec::with_capacity(count);
     let mut assembled = 0u64;
-    let mut programs = BTreeMap::new();
+    let mut programs = BTreeSet::new();
     let mut program_bytes = 0u64;
     let mut previous_revision_id = None;
     let mut checkpoint_names = BTreeSet::new();
@@ -2016,35 +2027,30 @@ fn decode_revision_history(
                     if length > crate::document::MAX_RULE_PROGRAM_BYTES {
                         return Err(PersistenceError::ResourceLimit);
                     }
-                    Some(Arc::new(decode_rule_program(reader.take(length)?)?))
+                    Some(HistoryProgram::Inline(reader.take(length)?))
                 }
                 HISTORY_RULE_PROGRAM_IN_CHUNKS if schema >= 5 => {
                     let (length, checksum, numbers) =
                         read_chunk_list(&mut reader, crate::document::MAX_RULE_PROGRAM_BYTES)?;
-                    let program = HistorySnapshot::Chunks {
-                        length,
-                        checksum,
-                        numbers,
-                    };
-                    // A program the history named before is the same one, held once.
-                    if let Some(decoded) = programs.get(&(length, checksum, numbers)) {
-                        Some(Arc::clone(decoded))
-                    } else {
+                    // A program the history named before is the same one, counted once.
+                    if programs.insert((length, checksum, numbers)) {
                         program_bytes = check_assembled(
                             HISTORY_PROGRAMS_ENTRY,
                             program_bytes,
                             length,
                             budget.programs,
                         )?;
-                        let decoded = Arc::new(decode_rule_program(&program.assemble(&chunks)?)?);
-                        programs.insert((length, checksum, numbers), Arc::clone(&decoded));
-                        Some(decoded)
                     }
+                    Some(HistoryProgram::Chunks {
+                        length,
+                        checksum,
+                        numbers,
+                    })
                 }
                 HISTORY_RULE_PROGRAM_AS_PREVIOUS if schema >= 4 => Some(
                     records
                         .last()
-                        .and_then(|previous: &HistoryRecord<'_>| previous.rule_program.clone())
+                        .and_then(|previous: &HistoryRecord<'_>| previous.rule_program)
                         .ok_or(PersistenceError::InvalidRevisionHistory)?,
                 ),
                 _ => return Err(PersistenceError::InvalidRevisionHistory),
@@ -2111,6 +2117,39 @@ fn decode_revision_history(
     } else {
         cursor
     };
+    // Only the kept revisions' programs are assembled and checked (N-5); one the
+    // history names again is decoded once and shared.
+    let mut decoded = BTreeMap::new();
+    let rule_programs = records
+        .iter()
+        .map(|record| {
+            record
+                .rule_program
+                .map(|program| {
+                    if let Some(shared) = decoded.get(&program) {
+                        return Ok(Arc::clone(shared));
+                    }
+                    let source = Arc::new(match program {
+                        HistoryProgram::Inline(bytes) => decode_rule_program(bytes)?,
+                        HistoryProgram::Chunks {
+                            length,
+                            checksum,
+                            numbers,
+                        } => decode_rule_program(
+                            &HistorySnapshot::Chunks {
+                                length,
+                                checksum,
+                                numbers,
+                            }
+                            .assemble(&chunks)?,
+                        )?,
+                    });
+                    decoded.insert(program, Arc::clone(&source));
+                    Ok(source)
+                })
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, PersistenceError>>()?;
 
     let snapshots = if schema >= 4 {
         // Every revision a format-4 history holds was written in the current format,
@@ -2160,7 +2199,9 @@ fn decode_revision_history(
     let current_source_digest = Some(snapshots[cursor].1.clone());
     let mut revisions = Vec::with_capacity(count);
     let mut document_id = None;
-    for (record, (validated, _)) in records.into_iter().zip(snapshots) {
+    for ((record, (validated, _)), rule_program) in
+        records.into_iter().zip(snapshots).zip(rule_programs)
+    {
         let snapshot = validated.snapshot();
         if snapshot.revision_id() != record.revision_id
             || document_id.is_some_and(|id| id != snapshot.document_id())
@@ -2173,7 +2214,7 @@ fn decode_revision_history(
             record.batch_digest,
             record.origin,
             record.checkpoint,
-            record.rule_program,
+            rule_program,
         ));
     }
     // The revision a history names as current is the saved document. Both were written by
@@ -2202,8 +2243,22 @@ struct HistoryRecord<'a> {
     batch_digest: String,
     origin: RevisionOrigin,
     checkpoint: Option<String>,
-    rule_program: Option<Arc<crate::document::RuleProgramSource>>,
+    rule_program: Option<HistoryProgram<'a>>,
     encoded_snapshot: HistorySnapshot<'a>,
+}
+
+/// The program of one history revision as the file names it, decoded only if
+/// the revision is kept.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum HistoryProgram<'a> {
+    /// Stored whole, before format 5.
+    Inline(&'a [u8]),
+    /// Chunk numbers of `length` bytes, from format 5.
+    Chunks {
+        length: usize,
+        checksum: [u8; 32],
+        numbers: &'a [u8],
+    },
 }
 
 /// The encoded snapshot of one history revision as the file names it.
@@ -3243,6 +3298,85 @@ mod tests {
             opened.revision_history().next().unwrap().id(),
             revisions[cursor - UNDO_REVISIONS].id()
         );
+        assert_eq!(
+            opened.current().revision_id(),
+            store.current().revision_id()
+        );
+    }
+
+    /// Review 2026-10-15 status N-5: the program of a revision outside the kept
+    /// window is never assembled nor checked, so a damaged one there costs
+    /// nothing (a kept one is checked as before).
+    #[test]
+    fn only_the_kept_revisions_programs_are_read() {
+        use crate::document::{CanonicalCommand, CommandBatch, NodeId, RuleProgramSource};
+        use crate::tolerance::limits::UNDO_REVISIONS;
+        use ketchup_geometry::dimension::Dimension;
+        const MARKER: &[u8] = b"# retired program";
+        let edited = |edits: u64, program: bool| {
+            let mut store = DocumentStore::new();
+            for id in 1..=edits {
+                store
+                    .apply_batch(&CommandBatch::new(vec![
+                        CanonicalCommand::CreateEvaluatorNode {
+                            id: NodeId(id),
+                            name: format!("parameter-{id}"),
+                            dimension: Dimension::new("1", 1.0).unwrap(),
+                            dependencies: vec![],
+                        },
+                    ]))
+                    .unwrap();
+                // The first edit is the program's revision.
+                if program && id == 1 {
+                    store
+                        .bind_rule_program(RuleProgramSource {
+                            file_name: "model.star".into(),
+                            source: format!("{}\nx = 1\n", std::str::from_utf8(MARKER).unwrap()),
+                            overrides: BTreeMap::new(),
+                            variants: BTreeMap::new(),
+                        })
+                        .unwrap();
+                }
+            }
+            store
+        };
+        let window = u64::try_from(UNDO_REVISIONS).unwrap();
+        let store = edited(3 * window / 2, false);
+        let kept = store.revision_history().collect::<Vec<_>>();
+        let document_bin = encoded_snapshot(&store.current());
+        let outcome = load(&save(&store.current())).unwrap();
+        let damaged = |other: &DocumentStore| {
+            let revisions = other
+                .revision_history()
+                .filter(|revision| revision.id() < kept[0].id())
+                .chain(kept.iter().copied())
+                .collect::<Vec<_>>();
+            let cursor = revisions.len() - 1;
+            let mut history = encode_history(
+                &revisions,
+                cursor,
+                store.next_revision_id(),
+                &document_bin,
+                HISTORY_BUDGET,
+            )
+            .unwrap();
+            let at = history
+                .windows(MARKER.len())
+                .position(|window| window == MARKER)
+                .expect("the history holds the retired program");
+            history[at + 2] ^= 0x20;
+            decode_revision_history(
+                &history,
+                &document_bin.bytes,
+                &outcome,
+                &ContainerData::default(),
+                HISTORY_BUDGET,
+            )
+        };
+        // The other document's revisions, all with the program, take the ids
+        // before the kept ones.
+        let opened = damaged(&edited(window - 1, true)).unwrap();
+        assert_eq!(opened.revision_count(), UNDO_REVISIONS + 1);
         assert_eq!(
             opened.current().revision_id(),
             store.current().revision_id()
