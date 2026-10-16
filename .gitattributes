@@ -19,4 +19,5 @@ artifacts/r0/occt-cmake-config.json -text !eol
 *.dll binary
 *.lib binary
 *.cmd text eol=crlf
+scripts/hooks/* text eol=lf
 *.star text eol=lf
