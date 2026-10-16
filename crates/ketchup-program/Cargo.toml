@@ -25,7 +25,6 @@ allocative = "=0.3.4"
 
 [dev-dependencies]
 ketchup-test-env = { path = "../ketchup-test-env" }
-sha2 = "0.10.9"
 
 [lints]
 workspace = true

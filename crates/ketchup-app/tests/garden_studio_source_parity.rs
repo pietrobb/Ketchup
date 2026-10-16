@@ -1,6 +1,8 @@
 //! Independent parity against meshes exported by background Blender from the original
 //! generator. No model geometry is constructed here. Requires local artifacts and a
-//! native exact worker provisioned by Cargo for the selected test profile.
+//! native exact worker provisioned by Cargo for the selected test profile. The Blender
+//! reference is attached to the `sample-files` GitHub release; download
+//! `garden-studio-exact.blender-reference.json` into `examples/` first.
 //! Run: cargo test -p ketchup-app --test garden_studio_source_parity -- --ignored --nocapture
 
 use ketchup_application::{DocumentSession, SessionSettings};

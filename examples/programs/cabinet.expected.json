@@ -66,8 +66,7 @@
           "kinds": {
             "drill": 36,
             "pocket": 1
-          },
-          "sha256": "a1e1ad3c50dc64965b2376791115124a0517f772805abb8b4d15dcdb1bd190c0"
+          }
         },
         "part": "carcass/left",
         "size_mm": [
@@ -82,8 +81,7 @@
           "kinds": {
             "drill": 36,
             "pocket": 1
-          },
-          "sha256": "cf1932a2996bfb6f23432b217b9083471a27fa40385ea86598b763a3e55e454b"
+          }
         },
         "part": "carcass/right",
         "size_mm": [

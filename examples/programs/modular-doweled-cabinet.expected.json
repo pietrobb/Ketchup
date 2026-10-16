@@ -83,8 +83,7 @@
         ],
         "material": "board",
         "parts": {
-          "count": 28,
-          "sha256": "98611560a60244005acad18d1a789a8bef44c87e569189db09e1d6bf9c8cb195"
+          "count": 28
         }
       },
       {
@@ -148,8 +147,7 @@
       }
     ],
     "machining": {
-      "count": 88,
-      "sha256": "0ae90675eb0ac805b6ad77c3c1b936e85a23fbb7f0c94e8b595d4d5aa69818b5"
+      "count": 88
     },
     "total_parts": 88
   },
@@ -856,8 +854,7 @@
       "kind": "group_contact_unverified",
       "message": "group lower modules has 56 sets without verified contact: [lower 0 bottom]; [lower 0 brace 0]; [lower 0 brace 1]; [lower 0 brace 2]; [lower 0 high shelf]; [lower 0 left]; [lower 0 low shelf]; [lower 0 plinth front]; [lower 0 plinth rear]; [lower 0 plinth support 0]; [lower 0 plinth support 1]; [lower 0 plinth support 2]; [lower 0 right]; [lower 0 top]; [lower 1 bottom]; [lower 1 brace 0]; [lower 1 brace 1]; [lower 1 brace 2]; [lower 1 high shelf]; [lower 1 left]; [lower 1 low shelf]; [lower 1 plinth front]; [lower 1 plinth rear]; [lower 1 plinth support 0]; [lower 1 plinth support 1]; [lower 1 plinth support 2]; [lower 1 right]; [lower 1 top]; [lower 2 bottom]; [lower 2 brace 0]; [lower 2 brace 1]; [lower 2 brace 2]; [lower 2 high shelf]; [lower 2 left]; [lower 2 low shelf]; [lower 2 plinth front]; [lower 2 plinth rear]; [lower 2 plinth support 0]; [lower 2 plinth support 1]; [lower 2 plinth support 2]; [lower 2 right]; [lower 2 top]; [lower 3 bottom]; [lower 3 brace 0]; [lower 3 brace 1]; [lower 3 brace 2]; [lower 3 high shelf]; [lower 3 left]; [lower 3 low shelf]; [lower 3 plinth front]; [lower 3 plinth rear]; [lower 3 plinth support 0]; [lower 3 plinth support 1]; [lower 3 plinth support 2]; [lower 3 right]; [lower 3 top]",
       "parts": {
-        "count": 56,
-        "sha256": "87f2a21d29d0cab24a0ce4ab44109a46e4c73c83bd20a9b500f5323cb9d047bf"
+        "count": 56
       },
       "severity": "warning",
       "source_lines": [
@@ -944,8 +941,7 @@
       "kind": "group_contact_unverified",
       "message": "group upper modules has 32 sets without verified contact: [upper 0 bottom]; [upper 0 brace 0]; [upper 0 brace 1]; [upper 0 high shelf]; [upper 0 left]; [upper 0 low shelf]; [upper 0 right]; [upper 0 top]; [upper 1 bottom]; [upper 1 brace 0]; [upper 1 brace 1]; [upper 1 high shelf]; [upper 1 left]; [upper 1 low shelf]; [upper 1 right]; [upper 1 top]; [upper 2 bottom]; [upper 2 brace 0]; [upper 2 brace 1]; [upper 2 high shelf]; [upper 2 left]; [upper 2 low shelf]; [upper 2 right]; [upper 2 top]; [upper 3 bottom]; [upper 3 brace 0]; [upper 3 brace 1]; [upper 3 high shelf]; [upper 3 left]; [upper 3 low shelf]; [upper 3 right]; [upper 3 top]",
       "parts": {
-        "count": 32,
-        "sha256": "482c9501129dbc5688726640cd67fd641166f9c601eced17c11373f19c46e547"
+        "count": 32
       },
       "severity": "warning",
       "source_lines": [
@@ -1012,8 +1008,7 @@
       "kind": "group_contact_unverified",
       "message": "group cabinet has 88 sets without verified contact: [lower 0 bottom]; [lower 0 brace 0]; [lower 0 brace 1]; [lower 0 brace 2]; [lower 0 high shelf]; [lower 0 left]; [lower 0 low shelf]; [lower 0 plinth front]; [lower 0 plinth rear]; [lower 0 plinth support 0]; [lower 0 plinth support 1]; [lower 0 plinth support 2]; [lower 0 right]; [lower 0 top]; [lower 1 bottom]; [lower 1 brace 0]; [lower 1 brace 1]; [lower 1 brace 2]; [lower 1 high shelf]; [lower 1 left]; [lower 1 low shelf]; [lower 1 plinth front]; [lower 1 plinth rear]; [lower 1 plinth support 0]; [lower 1 plinth support 1]; [lower 1 plinth support 2]; [lower 1 right]; [lower 1 top]; [lower 2 bottom]; [lower 2 brace 0]; [lower 2 brace 1]; [lower 2 brace 2]; [lower 2 high shelf]; [lower 2 left]; [lower 2 low shelf]; [lower 2 plinth front]; [lower 2 plinth rear]; [lower 2 plinth support 0]; [lower 2 plinth support 1]; [lower 2 plinth support 2]; [lower 2 right]; [lower 2 top]; [lower 3 bottom]; [lower 3 brace 0]; [lower 3 brace 1]; [lower 3 brace 2]; [lower 3 high shelf]; [lower 3 left]; [lower 3 low shelf]; [lower 3 plinth front]; [lower 3 plinth rear]; [lower 3 plinth support 0]; [lower 3 plinth support 1]; [lower 3 plinth support 2]; [lower 3 right]; [lower 3 top]; [upper 0 bottom]; [upper 0 brace 0]; [upper 0 brace 1]; [upper 0 high shelf]; [upper 0 left]; [upper 0 low shelf]; [upper 0 right]; [upper 0 top]; [upper 1 bottom]; [upper 1 brace 0]; [upper 1 brace 1]; [upper 1 high shelf]; [upper 1 left]; [upper 1 low shelf]; [upper 1 right]; [upper 1 top]; [upper 2 bottom]; [upper 2 brace 0]; [upper 2 brace 1]; [upper 2 high shelf]; [upper 2 left]; [upper 2 low shelf]; [upper 2 right]; [upper 2 top]; [upper 3 bottom]; [upper 3 brace 0]; [upper 3 brace 1]; [upper 3 high shelf]; [upper 3 left]; [upper 3 low shelf]; [upper 3 right]; [upper 3 top]",
       "parts": {
-        "count": 88,
-        "sha256": "9589ea72126767da7cb2a118b4663adcf24a004b7931a7ad03a82e39c2e1bf71"
+        "count": 88
       },
       "severity": "warning",
       "source_lines": [
@@ -1109,8 +1104,7 @@
       "contact": 189,
       "gap": 118,
       "touch": 52
-    },
-    "sha256": "e89fe615a968bec6b0c376c945f1a7a8c6dadfea328fbc50025fb298fa6e614a"
+    }
   },
   "unused_overrides": [],
   "warnings": 11

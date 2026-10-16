@@ -1089,8 +1089,7 @@
       "gap": 27,
       "overlap": 34,
       "touch": 16
-    },
-    "sha256": "daeadde27bdb32ff99da503efbb31ea3b55254df8a5757401c76020381a75296"
+    }
   },
   "unused_overrides": [],
   "warnings": 22

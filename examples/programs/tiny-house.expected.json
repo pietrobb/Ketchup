@@ -1,8 +1,7 @@
 {
   "bom": {
     "cut_list": {
-      "count": 273,
-      "sha256": "f73cb15ec29558894f226aadb3e511cfed801c2c534666a897e28d8af76d3779"
+      "count": 273
     },
     "hardware": [
       {
@@ -46,8 +45,7 @@
       "a computed check, not an authorized structural design"
     ],
     "members": {
-      "count": 228,
-      "sha256": "598bb66f5e78a03b8ad060afa47a46a8e5f575bfdca68b857b1f2efb9915dc63"
+      "count": 228
     }
   },
   "errors": 0,
@@ -56,15 +54,13 @@
     "kinds": {
       "collision_unverified": 760,
       "group_contact_unverified": 10
-    },
-    "sha256": "bdae70b28e818182a3e52534b65851c4c622f256cef8ab224e7e051a3117477e"
+    }
   },
   "joints": {
     "count": 28,
     "kinds": {
       "hanger": 28
-    },
-    "sha256": "adbfe21984e27863a946c81d753c7046e71f4eb0bc907ce45a860867d7a5274f"
+    }
   },
   "loads": {
     "joints": {
@@ -328,8 +324,7 @@
       }
     },
     "members": {
-      "count": 228,
-      "sha256": "5b95d15368cf7b0a86f431abd00d0225df9a9b685f291f3942ad412d7eb3ad77"
+      "count": 228
     },
     "unassigned": {
       "konštrukcia/hrebenáč": "konštrukcia/hrebenáč rests on nothing that carries it",
@@ -405,8 +400,7 @@
       "gap": 810,
       "overlap": 1833,
       "touch": 482
-    },
-    "sha256": "70d9d8d37036fac2c6ce9d728481e460b5e0bfb8340a175afa8099a374394cb0"
+    }
   },
   "unused_overrides": [],
   "warnings": 770

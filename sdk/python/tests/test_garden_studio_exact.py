@@ -287,6 +287,7 @@ class GardenColorTests(unittest.TestCase):
 
     def test_operator_source_matches_original_140_part_material_mapping(self):
         source = Path('C:/Sources8/Supervisor/temp/blender_house_pilot/generate_house.py')
+        # The evidence is attached to the sample-files GitHub release, not tracked.
         evidence = Path(__file__).resolve().parents[3] / 'examples/garden-studio-exact.validation.json'
         if not source.exists() or not evidence.exists():
             self.skipTest('Operator Blender source/exact evidence not available on this machine.')

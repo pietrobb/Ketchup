@@ -17,6 +17,9 @@ cmake-build-*/
 /third_party/occt-build*/
 /third_party/occt-install*/
 /artifacts/
+# Garden studio evidence from an external Blender run, kept in the sample-files release
+/examples/*.validation.json
+/examples/*.blender-reference.json
 __pycache__/
 # Local editor and OS files
 .vs/
