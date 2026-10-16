@@ -533,7 +533,7 @@ impl KetchupApp {
             return;
         };
         let result = self.acquire_work_recovery_lock().and_then(|()| {
-            ketchup_model::persistence::save_work_recovery_document_store_with_container_if_unchanged(
+            write_work_recovery_checkpoint(
                 &path,
                 &self.document,
                 &self.file.container_data,
@@ -630,11 +630,11 @@ impl KetchupApp {
             self.report_file_persistence_error("error-save-document", path, &error);
             return Err(SaveFailure::Failed);
         }
-        let (prepared, truncate_history) = match prepared.unwrap_or_else(|| {
+        let prepared = match prepared.unwrap_or_else(|| {
             super::save_activity::prepare_save(&self.document, &self.file.container_data)
         }) {
-            Ok((bytes, false)) => (bytes, false),
-            Ok((bytes, true)) => {
+            Ok(prepared) if prepared.keeps_history() => prepared,
+            Ok(prepared) => {
                 let title = self.catalog.text("dialog-save-current-only-title");
                 let description = self.catalog.format(
                     "dialog-save-current-only-description",
@@ -662,7 +662,7 @@ impl KetchupApp {
                 if !request_authorized() {
                     return Err(SaveFailure::Cancelled);
                 }
-                (bytes, true)
+                prepared
             }
             Err(error) => {
                 self.digest = self.catalog.format(
@@ -675,7 +675,8 @@ impl KetchupApp {
                 return Err(SaveFailure::Failed);
             }
         };
-        let saved_identity = ketchup_model::persistence::FileIdentity::from_bytes(&prepared);
+        let truncate_history = !prepared.keeps_history();
+        let saved_identity = prepared.identity();
         let owned_identity = (self.file.path.as_deref() == Some(path))
             .then_some(self.file.identity)
             .flatten();
@@ -716,7 +717,7 @@ impl KetchupApp {
         // replacing some other existing file needs the user's consent.
         if expected_identity.is_some()
             && owned_identity.is_none()
-            && let Err(error) = self.authorize_overwrite(path, &prepared)
+            && let Err(error) = self.authorize_overwrite(path, prepared.bytes())
         {
             self.digest = self.catalog.format(
                 "error-save-document",
@@ -732,20 +733,13 @@ impl KetchupApp {
         }
         if let Some(context) = context {
             let target_lock = target_lock.or_else(|| self.file.work_recovery_lock.take());
-            self.start_prepared_write(
-                path,
-                prepared,
-                truncate_history,
-                expected_identity,
-                target_lock,
-                context,
-            );
+            self.start_prepared_write(path, prepared, expected_identity, target_lock, context);
             return Ok(());
         }
-        let result = ketchup_model::persistence::save_prepared_document_if_unchanged(
+        let result = ketchup_model::persistence::publish_document(
             path,
             &prepared,
-            expected_identity,
+            ketchup_model::persistence::Publish::over(expected_identity),
         );
         self.finish_document_save(path, truncate_history, saved_identity, result)
     }
@@ -1281,18 +1275,24 @@ impl KetchupApp {
                 // A mutation that left the history as the checkpoint already holds it
                 // (a carried-forward exact publication) has nothing new to recover.
                 if work_recovery_identity.is_some()
-                    && work_recovery_digest.as_deref().is_some_and(|digest| {
-                        *digest == document.history_digest()
-                    })
+                    && work_recovery_digest
+                        .as_deref()
+                        .is_some_and(|digest| *digest == document.history_digest())
                 {
                     return Ok(());
                 }
-                match ketchup_model::persistence::save_work_recovery_document_store_with_container_if_unchanged(
-                    path, document, container_data, identity, work_recovery_identity,
+                match write_work_recovery_checkpoint(
+                    path,
+                    document,
+                    container_data,
+                    identity,
+                    work_recovery_identity,
                 ) {
                     Ok(identity) => next_work_recovery_identity = Some(identity),
                     Err(error) => {
-                        if let Some(identity) = error.published_identity(&ketchup_model::persistence::work_recovery_path(path)) {
+                        if let Some(identity) = error.published_identity(
+                            &ketchup_model::persistence::work_recovery_path(path),
+                        ) {
                             next_work_recovery_identity = Some(identity);
                             publication_error = Some(error);
                         } else {
@@ -1681,4 +1681,22 @@ fn current_unix_time_ms() -> Result<u64, Rejection> {
         .map_err(|error| failed("clock", error))?
         .as_millis();
     u64::try_from(millis).map_err(|error| failed("clock", error))
+}
+
+/// The work-recovery checkpoint of `document`, bound to the saved file `identity`;
+/// a history too large for the file leaves only the current revision in it.
+fn write_work_recovery_checkpoint(
+    path: &Path,
+    document: &DocumentStore,
+    container: &ketchup_model::persistence::ContainerData,
+    identity: ketchup_model::persistence::FileIdentity,
+    expected: Option<ketchup_model::persistence::FileIdentity>,
+) -> Result<
+    ketchup_model::persistence::FileIdentity,
+    ketchup_model::persistence::FilePersistenceError,
+> {
+    use ketchup_model::persistence::{self, FilePersistenceError, HistoryPolicy};
+    let prepared = persistence::prepare_document(document, container, HistoryPolicy::KeepIfFits)
+        .map_err(FilePersistenceError::Format)?;
+    persistence::publish_work_recovery(path, &prepared, identity, expected)
 }

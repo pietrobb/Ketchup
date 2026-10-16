@@ -237,34 +237,32 @@ impl DocumentSession {
         persistence::check_work_recovery_identity(path, expected_recovery)
             .map_err(SessionError::Persistence)?;
         let mut publication_error = None;
-        let saved_bytes = if preserve_history {
-            persistence::save_document_store(&self.document, &self.container_data)
+        let policy = if preserve_history {
+            persistence::HistoryPolicy::Keep
         } else {
-            persistence::save_document_store_current_snapshot(&self.document, &self.container_data)
-        }
-        .map_err(|error| {
-            SessionError::Persistence(persistence::FilePersistenceError::Format(error))
-        })?;
-        let saved_identity = persistence::FileIdentity::from_bytes(&saved_bytes);
+            persistence::HistoryPolicy::CurrentOnly
+        };
+        let prepared = persistence::prepare_document(&self.document, &self.container_data, policy)
+            .map_err(|error| {
+                SessionError::Persistence(persistence::FilePersistenceError::Format(error))
+            })?;
+        let saved_identity = prepared.identity();
         let expected_identity = (self.path.as_deref() == Some(path))
             .then_some(self.file_identity)
             .flatten();
-        let result = match (options.overwrite, expected_identity) {
-            (true, Some(expected)) => {
-                persistence::save_prepared_document_if_unchanged(path, &saved_bytes, Some(expected))
-            }
-            (true, None) => persistence::save_prepared_document(path, &saved_bytes),
-            (false, _) => {
-                persistence::save_prepared_document_if_unchanged(path, &saved_bytes, None)
-            }
+        let mode = match (options.overwrite, expected_identity) {
+            (true, Some(expected)) => persistence::Publish::IfUnchanged(expected),
+            (true, None) => persistence::Publish::Replace,
+            (false, _) => persistence::Publish::IfAbsent,
         };
+        let result = persistence::publish_document(path, &prepared, mode);
         if let Err(error) = result {
             if error.published_identity(path).is_none() {
                 return Err(SessionError::Persistence(error));
             }
             publication_error = Some(error);
         }
-        if !preserve_history {
+        if !prepared.keeps_history() {
             self.document.discard_history_before_current();
         }
         let owned_recovery_path = self.path.clone().or_else(|| {
@@ -348,15 +346,17 @@ impl DocumentSession {
                 .map_err(SessionError::Persistence)?;
             return Ok(None);
         }
-        persistence::save_work_recovery_document_store_with_container_if_unchanged(
-            path,
+        let prepared = persistence::prepare_document(
             document,
             container_data,
-            identity,
-            work_recovery_identity,
+            persistence::HistoryPolicy::KeepIfFits,
         )
-        .map(Some)
-        .map_err(SessionError::Persistence)
+        .map_err(|error| {
+            SessionError::Persistence(persistence::FilePersistenceError::Format(error))
+        })?;
+        persistence::publish_work_recovery(path, &prepared, identity, work_recovery_identity)
+            .map(Some)
+            .map_err(SessionError::Persistence)
     }
     pub fn is_modified(&self) -> bool {
         self.recovery.is_some()

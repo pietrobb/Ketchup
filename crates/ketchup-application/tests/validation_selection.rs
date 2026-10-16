@@ -1905,10 +1905,16 @@ fn requested_checks_without_applicable_roles_are_not_a_success() {
         .unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("missing-inputs.ketchup");
-    ketchup_model::persistence::save_atomic_document_store_with_container(
-        &path,
+    let prepared = ketchup_model::persistence::prepare_document(
         &document,
         &ketchup_model::persistence::ContainerData::default(),
+        ketchup_model::persistence::HistoryPolicy::Keep,
+    )
+    .unwrap();
+    ketchup_model::persistence::publish_document(
+        &path,
+        &prepared,
+        ketchup_model::persistence::Publish::IfAbsent,
     )
     .unwrap();
     let session = DocumentSession::open(&path, Default::default()).unwrap();

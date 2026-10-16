@@ -393,6 +393,31 @@ fn history_snapshot_offsets(bytes: &[u8]) -> Vec<(usize, usize)> {
     snapshots
 }
 
+/// Saves `store` with its whole history through the save pipeline.
+fn publish(
+    path: &std::path::Path,
+    store: &DocumentStore,
+    data: &persistence::ContainerData,
+    mode: persistence::Publish,
+) -> Result<persistence::FileIdentity, persistence::FilePersistenceError> {
+    let prepared =
+        persistence::prepare_document(store, data, persistence::HistoryPolicy::Keep).unwrap();
+    persistence::publish_document(path, &prepared, mode).map(|()| prepared.identity())
+}
+
+/// Writes the work-recovery checkpoint of `store` as an edit does.
+fn checkpoint(
+    path: &std::path::Path,
+    store: &DocumentStore,
+    data: &persistence::ContainerData,
+    base: persistence::FileIdentity,
+    expected: Option<persistence::FileIdentity>,
+) -> Result<persistence::FileIdentity, persistence::FilePersistenceError> {
+    let prepared =
+        persistence::prepare_document(store, data, persistence::HistoryPolicy::KeepIfFits).unwrap();
+    persistence::publish_work_recovery(path, &prepared, base, expected)
+}
+
 fn graph_document() -> DocumentStore {
     let segment = SlotSegment::new(NodeId(2), "items", "a").unwrap();
     let path = SlotPath::new(vec![segment.clone()]).unwrap();
@@ -1591,10 +1616,11 @@ fn work_recovery_of_a_history_beyond_the_file_limit_keeps_the_current_revision()
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("large.ketchup");
     let container_data = persistence::ContainerData::default();
-    persistence::save_atomic_document_store_with_container(
+    publish(
         &path,
         &graph_document(),
         &container_data,
+        persistence::Publish::Replace,
     )
     .unwrap();
     let base_identity = persistence::read_native_document_identity(&path).unwrap();
@@ -1606,13 +1632,7 @@ fn work_recovery_of_a_history_beyond_the_file_limit_keeps_the_current_revision()
 
     // Every edit writes a checkpoint; one too large for its history must not
     // refuse the edit.
-    persistence::save_work_recovery_document_store_with_container(
-        &path,
-        &store,
-        &container_data,
-        base_identity,
-    )
-    .unwrap();
+    checkpoint(&path, &store, &container_data, base_identity, None).unwrap();
     let recovered = persistence::load_file_with_source(&path).unwrap();
     assert_eq!(
         recovered.source_path(),
@@ -1676,12 +1696,14 @@ fn explicit_current_snapshot_save_preserves_work_beyond_history_byte_limit() {
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("compacted.ketchup");
-    persistence::save_atomic_document_store_current_snapshot_with_container(
-        &path,
+    let prepared = persistence::prepare_document(
         &store,
         &persistence::ContainerData::default(),
+        persistence::HistoryPolicy::CurrentOnly,
     )
     .unwrap();
+    assert!(!prepared.keeps_history());
+    persistence::publish_document(&path, &prepared, persistence::Publish::Replace).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), first);
 }
 
@@ -2044,8 +2066,7 @@ fn a_primary_from_a_newer_format_is_refused_and_never_replaced_by_its_recovery()
         let path = directory.path().join(name);
         let save = |store: &DocumentStore| {
             if schema_offset {
-                persistence::save_atomic_document_store_with_container(&path, store, &data)
-                    .unwrap();
+                publish(&path, store, &data, persistence::Publish::Replace).unwrap();
             } else {
                 persistence::save_atomic(&path, &store.current()).unwrap();
             }
@@ -2082,8 +2103,8 @@ fn a_primary_from_a_newer_format_is_refused_and_never_replaced_by_its_recovery()
     // A history a newer Kečup wrote is refused the same way (PS-3), not dropped
     // and not replaced by the recovery.
     let path = directory.path().join("history.ketchup");
-    persistence::save_atomic_document_store_with_container(&path, &store, &data).unwrap();
-    persistence::save_atomic_document_store_with_container(&path, &store, &data).unwrap();
+    publish(&path, &store, &data, persistence::Publish::Replace).unwrap();
+    publish(&path, &store, &data, persistence::Publish::Replace).unwrap();
     assert!(path.with_extension("ketchup.recovery").is_file());
     let mut newer = std::fs::read(&path).unwrap();
     let (checksum_offset, history_offset, history_len) =
@@ -2110,10 +2131,10 @@ fn a_program_with_a_field_from_a_newer_writer_is_refused_and_never_replaced_by_i
     program.file_name = format!("{}.star", "p".repeat(24));
     let mut store = graph_document();
     store.bind_rule_program(program.clone()).unwrap();
-    persistence::save_atomic_document_store_with_container(&path, &store, &data).unwrap();
+    publish(&path, &store, &data, persistence::Publish::Replace).unwrap();
     program.overrides.insert("width".to_owned(), 900.0);
     store.replace_rule_program_source(program.clone()).unwrap();
-    persistence::save_atomic_document_store_with_container(&path, &store, &data).unwrap();
+    publish(&path, &store, &data, persistence::Publish::Replace).unwrap();
     assert!(path.with_extension("ketchup.recovery").is_file());
 
     // The same entry length, so only the program's content changes.
@@ -2142,14 +2163,61 @@ fn a_program_with_a_field_from_a_newer_writer_is_refused_and_never_replaced_by_i
     );
 }
 
+/// Review 2026-10-15 S2: publishing checks the checksums of the file it writes and
+/// of the file it keeps as `.recovery`, without decoding either document again.
+#[test]
+fn save_over_a_file_decodes_neither_the_new_nor_the_replaced_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("saved.ketchup");
+    let data = persistence::ContainerData::default();
+    let mut store = graph_document();
+    let first = publish(&path, &store, &data, persistence::Publish::IfAbsent).unwrap();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("9", 9.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let previous = std::fs::read(&path).unwrap();
+
+    let (saved, decodes) = persistence::headless_count_snapshot_decodes(|| {
+        publish(
+            &path,
+            &store,
+            &data,
+            persistence::Publish::IfUnchanged(first),
+        )
+    });
+    saved.unwrap();
+    assert_eq!(decodes, 0, "Save decoded {decodes} document snapshots");
+    assert_eq!(
+        std::fs::read(path.with_extension("ketchup.recovery")).unwrap(),
+        previous
+    );
+    assert_eq!(
+        persistence::load_file(&path)
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        store.current().canonical_digest()
+    );
+}
+
 #[test]
 fn conditional_save_rejects_external_replacement_without_touching_primary_or_recovery() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("shared.ketchup");
     let container_data = persistence::ContainerData::default();
     let initial = graph_document();
-    persistence::save_atomic_document_store_with_container(&path, &initial, &container_data)
-        .unwrap();
+    publish(
+        &path,
+        &initial,
+        &container_data,
+        persistence::Publish::Replace,
+    )
+    .unwrap();
     let opened_identity = persistence::read_native_document_identity(&path).unwrap();
     let source = std::fs::read(&path).unwrap();
     let mut first = persistence::load(&source)
@@ -2171,11 +2239,11 @@ fn conditional_save_rejects_external_replacement_without_touching_primary_or_rec
             },
         ]))
         .unwrap();
-    let first_identity = persistence::save_atomic_document_store_with_container_if_unchanged(
+    let first_identity = publish(
         &path,
         &first,
         &container_data,
-        opened_identity,
+        persistence::Publish::IfUnchanged(opened_identity),
     )
     .unwrap();
     let primary_after_first = std::fs::read(&path).unwrap();
@@ -2190,11 +2258,11 @@ fn conditional_save_rejects_external_replacement_without_touching_primary_or_rec
         ]))
         .unwrap();
     assert!(matches!(
-        persistence::save_atomic_document_store_with_container_if_unchanged(
+        publish(
             &path,
             &second,
             &container_data,
-            opened_identity,
+            persistence::Publish::IfUnchanged(opened_identity)
         ),
         Err(persistence::FilePersistenceError::ExternalConflict)
     ));
@@ -2206,11 +2274,11 @@ fn conditional_save_rejects_external_replacement_without_touching_primary_or_rec
 
     std::fs::remove_file(&path).unwrap();
     assert!(matches!(
-        persistence::save_atomic_document_store_with_container_if_unchanged(
+        publish(
             &path,
             &second,
             &container_data,
-            first_identity,
+            persistence::Publish::IfUnchanged(first_identity)
         ),
         Err(persistence::FilePersistenceError::ExternalConflict)
     ));
@@ -2224,7 +2292,13 @@ fn dirty_work_recovery_is_bound_to_the_primary_and_corruption_is_ignored() {
     let work_recovery = persistence::work_recovery_path(&path);
     let container_data = persistence::ContainerData::default();
     let mut store = graph_document();
-    persistence::save_atomic_document_store_with_container(&path, &store, &container_data).unwrap();
+    publish(
+        &path,
+        &store,
+        &container_data,
+        persistence::Publish::Replace,
+    )
+    .unwrap();
     let primary_bytes = std::fs::read(&path).unwrap();
     let base_identity = persistence::read_native_document_identity(&path).unwrap();
 
@@ -2237,13 +2311,7 @@ fn dirty_work_recovery_is_bound_to_the_primary_and_corruption_is_ignored() {
         ]))
         .unwrap();
     let dirty_digest = store.current().canonical_digest();
-    persistence::save_work_recovery_document_store_with_container(
-        &path,
-        &store,
-        &container_data,
-        base_identity,
-    )
-    .unwrap();
+    checkpoint(&path, &store, &container_data, base_identity, None).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), primary_bytes);
 
     let recovered = persistence::load_file_with_source(&path).unwrap();
@@ -2268,13 +2336,7 @@ fn dirty_work_recovery_is_bound_to_the_primary_and_corruption_is_ignored() {
         .unwrap()
     );
 
-    persistence::save_work_recovery_document_store_with_container(
-        &path,
-        &store,
-        &container_data,
-        base_identity,
-    )
-    .unwrap();
+    checkpoint(&path, &store, &container_data, base_identity, None).unwrap();
     let mut replacement = graph_document();
     replacement
         .apply_batch(&CommandBatch::new(vec![
@@ -2284,8 +2346,13 @@ fn dirty_work_recovery_is_bound_to_the_primary_and_corruption_is_ignored() {
             },
         ]))
         .unwrap();
-    persistence::save_atomic_document_store_with_container(&path, &replacement, &container_data)
-        .unwrap();
+    publish(
+        &path,
+        &replacement,
+        &container_data,
+        persistence::Publish::Replace,
+    )
+    .unwrap();
     let replaced = persistence::load_file_with_source(&path).unwrap();
     assert_eq!(replaced.source_path(), path);
     assert_eq!(
@@ -2301,7 +2368,13 @@ fn stale_session_cleanup_does_not_delete_a_newer_work_recovery_checkpoint() {
     let work_recovery = persistence::work_recovery_path(&path);
     let container_data = persistence::ContainerData::default();
     let mut first = graph_document();
-    persistence::save_atomic_document_store_with_container(&path, &first, &container_data).unwrap();
+    publish(
+        &path,
+        &first,
+        &container_data,
+        persistence::Publish::Replace,
+    )
+    .unwrap();
     let base_identity = persistence::read_native_document_identity(&path).unwrap();
 
     first
@@ -2312,21 +2385,17 @@ fn stale_session_cleanup_does_not_delete_a_newer_work_recovery_checkpoint() {
             },
         ]))
         .unwrap();
-    let first_checkpoint_identity = persistence::save_work_recovery_document_store_with_container(
-        &path,
-        &first,
-        &container_data,
-        base_identity,
-    )
-    .unwrap();
+    let first_checkpoint_identity =
+        checkpoint(&path, &first, &container_data, base_identity, None).unwrap();
 
     let preserved = std::fs::read(&work_recovery).unwrap();
     assert!(
-        persistence::save_work_recovery_document_store_with_container(
+        checkpoint(
             &path,
             &graph_document(),
             &container_data,
-            base_identity
+            base_identity,
+            None
         )
         .is_err()
     );
@@ -2340,15 +2409,14 @@ fn stale_session_cleanup_does_not_delete_a_newer_work_recovery_checkpoint() {
             },
         ]))
         .unwrap();
-    let second_checkpoint_identity =
-        persistence::save_work_recovery_document_store_with_container_if_unchanged(
-            &path,
-            &second,
-            &container_data,
-            base_identity,
-            Some(first_checkpoint_identity),
-        )
-        .unwrap();
+    let second_checkpoint_identity = checkpoint(
+        &path,
+        &second,
+        &container_data,
+        base_identity,
+        Some(first_checkpoint_identity),
+    )
+    .unwrap();
     let newer_checkpoint = std::fs::read(&work_recovery).unwrap();
 
     assert!(!persistence::clear_work_recovery(&path, Some(first_checkpoint_identity)).unwrap());

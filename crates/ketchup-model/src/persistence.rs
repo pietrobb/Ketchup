@@ -18,7 +18,13 @@ use crate::graph::SlotResolution;
 
 pub(crate) mod history_chunks;
 mod legacy;
+mod pipeline;
 mod work_recovery;
+
+pub use pipeline::{
+    HistoryPolicy, PreparedDocument, Publish, prepare_document, prepare_snapshot, publish_document,
+    publish_work_recovery, save_atomic,
+};
 #[cfg(feature = "testing")]
 pub use work_recovery::headless_with_parent_sync_failure;
 pub use work_recovery::{WorkRecoveryLock, check_work_recovery_identity, set_aside_work_recovery};
@@ -900,6 +906,15 @@ pub fn save_document_store_current_snapshot(
 #[cfg(feature = "testing")]
 thread_local! {
     static HISTORY_ENCODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SNAPSHOT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Runs `operation` and counts the document snapshots it decoded on this thread.
+#[cfg(feature = "testing")]
+pub fn headless_count_snapshot_decodes<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    let before = SNAPSHOT_DECODES.get();
+    let result = operation();
+    (result, SNAPSHOT_DECODES.get() - before)
 }
 
 /// Runs `operation` and counts the Undo histories it encoded on this thread.
@@ -1131,83 +1146,6 @@ pub fn read_native_document_identity(
     read_native_document_file(path).map(|bytes| FileIdentity::from_bytes(&bytes))
 }
 
-pub fn save_atomic(
-    path: impl AsRef<Path>,
-    snapshot: &Snapshot,
-) -> Result<(), FilePersistenceError> {
-    save_atomic_with_container(path, snapshot, &ContainerData::default())
-}
-
-pub fn save_atomic_with_container(
-    path: impl AsRef<Path>,
-    snapshot: &Snapshot,
-    container_data: &ContainerData,
-) -> Result<(), FilePersistenceError> {
-    let bytes = save_container(snapshot, container_data).map_err(FilePersistenceError::Format)?;
-    save_atomic_bytes(path.as_ref(), &bytes, None)
-}
-
-pub fn save_atomic_document_store_with_container(
-    path: impl AsRef<Path>,
-    document: &DocumentStore,
-    container_data: &ContainerData,
-) -> Result<(), FilePersistenceError> {
-    let bytes =
-        save_document_store(document, container_data).map_err(FilePersistenceError::Format)?;
-    save_atomic_bytes(path.as_ref(), &bytes, None)
-}
-
-pub fn save_atomic_document_store_with_container_if_unchanged(
-    path: impl AsRef<Path>,
-    document: &DocumentStore,
-    container_data: &ContainerData,
-    expected: FileIdentity,
-) -> Result<FileIdentity, FilePersistenceError> {
-    let bytes =
-        save_document_store(document, container_data).map_err(FilePersistenceError::Format)?;
-    save_atomic_bytes(path.as_ref(), &bytes, Some(expected))?;
-    Ok(FileIdentity::from_bytes(&bytes))
-}
-
-pub fn save_atomic_document_store_with_container_if_absent(
-    path: impl AsRef<Path>,
-    document: &DocumentStore,
-    container_data: &ContainerData,
-) -> Result<FileIdentity, FilePersistenceError> {
-    let bytes =
-        save_document_store(document, container_data).map_err(FilePersistenceError::Format)?;
-    save_atomic_bytes_if_absent(path.as_ref(), &bytes)?;
-    Ok(FileIdentity::from_bytes(&bytes))
-}
-
-pub fn save_atomic_document_store_current_snapshot_with_container(
-    path: impl AsRef<Path>,
-    document: &DocumentStore,
-    container_data: &ContainerData,
-) -> Result<(), FilePersistenceError> {
-    let bytes = save_document_store_current_snapshot(document, container_data)
-        .map_err(FilePersistenceError::Format)?;
-    save_atomic_bytes(path.as_ref(), &bytes, None)
-}
-
-/// Publish already prepared native bytes over whatever `path` holds, keeping the
-/// replaced file as its `.recovery`.
-pub fn save_prepared_document(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
-    save_atomic_bytes(path, bytes, None)
-}
-
-/// Publish already prepared native bytes, preserving validation and compare-before-write.
-pub fn save_prepared_document_if_unchanged(
-    path: &Path,
-    bytes: &[u8],
-    expected: Option<FileIdentity>,
-) -> Result<(), FilePersistenceError> {
-    match expected {
-        Some(identity) => save_atomic_bytes(path, bytes, Some(identity)),
-        None => save_atomic_bytes_if_absent(path, bytes),
-    }
-}
-
 fn save_atomic_bytes(
     path: &Path,
     bytes: &[u8],
@@ -1226,7 +1164,7 @@ fn save_atomic_bytes_if_absent_after_check(
     after_check: impl FnOnce(),
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), FilePersistenceError> {
-    verify(bytes).map_err(FilePersistenceError::Format)?;
+    verify_checksums(bytes).map_err(FilePersistenceError::Format)?;
     let lock_path = save_lock_path(path);
     let lock_file = fs::OpenOptions::new()
         .read(true)
@@ -1269,7 +1207,7 @@ fn save_atomic_bytes_after_compare(
     expected: Option<FileIdentity>,
     after_compare: impl FnOnce(),
 ) -> Result<(), FilePersistenceError> {
-    verify(bytes).map_err(FilePersistenceError::Format)?;
+    verify_checksums(bytes).map_err(FilePersistenceError::Format)?;
     let lock_path = save_lock_path(path);
     let lock_file = fs::OpenOptions::new()
         .read(true)
@@ -1284,7 +1222,7 @@ fn save_atomic_bytes_after_compare(
         {
             return Err(FilePersistenceError::ExternalConflict);
         }
-        Ok(previous) if verify(&previous).is_ok() => {
+        Ok(previous) if verify_checksums(&previous).is_ok() => {
             write_atomic(&recovery_path(path), &previous)?;
         }
         Err(FilePersistenceError::Format(PersistenceError::ResourceLimit)) => {
@@ -1363,45 +1301,11 @@ pub fn work_recovery_path(path: &Path) -> PathBuf {
     PathBuf::from(recovery)
 }
 
-pub fn save_work_recovery_document_store_with_container(
+/// Writes `payload`, a prepared native file, as the work-recovery checkpoint of
+/// the file at `path` (see [`publish_work_recovery`]).
+fn write_work_recovery(
     path: &Path,
-    document: &DocumentStore,
-    container_data: &ContainerData,
-    base_identity: FileIdentity,
-) -> Result<FileIdentity, FilePersistenceError> {
-    let _owner = WorkRecoveryLock::acquire(path)?;
-    save_work_recovery_document_store_with_container_if_unchanged(
-        path,
-        document,
-        container_data,
-        base_identity,
-        None,
-    )
-}
-
-/// Replaces only the checkpoint observed by this writer; None requires absence.
-/// Live sessions must also retain a WorkRecoveryLock to protect recovery reopen.
-pub fn save_work_recovery_document_store_with_container_if_unchanged(
-    path: &Path,
-    document: &DocumentStore,
-    container_data: &ContainerData,
-    base_identity: FileIdentity,
-    expected_recovery: Option<FileIdentity>,
-) -> Result<FileIdentity, FilePersistenceError> {
-    save_work_recovery_document_store_with_container_after_compare(
-        path,
-        document,
-        container_data,
-        base_identity,
-        expected_recovery,
-        || {},
-    )
-}
-
-fn save_work_recovery_document_store_with_container_after_compare(
-    path: &Path,
-    document: &DocumentStore,
-    container_data: &ContainerData,
+    payload: &[u8],
     base_identity: FileIdentity,
     expected_recovery: Option<FileIdentity>,
     after_compare: impl FnOnce(),
@@ -1419,21 +1323,13 @@ fn save_work_recovery_document_store_with_container_after_compare(
     }
     check_work_recovery_identity(path, expected_recovery)?;
     after_compare();
-    let payload = match save_document_store(document, container_data) {
-        Ok(payload) => payload,
-        Err(PersistenceError::ResourceLimit | PersistenceError::TooLarge { .. }) => {
-            save_document_store_current_snapshot(document, container_data)
-                .map_err(FilePersistenceError::Format)?
-        }
-        Err(error) => return Err(FilePersistenceError::Format(error)),
-    };
     let mut bytes = Vec::with_capacity(WORK_RECOVERY_MAGIC.len() + 2 + 8 + 32 + 8 + payload.len());
     bytes.extend_from_slice(WORK_RECOVERY_MAGIC);
     push_u16(&mut bytes, WORK_RECOVERY_SCHEMA);
     push_u64(&mut bytes, base_identity.byte_len());
     bytes.extend_from_slice(&base_identity.sha256());
     push_u64(&mut bytes, payload.len() as u64);
-    bytes.extend_from_slice(&payload);
+    bytes.extend_from_slice(payload);
     write_atomic_after_prepare(
         &work_recovery_path(path),
         &bytes,
@@ -1752,23 +1648,28 @@ fn open_backup(
 
 pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
     if bytes.starts_with(CONTAINER_MAGIC) {
-        return load_container(bytes, true);
+        return load_container(bytes);
     }
     load_document(bytes, ContainerData::default(), &mut BTreeMap::new())
 }
 
-/// Whether `bytes` open as a document: the container, its checksums, the program
-/// and the current revision, without the Undo history, which opening a file
-/// tolerates losing. Save checks what it writes and what it replaces this way
-/// (review PS-6).
-fn verify(bytes: &[u8]) -> Result<(), PersistenceError> {
-    if bytes.starts_with(CONTAINER_MAGIC) {
-        return load_container(bytes, false).map(drop);
+/// Whether `bytes` are an intact native container: its framing, the checksum of
+/// every entry and a required `document.bin`. Save checks what it writes and
+/// what it keeps as `.recovery` this way, without decoding either document
+/// (review PS-6, 2026-10-15 S2). A file from before the container is decoded.
+fn verify_checksums(bytes: &[u8]) -> Result<(), PersistenceError> {
+    if !bytes.starts_with(CONTAINER_MAGIC) {
+        return load(bytes).map(drop);
     }
-    load(bytes).map(drop)
+    match container_entries(bytes)?.get("document.bin") {
+        Some((true, _)) => Ok(()),
+        Some((false, _)) => Err(PersistenceError::DocumentEntryNotRequired),
+        None => Err(PersistenceError::MissingDocumentEntry),
+    }
 }
 
-fn load_container(bytes: &[u8], with_history: bool) -> Result<LoadOutcome, PersistenceError> {
+/// The entries of a native container whose framing and checksums hold.
+fn container_entries(bytes: &[u8]) -> Result<BTreeMap<String, (bool, Vec<u8>)>, PersistenceError> {
     if bytes.len() > MAX_CONTAINER_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
@@ -1804,7 +1705,11 @@ fn load_container(bytes: &[u8], with_history: bool) -> Result<LoadOutcome, Persi
     if !reader.is_finished() {
         return Err(PersistenceError::TrailingBytes);
     }
+    Ok(entries)
+}
 
+fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
+    let mut entries = container_entries(bytes)?;
     let (document_required, document) = entries
         .remove("document.bin")
         .ok_or(PersistenceError::MissingDocumentEntry)?;
@@ -1863,7 +1768,7 @@ fn load_container(bytes: &[u8], with_history: bool) -> Result<LoadOutcome, Persi
         }
         (None, _) => {}
     }
-    if let Some(revision_history) = revision_history.filter(|_| with_history) {
+    if let Some(revision_history) = revision_history {
         // The current revision was verified on its own; a history that no longer
         // decodes (a writer that changed the snapshot form without a new format, a
         // damaged entry) costs the Undo steps, not the document.
@@ -2623,6 +2528,8 @@ fn load_document(
     mut container_data: ContainerData,
     migrated_digests: &mut BTreeMap<String, String>,
 ) -> Result<LoadOutcome, PersistenceError> {
+    #[cfg(feature = "testing")]
+    SNAPSHOT_DECODES.set(SNAPSHOT_DECODES.get() + 1);
     if bytes.len() > MAX_SNAPSHOT_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
@@ -3548,11 +3455,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("model.ketchup");
         let container = ContainerData::default();
-        let first =
-            save_atomic_document_store_with_container_if_absent(&path, &store, &container).unwrap();
+        let prepared = prepare_document(&store, &container, HistoryPolicy::Keep).unwrap();
+        publish_document(&path, &prepared, Publish::IfAbsent).unwrap();
         HISTORY_DECODES.with(|count| count.set(0));
-        save_atomic_document_store_with_container_if_unchanged(&path, &store, &container, first)
-            .unwrap();
+        publish_document(&path, &prepared, Publish::IfUnchanged(prepared.identity())).unwrap();
         assert_eq!(HISTORY_DECODES.with(std::cell::Cell::get), 0);
         assert!(load(&fs::read(recovery_path(&path)).unwrap()).is_ok());
         let opened = load_file(&path).unwrap();
@@ -4081,18 +3987,12 @@ mod tests {
 
         let recovery_path = path.clone();
         let recovery_compared_tx = compared_tx.clone();
+        let dirty = save_document_store(&dirty, &container_data).unwrap();
         let recovery = std::thread::spawn(move || {
-            save_work_recovery_document_store_with_container_after_compare(
-                &recovery_path,
-                &dirty,
-                &container_data,
-                base_identity,
-                None,
-                || {
-                    recovery_compared_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
-                },
-            )
+            write_work_recovery(&recovery_path, &dirty, base_identity, None, || {
+                recovery_compared_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
         });
         compared_rx.recv().unwrap();
 

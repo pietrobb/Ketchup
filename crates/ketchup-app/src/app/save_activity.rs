@@ -1,21 +1,15 @@
 //! Native saving: prepare and publish on workers, ask for consent on the UI thread.
 use crate::*;
 use ketchup_model::persistence::{
-    self, ContainerData, FileIdentity, FilePersistenceError, PersistenceError, WorkRecoveryLock,
+    self, ContainerData, FileIdentity, FilePersistenceError, HistoryPolicy, PersistenceError,
+    PreparedDocument, Publish, WorkRecoveryLock,
 };
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-pub(super) type PreparedSave = Result<(Vec<u8>, bool), PersistenceError>;
+pub(super) type PreparedSave = Result<PreparedDocument, PersistenceError>;
 
 pub(super) fn prepare_save(document: &DocumentStore, container: &ContainerData) -> PreparedSave {
-    match persistence::save_document_store(document, container) {
-        Ok(bytes) => Ok((bytes, false)),
-        Err(PersistenceError::ResourceLimit | PersistenceError::TooLarge { .. }) => {
-            persistence::save_document_store_current_snapshot(document, container)
-                .map(|bytes| (bytes, true))
-        }
-        Err(error) => Err(error),
-    }
+    persistence::prepare_document(document, container, HistoryPolicy::KeepIfFits)
 }
 
 struct Source {
@@ -121,20 +115,20 @@ impl KetchupApp {
     pub(super) fn start_prepared_write(
         &mut self,
         path: &Path,
-        bytes: Vec<u8>,
-        truncate: bool,
+        prepared: PreparedDocument,
         expected: Option<FileIdentity>,
         target_lock: Option<WorkRecoveryLock>,
         context: &egui::Context,
     ) {
         let source = Source::capture(self);
-        let identity = FileIdentity::from_bytes(&bytes);
+        let identity = prepared.identity();
+        let truncate = !prepared.keeps_history();
         let worker_path = path.to_owned();
         let repaint = context.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let result =
-                persistence::save_prepared_document_if_unchanged(&worker_path, &bytes, expected);
+                persistence::publish_document(&worker_path, &prepared, Publish::over(expected));
             if sender.send((result, target_lock)).is_ok() {
                 repaint.request_repaint();
             }
