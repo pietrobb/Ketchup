@@ -433,6 +433,9 @@ fn start(
         available,
     }));
     let worker_discovery = Arc::clone(&discovery);
+    // Nonces of attach requests whose proof held: a captured request line
+    // replayed later is rejected without asking the user again.
+    let used_nonces = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
     let worker_instance_id = instance_id.clone();
     let (sender, requests) = mpsc::sync_channel(1);
     let (delivery_sender, deliveries) = mpsc::channel();
@@ -461,6 +464,7 @@ fn start(
                         let connection_instance_id = worker_instance_id.clone();
                         let connection_bootstrap = bootstrap.clone();
                         let connection_discovery = Arc::clone(&worker_discovery);
+                        let connection_nonces = Arc::clone(&used_nonces);
                         let connection_stop = Arc::clone(&stop);
                         if let Ok(handler) = std::thread::Builder::new()
                             .name("ketchup-live-consent-connection".into())
@@ -473,6 +477,7 @@ fn start(
                                     &connection_instance_id,
                                     &connection_bootstrap,
                                     &connection_discovery,
+                                    &connection_nonces,
                                     &connection_stop,
                                 );
                             })
@@ -517,6 +522,7 @@ fn serve(
     instance_id: &str,
     bootstrap: &str,
     discovery: &Mutex<DiscoveryState>,
+    used_nonces: &Mutex<std::collections::HashSet<String>>,
     stop: &AtomicBool,
 ) {
     let _ = (|| -> io::Result<()> {
@@ -534,7 +540,15 @@ fn serve(
             return write_list_response(&mut stream, &nonce, instance_id, &state, stop);
         }
         let expected = ketchup_mcp::local_auth::client_attach_proof(bootstrap, instance_id, &nonce);
-        if !ketchup_mcp::local_auth::proofs_match(&request.proof, &expected) {
+        let replayed = || -> io::Result<bool> {
+            Ok(!used_nonces
+                .lock()
+                .map_err(|_: std::sync::PoisonError<_>| {
+                    io::Error::other("nonce record unavailable")
+                })?
+                .insert(nonce.clone()))
+        };
+        if !ketchup_mcp::local_auth::proofs_match(&request.proof, &expected) || replayed()? {
             return write_response(
                 &mut stream,
                 &nonce,
@@ -952,6 +966,52 @@ mod tests {
         assert!(
             broker.requests.try_recv().is_err(),
             "the UI was never asked"
+        );
+    }
+
+    /// Review 2026-10-15 status: the window did not remember the nonces it
+    /// had answered, so an attach request line captured once could be sent
+    /// again and ask the user again. A replay is rejected without a prompt.
+    #[test]
+    fn a_replayed_attach_request_is_rejected_without_asking_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let broker = start(
+            egui::Context::default(),
+            directory.path(),
+            "Untitled".to_owned(),
+            true,
+        )
+        .unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(
+            &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
+        )
+        .unwrap();
+        let line = attach_line(&registry, "8".repeat(64));
+        let mut first = TcpStream::connect(broker.address).unwrap();
+        writeln!(first, "{line}").unwrap();
+        let pending = broker
+            .requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the first attach asks the user");
+        drop(pending);
+        first
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut answer = String::new();
+        first.read_to_string(&mut answer).unwrap();
+
+        let mut replay = TcpStream::connect(broker.address).unwrap();
+        writeln!(replay, "{line}").unwrap();
+        replay
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut response = String::new();
+        replay.read_to_string(&mut response).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["status"], "rejected");
+        assert!(
+            broker.requests.try_recv().is_err(),
+            "the UI was asked again"
         );
     }
 
