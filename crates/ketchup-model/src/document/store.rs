@@ -327,7 +327,8 @@ impl DocumentStore {
     /// program the file stores beside the document.
     pub(crate) fn restore_opened_rule_program(&mut self, source: Arc<RuleProgramSource>) {
         debug_assert_eq!(self.revisions.len(), 1);
-        Arc::make_mut(&mut self.revisions[self.cursor]).rule_program = Some(source);
+        Arc::make_mut(&mut self.revisions[self.cursor]).rule_program =
+            Some(BoundRuleProgram::new(source));
     }
 
     /// Associates the source with the current newly committed revision, within the same transaction.
@@ -340,7 +341,8 @@ impl DocumentStore {
             return Err(RuleProgramError::AlreadyBound.into());
         }
         Self::validate_rule_program_source(&source)?;
-        Arc::make_mut(&mut self.revisions[self.cursor]).rule_program = Some(Arc::new(source));
+        Arc::make_mut(&mut self.revisions[self.cursor]).rule_program =
+            Some(BoundRuleProgram::new(Arc::new(source)));
         Ok(())
     }
 
@@ -362,18 +364,21 @@ impl DocumentStore {
             .checked_add(1)
             .ok_or(CanonicalError::RevisionExhausted)?;
         let current = &self.revisions[self.cursor];
-        let encoded = serde_json::to_vec(&source).expect("validated rule program source");
-        let digest = Sha256::digest([b"ketchup.rule-source.v1".as_slice(), &encoded].concat());
+        let program = BoundRuleProgram::new(Arc::new(source));
+        let batch_digest = program.digest[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         let revision = Arc::new(Revision {
             id: revision_id,
             snapshot: Snapshot {
                 revision_id,
                 product: Arc::clone(&current.snapshot.product),
             },
-            batch_digest: format!("{digest:x}")[..16].to_owned(),
+            batch_digest,
             origin: RevisionOrigin::Principal(ProposalPrincipal::ManualClient),
             checkpoint: None,
-            rule_program: Some(Arc::new(source)),
+            rule_program: Some(program),
             recomputed_nodes: BTreeSet::new(),
             dirty_features: BTreeSet::new(),
             feature_states: current.feature_states.clone(),
@@ -399,7 +404,15 @@ impl DocumentStore {
             .skip(first)
             .take(cursor + limits::UNDO_REVISIONS + 1);
         let mut restored = Vec::with_capacity(revisions.len());
+        // Revisions that hold one program share its Arc; digest each program once.
+        let mut bound = BTreeMap::<*const RuleProgramSource, BoundRuleProgram>::new();
         for (validated, batch_digest, origin, checkpoint, rule_program) in revisions {
+            let rule_program = rule_program.map(|source| {
+                bound
+                    .entry(Arc::as_ptr(&source))
+                    .or_insert_with(|| BoundRuleProgram::new(source))
+                    .clone()
+            });
             let ValidatedSnapshot {
                 snapshot,
                 feature_states,
@@ -809,9 +822,9 @@ impl DocumentStore {
             digest.update(revision.id.to_le_bytes());
             digest.update(revision.snapshot.canonical_digest().as_bytes());
             digest.update(revision.batch_digest.as_bytes());
-            if let Some(source) = revision.rule_program.as_ref() {
+            if let Some(program) = revision.rule_program.as_ref() {
                 digest.update([1]);
-                digest.update(serde_json::to_vec(source).expect("finite rule program source"));
+                digest.update(program.digest);
             }
             match revision.origin {
                 RevisionOrigin::Initial => digest.update([0]),
@@ -1107,7 +1120,7 @@ impl DocumentStore {
     /// the document's threads between modelled and cosmetic keeps the program
     /// owning the model; any other edit detaches it. A program's own bolts
     /// following its mode are its own edit, which binds its source anew.
-    fn rule_program_kept_by(&self, batch: &CommandBatch) -> Option<Arc<RuleProgramSource>> {
+    fn rule_program_kept_by(&self, batch: &CommandBatch) -> Option<BoundRuleProgram> {
         let switches_mode = batch
             .commands
             .iter()

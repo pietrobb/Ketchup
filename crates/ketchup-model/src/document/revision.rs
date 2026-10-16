@@ -146,6 +146,42 @@ fn variant_values<'de, D: serde::Deserializer<'de>>(
         .collect())
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static RULE_PROGRAM_DIGESTS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// The SHA-256 of a program's JSON under the program-source domain; the history
+/// digest and a source edit's batch digest name a program by it.
+pub(super) fn rule_program_digest(source: &RuleProgramSource) -> [u8; 32] {
+    #[cfg(test)]
+    RULE_PROGRAM_DIGESTS.with(|count| count.set(count.get() + 1));
+    let encoded = serde_json::to_vec(source).expect("finite rule program source");
+    Sha256::digest([b"ketchup.rule-source.v1".as_slice(), &encoded].concat()).into()
+}
+
+/// A revision's program with its digest, computed once when the program is bound,
+/// so a history digest does not encode every revision's program again (review PS-7).
+#[derive(Clone, Debug)]
+pub(super) struct BoundRuleProgram {
+    pub(super) source: std::sync::Arc<RuleProgramSource>,
+    pub(super) digest: [u8; 32],
+}
+
+impl BoundRuleProgram {
+    pub(super) fn new(source: std::sync::Arc<RuleProgramSource>) -> Self {
+        let digest = rule_program_digest(&source);
+        Self { source, digest }
+    }
+}
+
+impl PartialEq for BoundRuleProgram {
+    fn eq(&self, other: &Self) -> bool {
+        self.digest == other.digest
+    }
+}
+
 #[derive(Clone)]
 pub struct Revision {
     pub(super) id: u64,
@@ -155,7 +191,7 @@ pub struct Revision {
     pub(super) checkpoint: Option<String>,
     /// Shared between the revisions that keep the same program, so an Undo history
     /// holds each program once.
-    pub(super) rule_program: Option<std::sync::Arc<RuleProgramSource>>,
+    pub(super) rule_program: Option<BoundRuleProgram>,
     pub(super) recomputed_nodes: BTreeSet<NodeId>,
     pub(super) dirty_features: BTreeSet<FeatureId>,
     pub(super) feature_states: BTreeMap<FeatureId, FeatureEvaluationState>,
@@ -190,7 +226,9 @@ impl Revision {
 
     #[must_use]
     pub fn rule_program(&self) -> Option<&RuleProgramSource> {
-        self.rule_program.as_deref()
+        self.rule_program
+            .as_ref()
+            .map(|program| program.source.as_ref())
     }
 
     #[must_use]
@@ -326,3 +364,49 @@ pub(crate) type StoredRevision = (
     Option<String>,
     Option<std::sync::Arc<RuleProgramSource>>,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PS-7: the history digest names each revision's program by the digest made
+    /// when it was bound, not by encoding every program again.
+    #[test]
+    fn a_history_digest_encodes_no_program() {
+        use ketchup_geometry::dimension::Dimension;
+        let program = |edit: usize| RuleProgramSource {
+            file_name: "model.star".into(),
+            source: format!("# {edit}\n"),
+            overrides: BTreeMap::new(),
+            variants: BTreeMap::new(),
+        };
+        let mut store = DocumentStore::new();
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateEvaluatorNode {
+                    id: NodeId(1),
+                    name: "parameter".into(),
+                    dimension: Dimension::new("1", 1.0).unwrap(),
+                    dependencies: vec![],
+                },
+            ]))
+            .unwrap();
+        store.bind_rule_program(program(0)).unwrap();
+        for edit in 1..=8 {
+            store.replace_rule_program_source(program(edit)).unwrap();
+        }
+        let before = store.history_digest();
+        RULE_PROGRAM_DIGESTS.with(|count| count.set(0));
+        assert_eq!(store.history_digest(), before);
+        assert_eq!(RULE_PROGRAM_DIGESTS.with(std::cell::Cell::get), 0);
+
+        // A different program still changes the digest; the same one does not.
+        store.replace_rule_program_source(program(9)).unwrap();
+        let edited = store.history_digest();
+        assert_ne!(edited, before);
+        store.undo().unwrap();
+        assert_eq!(store.history_digest(), before);
+        store.redo().unwrap();
+        assert_eq!(store.history_digest(), edited);
+    }
+}
