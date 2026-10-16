@@ -320,9 +320,14 @@ fn command_registry_exposes_only_complete_modeling_tools() {
 
 #[test]
 fn opening_program_document_evaluates_and_frames_actual_scene() {
-    let path =
+    let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/programs/table.ketchup");
-    assert!(path.is_file(), "missing fixture: {}", path.display());
+    assert!(fixture.is_file(), "missing fixture: {}", fixture.display());
+    // Opening takes the work-recovery lock beside the file and may set a checkpoint
+    // aside there, so open a copy and leave the source tree untouched.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("table.ketchup");
+    std::fs::copy(&fixture, &path).unwrap();
     let worker = exact_worker_candidates()
         .into_iter()
         .find(|candidate| candidate.is_file())
