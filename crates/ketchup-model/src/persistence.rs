@@ -2080,6 +2080,17 @@ fn decode_revision_history(
     {
         return Err(PersistenceError::InvalidRevisionHistory);
     }
+    // A file written before the shared Undo limit can hold up to 4 096 revisions; the
+    // store keeps those within the limit around the cursor, so only they are loaded
+    // (PS-12). Older formats load whole: their migrated digests chain across revisions.
+    let cursor = if schema >= 4 {
+        let first = cursor.saturating_sub(crate::tolerance::limits::UNDO_REVISIONS);
+        records.drain(..first);
+        records.truncate(cursor - first + crate::tolerance::limits::UNDO_REVISIONS + 1);
+        cursor - first
+    } else {
+        cursor
+    };
 
     let snapshots = if schema >= 4 {
         // Every revision a format-4 history holds was written in the current format,
@@ -3150,6 +3161,71 @@ mod tests {
             decode(&history, snapshot_bytes(largest - 1)),
             Err(PersistenceError::ResourceLimit)
         ));
+    }
+
+    /// PS-12: opening loads only the revisions the Undo limit keeps around the
+    /// cursor. Those before the window belong to another document here, so the
+    /// history opens only if they are never loaded.
+    #[test]
+    fn opening_a_long_history_loads_only_the_revisions_it_keeps() {
+        use crate::document::{CanonicalCommand, CommandBatch, NodeId};
+        use crate::tolerance::limits::UNDO_REVISIONS;
+        use ketchup_geometry::dimension::Dimension;
+        let edited = |edits: u64| {
+            let mut store = DocumentStore::new();
+            for id in 1..=edits {
+                store
+                    .apply_batch(&CommandBatch::new(vec![
+                        CanonicalCommand::CreateEvaluatorNode {
+                            id: NodeId(id),
+                            name: format!("parameter-{id}"),
+                            dimension: Dimension::new("1", 1.0).unwrap(),
+                            dependencies: vec![],
+                        },
+                    ]))
+                    .unwrap();
+            }
+            store
+        };
+        let window = u64::try_from(UNDO_REVISIONS).unwrap();
+        let (other, store) = (edited(window - 1), edited(3 * window / 2));
+        let kept = store.revision_history().collect::<Vec<_>>();
+        assert_eq!(kept[0].id(), window / 2);
+        // The other document's revisions take the ids before the kept ones.
+        let revisions = other
+            .revision_history()
+            .filter(|revision| revision.id() < kept[0].id())
+            .chain(kept.iter().copied())
+            .collect::<Vec<_>>();
+        let cursor = revisions.len() - 1;
+        assert!(cursor > UNDO_REVISIONS);
+        let document_bin = encoded_snapshot(&store.current());
+        let history = encode_history(
+            &revisions,
+            cursor,
+            store.next_revision_id(),
+            &document_bin,
+            HISTORY_BUDGET,
+        )
+        .unwrap();
+        let outcome = load(&save(&store.current())).unwrap();
+        let opened = decode_revision_history(
+            &history,
+            &document_bin.bytes,
+            &outcome,
+            &ContainerData::default(),
+            HISTORY_BUDGET,
+        )
+        .unwrap();
+        assert_eq!(opened.revision_count(), UNDO_REVISIONS + 1);
+        assert_eq!(
+            opened.revision_history().next().unwrap().id(),
+            revisions[cursor - UNDO_REVISIONS].id()
+        );
+        assert_eq!(
+            opened.current().revision_id(),
+            store.current().revision_id()
+        );
     }
 
     /// PS-10: a chunk range past what a `u32` holds is refused, not written as
