@@ -112,12 +112,9 @@ fn report(snapshot: &Snapshot, facts: &ExactPairFacts, coverage: &Value) -> Valu
                 let (a, b) = (&a.instance_path, &b.instance_path);
                 if facts
                     .get(&(a.min(b).clone(), a.max(b).clone()))
-                    .is_some_and(|pair| {
-                        pair.penetrating()
-                            || pair
-                                .distance_mm
-                                .is_some_and(|d| d <= snapshot.tolerance().linear_mm())
-                    })
+                    // The program's contact rule, not the document tolerance:
+                    // both report the same group (review PRG-5).
+                    .is_some_and(|pair| pair.penetrating() || pair.touching())
                 {
                     let (a, b) = (root(&parents, left), root(&parents, right));
                     parents[b] = a;

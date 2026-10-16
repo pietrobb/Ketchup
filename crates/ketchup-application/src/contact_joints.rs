@@ -1,6 +1,7 @@
 //! Contact checks for physical declarations; kinematic joints do not imply contact.
 use crate::collision::ExactPairFacts;
 use ketchup_model::document::{InstancePath, Snapshot};
+use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -50,7 +51,8 @@ pub(crate) fn append_report(
         }
         checked += 1;
         let distance = distance.expect("checked distance");
-        if distance <= joint.max_gap_mm + snapshot.tolerance().linear_mm()
+        // The allowance the program's joint check adds (review PRG-5).
+        if distance <= joint.max_gap_mm + CONTACT_FIT_MM
             || fact.is_some_and(|pair| pair.penetrating())
         {
             continue;

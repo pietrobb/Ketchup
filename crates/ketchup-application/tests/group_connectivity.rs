@@ -136,6 +136,22 @@ fn native_nested_groups_use_full_paths_and_actual_solids_not_overlapping_boxes()
     );
 }
 
+/// Review 2026-10-15 status PRG-5: the program counts parts 0.005 mm apart as in
+/// contact (`CONTACT_FIT_MM`), while this validator measured group contact and
+/// physical joints against the document's 1e-7 mm and called the same group
+/// disconnected and the same joint without contact.
+#[test]
+fn a_group_and_a_joint_in_contact_for_the_program_are_in_contact_here() {
+    let _turn = crate::integration_support::file_turn();
+    let session = session(
+        "a=box('a',(10,10,10))\nb=box('b',(10,10,10),at=(10.005,0,0))\ngroup('g',[a,b],grounded=True)\njoint(a,b,kind='fixed',name='physical')",
+    );
+    let report = check(&session.snapshot(), false);
+    assert_eq!(report["complete"], true, "{report:#}");
+    assert_eq!(report["state"], "passed", "{report:#}");
+    assert_eq!(report["group_connectivity"]["checked_joint_count"], 1);
+}
+
 #[test]
 fn cancelled_or_non_native_contact_is_incomplete_not_disconnected_or_passed() {
     let _turn = crate::integration_support::file_turn();
