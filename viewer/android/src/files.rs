@@ -122,7 +122,7 @@ impl Files {
                 })
             }
         };
-        started.map_err(|error| android_error("viewer.android.dialog", "", error.to_string()))?;
+        started.map_err(|error| jni_error("viewer.android.dialog", "", error))?;
         self.waiting = true;
         Ok(())
     }
@@ -153,11 +153,7 @@ impl Files {
                 },
                 Ok(None) => return,
                 Err(error) => {
-                    app.report(android_error(
-                        "viewer.android.dialog",
-                        "",
-                        error.to_string(),
-                    ));
+                    app.report(jni_error("viewer.android.dialog", "", error));
                     return;
                 }
             };
@@ -182,8 +178,11 @@ impl Files {
         }
         let name = self.display_name(uri);
         let target = if name.is_empty() { uri } else { &name };
-        let read_error =
-            |error: std::io::Error| android_error("viewer.android.read", target, error.to_string());
+        let read_error = |error: std::io::Error| {
+            Rejection::new("viewer.android.read", RejectionPhase::Io)
+                .target(target.to_owned())
+                .caused_by(error)
+        };
         // The readers take only what the format allows, from the file itself:
         // a large package never has to fit the Java heap (VW-6).
         let mut file = self.open_file(uri, "r", target)?;
@@ -244,10 +243,8 @@ impl Files {
                 return last_error(env, activity).map(Err);
             }
             Ok(Ok(fd))
-        })
-        .map_err(|error| error.to_string())
-        .and_then(|fd| fd)
-        .map_err(|detail| android_error(code, target, detail))?;
+        });
+        let fd = answered(code, target, fd)?;
         // SAFETY: `openFile` detached `fd` from its ParcelFileDescriptor, so
         // nothing else owns or closes it.
         #[allow(unsafe_code)]
@@ -260,7 +257,7 @@ impl Files {
         if bytes.is_empty() {
             return Ok(());
         }
-        with_activity(&self.android_app, |env, activity| {
+        let shared = with_activity(&self.android_app, |env, activity| {
             let file_name = env.new_string(name)?;
             let data = env.byte_array_from_slice(bytes)?;
             let shared = env
@@ -276,10 +273,8 @@ impl Files {
             } else {
                 last_error(env, activity).map(Err)
             }
-        })
-        .map_err(|error| error.to_string())
-        .and_then(|shared| shared)
-        .map_err(|detail| android_error("viewer.android.share", name, detail))
+        });
+        answered("viewer.android.share", name, shared)
     }
 
     /// Replaces the file with `bytes`; a commented copy of a large package
@@ -330,7 +325,10 @@ impl Files {
     }
 }
 
-fn last_error(env: &mut Env, activity: &JObject) -> jni::errors::Result<String> {
+/// What the activity's `lastError` says went wrong in its previous call.
+struct ActivityFailure(String);
+
+fn last_error(env: &mut Env, activity: &JObject) -> jni::errors::Result<ActivityFailure> {
     let error = env
         .call_method(
             activity,
@@ -339,11 +337,34 @@ fn last_error(env: &mut Env, activity: &JObject) -> jni::errors::Result<String> 
             &[],
         )?
         .l()?;
-    env.cast_local::<JString>(error)?.try_to_string(env)
+    env.cast_local::<JString>(error)?
+        .try_to_string(env)
+        .map(ActivityFailure)
 }
 
 fn android_error(code: &'static str, target: &str, detail: String) -> Rejection {
     Rejection::new(code, RejectionPhase::Io)
         .target(target.to_owned())
         .caused_by_messages([detail])
+}
+
+/// A failed JNI call, keeping the JNI error itself.
+fn jni_error(code: &'static str, target: &str, error: jni::errors::Error) -> Rejection {
+    Rejection::new(code, RejectionPhase::Io)
+        .target(target.to_owned())
+        .caused_by(error)
+}
+
+/// The answer of an activity method that reports its own failure as text
+/// (`lastError`), or the JNI error of calling it.
+fn answered<T>(
+    code: &'static str,
+    target: &str,
+    call: jni::errors::Result<Result<T, ActivityFailure>>,
+) -> Result<T, Rejection> {
+    match call {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(ActivityFailure(detail))) => Err(android_error(code, target, detail)),
+        Err(error) => Err(jni_error(code, target, error)),
+    }
 }

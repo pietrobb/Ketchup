@@ -114,6 +114,47 @@ def test_counts_text_errors_formatted_variants_and_unwraps(tmp_path):
     }
 
 
+def test_viewer_apps_are_scanned_and_text_or_debug_causes_count(tmp_path):
+    write(
+        tmp_path,
+        "viewer/android/src/files.rs",
+        "let a = call().map_err(ToString::to_string)?;\n"
+        "let b = call().map_err(std::string::ToString::to_string)?;\n"
+        "let c = call().map_err(|error| error.to_string())?;\n",
+    )
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        'let d = format!("{error:?}");\n'
+        'let e = format!("query rejected: {e:#?} at {x}");\n'
+        'let f = format!("{:?}", error);\n'
+        'let g = format!("{:?}", &io_error);\n'
+        '// Debug text of values that are not errors does not count.\n'
+        'let h = format!("{point:?}"); let i = format!("{:?}", kind);\n',
+    )
+    assert checker.current_counts(tmp_path) == {
+        "viewer/android/src/files.rs stringified_cause": 3,
+        "crates/a/src/lib.rs debug_formatted": 4,
+    }
+
+
+def test_the_baseline_has_no_way_to_grow(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    write(tmp_path, "crates/a/src/lib.rs", "a.map_err(|_| 1);\n")
+    assert checker.check(tmp_path, update=True) == 0
+    write(tmp_path, "crates/a/src/lib.rs", "a.map_err(|_| 1);\nb.map_err(|_| 2);\n")
+    assert checker.check(tmp_path, update=True) == 1
+    assert "allow_growth" not in checker.check.__code__.co_varnames
+    source = (ROOT / "scripts" / "check_error_hygiene.py").read_text(encoding="utf-8")
+    assert "--allow-growth" not in source
+
+
+def test_the_checks_and_baselines_have_an_owner():
+    owners = (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8").split()
+    assert "/scripts/check_*.py" in owners
+    assert "/scripts/*baseline*" in owners
+
+
 def test_ratchet_refuses_growth_and_locks_in_shrinking(tmp_path, capsys):
     (tmp_path / "scripts").mkdir()
     write(tmp_path, "crates/a/src/lib.rs", 'a.map_err(|_| 1);\nb.map_err(|_| 2);\n')

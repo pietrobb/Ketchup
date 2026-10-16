@@ -16,8 +16,10 @@ Two forms are counted in production source (crates/*/src, test modules and
   assumption broke when it fires.
 - string_result: `Result<_, String>` (or `Ok::<_, String>`) makes every caller unable to tell one
   failure from another.
-- stringified_cause: `map_err(|e| e.to_string())` flattens a typed error into
-  text, so the caller can no longer react to its kind.
+- stringified_cause: `map_err(|e| e.to_string())` or `map_err(ToString::to_string)`
+  flattens a typed error into text, so the caller can no longer react to its kind.
+- debug_formatted: `format!("{error:?}")` or `format!("{:?}", error)` turns an
+  error into its Debug text, which neither the caller nor the user can act on.
 - stringified_variant: `Variant(error.to_string())` does the same inside an
   error variant; carry the source error as a field instead.
 - formatted_variant: `Variant(format!(...))` puts the facts of an error into a
@@ -27,8 +29,11 @@ Two forms are counted in production source (crates/*/src, test modules and
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
-fails. Run with --update after removing occurrences to shrink the baseline.
-Never add entries by hand.
+fails. Run with --update after removing occurrences to shrink the baseline; it never
+grows the baseline. Never add entries by hand: the baseline and the checks are
+owned in .github/CODEOWNERS.
+
+The viewer apps (viewer/*/src) are production source too.
 """
 from __future__ import annotations
 
@@ -38,7 +43,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_NAME = "scripts/error_hygiene_baseline.txt"
-SOURCES = ["crates/*/src/**/*.rs"]
+SOURCES = ["crates/*/src/**/*.rs", "viewer/*/src/**/*.rs"]
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 # Errors whose value says nothing beyond their type: dropping them loses nothing.
 # An entry matches the named type by its trailing path, so "fmt::Error" accepts
@@ -66,7 +71,12 @@ SILENT_UNREACHABLE = re.compile(r"\bunreachable!\s*\(\s*\)")
 # A turbofish `Ok::<_, String>(...)` names the same text error type.
 STRING_RESULT = re.compile(r"\b(?:Result|(?:Ok|Err)::)<(?:[^<>,]|<[^<>]*(?:<[^<>]*>[^<>]*)*>)+,\s*String\s*>")
 STRINGIFIED_CAUSE = re.compile(
-    r"map_err\(\s*(?:move\s*)?\|\s*(\w+)\s*\|\s*\1\s*\.\s*to_string\(\)\s*\)")
+    r"map_err\(\s*(?:(?:move\s*)?\|\s*(\w+)\s*\|\s*\1\s*\.\s*to_string\(\)"
+    r"|(?:std::string::)?ToString::to_string)\s*\)")
+ERROR_NAME = r"(?:e|err|error|\w+_err(?:or)?|source|cause)"
+DEBUG_FORMATTED = re.compile(
+    r'format!\(\s*"(?:[^"\\]|\\.)*?(?:\{' + ERROR_NAME + r':#?\?\}'
+    r'|\{:#?\?\}(?:[^"\\]|\\.)*"\s*,\s*&?' + ERROR_NAME + r'\b)')
 STRINGIFIED_VARIANT = re.compile(
     r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*(?:e|err|error|\w+_err(?:or)?|source|cause)"
     r"\s*\.\s*to_string\(\)\s*\)")
@@ -93,6 +103,7 @@ def file_counts(text: str) -> dict[str, int]:
             "silent_unreachable": len(SILENT_UNREACHABLE.findall(text)),
             "string_result": len(STRING_RESULT.findall(text)),
             "stringified_cause": len(STRINGIFIED_CAUSE.findall(text)),
+            "debug_formatted": len(DEBUG_FORMATTED.findall(text)),
             "stringified_variant": len(STRINGIFIED_VARIANT.findall(text)),
             "formatted_variant": len(FORMATTED_VARIANT.findall(text)),
             "unwrap": len(UNWRAP.findall(text))}
@@ -122,12 +133,12 @@ def read_baseline(root: Path = ROOT) -> dict[str, int]:
     return baseline
 
 
-def check(root: Path = ROOT, update: bool = False, allow_growth: bool = False) -> int:
+def check(root: Path = ROOT, update: bool = False) -> int:
     counts = current_counts(root)
     old = read_baseline(root)
     if update:
         grown = {key: value for key, value in counts.items() if value > old.get(key, 0)}
-        if old and grown and not allow_growth:
+        if old and grown:
             print("Refusing to grow the baseline:", *sorted(grown), sep="\n  ")
             return 1
         lines = [f"{key} {value}" for key, value in sorted(counts.items())]
@@ -155,4 +166,4 @@ def check(root: Path = ROOT, update: bool = False, allow_growth: bool = False) -
 
 
 if __name__ == "__main__":
-    sys.exit(check(update="--update" in sys.argv, allow_growth="--allow-growth" in sys.argv))
+    sys.exit(check(update="--update" in sys.argv))

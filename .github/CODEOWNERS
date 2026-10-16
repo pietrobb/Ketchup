@@ -1,4 +1,7 @@
 /.github/workflows/ @pietrobb
+/.github/CODEOWNERS @pietrobb
 /AGENTS.md @pietrobb
-/scripts/check_no_named_products.py @pietrobb
-/scripts/named_products_baseline.txt @pietrobb
+# The repository checks and the ratchet baselines they compare against: a
+# baseline that grows, or a check that looks at less, needs the owner.
+/scripts/check_*.py @pietrobb
+/scripts/*baseline* @pietrobb

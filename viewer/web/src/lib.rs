@@ -200,23 +200,28 @@ fn browser_origin_allowed(
     address: &str,
     allowed: &[&str],
 ) -> Result<(), Rejection> {
-    let refused = || {
-        Rejection::new("viewer.link.origin", RejectionPhase::Request)
-            .target(address.to_owned())
+    // The browser's own answer, when it has one, says why the address failed.
+    let refused = |detail: JsValue| {
+        let refusal = Rejection::new("viewer.link.origin", RejectionPhase::Request);
+        browser_cause(refusal.target(address.to_owned()), detail)
             .reason("This Viewer does not open models from that address.")
             .fix_hint("Open the link published by the manufacturer, or ask them to allow the model's origin.")
     };
     let location = window.location();
-    let page = location.origin().map_err(|_| refused())?;
-    let base = location.href().map_err(|_| refused())?;
+    let page = location.origin().map_err(refused)?;
+    let base = location.href().map_err(refused)?;
     let origin = web_sys::Url::new_with_base(address, &base)
-        .map_err(|_| refused())?
+        .map_err(refused)?
         .origin();
     let known = origin == page
         || allowed
             .iter()
             .any(|allowed| allowed.trim_end_matches('/').eq_ignore_ascii_case(&origin));
-    if known { Ok(()) } else { Err(refused()) }
+    if known {
+        Ok(())
+    } else {
+        Err(refused(JsValue::NULL))
+    }
 }
 
 /// Download the shared model; same-origin or CORS-enabled hosts only.
@@ -398,7 +403,14 @@ fn document() -> Result<web_sys::Document, Rejection> {
 }
 
 fn browser_error(code: &'static str, target: &str, detail: JsValue) -> Rejection {
-    let rejection = Rejection::new(code, RejectionPhase::Io).target(target.to_owned());
+    browser_cause(
+        Rejection::new(code, RejectionPhase::Io).target(target.to_owned()),
+        detail,
+    )
+}
+
+/// `rejection` caused by the browser's error `detail`, when it has a message.
+fn browser_cause(rejection: Rejection, detail: JsValue) -> Rejection {
     match detail.as_string().or_else(|| {
         detail
             .dyn_ref::<js_sys::Error>()
