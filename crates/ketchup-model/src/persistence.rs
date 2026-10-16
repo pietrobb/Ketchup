@@ -644,6 +644,8 @@ fn encode_history(
     document_bin: &crate::document::EncodedSnapshot,
     budget: HistoryBudget,
 ) -> Result<Vec<u8>, PersistenceError> {
+    #[cfg(feature = "testing")]
+    HISTORY_ENCODES.set(HISTORY_ENCODES.get() + 1);
     let count = u32::try_from(revisions.len())
         .map_err(|_: std::num::TryFromIntError| PersistenceError::ResourceLimit)?;
     if count == 0 || count > FILE_HISTORY_REVISIONS || cursor >= revisions.len() {
@@ -833,6 +835,19 @@ pub fn save_document_store_current_snapshot(
         Some(encode_current_revision_history(document, &document_bin)?),
         encoded_program(document.current_rule_program())?,
     )
+}
+
+#[cfg(feature = "testing")]
+thread_local! {
+    static HISTORY_ENCODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Runs `operation` and counts the Undo histories it encoded on this thread.
+#[cfg(feature = "testing")]
+pub fn headless_count_history_encodes<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    let before = HISTORY_ENCODES.get();
+    let result = operation();
+    (result, HISTORY_ENCODES.get() - before)
 }
 
 /// The current revision of `document` saved with `history` as its `history.bin`.
@@ -1108,27 +1123,10 @@ pub fn save_atomic_document_store_current_snapshot_with_container(
     save_atomic_bytes(path.as_ref(), &bytes, None)
 }
 
-pub fn save_atomic_document_store_current_snapshot_with_container_if_unchanged(
-    path: impl AsRef<Path>,
-    document: &DocumentStore,
-    container_data: &ContainerData,
-    expected: FileIdentity,
-) -> Result<FileIdentity, FilePersistenceError> {
-    let bytes = save_document_store_current_snapshot(document, container_data)
-        .map_err(FilePersistenceError::Format)?;
-    save_atomic_bytes(path.as_ref(), &bytes, Some(expected))?;
-    Ok(FileIdentity::from_bytes(&bytes))
-}
-
-pub fn save_atomic_document_store_current_snapshot_with_container_if_absent(
-    path: impl AsRef<Path>,
-    document: &DocumentStore,
-    container_data: &ContainerData,
-) -> Result<FileIdentity, FilePersistenceError> {
-    let bytes = save_document_store_current_snapshot(document, container_data)
-        .map_err(FilePersistenceError::Format)?;
-    save_atomic_bytes_if_absent(path.as_ref(), &bytes)?;
-    Ok(FileIdentity::from_bytes(&bytes))
+/// Publish already prepared native bytes over whatever `path` holds, keeping the
+/// replaced file as its `.recovery`.
+pub fn save_prepared_document(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
+    save_atomic_bytes(path, bytes, None)
 }
 
 /// Publish already prepared native bytes, preserving validation and compare-before-write.
@@ -1161,7 +1159,7 @@ fn save_atomic_bytes_if_absent_after_check(
     after_check: impl FnOnce(),
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), FilePersistenceError> {
-    load(bytes).map_err(FilePersistenceError::Format)?;
+    verify(bytes).map_err(FilePersistenceError::Format)?;
     let lock_path = save_lock_path(path);
     let lock_file = fs::OpenOptions::new()
         .read(true)
@@ -1204,7 +1202,7 @@ fn save_atomic_bytes_after_compare(
     expected: Option<FileIdentity>,
     after_compare: impl FnOnce(),
 ) -> Result<(), FilePersistenceError> {
-    load(bytes).map_err(FilePersistenceError::Format)?;
+    verify(bytes).map_err(FilePersistenceError::Format)?;
     let lock_path = save_lock_path(path);
     let lock_file = fs::OpenOptions::new()
         .read(true)
@@ -1219,7 +1217,7 @@ fn save_atomic_bytes_after_compare(
         {
             return Err(FilePersistenceError::ExternalConflict);
         }
-        Ok(previous) if load(&previous).is_ok() => {
+        Ok(previous) if verify(&previous).is_ok() => {
             write_atomic(&recovery_path(path), &previous)?;
         }
         Err(FilePersistenceError::Format(PersistenceError::ResourceLimit)) => {
@@ -1690,12 +1688,23 @@ fn try_load_recovery(path: &Path) -> Result<Option<LoadedFile>, FilePersistenceE
 
 pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
     if bytes.starts_with(CONTAINER_MAGIC) {
-        return load_container(bytes);
+        return load_container(bytes, true);
     }
     load_document(bytes, ContainerData::default(), &mut BTreeMap::new())
 }
 
-fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
+/// Whether `bytes` open as a document: the container, its checksums, the program
+/// and the current revision, without the Undo history, which opening a file
+/// tolerates losing. Save checks what it writes and what it replaces this way
+/// (review PS-6).
+fn verify(bytes: &[u8]) -> Result<(), PersistenceError> {
+    if bytes.starts_with(CONTAINER_MAGIC) {
+        return load_container(bytes, false).map(drop);
+    }
+    load(bytes).map(drop)
+}
+
+fn load_container(bytes: &[u8], with_history: bool) -> Result<LoadOutcome, PersistenceError> {
     if bytes.len() > MAX_CONTAINER_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
@@ -1784,7 +1793,7 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
     if let (Some(program), LoadOutcome::Editable { document, .. }) = (&program, &mut outcome) {
         document.restore_opened_rule_program(Arc::clone(program));
     }
-    if let Some(revision_history) = revision_history {
+    if let Some(revision_history) = revision_history.filter(|_| with_history) {
         // The current revision was verified on its own; a history that no longer
         // decodes (a writer that changed the snapshot form without a new format, a
         // damaged entry) costs the Undo steps, not the document.
@@ -1849,6 +1858,8 @@ fn decode_revision_history(
     container_data: &ContainerData,
     budget: HistoryBudget,
 ) -> Result<DocumentStore, PersistenceError> {
+    #[cfg(test)]
+    tests::HISTORY_DECODES.with(|count| count.set(count.get() + 1));
     if bytes.len() > MAX_SIDECAR_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
@@ -2874,6 +2885,8 @@ mod tests {
     thread_local! {
         pub(super) static EVIDENCE_GRAPH_COMPILES: std::cell::Cell<usize> =
             const { std::cell::Cell::new(0) };
+        pub(super) static HISTORY_DECODES: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(0) };
     }
 
     /// PS-1: a budget a history fits is one it saves and opens with; one byte
@@ -2938,6 +2951,40 @@ mod tests {
             decode(fits - 1),
             Err(PersistenceError::TooLarge { bytes, .. }) if bytes == fits
         ));
+    }
+
+    /// PS-6: Save checks the bytes it writes and the file it replaces without
+    /// decoding either Undo history; opening the saved file still restores it.
+    #[test]
+    fn saving_over_a_file_decodes_no_history() {
+        use crate::document::{CanonicalCommand, CommandBatch, NodeId};
+        use ketchup_geometry::dimension::Dimension;
+        let mut store = DocumentStore::new();
+        for id in 1..=3_u64 {
+            store
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::CreateEvaluatorNode {
+                        id: NodeId(id),
+                        name: format!("parameter-{id}"),
+                        dimension: Dimension::new(id.to_string(), id as f64).unwrap(),
+                        dependencies: vec![],
+                    },
+                ]))
+                .unwrap();
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("model.ketchup");
+        let container = ContainerData::default();
+        let first =
+            save_atomic_document_store_with_container_if_absent(&path, &store, &container).unwrap();
+        HISTORY_DECODES.with(|count| count.set(0));
+        save_atomic_document_store_with_container_if_unchanged(&path, &store, &container, first)
+            .unwrap();
+        assert_eq!(HISTORY_DECODES.with(std::cell::Cell::get), 0);
+        assert!(load(&fs::read(recovery_path(&path)).unwrap()).is_ok());
+        let opened = load_file(&path).unwrap();
+        let opened = opened.editable_document().expect("editable");
+        assert_eq!(opened.revision_count(), store.revision_count());
     }
 
     /// PS-5: revisions that share one product (a program source edit, a rollback)

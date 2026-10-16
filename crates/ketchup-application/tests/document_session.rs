@@ -216,6 +216,50 @@ fn shared_python_contract_corpus_plans_and_evaluates_with_real_worker() {
     }
 }
 
+/// PS-6: a session Save encodes the history once and publishes those bytes.
+#[test]
+fn session_save_encodes_the_history_once() {
+    let mut session = DocumentSession::default();
+    for value in [10.0, 20.0] {
+        let command = if value == 10.0 {
+            CanonicalCommand::CreateEvaluatorNode {
+                id: NodeId(1),
+                name: "parameter".into(),
+                dimension: Dimension::new("10", value).unwrap(),
+                dependencies: vec![],
+            }
+        } else {
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("20", value).unwrap(),
+            }
+        };
+        let proposal = session
+            .plan_commands(CommandBatch::new(vec![command]))
+            .unwrap();
+        session.apply_proposal(&proposal).unwrap();
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("model.ketchup");
+    let (saved, encodes) =
+        persistence::headless_count_history_encodes(|| session.save(&path, SaveOptions::default()));
+    saved.unwrap();
+    assert_eq!(encodes, 1, "new file");
+    let (saved, encodes) = persistence::headless_count_history_encodes(|| {
+        session.save(&path, SaveOptions { overwrite: true })
+    });
+    saved.unwrap();
+    assert_eq!(encodes, 1, "over the session's file");
+    let other = directory.path().join("other.ketchup");
+    let (saved, encodes) = persistence::headless_count_history_encodes(|| {
+        session.save_current_snapshot(&other, SaveOptions::default())
+    });
+    saved.unwrap();
+    assert_eq!(encodes, 1, "current revision only");
+    let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    assert_eq!(reopened.visible_undo_steps(), 2);
+}
+
 #[test]
 fn explicit_current_snapshot_save_is_atomic_and_resets_the_persistent_history_boundary() {
     let mut session = DocumentSession::default();

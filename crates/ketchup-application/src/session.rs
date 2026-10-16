@@ -246,65 +246,20 @@ impl DocumentSession {
         let expected_identity = (self.path.as_deref() == Some(path))
             .then_some(self.file_identity)
             .flatten();
-        if options.overwrite {
-            let result = match (preserve_history, expected_identity) {
-                (true, Some(expected)) => {
-                    persistence::save_atomic_document_store_with_container_if_unchanged(
-                        path,
-                        &self.document,
-                        &self.container_data,
-                        expected,
-                    )
-                    .map(|_| ())
-                }
-                (false, Some(expected)) => {
-                    persistence::save_atomic_document_store_current_snapshot_with_container_if_unchanged(
-                        path,
-                        &self.document,
-                        &self.container_data,
-                        expected,
-                    )
-                    .map(|_| ())
-                }
-                (true, None) => persistence::save_atomic_document_store_with_container(
-                    path,
-                    &self.document,
-                    &self.container_data,
-                ),
-                (false, None) => {
-                    persistence::save_atomic_document_store_current_snapshot_with_container(
-                        path,
-                        &self.document,
-                        &self.container_data,
-                    )
-                }
-            };
-            if let Err(error) = result {
-                if error.published_identity(path).is_none() {
-                    return Err(SessionError::Persistence(error));
-                }
-                publication_error = Some(error);
+        let result = match (options.overwrite, expected_identity) {
+            (true, Some(expected)) => {
+                persistence::save_prepared_document_if_unchanged(path, &saved_bytes, Some(expected))
             }
-        } else {
-            let result = if preserve_history {
-                persistence::save_atomic_document_store_with_container_if_absent(
-                    path,
-                    &self.document,
-                    &self.container_data,
-                )
-            } else {
-                persistence::save_atomic_document_store_current_snapshot_with_container_if_absent(
-                    path,
-                    &self.document,
-                    &self.container_data,
-                )
-            };
-            if let Err(error) = result {
-                if error.published_identity(path).is_none() {
-                    return Err(SessionError::Persistence(error));
-                }
-                publication_error = Some(error);
+            (true, None) => persistence::save_prepared_document(path, &saved_bytes),
+            (false, _) => {
+                persistence::save_prepared_document_if_unchanged(path, &saved_bytes, None)
             }
+        };
+        if let Err(error) = result {
+            if error.published_identity(path).is_none() {
+                return Err(SessionError::Persistence(error));
+            }
+            publication_error = Some(error);
         }
         if !preserve_history {
             self.document.discard_history_before_current();
