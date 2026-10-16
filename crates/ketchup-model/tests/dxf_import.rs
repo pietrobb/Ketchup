@@ -2990,6 +2990,20 @@ fn many_inserts_of_a_full_block_are_refused_before_comparing_their_profiles() {
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
 }
 
+/// The entity limit admits ten thousand separate lines, each its own profile.
+/// Joining them into profiles looked for the next seed and the open ends of
+/// every profile among all segments, so the file took tens of seconds before
+/// it was refused for its profile count (a fuzzed 171 KB DXF ran past 5 s on CI).
+#[test]
+fn ten_thousand_separate_lines_are_refused_without_quadratic_joining() {
+    let started = std::time::Instant::now();
+    assert_eq!(
+        inspect_dxf(&disconnected_lines(10_000), DxfImportOptions::new(None)),
+        Err(DxfImportError::TooManyProfiles)
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
 #[test]
 fn unitless_files_require_review_and_scale_user_units_before_validation() {
     let source = dxf(None, "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n1\n21\n0\n");

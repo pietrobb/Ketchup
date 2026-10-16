@@ -4284,11 +4284,15 @@ fn assemble_loose_segments(
             return Err(DxfImportError::AmbiguousGeometry);
         }
         let mut unused = (0..segments.len()).collect::<BTreeSet<_>>();
-        while let Some(seed) = unused
-            .iter()
-            .min_by_key(|index| segments[**index].ordinal)
-            .copied()
-        {
+        // Seeds in ordinal order, and open ends looked up among the
+        // component's own points: scanning every segment per profile made a
+        // file of many separate segments quadratic.
+        let mut seeds = (0..segments.len()).collect::<Vec<_>>();
+        seeds.sort_by_key(|index| segments[*index].ordinal);
+        for seed in seeds {
+            if !unused.contains(&seed) {
+                continue;
+            }
             let mut component = BTreeSet::new();
             let mut queue = VecDeque::from([seed]);
             while let Some(index) = queue.pop_front() {
@@ -4304,16 +4308,24 @@ fn assemble_loose_segments(
                     }
                 }
             }
-            let degree_one = endpoints
+            let component_points = component
                 .iter()
-                .filter(|(_, incident)| {
-                    incident
+                .flat_map(|index| {
+                    [
+                        point_key(segments[*index].segment.start_mm()),
+                        point_key(segments[*index].segment.end_mm()),
+                    ]
+                })
+                .collect::<BTreeSet<_>>();
+            let degree_one = component_points
+                .into_iter()
+                .filter(|point| {
+                    endpoints[point]
                         .iter()
                         .filter(|index| component.contains(index))
                         .count()
                         == 1
                 })
-                .map(|(point, _)| *point)
                 .collect::<Vec<_>>();
             let closed = match degree_one.len() {
                 0 => true,
