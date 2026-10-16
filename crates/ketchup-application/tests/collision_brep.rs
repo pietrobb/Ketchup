@@ -78,7 +78,15 @@ fn exact_scope(document: &DocumentStore, scope: &CollisionScope) -> serde_json::
 }
 #[test]
 fn worker_contact_penetration_and_snapshot_are_exact() {
-    for (x, state, count) in [(10.0, "passed", 0), (9.0, "failed", 1), (11.0, "passed", 0)] {
+    // A press fit no thicker than CONTACT_FIT_MM (9.995: 0.005 mm) touches, as
+    // in a program's report; 9.98 (0.02 mm) collides (review 2026-10-16 R-4).
+    for (x, state, count) in [
+        (10.0, "passed", 0),
+        (9.995, "passed", 0),
+        (9.98, "failed", 1),
+        (9.0, "failed", 1),
+        (11.0, "passed", 0),
+    ] {
         let mut document = DocumentStore::new();
         add(&mut document, 1, rectangle(), 0.0);
         add(&mut document, 2, rectangle(), x);
@@ -108,6 +116,21 @@ fn worker_contact_penetration_and_snapshot_are_exact() {
             document.current().canonical_digest()
         );
         assert_eq!(undo, document.visible_undo_steps());
+    }
+}
+#[test]
+fn the_analytic_check_without_a_worker_takes_a_press_fit_as_contact() {
+    for (x, state, count) in [(9.995, "passed", 0), (9.98, "failed", 1)] {
+        let mut document = DocumentStore::new();
+        add(&mut document, 1, rectangle(), 0.0);
+        add(&mut document, 2, rectangle(), x);
+        let report = assistant_validation_context(
+            &document.current(),
+            &ExactResultRegistry::default(),
+            &selection(),
+        );
+        assert_eq!(report["collision"]["state"], state, "{report}");
+        assert_eq!(report["issue_count"], count, "{report}");
     }
 }
 #[test]

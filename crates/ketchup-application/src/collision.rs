@@ -24,13 +24,13 @@ use ketchup_model::exact_product::{
     ExactProductError, ExactResultRegistry, ExactSnapshotPreparation,
 };
 use ketchup_model::exact_validation::{
-    GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, GeneralBodyValidationError,
-    GeneralClearanceCase, GravitySupportContact, general_body_input_bytes,
-    general_body_narrow_phase, general_body_validation_policy, general_body_validator_descriptor,
+    GeneralBodyParticipant, GeneralBodyValidationError, GeneralClearanceCase,
+    GravitySupportContact, general_body_input_bytes, general_body_narrow_phase,
+    general_body_validation_policy, general_body_validator_descriptor,
 };
 use ketchup_model::persistence::ContainerData;
-use ketchup_model::tolerance::TolerancePolicy;
 use ketchup_model::tolerance::limits;
+use ketchup_model::tolerance::{CONTACT_FIT_MM, TolerancePolicy};
 use ketchup_model::validation::{
     DIAGNOSTIC_SCHEMA_V1, DiagnosticLocation, DiagnosticSeverity, EvidenceClass, EvidenceCounts,
     ValidationDiagnostic, ValidationInvocation, ValidationReport, ValidationState,
@@ -846,6 +846,13 @@ fn collision_hulls(graphs: &[ExactBRepGraph], bodies: &[Body]) -> Vec<Option<hul
 /// Exact answers by the full paths of two leaf instances, smaller path first.
 pub type ExactPairFacts = BTreeMap<(InstancePath, InstancePath), ExactPair>;
 
+/// The contact rule of a program's report (review PRG-5, R-4): solids whose
+/// common solid is no thicker than [`CONTACT_FIT_MM`] touch, so a press fit
+/// is not a collision here either.
+fn penetrates_past_contact_fit(result: &ExactPairQueryResult) -> bool {
+    result.relation == ExactPairRelation::Penetrating && result.common_thickness_mm > CONTACT_FIT_MM
+}
+
 fn exact_pair(result: &ExactPairQueryResult) -> ExactPair {
     ExactPair {
         common_volume_mm3: result.common_volume_mm3,
@@ -1600,7 +1607,7 @@ fn collision_report(
                                         exact_pair(&result),
                                         tolerance,
                                     );
-                                    if result.relation == ExactPairRelation::Penetrating {
+                                    if penetrates_past_contact_fit(&result) {
                                         issues.push(issue(&bodies[left], &bodies[right], json!({"method": "occt_brep_common_volume", "common_volume_mm3": result.common_volume_mm3, "distance_mm": result.distance_mm})));
                                     }
                                 }
@@ -1630,7 +1637,7 @@ fn collision_report(
             for right in left + 1..bodies.len() {
                 if let (Some(l), Some(r)) = (&bodies[left].analytic, &bodies[right].analytic) {
                     match general_body_narrow_phase(l, r, tolerance) {
-                    Ok(result) => { checked += 1; if result.relation == GeneralBodyNarrowPhaseRelation::Intersecting {
+                    Ok(result) => { checked += 1; if result.signed_separation_mm < -CONTACT_FIT_MM.max(tolerance.linear_mm()) {
                         issues.push(issue(&bodies[left], &bodies[right], json!({"method": "canonical_box_analytic", "signed_separation_mm": result.signed_separation_mm})));
                     } },
                     Err(error) => failures.push(json!({"left": identity(&bodies[left]), "right": identity(&bodies[right]), "reason": format!("{error:?}")})),
