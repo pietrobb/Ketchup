@@ -14,7 +14,7 @@ use ketchup_view_format::Package;
 use ketchup_viewer::app::{FileRequest, ViewerApp};
 use ketchup_viewer::review::Written;
 
-use crate::replace::{ReplaceFailure, replace_keeping_original};
+use crate::replace::{Interrupted, ReplaceFailure, recover_interrupted, replace_keeping_original};
 
 /// Request code ViewerActivity gives a file another app opened with the Viewer.
 const OPENED_BY_ANOTHER_APP: i32 = 0;
@@ -299,7 +299,7 @@ impl Files {
             self.open_file(uri, "wt", uri)
                 .map_err(std::io::Error::other)
         };
-        replace_keeping_original(original, open_write, &backup, bytes).map_err(|failure| {
+        replace_keeping_original(original, open_write, uri, &backup, bytes).map_err(|failure| {
             match failure {
                 ReplaceFailure::Unchanged(error) => failed()
                     .caused_by(error)
@@ -316,12 +316,47 @@ impl Files {
                 } => failed()
                     .caused_by(write)
                     .reason(format!(
-                        "Saving failed and the file could not be put back ({restore}); its earlier content is kept in {}.",
+                        "Saving failed and the file could not be put back ({restore}); its earlier content is kept in {} and the next start tries again.",
                         backup.display()
                     ))
                     .fix_hint("Save again, or choose another place."),
             }
         })
+    }
+
+    /// Undoes the saves Android cut off by ending the process (VW-11), and
+    /// tells the customer what was put back or could not be.
+    pub(crate) fn recover_interrupted_saves(&self, app: &mut ViewerApp) {
+        let Some(private) = self.android_app.internal_data_path() else {
+            return;
+        };
+        let open = |mode: &'static str| {
+            move |uri: &str| {
+                self.open_file(uri, mode, uri)
+                    .map_err(std::io::Error::other)
+            }
+        };
+        for outcome in recover_interrupted(&private, open("r"), open("wt")) {
+            let failed = |target: String| {
+                Rejection::new("viewer.android.write", RejectionPhase::Io).target(target)
+            };
+            app.report(match outcome {
+                Interrupted::Restored { target } => failed(target)
+                    .reason("A save was cut off when Android ended the app; the file holds what it held before.")
+                    .fix_hint("Save again."),
+                Interrupted::Kept {
+                    target,
+                    backup,
+                    error,
+                } => failed(target)
+                    .caused_by(error)
+                    .reason(format!(
+                        "A save was cut off when Android ended the app and the file could not be put back; its earlier content is kept in {} and the next start tries again.",
+                        backup.display()
+                    ))
+                    .fix_hint("Save again, or choose another place."),
+            });
+        }
     }
 }
 

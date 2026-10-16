@@ -79,9 +79,11 @@ fn android_main(android_app: android_activity::AndroidApp) {
             {
                 log::error!("{error}; {}", error.fix_hint_text());
             }
+            let files = files::Files::new(android_app.clone());
+            files.recover_interrupted_saves(&mut app);
             Ok(Box::new(AndroidViewer {
                 app,
-                files: files::Files::new(android_app.clone()),
+                files,
                 android_app,
                 measured_for: None,
                 bars: [0; 4],

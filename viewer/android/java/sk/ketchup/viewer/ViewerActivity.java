@@ -58,6 +58,16 @@ public class ViewerActivity extends NativeActivity {
     protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
         Uri uri = result == RESULT_OK && data != null ? data.getData() : null;
+        if (uri != null && (data.getFlags() & Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) != 0) {
+            // A save Android cuts off by ending the app is undone at the next
+            // start, which needs the grant to write the document again.
+            try {
+                getContentResolver().takePersistableUriPermission(uri, data.getFlags()
+                        & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
+            } catch (Throwable error) {
+                lastError = error.toString();
+            }
+        }
         push(code, uri);
     }
 
