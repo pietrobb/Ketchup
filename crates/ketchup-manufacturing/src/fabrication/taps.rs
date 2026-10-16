@@ -4,22 +4,24 @@ use super::*;
 use ketchup_geometry::tapping::TappedHole;
 
 impl GeneralFabricationProjection {
-    /// The support report lines that name what a BTLx file loses of the threads:
-    /// BTLx 2.3.1 has no tapping processing, so a thread is only its drilling's
-    /// comment and user attributes, which a machine may ignore and drill the
-    /// core hole alone. `tapped_drillings=0` and nothing else when none is tapped.
-    pub fn btlx_thread_loss_report(&self, snapshot: &Snapshot) -> String {
+    /// The support report lines that name what a BTLx file loses of the threads,
+    /// as the BTLx gate finds them: BTLx 2.3.1 has no tapping processing, so a
+    /// thread is only its drilling's comment and user attributes, which a
+    /// machine may ignore and drill the core hole alone. `tapped_drillings=0`
+    /// and nothing else when none is tapped.
+    ///
+    /// # Errors
+    /// The gate's refusal, as [`Self::btlx_2_3_1_export`] gives it.
+    pub fn btlx_thread_loss_report(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<String, GeneralFabricationError> {
         let tapped = self
-            .manufacturing
-            .operations
-            .iter()
-            .filter_map(|operation| {
-                let thread = operation.thread.as_ref()?;
-                let part = snapshot.definition(operation.definition_id).map_or_else(
-                    || operation.definition_id.0.to_string(),
-                    |part| part.name().to_owned(),
-                );
-                Some(format!("{part}: {}", thread.label()))
+            .admit(snapshot, ShopFormat::Btlx)?
+            .into_iter()
+            .filter_map(|loss| match loss.element {
+                ShopElement::Thread(label) => Some(format!("{}: {label}", loss.part)),
+                _ => None,
             })
             .collect::<Vec<_>>();
         let mut report = format!("tapped_drillings={}\n", tapped.len());
@@ -30,7 +32,7 @@ impl GeneralFabricationProjection {
                 tapped.join("; ")
             ));
         }
-        report
+        Ok(report)
     }
 }
 

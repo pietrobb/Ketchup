@@ -99,7 +99,7 @@ impl GeneralFabricationProjection {
             .bom
             .rows
             .iter()
-            .filter(|row| row.item_kind != GeneralBomItemKind::Purchased)
+            .filter(|row| ShopFormat::ProductionJob.writes(row.item_kind))
         {
             let GeneralBodySource::Exact(_) = &row.source else {
                 return Err(GeneralFabricationError::ExportBlocked);

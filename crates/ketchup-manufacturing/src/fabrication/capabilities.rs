@@ -28,6 +28,19 @@ impl fmt::Display for ShopFormat {
     }
 }
 
+impl ShopFormat {
+    /// Whether the format writes a part of this kind: BTLx timber members
+    /// only, the drawing every part, the others every part that is made.
+    #[must_use]
+    pub fn writes(self, kind: GeneralBomItemKind) -> bool {
+        match self {
+            Self::Drawing => true,
+            Self::Btlx => kind == GeneralBomItemKind::Timber,
+            Self::ProductionJob | Self::Woodwop { .. } => kind != GeneralBomItemKind::Purchased,
+        }
+    }
+}
+
 /// An element of a part a format carries, loses or refuses.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ShopElement {
@@ -108,9 +121,9 @@ pub struct ShopLoss {
 }
 
 impl GeneralFabricationProjection {
-    /// The gate every export passes before it writes a part: each made
-    /// part's copies, operations and threads are looked up in the capability
-    /// table for `format`. The first element refused is named with its part;
+    /// The gate every export passes before it writes a part: the copies,
+    /// operations and threads of each part `format` writes are looked up in
+    /// the capability table for `format`. The first element refused is named with its part;
     /// the elements written at a loss are returned for the loss report.
     ///
     /// # Errors
@@ -126,7 +139,7 @@ impl GeneralFabricationProjection {
             .bom
             .rows
             .iter()
-            .filter(|row| row.item_kind != GeneralBomItemKind::Purchased)
+            .filter(|row| format.writes(row.item_kind))
         {
             let part = snapshot
                 .definition(row.definition_id)

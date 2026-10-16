@@ -1084,12 +1084,10 @@ impl GeneralFabricationProjection {
         {
             return Err(GeneralFabricationError::ExportBlocked);
         }
-        self.admit(
-            snapshot,
-            ShopFormat::Woodwop {
-                vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
-            },
-        )?;
+        let format = ShopFormat::Woodwop {
+            vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
+        };
+        self.admit(snapshot, format)?;
         let mut holes = Vec::new();
         for joint in snapshot.pin_joints() {
             let projection = project_pin_joint_contract(snapshot, joint)
@@ -1105,7 +1103,7 @@ impl GeneralFabricationProjection {
             .bom
             .rows
             .iter()
-            .filter(|row| row.item_kind != GeneralBomItemKind::Purchased)
+            .filter(|row| format.writes(row.item_kind))
         {
             let part = snapshot
                 .definition(row.definition_id)
@@ -1220,7 +1218,7 @@ impl GeneralFabricationProjection {
             .bom
             .rows
             .iter()
-            .any(|row| row.item_kind == GeneralBomItemKind::Timber)
+            .any(|row| ShopFormat::Btlx.writes(row.item_kind))
             || self.manufacturing.operations.is_empty()
         {
             return Err(GeneralFabricationError::ExportBlocked);
@@ -1236,7 +1234,7 @@ impl GeneralFabricationProjection {
             .bom
             .rows
             .iter()
-            .filter(|row| row.item_kind == GeneralBomItemKind::Timber)
+            .filter(|row| ShopFormat::Btlx.writes(row.item_kind))
             .enumerate()
         {
             let part = snapshot

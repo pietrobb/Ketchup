@@ -965,95 +965,7 @@ fn general_fabrication_requires_explicit_unambiguous_timber_marking() {
 
 #[test]
 fn mixed_mechanical_bom_keeps_make_buy_materials_positions_and_timber_export_boundary() {
-    let mut document = exact_only_document();
-    document
-        .apply_batch(&CommandBatch::new(vec![
-            occurrence(EXACT_THIRD, EXACT_DEFINITION, 40.0),
-            CanonicalCommand::UpsertClassificationDimension {
-                id: FABRICATION_ROLE_DIMENSION,
-                name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
-                categories: vec![
-                    (TIMBER_MEMBER_CATEGORY, TIMBER_MEMBER_ROLE_V1.to_owned()),
-                    (
-                        MANUFACTURED_ITEM_CATEGORY,
-                        MANUFACTURED_ITEM_ROLE_V1.to_owned(),
-                    ),
-                    (PURCHASED_ITEM_CATEGORY, PURCHASED_ITEM_ROLE_V1.to_owned()),
-                ],
-            },
-            CanonicalCommand::UpsertClassificationDimension {
-                id: MATERIAL_DIMENSION,
-                name: MATERIAL_DIMENSION_V1.to_owned(),
-                categories: vec![
-                    (
-                        STEEL_MATERIAL_CATEGORY,
-                        "ketchup.material.steel.s355.v1".to_owned(),
-                    ),
-                    (
-                        BEARING_MATERIAL_CATEGORY,
-                        "ketchup.material.bearing.6202.v1".to_owned(),
-                    ),
-                ],
-            },
-            CanonicalCommand::SetOccurrenceClassification {
-                occurrence_id: EXACT_LEFT,
-                dimension_id: FABRICATION_ROLE_DIMENSION,
-                category_id: Some(TIMBER_MEMBER_CATEGORY),
-            },
-            CanonicalCommand::SetOccurrenceClassification {
-                occurrence_id: EXACT_RIGHT,
-                dimension_id: FABRICATION_ROLE_DIMENSION,
-                category_id: Some(PURCHASED_ITEM_CATEGORY),
-            },
-            CanonicalCommand::SetOccurrenceClassification {
-                occurrence_id: EXACT_THIRD,
-                dimension_id: FABRICATION_ROLE_DIMENSION,
-                category_id: Some(MANUFACTURED_ITEM_CATEGORY),
-            },
-            CanonicalCommand::SetOccurrenceClassification {
-                occurrence_id: EXACT_RIGHT,
-                dimension_id: MATERIAL_DIMENSION,
-                category_id: Some(BEARING_MATERIAL_CATEGORY),
-            },
-            CanonicalCommand::SetOccurrenceClassification {
-                occurrence_id: EXACT_THIRD,
-                dimension_id: MATERIAL_DIMENSION,
-                category_id: Some(STEEL_MATERIAL_CATEGORY),
-            },
-        ]))
-        .unwrap();
-    let snapshot = document.current();
-    let package = exact_package(&snapshot);
-    let registry = ExactResultRegistry::accept(&snapshot, [Arc::new(package)]).unwrap();
-    let tolerance = TolerancePolicy::default();
-    let left = GeneralBodyParticipant::accept(
-        &snapshot,
-        &registry,
-        InstancePath::root(EXACT_LEFT),
-        tolerance,
-    )
-    .unwrap();
-    let right = GeneralBodyParticipant::accept(
-        &snapshot,
-        &registry,
-        InstancePath::root(EXACT_RIGHT),
-        tolerance,
-    )
-    .unwrap();
-    let third = GeneralBodyParticipant::accept(
-        &snapshot,
-        &registry,
-        InstancePath::root(EXACT_THIRD),
-        tolerance,
-    )
-    .unwrap();
-    let cases = vec![
-        GeneralClearanceCase::new(left, right.clone(), 10.0).unwrap(),
-        GeneralClearanceCase::new(right, third, 10.0).unwrap(),
-    ];
-    let report = general_report(&snapshot, &cases, tolerance);
-
-    let projection = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    let (snapshot, projection) = mixed_mechanical_projection(None);
     assert_eq!(projection.bom.rows.len(), 3);
     assert_eq!(projection.bom.rows[0].position, 1);
     assert_eq!(projection.bom.rows[0].item_kind, GeneralBomItemKind::Timber);
@@ -1117,6 +1029,46 @@ fn mixed_mechanical_bom_keeps_make_buy_materials_positions_and_timber_export_bou
         tampered.bom_export(&snapshot),
         Err(GeneralFabricationError::ExportBlocked)
     );
+}
+
+/// BTLx writes timber members only, so its gate checks only them: a
+/// manufactured part placed mirrored beside a timber member neither blocks
+/// the BTLx nor appears in it, while the production job, which makes it,
+/// refuses its mirrored copy by name.
+#[test]
+fn btlx_admits_only_the_timber_it_writes_beside_a_mirrored_manufactured_part() {
+    let mirrored = Transform::from_matrix([
+        -1.0, 0.0, 0.0, 1000.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    let (snapshot, projection) = mixed_mechanical_projection(Some(mirrored));
+    let manufactured = projection
+        .bom
+        .rows
+        .iter()
+        .find(|row| row.item_kind == GeneralBomItemKind::Manufactured)
+        .unwrap();
+    assert!(manufactured.mirrored, "{:#?}", projection.bom.rows);
+    let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert_eq!(btlx.matches("<Part ").count(), 1, "{btlx}");
+    assert_eq!(
+        projection.admit(&snapshot, ShopFormat::Btlx),
+        Ok(Vec::new())
+    );
+    assert_eq!(
+        projection.btlx_thread_loss_report(&snapshot),
+        Ok("tapped_drillings=0\n".to_owned())
+    );
+    let part = snapshot
+        .definition(EXACT_DEFINITION)
+        .unwrap()
+        .name()
+        .to_owned();
+    assert!(matches!(
+        projection.admit(&snapshot, ShopFormat::ProductionJob),
+        Err(GeneralFabricationError::CannotCarry { part: refused, element: ShopElement::MirroredCopy, .. })
+            if refused == part
+    ));
 }
 
 #[test]
@@ -2163,7 +2115,7 @@ fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_a
     assert!(btlx.contains("<UserAttribute Name=\"ThreadDepth\" Value=\"40\" Type=\"real\"/>"));
     assert!(btlx.contains("Name=\"Ketchup tapped drilling\" Comment=\"M12×1.75 depth 40\""));
     // BTLx has no tapping processing: its support report says the thread may be lost.
-    let loss = projection.btlx_thread_loss_report(&snapshot);
+    let loss = projection.btlx_thread_loss_report(&snapshot).unwrap();
     assert!(
         loss.starts_with("tapped_drillings=1\nthread_loss=BTLx 2.3.1 has no tapping processing;"),
         "{loss}"
@@ -3521,4 +3473,111 @@ fn assert_btlx_golden(actual: &[u8], name: &str) {
         std::fs::write(&path, actual).unwrap();
     }
     assert_eq!(actual, std::fs::read(&path).unwrap().as_slice(), "{name}");
+}
+
+/// A timber member, a manufactured part (placed by `third_transform`) and a
+/// purchased part, all of one definition.
+fn mixed_mechanical_projection(
+    third_transform: Option<Transform>,
+) -> (Snapshot, GeneralFabricationProjection) {
+    let mut document = exact_only_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            occurrence(EXACT_THIRD, EXACT_DEFINITION, 40.0),
+            CanonicalCommand::UpsertClassificationDimension {
+                id: FABRICATION_ROLE_DIMENSION,
+                name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (TIMBER_MEMBER_CATEGORY, TIMBER_MEMBER_ROLE_V1.to_owned()),
+                    (
+                        MANUFACTURED_ITEM_CATEGORY,
+                        MANUFACTURED_ITEM_ROLE_V1.to_owned(),
+                    ),
+                    (PURCHASED_ITEM_CATEGORY, PURCHASED_ITEM_ROLE_V1.to_owned()),
+                ],
+            },
+            CanonicalCommand::UpsertClassificationDimension {
+                id: MATERIAL_DIMENSION,
+                name: MATERIAL_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (
+                        STEEL_MATERIAL_CATEGORY,
+                        "ketchup.material.steel.s355.v1".to_owned(),
+                    ),
+                    (
+                        BEARING_MATERIAL_CATEGORY,
+                        "ketchup.material.bearing.6202.v1".to_owned(),
+                    ),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_LEFT,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: Some(TIMBER_MEMBER_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_RIGHT,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: Some(PURCHASED_ITEM_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_THIRD,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: Some(MANUFACTURED_ITEM_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_RIGHT,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(BEARING_MATERIAL_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_THIRD,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(STEEL_MATERIAL_CATEGORY),
+            },
+        ]))
+        .unwrap();
+    if let Some(transform) = third_transform {
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: EXACT_THIRD,
+                    transform,
+                },
+            ]))
+            .unwrap();
+    }
+    let snapshot = document.current();
+    let package = exact_package(&snapshot);
+    let registry = ExactResultRegistry::accept(&snapshot, [Arc::new(package)]).unwrap();
+    let tolerance = TolerancePolicy::default();
+    let left = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(EXACT_LEFT),
+        tolerance,
+    )
+    .unwrap();
+    let right = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(EXACT_RIGHT),
+        tolerance,
+    )
+    .unwrap();
+    let third = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(EXACT_THIRD),
+        tolerance,
+    )
+    .unwrap();
+    let cases = vec![
+        GeneralClearanceCase::new(left, right.clone(), 10.0).unwrap(),
+        GeneralClearanceCase::new(right, third, 10.0).unwrap(),
+    ];
+    let report = general_report(&snapshot, &cases, tolerance);
+
+    let projection = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    (snapshot, projection)
 }
