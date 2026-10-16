@@ -49,7 +49,8 @@ if ($BuildDir -eq $InstallDir -or $BuildDir -eq $SourceDir -or $InstallDir -eq $
 $expectedCommit = "b8f597c677811d1f9f4d8a97f5ae2825c0353a42"
 $expectedOrigin = "https://github.com/Open-Cascade-SAS/OCCT.git"
 $expectedGitHash = "5ecc74f73bcb2ed9ca3c35e7fa287018147fa53c5f8f402517af675a14afbb1a"
-$git = (Get-Command git -CommandType Application).Source
+# The first on PATH: a runner has several git.exe, and all of them as one name do not run.
+$git = (Get-Command git -CommandType Application | Select-Object -First 1).Source
 if (-not $RunnerToolchain -and (Get-FileHash $git -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedGitHash) {
     throw "The Git binary does not match the frozen R0 fingerprint."
 }
@@ -73,7 +74,7 @@ foreach ($directory in @($BuildDir, $InstallDir)) {
     }
 }
 
-$cmake = (Get-Command cmake -CommandType Application).Source
+$cmake = (Get-Command cmake -CommandType Application | Select-Object -First 1).Source
 $toolchain = @()
 if (-not $RunnerToolchain) {
     $expectedCMakeVersion = "cmake version 4.2.1"
