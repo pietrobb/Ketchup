@@ -2500,7 +2500,6 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
- "ketchup-exact",
  "ketchup-geometry",
  "ketchup-model",
  "ketchup-test-env",

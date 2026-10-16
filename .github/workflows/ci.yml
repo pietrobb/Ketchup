@@ -72,14 +72,14 @@ jobs:
 
   rust-without-occt:
     name: format, clippy and tests of the crates without OCCT
-    # Runs for every pull request, forks included. ketchup-model needs OCCT
-    # only for its tests; the windowed crates need a platform winit.
+    # Runs for every pull request, forks included. The windowed crates need a
+    # platform winit.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       CRATES: >-
         -p ketchup-analysis -p ketchup-assistant -p ketchup-dwg -p ketchup-geometry
-        -p ketchup-interaction -p ketchup-manufacturing -p ketchup-mcp -p ketchup-pdm
+        -p ketchup-interaction -p ketchup-manufacturing -p ketchup-mcp -p ketchup-model -p ketchup-pdm
         -p ketchup-program -p ketchup-rejection -p ketchup-test-env -p ketchup-tolerance
         -p ketchup-view-format -p ketchup-viewer-android
       # The MCP discovery directory lives in the per-user runtime directory.
@@ -93,11 +93,45 @@ jobs:
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy
-        run: |
-          cargo clippy --locked $CRATES --all-targets -- -D warnings
-          cargo clippy --locked -p ketchup-model --lib -- -D warnings
+        run: cargo clippy --locked $CRATES --all-targets -- -D warnings
       - name: tests
         run: cargo test --locked $CRATES --no-fail-fast
+
+  rust-with-occt:
+    name: clippy and tests of the crates with OCCT on Windows
+    # A GitHub-hosted runner builds the pinned OCCT 8.0.1 once with its own
+    # Visual Studio and keeps the install in the Actions cache; the window,
+    # the application, the exact kernel and the workers, Windows-only code
+    # (job objects, the live bridge) included, are checked on every run.
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      CRATES: -p ketchup-app -p ketchup-application -p ketchup-exact -p ketchup-scheduler
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: OCCT from the cache
+        id: occt
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/occt-install-r0-v1
+          key: occt-8.0.1-b8f597c6-windows-${{ hashFiles('scripts/windows/build-occt.ps1') }}
+      - name: OCCT build
+        if: steps.occt.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git -c advice.detachedHead=false clone --quiet --depth 1 --branch V8_0_1 https://github.com/Open-Cascade-SAS/OCCT.git third_party/occt-src
+          ./scripts/windows/build-occt.ps1 -RunnerToolchain -ParallelJobs 4
+      - name: clippy
+        run: cargo clippy --locked $env:CRATES.Split(' ') --all-targets -- -D warnings
+      - name: workers for the tests
+        run: cargo build --locked -p ketchup-scheduler --bins
+      - name: tests
+        env:
+          # Two OCCT test threads fit the runner's memory.
+          RUST_TEST_THREADS: 2
+        run: cargo test --locked $env:CRATES.Split(' ') --no-fail-fast
 
   viewer-targets:
     name: clippy of the phone and browser Viewers
@@ -132,7 +166,7 @@ jobs:
     name: CI passed
     # A skipped job counts as passed for a required check; this job fails
     # unless every job it needs ran and passed.
-    needs: [checks, dependencies, rust-without-occt, viewer-targets, viewer-macos]
+    needs: [checks, dependencies, rust-without-occt, rust-with-occt, viewer-targets, viewer-macos]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
