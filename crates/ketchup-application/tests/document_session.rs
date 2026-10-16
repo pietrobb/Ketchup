@@ -471,6 +471,7 @@ fn an_unusable_work_recovery_is_set_aside_and_edits_are_checkpointed_again() {
         assert_eq!(session.path(), Some(primary.as_path()), "{case}");
         let (reason, moved) = session.work_recovery_set_aside().expect(case);
         assert!(!reason.is_empty(), "{case}");
+        let moved = moved.unwrap();
         assert_eq!(std::fs::read(moved).unwrap(), checkpoint, "{case}");
         set_aside.push(moved.to_owned());
         assert!(!recovery.exists(), "{case}");
@@ -481,6 +482,29 @@ fn an_unusable_work_recovery_is_set_aside_and_edits_are_checkpointed_again() {
         assert!(!recovery.exists(), "{case}");
     }
     assert_ne!(set_aside[0], set_aside[1]);
+
+    // Review 2026-10-15 status, low: a checkpoint that cannot be moved aside
+    // (here every set-aside name is taken) does not stop the file from
+    // opening, as in the window; the reason and the failure are named, and the
+    // checkpoint stays where it is.
+    for index in 1..=1000 {
+        let mut name = recovery.as_os_str().to_os_string();
+        name.push(if index == 1 {
+            ".stale".to_owned()
+        } else {
+            format!(".stale-{index}")
+        });
+        if !std::path::Path::new(&name).exists() {
+            std::fs::write(&name, b"").unwrap();
+        }
+    }
+    std::fs::write(&recovery, b"KETCHUPWRK damaged").unwrap();
+    let session = DocumentSession::open(&primary, SessionSettings::default()).unwrap();
+    assert_eq!(session.path(), Some(primary.as_path()));
+    let (reason, moved) = session.work_recovery_set_aside().unwrap();
+    assert!(!reason.is_empty());
+    assert!(moved.unwrap_err().contains("a thousand"), "{moved:?}");
+    assert_eq!(std::fs::read(&recovery).unwrap(), b"KETCHUPWRK damaged");
 }
 
 #[test]

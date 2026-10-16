@@ -97,7 +97,7 @@ pub struct DocumentSession {
     full_exact_baseline: Option<ExactSource>,
     incremental_exact_plan: Option<IncrementalExactPlan>,
     history_discarded: Option<String>,
-    work_recovery_set_aside: Option<(String, PathBuf)>,
+    work_recovery_set_aside: Option<(String, Result<PathBuf, String>)>,
 }
 impl Default for DocumentSession {
     fn default() -> Self {
@@ -132,12 +132,13 @@ impl DocumentSession {
         self.history_discarded.as_deref()
     }
     /// Why the work-recovery checkpoint beside the opened file could not be
-    /// used, and where it was moved so that this session can write its own.
+    /// used, and where it was moved so that this session can write its own, or
+    /// why it could not be moved.
     #[must_use]
-    pub fn work_recovery_set_aside(&self) -> Option<(&str, &Path)> {
+    pub fn work_recovery_set_aside(&self) -> Option<(&str, Result<&Path, &str>)> {
         self.work_recovery_set_aside
             .as_ref()
-            .map(|(reason, path)| (reason.as_str(), path.as_path()))
+            .map(|(reason, moved)| (reason.as_str(), moved.as_deref().map_err(String::as_str)))
     }
     /// Review-only and invalid input never replaces a live session.
     pub fn open(path: impl AsRef<Path>, settings: SessionSettings) -> Result<Self, SessionError> {
@@ -156,15 +157,16 @@ impl DocumentSession {
             requested_path: requested_path.to_owned(),
             source_path,
         });
-        // A checkpoint this file cannot use would refuse every later one.
-        let work_recovery_set_aside = match unusable_work_recovery {
-            Some(reason) => Some((
+        // A checkpoint this file cannot use would refuse every later one. One
+        // that cannot be moved aside does not stop the file from opening, as in
+        // the window: the edits are refused until it is gone, and it is named.
+        let work_recovery_set_aside = unusable_work_recovery.map(|reason| {
+            (
                 reason,
                 persistence::set_aside_work_recovery(requested_path, &recovery_lock)
-                    .map_err(SessionError::Persistence)?,
-            )),
-            None => None,
-        };
+                    .map_err(|error| error.to_string()),
+            )
+        });
         let saved_digest = Some(document.history_digest());
         Ok(Self {
             document,

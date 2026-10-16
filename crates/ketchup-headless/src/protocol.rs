@@ -956,8 +956,8 @@ impl Server {
                         ),
                     }));
                 }
-                if let Some((reason, set_aside)) = self.session.work_recovery_set_aside() {
-                    warnings.push(json!({
+                match self.session.work_recovery_set_aside() {
+                    Some((reason, Ok(set_aside))) => warnings.push(json!({
                         "kind": "work_recovery_set_aside",
                         "message": format!(
                             "the unsaved-work checkpoint beside this file could not be used \
@@ -965,7 +965,17 @@ impl Server {
                             set_aside.display()
                         ),
                         "path": set_aside.display().to_string(),
-                    }));
+                    })),
+                    // Edits are refused while it stays there.
+                    Some((reason, Err(error))) => warnings.push(json!({
+                        "kind": "work_recovery_not_set_aside",
+                        "message": format!(
+                            "the unsaved-work checkpoint beside this file could not be used \
+                             ({reason}) and could not be moved aside ({error}); the document \
+                             cannot be edited until that checkpoint is moved or removed"
+                        ),
+                    })),
+                    None => {}
                 }
                 if !warnings.is_empty() {
                     result["warnings"] = Value::Array(warnings);
