@@ -201,8 +201,12 @@ impl eframe::App for AndroidViewer {
                 Ok(mark) => self.session = mark,
                 Err(error) => {
                     log::error!("{error}; {}", error.fix_hint_text());
-                    // Tried once for this change, not again every frame.
-                    self.session = self.app.session_mark();
+                    // Tried once for this change, not again every frame; the
+                    // next change writes the package again.
+                    self.session = self
+                        .app
+                        .session_mark()
+                        .map(ketchup_viewer::app::SessionMark::unkept);
                 }
             }
         }

@@ -24,6 +24,22 @@ pub struct SessionMark {
     package: [u8; 32],
     revision: u64,
     unsaved: bool,
+    /// False after keeping failed: the stored package may be another one.
+    package_kept: bool,
+}
+
+impl SessionMark {
+    /// The mark to remember after [`ViewerApp::keep_session`] failed: the same
+    /// change is not tried again every frame, but the next one writes the
+    /// package again, so its comments are never kept beside another package
+    /// (review 2026-10-15 N-11).
+    #[must_use]
+    pub fn unkept(self) -> Self {
+        Self {
+            package_kept: false,
+            ..self
+        }
+    }
 }
 
 impl ViewerApp {
@@ -35,6 +51,7 @@ impl ViewerApp {
             package: model.export().payload_digest().ok()?,
             revision: review.revision(),
             unsaved: review.unsaved(),
+            package_kept: true,
         })
     }
 
@@ -54,13 +71,18 @@ impl ViewerApp {
         else {
             return Ok(last);
         };
-        if Some(mark) == last {
+        if last.is_some_and(|last| {
+            SessionMark {
+                package_kept: true,
+                ..last
+            } == mark
+        }) {
             return Ok(last);
         }
         std::fs::create_dir_all(dir).map_err(|error| session_error(dir, error))?;
         let marker = dir.join(UNSAVED);
         let comments = dir.join(COMMENTS);
-        if last.is_none_or(|last| last.package != mark.package) {
+        if last.is_none_or(|last| last.package != mark.package || !last.package_kept) {
             for stale in [&comments, &marker] {
                 remove_if_present(stale)?;
             }
@@ -86,14 +108,15 @@ impl ViewerApp {
         let file = std::fs::File::open(&path).map_err(|error| session_error(&path, error))?;
         self.open(std::io::BufReader::new(file))?;
         // A session kept before the comments had a file of their own carries
-        // them in the package.
+        // them in the package. Comments that do not open on it (kept beside
+        // another package, or cut short) count as none: the package still opens.
         let comments = dir.join(COMMENTS);
         if comments.exists()
             && let Some(model) = &self.model
+            && let Ok(file) = std::fs::File::open(&comments)
+            && let Ok(review) = Review::open(std::io::BufReader::new(file), model)
         {
-            let file =
-                std::fs::File::open(&comments).map_err(|error| session_error(&comments, error))?;
-            self.review = Some(Review::open(std::io::BufReader::new(file), model)?);
+            self.review = Some(review);
         }
         if dir.join(UNSAVED).exists()
             && let Some(review) = &mut self.review

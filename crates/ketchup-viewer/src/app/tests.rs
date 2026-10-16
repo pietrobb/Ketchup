@@ -1092,6 +1092,54 @@ fn a_comment_edit_keeps_only_the_comments_not_the_whole_package() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Review 2026-10-15 N-11: keeping another package fails (a full device);
+/// the phone remembers the failed mark, so it does not retry every frame. The
+/// next comment then writes that package again instead of keeping its comments
+/// beside the previous package, and comments that do not open on the kept
+/// package count as none rather than losing the package at the next start.
+#[test]
+fn a_session_that_failed_to_keep_a_package_writes_it_with_the_next_change() {
+    let dir = std::env::temp_dir().join(format!("ketchup-viewer-full-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let first = customer_with_comment(&bytes, "Darker oak");
+    let kept = first.keep_session(&dir, None).unwrap();
+
+    let mut other = scene_package();
+    other.manifest.source.revision += 1;
+    let mut other_bytes = Vec::new();
+    other.write(&mut other_bytes).expect("other");
+    let mut app = customer_with_comment(&other_bytes, "Other");
+    let blocked = dir.join("session.ketchup-view.part");
+    std::fs::create_dir(&blocked).unwrap();
+    assert!(app.keep_session(&dir, kept).is_err());
+    let failed = app.session_mark().map(SessionMark::unkept);
+    assert_eq!(app.keep_session(&dir, failed).unwrap(), failed, "retried");
+    std::fs::remove_dir(&blocked).unwrap();
+
+    let review = app.review.as_mut().unwrap();
+    review.start(review.comments.comments[0].view.clone(), None);
+    review.draft.as_mut().unwrap().text = "And brass handles".into();
+    assert!(review.commit());
+    app.keep_session(&dir, failed).unwrap();
+    let package = dir.join("session.ketchup-view");
+    assert_eq!(std::fs::read(&package).unwrap(), other_bytes);
+    let mut restarted = ViewerApp::new(None);
+    restarted.restore_session(&dir).unwrap();
+    assert_eq!(restarted.opened_counts().map(|[_, _, c]| c), Some(2));
+
+    // The other package's comments beside the first package: it still opens.
+    std::fs::write(&package, &bytes).unwrap();
+    let mut restarted = ViewerApp::new(None);
+    assert!(restarted.restore_session(&dir).unwrap().is_some());
+    assert_eq!(
+        restarted.opened_counts(),
+        first.opened_counts().map(|[a, b, _]| [a, b, 0])
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// VW-7: two customers comment on one export; the author keeps both,
 /// because the author matches comments by export and ID.
 #[test]
