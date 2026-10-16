@@ -20,6 +20,11 @@ limited on the thread (`repr_limit_reached`). Big integers count their digits ag
 bound (`Heap::bounded_bytes`), and a product past 2^20 bits fails like upstream's left
 shift past 100 000 bits, since one such multiplication cannot be interrupted.
 
+`Heap::memory_limit_reached` tells whether the bound refused an operation or the heap holds
+more than it. The refusal's error loses its type when a method returns it as
+`anyhow::Error`, and `ketchup-program` must report it with the code `memory_limit` like the
+worker's own memory limit.
+
 `src/lib.rs` also allows two lints that newer rustc reports in the unchanged upstream
 code (`deprecated`, `mismatched_lifetime_syntaxes`), so the build stays quiet.
 

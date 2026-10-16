@@ -114,6 +114,8 @@ pub struct Heap {
     peak_allocated: Cell<usize>,
     /// Ketchup patch: bytes the heap may hold before a large allocation fails.
     allocation_limit: Cell<Option<usize>>,
+    /// Ketchup patch: an operation was refused because of the bound.
+    allocation_refused: Cell<bool>,
     /// Ketchup patch: bytes values on this heap hold outside the arena (integer digits).
     external_bytes: Cell<usize>,
     arena: FastCell<Arena<Bump>>,
@@ -676,8 +678,22 @@ impl Heap {
             .and_then(|bytes| bytes.checked_add(self.bounded_bytes()))
         {
             Some(total) if total <= limit => Ok(()),
-            _ => Err(crate::Error::new_other(MemoryLimit)),
+            _ => {
+                self.allocation_refused.set(true);
+                Err(crate::Error::new_other(MemoryLimit))
+            }
         }
+    }
+
+    /// Whether this heap reached its bound: an operation was refused, or the heap
+    /// holds more than the bound. The refusal's error loses its type when a
+    /// method returns it as `anyhow::Error`, so the embedder asks the heap.
+    pub fn memory_limit_reached(&self) -> bool {
+        self.allocation_refused.get()
+            || self
+                .allocation_limit
+                .get()
+                .is_some_and(|limit| self.bounded_bytes() > limit)
     }
 
     /// Number of bytes allocated by the heap but not yet filled.

@@ -64,8 +64,9 @@ impl std::fmt::Display for ProgramError {
 
 impl std::error::Error for ProgramError {}
 
-/// Every [`ProgramError`] code. The last three come from the separate process
-/// that evaluates programs: it ran out of memory, ran past its time, or died.
+/// Every [`ProgramError`] code. `memory_limit` is the program heap bound or the
+/// memory of the separate process that evaluates programs; `time_limit` and
+/// `worker_failed` come from that process running past its time or dying.
 pub const ERROR_CODES: [&str; 9] = [
     "syntax_error",
     "evaluation_error",
@@ -2559,15 +2560,19 @@ pub fn evaluate_cancellable(
         let mut eval = Evaluator::new(&module);
         crate::execution_budget::install(&mut eval, cancel);
         eval.set_print_handler(state.as_ref());
-        eval.eval_module(ast, &globals)
-            .map(|_| ())
-            .map_err(|error| {
-                if cancel.is_cancelled() {
-                    evaluation_error("cancelled", &error)
-                } else {
-                    located_error("evaluation_error", file_name, source, &error)
-                }
-            })
+        let result = eval.eval_module(ast, &globals);
+        // The heap, not the error: a refused allocation's error loses its type
+        // on the way out of a method (third_party/starlark/PATCH.md).
+        let memory_limit = eval.heap().memory_limit_reached();
+        result.map(|_| ()).map_err(|error| {
+            if cancel.is_cancelled() {
+                evaluation_error("cancelled", &error)
+            } else if memory_limit {
+                located_error("memory_limit", file_name, source, &error)
+            } else {
+                located_error("evaluation_error", file_name, source, &error)
+            }
+        })
     };
     drop(module);
     STATE.with(|slot| *slot.borrow_mut() = None);
@@ -2660,6 +2665,37 @@ mod tests {
             stopped_after < std::time::Duration::from_millis(200),
             "stopped {stopped_after:?} after the cancel (ran {ran:?})"
         );
+    }
+
+    /// Review 2026-10-15 PRG-6 and PRG-M1: the heap bound now stops these inside the
+    /// interpreter before the worker's memory limit is reached, and the program
+    /// still gets the code `memory_limit`, not a generic `evaluation_error`.
+    #[test]
+    fn a_program_past_the_heap_bound_gets_the_code_memory_limit() {
+        for source in [
+            "s = \"ab\" * 50000\nt = s.replace(\"\", s)\n",
+            "x = \"a\" * 1500000000\n",
+        ] {
+            let error = evaluate_cancellable(
+                "big.star",
+                source,
+                &BTreeMap::new(),
+                &CancelToken::default(),
+            )
+            .map(|_| ())
+            .unwrap_err();
+            assert_eq!(error.code, "memory_limit", "{source}: {error}");
+            assert!(error.location.is_some(), "{source}: {error}");
+        }
+        let error = evaluate_cancellable(
+            "bad.star",
+            "x = 1 + \"a\"\n",
+            &BTreeMap::new(),
+            &CancelToken::default(),
+        )
+        .map(|_| ())
+        .unwrap_err();
+        assert_eq!(error.code, "evaluation_error", "{error}");
     }
 
     /// The library's comments are the program documentation an AI reads

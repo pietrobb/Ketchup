@@ -3,14 +3,37 @@
 //! applied it (the window) keeps working (review PRG-M1). The checks of its
 //! model run there too, under the same limits (review PRG-1).
 use crate::operations_support::{BLOCK, apply_error, session};
+use ketchup_application::{DocumentSession, RuleProgramApplyError, SessionSettings};
+use ketchup_model::document::RuleProgramSource;
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+/// The interpreter's heap bound or the worker's process limit may stop it first;
+/// either way the code is `memory_limit` and the same session applies the next program.
 #[test]
 fn a_program_past_the_memory_limit_is_refused_and_the_session_lives_on() {
     let _turn = crate::integration_support::file_turn();
-    let error = apply_error("s = \"ab\" * 50000\nt = s.replace(\"\", s)\n");
-    assert!(error.contains("GiB of memory and was stopped"), "{error}");
-    session(BLOCK).unwrap();
+    let mut session = DocumentSession::new(SessionSettings::default());
+    let program = source("s = \"ab\" * 50000\nt = s.replace(\"\", s)\n");
+    let Err(error) = session.apply_rule_program(program, false) else {
+        panic!("the program must be refused");
+    };
+    let RuleProgramApplyError::Program { code, .. } = &error else {
+        panic!("{error}");
+    };
+    assert_eq!(code, "memory_limit", "{error}");
+    if let Err(error) = session.apply_rule_program(source(BLOCK), false) {
+        panic!("{error}");
+    }
+}
+
+fn source(program: &str) -> RuleProgramSource {
+    RuleProgramSource {
+        variants: Default::default(),
+        file_name: "operations.star".to_owned(),
+        source: program.to_owned(),
+        overrides: BTreeMap::new(),
+    }
 }
 
 /// 400 boxes that all overlap evaluate in a fraction of a second, but checking
