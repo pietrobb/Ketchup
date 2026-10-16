@@ -422,6 +422,8 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             drop(sources);
             record_source(eval, &state, &[&part.name]);
         }
+        let bodies = parts.iter().map(super::boolean_bodies).sum();
+        state.add_bodies(bodies, &format!("instance {name:?}"))?;
         for part in &parts {
             state.take_name(&part.name, Named::Part);
         }

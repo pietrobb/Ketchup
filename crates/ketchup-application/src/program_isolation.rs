@@ -5,7 +5,9 @@
 //! file cannot take the window down.
 use crate::evaluation::{configured_exact_worker, exact_worker_candidates};
 use ketchup_dwg::DwgDrawing;
-use ketchup_program::{CancelToken, Evaluated, ProgramError, Report};
+use ketchup_program::{
+    CancelToken, Evaluated, ExactShapes, ProgramError, ProgramModel, Refined, Report,
+};
 use ketchup_scheduler::WorkerError;
 use ketchup_scheduler::program_worker::{DwgConversionError, ProgramWorker};
 use std::collections::BTreeMap;
@@ -45,6 +47,25 @@ pub fn evaluate_program(
 /// `report_too_large`, `time_limit`, `memory_limit` and `worker_failed`.
 pub fn report_program(evaluated: &Evaluated, cancel: &CancelToken) -> Result<Report, ProgramError> {
     with_worker(|worker| worker.report(evaluated, cancel)).unwrap_or_else(|error| {
+        Err(ProgramError {
+            code: "worker_failed",
+            message: format!("programs cannot be checked: {error}"),
+            location: None,
+        })
+    })
+}
+
+/// [`ketchup_program::refine`] in a program worker, under the limits of a
+/// report: it repeats the checks of the report (review 2026-10-15 N-4).
+///
+/// # Errors
+/// As [`report_program`].
+pub fn refine_report(
+    model: &ProgramModel,
+    exact: &ExactShapes,
+    cancel: &CancelToken,
+) -> Result<Refined, ProgramError> {
+    with_worker(|worker| worker.refine(model, exact, cancel)).unwrap_or_else(|error| {
         Err(ProgramError {
             code: "worker_failed",
             message: format!("programs cannot be checked: {error}"),

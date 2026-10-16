@@ -1,7 +1,7 @@
 # process-wrap 10.0.0, patched for Ketchup
 
 Unmodified copy of `process-wrap` 10.0.0 from crates.io (Apache-2.0 OR MIT, see the license
-files) except three changes: the std API gets the `KillOnDrop` wrapper that the Tokio API already
+files) except four changes (the fourth: `JobMemoryLimit` on Unix, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
 has, a `JobMemoryLimit` wrapper, and its job object starts the child without suspending it (below). The upstream `tests/` directory is left out; this
 workspace never builds a dependency's tests.
 
@@ -39,6 +39,12 @@ heap limit does not see every allocation (`str.replace`, dict copies, big intege
 could take all the memory of the computer and an allocation failure aborted the editor window. In
 a job with a memory limit the allocation fails in the worker only; the editor sees the worker die
 and reports a memory limit.
+
+On Unix, where there is no job object, `JobMemoryLimit` is exported too (any feature set) and its
+`pre_spawn` sets `RLIMIT_AS` to the limit in the child, through `pre_exec` before `exec`. This
+needs nix's `resource` feature (`Cargo.toml`). Ketchup's crates forbid `unsafe`, and `pre_exec`
+is unsafe. The limit caps address space, not committed memory as on Windows; the program worker
+reserves little beyond what it uses, so the same number serves both (review 2026-10-15 PRG-1).
 
 ## No suspended start
 

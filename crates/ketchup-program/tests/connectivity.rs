@@ -104,7 +104,7 @@ fn non_box_contacts_remain_unverified_until_exact_solids_settle_them() {
             ..Default::default()
         },
     );
-    report.refine(&evaluated.model, &exact);
+    report.apply_refined(ketchup_program::refine(&evaluated.model, &exact));
     assert!(report.issues.iter().any(|i| i.kind == "disconnected_group"));
     assert!(
         !report
@@ -121,7 +121,7 @@ fn non_box_contacts_remain_unverified_until_exact_solids_settle_them() {
             ..Default::default()
         },
     );
-    report.refine(&evaluated.model, &exact);
+    report.apply_refined(ketchup_program::refine(&evaluated.model, &exact));
     assert!(
         !report
             .issues

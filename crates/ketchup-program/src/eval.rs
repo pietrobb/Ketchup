@@ -41,6 +41,10 @@ pub const MAX_PARTS: usize = 20_000;
 /// booleans: each boolean records a copy of its tool, so parts that cut each
 /// other in turn would otherwise grow exponentially (review PRG-3).
 pub const MAX_BOOLEAN_BODIES: usize = 10_000;
+/// Bodies the whole model may hold, parts and tools with every body their
+/// booleans recorded: the per-part bound alone lets each of [`MAX_PARTS`]
+/// parts hold [`MAX_BOOLEAN_BODIES`] (review 2026-10-15 N-6).
+pub const MAX_MODEL_BODIES: usize = 100_000;
 /// Booleans one part may nest through its tools' own booleans. The model
 /// crosses the worker boundary as CBOR, decoded recursively: past about 45
 /// levels a debug build overflows a 1 MB stack, past about 85 a release build
@@ -124,6 +128,8 @@ struct State {
     /// look them up here instead of scanning the model for every new part.
     names: RefCell<BTreeMap<String, Named>>,
     group_of: RefCell<BTreeMap<String, String>>,
+    /// Bodies added to the model so far, see [`MAX_MODEL_BODIES`].
+    bodies: std::cell::Cell<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +155,20 @@ impl State {
         for member in &group.members {
             group_of.insert(member.clone(), group.name.clone());
         }
+    }
+
+    /// Counts `added` more bodies in the model, refused past [`MAX_MODEL_BODIES`].
+    fn add_bodies(&self, added: usize, what: &str) -> anyhow::Result<()> {
+        let bodies = self.bodies.get() + added;
+        if bodies > MAX_MODEL_BODIES {
+            anyhow::bail!(
+                "{what}: the model would hold {bodies} bodies, more than {MAX_MODEL_BODIES}, counting \
+                 every body the booleans of its parts and tools recorded; copies of a part keep \
+                 all its booleans, so cut the copies from one tool body instead"
+            );
+        }
+        self.bodies.set(bodies);
+        Ok(())
     }
 }
 
@@ -894,6 +914,7 @@ fn insert_part(state: &State, mut part: Part, tool: bool) -> anyhow::Result<Part
     if model.parts.len() + model.tools.len() >= MAX_PARTS {
         anyhow::bail!("more than {MAX_PARTS} parts; check the program for a runaway loop");
     }
+    state.add_bodies(boolean_bodies(&part), &format!("part {name:?}"))?;
     if tool {
         model.tools.push(part.clone());
     } else {
@@ -1285,6 +1306,7 @@ fn apply_boolean<'v>(
         }
         let name = requested.unwrap_or_else(|| format!("{operation} {tool}"));
         check_part_name(&name)?;
+        state.add_bodies(tool_bodies, &format!("{operation}({target:?}, {tool:?})"))?;
         add_operation(
             part,
             ProgramOperation::Boolean(Box::new(ProgramBoolean {

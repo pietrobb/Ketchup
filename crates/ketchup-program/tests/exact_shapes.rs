@@ -37,6 +37,27 @@ fn boxes_alone_take_a_leg_under_the_corner_of_a_round_seat_as_support() {
 }
 
 #[test]
+fn a_part_checked_against_others_is_apart_from_them_without_one_answer_per_pair() {
+    let mut exact = ExactShapes::default();
+    exact.checked_against(
+        ["seat".to_owned()],
+        ["seat", "leg", "rail"].map(String::from),
+    );
+    let touching = ExactPair {
+        distance_mm: Some(0.0),
+        ..ExactPair::default()
+    };
+    exact.insert("rail", "seat", touching);
+    assert_eq!(exact.pair("leg", "seat"), Some(ExactPair::default()));
+    assert_eq!(exact.pair("seat", "rail"), Some(touching));
+    // Neither was checked, or the other part was not among those checked.
+    assert_eq!(exact.pair("leg", "rail"), None);
+    assert_eq!(exact.pair("seat", "hidden"), None);
+    let wire = serde_json::to_string(&exact).unwrap();
+    assert_eq!(serde_json::from_str::<ExactShapes>(&wire).unwrap(), exact);
+}
+
+#[test]
 fn an_exact_gap_at_the_corner_leaves_the_round_seat_floating() {
     let (evaluated, mut report) = checked(&seat_on_leg(120.0));
     let mut exact = ExactShapes::default();
@@ -49,7 +70,7 @@ fn an_exact_gap_at_the_corner_leaves_the_round_seat_floating() {
             ..ExactPair::default()
         },
     );
-    report.refine(&evaluated.model, &exact);
+    report.apply_refined(ketchup_program::refine(&evaluated.model, &exact));
     assert_eq!(
         kinds(&report),
         ["expectation_failed", "floating_part"],
@@ -83,7 +104,7 @@ fn a_sliver_of_common_volume_is_contact_like_a_sliver_of_box_overlap() {
                 ..ExactPair::default()
             },
         );
-        report.refine(&evaluated.model, &exact);
+        report.apply_refined(ketchup_program::refine(&evaluated.model, &exact));
         report
     };
     // A 30 x 30 x 0.005 slab.
@@ -108,7 +129,7 @@ fn an_exact_contact_patch_reports_its_true_area() {
             ..ExactPair::default()
         },
     );
-    report.refine(&evaluated.model, &exact);
+    report.apply_refined(ketchup_program::refine(&evaluated.model, &exact));
     assert!(kinds(&report).is_empty(), "{:#?}", report.issues);
     let relation = &report.relations[0];
     assert_eq!(relation.kind, RelationKind::Contact);
@@ -121,7 +142,7 @@ fn apart_by_an_unmeasured_distance_leaves_the_expectation_unverified() {
     let (evaluated, mut report) = checked(&seat_on_leg(120.0));
     let mut exact = ExactShapes::default();
     exact.insert("seat", "leg", ExactPair::default());
-    report.refine(&evaluated.model, &exact);
+    report.apply_refined(ketchup_program::refine(&evaluated.model, &exact));
     assert_eq!(
         kinds(&report),
         ["floating_part", "expectation_unverified"],
@@ -202,7 +223,7 @@ fn machined_boxes_use_the_measured_gap_instead_of_the_uncut_box() {
                 ..ExactPair::default()
             },
         );
-        report.refine(&evaluated.model, &exact);
+        report.apply_refined(ketchup_program::refine(&evaluated.model, &exact));
         assert!(
             !kinds(&report).iter().any(|kind| matches!(
                 *kind,

@@ -1,9 +1,10 @@
 //! Exact collision and distance answers for applied program solids.
 use crate::collision::{CollisionScope, ExactPairFacts, scoped_exact_pairs_with_worker};
+use crate::program_isolation::refine_report;
 use ketchup_model::document::{InstancePath, Snapshot};
 use ketchup_model::persistence::ContainerData;
 use ketchup_program::{
-    COLLISION_UNVERIFIED, ExactPair, ExactShapes, ProgramModel, Report, exact_candidates,
+    COLLISION_UNVERIFIED, CancelToken, ExactShapes, ProgramModel, Report, exact_candidates,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,11 +32,10 @@ fn named_shapes(
 ) -> ExactShapes {
     let mut shapes = ExactShapes::default();
     if complete {
-        for id in checked {
-            for (_, name) in names.iter().filter(|(other, _)| *other != id) {
-                shapes.insert(&names[id], name, ExactPair::default());
-            }
-        }
+        shapes.checked_against(
+            checked.iter().map(|id| names[id].clone()),
+            names.values().cloned(),
+        );
     }
     for ((left, right), fact) in facts {
         if let (Some(left), Some(right)) = (names.get(left), names.get(right)) {
@@ -45,7 +45,9 @@ fn named_shapes(
     shapes
 }
 
-/// Re-derives the program report from native answers without changing the model.
+/// Re-derives the program report from native answers without changing the
+/// model, in the program worker. A refused re-derivation keeps the report as
+/// it was and names why the check is incomplete.
 pub fn apply_exact_pairs(
     report: &mut Report,
     model: &ProgramModel,
@@ -53,8 +55,10 @@ pub fn apply_exact_pairs(
     checked: &BTreeSet<InstancePath>,
     exact: &Value,
     facts: &ExactPairFacts,
+    cancel: &CancelToken,
 ) -> Value {
-    let complete = exact["complete"].as_bool() == Some(true);
+    let mut complete = exact["complete"].as_bool() == Some(true);
+    let mut not_evaluated = exact["not_evaluated"].clone();
     let shapes = named_shapes(facts, names, checked, complete);
     let measurements: Vec<_> = ketchup_program::exact::measured_pairs(model)
         .into_iter().map(|(a, b)| {
@@ -70,8 +74,18 @@ pub fn apply_exact_pairs(
         count(report, COLLISION_UNVERIFIED),
         count(report, "collision"),
     );
-    report.refine(model, &shapes);
-    let reason = exact["not_evaluated"]
+    match refine_report(model, &shapes, cancel) {
+        Ok(refined) => report.apply_refined(refined),
+        Err(error) => {
+            complete = false;
+            let refused = json!({ "reason": error.code, "detail": error.message });
+            match not_evaluated.as_array_mut() {
+                Some(reasons) => reasons.insert(0, refused),
+                None => not_evaluated = json!([refused]),
+            }
+        }
+    }
+    let reason = not_evaluated
         .as_array()
         .and_then(|reasons| reasons.first())
         .and_then(|reason| reason["reason"].as_str())
@@ -99,7 +113,7 @@ pub fn apply_exact_pairs(
         "distance_measurements_state": if measurements.is_empty() { "not_requested" } else if measurements.iter().all(|m| m["state"] == "verified") { "verified" } else { "incomplete" },
         "exact_pair_count": facts.len(),
         "checked_pair_count": exact["checked_pair_count"],
-        "not_evaluated": exact["not_evaluated"],
+        "not_evaluated": not_evaluated,
     })
 }
 
@@ -192,6 +206,7 @@ fn verify_candidates(
     // Full paths keep siblings of shared component roots distinct.
     let scope = CollisionScope::bind(snapshot, checked.iter().map(InstancePath::root_occurrence))
         .measuring_pairs(requested);
+    let cancel = CancelToken::from(Arc::clone(&cancelled));
     let (exact, facts) = scoped_exact_pairs_with_worker(
         snapshot,
         container,
@@ -201,6 +216,6 @@ fn verify_candidates(
         cancelled,
     );
     Some(apply_exact_pairs(
-        report, model, &names, &checked, &exact, &facts,
+        report, model, &names, &checked, &exact, &facts, &cancel,
     ))
 }

@@ -11,7 +11,9 @@ use crate::{
 use ketchup_dwg::MAX_DWG_SOURCE_BYTES;
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_GRAPH_BYTES};
 use ketchup_model::graph::sha256_hex;
-use ketchup_program::{Evaluated, ProgramError, ProgramModel, Report, SourceLines};
+use ketchup_program::{
+    Evaluated, ExactShapes, ProgramError, ProgramModel, Refined, Report, SourceLines,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -128,6 +130,9 @@ pub enum WorkerRequest {
     /// materials). Only the program worker gets it: on a large model this costs
     /// far more than the evaluation and has no bound of its own (review PRG-1).
     ReportProgram(Box<EvaluatedProgram>),
+    /// Re-derives a report's issues and relations with exact answers: it costs
+    /// as much as the checks of the report (review 2026-10-15 N-4).
+    RefineReport(Box<RefineInput>),
     /// Reads a DWG file as DXF. Only the program worker gets it, for the same
     /// reason: the reader allocates what a damaged file declares.
     ConvertDwg(DwgInput),
@@ -166,6 +171,7 @@ pub enum WorkerReply {
     Pair(PairMeasure),
     Program(Box<ProgramOutcome>),
     Report(Box<ReportOutcome>),
+    Refined(Box<RefineOutcome>),
     Dwg(Box<DwgOutcome>),
     Failure(WorkerFailure),
 }
@@ -384,6 +390,21 @@ impl From<ProgramOutcome> for Result<Evaluated, ProgramError> {
 pub enum ReportOutcome {
     Reported(Box<Report>),
     /// The report did not fit its reply.
+    Failed(ProgramError),
+}
+
+/// A model and the exact answers to refine its report with.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RefineInput {
+    pub model: ProgramModel,
+    pub exact: ExactShapes,
+}
+
+/// [`ketchup_program::refine`] of one model.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum RefineOutcome {
+    Refined(Box<Refined>),
+    /// The issues and relations did not fit their reply.
     Failed(ProgramError),
 }
 

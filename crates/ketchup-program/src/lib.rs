@@ -115,11 +115,29 @@ impl Report {
         self
     }
 
-    /// Re-derives the issues and relations of `model` with the exact answers
-    /// for the pairs whose boxes misstate their solids.
-    pub fn refine(&mut self, model: &ProgramModel, exact: &ExactShapes) {
-        self.relations = relations_with(model, &[], exact);
-        self.set_issues(validate_with(model, exact));
+    /// Takes the issues and relations [`refine`] re-derived.
+    pub fn apply_refined(&mut self, refined: Refined) {
+        self.relations = refined.relations;
+        self.set_issues(refined.issues);
+    }
+}
+
+/// The issues and relations of a model re-derived with exact answers.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct Refined {
+    #[serde(deserialize_with = "validate::report_issues")]
+    pub issues: Vec<Issue>,
+    pub relations: Vec<Relation>,
+}
+
+/// Re-derives the issues and relations of `model` with the exact answers for
+/// the pairs whose boxes misstate their solids. It costs as much as the checks
+/// of [`report`], so the editor runs it in the program worker too.
+#[must_use]
+pub fn refine(model: &ProgramModel, exact: &ExactShapes) -> Refined {
+    Refined {
+        relations: relations_with(model, &[], exact),
+        issues: validate_with(model, exact),
     }
 }
 

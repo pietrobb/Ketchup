@@ -165,6 +165,7 @@ fn handle_request(
         // Programs and DWG files go to ketchup-program-worker.
         WorkerRequest::EvaluateProgram(_)
         | WorkerRequest::ReportProgram(_)
+        | WorkerRequest::RefineReport(_)
         | WorkerRequest::ConvertDwg(_) => Err(WorkerFailure::invalid_request()),
         WorkerRequest::Exception => match backend.exception_probe() {
             Ok(_) => Err(WorkerFailure::code("unexpected_success")),

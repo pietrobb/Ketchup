@@ -1,8 +1,8 @@
-﻿//! Programs evaluated and checked in the program worker: the review's runaway
+//! Programs evaluated and checked in the program worker: the review's runaway
 //! programs and models end with an error instead of taking the process down or
 //! running for minutes, and a normal program and its report come back bit for
 //! bit as in process.
-use ketchup_program::{CancelToken, evaluate, report};
+use ketchup_program::{CancelToken, ExactPair, ExactShapes, evaluate, refine, report};
 use ketchup_scheduler::program_worker::ProgramWorker;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -40,6 +40,24 @@ fn memory_past_the_limit_ends_the_worker_not_the_caller() {
         started.elapsed()
     );
     assert_eq!(run(&mut worker, BOX).unwrap().model.parts.len(), 1);
+}
+
+/// Unix has no job object: the worker's memory limit is its own address-space
+/// limit (review 2026-10-15 PRG-1, PRG-3, PRG-6).
+#[cfg(target_os = "linux")]
+#[test]
+fn the_worker_runs_under_its_address_space_limit_on_linux() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    run(&mut worker, BOX).unwrap();
+    let pid = worker.process_id().unwrap();
+    let limits = std::fs::read_to_string(format!("/proc/{pid}/limits")).unwrap();
+    let address_space = limits
+        .lines()
+        .find(|line| line.starts_with("Max address space"))
+        .unwrap();
+    let bytes = ketchup_scheduler::program_worker::PROGRAM_WORKER_MEMORY_BYTES.to_string();
+    assert!(address_space.contains(&bytes), "{address_space}");
 }
 
 #[test]
@@ -151,6 +169,47 @@ fn a_report_past_the_deadline_is_killed() {
     assert_eq!(worker.process_id(), None);
     let small = run(&mut worker, BOX).unwrap();
     assert!(worker.report(&small, &CancelToken::default()).unwrap().ok);
+}
+
+/// Refining a report with exact answers repeats its checks, so it is stopped
+/// at the same deadline instead of running in the caller (review 2026-10-15 N-4).
+#[test]
+fn a_refine_past_the_deadline_is_killed() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker().with_deadline(Duration::from_secs(2));
+    let evaluated = run(
+        &mut worker,
+        "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n",
+    )
+    .unwrap();
+    let started = Instant::now();
+    let error = worker
+        .refine(
+            &evaluated.model,
+            &ExactShapes::default(),
+            &CancelToken::default(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "time_limit", "{error}");
+    assert!(
+        error.message.starts_with("checking the program's model"),
+        "{error}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(worker.process_id(), None);
+    let small = run(&mut worker, BOX).unwrap();
+    let refined = worker
+        .refine(
+            &small.model,
+            &ExactShapes::default(),
+            &CancelToken::default(),
+        )
+        .unwrap();
+    assert_eq!(refined, refine(&small.model, &ExactShapes::default()));
 }
 
 const MOTION: &str = r#"
@@ -276,6 +335,21 @@ fn assert_round_trip(programs: Vec<(String, String)>) {
         assert_eq!(
             format!("{checked:?}"),
             format!("{:?}", Ok::<_, ()>(report(&local))),
+            "{name}"
+        );
+        // The first two parts touch on their solids, whatever their boxes say.
+        let mut exact = ExactShapes::default();
+        if let [a, b, ..] = local.model.parts.as_slice() {
+            let touching = ExactPair {
+                distance_mm: Some(0.0),
+                ..ExactPair::default()
+            };
+            exact.insert(&a.name, &b.name, touching);
+        }
+        let refined = worker.refine(&local.model, &exact, &CancelToken::default());
+        assert_eq!(
+            format!("{refined:?}"),
+            format!("{:?}", Ok::<_, ()>(refine(&local.model, &exact))),
             "{name}"
         );
     }

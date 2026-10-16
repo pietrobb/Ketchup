@@ -11,11 +11,11 @@ use crate::expect::Measure;
 use crate::model::{Part, ProgramModel};
 use crate::validate;
 use ketchup_model::tolerance::CONTACT_FIT_MM;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What the exact solids of two parts share.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct ExactPair {
     pub common_volume_mm3: f64,
     /// How deep the solids overlap: the thickness of the thickest solid they
@@ -51,10 +51,52 @@ impl ExactPair {
 }
 
 /// Exact answers by the names of two parts; a pair without one was not
-/// measured.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// measured, unless one of its parts was checked against every other part.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(from = "ShapesWire", into = "ShapesWire")]
 pub struct ExactShapes {
     pairs: BTreeMap<(String, String), ExactPair>,
+    /// Parts checked against every part of `against`: their pairs among
+    /// those without an answer are exactly apart. One name each instead of
+    /// one answer per pair, which for a model of 750 parts did not fit a
+    /// worker request.
+    checked: BTreeSet<String>,
+    against: BTreeSet<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ShapesWire {
+    pairs: Vec<(String, String, ExactPair)>,
+    checked: BTreeSet<String>,
+    against: BTreeSet<String>,
+}
+
+impl From<ShapesWire> for ExactShapes {
+    fn from(wire: ShapesWire) -> Self {
+        let mut shapes = Self {
+            checked: wire.checked,
+            against: wire.against,
+            ..Self::default()
+        };
+        for (a, b, pair) in wire.pairs {
+            shapes.insert(&a, &b, pair);
+        }
+        shapes
+    }
+}
+
+impl From<ExactShapes> for ShapesWire {
+    fn from(shapes: ExactShapes) -> Self {
+        Self {
+            pairs: shapes
+                .pairs
+                .into_iter()
+                .map(|((a, b), pair)| (a, b, pair))
+                .collect(),
+            checked: shapes.checked,
+            against: shapes.against,
+        }
+    }
 }
 
 fn key(a: &str, b: &str) -> (String, String) {
@@ -70,20 +112,25 @@ impl ExactShapes {
         self.pairs.insert(key(a, b), pair);
     }
 
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.pairs.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.pairs.is_empty()
+    /// Records that every part of `checked` was checked against every part
+    /// of `against`: their pairs without an answer are apart.
+    pub fn checked_against(
+        &mut self,
+        checked: impl IntoIterator<Item = String>,
+        against: impl IntoIterator<Item = String>,
+    ) {
+        self.checked.extend(checked);
+        self.against.extend(against);
     }
 
     /// The exact answer for a pair, or `None` when it was not measured.
     #[must_use]
     pub fn pair(&self, a: &str, b: &str) -> Option<ExactPair> {
-        self.pairs.get(&key(a, b)).copied()
+        let apart = |a: &str, b: &str| self.checked.contains(a) && self.against.contains(b);
+        self.pairs
+            .get(&key(a, b))
+            .copied()
+            .or_else(|| (a != b && (apart(a, b) || apart(b, a))).then(ExactPair::default))
     }
 
     /// The exact answer for two parts under the program's contact rule: see

@@ -12,13 +12,15 @@
 //! the DWG reader.
 pub use crate::protocol::DwgRefusal;
 use crate::protocol::{
-    DwgInput, Frame, MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, ProgramInput, ReportOutcome,
-    WorkerFailure, WorkerReply, WorkerRequest, protocol_identity, read_frame, write_frame,
+    DwgInput, Frame, MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, ProgramInput, RefineInput,
+    RefineOutcome, ReportOutcome, WorkerFailure, WorkerReply, WorkerRequest, protocol_identity,
+    read_frame, write_frame,
 };
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
 use ketchup_dwg::{DwgDrawing, MAX_DWG_SOURCE_BYTES};
 use ketchup_program::{
-    CancelToken, EVALUATION_HEAP_BYTES, EVALUATION_TIME, Evaluated, ProgramError, Report,
+    CancelToken, EVALUATION_HEAP_BYTES, EVALUATION_TIME, Evaluated, ExactShapes, ProgramError,
+    ProgramModel, Refined, Report,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -204,6 +206,32 @@ impl ProgramWorker {
         }
     }
 
+    /// [`ketchup_program::refine`] in the worker, under the limits of a report.
+    ///
+    /// # Errors
+    /// As [`Self::report`].
+    pub fn refine(
+        &mut self,
+        model: &ProgramModel,
+        exact: &ExactShapes,
+        cancel: &CancelToken,
+    ) -> Result<Refined, ProgramError> {
+        let input = RefineInput {
+            model: model.clone(),
+            exact: exact.clone(),
+        };
+        let deadline = self.report_deadline;
+        let outcome = self
+            .call(cancel, |client| {
+                client.refine_report(input, cancel.flag(), deadline)
+            })
+            .map_err(Stopped::report_error)?;
+        match outcome {
+            RefineOutcome::Refined(refined) => Ok(*refined),
+            RefineOutcome::Failed(error) => Err(error),
+        }
+    }
+
     /// [`ketchup_dwg::dwg_to_dxf`] in the worker, for a file of at most
     /// [`MAX_DWG_SOURCE_BYTES`] and DXF text of at most `max_dxf_bytes`.
     ///
@@ -299,6 +327,10 @@ pub fn run_stdio() {
                 let report = ketchup_program::report(&Evaluated::from(*input));
                 WorkerReply::Report(Box::new(ReportOutcome::Reported(Box::new(report))))
             }
+            Frame::Message(WorkerRequest::RefineReport(input)) => {
+                let refined = ketchup_program::refine(&input.model, &input.exact);
+                WorkerReply::Refined(Box::new(RefineOutcome::Refined(Box::new(refined))))
+            }
             Frame::Message(WorkerRequest::ConvertDwg(input)) => WorkerReply::Dwg(Box::new(
                 ketchup_dwg::dwg_to_dxf(
                     &input.dwg,
@@ -326,18 +358,18 @@ pub fn run_stdio() {
 
 /// What the worker answers instead of a reply larger than its frame.
 fn too_large(reply: &WorkerReply) -> WorkerReply {
+    let error = || ProgramError {
+        code: "report_too_large",
+        message: format!(
+            "the program's model has more issues and relations than one report of {} MiB \
+             holds; fix the overlapping parts it reports in smaller groups",
+            MAX_REPLY_FRAME_BYTES >> 20
+        ),
+        location: None,
+    };
     match reply {
-        WorkerReply::Report(_) => {
-            WorkerReply::Report(Box::new(ReportOutcome::Failed(ProgramError {
-                code: "report_too_large",
-                message: format!(
-                    "the program's model has more issues and relations than one report of {} MiB \
-                 holds; fix the overlapping parts it reports in smaller groups",
-                    MAX_REPLY_FRAME_BYTES >> 20
-                ),
-                location: None,
-            })))
-        }
+        WorkerReply::Report(_) => WorkerReply::Report(Box::new(ReportOutcome::Failed(error()))),
+        WorkerReply::Refined(_) => WorkerReply::Refined(Box::new(RefineOutcome::Failed(error()))),
         _ => WorkerReply::Failure(WorkerFailure::code("resource_limit")),
     }
 }

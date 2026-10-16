@@ -674,6 +674,33 @@ fn parts_cutting_each_other_in_turn_stop_at_the_boolean_body_bound() {
         .unwrap_or_else(|error| panic!("{error}"));
 }
 
+/// Review 2026-10-15 N-6: the per-part bound let each part of a model hold
+/// up to `MAX_BOOLEAN_BODIES`; the whole model is bounded too, by name. A tool
+/// of 100 bodies cut 99 times from a part gives it 9 901 bodies, under the
+/// per-part bound: ten such parts fit the model, eleven do not.
+#[test]
+fn many_heavily_cut_parts_stop_at_the_model_body_bound() {
+    let program = |parts: usize| {
+        format!(
+            "box(\"tool\", (1, 1, 1), at = (0, 0, -10))\n\
+             for i in range(99):\n    box(\"c%d\" % i, (1, 1, 1), at = (0, 0, -20))\n    \
+             subtract(\"tool\", \"c%d\" % i, name = \"t%d\" % i)\n\
+             for p in range({parts}):\n    box(\"p%d\" % p, (10, 10, 10), at = (20 * p, 0, 0))\n    \
+             for j in range(99):\n        subtract(\"p%d\" % p, \"tool\", name = \"p%d_%d\" % (p, j))\n"
+        )
+    };
+    ketchup_program::evaluate("cuts.star", &program(10), &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"));
+    let Err(error) = ketchup_program::evaluate("cuts.star", &program(11), &BTreeMap::new()) else {
+        panic!("eleven parts must pass the model body bound");
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains(&ketchup_program::eval::MAX_MODEL_BODIES.to_string()),
+        "{message}"
+    );
+}
+
 /// Review 2026-10-15 N-7: a chain of parts each cut by the one before nests
 /// one boolean per part; past the depth bound it is refused by name.
 #[test]

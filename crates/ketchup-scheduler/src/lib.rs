@@ -40,9 +40,12 @@ use ketchup_model::import::{
     STEP_MESH_MAGIC, StepImportEvidence, StepImportMesh, StepXdeImportEvidence,
     StepXdeNodeEvidence, StepXdePartEvidence,
 };
+use process_wrap::std::JobMemoryLimit;
+#[cfg(unix)]
+use process_wrap::std::ProcessGroup;
 use process_wrap::std::{ChildWrapper, CommandWrap};
 #[cfg(windows)]
-use process_wrap::std::{JobMemoryLimit, JobObject, KillOnDrop};
+use process_wrap::std::{JobObject, KillOnDrop};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -1048,8 +1051,15 @@ fn spawn_limited_worker_command(
         }
         command.wrap(JobObject);
     }
-    #[cfg(not(windows))]
-    let _ = memory_limit;
+    // Unix has no job object: the worker gets its own process group, so a kill
+    // reaches anything it started, and the memory limit is its own RLIMIT_AS.
+    #[cfg(unix)]
+    {
+        command.wrap(ProcessGroup::leader());
+        if let Some(bytes) = memory_limit {
+            command.wrap(JobMemoryLimit(bytes));
+        }
+    }
     command.spawn()
 }
 

@@ -4,8 +4,8 @@ use super::*;
 use crate::protocol::{
     DwgInput, DwgOutcome, EvaluatedProgram, ExportReceipt, Frame, GraphInput,
     MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MeshReceipt, ProgramInput, ProgramOutcome,
-    ReportOutcome, SourceFile, WorkerFailure, WorkerImportPart, WorkerReply, WorkerRequest,
-    encode_frame, protocol_identity, read_frame,
+    RefineInput, RefineOutcome, ReportOutcome, SourceFile, WorkerFailure, WorkerImportPart,
+    WorkerReply, WorkerRequest, encode_frame, protocol_identity, read_frame,
 };
 
 pub(crate) struct WorkerWriteRequest {
@@ -684,6 +684,19 @@ impl ExactWorkerClient {
         let request = WorkerRequest::ReportProgram(Box::new(input));
         match self.call(&request, cancelled, timeout)? {
             WorkerReply::Report(outcome) => Ok(*outcome),
+            reply => self.unexpected(reply),
+        }
+    }
+
+    pub(crate) fn refine_report(
+        &mut self,
+        input: RefineInput,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<RefineOutcome, WorkerError> {
+        let request = WorkerRequest::RefineReport(Box::new(input));
+        match self.call(&request, cancelled, timeout)? {
+            WorkerReply::Refined(outcome) => Ok(*outcome),
             reply => self.unexpected(reply),
         }
     }
