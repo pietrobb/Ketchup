@@ -198,11 +198,14 @@ impl LiveBridge {
             "export_failed"
         })?;
         let loss_report = target.with_extension(format!("{extension}.loss.txt"));
+        // BTLx names what it cannot carry, such as threads, in its support report.
+        let support_report = target.with_extension(format!("{extension}.support.txt"));
         Ok(json!({
             "exported": true,
             "path": path,
             "export_format": export_format,
             "loss_report": loss_report.is_file().then(|| loss_report.display().to_string()),
+            "support_report": support_report.is_file().then(|| support_report.display().to_string()),
             "basis": "visible_parts",
         }))
     }

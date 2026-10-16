@@ -808,6 +808,7 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
     assert!(support.contains("intermediate_saw_cuts=0"));
     assert!(support.contains("concrete_importer_verified=false"));
     assert!(support.contains("machine_execution_order_guaranteed=false"));
+    assert!(support.ends_with("\ntapped_drillings=0\n"), "{support}");
     assert_eq!(script.export_requests()[0].extension, "btlx");
     let receipt = harness.state().last_side_effect_receipt().unwrap();
     assert_eq!(

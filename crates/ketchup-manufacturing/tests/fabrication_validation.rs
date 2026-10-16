@@ -2158,6 +2158,16 @@ fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_a
     assert!(btlx.contains("<UserAttribute Name=\"ThreadPitch\" Value=\"1.75\" Type=\"real\"/>"));
     assert!(btlx.contains("<UserAttribute Name=\"ThreadDepth\" Value=\"40\" Type=\"real\"/>"));
     assert!(btlx.contains("Name=\"Ketchup tapped drilling\" Comment=\"M12×1.75 depth 40\""));
+    // BTLx has no tapping processing: its support report says the thread may be lost.
+    let loss = projection.btlx_thread_loss_report(&snapshot);
+    assert!(
+        loss.starts_with("tapped_drillings=1\nthread_loss=BTLx 2.3.1 has no tapping processing;"),
+        "{loss}"
+    );
+    assert!(
+        loss.ends_with(": Timber with circular drilling: M12×1.75 depth 40\n"),
+        "{loss}"
+    );
 
     let export = String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
     assert!(export.contains(":interval(-1000,-950):through(false);result_fingerprint=m17-circular-drill-result;thread=M12×1.75 depth 40\n"), "{export}");
