@@ -511,9 +511,7 @@ impl KetchupApp {
 
     pub(crate) fn ephemeral_edit_active(&self) -> bool {
         self.has_preview()
-            // A shape with nothing committed yet; a line chain's Undo takes
-            // back its last segment and ends the chain.
-            || (self.gesture.sketch.start.is_some() && self.gesture.sketch.chain_items.is_empty())
+            || self.gesture_holds_undo()
             || self.has_drawn_shape_preview()
             || self.has_occurrence_operation_preview()
             || self.solid_tools.target.is_some()
@@ -524,18 +522,6 @@ impl KetchupApp {
             || self.tool_preview.get::<SweepPreview>().is_some()
             || self.tool_preview.get::<LoftPreview>().is_some()
             || self.tool_preview.get::<GeneralFinishPreview>().is_some()
-            || self
-                .gesture
-                .drag
-                .get::<PushPullDrag>()
-                .is_some_and(|drag| self.push_pull_gesture_is_current(drag))
-            || self
-                .gesture
-                .drag
-                .get::<PushPullAnchor>()
-                .map(|anchor| &anchor.0)
-                .is_some_and(|anchor| self.push_pull_gesture_is_current(anchor))
-            || self.transform_gesture_active()
     }
 
     /// Whether the About window is on screen.

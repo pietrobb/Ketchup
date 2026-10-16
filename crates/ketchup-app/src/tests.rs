@@ -370,6 +370,7 @@ mod organization;
 mod scale_feature;
 mod scaled_placement;
 pub(crate) mod shell;
+mod tool_gesture;
 mod transform;
 mod viewer_comments;
 mod viewport;

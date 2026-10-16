@@ -87,6 +87,7 @@ mod thread_display;
 #[cfg(test)]
 #[path = "app/thread_display_tests.rs"]
 mod thread_display_tests;
+pub(crate) mod tool_gesture;
 mod transform;
 mod viewer_export;
 mod viewer_export_activity;

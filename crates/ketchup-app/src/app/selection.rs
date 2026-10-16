@@ -1189,8 +1189,7 @@ impl KetchupApp {
             || self.tool_preview.get::<LoftPreview>().is_some()
             || self.tool_preview.get::<GeneralFinishPreview>().is_some()
             || self.solid_tools.target.is_some()
-            || self.gesture.drag.get::<PushPullAnchor>().is_some()
-            || self.transform_tool.session.is_some()
+            || self.gesture_open()
             || self.gesture.sketch.armed
         {
             self.clear_ephemeral_edit_state();

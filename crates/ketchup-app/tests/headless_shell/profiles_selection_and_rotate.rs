@@ -2478,7 +2478,16 @@ fn move_rejects_an_outliner_selection_change_during_the_gesture() {
     assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
     assert!(!shell.app().occurrence_is_selected(OccurrenceId(1)));
 
-    // A typed distance is then a fresh move of the new selection alone.
+    // A distance typed for the gesture is refused as for every tool, never
+    // moved along a way the new selection was not shown; typed again it is a
+    // fresh move of the new selection alone.
+    shell.type_text("25");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("error-preview-stale")
+    );
+    assert_eq!(shell.app().canonical_digest(), digest);
     shell.type_text("25");
     shell.press_key(Key::Enter);
     assert_eq!(
