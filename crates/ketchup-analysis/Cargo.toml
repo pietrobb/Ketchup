@@ -7,6 +7,7 @@ autotests = false
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 ed25519-dalek = "2.2.0"

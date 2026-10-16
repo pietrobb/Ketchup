@@ -7,6 +7,7 @@ autotests = false
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 cxx = "=1.0.198"

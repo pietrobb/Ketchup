@@ -17,6 +17,8 @@ edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
 repository = "https://github.com/pietrobb/Ketchup"
+# Nothing here is released on crates.io; path dependencies need no version.
+publish = false
 
 # Debug builds keep only line tables (backtraces still show file:line); dependencies keep none.
 [profile.dev]

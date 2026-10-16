@@ -1,9 +1,25 @@
 [graph]
 all-features = true
-targets = ["x86_64-pc-windows-msvc"]
+# Every platform something is built for: the desktop app, CI, the macOS,
+# Android and browser Viewers.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "aarch64-linux-android",
+    "wasm32-unknown-unknown",
+]
 
 [advisories]
 yanked = "deny"
+# Unmaintained, not vulnerable, and with no maintained release of the crate
+# that brings them in. A new advisory, or any vulnerability, still fails.
+ignore = [
+    { id = "RUSTSEC-2024-0388", reason = "derivative: brought in by the vendored starlark 0.13 (third_party/starlark)" },
+    { id = "RUSTSEC-2025-0057", reason = "fxhash: brought in by starlark_map 0.13 of the vendored starlark" },
+    { id = "RUSTSEC-2024-0436", reason = "paste: brought in by the vendored starlark 0.13 and by metal 0.31 of wgpu" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: the font reader of egui (owned_ttf_parser); ketchup-manufacturing reads the drawing-sheet PDF font with the same version" },
+]
 
 [licenses]
 confidence-threshold = 0.93
@@ -30,6 +46,8 @@ allow = ["MPL-2.0"]
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# The workspace's own path dependencies (publish = false) carry no version.
+allow-wildcard-paths = true
 highlight = "all"
 
 [sources]
