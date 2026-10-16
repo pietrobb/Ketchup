@@ -181,7 +181,7 @@ pub(super) fn apply(
         CanonicalCommand::SetHoleThread { .. }
         | CanonicalCommand::SetModeledThreads { .. }
         | CanonicalCommand::SetShaftThread { .. } => threads::apply(&mut edit.product, command)?,
-        _ => {}
+        _ => return Err(CanonicalError::CommandOutsideFamily("feature")),
     }
     Ok(())
 }

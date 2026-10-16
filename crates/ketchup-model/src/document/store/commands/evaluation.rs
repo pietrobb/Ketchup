@@ -246,7 +246,7 @@ pub(super) fn apply(
             edit.previous_evaluation = Some(report.clone());
             edit.evaluation_identity = report.identity;
         }
-        _ => {}
+        _ => return Err(CanonicalError::CommandOutsideFamily("evaluation")),
     }
     Ok(())
 }

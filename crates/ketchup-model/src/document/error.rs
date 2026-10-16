@@ -21,6 +21,9 @@ pub enum CanonicalError {
     MissingDependency(NodeId),
     UnsupportedCommandSchema,
     EmptyCommandBatch,
+    /// A command reached a command family that does not apply it: a batch
+    /// dispatch error, refused instead of applying nothing.
+    CommandOutsideFamily(&'static str),
     ReservedProductId,
     EmptyProductName,
     InvalidTransform,
@@ -207,6 +210,7 @@ impl CanonicalError {
             Self::MissingDependency(..) => "canonical.missing_dependency",
             Self::UnsupportedCommandSchema => "canonical.unsupported_command_schema",
             Self::EmptyCommandBatch => "canonical.empty_command_batch",
+            Self::CommandOutsideFamily(_) => "canonical.command_outside_family",
             Self::ReservedProductId => "canonical.reserved_product_id",
             Self::EmptyProductName => "canonical.empty_product_name",
             Self::InvalidTransform => "canonical.invalid_transform",
@@ -454,6 +458,10 @@ impl fmt::Display for CanonicalError {
             Self::MissingDependency(id) => write!(formatter, "dependency {} does not exist", id.0),
             Self::UnsupportedCommandSchema => formatter.write_str("unsupported command schema"),
             Self::EmptyCommandBatch => formatter.write_str("command batch is empty"),
+            Self::CommandOutsideFamily(family) => write!(
+                formatter,
+                "the command reached the {family} commands, which do not apply it"
+            ),
             Self::ReservedProductId => formatter.write_str("product entity ID zero is reserved"),
             Self::EmptyProductName => formatter.write_str("product entity name is empty"),
             Self::InvalidTransform => {

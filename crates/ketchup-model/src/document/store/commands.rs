@@ -176,3 +176,51 @@ impl BatchEdit {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Family = fn(&mut BatchEdit, &CanonicalCommand) -> Result<(), CanonicalError>;
+
+    /// Review 2026-10-15 status PS-11: every command family ended in `_ => {}`, so a
+    /// command the dispatcher sent to the wrong family changed nothing and the batch
+    /// still succeeded.
+    #[test]
+    fn a_command_sent_to_a_family_that_does_not_apply_it_is_refused() {
+        let current = DocumentStore::new().current();
+        let mut edit = BatchEdit {
+            product: current.product.as_ref().clone(),
+            current,
+            explicit_dirty_features: BTreeSet::new(),
+            evaluation_identity: EvaluationIdentity::default(),
+            previous_evaluation: None,
+            production_anchors: BTreeMap::new(),
+            rebound_production_paths: BTreeSet::new(),
+        };
+        let tag = CanonicalCommand::DeleteTag { id: TagId(1) };
+        let recipe = CanonicalCommand::ClearAssemblyRecipe;
+        let families: [(&str, Family, &CanonicalCommand); 9] = [
+            ("annotation", annotations::apply, &tag),
+            ("assembly relation", assembly_relations::apply, &recipe),
+            (
+                "definition and body",
+                definitions_and_bodies::apply,
+                &recipe,
+            ),
+            ("evaluation", evaluation::apply, &recipe),
+            ("feature", features::apply, &recipe),
+            ("occurrence", occurrences::apply, &recipe),
+            ("organization", organization::apply, &recipe),
+            ("sketch constraint", sketch_constraints::apply, &recipe),
+            ("sketch entity", sketch_entities::apply, &recipe),
+        ];
+        for (family, apply, command) in families {
+            assert_eq!(
+                apply(&mut edit, command),
+                Err(CanonicalError::CommandOutsideFamily(family)),
+                "{family}"
+            );
+        }
+    }
+}

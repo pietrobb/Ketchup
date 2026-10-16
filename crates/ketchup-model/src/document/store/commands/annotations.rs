@@ -114,7 +114,7 @@ pub(super) fn apply(
                 .remove(id)
                 .ok_or(CanonicalError::DrawingSheetNotFound(*id))?;
         }
-        _ => {}
+        _ => return Err(CanonicalError::CommandOutsideFamily("annotation")),
     }
     Ok(())
 }

@@ -226,7 +226,7 @@ pub(super) fn apply(
         CanonicalCommand::ApplySolidTool(plan) => {
             apply_solid_tool(&mut edit.product, plan)?;
         }
-        _ => {}
+        _ => return Err(CanonicalError::CommandOutsideFamily("occurrence")),
     }
     Ok(())
 }

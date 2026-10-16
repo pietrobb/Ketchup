@@ -204,7 +204,7 @@ pub(super) fn apply(
                 .import_receipts
                 .insert(receipt.id(), Arc::new(receipt.clone()));
         }
-        _ => {}
+        _ => return Err(CanonicalError::CommandOutsideFamily("organization")),
     }
     Ok(())
 }

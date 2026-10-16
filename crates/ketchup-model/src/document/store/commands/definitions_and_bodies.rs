@@ -282,7 +282,7 @@ pub(super) fn apply(
                     .insert(key, requested_suppressed);
             }
         }
-        _ => {}
+        _ => return Err(CanonicalError::CommandOutsideFamily("definition and body")),
     }
     Ok(())
 }

@@ -349,7 +349,7 @@ pub(super) fn apply(
                 .remove(id)
                 .ok_or(CanonicalError::MechanicalConditionNotFound(*id))?;
         }
-        _ => {}
+        _ => return Err(CanonicalError::CommandOutsideFamily("assembly relation")),
     }
     Ok(())
 }

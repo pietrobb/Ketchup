@@ -128,7 +128,7 @@ pub(super) fn apply(
                 }),
             );
         }
-        _ => {}
+        _ => return Err(CanonicalError::CommandOutsideFamily("sketch constraint")),
     }
     Ok(())
 }
