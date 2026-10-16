@@ -5,7 +5,7 @@
 //! (the interpreter, a script named on the command line), stays open from its
 //! hash until the plugin process has ended; on Windows without write or delete
 //! sharing, so nobody can change, replace or rename it meanwhile. Elsewhere the
-//! files are only staged and hashed.
+//! files are hashed again before the process starts.
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io;
@@ -57,6 +57,9 @@ pub(super) struct HeldFiles {
     files: Vec<File>,
     /// The stage's files by relative path, with the SHA-256 the consent shows.
     staged: BTreeMap<PathBuf, String>,
+    /// The files outside the stage (interpreter, scripts on the command line)
+    /// by absolute path, with their SHA-256.
+    outside: BTreeMap<PathBuf, String>,
     stage: Option<tempfile::TempDir>,
 }
 
@@ -84,6 +87,8 @@ impl HeldFiles {
         self.files.push(file);
         if let Some(relative) = self.stage().and_then(|stage| path.strip_prefix(stage).ok()) {
             self.staged.insert(relative.to_owned(), sha256.clone());
+        } else {
+            self.outside.insert(path.to_owned(), sha256.clone());
         }
         Ok(sha256)
     }
@@ -92,6 +97,17 @@ impl HeldFiles {
     /// nothing was added or changed since the consent was asked for.
     pub(super) fn unchanged(&self) -> io::Result<()> {
         let changed = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
+        // A file outside the stage is not copied: only on Windows does its held
+        // handle keep it from being rewritten, so it is hashed again everywhere.
+        for (path, sha256) in &self.outside {
+            let file = open_regular(path)?;
+            if ketchup_model::graph::sha256_reader_hex(&file)? != *sha256 {
+                return Err(changed(format!(
+                    "{} changed after it was allowed",
+                    path.display()
+                )));
+            }
+        }
         let Some(stage) = self.stage() else {
             return Ok(());
         };
@@ -161,6 +177,27 @@ mod tests {
         assert_eq!(fs::read(&script).unwrap(), b"x = 1\n");
         drop(held);
         fs::write(&script, "x = 2\n").unwrap();
+    }
+
+    /// Review 2026-10-15 status: on Linux and macOS a held file outside the
+    /// plugin folder (an interpreter, a script on the command line) is not
+    /// locked, so a file rewritten while the consent prompt was open must stop
+    /// the run. Dropping the handles stands in for a platform without locks.
+    #[test]
+    fn a_file_outside_the_stage_rewritten_after_hashing_stops_the_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("plugin.py");
+        fs::write(&script, "x = 1\n").unwrap();
+        let mut held = HeldFiles::staged().unwrap();
+        held.hash(&script).unwrap();
+        held.unchanged().unwrap();
+        held.files.clear();
+        fs::write(&script, "x = 2\n").unwrap();
+        let error = held.unchanged().unwrap_err();
+        assert!(
+            error.to_string().contains("changed after it was allowed"),
+            "{error}"
+        );
     }
 
     #[test]
