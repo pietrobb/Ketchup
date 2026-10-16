@@ -413,9 +413,7 @@ fn checkpoint(
     base: persistence::FileIdentity,
     expected: Option<persistence::FileIdentity>,
 ) -> Result<persistence::FileIdentity, persistence::FilePersistenceError> {
-    let prepared =
-        persistence::prepare_document(store, data, persistence::HistoryPolicy::KeepIfFits).unwrap();
-    persistence::publish_work_recovery(path, &prepared, base, expected)
+    persistence::publish_work_recovery(path, store, data, base, expected)
 }
 
 fn graph_document() -> DocumentStore {

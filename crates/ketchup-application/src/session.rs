@@ -346,17 +346,15 @@ impl DocumentSession {
                 .map_err(SessionError::Persistence)?;
             return Ok(None);
         }
-        let prepared = persistence::prepare_document(
+        persistence::publish_work_recovery(
+            path,
             document,
             container_data,
-            persistence::HistoryPolicy::KeepIfFits,
+            identity,
+            work_recovery_identity,
         )
-        .map_err(|error| {
-            SessionError::Persistence(persistence::FilePersistenceError::Format(error))
-        })?;
-        persistence::publish_work_recovery(path, &prepared, identity, work_recovery_identity)
-            .map(Some)
-            .map_err(SessionError::Persistence)
+        .map(Some)
+        .map_err(SessionError::Persistence)
     }
     pub fn is_modified(&self) -> bool {
         self.recovery.is_some()

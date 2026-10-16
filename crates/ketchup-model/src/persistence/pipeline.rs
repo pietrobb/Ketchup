@@ -4,9 +4,9 @@
 use std::path::Path;
 
 use super::{
-    ContainerData, FileIdentity, FilePersistenceError, PersistenceError, save_atomic_bytes,
-    save_atomic_bytes_if_absent, save_container, save_document_store,
-    save_document_store_current_snapshot, write_work_recovery,
+    ContainerData, FileIdentity, FilePersistenceError, PersistenceError, publish_bytes,
+    save_container, save_document_store, save_document_store_current_snapshot,
+    sync_parent_directory, write_work_recovery,
 };
 use crate::document::{DocumentStore, Snapshot};
 
@@ -25,19 +25,10 @@ pub enum HistoryPolicy {
 #[derive(Clone, Debug)]
 pub struct PreparedDocument {
     bytes: Vec<u8>,
-    identity: FileIdentity,
     keeps_history: bool,
 }
 
 impl PreparedDocument {
-    fn new(bytes: Vec<u8>, keeps_history: bool) -> Self {
-        Self {
-            identity: FileIdentity::from_bytes(&bytes),
-            bytes,
-            keeps_history,
-        }
-    }
-
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
@@ -45,7 +36,7 @@ impl PreparedDocument {
 
     #[must_use]
     pub fn identity(&self) -> FileIdentity {
-        self.identity
+        FileIdentity::from_bytes(&self.bytes)
     }
 
     /// Whether the file carries the document's Undo history; without it, the
@@ -74,15 +65,10 @@ pub fn prepare_document(
             Err(error) => return Err(error),
         },
     };
-    Ok(PreparedDocument::new(bytes, keeps_history))
-}
-
-/// Encodes one revision with no Undo history, e.g. a migrated or exported snapshot.
-pub fn prepare_snapshot(
-    snapshot: &Snapshot,
-    container: &ContainerData,
-) -> Result<PreparedDocument, PersistenceError> {
-    save_container(snapshot, container).map(|bytes| PreparedDocument::new(bytes, false))
+    Ok(PreparedDocument {
+        bytes,
+        keeps_history,
+    })
 }
 
 /// What publishing may replace at the destination.
@@ -110,23 +96,23 @@ pub fn publish_document(
     prepared: &PreparedDocument,
     mode: Publish,
 ) -> Result<(), FilePersistenceError> {
-    match mode {
-        Publish::Replace => save_atomic_bytes(path, prepared.bytes(), None),
-        Publish::IfUnchanged(identity) => save_atomic_bytes(path, prepared.bytes(), Some(identity)),
-        Publish::IfAbsent => save_atomic_bytes_if_absent(path, prepared.bytes()),
-    }
+    publish_bytes(path, prepared.bytes(), mode, || {}, sync_parent_directory)
 }
 
-/// Writes `prepared` as the work-recovery checkpoint of the file at `path`, bound
-/// to that file's `base_identity`; it replaces only the checkpoint this writer
-/// observed (`None` requires there is none). Live sessions must also hold a
-/// `WorkRecoveryLock` to protect a recovery reopen.
+/// Writes `document` ([`HistoryPolicy::KeepIfFits`]) as the work-recovery
+/// checkpoint of the file at `path`, bound to that file's `base_identity`; it
+/// replaces only the checkpoint this writer observed (`None` requires there is
+/// none). Live sessions must also hold a `WorkRecoveryLock` to protect a recovery
+/// reopen.
 pub fn publish_work_recovery(
     path: &Path,
-    prepared: &PreparedDocument,
+    document: &DocumentStore,
+    container: &ContainerData,
     base_identity: FileIdentity,
     expected_recovery: Option<FileIdentity>,
 ) -> Result<FileIdentity, FilePersistenceError> {
+    let prepared = prepare_document(document, container, HistoryPolicy::KeepIfFits)
+        .map_err(FilePersistenceError::Format)?;
     write_work_recovery(
         path,
         prepared.bytes(),
@@ -141,7 +127,13 @@ pub fn save_atomic(
     path: impl AsRef<Path>,
     snapshot: &Snapshot,
 ) -> Result<(), FilePersistenceError> {
-    let prepared = prepare_snapshot(snapshot, &ContainerData::default())
+    let bytes = save_container(snapshot, &ContainerData::default())
         .map_err(FilePersistenceError::Format)?;
-    publish_document(path.as_ref(), &prepared, Publish::Replace)
+    publish_bytes(
+        path.as_ref(),
+        &bytes,
+        Publish::Replace,
+        || {},
+        sync_parent_directory,
+    )
 }

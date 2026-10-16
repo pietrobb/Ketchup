@@ -22,7 +22,7 @@ mod pipeline;
 mod work_recovery;
 
 pub use pipeline::{
-    HistoryPolicy, PreparedDocument, Publish, prepare_document, prepare_snapshot, publish_document,
+    HistoryPolicy, PreparedDocument, Publish, prepare_document, publish_document,
     publish_work_recovery, save_atomic,
 };
 #[cfg(feature = "testing")]
@@ -1146,76 +1146,33 @@ pub fn read_native_document_identity(
     read_native_document_file(path).map(|bytes| FileIdentity::from_bytes(&bytes))
 }
 
-fn save_atomic_bytes(
+/// Writes the native file `bytes` at `path` under the save lock as `mode`
+/// allows, keeping an intact replaced file as its `.recovery`.
+fn publish_bytes(
     path: &Path,
     bytes: &[u8],
-    expected: Option<FileIdentity>,
-) -> Result<(), FilePersistenceError> {
-    save_atomic_bytes_after_compare(path, bytes, expected, || {})
-}
-
-fn save_atomic_bytes_if_absent(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
-    save_atomic_bytes_if_absent_after_check(path, bytes, || {}, sync_parent_directory)
-}
-
-fn save_atomic_bytes_if_absent_after_check(
-    path: &Path,
-    bytes: &[u8],
-    after_check: impl FnOnce(),
+    mode: Publish,
+    after_compare: impl FnOnce(),
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), FilePersistenceError> {
     verify_checksums(bytes).map_err(FilePersistenceError::Format)?;
-    let lock_path = save_lock_path(path);
-    let lock_file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    lock_file.lock()?;
-    match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(FilePersistenceError::Io(error)),
-        Ok(_) => return Err(FilePersistenceError::ExternalConflict),
-    }
-    after_check();
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(bytes)?;
-    temporary.as_file_mut().sync_all()?;
-    temporary.persist_noclobber(path).map_err(|error| {
-        if error.error.kind() == io::ErrorKind::AlreadyExists {
-            FilePersistenceError::ExternalConflict
-        } else {
-            FilePersistenceError::Io(error.error)
+    let _lock = lock_saves(path)?;
+    let expected = match mode {
+        Publish::Replace => None,
+        Publish::IfUnchanged(identity) => Some(identity),
+        Publish::IfAbsent => {
+            match fs::symlink_metadata(path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(FilePersistenceError::Io(error)),
+                Ok(_) => return Err(FilePersistenceError::ExternalConflict),
+            }
+            let before_persist = || {
+                after_compare();
+                Ok(())
+            };
+            return write_atomic_after_prepare(path, bytes, false, before_persist, sync_parent);
         }
-    })?;
-    sync_parent(parent).map_err(|error| FilePersistenceError::Published {
-        path: path.to_owned(),
-        identity: FileIdentity::from_bytes(bytes),
-        error,
-    })?;
-    Ok(())
-}
-
-fn save_atomic_bytes_after_compare(
-    path: &Path,
-    bytes: &[u8],
-    expected: Option<FileIdentity>,
-    after_compare: impl FnOnce(),
-) -> Result<(), FilePersistenceError> {
-    verify_checksums(bytes).map_err(FilePersistenceError::Format)?;
-    let lock_path = save_lock_path(path);
-    let lock_file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    lock_file.lock()?;
+    };
     match read_native_document_file(path) {
         Ok(previous)
             if expected.is_some_and(|identity| identity != FileIdentity::from_bytes(&previous)) =>
@@ -1225,10 +1182,8 @@ fn save_atomic_bytes_after_compare(
         Ok(previous) if verify_checksums(&previous).is_ok() => {
             write_atomic(&recovery_path(path), &previous)?;
         }
-        Err(FilePersistenceError::Format(PersistenceError::ResourceLimit)) => {
-            return Err(FilePersistenceError::Format(
-                PersistenceError::ResourceLimit,
-            ));
+        Err(error @ FilePersistenceError::Format(PersistenceError::ResourceLimit)) => {
+            return Err(error);
         }
         Err(_) if expected.is_some() => return Err(FilePersistenceError::ExternalConflict),
         _ => {}
@@ -1236,6 +1191,7 @@ fn save_atomic_bytes_after_compare(
     write_atomic_after_prepare(
         path,
         bytes,
+        true,
         || {
             after_compare();
             if expected.is_some_and(|expected| {
@@ -1245,17 +1201,20 @@ fn save_atomic_bytes_after_compare(
             }
             Ok(())
         },
-        sync_parent_directory,
+        sync_parent,
     )
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
-    write_atomic_after_prepare(path, bytes, || Ok(()), sync_parent_directory)
+    write_atomic_after_prepare(path, bytes, true, || Ok(()), sync_parent_directory)
 }
 
+/// Writes `bytes` to a temporary file beside `path` and moves it there, over an
+/// existing file only when `replace`; without it an existing `path` is a conflict.
 fn write_atomic_after_prepare(
     path: &Path,
     bytes: &[u8],
+    replace: bool,
     before_persist: impl FnOnce() -> Result<(), FilePersistenceError>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), FilePersistenceError> {
@@ -1267,9 +1226,15 @@ fn write_atomic_after_prepare(
     temporary.write_all(bytes)?;
     temporary.as_file_mut().sync_all()?;
     before_persist()?;
-    temporary
-        .persist(path)
-        .map_err(|error| FilePersistenceError::Io(error.error))?;
+    let persisted = if replace {
+        temporary.persist(path)
+    } else {
+        temporary.persist_noclobber(path)
+    };
+    persisted.map_err(|error| match error.error.kind() {
+        io::ErrorKind::AlreadyExists if !replace => FilePersistenceError::ExternalConflict,
+        _ => FilePersistenceError::Io(error.error),
+    })?;
     sync_parent(parent).map_err(|error| FilePersistenceError::Published {
         path: path.to_owned(),
         identity: FileIdentity::from_bytes(bytes),
@@ -1310,14 +1275,7 @@ fn write_work_recovery(
     expected_recovery: Option<FileIdentity>,
     after_compare: impl FnOnce(),
 ) -> Result<FileIdentity, FilePersistenceError> {
-    let lock_path = save_lock_path(path);
-    let lock_file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    lock_file.lock()?;
+    let _lock = lock_saves(path)?;
     if read_native_document_identity(path)? != base_identity {
         return Err(FilePersistenceError::ExternalConflict);
     }
@@ -1333,6 +1291,7 @@ fn write_work_recovery(
     write_atomic_after_prepare(
         &work_recovery_path(path),
         &bytes,
+        true,
         || {
             if read_native_document_identity(path)? != base_identity {
                 return Err(FilePersistenceError::ExternalConflict);
@@ -1356,14 +1315,7 @@ fn clear_work_recovery_after_compare(
     expected: Option<FileIdentity>,
     after_compare: impl FnOnce(),
 ) -> Result<bool, FilePersistenceError> {
-    let lock_path = save_lock_path(path);
-    let lock_file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    lock_file.lock()?;
+    let _lock = lock_saves(path)?;
     let recovery_path = work_recovery_path(path);
     let metadata = match fs::symlink_metadata(&recovery_path) {
         Ok(metadata) => metadata,
@@ -1392,6 +1344,18 @@ fn recovery_path(path: &Path) -> PathBuf {
     let mut recovery = path.as_os_str().to_os_string();
     recovery.push(".recovery");
     PathBuf::from(recovery)
+}
+
+/// Holds the save lock of `path` until the returned file is dropped.
+fn lock_saves(path: &Path) -> io::Result<fs::File> {
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(save_lock_path(path))?;
+    lock_file.lock()?;
+    Ok(lock_file)
 }
 
 fn save_lock_path(path: &Path) -> PathBuf {
@@ -3800,9 +3764,10 @@ mod tests {
         let external = b"concurrent external creation";
 
         assert!(matches!(
-            save_atomic_bytes_if_absent_after_check(
+            publish_bytes(
                 &path,
                 &payload,
+                Publish::IfAbsent,
                 || fs::write(&path, external).unwrap(),
                 |_| Ok(()),
             ),
@@ -3817,9 +3782,10 @@ mod tests {
         let path = directory.path().join("new.ketchup");
         let payload = save(&DocumentStore::new().current());
 
-        let error = save_atomic_bytes_if_absent_after_check(
+        let error = publish_bytes(
             &path,
             &payload,
+            Publish::IfAbsent,
             || {},
             |_| Err(io::Error::other("injected parent sync failure")),
         )
@@ -3839,6 +3805,7 @@ mod tests {
         let error = write_atomic_after_prepare(
             &path,
             &payload,
+            true,
             || Ok(()),
             |_| Err(io::Error::other("injected parent sync failure")),
         )
@@ -3880,19 +3847,29 @@ mod tests {
         let first_payload = first_bytes.clone();
         let first_compared_tx = compared_tx.clone();
         let first = std::thread::spawn(move || {
-            save_atomic_bytes_after_compare(&first_path, &first_payload, Some(expected), || {
-                first_compared_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-            })
+            publish_bytes(
+                &first_path,
+                &first_payload,
+                Publish::IfUnchanged(expected),
+                || {
+                    first_compared_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+                sync_parent_directory,
+            )
         });
         compared_rx.recv().unwrap();
 
         let second_path = path.clone();
         let second_compared_tx = compared_tx;
         let second = std::thread::spawn(move || {
-            save_atomic_bytes_after_compare(&second_path, &second_bytes, Some(expected), || {
-                second_compared_tx.send(()).unwrap()
-            })
+            publish_bytes(
+                &second_path,
+                &second_bytes,
+                Publish::IfUnchanged(expected),
+                || second_compared_tx.send(()).unwrap(),
+                sync_parent_directory,
+            )
         });
         let second_passed_comparison = compared_rx.recv_timeout(Duration::from_millis(250)).is_ok();
         release_tx.send(()).unwrap();
@@ -3941,9 +3918,13 @@ mod tests {
         let external_write = external.clone();
 
         assert!(matches!(
-            save_atomic_bytes_after_compare(&path, &replacement, Some(expected), || {
-                fs::write(&path, external_write).unwrap();
-            }),
+            publish_bytes(
+                &path,
+                &replacement,
+                Publish::IfUnchanged(expected),
+                || fs::write(&path, external_write).unwrap(),
+                sync_parent_directory,
+            ),
             Err(FilePersistenceError::ExternalConflict)
         ));
         assert_eq!(fs::read(&path).unwrap(), external);
@@ -3999,11 +3980,12 @@ mod tests {
         let save_path = path.clone();
         let save_compared_tx = compared_tx;
         let save = std::thread::spawn(move || {
-            save_atomic_bytes_after_compare(
+            publish_bytes(
                 &save_path,
                 &replacement_bytes,
-                Some(base_identity),
+                Publish::IfUnchanged(base_identity),
                 || save_compared_tx.send(()).unwrap(),
+                sync_parent_directory,
             )
         });
         let save_passed_comparison = compared_rx.recv_timeout(Duration::from_millis(250)).is_ok();

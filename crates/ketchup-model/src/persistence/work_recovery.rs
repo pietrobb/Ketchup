@@ -72,13 +72,7 @@ pub fn set_aside_work_recovery(
     path: &Path,
     _owner: &WorkRecoveryLock,
 ) -> Result<PathBuf, FilePersistenceError> {
-    let lock_file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(save_lock_path(path))?;
-    lock_file.lock()?;
+    let _lock = lock_saves(path)?;
     let source = work_recovery_path(path);
     for index in 1..=1000_u32 {
         let mut target = source.as_os_str().to_os_string();

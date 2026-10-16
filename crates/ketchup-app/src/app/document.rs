@@ -533,7 +533,7 @@ impl KetchupApp {
             return;
         };
         let result = self.acquire_work_recovery_lock().and_then(|()| {
-            write_work_recovery_checkpoint(
+            ketchup_model::persistence::publish_work_recovery(
                 &path,
                 &self.document,
                 &self.file.container_data,
@@ -1281,7 +1281,7 @@ impl KetchupApp {
                 {
                     return Ok(());
                 }
-                match write_work_recovery_checkpoint(
+                match ketchup_model::persistence::publish_work_recovery(
                     path,
                     document,
                     container_data,
@@ -1681,22 +1681,4 @@ fn current_unix_time_ms() -> Result<u64, Rejection> {
         .map_err(|error| failed("clock", error))?
         .as_millis();
     u64::try_from(millis).map_err(|error| failed("clock", error))
-}
-
-/// The work-recovery checkpoint of `document`, bound to the saved file `identity`;
-/// a history too large for the file leaves only the current revision in it.
-fn write_work_recovery_checkpoint(
-    path: &Path,
-    document: &DocumentStore,
-    container: &ketchup_model::persistence::ContainerData,
-    identity: ketchup_model::persistence::FileIdentity,
-    expected: Option<ketchup_model::persistence::FileIdentity>,
-) -> Result<
-    ketchup_model::persistence::FileIdentity,
-    ketchup_model::persistence::FilePersistenceError,
-> {
-    use ketchup_model::persistence::{self, FilePersistenceError, HistoryPolicy};
-    let prepared = persistence::prepare_document(document, container, HistoryPolicy::KeepIfFits)
-        .map_err(FilePersistenceError::Format)?;
-    persistence::publish_work_recovery(path, &prepared, identity, expected)
 }
