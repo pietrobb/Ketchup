@@ -60,6 +60,85 @@ pub fn download_name(model_address: Option<&str>, suffix: &str) -> String {
     format!("{name}{suffix}")
 }
 
+/// Largest file the Viewer takes from a link or a picked file: a package, or
+/// a comments file when `comments`. Anything longer cannot be read anyway.
+pub fn file_limit(comments: bool) -> usize {
+    if comments {
+        ketchup_view_format::MAX_COMMENTS_BYTES
+    } else {
+        ketchup_view_format::MAX_PACKAGE_FILE_BYTES
+    }
+}
+
+/// A picked file of `size` bytes is refused before the browser reads it into
+/// memory when it is longer than `limit`.
+pub fn check_file_size(name: &str, size: f64, limit: usize) -> Result<(), Rejection> {
+    // `size` is the browser's integer byte count; every limit fits u32.
+    if size <= f64::from(u32::try_from(limit).unwrap_or(u32::MAX)) {
+        Ok(())
+    } else {
+        Err(too_large("viewer.web.too_large", name, limit))
+    }
+}
+
+/// The bytes of a shared model as they arrive, refused as soon as the server
+/// announces or sends more than `limit`, so a huge or endless answer never
+/// fills the page's memory.
+pub struct Download {
+    address: String,
+    limit: usize,
+    bytes: Vec<u8>,
+}
+
+impl Download {
+    /// Starts a download whose answer declares `content_length`, if it does.
+    pub fn new(
+        address: &str,
+        content_length: Option<&str>,
+        limit: usize,
+    ) -> Result<Self, Rejection> {
+        let declared = content_length
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|declared| usize::try_from(declared).unwrap_or(usize::MAX));
+        if declared.is_some_and(|declared| declared > limit) {
+            return Err(too_large("viewer.link.too_large", address, limit));
+        }
+        Ok(Self {
+            address: address.to_owned(),
+            limit,
+            // A declared length only sizes the buffer; the bytes still count.
+            bytes: Vec::with_capacity(declared.unwrap_or(0)),
+        })
+    }
+
+    /// Appends the next chunk, or refuses it when the model would pass the limit.
+    pub fn push(&mut self, chunk: &[u8]) -> Result<(), Rejection> {
+        if chunk.len() > self.limit - self.bytes.len() {
+            return Err(too_large(
+                "viewer.link.too_large",
+                &self.address,
+                self.limit,
+            ));
+        }
+        self.bytes.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    pub fn finish(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+fn too_large(code: &'static str, target: &str, limit: usize) -> Rejection {
+    Rejection::new(code, RejectionPhase::Request)
+        .target(target.to_owned())
+        .reason(format!(
+            "The file is larger than the {} MiB a Viewer file can have.",
+            limit / (1024 * 1024)
+        ))
+        .fix_hint("Open the package exported from Kečup; ask the manufacturer for a new link if it was replaced.")
+}
+
 fn allowed(
     address: &str,
     origin: Option<String>,
@@ -187,5 +266,33 @@ mod tests {
             "model.ketchup-comments"
         );
         assert_eq!(download_name(None, comments), "model.ketchup-comments");
+    }
+
+    #[test]
+    fn downloads_stop_at_the_largest_file_a_viewer_reads() {
+        let address = "designs/a.ketchup-view";
+        // An announced length past the limit is refused before any byte.
+        let announced = Download::new(address, Some("1025"), 1024).err().unwrap();
+        assert_eq!(announced.code(), "viewer.link.too_large");
+        assert!(Download::new(address, Some(" 18446744073709551615 "), 1024).is_err());
+        // Without (or with a lying) length the bytes themselves count.
+        for declared in [None, Some("10"), Some("chunked")] {
+            let mut download = Download::new(address, declared, 1024).unwrap();
+            download.push(&[1; 1000]).unwrap();
+            download.push(&[2; 24]).unwrap();
+            let past = download.push(&[3]).unwrap_err();
+            assert_eq!(past.code(), "viewer.link.too_large");
+            assert_eq!(download.finish().len(), 1024);
+        }
+        assert!(check_file_size("a.ketchup-view", 1024.0, 1024).is_ok());
+        assert_eq!(
+            check_file_size("a.ketchup-view", 1025.0, 1024)
+                .unwrap_err()
+                .code(),
+            "viewer.web.too_large"
+        );
+        // A full package with a full comments section still fits.
+        assert!(file_limit(false) > ketchup_view_format::MAX_GLB_BYTES);
+        assert_eq!(file_limit(true), ketchup_view_format::MAX_COMMENTS_BYTES);
     }
 }

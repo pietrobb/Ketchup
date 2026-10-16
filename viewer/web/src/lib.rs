@@ -254,10 +254,33 @@ async fn fetch_bytes(address: &str) -> Result<Vec<u8>, Rejection> {
             response.status()
         )));
     }
-    let buffer = JsFuture::from(response.array_buffer().map_err(failed)?)
-        .await
-        .map_err(failed)?;
-    Ok(js_sys::Uint8Array::new(&buffer).to_vec())
+    // Read as it arrives, so an answer past what a package can be stops the
+    // download instead of filling the page's memory (VW-11).
+    let length = response.headers().get("content-length").map_err(failed)?;
+    let mut download = share::Download::new(address, length.as_deref(), share::file_limit(false))?;
+    let Some(body) = response.body() else {
+        return Ok(download.finish());
+    };
+    let reader: web_sys::ReadableStreamDefaultReader = body
+        .get_reader()
+        .dyn_into()
+        .map_err(|reader: js_sys::Object| failed(reader.into()))?;
+    loop {
+        let next = JsFuture::from(reader.read()).await.map_err(failed)?;
+        let done = js_sys::Reflect::get(&next, &JsValue::from_str("done")).map_err(failed)?;
+        if done.as_bool() != Some(false) {
+            return Ok(download.finish());
+        }
+        let chunk: js_sys::Uint8Array = js_sys::Reflect::get(&next, &JsValue::from_str("value"))
+            .map_err(failed)?
+            .dyn_into()
+            .map_err(failed)?;
+        if let Err(too_large) = download.push(&chunk.to_vec()) {
+            // Stops the transfer; the promise only reports that it stopped.
+            drop(reader.cancel());
+            return Err(too_large);
+        }
+    }
 }
 
 /// Let the customer choose a local file; it arrives in the inbox.
@@ -285,6 +308,13 @@ fn pick_file(
             return;
         };
         let name = file.name();
+        if let Err(too_large) =
+            share::check_file_size(&name, file.size(), share::file_limit(comments))
+        {
+            inbox.borrow_mut().push(Incoming::Failed(too_large));
+            ctx.request_repaint();
+            return;
+        }
         spawn_local(async move {
             let item = match JsFuture::from(file.array_buffer()).await {
                 Ok(buffer) => {

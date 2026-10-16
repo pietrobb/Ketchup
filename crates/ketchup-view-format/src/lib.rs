@@ -17,7 +17,7 @@ pub use comments::{
     Arrow, Comment, CommentView, Comments, ExportRef, MAX_ARROWS, MAX_AUTHOR_BYTES,
     MAX_COMMENT_TEXT_BYTES, MAX_COMMENTS, MAX_COMMENTS_BYTES, seed_comment_ids,
 };
-pub use container::{MAX_GLB_BYTES, MAX_MANIFEST_BYTES, Package};
+pub use container::{MAX_GLB_BYTES, MAX_MANIFEST_BYTES, MAX_PACKAGE_FILE_BYTES, Package};
 pub use glb::geometry::{Geometry, GeometryNode, GeometryPrimitive, PrimitiveTopology};
 pub use identity::{IdentifiedPackage, PackageExport};
 use ketchup_rejection::{Rejection, RejectionPhase};

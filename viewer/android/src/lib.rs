@@ -4,6 +4,8 @@
 
 #[cfg(target_os = "android")]
 mod files;
+#[cfg(any(test, target_os = "android"))]
+mod replace;
 
 /// Called by android-activity when the app starts.
 #[cfg(target_os = "android")]

@@ -21,6 +21,11 @@ const COMMENTS_HEADER_BYTES: usize = 11 + 4 + 32;
 pub const MAX_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
 /// Largest accepted embedded GLB.
 pub const MAX_GLB_BYTES: usize = 256 * 1024 * 1024;
+/// Largest package file a reader can accept: the header, both payloads at
+/// their limits and a full comments section. A download or copy past it can
+/// stop without reading on.
+pub const MAX_PACKAGE_FILE_BYTES: usize =
+    HEADER_BYTES + MAX_MANIFEST_BYTES + MAX_GLB_BYTES + COMMENTS_HEADER_BYTES + MAX_COMMENTS_BYTES;
 /// Most entries in one list of a package: GLB nodes, meshes, primitives, accessors and
 /// buffer views; manifest definitions, occurrences and dimensions.
 pub(crate) const MAX_ENTRIES: usize = 100_000;

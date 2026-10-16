@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Read};
 use std::os::fd::{FromRawFd, OwnedFd};
 
 use jni::objects::{JObject, JString};
@@ -13,6 +13,8 @@ use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_view_format::Package;
 use ketchup_viewer::app::{FileRequest, ViewerApp};
 use ketchup_viewer::review::Written;
+
+use crate::replace::{ReplaceFailure, replace_keeping_original};
 
 /// Request code ViewerActivity gives a file another app opened with the Viewer.
 const OPENED_BY_ANOTHER_APP: i32 = 0;
@@ -281,13 +283,50 @@ impl Files {
     }
 
     /// Replaces the file with `bytes`; a commented copy of a large package
-    /// never has to fit the Java heap.
+    /// never has to fit the Java heap. A write that fails halfway puts the
+    /// file's earlier bytes back (VW-11).
     fn write(&self, uri: &str, bytes: &[u8]) -> Result<(), Rejection> {
+        let failed =
+            || Rejection::new("viewer.android.write", RejectionPhase::Io).target(uri.to_owned());
+        let private = self.android_app.internal_data_path().ok_or_else(|| {
+            failed().reason("The app has no private storage to keep the old file aside.")
+        })?;
+        // A kept original that could not be put back is never overwritten
+        // by the next save.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let backup = private.join(format!("replacing-{stamp}.bak"));
+        let original = BufReader::new(self.open_file(uri, "r", uri)?);
         // A provider may hand out a pipe, which cannot be synced; the file
         // is unbuffered and closing it hands every byte over.
-        let mut file = self.open_file(uri, "wt", uri)?;
-        file.write_all(bytes)
-            .map_err(|error| android_error("viewer.android.write", uri, error.to_string()))
+        let open_write = || {
+            self.open_file(uri, "wt", uri)
+                .map_err(std::io::Error::other)
+        };
+        replace_keeping_original(original, open_write, &backup, bytes).map_err(|failure| {
+            match failure {
+                ReplaceFailure::Unchanged(error) => failed()
+                    .caused_by(error)
+                    .reason("The old file could not be kept aside, so nothing was written.")
+                    .fix_hint("Free some space on the phone and save again."),
+                ReplaceFailure::Restored(error) => failed()
+                    .caused_by(error)
+                    .reason("Saving failed; the file holds what it held before.")
+                    .fix_hint("Save again, or choose another place."),
+                ReplaceFailure::Damaged {
+                    write,
+                    restore,
+                    backup,
+                } => failed()
+                    .caused_by(write)
+                    .reason(format!(
+                        "Saving failed and the file could not be put back ({restore}); its earlier content is kept in {}.",
+                        backup.display()
+                    ))
+                    .fix_hint("Save again, or choose another place."),
+            }
+        })
     }
 }
 
