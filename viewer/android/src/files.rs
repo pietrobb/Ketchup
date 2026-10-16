@@ -337,9 +337,8 @@ impl Files {
             }
         };
         for outcome in recover_interrupted(&private, open("r"), open("wt")) {
-            let failed = |target: String| {
-                Rejection::new("viewer.android.write", RejectionPhase::Io).target(target)
-            };
+            let rejection = || Rejection::new("viewer.android.write", RejectionPhase::Io);
+            let failed = |target: String| rejection().target(target);
             app.report(match outcome {
                 Interrupted::Restored { target } => failed(target)
                     .reason("A save was cut off when Android ended the app; the file holds what it held before.")
@@ -355,6 +354,13 @@ impl Files {
                         backup.display()
                     ))
                     .fix_hint("Save again, or choose another place."),
+                Interrupted::Left { target, kept } => target
+                    .map_or_else(rejection, failed)
+                    .reason(format!(
+                        "A save was cut off when Android ended the app, and the file now holds something that save did not write, or the save's record could not be read; the file was left as it is and its earlier content is kept in {}.",
+                        kept.display()
+                    ))
+                    .fix_hint("Check the file, and save again if it should hold your comments."),
             });
         }
     }

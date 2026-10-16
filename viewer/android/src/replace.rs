@@ -1,80 +1,125 @@
 //! Replacing a document the customer chose in the save dialog. A content
 //! provider offers no rename, so a write cut off halfway ("wt" truncates
 //! first) would leave neither the old file nor the new one (VW-11). The old
-//! bytes are kept in private storage first and written back when the new
-//! ones do not get through. Next to them a record names the document and the
-//! length and checksum of the new bytes, so a write that Android cut off by
-//! ending the process is undone at the next start (`recover_interrupted`).
+//! bytes and the new ones are kept in private storage first, and the old ones
+//! are written back when the new ones do not get through. A record beside
+//! them names the document and the length and checksum of both, so a write
+//! that Android cut off by ending the process is undone at the next start
+//! (`recover_interrupted`). Only a document holding part of the new or the
+//! old bytes is put back; bytes another app wrote since stay, and the old
+//! bytes are then set aside under a name of their own (review status R-3).
 
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 /// The extension of the record kept beside a backup.
 const RECORD: &str = "target";
+/// The record while it is written; it gets [`RECORD`] once it is complete,
+/// so a record cut off halfway never names a document.
+const RECORD_PART: &str = "target-part";
+/// The extension of the new bytes kept beside a backup.
+const NEW: &str = "new";
+/// The last line of a complete record.
+const END: &str = "end";
 
-/// What the record beside `backup` says: the document and its new bytes.
-#[derive(Debug, PartialEq)]
-struct Record {
-    target: String,
+/// The length and checksum of some bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Summary {
     length: u64,
     checksum: u64,
 }
 
-impl Record {
-    fn of(target: &str, bytes: &[u8]) -> Self {
-        let mut checksum = Checksum::default();
-        checksum.add(bytes);
-        Self {
-            target: target.to_owned(),
-            length: bytes.len() as u64,
-            checksum: checksum.0,
-        }
-    }
+/// What the record beside a backup says: the document, its new bytes and
+/// its old ones.
+#[derive(Debug, PartialEq)]
+struct Record {
+    target: String,
+    new: Summary,
+    old: Summary,
+}
 
+impl Record {
     fn text(&self) -> String {
-        format!("{}\n{:016x}\n{}", self.length, self.checksum, self.target)
+        format!(
+            "{}\n{:016x}\n{}\n{:016x}\n{}\n{END}\n",
+            self.new.length, self.new.checksum, self.old.length, self.old.checksum, self.target
+        )
     }
 
     fn parse(text: &str) -> Option<Self> {
-        let mut lines = text.splitn(3, '\n');
-        let length = lines.next()?.parse().ok()?;
-        let checksum = u64::from_str_radix(lines.next()?, 16).ok()?;
-        let target = lines.next()?.to_owned();
+        let body = text.strip_suffix(&format!("\n{END}\n"))?;
+        let mut lines = body.splitn(5, '\n');
+        let new = summary(&mut lines)?;
+        let old = summary(&mut lines)?;
+        let target = lines.next().filter(|target| !target.is_empty())?;
         Some(Self {
-            target,
-            length,
-            checksum,
+            target: target.to_owned(),
+            new,
+            old,
         })
     }
 }
 
-/// FNV-1a over the bytes: enough to tell the complete new bytes from a
-/// prefix or from bytes another app wrote, not a defence against anyone.
-struct Checksum(u64);
+fn summary<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Option<Summary> {
+    Some(Summary {
+        length: lines.next()?.parse().ok()?,
+        checksum: u64::from_str_radix(lines.next()?, 16).ok()?,
+    })
+}
+
+/// FNV-1a over the bytes and their count: enough to tell the bytes kept in
+/// private storage from damaged ones, not a defence against anyone.
+struct Checksum(Summary);
 
 impl Default for Checksum {
     fn default() -> Self {
-        Self(0xcbf2_9ce4_8422_2325)
+        Self(Summary {
+            length: 0,
+            checksum: 0xcbf2_9ce4_8422_2325,
+        })
     }
 }
 
 impl Checksum {
     fn add(&mut self, bytes: &[u8]) {
         for byte in bytes {
-            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+            self.0.checksum = (self.0.checksum ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
         }
+        self.0.length += bytes.len() as u64;
+    }
+
+    fn of(bytes: &[u8]) -> Summary {
+        let mut checksum = Self::default();
+        checksum.add(bytes);
+        checksum.0
     }
 }
 
-fn record_path(backup: &Path) -> PathBuf {
-    backup.with_extension(RECORD)
+/// A file written through, summing what it takes.
+struct Summing {
+    file: File,
+    checksum: Checksum,
 }
 
-/// Removes the record before the backup: a record without its backup is
-/// dropped at the next start, a backup without its record is never used.
+impl Write for Summing {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.file.write(buf)?;
+        self.checksum.add(&buf[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+/// Removes the record before the bytes: without a record nothing was
+/// written to the document yet, so the bytes are dropped at the next start.
 fn forget(backup: &Path) {
-    drop(std::fs::remove_file(record_path(backup)));
+    for extension in [RECORD, RECORD_PART, NEW] {
+        drop(std::fs::remove_file(backup.with_extension(extension)));
+    }
     drop(std::fs::remove_file(backup));
 }
 
@@ -96,23 +141,16 @@ pub(crate) enum ReplaceFailure {
 
 /// Replaces the document `target`, read by `original` and written by
 /// `open_write` (which truncates), with `bytes`, keeping its old bytes at
-/// `backup` with a record beside it until the new ones are written.
+/// `backup`, the new ones and a record beside them until the new ones are
+/// written.
 pub(crate) fn replace_keeping_original<W: Write>(
-    mut original: impl Read,
+    original: impl Read,
     mut open_write: impl FnMut() -> io::Result<W>,
     target: &str,
     backup: &Path,
     bytes: &[u8],
 ) -> Result<(), ReplaceFailure> {
-    let kept = File::create(backup)
-        .and_then(|mut file| io::copy(&mut original, &mut file).and_then(|_| file.sync_all()))
-        .and_then(|()| {
-            let mut record = File::create(record_path(backup))?;
-            record.write_all(Record::of(target, bytes).text().as_bytes())?;
-            record.sync_all()
-        })
-        .and_then(|()| sync_directory(backup));
-    if let Err(error) = kept {
+    if let Err(error) = keep(original, target, backup, bytes) {
         forget(backup);
         return Err(ReplaceFailure::Unchanged(error));
     }
@@ -138,6 +176,37 @@ pub(crate) fn replace_keeping_original<W: Write>(
     }
 }
 
+/// Keeps the old bytes at `backup` and the new ones beside them, then the
+/// record naming both, each on disk before the next.
+fn keep(mut original: impl Read, target: &str, backup: &Path, bytes: &[u8]) -> io::Result<()> {
+    if target.is_empty() || target.contains('\n') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the document's name cannot be recorded",
+        ));
+    }
+    let mut old = Summing {
+        file: File::create(backup)?,
+        checksum: Checksum::default(),
+    };
+    io::copy(&mut original, &mut old)?;
+    old.file.sync_all()?;
+    let mut new = File::create(backup.with_extension(NEW))?;
+    new.write_all(bytes)?;
+    new.sync_all()?;
+    let record = Record {
+        target: target.to_owned(),
+        new: Checksum::of(bytes),
+        old: old.checksum.0,
+    };
+    let part = backup.with_extension(RECORD_PART);
+    let mut file = File::create(&part)?;
+    file.write_all(record.text().as_bytes())?;
+    file.sync_all()?;
+    std::fs::rename(&part, backup.with_extension(RECORD))?;
+    sync_directory(backup)
+}
+
 fn restore<W: Write>(
     open_write: &mut impl FnMut() -> io::Result<W>,
     backup: &Path,
@@ -148,8 +217,8 @@ fn restore<W: Write>(
     file.flush()
 }
 
-/// The backup and its record survive the process only once the directory
-/// naming them is on disk too.
+/// The kept bytes and their record survive the process only once the
+/// directory naming them is on disk too.
 fn sync_directory(backup: &Path) -> io::Result<()> {
     #[cfg(unix)]
     if let Some(directory) = backup.parent() {
@@ -172,12 +241,20 @@ pub(crate) enum Interrupted {
         backup: PathBuf,
         error: io::Error,
     },
+    /// The document holds bytes the save did not write (another app wrote
+    /// it since), or the record of the save cannot be read: the document is
+    /// left as it is and its old bytes are kept at `kept`.
+    Left {
+        target: Option<String>,
+        kept: PathBuf,
+    },
 }
 
 /// Finishes the replacements in `private` that a process ending halfway left
 /// behind: a document holding all of its new bytes keeps them; one holding
-/// fewer, which a write cut off leaves, gets its old bytes back; one holding
-/// more was written by another app since and is left alone.
+/// part of the new or the old bytes, which a cut-off write or write-back
+/// leaves, gets its old bytes back; any other was written by another app
+/// since and is left alone.
 pub(crate) fn recover_interrupted<R: Read, W: Write>(
     private: &Path,
     mut open_read: impl FnMut(&str) -> io::Result<R>,
@@ -186,71 +263,181 @@ pub(crate) fn recover_interrupted<R: Read, W: Write>(
     let Ok(entries) = std::fs::read_dir(private) else {
         return Vec::new();
     };
-    let mut records: Vec<PathBuf> = entries
+    let backups: std::collections::BTreeSet<PathBuf> = entries
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == RECORD)
-                && path
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with("replacing-"))
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("replacing-"))
         })
+        .map(|path| path.with_extension("bak"))
         .collect();
-    records.sort();
     let mut outcomes = Vec::new();
-    for record_file in records {
-        let backup = record_file.with_extension("bak");
-        let Some(record) = std::fs::read_to_string(&record_file)
-            .ok()
-            .and_then(|text| Record::parse(&text))
-        else {
-            // Cut off before it was complete: nothing was written yet.
-            forget(&backup);
-            continue;
+    for backup in backups {
+        let text = match std::fs::read_to_string(backup.with_extension(RECORD)) {
+            // The record was not complete: nothing was written yet.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                forget(&backup);
+                continue;
+            }
+            text => text.ok(),
         };
         if !backup.is_file() {
-            drop(std::fs::remove_file(&record_file));
+            forget(&backup);
             continue;
         }
-        let kept = |error: io::Error| Interrupted::Kept {
-            target: record.target.clone(),
-            backup: backup.clone(),
-            error,
+        let Some(record) = text.as_deref().and_then(Record::parse) else {
+            outcomes.push(set_aside(&backup, None));
+            continue;
         };
-        let held = open_read(&record.target).and_then(|mut document| {
-            let mut checksum = Checksum::default();
-            let mut length = 0u64;
-            let mut buffer = [0u8; 64 * 1024];
-            loop {
-                let read = document.read(&mut buffer)?;
-                if read == 0 {
-                    return Ok((length, checksum.0));
-                }
-                checksum.add(&buffer[..read]);
-                length += read as u64;
-            }
-        });
-        match held {
-            Ok((length, checksum)) if length == record.length && checksum == record.checksum => {
-                forget(&backup);
-            }
-            Ok((length, _)) if length < record.length => {
-                match restore(&mut || open_write(&record.target), &backup) {
-                    Ok(()) => {
-                        forget(&backup);
-                        outcomes.push(Interrupted::Restored {
-                            target: record.target.clone(),
-                        });
-                    }
-                    Err(error) => outcomes.push(kept(error)),
-                }
-            }
-            // Longer than the save wrote: another app wrote it since.
-            Ok(_) => forget(&backup),
-            Err(error) => outcomes.push(kept(error)),
-        }
+        outcomes.extend(recover(&record, &backup, &mut open_read, &mut open_write));
     }
     outcomes
+}
+
+fn recover<R: Read, W: Write>(
+    record: &Record,
+    backup: &Path,
+    open_read: &mut impl FnMut(&str) -> io::Result<R>,
+    open_write: &mut impl FnMut(&str) -> io::Result<W>,
+) -> Option<Interrupted> {
+    let kept = |error: io::Error| Interrupted::Kept {
+        target: record.target.clone(),
+        backup: backup.to_owned(),
+        error,
+    };
+    let new = backup.with_extension(NEW);
+    let held = check(&new, record.new)
+        .and_then(|()| check(backup, record.old))
+        .and_then(|()| open_read(&record.target))
+        .and_then(|document| holds(document, &new, backup));
+    let restored = || Interrupted::Restored {
+        target: record.target.clone(),
+    };
+    match held {
+        Ok((Prefix::Whole, _)) => {
+            forget(backup);
+            None
+        }
+        Ok((_, Prefix::Whole)) => {
+            forget(backup);
+            Some(restored())
+        }
+        Ok((Prefix::Part, _) | (_, Prefix::Part)) => {
+            match restore(&mut || open_write(&record.target), backup) {
+                Ok(()) => {
+                    forget(backup);
+                    Some(restored())
+                }
+                Err(error) => Some(kept(error)),
+            }
+        }
+        Ok(_) => Some(set_aside(backup, Some(record.target.clone()))),
+        Err(error) => Some(kept(error)),
+    }
+}
+
+/// Moves the old bytes at `backup` out of the replacements, under a name
+/// of their own, and drops the rest of the replacement.
+fn set_aside(backup: &Path, target: Option<String>) -> Interrupted {
+    let name = backup.file_name().map_or_else(Default::default, |name| {
+        name.to_string_lossy().replacen("replacing-", "kept-", 1)
+    });
+    let kept = backup.with_file_name(name);
+    if std::fs::rename(backup, &kept).is_err() {
+        // The next start tries again.
+        return Interrupted::Left {
+            target,
+            kept: backup.to_owned(),
+        };
+    }
+    forget(backup);
+    Interrupted::Left { target, kept }
+}
+
+/// Fails unless the file at `path` still holds the bytes `summary` names.
+fn check(path: &Path, summary: Summary) -> io::Result<()> {
+    let mut file = File::open(path)?;
+    let mut checksum = Checksum::default();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        checksum.add(&buffer[..read]);
+    }
+    if checksum.0 == summary {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the bytes kept in private storage no longer match their record",
+        ))
+    }
+}
+
+/// How the bytes of a document stand to some kept bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Prefix {
+    Whole,
+    Part,
+    Not,
+}
+
+/// The kept bytes at a path, read alongside the document.
+struct Alongside {
+    file: BufReader<File>,
+    matching: bool,
+    expected: Vec<u8>,
+}
+
+impl Alongside {
+    fn open(path: &Path) -> io::Result<Self> {
+        Ok(Self {
+            file: BufReader::new(File::open(path)?),
+            matching: true,
+            expected: Vec::new(),
+        })
+    }
+
+    fn next(&mut self, chunk: &[u8]) -> io::Result<()> {
+        if !self.matching {
+            return Ok(());
+        }
+        self.expected.resize(chunk.len(), 0);
+        match self.file.read_exact(&mut self.expected) {
+            Ok(()) => self.matching = self.expected == chunk,
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => self.matching = false,
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    fn end(mut self) -> io::Result<Prefix> {
+        if !self.matching {
+            return Ok(Prefix::Not);
+        }
+        Ok(if self.file.read(&mut [0u8])? == 0 {
+            Prefix::Whole
+        } else {
+            Prefix::Part
+        })
+    }
+}
+
+/// How the `document` stands to the new bytes at `new` and the old ones at
+/// `old`.
+fn holds(mut document: impl Read, new: &Path, old: &Path) -> io::Result<(Prefix, Prefix)> {
+    let (mut new, mut old) = (Alongside::open(new)?, Alongside::open(old)?);
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = document.read(&mut buffer)?;
+        if read == 0 {
+            return Ok((new.end()?, old.end()?));
+        }
+        new.next(&buffer[..read])?;
+        old.next(&buffer[..read])?;
+    }
 }
 
 #[cfg(test)]
@@ -371,8 +558,39 @@ mod tests {
         dir.join("replacing-1.bak")
     }
 
+    /// The files of replacements still in progress beside `backup`.
     fn left_in(backup: &Path) -> usize {
-        std::fs::read_dir(backup.parent().unwrap()).unwrap().count()
+        std::fs::read_dir(backup.parent().unwrap())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("replacing-")
+            })
+            .count()
+    }
+
+    /// The document was left as it was and its old bytes, `original`, are
+    /// set aside under a name of their own; the set-aside file is removed.
+    fn assert_changed_and_kept(outcomes: &[Interrupted], original: &[u8]) {
+        let [Interrupted::Left { target, kept }] = outcomes else {
+            panic!("{outcomes:?}");
+        };
+        assert_eq!(target.as_deref(), Some(TARGET));
+        assert_set_aside(kept, original);
+    }
+
+    fn assert_set_aside(kept: &Path, original: &[u8]) {
+        assert!(
+            kept.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("kept-")),
+            "{kept:?}"
+        );
+        assert_eq!(std::fs::read(kept).unwrap(), original);
+        std::fs::remove_file(kept).unwrap();
     }
 
     /// Review 2026-10-15 status VW-11: Android may end the process in the
@@ -416,8 +634,9 @@ mod tests {
         let document = Document::new(b"old", &[]);
         document.replace_ending_after(&backup, b"new comments", 4);
         *document.bytes.borrow_mut() = b"written by another app since".to_vec();
-        assert!(document.recover(backup.parent().unwrap()).is_empty());
+        let outcomes = document.recover(backup.parent().unwrap());
         assert_eq!(*document.bytes.borrow(), b"written by another app since");
+        assert_changed_and_kept(&outcomes, b"old");
         assert_eq!(left_in(&backup), 0);
 
         let document = Document::new(b"old", &[]);
@@ -438,6 +657,75 @@ mod tests {
         assert_eq!(std::fs::read(&backup).unwrap(), b"old");
         assert_eq!(document.recover(backup.parent().unwrap()).len(), 1);
         assert_eq!(*document.bytes.borrow(), b"old");
+    }
+
+    /// Review 2026-10-16 status R-3: shorter bytes another app wrote since
+    /// are neither the new bytes cut off nor the old ones, so they stay.
+    #[test]
+    fn shorter_bytes_another_app_wrote_since_are_not_overwritten() {
+        let backup = backup("shorter");
+        let original = b"the customer's earlier comments".to_vec();
+        let document = Document::new(&original, &[]);
+        document.replace_ending_after(&backup, &[7; 64], 10);
+        *document.bytes.borrow_mut() = b"short note".to_vec();
+        let outcomes = document.recover(backup.parent().unwrap());
+        assert_eq!(*document.bytes.borrow(), b"short note");
+        assert_changed_and_kept(&outcomes, &original);
+        assert_eq!(left_in(&backup), 0);
+    }
+
+    /// R-3: a write-back the process did not live through either leaves a
+    /// prefix of the old bytes, longer than the new ones; it is put back.
+    #[test]
+    fn a_write_back_cut_off_too_is_finished_at_the_next_start() {
+        let backup = backup("restore-cut");
+        let original = b"the customer's earlier comments".to_vec();
+        let document = Document::new(&original, &[]);
+        document.replace_ending_after(&backup, b"short", 2);
+        document.ends_after.set(Some(20));
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            document.recover(backup.parent().unwrap())
+        }));
+        assert!(ended.is_err(), "the write-back ended the process");
+        assert_eq!(*document.bytes.borrow(), original[..20]);
+
+        let outcomes = document.recover(backup.parent().unwrap());
+        assert!(
+            matches!(outcomes.as_slice(), [Interrupted::Restored { target }] if target == TARGET),
+            "{outcomes:?}"
+        );
+        assert_eq!(*document.bytes.borrow(), original);
+        assert_eq!(left_in(&backup), 0);
+    }
+
+    /// R-3: a record cut off while written, naming `…/4` for `…/42`, never
+    /// names a document: under its own name until complete, nothing was
+    /// written yet; one that does not end as a record does is not followed,
+    /// and the old bytes are set aside.
+    #[test]
+    fn a_record_cut_off_while_written_names_no_document() {
+        let backup = backup("torn");
+        let torn = format!(
+            "12\n{:016x}\n3\n{:016x}\n{}",
+            1,
+            2,
+            &TARGET[..TARGET.len() - 1]
+        );
+        let document = Document::new(b"untouched", &[]);
+        std::fs::write(&backup, b"old").unwrap();
+        std::fs::write(backup.with_extension(RECORD_PART), &torn).unwrap();
+        assert!(document.recover(backup.parent().unwrap()).is_empty());
+        assert_eq!(left_in(&backup), 0);
+
+        std::fs::write(&backup, b"old").unwrap();
+        std::fs::write(backup.with_extension(RECORD), &torn).unwrap();
+        let outcomes = document.recover(backup.parent().unwrap());
+        let [Interrupted::Left { target: None, kept }] = outcomes.as_slice() else {
+            panic!("{outcomes:?}");
+        };
+        assert_set_aside(kept, b"old");
+        assert_eq!(*document.bytes.borrow(), b"untouched");
+        assert_eq!(left_in(&backup), 0);
     }
 
     #[test]
