@@ -243,7 +243,10 @@ mod tests {
             "L.append((1 << 100000) + len(L))\n".repeat(60)
         );
         let error = run_with_heap(&kept, 1 << 18).unwrap_err();
-        assert!(error.to_string().contains("memory limit exceeded"), "{error}");
+        assert!(
+            error.to_string().contains("memory limit exceeded"),
+            "{error}"
+        );
     }
 
     /// One multiplication of huge integers is uninterruptible work; products past
