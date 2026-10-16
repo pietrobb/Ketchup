@@ -87,7 +87,10 @@ reproduced failure that they catch, or explicit approval by the owner.
   that crate's `tests/integration.rs`. Build and test only with the one canonical command
   `cargo test --locked --workspace --all-targets` (filter after `--`, e.g. `-- <name>::`;
   build without running: `--no-run`). No `-p`, `--features` or `--all-features`: each other
-  feature set compiles a second copy of the workspace into `target\debug`. Release builds and
+  feature set compiles a second copy of the workspace into `target\debug`. CI is the exception:
+  each job builds from scratch for its own runner, so it names its crates with `-p`, and
+  `scripts/check_ci_crates.py` fails on a crate no job names or a crate with tests no job
+  tests. Release builds and
   `cargo clippy --locked --workspace --all-targets -- -D warnings` are the only other cargo
   commands. A test that starts external processes (workers, plugins) takes
   `crate::integration_support::file_turn()` first; the app harness `Shell` takes it itself.

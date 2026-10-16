@@ -5,12 +5,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly and by hand, the OCCT job also runs the large-house and the
+  # release-only whole-house tests.
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -102,6 +107,16 @@ jobs:
         run: cargo clippy --locked $CRATES --all-targets -- -D warnings
       - name: tests
         run: cargo test --locked $CRATES --no-fail-fast
+      # The desktop Viewer renders its own pixels in tests; on Linux the
+      # Vulkan software rasterizer (lavapipe) is the adapter.
+      - name: lavapipe
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers
+      - name: clippy and tests of the desktop Viewer on lavapipe
+        if: runner.os == 'Linux'
+        run: |
+          cargo clippy --locked -p ketchup-viewer --all-targets -- -D warnings
+          cargo test --locked -p ketchup-viewer --no-fail-fast
 
   rust-with-occt:
     name: clippy and tests of the crates with OCCT on Windows
@@ -109,13 +124,15 @@ jobs:
     # Visual Studio and keeps the install in the Actions cache; the window,
     # the application, the headless session, the exact kernel and the workers,
     # Windows-only code (job objects, the live bridge) included, are checked on
-    # every run. scripts/check_ci_crates.py fails on a crate no job names.
+    # every run. scripts/check_ci_crates.py fails on a crate no job names and
+    # on a crate with tests no job tests.
     runs-on: windows-latest
-    timeout-minutes: 180
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 330 || 180 }}
     env:
       CRATES: >-
         -p ketchup-app -p ketchup-application -p ketchup-exact -p ketchup-headless
         -p ketchup-scheduler -p ketchup-test-gpu
+      NIGHTLY: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -154,6 +171,22 @@ jobs:
           cargo test --locked $env:CRATES.Split(' ') --no-fail-fast --
           --skip instanced_rendering::real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw
           --skip instanced_rendering::garden_studio_hardware_gpu_camera_frames
+      - name: large-house tests
+        if: env.NIGHTLY == 'true'
+        env:
+          RUST_TEST_THREADS: 2
+        run: cargo test --locked $env:CRATES.Split(' ') --no-fail-fast -- --ignored large_house
+      # The tests find the worker beside them, so it is built in release too.
+      - name: release workers
+        if: env.NIGHTLY == 'true'
+        run: cargo build --locked --release -p ketchup-scheduler --bins
+      - name: release-only whole-house tests
+        if: env.NIGHTLY == 'true'
+        env:
+          RUST_TEST_THREADS: 2
+        run: >-
+          cargo test --locked --release -p ketchup-application --no-fail-fast --
+          --ignored house_panel_validation:: house_project_collision::
 
   viewer-targets:
     name: clippy of the phone and browser Viewers
