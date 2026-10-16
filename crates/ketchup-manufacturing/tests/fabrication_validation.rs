@@ -2152,45 +2152,101 @@ fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_a
     );
 }
 
-/// A thread recorded on a hole that does not take it (set raw, or left from
-/// before the hole or the thread changed) is refused by name wherever it
-/// would reach the shop: machine files, the production job and the drawing.
-#[test]
-fn a_hole_that_does_not_take_its_thread_is_refused_by_name_at_every_export() {
-    let tapped = |document: DocumentStore, thread: HoleThread| {
-        let mut document = document;
-        document
-            .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::SetProductionCode {
-                    instance_path: InstancePath::root(GRAPH_LEFT),
-                    code: Some("000000000046".to_owned()),
-                },
-                CanonicalCommand::SetProductionCode {
-                    instance_path: InstancePath::root(GRAPH_RIGHT),
-                    code: Some("000000000047".to_owned()),
-                },
-                CanonicalCommand::SetHoleThread {
-                    id: GRAPH_BOOLEAN,
-                    thread: Some(thread),
-                },
-            ]))
-            .unwrap();
-        exact_graph_document_fabrication_projection(
-            document,
-            "m17-circular-drill-result",
-            GRAPH_BOOLEAN,
-        )
-    };
-    let m12 = |pitch_mm: f64, depth_mm: f64| HoleThread {
+/// `document` with the production codes of both its timbers.
+fn coded(mut document: DocumentStore) -> Snapshot {
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_LEFT),
+                code: Some("000000000046".to_owned()),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_RIGHT),
+                code: Some("000000000047".to_owned()),
+            },
+        ]))
+        .unwrap();
+    document.current()
+}
+
+fn m12(pitch_mm: f64, depth_mm: f64) -> HoleThread {
+    HoleThread {
         size: "M12".to_owned(),
         pitch_mm,
         depth_mm,
         modeled: None,
+    }
+}
+
+/// A thread its hole does not take is refused when it is set: the size and
+/// its coarse pitch, the tap drill and no deeper than the blind cut runs.
+/// Whether the tap's runout fits below a thread in a blind cut, the export
+/// tells on the exact body.
+#[test]
+fn a_thread_the_hole_does_not_take_is_refused_when_it_is_set() {
+    let set = |document: &mut DocumentStore, thread: HoleThread| {
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetHoleThread {
+                id: GRAPH_BOOLEAN,
+                thread: Some(thread),
+            }]))
+            .err()
     };
+    let refused = |mismatch| {
+        Some(
+            ketchup_model::document::CanonicalError::HoleThreadMismatch {
+                id: GRAPH_BOOLEAN,
+                mismatch,
+            },
+        )
+    };
+    let mut ten = circular_drill_document();
+    assert_eq!(
+        set(&mut ten, m12(1.75, 40.0)),
+        refused(TappedHoleMismatch::Drill {
+            tap_drill_mm: 10.2,
+            hole_diameter_mm: 10.0,
+        })
+    );
+    let mut tap_drill = tap_drill_document();
+    for (thread, mismatch) in [
+        (
+            m12(1.5, 40.0),
+            TappedHoleMismatch::Pitch {
+                coarse_pitch_mm: 1.75,
+            },
+        ),
+        (
+            HoleThread {
+                size: "M11".to_owned(),
+                ..m12(1.75, 40.0)
+            },
+            TappedHoleMismatch::UnknownSize,
+        ),
+        (
+            m12(1.75, 55.0),
+            TappedHoleMismatch::TooDeep {
+                deepest_thread_mm: 50.0,
+                hole_depth_mm: 50.0,
+            },
+        ),
+    ] {
+        assert_eq!(set(&mut tap_drill, thread), refused(mismatch));
+    }
+    assert_eq!(tap_drill.current().hole_threads().count(), 0);
+    assert_eq!(set(&mut tap_drill, m12(1.75, 40.0)), None);
+    assert_eq!(tap_drill.current().hole_threads().count(), 1);
+}
+
+/// A thread recorded on a hole that does not take it (in a file from before
+/// the rule, or left from before the hole changed) is refused by name wherever
+/// it would reach the shop: machine files, the production job and the drawing.
+#[test]
+fn a_hole_that_does_not_take_its_thread_is_refused_by_name_at_every_export() {
     for (document, thread, mismatch) in [
         // The 10 mm hole is not the M12 tap drill.
         (
-            circular_drill_document(),
+            coded(circular_drill_document()),
             m12(1.75, 40.0),
             TappedHoleMismatch::Drill {
                 tap_drill_mm: 10.2,
@@ -2199,16 +2255,16 @@ fn a_hole_that_does_not_take_its_thread_is_refused_by_name_at_every_export() {
         ),
         // A 50 mm blind hole leaves the tap 8.3 mm below a 41.7 mm thread.
         (
-            tap_drill_document(),
+            coded(tap_drill_document()),
             m12(1.75, 45.0),
             TappedHoleMismatch::TooDeep {
                 deepest_thread_mm: 50.0 - 8.3,
                 hole_depth_mm: 50.0,
             },
         ),
-        // M12 is coarse 1.75; a raw command recorded another pitch.
+        // M12 is coarse 1.75; an older file recorded another pitch.
         (
-            tap_drill_document(),
+            coded(tap_drill_document()),
             m12(1.5, 40.0),
             TappedHoleMismatch::Pitch {
                 coarse_pitch_mm: 1.75,
@@ -2216,7 +2272,11 @@ fn a_hole_that_does_not_take_its_thread_is_refused_by_name_at_every_export() {
         ),
     ] {
         let label = thread.label();
-        let (snapshot, projection) = tapped(document, thread);
+        let (snapshot, projection) = exact_graph_document_fabrication_projection(
+            ketchup_model::testing::with_recorded_hole_thread(&document, GRAPH_BOOLEAN, thread),
+            "m17-circular-drill-result",
+            GRAPH_BOOLEAN,
+        );
         let refused = GeneralFabricationError::TappedHoleInvalid {
             part: "Timber with circular drilling".to_owned(),
             thread: label.clone(),

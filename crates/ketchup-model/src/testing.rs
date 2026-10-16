@@ -147,6 +147,24 @@ pub fn with_document_id(snapshot: &Snapshot, document_id: DocumentId) -> Snapsho
         .current()
 }
 
+/// A document of `snapshot` whose hole `id` has `thread` recorded, as a file from before the
+/// tapping rule may hold it: no command records a thread its hole does not take.
+///
+/// # Panics
+/// Panics when `snapshot` stops being a valid document, which a thread of a size, pitch and
+/// depth on an existing feature cannot cause.
+#[must_use]
+pub fn with_recorded_hole_thread(
+    snapshot: &Snapshot,
+    id: crate::document::FeatureId,
+    thread: crate::document::HoleThread,
+) -> DocumentStore {
+    let mut product = snapshot.product().clone();
+    product.hole_threads.insert(id, thread);
+    DocumentStore::from_product(snapshot.revision_id(), product)
+        .expect("a document stays valid with a recorded thread")
+}
+
 /// Edits the snapshot stored in `saved` (the output of `persistence::save`), a CBOR map
 /// `{revision_id, product}`, and reseals the checksum, so a test can hand the loader data
 /// that no command would produce. Map keys are the serde field names of the document types.

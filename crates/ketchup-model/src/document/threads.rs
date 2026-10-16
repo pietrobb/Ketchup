@@ -4,6 +4,7 @@
 use super::*;
 use ketchup_geometry::linalg;
 use ketchup_geometry::sketch::{CutStart, PadSpec};
+use ketchup_geometry::tapping::{TappedHole, TappedHoleMismatch, metric_coarse_tapping};
 
 /// One thread on a cylinder of a definition, in its frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -99,17 +100,7 @@ impl Snapshot {
     pub fn tapped_hole(&self, id: FeatureId) -> Option<ThreadCylinder> {
         let thread = self.product.hole_threads.get(&id)?;
         let feature = self.feature(id)?;
-        let (pad, placement) = match feature.kind() {
-            FeatureKind::Pad(pad) if matches!(pad.operation, PadOperation::Cut { .. }) => {
-                (pad, Transform::identity())
-            }
-            FeatureKind::Boolean {
-                operation: BooleanOperation::Cut,
-                tool,
-                ..
-            } => placed_pad(self, *tool)?,
-            _ => return None,
-        };
+        let (pad, placement) = cut_pad(&self.product, id)?;
         if matches!(
             pad.operation,
             PadOperation::Cut {
@@ -119,7 +110,7 @@ impl Snapshot {
         ) {
             return None;
         }
-        let (frame, center, radius) = profile_circle(self, pad.profile.feature_id())?;
+        let (frame, center, radius) = profile_circle(&self.product, pad.profile.feature_id())?;
         let start = linalg::add(
             frame.origin_mm,
             linalg::add(
@@ -190,7 +181,12 @@ pub(super) fn apply(
                 Some(thread) if !thread.is_valid() => {
                     return Err(CanonicalError::InvalidHoleThread(*id));
                 }
-                Some(thread) => product.hole_threads.insert(*id, thread.clone()),
+                Some(thread) => {
+                    if let Some(mismatch) = hole_thread_mismatch(product, *id, thread) {
+                        return Err(CanonicalError::HoleThreadMismatch { id: *id, mismatch });
+                    }
+                    product.hole_threads.insert(*id, thread.clone())
+                }
                 None => product.hole_threads.remove(id),
             };
         }
@@ -251,11 +247,68 @@ pub(super) fn add_dependencies(
     }
 }
 
+fn feature(product: &ProductModel, id: FeatureId) -> Option<&Feature> {
+    product.features.get(&id).map(Arc::as_ref)
+}
+
+/// The pad that cuts the hole `id`: the cut itself, or a cut Boolean's tool
+/// through the rigid placements on it.
+fn cut_pad(product: &ProductModel, id: FeatureId) -> Option<(&PadSpec, Transform)> {
+    match feature(product, id)?.kind() {
+        FeatureKind::Pad(pad) if matches!(pad.operation, PadOperation::Cut { .. }) => {
+            Some((pad, Transform::identity()))
+        }
+        FeatureKind::Boolean {
+            operation: BooleanOperation::Cut,
+            tool,
+            ..
+        } => placed_pad(product, *tool),
+        _ => None,
+    }
+}
+
+/// Why the hole `id` cuts does not take `thread`, by the rule every export
+/// checks it by again ([`TappedHole::check`]), as far as the document tells
+/// without the exact body: the size and its coarse pitch, the tap drill when
+/// the hole is one circle, and a thread no deeper than a blind cut runs.
+/// Whether that cut ends inside the part, so the tap needs its runout below
+/// the thread, only the exact body tells; the export checks that.
+pub(crate) fn hole_thread_mismatch(
+    product: &ProductModel,
+    id: FeatureId,
+    thread: &HoleThread,
+) -> Option<TappedHoleMismatch> {
+    let tolerance_mm = product.tolerance.linear_mm();
+    let Some(tapping) = metric_coarse_tapping(&thread.size) else {
+        return Some(TappedHoleMismatch::UnknownSize);
+    };
+    let pad = cut_pad(product, id).map(|(pad, _)| pad);
+    // A hole that is not one circle has its size in the exact body only, so
+    // it is taken here as the tap drill and left to the export.
+    let hole_diameter_mm = pad
+        .and_then(|pad| profile_circle(product, pad.profile.feature_id()))
+        .map_or(tapping.tap_drill_mm, |(_, _, radius)| 2.0 * radius);
+    let hole_depth_mm = match pad.map(|pad| &pad.extent) {
+        Some(FeatureExtent::Blind(depth)) => depth.millimetres(),
+        _ => f64::INFINITY,
+    };
+    TappedHole {
+        size: &thread.size,
+        pitch_mm: thread.pitch_mm,
+        thread_depth_mm: thread.depth_mm,
+        hole_diameter_mm,
+        hole_depth_mm,
+        through: true,
+    }
+    .check(tolerance_mm)
+    .err()
+}
+
 /// The pad a cut's tool is, through the rigid placements on it.
-fn placed_pad(snapshot: &Snapshot, mut id: FeatureId) -> Option<(&PadSpec, Transform)> {
+fn placed_pad(product: &ProductModel, mut id: FeatureId) -> Option<(&PadSpec, Transform)> {
     let mut placement = Transform::identity();
     loop {
-        match snapshot.feature(id)?.kind() {
+        match feature(product, id)?.kind() {
             FeatureKind::Pad(pad) => return Some((pad, placement)),
             FeatureKind::RigidTransform { target, transform } => {
                 placement = placement.compose(*transform);
@@ -268,10 +321,13 @@ fn placed_pad(snapshot: &Snapshot, mut id: FeatureId) -> Option<(&PadSpec, Trans
 
 /// The frame, centre and radius of a profile that is one circle: a sketch on
 /// its workplane, or a plain profile in the definition's XY plane.
-fn profile_circle(snapshot: &Snapshot, id: FeatureId) -> Option<(WorkplaneFrame, [f64; 2], f64)> {
-    let arcs: Vec<([f64; 2], [f64; 2])> = match snapshot.feature(id)?.kind() {
+fn profile_circle(
+    product: &ProductModel,
+    id: FeatureId,
+) -> Option<(WorkplaneFrame, [f64; 2], f64)> {
+    let arcs: Vec<([f64; 2], [f64; 2])> = match feature(product, id)?.kind() {
         FeatureKind::Sketch(sketch) => {
-            let FeatureKind::Workplane(workplane) = snapshot.feature(sketch.workplane)?.kind()
+            let FeatureKind::Workplane(workplane) = feature(product, sketch.workplane)?.kind()
             else {
                 return None;
             };

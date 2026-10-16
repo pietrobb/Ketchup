@@ -56,6 +56,12 @@ pub enum CanonicalError {
     FeatureNotFound(FeatureId),
     FeatureHasNoDimension(FeatureId),
     InvalidHoleThread(FeatureId),
+    /// The hole does not take the thread by the tapping rule every export
+    /// checks again.
+    HoleThreadMismatch {
+        id: FeatureId,
+        mismatch: ketchup_geometry::tapping::TappedHoleMismatch,
+    },
     InvalidShaftThread(FeatureId),
     DraftAngleOutOfRange,
     FeatureIsNotProfile(FeatureId),
@@ -247,6 +253,7 @@ impl CanonicalError {
             Self::FeatureNotFound(..) => "canonical.feature_not_found",
             Self::FeatureHasNoDimension(..) => "canonical.feature_has_no_dimension",
             Self::InvalidHoleThread(..) => "canonical.invalid_hole_thread",
+            Self::HoleThreadMismatch { .. } => "canonical.hole_thread_mismatch",
             Self::InvalidShaftThread(..) => "canonical.invalid_shaft_thread",
             Self::DraftAngleOutOfRange => "canonical.draft_angle_out_of_range",
             Self::FeatureIsNotProfile(..) => "canonical.feature_is_not_profile",
@@ -544,6 +551,11 @@ impl fmt::Display for CanonicalError {
             Self::InvalidHoleThread(id) | Self::InvalidShaftThread(id) => {
                 write_invalid_thread(formatter, self, *id)
             }
+            Self::HoleThreadMismatch { id, mismatch } => write!(
+                formatter,
+                "the hole of feature {} does not take its thread: {mismatch}",
+                id.0
+            ),
             Self::DraftAngleOutOfRange => write!(
                 formatter,
                 "a draft angle must be between {MIN_DRAFT_ANGLE_DEGREES} and \
