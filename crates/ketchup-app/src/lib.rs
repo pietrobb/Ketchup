@@ -213,8 +213,7 @@ const PRECISE_SNAP_WORLD_TOLERANCE_MM: f64 = 0.5;
 const ROTATION_SNAP_DEGREES: f64 = 15.0;
 /// Below this arm length the pointer is effectively on the rotation centre and
 /// its angle is noise, so the gesture holds its previous value.
-// not a tolerance: a pointer distance of the rotate gesture, not a model agreement.
-const ROTATION_MIN_ARM_MM: f64 = 0.5;
+const ROTATION_MIN_ARM_MM: f64 = 0.5; // not a tolerance: a pointer distance of the gesture
 const SHELL_TITLE_SIZE: f32 = 14.0;
 const SHELL_BODY_SIZE: f32 = 12.5;
 const SHELL_SMALL_SIZE: f32 = 11.0;
