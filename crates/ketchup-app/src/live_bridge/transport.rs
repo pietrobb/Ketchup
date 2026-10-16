@@ -1,25 +1,73 @@
 //! Transport owns sockets and bounded messages only, never the GUI/store.
 use super::*;
 use std::{
+    collections::VecDeque,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    sync::atomic::AtomicU8,
     time::{Duration, Instant},
 };
 
 const IO_DEADLINE: Duration = Duration::from_secs(2);
 const STOP_POLL: Duration = Duration::from_millis(25);
 const MAX_CONNECTIONS: usize = 4;
+/// Connections alive at once while evicted ones are still closing.
+const MAX_CONNECTIONS_EVICTING: usize = 2 * MAX_CONNECTIONS;
+
+/// Where a connection is in its handshake; acceptor and connection race for
+/// it once, so a connection that showed the token is never evicted.
+const PENDING: u8 = 0;
+const AUTHENTICATED: u8 = 1;
+const EVICTED: u8 = 2;
 
 struct ConnectionPermit(Arc<AtomicUsize>);
 
 impl ConnectionPermit {
-    fn claim(active: &Arc<AtomicUsize>) -> Option<Self> {
+    fn claim(active: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
         active
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < MAX_CONNECTIONS).then_some(count + 1)
+                (count < limit).then_some(count + 1)
             })
             .ok()
             .map(|_| Self(Arc::clone(active)))
+    }
+}
+
+/// Connections that have not yet shown the token, oldest first. When every
+/// slot is taken, a new connection evicts the oldest of them instead of being
+/// turned away, so idle strangers cannot keep the token's holder out. An
+/// evicted connection sees it within one `STOP_POLL` of reading and closes.
+#[derive(Default)]
+struct Pending(VecDeque<Arc<AtomicU8>>);
+
+impl Pending {
+    /// Evicts the oldest connection still waiting for its token.
+    fn evict_oldest(&mut self) -> bool {
+        while let Some(state) = self.0.pop_front() {
+            // Held by this list alone, its connection already ended.
+            if Arc::strong_count(&state) > 1
+                && state
+                    .compare_exchange(PENDING, EVICTED, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn admit(&mut self, active: &Arc<AtomicUsize>) -> Option<(ConnectionPermit, Arc<AtomicU8>)> {
+        self.0.retain(|state| {
+            Arc::strong_count(state) > 1 && state.load(Ordering::Acquire) == PENDING
+        });
+        let permit = ConnectionPermit::claim(active, MAX_CONNECTIONS).or_else(|| {
+            self.evict_oldest()
+                .then(|| ConnectionPermit::claim(active, MAX_CONNECTIONS_EVICTING))
+                .flatten()
+        })?;
+        let state = Arc::new(AtomicU8::new(PENDING));
+        self.0.push_back(Arc::clone(&state));
+        Some((permit, state))
     }
 }
 
@@ -51,10 +99,11 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
         .name("ketchup-live-bridge".into())
         .spawn(move || {
             let mut session = 0_u64;
+            let mut pending = Pending::default();
             while !stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, peer)) if peer.ip().is_loopback() => {
-                        let Some(permit) = ConnectionPermit::claim(&connection_count) else {
+                        let Some((permit, authenticated)) = pending.admit(&connection_count) else {
                             continue;
                         };
                         let Some(next) = session.checked_add(1) else {
@@ -66,7 +115,6 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                         let stop = Arc::clone(&stop);
                         let taken_over = Arc::clone(&taken_over);
                         let context = context.clone();
-                        let authenticated = Arc::new(AtomicBool::new(false));
                         let _ = std::thread::Builder::new()
                             .name(format!("ketchup-live-client-{session}"))
                             .spawn(move || {
@@ -83,7 +131,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                                     &context,
                                     &authenticated,
                                 );
-                                if authenticated.load(Ordering::Acquire) {
+                                if authenticated.load(Ordering::Acquire) == AUTHENTICATED {
                                     let (reply, _receiver) = mpsc::sync_channel(1);
                                     let _ = sender.try_send(Queued {
                                         session,
@@ -300,9 +348,10 @@ fn read_until(
     mut buffer: &mut [u8],
     deadline: Option<Instant>,
     stop: &AtomicBool,
+    state: &AtomicU8,
 ) -> io::Result<()> {
     while !buffer.is_empty() {
-        if stop.load(Ordering::Acquire) {
+        if stop.load(Ordering::Acquire) || state.load(Ordering::Acquire) == EVICTED {
             return Err(io::ErrorKind::ConnectionAborted.into());
         }
         let timeout = deadline
@@ -337,14 +386,15 @@ fn read_frame(
     stream: &mut TcpStream,
     session_authenticated: bool,
     stop: &AtomicBool,
+    state: &AtomicU8,
 ) -> io::Result<Vec<u8>> {
     // Only an authenticated client may think indefinitely, and only BEFORE
     // the first byte. Header and body then share one absolute frame deadline.
     let pre_auth_deadline = (!session_authenticated).then(|| Instant::now() + IO_DEADLINE);
     let mut header = [0; 4];
-    read_until(stream, &mut header[..1], pre_auth_deadline, stop)?;
+    read_until(stream, &mut header[..1], pre_auth_deadline, stop, state)?;
     let deadline = pre_auth_deadline.unwrap_or_else(|| Instant::now() + IO_DEADLINE);
-    read_until(stream, &mut header[1..], Some(deadline), stop)?;
+    read_until(stream, &mut header[1..], Some(deadline), stop, state)?;
     let length = u32::from_be_bytes(header) as usize;
     // Before its token is checked a connection gets only a small frame.
     let limit = if session_authenticated {
@@ -356,7 +406,7 @@ fn read_frame(
         return Err(io::ErrorKind::InvalidData.into());
     }
     let mut bytes = vec![0; length];
-    read_until(stream, &mut bytes, Some(deadline), stop)?;
+    read_until(stream, &mut bytes, Some(deadline), stop, state)?;
     Ok(bytes)
 }
 
@@ -480,7 +530,7 @@ fn serve(
     sender: &mpsc::SyncSender<Queued>,
     Shutdown { stop, superseded }: Shutdown<'_>,
     context: &egui::Context,
-    authenticated_session: &AtomicBool,
+    authenticated_session: &AtomicU8,
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
     let mut session_authenticated = false;
@@ -495,7 +545,12 @@ fn serve(
         }
     };
     while !stop.load(Ordering::Acquire) {
-        let bytes = match read_frame(&mut stream, session_authenticated, stop) {
+        let bytes = match read_frame(
+            &mut stream,
+            session_authenticated,
+            stop,
+            authenticated_session,
+        ) {
             Ok(bytes) => bytes,
             Err(error) => {
                 if session_authenticated {
@@ -527,8 +582,15 @@ fn serve(
             )?;
             return Ok(());
         }
+        // A connection evicted for a newer one meanwhile stays closed.
+        if !session_authenticated
+            && authenticated_session
+                .compare_exchange(PENDING, AUTHENTICATED, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return Ok(());
+        }
         session_authenticated = true;
-        authenticated_session.store(true, Ordering::Release);
         // A malformed request body from an authenticated client is a fixable
         // argument mistake, not a reason to drop the connection.
         let envelope = match serde_json::from_str::<Request>(envelope.request.get()) {
@@ -622,23 +684,51 @@ mod tests {
             wait_for_connection_count(&bridge, 0);
         }
 
-        let live: Vec<_> = (0..MAX_CONNECTIONS)
+        // Clients that showed the token fill every slot: a stranger is turned away.
+        let token = "a".repeat(64);
+        let mut live: Vec<_> = (0..MAX_CONNECTIONS)
             .map(|_| TcpStream::connect(bridge.address).unwrap())
             .collect();
+        for stream in &mut live {
+            authenticate(stream, &token);
+        }
         wait_for_connection_count(&bridge, MAX_CONNECTIONS);
         let mut refused = TcpStream::connect(bridge.address).unwrap();
-        refused
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let mut byte = [0];
-        assert_eq!(refused.read(&mut byte).unwrap(), 0);
+        assert_closed(&mut refused);
         assert_eq!(
             bridge.active_connections.load(Ordering::Acquire),
             MAX_CONNECTIONS
         );
+        authenticate(&mut live[0], &token);
 
         drop(live);
         wait_for_connection_count(&bridge, 0);
+    }
+
+    fn assert_closed(stream: &mut TcpStream) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut byte = [0];
+        assert!(matches!(stream.read(&mut byte), Ok(0) | Err(_)));
+    }
+
+    /// SEC-6: connections that never show the token cannot keep its holder out
+    /// by taking every slot; the newest connection closes the oldest of them.
+    #[test]
+    fn strangers_holding_every_slot_cannot_keep_the_client_out() {
+        let token = "a".repeat(64);
+        let bridge = start_with_token(egui::Context::default(), token.clone()).unwrap();
+        let mut strangers: Vec<_> = (0..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(bridge.address).unwrap())
+            .collect();
+        wait_for_connection_count(&bridge, MAX_CONNECTIONS);
+
+        let mut client = TcpStream::connect(bridge.address).unwrap();
+        authenticate(&mut client, &token);
+        assert_closed(&mut strangers[0]);
+        authenticate(&mut client, &token);
+        wait_for_connection_count(&bridge, MAX_CONNECTIONS);
     }
 
     #[test]
