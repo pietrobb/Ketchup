@@ -1,48 +1,49 @@
-# BTLx 2.3.1: súradnicové konvencie Kečupu
+# BTLx 2.3.1: Ketchup coordinate conventions
 
-Stav: konvencia je pripnutá testami, **v konkrétnom importéri zatiaľ nepotvrdená**
-(support report hovorí `concrete_importer_verified=false`). Overenie: otvoriť
+Status: the convention is pinned by tests, **not yet confirmed in a concrete importer**
+(the support report says `concrete_importer_verified=false`). To confirm it, open
 `crates/ketchup-manufacturing/tests/fixtures/btlx/centred-60x140-drilling-2.3.1.btlx`
-v BTLx prehliadači alebo v importéri stroja a porovnať s očakávaním nižšie.
+in a BTLx viewer or a machine importer and compare it with the expectation below.
 
-## Polotovar (stock frame)
+## Stock frame
 
-Prvok je priamy hranol: obdĺžnikový profil v rovine definície x/y, vytiahnutý
-pozdĺž z. Rám polotovaru má počiatok v **minimálnom rohu** profilu, nie v
-počiatku definície. Ten istý roh používajú BTLx, woodWOP aj `production_job`
-(`StockBlank` v `fabrication.rs`).
+A member is a straight prism: a rectangular profile in the definition x/y plane,
+extruded along z. The stock frame has its origin at the **minimum corner** of the
+profile, not at the definition origin. BTLx, woodWOP and `production_job` use the
+same corner (`StockBlank` in `fabrication.rs`).
 
-| BTLx       | Os dielca | Os definície | Rozmer           |
-|------------|-----------|--------------|------------------|
-| `Length`   | X         | z            | dĺžka vytiahnutia |
-| `Width`    | Y         | x            | šírka profilu    |
-| `Height`   | Z         | y            | výška profilu    |
+| BTLx       | Part axis | Definition axis | Dimension         |
+|------------|-----------|-----------------|-------------------|
+| `Length`   | X         | z               | extrusion length  |
+| `Width`    | Y         | x               | profile width     |
+| `Height`   | Z         | y               | profile height    |
 
-Bod definície `(x, y, z)` je v dielci `(z, x − x_min, y − y_min)`.
+The definition point `(x, y, z)` is `(z, x − x_min, y − y_min)` in the part.
 
-## Referenčná rovina opracovania
+## Machining reference plane
 
-`UserReferencePlane` má `ReferencePoint`, `XVector` a `YVector` v súradniciach
-dielca. Normála roviny je `XVector × YVector` a smeruje **do materiálu**:
-vŕtanie začína v bode `ReferencePoint + StartX·XVector + StartY·YVector` a ide
-o `Depth` pozdĺž normály.
+`UserReferencePlane` has `ReferencePoint`, `XVector` and `YVector` in part
+coordinates. The plane normal is `XVector × YVector` and points **into the
+material**: a drilling starts at `ReferencePoint + StartX·XVector + StartY·YVector`
+and goes `Depth` along the normal.
 
-## Overený príklad
+## Worked example
 
-Profil `(−30, −70)…(30, 70)`, dĺžka 2000 mm, otvor Ø10 hĺbky 50 mm do čela
-v bode profilu `(15, 40)`:
+Profile `(−30, −70)…(30, 70)`, length 2000 mm, a Ø10 hole 50 mm deep into the end
+face at profile point `(15, 40)`:
 
 - `Length="2000" Width="60" Height="140"`,
-- vstup otvoru v dielci `(2000, 45, 110)`, koniec `(1950, 45, 110)`.
+- hole entry in the part `(2000, 45, 110)`, end `(1950, 45, 110)`.
 
-Ak importér ukáže otvor 45 mm od hrany na 60 mm strane a 110 mm od spodku na
-140 mm strane, Width/Height aj smer normály sedia.
+If the importer shows the hole 45 mm from the edge on the 60 mm side and 110 mm
+from the bottom on the 140 mm side, Width/Height and the normal direction match.
 
-## Testy
+## Tests
 
 - `btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner`:
-  golden súbor vyššie.
-- Každý BTLx golden prechádza `assert_btlx_machining_lies_in_its_blank`: každý
-  bod opracovania na rovine aj v hĺbke leží v `[0, Length] × [0, Width] × [0, Height]`.
-- `a_profile_centred_on_its_axis_is_machined_from_its_minimum_corner`: BTLx aj
-  woodWOP merajú od rovnakého rohu.
+  the golden file above.
+- Every BTLx golden passes `assert_btlx_machining_lies_in_its_blank`: every
+  machining point on the plane and at depth lies in
+  `[0, Length] × [0, Width] × [0, Height]`.
+- `a_profile_centred_on_its_axis_is_machined_from_its_minimum_corner`: BTLx and
+  woodWOP measure from the same corner.

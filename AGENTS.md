@@ -3,7 +3,8 @@
 These rules apply to every agent (Codex/GPT, Claude, or others) and to human contributors.
 They override conflicting guidance in older documents, including `docs/archive/EXECUTION_CONTRACT.md`
 §11, §12 and §16 and the gate/preregistration process.
-Plan and rationale: `docs/plan-upratovania-2026-09-24.md`, `docs/analyza-fundamentov-2026-09-24.md`.
+Decision and rationale: `docs/adr/0009-rule-programs-and-a-generic-core.md`. `docs/` holds only
+normative English documents and ADRs; dated reviews, status files and notes go to `docs/archive/`.
 
 ## 1. No bespoke shapes or products in the core
 

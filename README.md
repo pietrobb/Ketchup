@@ -174,13 +174,13 @@ Read project authority in this order:
 1. [`AGENTS.md`](AGENTS.md): the working rules for every contributor and coding agent. Generic geometry only in the core; validators report instead of blocking; only data-protecting checks.
 2. [Accepted ADRs](docs/adr) for the decisions they own. [ADR 0008](docs/adr/0008-retire-gate-governance.md) retired the gate and preregistration process.
 3. The [interaction specification](docs/design/README.md) and [implementation plan](docs/design/IMPLEMENTATION_PLAN.md) for UI behavior.
-4. The [fundamentals analysis](docs/analyza-fundamentov-2026-09-24.md) and [cleanup plan](docs/plan-upratovania-2026-09-24.md) for the current direction.
+4. [ADR 0009](docs/adr/0009-rule-programs-and-a-generic-core.md) for the current direction: rule programs and a generic core.
 
-Earlier specifications and the execution contract are kept in [`docs/archive`](docs/archive) for history only; they are not binding.
+Earlier specifications, the execution contract, dated code reviews and working notes are kept in [`docs/archive`](docs/archive) for history only; they are not binding.
 
 ## Direction
 
-The model is moving from absolute per-piece geometry to a rule program that the AI or a person writes. Boards, holes and joints will follow from parameters, and validators will report issues instead of rejecting edits. Named-product code paths are being removed; `scripts/check_no_named_products.py` keeps them from returning. See the [cleanup plan](docs/plan-upratovania-2026-09-24.md).
+The model is moving from absolute per-piece geometry to a rule program that the AI or a person writes. Boards, holes and joints will follow from parameters, and validators will report issues instead of rejecting edits. Named-product code paths are being removed; `scripts/check_no_named_products.py` keeps them from returning. See [ADR 0009](docs/adr/0009-rule-programs-and-a-generic-core.md).
 
 ## License
 
