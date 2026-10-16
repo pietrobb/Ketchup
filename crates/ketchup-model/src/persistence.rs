@@ -1,3 +1,7 @@
+// A count or length written in fewer bits than it holds would be read back as
+// another number, so the writers convert with `try_from` (PS-10).
+#![deny(clippy::cast_possible_truncation)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
@@ -13,6 +17,8 @@ use crate::document::{
 use crate::graph::SlotResolution;
 
 pub(crate) mod history_chunks;
+// Reads only formats no longer written; its casts are of constant read limits.
+#[allow(clippy::cast_possible_truncation)]
 mod legacy;
 mod work_recovery;
 #[cfg(feature = "testing")]
@@ -539,16 +545,17 @@ const HISTORY_RULE_PROGRAM_AS_PREVIOUS: u8 = 2;
 const HISTORY_RULE_PROGRAM_IN_CHUNKS: u8 = 3;
 
 /// Revision id, batch digest, origin and checkpoint.
-fn write_revision_header(bytes: &mut Vec<u8>, revision: &Revision) {
+fn write_revision_header(bytes: &mut Vec<u8>, revision: &Revision) -> Result<(), PersistenceError> {
     push_u64(bytes, revision.id());
-    push_string(bytes, revision.batch_digest());
+    push_string(bytes, revision.batch_digest())?;
     write_revision_origin(bytes, revision.origin());
     if let Some(checkpoint) = revision.checkpoint() {
         push_u8(bytes, 1);
-        push_string(bytes, checkpoint);
+        push_string(bytes, checkpoint)?;
     } else {
         push_u8(bytes, 0);
     }
+    Ok(())
 }
 
 /// The program JSON of `revision`, within the limit a reader accepts.
@@ -577,10 +584,10 @@ fn write_format_3_revision_metadata(
     bytes: &mut Vec<u8>,
     revision: &Revision,
 ) -> Result<(), PersistenceError> {
-    write_revision_header(bytes, revision);
+    write_revision_header(bytes, revision)?;
     if let Some(encoded) = encoded_rule_program(revision)? {
         push_u8(bytes, 1);
-        push_u32(bytes, encoded.len() as u32);
+        push_u32(bytes, u32_count(encoded.len())?);
         bytes.extend_from_slice(&encoded);
     } else {
         push_u8(bytes, 0);
@@ -596,14 +603,20 @@ struct ChunkTable {
 }
 
 impl ChunkTable {
-    fn add_document_chunk(&mut self, chunk: &history_chunks::Chunk) {
-        let next = self.numbers.len() as u32;
-        self.numbers.entry(chunk.sha256).or_insert_with(|| {
-            push_u8(&mut self.bytes, HISTORY_CHUNK_IN_DOCUMENT);
-            push_u32(&mut self.bytes, chunk.range.start as u32);
-            push_u32(&mut self.bytes, chunk.range.len() as u32);
-            next
-        });
+    fn add_document_chunk(
+        &mut self,
+        chunk: &history_chunks::Chunk,
+    ) -> Result<(), PersistenceError> {
+        if self.numbers.contains_key(&chunk.sha256) {
+            return Ok(());
+        }
+        let next = u32_count(self.numbers.len())?;
+        let (start, length) = (u32_count(chunk.range.start)?, u32_count(chunk.range.len())?);
+        push_u8(&mut self.bytes, HISTORY_CHUNK_IN_DOCUMENT);
+        push_u32(&mut self.bytes, start);
+        push_u32(&mut self.bytes, length);
+        self.numbers.insert(chunk.sha256, next);
+        Ok(())
     }
 
     /// `bytes` into `record` as its length, SHA-256 and chunk numbers; a chunk
@@ -614,22 +627,38 @@ impl ChunkTable {
         bytes: &[u8],
         sha256: &[u8; 32],
         chunks: &[history_chunks::Chunk],
-    ) {
-        push_u64(record, bytes.len() as u64);
+    ) -> Result<(), PersistenceError> {
+        push_u64(record, u64_len(bytes.len())?);
         record.extend_from_slice(sha256);
-        push_u32(record, chunks.len() as u32);
+        push_u32(record, u32_count(chunks.len())?);
         for chunk in chunks {
-            let next = self.numbers.len() as u32;
-            let number = *self.numbers.entry(chunk.sha256).or_insert_with(|| {
-                let bytes = &bytes[chunk.range.clone()];
+            let number = if let Some(number) = self.numbers.get(&chunk.sha256) {
+                *number
+            } else {
+                let number = u32_count(self.numbers.len())?;
+                let bytes = bytes
+                    .get(chunk.range.clone())
+                    .ok_or(PersistenceError::LengthOverflow)?;
                 push_u8(&mut self.bytes, HISTORY_CHUNK_INLINE);
-                push_u32(&mut self.bytes, bytes.len() as u32);
+                push_u32(&mut self.bytes, u32_count(bytes.len())?);
                 self.bytes.extend_from_slice(bytes);
-                next
-            });
+                self.numbers.insert(chunk.sha256, number);
+                number
+            };
             push_u32(record, number);
         }
+        Ok(())
     }
+}
+
+/// `value` as the `u32` a count or length is written as.
+fn u32_count(value: usize) -> Result<u32, PersistenceError> {
+    u32::try_from(value).map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)
+}
+
+/// `value` as the `u64` a byte length is written as.
+fn u64_len(value: usize) -> Result<u64, PersistenceError> {
+    u64::try_from(value).map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)
 }
 
 /// A history revision whose snapshot is the container's `document.bin`.
@@ -664,7 +693,7 @@ fn encode_history(
         .chunks
         .get_or_init(|| history_chunks::chunks(&document_bin.bytes))
     {
-        table.add_document_chunk(chunk);
+        table.add_document_chunk(chunk)?;
     }
     let mut records = Vec::new();
     let mut assembled = 0u64;
@@ -675,7 +704,7 @@ fn encode_history(
     let mut items = u64::from(count);
     for (index, revision) in revisions.iter().enumerate() {
         let previous = index.checked_sub(1).map(|previous| revisions[previous]);
-        write_revision_header(&mut records, revision);
+        write_revision_header(&mut records, revision)?;
         items = count_items(items, revision.batch_digest().len(), budget.items)?;
         if let Some(checkpoint) = revision.checkpoint() {
             items = count_items(items, checkpoint.len(), budget.items)?;
@@ -697,7 +726,7 @@ fn encode_history(
             push_u8(&mut records, HISTORY_RULE_PROGRAM_IN_CHUNKS);
             let chunks = history_chunks::chunks(&encoded);
             items = count_items(items, chunks.len(), budget.items)?;
-            table.write(&mut records, &encoded, &checksum, &chunks);
+            table.write(&mut records, &encoded, &checksum, &chunks)?;
         } else {
             push_u8(&mut records, 0);
         }
@@ -720,7 +749,7 @@ fn encode_history(
             .get_or_init(|| history_chunks::chunks(&snapshot.bytes));
         items = count_items(items, chunks.len(), budget.items)?;
         push_u8(&mut records, HISTORY_SNAPSHOT_IN_CHUNKS);
-        table.write(&mut records, &snapshot.bytes, &snapshot.sha256, chunks);
+        table.write(&mut records, &snapshot.bytes, &snapshot.sha256, chunks)?;
         check_entry_size("history.bin", table.bytes.len() + records.len())?;
         count_items(items, table.numbers.len(), budget.items)?;
     }
@@ -729,9 +758,9 @@ fn encode_history(
     bytes.extend_from_slice(HISTORY_MAGIC);
     push_u16(&mut bytes, HISTORY_SCHEMA);
     push_u32(&mut bytes, count);
-    push_u32(&mut bytes, cursor as u32);
+    push_u32(&mut bytes, u32_count(cursor)?);
     push_u64(&mut bytes, next_revision_id);
-    push_u32(&mut bytes, table.numbers.len() as u32);
+    push_u32(&mut bytes, u32_count(table.numbers.len())?);
     bytes.extend_from_slice(&table.bytes);
     bytes.extend_from_slice(&records);
     check_entry_size("history.bin", bytes.len())?;
@@ -940,13 +969,13 @@ fn save_container_entries(
     let mut encoded = Vec::new();
     encoded.extend_from_slice(CONTAINER_MAGIC);
     push_u16(&mut encoded, CONTAINER_SCHEMA);
-    push_u32(&mut encoded, entries.len() as u32);
+    push_u32(&mut encoded, u32_count(entries.len())?);
     for (path, (required, bytes)) in entries {
         validate_container_path(&path)?;
         check_entry_size(&path, bytes.len())?;
-        push_string(&mut encoded, &path);
+        push_string(&mut encoded, &path)?;
         push_u8(&mut encoded, u8::from(required));
-        push_u64(&mut encoded, bytes.len() as u64);
+        push_u64(&mut encoded, u64_len(bytes.len())?);
         encoded.extend_from_slice(&crate::graph::sha256_bytes(&bytes));
         encoded.extend_from_slice(&bytes);
         if encoded.len() > MAX_CONTAINER_BYTES {
@@ -1057,7 +1086,7 @@ fn bounded_regular_file_identity(
     if !metadata.is_file() || metadata.len() > maximum_bytes {
         return Ok(None);
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
     file.take(maximum_bytes.saturating_add(1))
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > maximum_bytes {
@@ -2892,7 +2921,8 @@ impl<'a> Reader<'a> {
         }
     }
     fn string(&mut self) -> Result<String, PersistenceError> {
-        let length = usize::try_from(self.count_with_limit(MAX_STRING_BYTES as u32)?)
+        // The running string budget below bounds each length.
+        let length = usize::try_from(self.count_with_limit(u32::MAX)?)
             .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         self.string_bytes = self
             .string_bytes
@@ -2930,9 +2960,10 @@ fn push_u32(bytes: &mut Vec<u8>, value: u32) {
 fn push_u64(bytes: &mut Vec<u8>, value: u64) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
-fn push_string(bytes: &mut Vec<u8>, value: &str) {
-    push_u32(bytes, value.len() as u32);
+fn push_string(bytes: &mut Vec<u8>, value: &str) -> Result<(), PersistenceError> {
+    push_u32(bytes, u32_count(value.len())?);
     bytes.extend_from_slice(value.as_bytes());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3121,6 +3152,32 @@ mod tests {
             decode(&history, snapshot_bytes(largest - 1)),
             Err(PersistenceError::ResourceLimit)
         ));
+    }
+
+    /// PS-10: a chunk range past what a `u32` holds is refused, not written as
+    /// the truncated range of other bytes, and leaves the table as it was.
+    #[test]
+    fn a_history_chunk_range_past_u32_is_refused_not_truncated() {
+        let past = usize::try_from(u64::from(u32::MAX) + 1).unwrap();
+        let mut table = ChunkTable::default();
+        for range in [past..past + 16, 0..past] {
+            let chunk = history_chunks::Chunk {
+                range,
+                sha256: [7; 32],
+            };
+            assert!(matches!(
+                table.add_document_chunk(&chunk),
+                Err(PersistenceError::LengthOverflow)
+            ));
+        }
+        assert!(table.numbers.is_empty() && table.bytes.is_empty());
+        let chunk = history_chunks::Chunk {
+            range: 16..32,
+            sha256: [7; 32],
+        };
+        table.add_document_chunk(&chunk).unwrap();
+        assert_eq!(table.numbers.get(&[7; 32]), Some(&0));
+        assert_eq!(table.bytes[1..], [16, 0, 0, 0, 16, 0, 0, 0]);
     }
 
     /// PS-6: Save checks the bytes it writes and the file it replaces without

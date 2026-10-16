@@ -68,8 +68,8 @@ mod tests {
     ) -> Vec<u8> {
         let mut history = HISTORY_MAGIC.to_vec();
         push_u16(&mut history, 3);
-        push_u32(&mut history, document.revision_count() as u32);
-        push_u32(&mut history, document.history_cursor() as u32);
+        push_u32(&mut history, u32_count(document.revision_count()).unwrap());
+        push_u32(&mut history, u32_count(document.history_cursor()).unwrap());
         push_u64(&mut history, document.next_revision_id());
         for (index, revision) in document.revision_history().enumerate() {
             write_format_3_revision_metadata(&mut history, revision).unwrap();
