@@ -318,17 +318,20 @@ impl KetchupApp {
                 self.reset_document_presentation();
                 self.camera.zoom_fit_pending = true;
                 self.camera.zoom_fit_pending_quiet = true;
+                // Every warning of the open is shown, not only the first.
+                let mut warnings = Vec::new();
                 if let Some(recovery) = &self.file.recovery_open {
                     self.status_key = "status-recovery";
-                    self.digest = self.catalog.format(
+                    warnings.push(self.catalog.format(
                         "digest-opened-recovery",
                         &BTreeMap::from([
                             ("source", recovery.source_path.display().to_string()),
                             ("requested", recovery.requested_path.display().to_string()),
                         ]),
-                    );
-                } else if let Some((reason, moved)) = work_recovery_set_aside {
-                    self.digest = match moved {
+                    ));
+                }
+                if let Some((reason, moved)) = work_recovery_set_aside {
+                    warnings.push(match moved {
                         Ok(set_aside) => self.catalog.format(
                             "digest-opened-work-recovery-set-aside",
                             &BTreeMap::from([
@@ -345,18 +348,22 @@ impl KetchupApp {
                                 ("error", error.to_string()),
                             ]),
                         ),
-                    };
-                } else if let Some(reason) = history_discarded {
-                    self.digest = self.catalog.format(
+                    });
+                }
+                if let Some(reason) = history_discarded {
+                    warnings.push(self.catalog.format(
                         "digest-opened-without-history",
                         &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
-                    );
-                } else {
-                    self.digest = self.catalog.format(
+                    ));
+                }
+                self.digest = if warnings.is_empty() {
+                    self.catalog.format(
                         "digest-opened-document",
                         &BTreeMap::from([("path", path.display().to_string())]),
-                    );
-                }
+                    )
+                } else {
+                    warnings.join(" ")
+                };
                 true
             }
             Err(error) => {

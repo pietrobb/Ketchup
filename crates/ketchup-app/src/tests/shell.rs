@@ -185,9 +185,35 @@ fn a_file_whose_history_does_not_decode_opens_without_undo_and_says_so() {
         ketchup_model::testing::save_with_history_entry(&app.document, b"KETCHUPHST\x09".to_vec()),
     )
     .unwrap();
+    // Review 2026-10-15 status, low: a damaged checkpoint beside the file is
+    // named too, not only the first warning of the open.
+    let checkpoint = ketchup_model::persistence::work_recovery_path(&path);
+    std::fs::write(&checkpoint, b"KETCHUPWRK damaged").unwrap();
 
     let mut reopened = KetchupApp::new();
     assert!(reopened.open_document_from(&path), "{}", reopened.digest);
+    // The words between the path and the next value tell the warnings apart.
+    let words = |key: &str| {
+        let text = reopened.catalog.text(key);
+        text.split('}')
+            .nth(1)
+            .unwrap()
+            .split('{')
+            .next()
+            .unwrap()
+            .to_owned()
+    };
+    for key in [
+        "digest-opened-work-recovery-set-aside",
+        "digest-opened-without-history",
+    ] {
+        assert!(
+            reopened.digest.contains(&words(key)),
+            "{key}: {}",
+            reopened.digest
+        );
+    }
+    assert!(!checkpoint.exists());
     assert_eq!(
         reopened.document.current().canonical_digest(),
         expected.canonical_digest()
@@ -196,7 +222,7 @@ fn a_file_whose_history_does_not_decode_opens_without_undo_and_says_so() {
     assert!(!reopened.is_dirty());
     let warning = reopened.catalog.text("digest-opened-without-history");
     let prefix = warning.split('{').next().unwrap();
-    assert!(reopened.digest.starts_with(prefix), "{}", reopened.digest);
+    assert!(reopened.digest.contains(prefix), "{}", reopened.digest);
     assert!(reopened.digest.contains("damaged-history.ketchup"));
 
     reopened.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
