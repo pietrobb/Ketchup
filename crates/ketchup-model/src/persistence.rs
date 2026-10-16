@@ -51,10 +51,17 @@ struct HistoryBudget {
     /// Distinct programs, which an opened history holds all at once, each once
     /// however many revisions keep it (PS-2).
     programs: u64,
+    /// Largest revision snapshot.
+    snapshot_bytes: usize,
+    /// Counts and string lengths of `history.bin` together, which its reader
+    /// counts like every reader (PS-9).
+    items: u32,
 }
 const HISTORY_BUDGET: HistoryBudget = HistoryBudget {
     snapshots: 2 * 1024 * 1024 * 1024,
     programs: 256 * 1024 * 1024,
+    snapshot_bytes: MAX_SNAPSHOT_BYTES,
+    items: MAX_COLLECTION_ITEMS,
 };
 /// The entries the budget is reported for.
 const HISTORY_REVISIONS_ENTRY: &str = "the revisions of history.bin";
@@ -663,9 +670,16 @@ fn encode_history(
     let mut assembled = 0u64;
     let mut programs = BTreeSet::new();
     let mut program_bytes = 0u64;
+    // What the reader counts against its item budget: the revision count, the
+    // chunk count, every string length and every chunk list.
+    let mut items = u64::from(count);
     for (index, revision) in revisions.iter().enumerate() {
         let previous = index.checked_sub(1).map(|previous| revisions[previous]);
         write_revision_header(&mut records, revision);
+        items = count_items(items, revision.batch_digest().len(), budget.items)?;
+        if let Some(checkpoint) = revision.checkpoint() {
+            items = count_items(items, checkpoint.len(), budget.items)?;
+        }
         if revision.rule_program().is_some()
             && previous.is_some_and(|previous| previous.rule_program() == revision.rule_program())
         {
@@ -681,12 +695,9 @@ fn encode_history(
                 )?;
             }
             push_u8(&mut records, HISTORY_RULE_PROGRAM_IN_CHUNKS);
-            table.write(
-                &mut records,
-                &encoded,
-                &checksum,
-                &history_chunks::chunks(&encoded),
-            );
+            let chunks = history_chunks::chunks(&encoded);
+            items = count_items(items, chunks.len(), budget.items)?;
+            table.write(&mut records, &encoded, &checksum, &chunks);
         } else {
             push_u8(&mut records, 0);
         }
@@ -695,6 +706,9 @@ fn encode_history(
             continue;
         }
         let snapshot = encoded_snapshot(revision.snapshot());
+        if snapshot.bytes.len() > budget.snapshot_bytes {
+            return Err(PersistenceError::ResourceLimit);
+        }
         assembled = check_assembled(
             HISTORY_REVISIONS_ENTRY,
             assembled,
@@ -704,10 +718,13 @@ fn encode_history(
         let chunks = snapshot
             .chunks
             .get_or_init(|| history_chunks::chunks(&snapshot.bytes));
+        items = count_items(items, chunks.len(), budget.items)?;
         push_u8(&mut records, HISTORY_SNAPSHOT_IN_CHUNKS);
         table.write(&mut records, &snapshot.bytes, &snapshot.sha256, chunks);
         check_entry_size("history.bin", table.bytes.len() + records.len())?;
+        count_items(items, table.numbers.len(), budget.items)?;
     }
+    count_items(items, table.numbers.len(), budget.items)?;
     let mut bytes = Vec::with_capacity(table.bytes.len() + records.len() + 32);
     bytes.extend_from_slice(HISTORY_MAGIC);
     push_u16(&mut bytes, HISTORY_SCHEMA);
@@ -765,6 +782,15 @@ fn check_assembled(
             bytes: total,
             limit: budget,
         });
+    }
+    Ok(total)
+}
+
+/// `items` plus `more`, within the item budget a reader of them keeps.
+fn count_items(items: u64, more: usize, budget: u32) -> Result<u64, PersistenceError> {
+    let total = items.saturating_add(u64::try_from(more).unwrap_or(u64::MAX));
+    if total > u64::from(budget) {
+        return Err(PersistenceError::ResourceLimit);
     }
     Ok(total)
 }
@@ -1860,7 +1886,7 @@ fn decode_revision_history(
     if bytes.len() > MAX_SIDECAR_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::with_item_budget(bytes, budget.items);
     if reader.take(HISTORY_MAGIC.len())? != HISTORY_MAGIC {
         return Err(PersistenceError::InvalidHistoryMagic);
     }
@@ -2003,6 +2029,7 @@ fn decode_revision_history(
             &mut reader,
             schema,
             (index == cursor).then_some(document_bytes),
+            budget.snapshot_bytes,
         )?;
         // Checked before anything is assembled.
         assembled = check_assembled(
@@ -2273,6 +2300,7 @@ fn read_history_snapshot<'a>(
     reader: &mut Reader<'a>,
     schema: u16,
     document_bytes: Option<&'a [u8]>,
+    max_length: usize,
 ) -> Result<HistorySnapshot<'a>, PersistenceError> {
     if schema >= 4 {
         match reader.u8()? {
@@ -2287,7 +2315,7 @@ fn read_history_snapshot<'a>(
     }
     let length = usize::try_from(reader.u64()?)
         .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
-    if length > MAX_SNAPSHOT_BYTES {
+    if length > max_length {
         return Err(PersistenceError::ResourceLimit);
     }
     let checksum: [u8; 32] = reader
@@ -2804,15 +2832,20 @@ struct Reader<'a> {
     bytes: &'a [u8],
     cursor: usize,
     collection_items: u64,
+    item_budget: u32,
     string_bytes: usize,
 }
 
 impl<'a> Reader<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
+        Self::with_item_budget(bytes, MAX_COLLECTION_ITEMS)
+    }
+    const fn with_item_budget(bytes: &'a [u8], item_budget: u32) -> Self {
         Self {
             bytes,
             cursor: 0,
             collection_items: 0,
+            item_budget,
             string_bytes: 0,
         }
     }
@@ -2852,7 +2885,7 @@ impl<'a> Reader<'a> {
             .collection_items
             .checked_add(u64::from(value))
             .ok_or(PersistenceError::ResourceLimit)?;
-        if value > limit || self.collection_items > u64::from(MAX_COLLECTION_ITEMS) {
+        if value > limit || self.collection_items > u64::from(self.item_budget) {
             Err(PersistenceError::ResourceLimit)
         } else {
             Ok(value)
@@ -2975,6 +3008,118 @@ mod tests {
         assert!(matches!(
             decode(fits - 1),
             Err(PersistenceError::TooLarge { bytes, .. }) if bytes == fits
+        ));
+    }
+
+    /// PS-9: Save keeps the limits the reader of a history keeps, its item budget
+    /// and the largest revision snapshot, so a history that saves also opens and
+    /// one past them is refused on Save (which keeps the current revision then).
+    #[test]
+    fn saving_and_opening_a_history_keep_the_same_item_and_snapshot_limits() {
+        use crate::document::{CanonicalCommand, CommandBatch, NodeId, RuleProgramSource};
+        use ketchup_geometry::dimension::Dimension;
+        let mut store = DocumentStore::new();
+        for id in 1..=3_u64 {
+            store
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::CreateEvaluatorNode {
+                        id: NodeId(id),
+                        name: format!("parameter-{id}"),
+                        dimension: Dimension::new(id.to_string(), id as f64).unwrap(),
+                        dependencies: vec![],
+                    },
+                ]))
+                .unwrap();
+        }
+        for name in ["A", "B"] {
+            let program = RuleProgramSource {
+                file_name: "model.star".into(),
+                source: format!("# {name}\n{}", "x = 1\n".repeat(20_000)),
+                overrides: BTreeMap::new(),
+                variants: BTreeMap::new(),
+            };
+            if name == "A" {
+                store.bind_rule_program(program).unwrap();
+            } else {
+                store.replace_rule_program_source(program).unwrap();
+            }
+        }
+        let revisions = store.revision_history().collect::<Vec<_>>();
+        let cursor = store.history_cursor();
+        let document_bin = encoded_snapshot(&store.current());
+        let outcome = load(&save(&store.current())).unwrap();
+        let encode = |budget| {
+            encode_history(
+                &revisions,
+                cursor,
+                store.next_revision_id(),
+                &document_bin,
+                budget,
+            )
+        };
+        let decode = |history: &[u8], budget| {
+            decode_revision_history(
+                history,
+                &document_bin.bytes,
+                &outcome,
+                &ContainerData::default(),
+                budget,
+            )
+        };
+
+        let items = |items| HistoryBudget {
+            items,
+            ..HISTORY_BUDGET
+        };
+        // The fewest items Save accepts are the fewest opening accepts.
+        let (mut refused, mut fits) = (0, MAX_COLLECTION_ITEMS);
+        while fits - refused > 1 {
+            let middle = refused + (fits - refused) / 2;
+            if encode(items(middle)).is_ok() {
+                fits = middle;
+            } else {
+                refused = middle;
+            }
+        }
+        let history = encode(items(fits)).unwrap();
+        assert_eq!(
+            decode(&history, items(fits)).unwrap().revision_count(),
+            revisions.len()
+        );
+        assert!(matches!(
+            encode(items(fits - 1)),
+            Err(PersistenceError::ResourceLimit)
+        ));
+        assert!(matches!(
+            decode(&history, items(fits - 1)),
+            Err(PersistenceError::ResourceLimit)
+        ));
+
+        let snapshot_bytes = |snapshot_bytes| HistoryBudget {
+            snapshot_bytes,
+            ..HISTORY_BUDGET
+        };
+        let largest = revisions
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != cursor)
+            .map(|(_, revision)| encoded_snapshot(revision.snapshot()).bytes.len())
+            .max()
+            .unwrap();
+        let history = encode(snapshot_bytes(largest)).unwrap();
+        assert_eq!(
+            decode(&history, snapshot_bytes(largest))
+                .unwrap()
+                .revision_count(),
+            revisions.len()
+        );
+        assert!(matches!(
+            encode(snapshot_bytes(largest - 1)),
+            Err(PersistenceError::ResourceLimit)
+        ));
+        assert!(matches!(
+            decode(&history, snapshot_bytes(largest - 1)),
+            Err(PersistenceError::ResourceLimit)
         ));
     }
 
