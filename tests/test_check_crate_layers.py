@@ -77,6 +77,18 @@ def test_workspace_modules_fit_the_limit():
         assert module not in checker.OVERSIZED
 
 
+def test_integration_test_files_are_held_to_the_module_limit():
+    # Review TST-1: a test file of 15 000 lines grew because only src was capped.
+    sizes = checker.module_sizes(ROOT)
+    assert "crates/ketchup-app/tests/headless_shell.rs" in sizes
+    assert "crates/ketchup-app/tests/scale_grips_ui.rs" in sizes
+    assert all(
+        sizes[path] <= checker.MAX_MODULE_LINES or path in checker.OVERSIZED
+        for path in sizes
+        if "/tests/" in path
+    )
+
+
 def test_function_lengths_skip_inline_test_modules_and_bodiless_functions(tmp_path):
     module = tmp_path / "m.rs"
     module.write_text(

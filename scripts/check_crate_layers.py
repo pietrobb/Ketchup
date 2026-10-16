@@ -5,7 +5,8 @@ placed in it, and a dependency that points sideways or upward fails, so the
 assistant and PDM crates can never become dependencies of the model or geometry.
 Only normal `[dependencies]` count; tests may use any crate.
 
-No source module of any crate may exceed MAX_MODULE_LINES. Modules that were
+No source module or integration-test file of any crate may exceed
+MAX_MODULE_LINES. Modules that were
 already larger are listed in OVERSIZED with their size: they may shrink but not
 grow, and an entry must be removed once its module fits the limit. Production
 functions follow the same rule with MAX_FUNCTION_LINES and LONG_FUNCTIONS: a
@@ -47,7 +48,15 @@ LAYERS = {
 
 MAX_MODULE_LINES = 5_000
 
-OVERSIZED = {}
+# Integration-test files that were already larger (review TST-1); new tests go
+# into a file named after the behavior they check.
+OVERSIZED = {
+    "crates/ketchup-app/tests/file_workflow.rs": 5412,
+    "crates/ketchup-app/tests/headless_shell.rs": 14931,
+    "crates/ketchup-application/tests/cad_program.rs": 5526,
+    "crates/ketchup-model/tests/product_document.rs": 5247,
+    "crates/ketchup-scheduler/tests/exact_brep_graph.rs": 7364,
+}
 
 # Modules AGENTS.md §6 forbids to grow, with their size: new code goes into new
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
@@ -147,10 +156,12 @@ def violations(graph, layers=LAYERS):
 
 
 def module_sizes(root):
-    """{"crates/<crate>/src/...rs": line count} for every crate source module."""
+    """{"crates/<crate>/{src,tests}/...rs": line count} for every crate source
+    module and integration-test file."""
     return {
         path.relative_to(root).as_posix(): len(path.read_text(encoding="utf-8").splitlines())
-        for path in sorted((root / "crates").glob("*/src/**/*.rs"))
+        for pattern in ("*/src/**/*.rs", "*/tests/**/*.rs")
+        for path in sorted((root / "crates").glob(pattern))
     }
 
 
