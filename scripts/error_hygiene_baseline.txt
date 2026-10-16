@@ -21,10 +21,6 @@ crates/ketchup-headless/src/protocol.rs unreachable 2
 crates/ketchup-model/src/exact_brep_graph.rs stringified_variant 3
 crates/ketchup-model/src/import/dxf.rs unreachable 1
 crates/ketchup-model/src/import/glb.rs stringified_variant 1
-crates/ketchup-model/src/persistence.rs formatted_variant 2
-crates/ketchup-model/src/persistence.rs stringified_variant 1
-crates/ketchup-model/src/persistence/snapshot_codec.rs stringified_variant 2
-crates/ketchup-model/src/persistence/snapshot_encoding.rs stringified_variant 1
 crates/ketchup-model/src/shared_change.rs stringified_variant 22
 crates/ketchup-model/src/shared_change/replacement.rs stringified_variant 1
 crates/ketchup-program/src/model.rs unreachable 2

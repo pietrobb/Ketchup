@@ -17,7 +17,7 @@
 //! write an indefinite-length map.
 
 use super::sheet_metal_v1::{SheetMetalV1, bend_path, flange_path};
-use super::{MAGIC, PersistenceError};
+use super::{MAGIC, PayloadError, PayloadSection, PersistenceError};
 use crate::document::{FeatureId, ProductModel, Snapshot};
 use std::collections::BTreeMap;
 
@@ -90,10 +90,8 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
     if crate::graph::sha256_bytes(payload) != checksum {
         return Err(PersistenceError::ChecksumMismatch);
     }
-    let invalid = |error: &dyn std::fmt::Display| invalid_payload(error);
     if format == SNAPSHOT_FORMAT {
-        let decoded: DecodedSnapshot =
-            ciborium::from_reader(payload).map_err(|error| invalid(&error))?;
+        let decoded: DecodedSnapshot = ciborium::from_reader(payload).map_err(invalid_snapshot)?;
         refuse_unknown_fields(payload, &decoded)?;
         return Ok(Decoded {
             revision_id: decoded.revision_id,
@@ -101,8 +99,7 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
             writer_digest: None,
         });
     }
-    let mut value: ciborium::Value =
-        ciborium::from_reader(payload).map_err(|error| invalid(&error))?;
+    let mut value: ciborium::Value = ciborium::from_reader(payload).map_err(invalid_snapshot)?;
     let format_98 = format < 99;
     if format_98 && let Some(product) = field(&mut value, "product") {
         rename_format_98_fields(product, |(old, new)| (old, new));
@@ -118,12 +115,12 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
         }
         format_102_joint_participants(product, false);
     }
-    let decoded: DecodedSnapshot = value.deserialized().map_err(|error| invalid(&error))?;
+    let decoded: DecodedSnapshot = value.deserialized().map_err(invalid_snapshot)?;
     // The writer hashed the identity form under its own field names, and before
     // [`rename_format_99_role_categories`], which the caller applies to formats before 100.
     let mut writer_form =
         crate::document::identity_form(|| ciborium::Value::serialized(&decoded.product))
-            .map_err(|error| invalid(&error))?;
+            .map_err(invalid_snapshot)?;
     restore_format_100_sheet_metal(&mut writer_form, sheet_metal);
     format_102_joint_participants(&mut writer_form, true);
     if format < 102 {
@@ -139,8 +136,8 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
     })
 }
 
-fn invalid_payload(error: &dyn std::fmt::Display) -> PersistenceError {
-    PersistenceError::InvalidPayload(error.to_string())
+fn invalid_snapshot(error: impl Into<PayloadError>) -> PersistenceError {
+    PersistenceError::payload(PayloadSection::Snapshot, error)
 }
 
 /// Refuses a snapshot of the current format that holds fields this version does not
@@ -164,10 +161,9 @@ fn refuse_unknown_fields(
     if known == payload {
         return Ok(());
     }
-    let stored: ciborium::Value =
-        ciborium::from_reader(payload).map_err(|error| invalid_payload(&error))?;
+    let stored: ciborium::Value = ciborium::from_reader(payload).map_err(invalid_snapshot)?;
     let known: ciborium::Value =
-        ciborium::from_reader(known.as_slice()).map_err(|error| invalid_payload(&error))?;
+        ciborium::from_reader(known.as_slice()).map_err(invalid_snapshot)?;
     let mut unknown = Vec::new();
     unknown_fields(&stored, &known, &mut String::new(), &mut unknown);
     if unknown.is_empty() {
@@ -397,18 +393,17 @@ struct StoredSheetMetal {
 fn read_format_100_sheet_metal(
     product: &mut ciborium::Value,
 ) -> Result<BTreeMap<FeatureId, StoredSheetMetal>, PersistenceError> {
-    let invalid =
-        |error: &dyn std::fmt::Display| PersistenceError::InvalidPayload(error.to_string());
     let mut read = BTreeMap::new();
     for (id, kind) in sheet_metal_kinds(product) {
-        let record: SheetMetalV1 = kind.deserialized().map_err(|error| invalid(&error))?;
-        let (spec, bend_of_flange) = record
-            .to_current()
-            .ok_or_else(|| invalid(&"a sheet-metal flange names an unknown side"))?;
-        let stored = std::mem::replace(
-            kind,
-            ciborium::Value::serialized(&spec).map_err(|error| invalid(&error))?,
-        );
+        let invalid = |error| PersistenceError::payload(PayloadSection::SheetMetal(id), error);
+        let record: SheetMetalV1 = kind.deserialized().map_err(invalid)?;
+        let (spec, bend_of_flange) = record.to_current().ok_or_else(|| {
+            PersistenceError::payload(
+                PayloadSection::SheetMetal(id),
+                PayloadError::UnknownFlangeSide,
+            )
+        })?;
+        let stored = std::mem::replace(kind, ciborium::Value::serialized(&spec).map_err(invalid)?);
         read.insert(
             id,
             StoredSheetMetal {

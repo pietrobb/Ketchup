@@ -1907,6 +1907,48 @@ fn interrupted_or_corrupt_primary_recovers_the_last_verified_container() {
     assert!(recovered.audit().recovered_from_backup);
 }
 
+/// Review PS-8: when the file and its `.recovery` backup both fail to open, the answer
+/// names both failures and the backup's path; without a backup it is the file's own.
+#[test]
+fn a_damaged_file_whose_backup_is_damaged_too_names_both_failures() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("damaged.ketchup");
+    let backup_path = path.with_extension("ketchup.recovery");
+    let store = graph_document();
+    std::fs::write(&path, b"interrupted replacement").unwrap();
+    assert!(matches!(
+        persistence::load_file(&path),
+        Err(persistence::FilePersistenceError::Format(
+            PersistenceError::InvalidMagic
+        ))
+    ));
+
+    let mut backup =
+        persistence::save_container(&store.current(), &persistence::ContainerData::default())
+            .unwrap();
+    *backup.last_mut().unwrap() ^= 0xff;
+    std::fs::write(&backup_path, &backup).unwrap();
+    let Err(persistence::FilePersistenceError::BackupUnusable {
+        primary,
+        backup_path: named,
+        backup,
+    }) = persistence::load_file(&path)
+    else {
+        panic!("the backup's failure was not reported");
+    };
+    assert!(matches!(
+        *primary,
+        persistence::FilePersistenceError::Format(PersistenceError::InvalidMagic)
+    ));
+    assert_eq!(named, backup_path);
+    assert!(matches!(
+        *backup,
+        persistence::FilePersistenceError::Format(PersistenceError::ContainerChecksumMismatch(
+            ref entry
+        )) if entry == "document.bin"
+    ));
+}
+
 /// A file a newer Kečup wrote is not damaged: opening it says so and never
 /// falls back to its older `.recovery`, whose next Save would overwrite the
 /// newer work.
@@ -2244,11 +2286,19 @@ fn sparse_native_documents_and_recovery_fail_before_unbounded_reads() {
         .unwrap()
         .set_len(persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
         .unwrap();
+    let Err(persistence::FilePersistenceError::BackupUnusable {
+        primary, backup, ..
+    }) = persistence::load_file(&path)
+    else {
+        panic!("an oversized backup must be refused, naming the primary's failure too");
+    };
     assert!(matches!(
-        persistence::load_file(&path),
-        Err(persistence::FilePersistenceError::Format(
-            PersistenceError::ResourceLimit
-        ))
+        *primary,
+        persistence::FilePersistenceError::Format(PersistenceError::InvalidMagic)
+    ));
+    assert!(matches!(
+        *backup,
+        persistence::FilePersistenceError::Format(PersistenceError::ResourceLimit)
     ));
 
     let save_path = directory.path().join("oversized-existing.ketchup");
@@ -2408,6 +2458,9 @@ fn document_tolerance_is_saved_undoable_and_part_of_the_digest() {
     });
     assert!(matches!(
         load_error(&invalid),
-        PersistenceError::InvalidPayload(_)
+        PersistenceError::InvalidPayload {
+            section: persistence::PayloadSection::Snapshot,
+            error: persistence::PayloadError::Data { .. },
+        }
     ));
 }

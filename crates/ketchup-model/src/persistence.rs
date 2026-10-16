@@ -18,11 +18,13 @@ mod work_recovery;
 #[cfg(feature = "testing")]
 pub use work_recovery::headless_with_parent_sync_failure;
 pub use work_recovery::{WorkRecoveryLock, check_work_recovery_identity, set_aside_work_recovery};
+mod payload_error;
 pub(crate) mod sheet_metal_v1;
 pub(crate) mod snapshot_codec;
 mod snapshot_encoding;
 
 pub use legacy::LegacyError;
+pub use payload_error::{PayloadError, PayloadLocation, PayloadSection};
 
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
 const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
@@ -554,9 +556,8 @@ fn encoded_program(
     let Some(source) = source else {
         return Ok(None);
     };
-    let encoded = serde_json::to_vec(source).map_err(|error| {
-        PersistenceError::InvalidPayload(format!("revision rule program: {error}"))
-    })?;
+    let encoded = serde_json::to_vec(source)
+        .map_err(|error| PersistenceError::payload(PayloadSection::RuleProgram, error))?;
     if encoded.len() > crate::document::MAX_RULE_PROGRAM_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
@@ -1635,55 +1636,51 @@ pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FileP
                 | PersistenceError::UnsupportedContainerEntry(_)
                 | PersistenceError::UnknownFields(_)),
             ) => Err(FilePersistenceError::Format(primary_error)),
-            Err(primary_error) => {
-                try_load_recovery(path)?.ok_or(FilePersistenceError::Format(primary_error))
-            }
+            Err(primary_error) => open_backup(path, FilePersistenceError::Format(primary_error)),
         },
         Err(error @ FilePersistenceError::Format(PersistenceError::ResourceLimit)) => Err(error),
-        Err(FilePersistenceError::Io(primary_error)) => {
-            try_load_recovery(path)?.ok_or(FilePersistenceError::Io(primary_error))
-        }
-        Err(FilePersistenceError::Format(error)) => Err(FilePersistenceError::Format(error)),
-        Err(
-            error @ (FilePersistenceError::ExternalConflict
-            | FilePersistenceError::Published { .. }),
-        ) => Err(error),
+        Err(primary_error @ FilePersistenceError::Io(_)) => open_backup(path, primary_error),
+        Err(error) => Err(error),
     }
 }
 
-fn try_load_recovery(path: &Path) -> Result<Option<LoadedFile>, FilePersistenceError> {
-    let source_path = recovery_path(path);
-    let bytes = match read_native_document_file(&source_path) {
-        Ok(bytes) => bytes,
-        Err(error @ FilePersistenceError::Format(PersistenceError::ResourceLimit)) => {
-            return Err(error);
+/// Opens the `.recovery` backup of `path` in place of the file, which failed with
+/// `primary`. Without a backup the answer is `primary`; when the backup fails too, the
+/// answer names both failures.
+fn open_backup(
+    path: &Path,
+    primary: FilePersistenceError,
+) -> Result<LoadedFile, FilePersistenceError> {
+    let backup_path = recovery_path(path);
+    let backup = match read_native_document_file(&backup_path) {
+        Ok(bytes) => match load(&bytes) {
+            Ok(mut outcome) => {
+                match &mut outcome {
+                    LoadOutcome::Editable { audit, .. } => audit.recovered_from_backup = true,
+                    LoadOutcome::ReviewOnly(candidate) => {
+                        candidate.audit.recovered_from_backup = true;
+                    }
+                }
+                return Ok(LoadedFile {
+                    outcome,
+                    source_path: backup_path,
+                    source_bytes: bytes,
+                    work_recovery_identity: None,
+                    unusable_work_recovery: None,
+                });
+            }
+            Err(error) => FilePersistenceError::Format(error),
+        },
+        Err(FilePersistenceError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(primary);
         }
-        Err(FilePersistenceError::Io(_)) => return Ok(None),
-        Err(FilePersistenceError::Format(error)) => {
-            return Err(FilePersistenceError::Format(error));
-        }
-        Err(
-            error @ (FilePersistenceError::ExternalConflict
-            | FilePersistenceError::Published { .. }),
-        ) => {
-            return Err(error);
-        }
+        Err(error) => error,
     };
-    let mut outcome = match load(&bytes) {
-        Ok(outcome) => outcome,
-        Err(_) => return Ok(None),
-    };
-    match &mut outcome {
-        LoadOutcome::Editable { audit, .. } => audit.recovered_from_backup = true,
-        LoadOutcome::ReviewOnly(candidate) => candidate.audit.recovered_from_backup = true,
-    }
-    Ok(Some(LoadedFile {
-        outcome,
-        source_path,
-        source_bytes: bytes,
-        work_recovery_identity: None,
-        unusable_work_recovery: None,
-    }))
+    Err(FilePersistenceError::BackupUnusable {
+        primary: Box::new(primary),
+        backup_path,
+        backup: Box::new(backup),
+    })
 }
 
 pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
@@ -2341,9 +2338,8 @@ fn decode_rule_program(
     /// Every field a program has ever stored; its other maps are keyed by
     /// parameter and variant names.
     const FIELDS: [&str; 4] = ["file_name", "source", "overrides", "variants"];
-    let invalid = |error: serde_json::Error| {
-        PersistenceError::InvalidPayload(format!("revision rule program: {error}"))
-    };
+    let invalid =
+        |error: serde_json::Error| PersistenceError::payload(PayloadSection::RuleProgram, error);
     let stored: serde_json::Map<String, serde_json::Value> =
         serde_json::from_slice(json).map_err(invalid)?;
     // Serde skips a field it does not know, so the program would open without
@@ -2397,7 +2393,7 @@ fn load_document(
             migrated_digests,
             |product| legacy::complete_old_records(product, &decoded.old),
         )
-        .map_err(|error| PersistenceError::InvalidPayload(error.to_string()))?;
+        .map_err(|error| PersistenceError::payload(PayloadSection::LegacyDigests, error))?;
         (
             decoded.revision_id,
             migrated.product,
@@ -2551,6 +2547,12 @@ pub enum FilePersistenceError {
     Io(io::Error),
     Format(PersistenceError),
     ExternalConflict,
+    /// The file did not open (`primary`), and neither did its `.recovery` backup.
+    BackupUnusable {
+        primary: Box<FilePersistenceError>,
+        backup_path: PathBuf,
+        backup: Box<FilePersistenceError>,
+    },
     /// The complete file is visible, but directory durability could not be confirmed.
     Published {
         path: PathBuf,
@@ -2585,6 +2587,15 @@ impl fmt::Display for FilePersistenceError {
             Self::ExternalConflict => {
                 formatter.write_str("the document changed outside this session")
             }
+            Self::BackupUnusable {
+                primary,
+                backup_path,
+                backup,
+            } => write!(
+                formatter,
+                "{primary}; its backup {} did not open either: {backup}",
+                backup_path.display()
+            ),
         }
     }
 }
@@ -2594,6 +2605,7 @@ impl std::error::Error for FilePersistenceError {
         match self {
             Self::Io(error) | Self::Published { error, .. } => Some(error),
             Self::Format(error) => Some(error),
+            Self::BackupUnusable { primary, .. } => Some(primary.as_ref()),
             Self::ExternalConflict => None,
         }
     }
@@ -2633,7 +2645,11 @@ pub enum PersistenceError {
     InvalidBoolean(u8),
     InvalidExactReference,
     ChecksumMismatch,
-    InvalidPayload(String),
+    /// A part of the document did not decode: which part, and why.
+    InvalidPayload {
+        section: PayloadSection,
+        error: PayloadError,
+    },
     /// The document holds fields this version does not know (by path), which opening it
     /// would drop and the next Save would lose.
     UnknownFields(Vec<String>),
@@ -2713,8 +2729,8 @@ impl fmt::Display for PersistenceError {
                 formatter.write_str("exact reference evidence is invalid")
             }
             Self::ChecksumMismatch => formatter.write_str("document checksum does not match"),
-            Self::InvalidPayload(reason) => {
-                write!(formatter, "document payload is invalid: {reason}")
+            Self::InvalidPayload { section, error } => {
+                write!(formatter, "{section} of the document {error}")
             }
             Self::UnknownFields(paths) => write!(
                 formatter,
@@ -2763,6 +2779,15 @@ impl std::error::Error for PersistenceError {
         }
     }
 }
+impl PersistenceError {
+    pub(crate) fn payload(section: PayloadSection, error: impl Into<PayloadError>) -> Self {
+        Self::InvalidPayload {
+            section,
+            error: error.into(),
+        }
+    }
+}
+
 impl From<ketchup_geometry::dimension::DimensionError> for PersistenceError {
     fn from(error: ketchup_geometry::dimension::DimensionError) -> Self {
         CanonicalError::from(error).into()

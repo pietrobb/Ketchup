@@ -18,7 +18,7 @@ pub(super) fn compare(snapshot: &Snapshot, bytes: &[u8]) -> Result<Encoding, Per
     let offset = MAGIC.len() + 2 + 32;
     let mut payload = &bytes[offset..];
     let stored: ciborium::Value = ciborium::from_reader(&mut payload)
-        .map_err(|error| PersistenceError::InvalidPayload(error.to_string()))?;
+        .map_err(|error| PersistenceError::payload(super::PayloadSection::Snapshot, error))?;
     let expected: ciborium::Value = ciborium::from_reader(&canonical[offset..])
         .expect("a newly encoded snapshot contains CBOR");
     Ok(if payload.is_empty() && stored == expected {
