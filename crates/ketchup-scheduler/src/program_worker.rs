@@ -218,6 +218,24 @@ impl ProgramWorker {
         self.evaluate_within(file_name, source, overrides, self.deadline, cancel)
     }
 
+    /// [`Self::evaluate`] that also ends by `deadline`, the one its checks share.
+    ///
+    /// # Errors
+    /// As [`Self::evaluate`].
+    pub fn evaluate_by(
+        &mut self,
+        file_name: &str,
+        source: &str,
+        overrides: &BTreeMap<String, f64>,
+        deadline: CheckDeadline,
+        cancel: &CancelToken,
+    ) -> Result<Evaluated, ProgramError> {
+        let time = self
+            .deadline
+            .min(deadline.request_time().map_err(Stopped::program_error)?);
+        self.evaluate_within(file_name, source, overrides, time, cancel)
+    }
+
     fn evaluate_within(
         &mut self,
         file_name: &str,
@@ -251,10 +269,7 @@ impl ProgramWorker {
         deadline: CheckDeadline,
         cancel: &CancelToken,
     ) -> Result<(Evaluated, Report), ProgramError> {
-        let time = self
-            .deadline
-            .min(deadline.request_time().map_err(Stopped::program_error)?);
-        let evaluated = self.evaluate_within(file_name, source, overrides, time, cancel)?;
+        let evaluated = self.evaluate_by(file_name, source, overrides, deadline, cancel)?;
         let report = self.report(&evaluated, deadline, cancel)?;
         Ok((evaluated, report))
     }

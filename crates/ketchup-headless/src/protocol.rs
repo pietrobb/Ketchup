@@ -20,6 +20,7 @@ use ketchup_application::batch_task::{
     OccurrenceBatchError, OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask,
 };
 use ketchup_application::model_query::{ModelQuery, created_receipt};
+use ketchup_application::program_isolation::{CheckDeadline, PROGRAM_CHECK_TIME};
 use ketchup_application::validation::{ASSISTANT_VALIDATOR_IDS, assistant_validator_catalog};
 use ketchup_application::{
     AssistantValidationSelection, DocumentSession, RuleProgramApplyError, SaveOptions,
@@ -591,6 +592,9 @@ pub struct Server {
     fea_reviews: FeaReviewWorkflow,
     pdm: LocalPdmWorkflow,
     compact_result: bool,
+    /// One deadline for each program request: evaluation, report, exact
+    /// check and refined report together (review 2026-10-15 S3).
+    check_time: std::time::Duration,
 }
 impl Server {
     pub fn new(settings: SessionSettings) -> Self {
@@ -614,40 +618,44 @@ impl Server {
             fea_reviews: FeaReviewWorkflow::new(worker_path),
             pdm: LocalPdmWorkflow::new(),
             compact_result: false,
+            check_time: PROGRAM_CHECK_TIME,
         }
     }
     fn batch_job_handle(&self, id: u64) -> String {
         format!("batch-{id:016x}-{:016x}", self.batch_job_key.hash_one(id))
     }
 
-    /// Builds the program in a scratch document, leaving the session's
-    /// document untouched, and settles on its exact solids what the boxes
-    /// cannot, exactly as `program_apply` and the window do.
+    /// Builds the evaluated program in a scratch document, leaving the
+    /// session's document untouched, and settles on its exact solids what the
+    /// boxes cannot, exactly as `program_apply` and the window do, by the
+    /// deadline of the whole check.
     fn exact_program_check(
         &self,
         source: &ketchup_model::document::RuleProgramSource,
-        model: &ketchup_program::ProgramModel,
+        evaluated: &ketchup_program::Evaluated,
         report: &mut ketchup_program::Report,
+        deadline: CheckDeadline,
     ) -> Option<Value> {
-        if ketchup_program::exact_candidates(model).is_empty() {
+        if ketchup_program::exact_candidates(&evaluated.model).is_empty() {
             return None;
         }
         let mut scratch = DocumentSession::new(self.settings.clone());
-        let built = match scratch.apply_rule_program(source.clone(), false) {
-            Ok(built) => built,
-            Err(error) => {
-                let reason = Error::from(error).code;
-                return Some(json!({"state": "incomplete",
+        let snapshot =
+            match scratch.replace_with_rule_model(evaluated.reference_model(), source.clone()) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    let reason = Error::from(error).code;
+                    return Some(json!({"state": "incomplete",
                     "not_evaluated": [{"reason": "program_build_failed", "detail": reason}]}));
-            }
-        };
+                }
+            };
         verify_rule_program_exact(
-            &built.snapshot,
-            model,
+            &snapshot,
+            &evaluated.model,
             report,
             scratch.container_data(),
             self.settings.exact_worker_path.clone(),
-            ketchup_application::program_isolation::CheckDeadline::after(PROGRAM_EXACT_TIMEOUT),
+            deadline,
             Arc::new(AtomicBool::new(false)),
         )
     }
@@ -1063,8 +1071,9 @@ impl Server {
             }
             "program_check" => {
                 let source = parse_program_source(p)?;
-                let (evaluated, mut report) = evaluate_program_source(&source)?;
-                let exact = self.exact_program_check(&source, &evaluated.model, &mut report);
+                let deadline = CheckDeadline::after(self.check_time);
+                let (evaluated, mut report) = evaluate_program_source(&source, deadline)?;
+                let exact = self.exact_program_check(&source, &evaluated, &mut report, deadline);
                 let mut result = json!(report);
                 if let Some(exact) = exact {
                     result["exact"] = exact;
@@ -1075,9 +1084,11 @@ impl Server {
                 Ok(result)
             }
             "program_apply" => {
-                let mut applied = self.session.apply_rule_program(
+                let deadline = CheckDeadline::after(self.check_time);
+                let mut applied = self.session.apply_rule_program_by(
                     parse_program_source(p)?,
                     boolean(p, "discard_unsaved", false)?,
+                    deadline,
                 )?;
                 if applied.replaced_document {
                     self.revoke_jobs();
@@ -1089,9 +1100,7 @@ impl Server {
                     &mut applied.report,
                     self.session.container_data(),
                     self.settings.exact_worker_path.clone(),
-                    ketchup_application::program_isolation::CheckDeadline::after(
-                        PROGRAM_EXACT_TIMEOUT,
-                    ),
+                    deadline,
                     Arc::new(AtomicBool::new(false)),
                 );
                 let mut result = self.state_result();
@@ -1334,9 +1343,6 @@ fn string<'a>(p: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::invalid(format!("{key} must be nonempty string")))
 }
-/// Budget of the exact solid check of one program check or build.
-const PROGRAM_EXACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-
 fn parse_program_source(
     p: &Map<String, Value>,
 ) -> Result<ketchup_model::document::RuleProgramSource> {
@@ -1369,12 +1375,13 @@ fn parse_program_source(
 
 fn evaluate_program_source(
     source: &ketchup_model::document::RuleProgramSource,
+    deadline: CheckDeadline,
 ) -> Result<(ketchup_program::Evaluated, ketchup_program::Report)> {
     ketchup_application::program_isolation::run_program(
         &source.file_name,
         &source.source,
         &source.overrides,
-        ketchup_application::program_isolation::CheckDeadline::start(),
+        deadline,
         &ketchup_program::CancelToken::default(),
     )
     .map_err(|error| Error {
@@ -1842,6 +1849,60 @@ mod tests {
             .unwrap()
             .as_bytes(),
         )
+    }
+
+    /// Review 2026-10-15 S3: a `program_check` evaluates, reports, builds the
+    /// exact solids and refines the report by one deadline, not by a fresh
+    /// one for every step (capability review run 99).
+    #[test]
+    fn a_program_check_ends_by_one_deadline() {
+        use std::time::{Duration, Instant};
+        // Overlapping boxes cost the checks time; the hole makes the first an
+        // exact candidate, so the check goes on to the exact solids.
+        let overlapping = |count: usize| {
+            format!(
+                "parts = [box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0)) for i in range({count})]\n\
+                 hole(parts[0], \"z+\", at=(50, 50), diameter=10, depth=20)\n"
+            )
+        };
+        let run = |source: &str| {
+            ketchup_application::program_isolation::run_program(
+                "test.star",
+                source,
+                &std::collections::BTreeMap::new(),
+                CheckDeadline::start(),
+                &ketchup_program::CancelToken::default(),
+            )
+            .unwrap();
+        };
+        // The worker is started before anything is timed.
+        run(&overlapping(1));
+        let mut count = 20;
+        let (source, checking) = loop {
+            let source = overlapping(count);
+            let started = Instant::now();
+            run(&source);
+            let checking = started.elapsed();
+            if checking >= Duration::from_millis(800) {
+                break (source, checking);
+            }
+            count = count * 3 / 2;
+        };
+        // Room for one evaluation and report, not for the refine after them.
+        let total = checking * 8 / 5;
+        let mut server = Server::new(SessionSettings::default());
+        server.check_time = total;
+        let started = Instant::now();
+        let checked = request(&mut server, "program_check", json!({"source": source}));
+        let elapsed = started.elapsed();
+        let (error, exact) = (&checked["error"], &checked["result"]["exact"]);
+        assert!(
+            elapsed < total + Duration::from_secs(1),
+            "{elapsed:?} for a deadline of {total:?}: {error} {exact}"
+        );
+        let stopped = error["code"] == "program.time_limit"
+            || exact["not_evaluated"][0]["reason"] == "time_limit";
+        assert!(stopped, "{error} {exact}");
     }
 
     /// Review 2026-10-15 S1: an open from the `.recovery` backup whose Undo

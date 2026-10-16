@@ -243,11 +243,28 @@ pub fn plan_rule_program(
     document: &DocumentStore,
     source: &RuleProgramSource,
 ) -> Result<RuleProgramPlan, RuleProgramApplyError> {
-    let evaluated = evaluate(source)?;
+    plan_rule_program_by(
+        document,
+        source,
+        crate::program_isolation::CheckDeadline::start(),
+    )
+}
+
+/// [`plan_rule_program`] whose evaluations end by `deadline`, the one the
+/// checks of the plan share.
+///
+/// # Errors
+/// As [`plan_rule_program`].
+pub fn plan_rule_program_by(
+    document: &DocumentStore,
+    source: &RuleProgramSource,
+    deadline: crate::program_isolation::CheckDeadline,
+) -> Result<RuleProgramPlan, RuleProgramApplyError> {
+    let evaluated = evaluate_by(source, deadline)?;
     let change = match document.current_rule_program() {
         Some(current) if current == source => RuleProgramChange::Unchanged,
         Some(current) => {
-            let old = evaluate(current)?;
+            let old = evaluate_by(current, deadline)?;
             let reference = evaluated.reference_model();
             let mut baseline = document.fork_for_planning();
             let mut commands =
@@ -296,8 +313,26 @@ impl DocumentSession {
         source: RuleProgramSource,
         allow_replacement: bool,
     ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
-        let deadline = crate::program_isolation::CheckDeadline::start();
-        let plan = plan_rule_program(self.document_store(), &source)?;
+        self.apply_rule_program_by(
+            source,
+            allow_replacement,
+            crate::program_isolation::CheckDeadline::start(),
+        )
+    }
+
+    /// [`Self::apply_rule_program`] whose evaluation and report end by
+    /// `deadline`, so a caller that checks the result further (the exact
+    /// check) keeps the whole request under one deadline.
+    ///
+    /// # Errors
+    /// As [`Self::apply_rule_program`].
+    pub fn apply_rule_program_by(
+        &mut self,
+        source: RuleProgramSource,
+        allow_replacement: bool,
+        deadline: crate::program_isolation::CheckDeadline,
+    ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
+        let plan = plan_rule_program_by(self.document_store(), &source, deadline)?;
         let report = plan.report(deadline)?;
         let RuleProgramPlan { evaluated, change } = plan;
         let snapshot = match change {
@@ -551,10 +586,18 @@ fn replacement_batch(
 fn evaluate(
     source: &RuleProgramSource,
 ) -> Result<ketchup_program::Evaluated, RuleProgramApplyError> {
-    crate::program_isolation::evaluate_program(
+    evaluate_by(source, crate::program_isolation::CheckDeadline::start())
+}
+
+fn evaluate_by(
+    source: &RuleProgramSource,
+    deadline: crate::program_isolation::CheckDeadline,
+) -> Result<ketchup_program::Evaluated, RuleProgramApplyError> {
+    crate::program_isolation::evaluate_program_by(
         &source.file_name,
         &source.source,
         &source.overrides,
+        deadline,
         &ketchup_program::CancelToken::default(),
     )
     .map_err(RuleProgramApplyError::from)

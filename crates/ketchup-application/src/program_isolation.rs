@@ -9,7 +9,7 @@ use ketchup_program::{
     CancelToken, Evaluated, ExactShapes, ProgramError, ProgramModel, Refined, Report,
 };
 use ketchup_scheduler::WorkerError;
-pub use ketchup_scheduler::program_worker::CheckDeadline;
+pub use ketchup_scheduler::program_worker::{CheckDeadline, PROGRAM_CHECK_TIME};
 use ketchup_scheduler::program_worker::{DwgConversionError, ProgramWorker};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -39,6 +39,28 @@ pub fn evaluate_program(
             })
         },
     )
+}
+
+/// [`evaluate_program`] that also ends by `deadline`, the one the checks
+/// after it share.
+///
+/// # Errors
+/// As [`evaluate_program`].
+pub fn evaluate_program_by(
+    file_name: &str,
+    source: &str,
+    overrides: &BTreeMap<String, f64>,
+    deadline: CheckDeadline,
+    cancel: &CancelToken,
+) -> Result<Evaluated, ProgramError> {
+    with_worker(|worker| worker.evaluate_by(file_name, source, overrides, deadline, cancel))
+        .unwrap_or_else(|error| {
+            Err(ProgramError {
+                code: "worker_failed",
+                message: format!("programs cannot be evaluated: {error}"),
+                location: None,
+            })
+        })
 }
 
 /// [`ketchup_program::report`] in a program worker, under its memory limit and

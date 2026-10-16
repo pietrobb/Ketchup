@@ -136,7 +136,7 @@ impl Server {
         let evaluated = self
             .session
             .rule_program()
-            .map(evaluate_program_source)
+            .map(|source| evaluate_program_source(source, CheckDeadline::after(self.check_time)))
             .transpose()?;
         let made = ketchup_application::made_parts(
             &snapshot,

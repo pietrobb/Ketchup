@@ -476,7 +476,12 @@ impl DocumentSession {
         let proposal = self.plan_cad_program(program, selection)?;
         self.apply_proposal(&proposal)
     }
-    pub(crate) fn replace_with_rule_model(
+    /// Replaces the document with the model of a program already evaluated,
+    /// without evaluating it again, as the program's `source`.
+    ///
+    /// # Errors
+    /// The model cannot be published as a document.
+    pub fn replace_with_rule_model(
         &mut self,
         model: &ketchup_program::ProgramModel,
         source: ketchup_model::document::RuleProgramSource,
