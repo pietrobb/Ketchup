@@ -762,6 +762,23 @@ impl Shell {
         self.run_idle();
     }
 
+    /// Press at `from` and reach `to` within the same frame, as a quick flick
+    /// does: no frame shows the pointer resting on the pressed point. The
+    /// button stays down.
+    pub fn flick_press(&mut self, from: Pos2, to: Pos2) {
+        self.gap();
+        self.move_pointer(from);
+        let input = self.harness.input_mut();
+        input.events.push(egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        input.events.push(egui::Event::PointerMoved(to));
+        self.harness.step();
+    }
+
     /// Press or release the synthetic primary button without completing the gesture.
     pub fn set_primary_button(&mut self, position: Pos2, modifiers: Modifiers, pressed: bool) {
         self.harness.input_mut().modifiers = modifiers;

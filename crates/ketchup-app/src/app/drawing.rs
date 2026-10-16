@@ -2629,6 +2629,9 @@ impl KetchupApp {
         let Some(start) = self.gesture.sketch.start else {
             self.gesture.sketch.start = Some(point);
             self.gesture.sketch.cursor = Some(point);
+            // A new shape has shown nothing yet, even when an earlier one on
+            // this point showed the same reading before Esc dropped it.
+            self.gesture.sketch.shown_reading = None;
             self.mark_sketch_source();
             if self.active_tool == ActiveTool::Line {
                 self.gesture.sketch.chain_origin = Some(point);

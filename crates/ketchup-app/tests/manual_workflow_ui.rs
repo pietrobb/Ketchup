@@ -493,6 +493,41 @@ fn an_unreadable_typed_value_is_refused_by_a_reason_that_stays_readable_in_every
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// UI-5 (review 2026-10-15): a shape dropped by Esc and started again on the
+/// same point shows the pointer's reading again. A quick press-and-drag starts
+/// the shape in a frame whose pointer is already at the old reading; before,
+/// the value box stayed empty because that reading counted as already shown.
+#[test]
+fn a_shape_started_again_on_the_same_point_shows_its_reading_again() {
+    let corner = Vec3::new(20.0, 20.0, 20.0);
+    let mut failures = Vec::new();
+    for (tool, command) in [
+        ("Rectangle", AppCommand::Rectangle),
+        ("Line", AppCommand::Line),
+        ("Circle", AppCommand::Circle),
+        ("Ellipse", AppCommand::Ellipse),
+    ] {
+        let mut shell = Shell::new();
+        let pointer = screen(&shell, corner + Vec3::new(30.0, 10.0, 0.0));
+        shell.click_command(command);
+        shell.click_at(screen(&shell, corner));
+        shell.move_pointer(pointer);
+        let reading = shell.app().value_input().to_owned();
+        assert!(!reading.is_empty(), "{tool} shows no reading at all");
+        shell.press_key(Key::Escape);
+        shell.click_command(command);
+        shell.flick_press(screen(&shell, corner), pointer);
+        shell.step();
+        if shell.app().value_input() != reading {
+            failures.push(format!(
+                "{tool} started again shows {:?}, not {reading:?}",
+                shell.app().value_input()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// A distance typed during a Move gesture travels the way the pointer shows,
 /// not along x, and completes that gesture: the next click starts a new Move.
 #[test]
