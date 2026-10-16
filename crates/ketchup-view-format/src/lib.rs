@@ -8,6 +8,7 @@
 mod comments;
 mod container;
 mod glb;
+mod identity;
 mod schema;
 mod validation;
 mod visibility;
@@ -18,6 +19,7 @@ pub use comments::{
 };
 pub use container::{MAX_GLB_BYTES, MAX_MANIFEST_BYTES, Package};
 pub use glb::geometry::{Geometry, GeometryNode, GeometryPrimitive, PrimitiveTopology};
+pub use identity::{IdentifiedPackage, PackageExport};
 use ketchup_rejection::{Rejection, RejectionPhase};
 pub use schema::*;
 pub use visibility::PathCover;

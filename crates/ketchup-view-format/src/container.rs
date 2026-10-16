@@ -1,6 +1,8 @@
 //! The binary `.ketchup-view` envelope: header, size limits and checksum.
 
-use crate::{Comments, MAX_COMMENTS_BYTES, Manifest, glb, reject};
+use crate::{
+    Comments, IdentifiedPackage, MAX_COMMENTS_BYTES, Manifest, PackageExport, glb, reject,
+};
 use ketchup_rejection::Rejection;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
@@ -61,9 +63,13 @@ impl Package {
     /// Read a package and the customer's comments saved into this copy, if any.
     /// The comments section follows the payload and is not part of the export
     /// identity, so the comments stay bound to the package they were written on.
-    pub fn read_with_comments(
+    pub fn read_with_comments(reader: impl Read) -> Result<(Self, Option<Comments>), Rejection> {
+        Self::read_identified(reader).map(|(package, comments)| (package.into_package(), comments))
+    }
+
+    pub(crate) fn read_identified(
         mut reader: impl Read,
-    ) -> Result<(Self, Option<Comments>), Rejection> {
+    ) -> Result<(IdentifiedPackage, Option<Comments>), Rejection> {
         let package = Self::read_payload(&mut reader)?;
         let mut rest = Vec::new();
         reader
@@ -97,27 +103,40 @@ impl Package {
     /// Write this package followed by `comments` on it, as a commented copy.
     pub fn write_with_comments(
         &self,
-        mut writer: impl Write,
+        writer: impl Write,
         comments: &Comments,
     ) -> Result<(), Rejection> {
+        self.write_commented(writer, comments, self)
+    }
+
+    /// The package streamed, then the comments section; the comments are
+    /// encoded and validated first, so nothing is written when they fail.
+    pub(crate) fn write_commented(
+        &self,
+        mut writer: impl Write,
+        comments: &Comments,
+        export: &(impl PackageExport + ?Sized),
+    ) -> Result<(), Rejection> {
         let mut json = Vec::new();
-        comments.write(&mut json, self)?;
-        let mut package = Vec::new();
-        self.write(&mut package)?;
-        package.extend_from_slice(COMMENTS_MAGIC);
-        package.extend_from_slice(
+        comments.write(&mut json, export)?;
+        self.write_with_digest(&mut writer, Some(export.payload_digest()?))?;
+        let mut section = Vec::with_capacity(COMMENTS_HEADER_BYTES + json.len());
+        section.extend_from_slice(COMMENTS_MAGIC);
+        section.extend_from_slice(
             &u32::try_from(json.len())
                 .expect("4 MiB fits u32")
                 .to_le_bytes(),
         );
-        package.extend_from_slice(&Sha256::digest(&json));
-        package.extend_from_slice(&json);
-        writer.write_all(&package).map_err(|error| {
+        section.extend_from_slice(&Sha256::digest(&json));
+        section.extend_from_slice(&json);
+        writer.write_all(&section).map_err(|error| {
             reject("output", "The Viewer package could not be written.").caused_by(error)
         })
     }
 
-    fn read_payload(mut reader: impl Read) -> Result<Self, Rejection> {
+    /// The payload with its identity: the verified checksum when the manifest
+    /// is stored as [`Self::write`] encodes it, else hashed again.
+    fn read_payload(mut reader: impl Read) -> Result<IdentifiedPackage, Rejection> {
         let mut header = [0; HEADER_BYTES];
         reader.read_exact(&mut header).map_err(|error| {
             reject("header", "The package header is incomplete.").caused_by(error)
@@ -152,14 +171,32 @@ impl Package {
             })?;
         let info = glb::validate(&payload[manifest_len..])?;
         manifest.validate(&info)?;
-        Ok(Self {
+        let canonical =
+            serde_json::to_vec(&manifest).is_ok_and(|encoded| encoded == payload[..manifest_len]);
+        let package = Self {
             manifest,
             glb: payload.split_off(manifest_len),
-        })
+        };
+        if canonical {
+            let digest = header[21..].try_into().expect("32-byte checksum");
+            Ok(IdentifiedPackage::known(package, digest))
+        } else {
+            IdentifiedPackage::new(package)
+        }
     }
 
     /// Validate, then write the package; nothing is written when validation fails.
-    pub fn write(&self, mut writer: impl Write) -> Result<(), Rejection> {
+    pub fn write(&self, writer: impl Write) -> Result<(), Rejection> {
+        self.write_with_digest(writer, None)
+    }
+
+    /// [`Self::write`] with `digest`, when known, as the checksum: it is the
+    /// identity, which hashes the same bytes.
+    pub(crate) fn write_with_digest(
+        &self,
+        mut writer: impl Write,
+        digest: Option<[u8; 32]>,
+    ) -> Result<(), Rejection> {
         if self.glb.len() > MAX_GLB_BYTES {
             return Err(reject("glb", "Geometry exceeds the package size limit."));
         }
@@ -175,9 +212,12 @@ impl Package {
             .caused_by(error)
         })?;
         let json = json.0;
-        let mut checksum = Sha256::new();
-        checksum.update(&json);
-        checksum.update(&self.glb);
+        let checksum = digest.unwrap_or_else(|| {
+            let mut checksum = Sha256::new();
+            checksum.update(&json);
+            checksum.update(&self.glb);
+            checksum.finalize().into()
+        });
         let mut header = Vec::with_capacity(HEADER_BYTES);
         header.extend_from_slice(MAGIC);
         header.extend_from_slice(&VERSION.to_le_bytes());
@@ -191,7 +231,7 @@ impl Package {
                 .expect("256 MiB fits u32")
                 .to_le_bytes(),
         );
-        header.extend_from_slice(&checksum.finalize());
+        header.extend_from_slice(&checksum);
         writer
             .write_all(&header)
             .and_then(|()| writer.write_all(&json))

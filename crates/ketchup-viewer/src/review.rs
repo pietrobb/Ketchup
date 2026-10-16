@@ -61,7 +61,7 @@ pub struct Draft {
 impl Review {
     /// No comments yet on the package `model` shows.
     pub fn new(model: &Model) -> Result<Self, Rejection> {
-        Ok(Self::with(Comments::new(model.package())?))
+        Ok(Self::with(Comments::new(model.export())?))
     }
 
     /// Comments already validated against the opened package.
@@ -79,22 +79,20 @@ impl Review {
 
     /// Comments read from a returned file, checked against `model`'s package.
     pub fn open(reader: impl Read, model: &Model) -> Result<Self, Rejection> {
-        Comments::read(reader, model.package()).map(Self::with)
+        Comments::read(reader, model.export()).map(Self::with)
     }
 
     /// Write every comment; the package itself is never written. The
     /// comments count as saved only once the host confirms the file with
     /// [`Self::written`]: a save dialog the customer cancels saves nothing.
     pub fn save(&self, writer: impl Write, model: &Model) -> Result<Written, Rejection> {
-        self.comments.write(writer, model.package())?;
+        self.comments.write(writer, model.export())?;
         Ok(Written(self.revision))
     }
 
     /// Write a copy of the package carrying every comment; saved as [`Self::save`].
     pub fn save_copy(&self, writer: impl Write, model: &Model) -> Result<Written, Rejection> {
-        model
-            .package()
-            .write_with_comments(writer, &self.comments)?;
+        model.export().write_with_comments(writer, &self.comments)?;
         Ok(Written(self.revision))
     }
 

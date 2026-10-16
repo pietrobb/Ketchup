@@ -176,16 +176,17 @@ impl ViewerApp {
     // Mobile adapters can supply bytes from their sandbox or document picker.
     /// Comments saved into a commented copy are opened with it.
     pub fn open(&mut self, reader: impl Read) -> Result<(), Rejection> {
-        let (package, comments) = ketchup_view_format::Package::read_with_comments(reader)?;
+        let (package, comments) =
+            ketchup_view_format::IdentifiedPackage::read_with_comments(reader)?;
         self.open_package(package, comments)
     }
 
     fn open_package(
         &mut self,
-        package: ketchup_view_format::Package,
+        package: ketchup_view_format::IdentifiedPackage,
         comments: Option<ketchup_view_format::Comments>,
     ) -> Result<(), Rejection> {
-        let model = Model::from_package(package)?;
+        let model = Model::from_identified(package)?;
         // Validate every scene before replacing the current model or its GPU resources.
         let cameras = model
             .manifest()
@@ -243,7 +244,7 @@ impl ViewerApp {
         let open = self
             .model
             .as_ref()
-            .is_some_and(|model| model.package().payload_sha256().is_ok_and(|s| s == wanted));
+            .is_some_and(|model| model.export().payload_sha256() == wanted);
         if !open {
             let package = sibling_package(path, &wanted)?;
             self.open_package(package, None)?;
@@ -871,7 +872,7 @@ fn open_file(path: &Path) -> Result<std::fs::File, Rejection> {
 fn sibling_package(
     comments: &Path,
     sha256: &str,
-) -> Result<ketchup_view_format::Package, Rejection> {
+) -> Result<ketchup_view_format::IdentifiedPackage, Rejection> {
     let folder = comments.parent().unwrap_or_else(|| Path::new("."));
     let entries = std::fs::read_dir(folder).map_err(|error| file_error(folder, error))?;
     entries
@@ -884,9 +885,9 @@ fn sibling_package(
         })
         .filter_map(|path| {
             let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
-            Some(ketchup_view_format::Package::read_with_comments(file).ok()?.0)
+            Some(ketchup_view_format::IdentifiedPackage::read_with_comments(file).ok()?.0)
         })
-        .find(|package| package.payload_sha256().is_ok_and(|s| s == sha256))
+        .find(|package| package.payload_sha256() == sha256)
         .ok_or_else(|| {
             Rejection::new("viewer.comments.package", RejectionPhase::Request)
                 .target(comments.display().to_string())

@@ -318,6 +318,51 @@ fn real_export_dimensions_and_camera_roundtrip_without_float_drift() {
     assert_eq!(Package::read(bytes(&package).as_slice()).unwrap(), package);
 }
 
+/// VW-10: an opened package keeps the identity it was read with: the
+/// verified checksum when the manifest is stored as Kečup encodes it, hashed
+/// again when another writer stored it otherwise. Written again, it is the
+/// same file, and comments bind to it as to the package.
+#[test]
+fn an_identified_package_keeps_the_export_identity_it_was_read_with() {
+    let (manifest, doc, binary) = fixture();
+    let package = Package {
+        manifest,
+        glb: encode_glb(&doc, &binary),
+    };
+    let expected = package.payload_sha256().unwrap();
+    let saved = bytes(&package);
+    let (identified, none) = IdentifiedPackage::read_with_comments(saved.as_slice()).unwrap();
+    assert!(none.is_none());
+    assert_eq!(identified.payload_sha256(), expected);
+    assert_eq!(identified.package(), &package);
+    let mut again = Vec::new();
+    identified.write(&mut again).unwrap();
+    assert_eq!(again, saved);
+
+    // The same manifest indented: another file checksum, the same identity.
+    let indented = serde_json::to_vec_pretty(&package.manifest).unwrap();
+    let raw = raw_package(&indented, &package.glb);
+    assert_ne!(raw[21..53], saved[21..53]);
+    let (identified, _) = IdentifiedPackage::read_with_comments(raw.as_slice()).unwrap();
+    assert_eq!(identified.payload_sha256(), expected);
+    assert_eq!(IdentifiedPackage::new(package.clone()).unwrap(), identified);
+
+    let comments = Comments::new(&identified).unwrap();
+    assert_eq!(comments.export.package_sha256, expected);
+    let mut copy = Vec::new();
+    identified
+        .write_with_comments(&mut copy, &comments)
+        .unwrap();
+    let mut plain_copy = Vec::new();
+    package
+        .write_with_comments(&mut plain_copy, &comments)
+        .unwrap();
+    assert_eq!(copy, plain_copy);
+    assert!(copy.starts_with(&saved));
+    let (_, carried) = Package::read_with_comments(copy.as_slice()).unwrap();
+    assert_eq!(carried, Some(comments));
+}
+
 #[test]
 fn aspect_changes_preserve_short_axis_framing_without_pixel_state() {
     let mut camera = camera();

@@ -1041,6 +1041,57 @@ fn a_viewer_ended_in_the_background_reopens_its_model_and_unsaved_comments() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// VW-10: the session keeps the package once, when it is opened; a comment
+/// edit writes only the comments, so a large package is not written again on
+/// the UI thread at every edit. Another package drops the kept comments.
+#[test]
+fn a_comment_edit_keeps_only_the_comments_not_the_whole_package() {
+    let dir = std::env::temp_dir().join(format!("ketchup-viewer-edit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let mut app = customer_with_comment(&bytes, "Darker oak");
+    let kept = app.keep_session(&dir, None).unwrap();
+    let package = dir.join("session.ketchup-view");
+    assert_eq!(std::fs::read(&package).unwrap(), bytes);
+    std::fs::rename(&package, dir.join("aside")).unwrap();
+
+    let review = app.review.as_mut().unwrap();
+    review.start(review.comments.comments[0].view.clone(), None);
+    review.draft.as_mut().unwrap().text = "And brass handles".into();
+    assert!(review.commit());
+    let kept = app.keep_session(&dir, kept).unwrap();
+    assert!(!package.exists(), "the package was written again");
+    assert!(dir.join("session.ketchup-comments").exists());
+    std::fs::rename(dir.join("aside"), &package).unwrap();
+    let mut restarted = ViewerApp::new(None);
+    assert!(restarted.restore_session(&dir).unwrap().is_some());
+    assert_eq!(restarted.opened_counts().map(|[_, _, c]| c), Some(2));
+    assert!(restarted.has_unsaved_comments());
+
+    // Another package: written, and the first one's comments are gone.
+    let mut other = scene_package();
+    other.manifest.source.revision += 1;
+    let mut other_bytes = Vec::new();
+    other.write(&mut other_bytes).expect("other");
+    let app = customer_with_comment(&other_bytes, "Other");
+    app.keep_session(&dir, kept).unwrap();
+    assert_eq!(std::fs::read(&package).unwrap(), other_bytes);
+    let mut restarted = ViewerApp::new(None);
+    restarted.restore_session(&dir).unwrap();
+    assert_eq!(restarted.opened_counts().map(|[_, _, c]| c), Some(1));
+
+    // A session kept before comments had their own file: a commented copy.
+    let mut copy = Vec::new();
+    app.save_commented_copy(&mut copy).unwrap();
+    std::fs::remove_file(dir.join("session.ketchup-comments")).unwrap();
+    std::fs::write(&package, &copy).unwrap();
+    let mut restarted = ViewerApp::new(None);
+    restarted.restore_session(&dir).unwrap();
+    assert_eq!(restarted.opened_counts().map(|[_, _, c]| c), Some(1));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// VW-7: two customers comment on one export; the author keeps both,
 /// because the author matches comments by export and ID.
 #[test]

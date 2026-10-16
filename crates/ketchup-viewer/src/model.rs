@@ -2,7 +2,7 @@
 //! placements, their owning components and bounds.
 
 use ketchup_rejection::{Rejection, RejectionPhase};
-use ketchup_view_format::{Geometry, Manifest, Package, PrimitiveTopology};
+use ketchup_view_format::{Geometry, IdentifiedPackage, Manifest, Package, PrimitiveTopology};
 use num_traits::ToPrimitive;
 use std::{collections::BTreeMap, io::Read, ops::Range};
 
@@ -12,7 +12,7 @@ type Bounds = [[f64; 3]; 2];
 /// Read-only package and placements, not duplicated meshes per occurrence.
 #[derive(Debug)]
 pub struct Model {
-    package: Package,
+    package: IdentifiedPackage,
     pub bodies: Vec<Body>,
     pub bounds_mm: Bounds,
     /// Per manifest occurrence: column-major source Z-up/mm placement.
@@ -46,6 +46,12 @@ impl Model {
 
     /// Place every mesh node and assign it to its nearest enclosing component.
     pub fn from_package(package: Package) -> Result<Self, Rejection> {
+        Self::from_identified(IdentifiedPackage::new(package)?)
+    }
+
+    /// [`Self::from_package`] for a package whose identity is already known.
+    pub fn from_identified(identified: IdentifiedPackage) -> Result<Self, Rejection> {
+        let package = identified.package();
         let geometry = package.geometry()?;
         let bounds = mesh_bounds(&geometry);
         let owner: BTreeMap<_, _> = package
@@ -122,7 +128,7 @@ impl Model {
             })
             .collect();
         Ok(Self {
-            package,
+            package: identified,
             bodies,
             bounds_mm: total_bounds,
             occurrence_matrices_mm,
@@ -134,25 +140,30 @@ impl Model {
     pub fn triangle_buffers(&self, mesh: usize) -> impl Iterator<Item = (&[u8], &[u8])> {
         self.triangles[mesh].iter().map(|(positions, indices)| {
             (
-                &self.package.glb[positions.clone()],
-                &self.package.glb[indices.clone()],
+                &self.package.package().glb[positions.clone()],
+                &self.package.package().glb[indices.clone()],
             )
         })
     }
 
     /// The package manifest, unchanged.
     pub fn manifest(&self) -> &Manifest {
-        &self.package.manifest
+        &self.package.package().manifest
     }
 
     /// The opened package, unchanged.
     pub fn package(&self) -> &Package {
+        self.package.package()
+    }
+
+    /// The opened package with its export identity, hashed once.
+    pub fn export(&self) -> &IdentifiedPackage {
         &self.package
     }
 
     /// The package geometry, borrowed and revalidated.
     pub fn geometry(&self) -> Result<Geometry<'_>, Rejection> {
-        self.package.geometry()
+        self.package.package().geometry()
     }
 }
 

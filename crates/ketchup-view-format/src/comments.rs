@@ -2,7 +2,9 @@
 //! exported `.ketchup-view`, each with the view it was written in, the picked
 //! component and 3D arrows. Bounded JSON that never carries or edits geometry.
 
-use crate::{Anchor, Camera, DisplayStyle, InstancePath, Package, Section, Source, reject};
+use crate::{
+    Anchor, Camera, DisplayStyle, InstancePath, Package, PackageExport, Section, Source, reject,
+};
 use ketchup_rejection::Rejection;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -84,8 +86,13 @@ pub struct Arrow {
 
 impl Package {
     /// SHA-256 of the manifest and geometry exactly as [`Package::write`]
-    /// checksums them: the identity of this export.
+    /// checksums them: the identity of this export. It hashes the whole
+    /// package; [`crate::IdentifiedPackage`] keeps it once computed.
     pub fn payload_sha256(&self) -> Result<String, Rejection> {
+        self.digest().map(|digest| crate::identity::hex(&digest))
+    }
+
+    pub(crate) fn digest(&self) -> Result<[u8; 32], Rejection> {
         use sha2::{Digest, Sha256};
         struct Hashing(Sha256);
         impl Write for Hashing {
@@ -102,24 +109,19 @@ impl Package {
             reject("manifest", "The manifest could not be encoded.").caused_by(error)
         })?;
         hashing.0.update(&self.glb);
-        Ok(hashing
-            .0
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect())
+        Ok(hashing.0.finalize().into())
     }
 }
 
 impl Comments {
     /// No comments yet on `package`.
-    pub fn new(package: &Package) -> Result<Self, Rejection> {
+    pub fn new(export: &(impl PackageExport + ?Sized)) -> Result<Self, Rejection> {
         Ok(Self {
             format: FORMAT.to_owned(),
             version: VERSION,
             export: ExportRef {
-                source: package.manifest.source.clone(),
-                package_sha256: package.payload_sha256()?,
+                source: export.package().manifest.source.clone(),
+                package_sha256: crate::identity::hex(&export.payload_digest()?),
             },
             comments: vec![],
         })
@@ -127,9 +129,12 @@ impl Comments {
 
     /// Read comments for `package`; size is limited before parsing and
     /// comments on another export or version are refused.
-    pub fn read(reader: impl Read, package: &Package) -> Result<Self, Rejection> {
+    pub fn read(
+        reader: impl Read,
+        export: &(impl PackageExport + ?Sized),
+    ) -> Result<Self, Rejection> {
         let comments = Self::read_unbound(reader)?;
-        comments.validate(package)?;
+        comments.validate(export)?;
         Ok(comments)
     }
 
@@ -154,8 +159,12 @@ impl Comments {
     }
 
     /// Validate against `package`, then write; nothing is written on failure.
-    pub fn write(&self, mut writer: impl Write, package: &Package) -> Result<(), Rejection> {
-        self.validate(package)?;
+    pub fn write(
+        &self,
+        mut writer: impl Write,
+        export: &(impl PackageExport + ?Sized),
+    ) -> Result<(), Rejection> {
+        self.validate(export)?;
         let bytes = serde_json::to_vec(self).map_err(|error| {
             reject("comments", "The comments could not be encoded.").caused_by(error)
         })?;
@@ -244,10 +253,11 @@ impl Comments {
     }
 
     /// The contents, then the binding to `package` and its components.
-    fn validate(&self, package: &Package) -> Result<(), Rejection> {
+    fn validate(&self, export: &(impl PackageExport + ?Sized)) -> Result<(), Rejection> {
         self.validate_contents()?;
+        let package = export.package();
         if self.export.source != package.manifest.source
-            || self.export.package_sha256 != package.payload_sha256()?
+            || self.export.package_sha256 != crate::identity::hex(&export.payload_digest()?)
         {
             return Err(reject(
                 "comments.export",
