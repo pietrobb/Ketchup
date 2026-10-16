@@ -167,9 +167,11 @@ impl KetchupApp {
                 .confirm_semantic_migration()
                 .map_err(MigrationError::failed)?;
             let (document, container_data) = confirmed.into_parts();
-            let snapshot = document.current();
-            let bytes = ketchup_model::persistence::save_container(&snapshot, &container_data)
-                .map_err(MigrationError::failed)?;
+            let bytes = ketchup_model::persistence::save_document_store_current_snapshot(
+                &document,
+                &container_data,
+            )
+            .map_err(MigrationError::failed)?;
             let parent = destination.parent().unwrap_or_else(|| Path::new("."));
             let mut temporary =
                 tempfile::NamedTempFile::new_in(parent).map_err(MigrationError::failed)?;

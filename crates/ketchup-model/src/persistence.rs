@@ -247,6 +247,9 @@ pub struct ReviewCandidate {
     snapshot: Snapshot,
     audit: Box<LoadAudit>,
     container_data: Box<ContainerData>,
+    /// The program the file stores beside the document (`program.json`); a
+    /// migration keeps it, as opening the file editable would.
+    program: Option<Arc<crate::document::RuleProgramSource>>,
 }
 
 impl ReviewCandidate {
@@ -311,6 +314,9 @@ impl ReviewCandidate {
         let mut document =
             DocumentStore::from_product(source_revision_id, self.snapshot.product().clone())?;
         let confirmed = document.apply_batch(&CommandBatch::new(commands))?;
+        if let Some(program) = &self.program {
+            document.bind_rule_program(program.as_ref().clone())?;
+        }
         Ok(ConfirmedMigration {
             document,
             container_data: self.container_data.as_ref().clone(),
@@ -1840,8 +1846,14 @@ fn load_container(bytes: &[u8], with_history: bool) -> Result<LoadOutcome, Persi
         extensions: BTreeMap::new(),
     };
     let mut outcome = load_document(&document, container_data, &mut BTreeMap::new())?;
-    if let (Some(program), LoadOutcome::Editable { document, .. }) = (&program, &mut outcome) {
-        document.restore_opened_rule_program(Arc::clone(program));
+    match (&program, &mut outcome) {
+        (Some(program), LoadOutcome::Editable { document, .. }) => {
+            document.restore_opened_rule_program(Arc::clone(program));
+        }
+        (Some(program), LoadOutcome::ReviewOnly(candidate)) => {
+            candidate.program = Some(Arc::clone(program));
+        }
+        (None, _) => {}
     }
     if let Some(revision_history) = revision_history.filter(|_| with_history) {
         // The current revision was verified on its own; a history that no longer
@@ -2563,6 +2575,7 @@ fn load_document(
             snapshot: document.current(),
             audit: Box::new(audit),
             container_data: Box::new(container_data),
+            program: None,
         }))
     } else {
         Ok(LoadOutcome::Editable {
@@ -3286,6 +3299,56 @@ mod tests {
         let opened = load_file(&path).unwrap();
         let opened = opened.editable_document().expect("editable");
         assert_eq!(opened.revision_count(), store.revision_count());
+    }
+
+    /// PS-1: a file that opens only for migration review keeps the program it
+    /// stores beside the document through the migration and its save.
+    #[test]
+    fn a_migrated_document_keeps_the_program_the_file_stores() {
+        use crate::document::{EncodedSnapshot, NodeId, RuleProgramSource};
+        let mut legacy = b"KETCHUPDOC".to_vec();
+        legacy.extend_from_slice(&0_u16.to_le_bytes());
+        legacy.extend_from_slice(&7_u64.to_le_bytes());
+        legacy.extend_from_slice(&1_u32.to_le_bytes());
+        legacy.extend_from_slice(&42_u64.to_le_bytes());
+        legacy.extend_from_slice(&1_u32.to_le_bytes());
+        legacy.push(b'x');
+        legacy.extend_from_slice(&3.5_f64.to_bits().to_le_bytes());
+        legacy.extend_from_slice(&0_u32.to_le_bytes());
+        let program = RuleProgramSource {
+            file_name: "model.star".into(),
+            source: "x = 3.5\n".into(),
+            overrides: BTreeMap::new(),
+            variants: BTreeMap::new(),
+        };
+        let file = save_container_entries(
+            &EncodedSnapshot {
+                sha256: crate::graph::sha256_bytes(&legacy),
+                bytes: legacy,
+                chunks: std::sync::OnceLock::new(),
+            },
+            &ContainerData::default(),
+            BTreeSet::new(),
+            None,
+            Some(serde_json::to_vec(&program).unwrap()),
+        )
+        .unwrap();
+
+        let loaded = load(&file).unwrap();
+        let (document, container) = loaded
+            .review_candidate()
+            .expect("a legacy dimension needs review")
+            .confirm_semantic_migration()
+            .unwrap()
+            .into_parts();
+        assert_eq!(document.current_rule_program(), Some(&program));
+        let saved = save_document_store_current_snapshot(&document, &container).unwrap();
+        let reopened = load(&saved).unwrap();
+        let reopened = reopened
+            .editable_document()
+            .expect("migrated file is editable");
+        assert_eq!(reopened.current_rule_program(), Some(&program));
+        assert!(reopened.current().evaluator_node(NodeId(42)).is_some());
     }
 
     /// PS-5: revisions that share one product (a program source edit, a rollback)
