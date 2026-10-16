@@ -1693,6 +1693,7 @@ pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FileP
                 | PersistenceError::UnsupportedSchema(_)
                 | PersistenceError::UnsupportedContainerSchema(_)
                 | PersistenceError::UnsupportedContainerEntry(_)
+                | PersistenceError::UnsupportedHistorySchema(_)
                 | PersistenceError::UnknownFields(_)),
             ) => Err(FilePersistenceError::Format(primary_error)),
             Err(primary_error) => open_backup(path, FilePersistenceError::Format(primary_error)),
@@ -1870,6 +1871,13 @@ fn load_container(bytes: &[u8], with_history: bool) -> Result<LoadOutcome, Persi
             // A program the file holds but that breaks its rules is refused by
             // name; dropping the history would silently drop the program too.
             (_, Err(error @ PersistenceError::InvalidRuleProgram(_))) => return Err(error),
+            // A history a newer Kečup wrote is not damaged: opened without it,
+            // the next Save would overwrite its steps with this one revision.
+            (_, Err(error @ PersistenceError::UnsupportedHistorySchema(schema)))
+                if schema > HISTORY_SCHEMA =>
+            {
+                return Err(error);
+            }
             // The history must end at the program the file stores beside the
             // document; one that ends elsewhere is not this document's history.
             (LoadOutcome::Editable { audit, .. }, Ok(restored))

@@ -1635,8 +1635,8 @@ fn corrupt_or_incompatible_revision_history_opens_only_the_current_revision() {
         PersistenceError::HistoryChecksumMismatch.to_string()
     );
 
-    let mut incompatible = encoded;
-    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&6_u16.to_le_bytes());
+    let mut incompatible = encoded.clone();
+    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&0_u16.to_le_bytes());
     rehash_container_entry(
         &mut incompatible,
         checksum_offset,
@@ -1645,8 +1645,19 @@ fn corrupt_or_incompatible_revision_history_opens_only_the_current_revision() {
     );
     assert_eq!(
         discarded_history(&incompatible),
-        PersistenceError::UnsupportedHistorySchema(6).to_string()
+        PersistenceError::UnsupportedHistorySchema(0).to_string()
     );
+
+    // Review 2026-10-15 status PS-3: a history a newer Kečup wrote is not
+    // damaged. Opening without it would let the next Save overwrite it with
+    // this writer's single revision, so the file is refused like a newer format.
+    let mut newer = encoded;
+    newer[history_offset + 10..history_offset + 12].copy_from_slice(&6_u16.to_le_bytes());
+    rehash_container_entry(&mut newer, checksum_offset, history_offset, history_len);
+    assert!(matches!(
+        persistence::load(&newer),
+        Err(PersistenceError::UnsupportedHistorySchema(6))
+    ));
 }
 
 /// The program that owns the document is part of the document, not of its Undo
@@ -1661,7 +1672,7 @@ fn a_discarded_history_keeps_the_current_program_through_open_and_save() {
     let (checksum_offset, history_offset, history_len) =
         container_entry_offsets(&encoded, "history.bin");
     let mut incompatible = encoded;
-    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&6_u16.to_le_bytes());
+    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&0_u16.to_le_bytes());
     rehash_container_entry(
         &mut incompatible,
         checksum_offset,
@@ -1670,7 +1681,7 @@ fn a_discarded_history_keeps_the_current_program_through_open_and_save() {
     );
     assert_eq!(
         discarded_history(&incompatible),
-        PersistenceError::UnsupportedHistorySchema(6).to_string()
+        PersistenceError::UnsupportedHistorySchema(0).to_string()
     );
     let (reopened, data) = persistence::load(&incompatible)
         .unwrap()
@@ -1995,6 +2006,24 @@ fn a_primary_from_a_newer_format_is_refused_and_never_replaced_by_its_recovery()
             "{name}: {error}"
         );
     }
+
+    // A history a newer Kečup wrote is refused the same way (PS-3), not dropped
+    // and not replaced by the recovery.
+    let path = directory.path().join("history.ketchup");
+    persistence::save_atomic_document_store_with_container(&path, &store, &data).unwrap();
+    persistence::save_atomic_document_store_with_container(&path, &store, &data).unwrap();
+    assert!(path.with_extension("ketchup.recovery").is_file());
+    let mut newer = std::fs::read(&path).unwrap();
+    let (checksum_offset, history_offset, history_len) =
+        container_entry_offsets(&newer, "history.bin");
+    newer[history_offset + 10..history_offset + 12].copy_from_slice(&u16::MAX.to_le_bytes());
+    rehash_container_entry(&mut newer, checksum_offset, history_offset, history_len);
+    std::fs::write(&path, newer).unwrap();
+    let Err(persistence::FilePersistenceError::Format(error)) = persistence::load_file(&path)
+    else {
+        panic!("a newer history must not open without its steps or from the recovery");
+    };
+    assert_eq!(error, PersistenceError::UnsupportedHistorySchema(u16::MAX));
 }
 
 /// A program a newer Kečup stored with a field this version does not know is
