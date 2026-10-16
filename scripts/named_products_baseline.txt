@@ -17,7 +17,6 @@ crates/ketchup-app/src/app_state.rs:panel 5
 crates/ketchup-app/src/command_registry.rs:weldment 1
 crates/ketchup-app/src/drawn_shape.rs:house 1
 crates/ketchup-app/src/helix_ui.rs:panel 2
-crates/ketchup-app/src/language.rs:panel 1
 crates/ketchup-app/src/lib.rs:panel 4
 crates/ketchup-app/src/live_bridge.rs:stud 1
 crates/ketchup-app/src/live_bridge/consent.rs:panel 1
@@ -40,7 +39,7 @@ crates/ketchup-application/src/validation_rules.rs:beam 3
 crates/ketchup-application/src/validation_rules.rs:panel 1
 crates/ketchup-assistant/src/sidecar.rs:weldment 13
 crates/ketchup-manufacturing/src/fabrication.rs:beam 3
-crates/ketchup-manufacturing/src/fabrication.rs:timber 23
+crates/ketchup-manufacturing/src/fabrication.rs:timber 20
 crates/ketchup-manufacturing/src/fabrication.rs:weldment 80
 crates/ketchup-manufacturing/src/project_drawings.rs:roof 1
 crates/ketchup-model/src/document/entities.rs:weldment 16

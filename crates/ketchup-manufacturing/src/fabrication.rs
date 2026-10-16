@@ -370,6 +370,13 @@ pub enum GeneralBomItemKind {
 }
 
 impl GeneralBomItemKind {
+    /// Whether the part is a member: a prismatic stock piece cut to length and
+    /// machined on its faces, the one kind a member-processing format writes.
+    #[must_use]
+    pub const fn is_member(self) -> bool {
+        matches!(self, Self::Timber)
+    }
+
     const fn token(self) -> &'static str {
         match self {
             Self::Timber => "manufactured-timber",
@@ -3075,7 +3082,7 @@ pub fn project_general_fabrication(
     let mut operations = Vec::new();
     let mut unresolved_sources = Vec::new();
     for row in &bom.rows {
-        if row.item_kind != GeneralBomItemKind::Timber {
+        if !row.item_kind.is_member() {
             continue;
         }
         match &row.source {
@@ -4701,9 +4708,7 @@ fn general_piece_drawing(
         ],
         machining_operations: operations
             .iter()
-            .filter(|operation| {
-                row.item_kind == GeneralBomItemKind::Timber && is_row_operation(row, operation)
-            })
+            .filter(|operation| row.item_kind.is_member() && is_row_operation(row, operation))
             .cloned()
             .collect(),
         evidence_class: row.evidence_class.clone(),
