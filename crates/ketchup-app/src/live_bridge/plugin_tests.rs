@@ -899,11 +899,12 @@ fn a_dot_dot_joined_to_a_plugin_option_is_refused() {
     }
 }
 
-/// SEC-6: a file the command line names outside the folder that does not exist
-/// yet is allowed only as absent; one created while the user is asked does not
-/// let the plugin run, and the prompt shows the path as absent.
+/// Review 2026-10-15 N-9: a path outside the folder where no file is yet was
+/// checked only at the start, and another process could create it while the
+/// plugin ran, which then opened it unhashed. Such a path is refused before
+/// anyone is asked, from a plugin folder and from a command line.
 #[test]
-fn a_plugin_path_created_after_it_was_allowed_as_absent_stops_the_run() {
+fn a_plugin_path_outside_where_no_file_is_yet_is_refused_without_a_prompt() {
     let _turn = file_turn();
     let directory = tempfile::tempdir().unwrap();
     let (folder, _) = height_folder(directory.path());
@@ -911,37 +912,64 @@ fn a_plugin_path_created_after_it_was_allowed_as_absent_stops_the_run() {
     let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
     manifest["arguments"] = json!(["plugin.py", later.display().to_string()]);
     std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
-    let dialogs = ScriptedFileDialogs::new()
-        .queue_high_risk_approval_after_write_attempt(1, &later, "x = 1\n");
+    let dialogs = ScriptedFileDialogs::new().always_confirm_high_risk_as(1);
     let probe = dialogs.clone();
     let mut wire = plugin_wire_answering(dialogs);
-    let original = height(&wire.app);
-    let undo = wire.app.undo_step_count();
+    let request = folder_request(&folder, json!({"height_mm": 35}));
+    assert_refused_without_prompt(&mut wire, request, "invalid_path", &probe);
 
-    let response = wire.answer_within(
-        Request::RunPlugin(folder_request(&folder, json!({"height_mm": 35}))),
-        Duration::from_secs(120),
-    );
-    assert_eq!(probe.high_risk_write_attempts(), [true]);
+    for named in [later.clone(), directory.path().join("sub/../later.py")] {
+        let command = plugin_request(vec![
+            example_script().to_string_lossy().into_owned(),
+            named.display().to_string(),
+        ]);
+        assert_refused_without_prompt(&mut wire, command, "invalid_path", &probe);
+    }
+    assert!(probe.high_risk_prompts().is_empty());
+}
+
+/// Review 2026-10-15 N-9: a relative argument of a command line that names
+/// no file resolved against the window's working directory, where a file
+/// could appear later. The process runs in an empty private directory, which
+/// must still be empty when it starts; a relative argument naming a file is
+/// given as the absolute path of the file that was hashed.
+#[test]
+fn a_command_lines_relative_arguments_resolve_in_an_empty_private_directory() {
+    let _turn = file_turn();
+    let here = std::env::current_dir().unwrap();
+    let script = example_script();
+    let relative = pathdiff_relative(&script, &here);
+    let request = plugin_request(vec!["later.py".to_owned(), relative.display().to_string()]);
+    let launch = crate::live_bridge::plugin::launch(&request).unwrap();
+    let directory = launch
+        .command
+        .working_directory
+        .clone()
+        .expect("the process runs in its own directory");
+    assert_ne!(directory, here);
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+    assert_eq!(launch.command.arguments[0], "later.py");
     assert_eq!(
-        response.error.as_deref(),
-        Some("plugin_failed"),
-        "{:?}",
-        response.result
+        Path::new(&launch.command.arguments[1]),
+        std::path::absolute(&relative).unwrap()
     );
-    let causes = response.result.unwrap()["causes"].to_string();
-    assert!(causes.contains("later.py was created"), "{causes}");
-    let prompt = &probe.high_risk_prompts()[0];
-    assert!(
-        prompt.contains(&format!(
-            "{}\n{}",
-            later.display(),
-            wire.app.catalog.text("live-plugin-consent-absent")
-        )),
-        "{prompt}"
-    );
-    assert_eq!(height(&wire.app), original);
-    assert_eq!(wire.app.undo_step_count(), undo);
+    launch.held.unchanged().unwrap();
+    std::fs::write(directory.join("later.py"), "raise SystemExit\n").unwrap();
+    assert!(launch.held.unchanged().is_err());
+}
+
+/// `path` relative to `base`, through `..` where it must.
+fn pathdiff_relative(path: &Path, base: &Path) -> PathBuf {
+    let path = std::path::absolute(path).unwrap();
+    let path: Vec<_> = path.components().collect();
+    let base: Vec<_> = base.components().collect();
+    let common = path.iter().zip(&base).take_while(|(a, b)| a == b).count();
+    let mut relative = PathBuf::new();
+    for _ in common..base.len() {
+        relative.push("..");
+    }
+    relative.extend(&path[common..]);
+    relative
 }
 
 /// SEC-6: a folder outside the plugin folder named on the command line could

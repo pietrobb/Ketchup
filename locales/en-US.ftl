@@ -19,7 +19,6 @@ live-import-consent-description = The unauthenticated local application will be 
 live-plugin-consent-title = Allow this plugin to run?
 live-plugin-consent-description = The plugin runs as a local program with your user rights and may change the model with the permissions below. A changed file or a further permission asks again.
 live-plugin-consent-files = Files:
-live-plugin-consent-absent = No file is there yet; allowed only while none is.
 live-plugin-consent-name = Plugin:
 live-plugin-consent-folder = Plugin folder, every file under it:
 live-plugin-consent-command = Command line:

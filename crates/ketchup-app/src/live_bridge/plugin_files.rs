@@ -51,14 +51,12 @@ fn open_checked(path: &Path, mut options: fs::OpenOptions) -> io::Result<File> {
 /// What a plugin run holds until its process has ended: the hashed files,
 /// then the stage they were copied into, removed last. A file can be added to
 /// a folder however its other files are held, so before the process starts
-/// the stage must still hold exactly the hashed files and every path the
-/// consent names as absent must still be absent (`unchanged`).
+/// the stage must still hold exactly the hashed files (`unchanged`).
 #[derive(Debug, Default)]
 pub(super) struct HeldFiles {
     files: Vec<File>,
     /// The stage's files by relative path, with the SHA-256 the consent shows.
     staged: BTreeMap<PathBuf, String>,
-    absent: Vec<PathBuf>,
     stage: Option<tempfile::TempDir>,
 }
 
@@ -90,24 +88,10 @@ impl HeldFiles {
         Ok(sha256)
     }
 
-    /// Records that the consent allows `path` only while no file is there.
-    pub(super) fn expect_absent(&mut self, path: &Path) {
-        self.absent.push(path.to_owned());
-    }
-
-    /// The stage holds exactly the files hashed in it, with the same bytes,
-    /// and no path expected absent exists: nothing was added or changed since
-    /// the consent was asked for.
+    /// The stage holds exactly the files hashed in it, with the same bytes:
+    /// nothing was added or changed since the consent was asked for.
     pub(super) fn unchanged(&self) -> io::Result<()> {
         let changed = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
-        for path in &self.absent {
-            if fs::symlink_metadata(path).is_ok() {
-                return Err(changed(format!(
-                    "{} was created after the plugin was allowed without it",
-                    path.display()
-                )));
-            }
-        }
         let Some(stage) = self.stage() else {
             return Ok(());
         };

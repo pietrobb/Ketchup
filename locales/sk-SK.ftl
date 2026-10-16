@@ -19,7 +19,6 @@ live-import-consent-description = Neoverená lokálna aplikácia bude môcť po 
 live-plugin-consent-title = Povoliť spustenie tohto pluginu?
 live-plugin-consent-description = Plugin beží ako lokálny program s vašimi právami a môže meniť model s uvedenými oprávneniami. Pri zmene súboru alebo ďalšom oprávnení sa okno spýta znova.
 live-plugin-consent-files = Súbory:
-live-plugin-consent-absent = Súbor tu zatiaľ nie je; povolené, len kým tu žiadny nebude.
 live-plugin-consent-name = Plugin:
 live-plugin-consent-folder = Priečinok pluginu, všetky súbory v ňom:
 live-plugin-consent-command = Príkazový riadok:

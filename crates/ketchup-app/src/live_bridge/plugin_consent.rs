@@ -10,6 +10,7 @@ use super::*;
 use crate::dialogs::HighRiskConfirmationRequest;
 use ketchup_model::graph::sha256_hex;
 use std::collections::BTreeSet;
+use std::path::Component;
 
 /// A plugin folder: every file under it by relative path and SHA-256.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,9 +40,8 @@ impl ConsentFolder {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PluginConsent {
     folder: Option<ConsentFolder>,
-    /// Files outside a plugin folder the command line names, with SHA-256;
-    /// none for a path allowed only while no file is there.
-    files: Vec<(PathBuf, Option<String>)>,
+    /// Files outside a plugin folder the command line names, with SHA-256.
+    files: Vec<(PathBuf, String)>,
     command: Vec<String>,
     principal_id: u64,
     capabilities: BTreeSet<String>,
@@ -94,7 +94,7 @@ impl PluginConsent {
         let hashed = |path: &Path, held: &mut HeldFiles| {
             let absolute = std::path::absolute(path)?;
             let hash = held.hash(&absolute)?;
-            Ok::<_, std::io::Error>((absolute, Some(hash)))
+            Ok::<_, std::io::Error>((absolute, hash))
         };
         // A network, device or stream path is refused before it is read.
         let remote = |path: &str| Path::new(path).is_absolute() && !local_absolute_path(path);
@@ -109,24 +109,30 @@ impl PluginConsent {
         let mut files = vec![
             hashed(&executable, held).map_err(|error| failed_because("plugin_failed", error))?,
         ];
+        let mut command = vec![executable.display().to_string()];
         for argument in arguments {
             let path = Path::new(argument);
             if path.is_file() {
-                files.push(
-                    hashed(path, held).map_err(|error| failed_because("plugin_failed", error))?,
-                );
-            } else if path.is_absolute() {
-                // Allowed only while nothing is there; a folder is refused.
-                super::plugin_manifest::outside_absent(path, Some(held))?;
-                files.push((path.to_owned(), None));
+                let (absolute, sha256) =
+                    hashed(path, held).map_err(|error| failed_because("plugin_failed", error))?;
+                command.push(absolute.display().to_string());
+                files.push((absolute, sha256));
+            } else if path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+            {
+                // Resolves in the run's empty private directory (`launch`).
+                command.push(argument.clone());
+            } else {
+                let absolute = std::path::absolute(path)
+                    .map_err(|error| failed_because("invalid_path", error))?;
+                return Err(super::plugin_manifest::not_a_file(&absolute));
             }
         }
         Ok(Self {
             folder: None,
             files,
-            command: std::iter::once(executable.display().to_string())
-                .chain(arguments.iter().cloned())
-                .collect(),
+            command,
             principal_id,
             capabilities: capabilities.iter().cloned().collect(),
             operations: operations.iter().cloned().collect(),
@@ -135,7 +141,7 @@ impl PluginConsent {
 
     pub(super) fn of_folder(
         folder: ConsentFolder,
-        outside: Vec<(PathBuf, Option<String>)>,
+        outside: Vec<(PathBuf, String)>,
         command: Vec<String>,
         principal_id: u64,
         capabilities: &[String],
@@ -154,6 +160,11 @@ impl PluginConsent {
     /// The executable that starts, as the consent names it.
     pub(super) fn executable(&self) -> &str {
         &self.command[0]
+    }
+
+    /// The arguments as the process gets them and the consent shows them.
+    pub(super) fn arguments(&self) -> &[String] {
+        &self.command[1..]
     }
 
     /// The same files, command line and principal, asking for no more than allowed.
@@ -235,10 +246,7 @@ impl KetchupApp {
         }
         for (path, sha256) in &wanted.files {
             lines.push(path.display().to_string());
-            lines.push(match sha256 {
-                Some(sha256) => format!("SHA-256 {sha256}"),
-                None => text("live-plugin-consent-absent"),
-            });
+            lines.push(format!("SHA-256 {sha256}"));
         }
         lines.extend([
             format!(

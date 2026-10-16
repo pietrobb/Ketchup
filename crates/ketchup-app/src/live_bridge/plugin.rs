@@ -96,12 +96,12 @@ pub(super) struct PluginAnswer {
 }
 
 /// What starts, what it may do, and what the user allows.
-struct PluginLaunch {
-    command: PluginCommand,
+pub(super) struct PluginLaunch {
+    pub(super) command: PluginCommand,
     grant: PluginGrant,
     consent: PluginConsent,
     /// The files the consent hashed, held until the process has ended.
-    held: HeldFiles,
+    pub(super) held: HeldFiles,
 }
 
 fn invalid_params(reason: &str) -> &'static str {
@@ -113,7 +113,7 @@ fn invalid_params(reason: &str) -> &'static str {
 }
 
 /// Reads the plugin folder or the command line; nothing starts yet.
-fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'static str> {
+pub(super) fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'static str> {
     #[cfg(test)]
     if let Some((_, gate)) = LAUNCH_GATE
         .lock()
@@ -159,7 +159,10 @@ fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'static str> {
                 &request.capabilities,
                 &request.allowed_operations,
             )?;
-            let mut held = HeldFiles::default();
+            // An empty private directory to run in: a relative argument
+            // naming no file resolves there, and nothing may appear in it.
+            let mut held =
+                HeldFiles::staged().map_err(|error| failed_because("plugin_failed", error))?;
             let consent = PluginConsent::of_command(
                 executable,
                 &request.arguments,
@@ -171,7 +174,8 @@ fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'static str> {
             Ok(PluginLaunch {
                 command: PluginCommand {
                     executable: PathBuf::from(consent.executable()),
-                    arguments: request.arguments.iter().map(OsString::from).collect(),
+                    arguments: consent.arguments().iter().map(OsString::from).collect(),
+                    working_directory: held.stage().map(Path::to_path_buf),
                     ..PluginCommand::default()
                 },
                 grant,
