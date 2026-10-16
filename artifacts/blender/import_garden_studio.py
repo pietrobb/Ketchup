@@ -1,8 +1,15 @@
+"""Imports the garden studio GLB into Blender and saves it as a .blend beside it.
+
+Run with `blender --background --python import_garden_studio.py`. The .blend is
+this script's output; it is not kept in the repository (the sample-files release
+holds a copy)."""
+
 import bpy
 from pathlib import Path
 
-source = Path(r"C:\Sources8\Ketchup\artifacts\blender\garden-studio-colored.glb")
-destination = Path(r"C:\Sources8\Ketchup\artifacts\blender\garden-studio-colored.blend")
+here = Path(__file__).resolve().parent
+source = here / "garden-studio-colored.glb"
+destination = here / "garden-studio-colored.blend"
 
 bpy.ops.object.select_all(action="SELECT")
 bpy.ops.object.delete(use_global=False)

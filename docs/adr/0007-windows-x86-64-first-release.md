@@ -5,7 +5,7 @@
 - Decision owner: Project owner
 - Accountable approver: Project owner
 - Resolves: V4-O08
-- Evidence: `scripts/windows/build-release-candidate.ps1`, `scripts/windows/test-release-candidate.ps1`, `scripts/windows/run-release-dialog-evidence.ps1`, `scripts/windows/test-release-dialog-evidence.ps1`
+- Evidence: `scripts/windows/build-release-candidate.ps1`, `scripts/windows/test-release-candidate.ps1`; the release dialog evidence scripts (run-release-dialog-evidence.ps1, test-release-dialog-evidence.ps1) were retired with gate governance in commit `0794b8c` (ADR 0008).
 
 ## Context
 

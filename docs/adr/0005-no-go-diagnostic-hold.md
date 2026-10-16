@@ -4,7 +4,7 @@
 - Date: 2026-08-04
 - Decision owner: Architecture lead
 - Accountable approver: Project owner
-- Evidence: `artifacts/gate-a0/diagnostics/a0d-run-002/`, `crates/ketchup-exact/src/native.cc`, ADR 0004
+- Evidence: `artifacts/gate-a0/diagnostics/a0d-run-002/`, `crates/ketchup-exact/src/native_extrude_revolve.cc` (then `native.cc`), ADR 0004
 
 ## Context
 
@@ -23,7 +23,7 @@ The preregistered safe halt was correct. The architectural inference was not sup
 
 ## A0 v2 application
 
-- The repaired adapter is localized to the profile-edge identity used for `BRepPrimAPI_MakePrism::Generated()` in `crates/ketchup-exact/src/native.cc`.
+- The repaired adapter is localized to the profile-edge identity used for `BRepPrimAPI_MakePrism::Generated()` in `crates/ketchup-exact/src/native_extrude_revolve.cc` (then `native.cc`).
 - A0 v2 retains the original top, bottom, and `side(profile_edge=east)` `Guaranteed` envelope and all inherited thresholds.
 - Every same-build and cross-build consumer includes one intentionally invalid reference negative control. It must return `Lost` under identical identity or compatibility quarantine under changed identity; `Resolved` or `Ambiguous` fails the combination.
 - A four-of-four pass withdraws L-01/L-02 from ADR 0004 because their evidentiary basis was the defective A0 observation, leaves L-03/L-04 unadopted, and releases the M3 halt.

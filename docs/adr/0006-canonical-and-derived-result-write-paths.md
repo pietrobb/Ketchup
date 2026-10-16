@@ -4,7 +4,7 @@
 - Date: 2026-08-04
 - Decision owner: Core/IO lead
 - Accountable approver: Project owner
-- Evidence: `crates/ketchup-core/src/document.rs`, `governance/d08-lifecycle-exceptions.json`, `scripts/windows/test-architecture-guards.ps1`, `scripts/windows/test-ci-guard-red-paths.ps1`
+- Evidence: `crates/ketchup-model/src/document.rs` (then `ketchup-core`). The lifecycle exception list and the two guard scripts named under "Mechanical enforcement" were retired with gate governance in commit `0794b8c` (ADR 0008).
 - Scope: Implements the immediate D-08 / V4-P07 / V4-P08 consequence requested after the audit of commit `10a7bea`; it is not the V4 adoption ADR or the broader dedicated P07/P08 ratification record required by V4C §3.5.
 
 ## Context
@@ -41,7 +41,10 @@ Open remains observational: it does not evaluate, recompute, migrate canonical m
 
 ## Mechanical enforcement
 
-`governance/d08-lifecycle-exceptions.json` enumerates the canonical gateway, canonical delegates, P07 gateway, P07 delegates, construction paths, and lifecycle exceptions. `test-architecture-guards.ps1` rejects:
+Retired in commit `0794b8c` (ADR 0008); kept here as the record of what was enforced. The files
+below no longer exist.
+
+The lifecycle exception list (governance/d08-lifecycle-exceptions.json) enumerated the canonical gateway, canonical delegates, P07 gateway, P07 delegates, construction paths, and lifecycle exceptions. The architecture guard (test-architecture-guards.ps1) rejected:
 
 - public or private `DocumentStore` authority mutation outside the reviewed blocks;
 - a canonical delegate that stops calling `apply_batch`;
@@ -50,7 +53,7 @@ Open remains observational: it does not evaluate, recompute, migrate canonical m
 - revision, cursor, or Undo effects inside the P07 gateway;
 - public persistence construction or mutation after candidate validation.
 
-`test-ci-guard-red-paths.ps1` deliberately injects a private in-core revision write and requires the sole-mutation guard to reject it, in addition to the existing public-mutator, post-validation, Undo, persistence-constructor, and lifecycle-register red paths.
+The red-path check (test-ci-guard-red-paths.ps1) deliberately injected a private in-core revision write and required the sole-mutation guard to reject it, in addition to the existing public-mutator, post-validation, Undo, persistence-constructor, and lifecycle-register red paths.
 
 ## Consequences
 
