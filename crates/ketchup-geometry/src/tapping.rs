@@ -128,7 +128,9 @@ impl MetricTapping {
     /// The nanometre slack keeps a depth already whole in µm from gaining one.
     #[must_use]
     pub fn blind_hole_depth_mm(&self, thread_depth_mm: f64) -> f64 {
-        ((thread_depth_mm + self.blind_hole_runout_mm) * 1000.0 - 1e-6).ceil() / 1000.0
+        ((thread_depth_mm + self.blind_hole_runout_mm - ketchup_tolerance::ROUNDING) * 1000.0)
+            .ceil()
+            / 1000.0
     }
 }
 

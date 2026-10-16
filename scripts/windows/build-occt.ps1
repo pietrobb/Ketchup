@@ -6,7 +6,7 @@ param(
     [ValidateRange(1, 64)]
     [int]$ParallelJobs = 12,
     # CI on a GitHub-hosted runner: the same OCCT commit and options, built
-    # with the runner's Git, CMake and Visual Studio 2022 instead of the
+    # with the runner's Git, CMake and newest Visual Studio instead of the
     # frozen R0 tools, whose hashes a hosted runner cannot match.
     [switch]$RunnerToolchain
 )
@@ -112,6 +112,7 @@ if (-not $RunnerToolchain) {
         if ($actualHash -ne $expectedToolHashes[$tool]) { throw "Native tool hash mismatch: $tool" }
     }
     $toolchain = @(
+        "-G", "Visual Studio 17 2022",
         "-T", "version=$msvcVersion",
         "-DCMAKE_GENERATOR_INSTANCE=$($vs.installationPath.Replace('\', '/'))",
         "-DCMAKE_SYSTEM_VERSION=$sdkVersion",
@@ -123,7 +124,6 @@ if (-not $RunnerToolchain) {
 $configure = @(
     "-S", $SourceDir,
     "-B", $BuildDir,
-    "-G", "Visual Studio 17 2022",
     "-A", "x64"
 ) + $toolchain + @(
     "-DBUILD_LIBRARY_TYPE=Shared",
