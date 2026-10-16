@@ -2705,9 +2705,12 @@ mod tests {
         let error = result.unwrap_err();
         assert_eq!(error.code, "cancelled", "{error}");
         assert!(error.message.contains("cancelled"), "{error}");
-        // Without the cancel it would spin until its budget ends (seconds).
+        // Without the cancel it would spin until its budget ends and fail with the
+        // budget's code, so the code above proves the cancel stopped it. The time
+        // includes starting the thread and the interpreter, which on a busy CI
+        // runner took over 200 ms; the bound only catches a stop that waits long.
         assert!(
-            stopped_after < std::time::Duration::from_millis(200),
+            stopped_after < std::time::Duration::from_secs(2),
             "stopped {stopped_after:?} after the cancel (ran {ran:?})"
         );
     }
