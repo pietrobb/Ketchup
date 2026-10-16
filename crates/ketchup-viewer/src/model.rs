@@ -4,7 +4,7 @@
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_view_format::{Geometry, IdentifiedPackage, Manifest, Package, PrimitiveTopology};
 use num_traits::ToPrimitive;
-use std::{collections::BTreeMap, io::Read, ops::Range};
+use std::{collections::BTreeMap, io::Read, ops::Range, sync::Arc};
 
 /// `[min, max]` corners in source millimetres.
 type Bounds = [[f64; 3]; 2];
@@ -12,7 +12,9 @@ type Bounds = [[f64; 3]; 2];
 /// Read-only package and placements, not duplicated meshes per occurrence.
 #[derive(Debug)]
 pub struct Model {
-    package: IdentifiedPackage,
+    /// Shared with a phone's session writer, which keeps it on a thread of
+    /// its own (VW-10).
+    package: Arc<IdentifiedPackage>,
     pub bodies: Vec<Body>,
     pub bounds_mm: Bounds,
     /// Per manifest occurrence: column-major source Z-up/mm placement.
@@ -128,7 +130,7 @@ impl Model {
             })
             .collect();
         Ok(Self {
-            package: identified,
+            package: Arc::new(identified),
             bodies,
             bounds_mm: total_bounds,
             occurrence_matrices_mm,
@@ -159,6 +161,11 @@ impl Model {
     /// The opened package with its export identity, hashed once.
     pub fn export(&self) -> &IdentifiedPackage {
         &self.package
+    }
+
+    /// [`Self::export`], to be written elsewhere while the model is shown.
+    pub fn shared_export(&self) -> Arc<IdentifiedPackage> {
+        Arc::clone(&self.package)
     }
 
     /// The package geometry, borrowed and revalidated.

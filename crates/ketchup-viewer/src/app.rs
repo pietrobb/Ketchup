@@ -22,7 +22,7 @@ use std::{
 
 mod comments_section;
 mod session;
-pub use session::SessionMark;
+pub use session::{SessionKeeper, SessionMark};
 
 /// Screens narrower than this (in points) get the phone layout.
 const NARROW_WIDTH: f32 = 650.0;

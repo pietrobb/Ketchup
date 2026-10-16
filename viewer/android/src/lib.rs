@@ -88,8 +88,8 @@ fn android_main(android_app: android_activity::AndroidApp) {
                 measured_for: None,
                 bars: [0; 4],
                 keyboard: 0,
-                session_dir,
-                session,
+                session: session_dir
+                    .map(|dir| ketchup_viewer::app::SessionKeeper::new(dir, session)),
             }))
         }),
     );
@@ -114,10 +114,8 @@ struct AndroidViewer {
     bars: [i32; 4],
     /// Height of the on-screen keyboard in pixels, 0 when closed.
     keyboard: i32,
-    /// Where the opened package and its comments are kept for the next start.
-    session_dir: Option<std::path::PathBuf>,
-    /// What is kept there now.
-    session: Option<ketchup_viewer::app::SessionMark>,
+    /// Keeps the opened package and its comments for the next start.
+    session: Option<ketchup_viewer::app::SessionKeeper>,
 }
 
 #[cfg(target_os = "android")]
@@ -198,18 +196,14 @@ impl eframe::App for AndroidViewer {
         }
         // Android may end the process whenever the app is in the background:
         // keep every change to the package or its comments as it happens.
-        if let Some(dir) = &self.session_dir {
-            match self.app.keep_session(dir, self.session) {
-                Ok(mark) => self.session = mark,
-                Err(error) => {
-                    log::error!("{error}; {}", error.fix_hint_text());
-                    // Tried once for this change, not again every frame; the
-                    // next change writes the package again.
-                    self.session = self
-                        .app
-                        .session_mark()
-                        .map(ketchup_viewer::app::SessionMark::unkept);
-                }
+        // A package is written on a thread of its own (VW-10); its comments
+        // follow on a later frame.
+        if let Some(session) = &mut self.session {
+            if let Err(error) = session.keep(&self.app) {
+                log::error!("{error}; {}", error.fix_hint_text());
+            }
+            if session.writing() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
         // The picker's answer comes back with the activity, not as input.
