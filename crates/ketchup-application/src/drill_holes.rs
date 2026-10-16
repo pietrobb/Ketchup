@@ -11,6 +11,7 @@ use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantHoleThread, AssistantPartHole,
 };
 use ketchup_geometry::linalg::{point_segment_distance2, signed_outline_distance};
+use ketchup_geometry::tapping::{TappedHole, TappedHoleMismatch};
 use ketchup_model::document::{DefinitionId, FeatureId, HoleThread, Snapshot};
 use ketchup_model::exact_product::{ExactBRepGraphPackage, ExactBodyPackage, ExactResultRegistry};
 use ketchup_model::tolerance::ROUNDING;
@@ -99,10 +100,6 @@ pub(crate) fn admit_drill_holes(
         assistant_planning_rejection(code, OPERATION, &target_name, invariant, hint)
     };
     let tolerance = snapshot.tolerance().linear_mm();
-    let thread = thread
-        .map(|thread| admit_thread(thread, diameter_mm, tolerance))
-        .transpose()
-        .map_err(|(code, invariant, hint)| reject(code, invariant, hint))?;
     let packages = topology.body_values(snapshot).unwrap_or_default();
     let package = packages
         .values()
@@ -186,9 +183,10 @@ pub(crate) fn admit_drill_holes(
         ));
     }
     let extent = bounds[1][axis] - bounds[0][axis];
-    if let Some(thread) = &thread {
-        admit_thread_depth(
+    if let Some(thread) = thread {
+        admit_thread(
             thread,
+            diameter_mm,
             depth_mm.unwrap_or(extent),
             through || depth_mm.is_none(),
             tolerance,
@@ -284,11 +282,16 @@ pub(crate) fn admit_drill_holes(
     Ok(AdmittedHoles { holes, bounds })
 }
 
-/// The library thread `thread` names, refused when the size is not in the
-/// fastener library or the hole is not its tap drill.
+/// The library thread `thread` names, tapped into a `diameter_mm` hole
+/// `depth_mm` deep: refused when the size is not in the fastener library or
+/// the hole does not take the thread by the rule every export checks it by
+/// again ([`TappedHole::check`]): its tap drill, and a thread at most as deep
+/// as a `through` hole, or as a blind one less the runout its tap needs.
 fn admit_thread(
     thread: &AssistantHoleThread,
     diameter_mm: f64,
+    depth_mm: f64,
+    through: bool,
     tolerance: f64,
 ) -> Result<HoleThread, (&'static str, String, &'static str)> {
     let library = ketchup_program::library_metric_threads().map_err(|error| {
@@ -310,8 +313,22 @@ fn admit_thread(
             "Use one of the listed thread sizes.",
         ));
     };
-    if !metric.fits_drill(diameter_mm, tolerance) {
-        return Err((
+    let hole = TappedHole {
+        size: &thread.size,
+        pitch_mm: metric.pitch_mm,
+        thread_depth_mm: thread.depth_mm,
+        hole_diameter_mm: diameter_mm,
+        hole_depth_mm: depth_mm,
+        through,
+    };
+    match hole.check(tolerance) {
+        Ok(()) => Ok(HoleThread {
+            size: thread.size.clone(),
+            pitch_mm: metric.pitch_mm,
+            depth_mm: thread.depth_mm,
+            modeled: thread.modeled_thread,
+        }),
+        Err(TappedHoleMismatch::Drill { .. }) => Err((
             "planning.cad_hole_thread_diameter_mismatch",
             format!(
                 "An {} thread (pitch {}) is tapped into its {} mm tap drill hole; this hole is \
@@ -319,14 +336,38 @@ fn admit_thread(
                 thread.size, metric.pitch_mm, metric.tap_drill_mm, diameter_mm
             ),
             "Drill the thread's tap drill diameter, or choose the thread that fits the hole.",
-        ));
+        )),
+        Err(TappedHoleMismatch::TooDeep { .. }) if through => Err((
+            "planning.cad_hole_thread_too_deep",
+            format!(
+                "The thread is {} mm deep, deeper than the {} mm hole.",
+                thread.depth_mm, depth_mm
+            ),
+            "Thread at most as deep as the hole.",
+        )),
+        Err(TappedHoleMismatch::TooDeep { .. }) => Err((
+            "planning.cad_hole_thread_too_deep",
+            format!(
+                "A {} mm deep {} thread needs a blind hole at least {} mm deep: the tap needs {} mm \
+                 below the thread (DIN 76-1 runout e1); this hole is {} mm.",
+                thread.depth_mm,
+                thread.size,
+                metric.blind_hole_depth_mm(thread.depth_mm),
+                metric.blind_hole_runout_mm,
+                depth_mm
+            ),
+            "Drill the blind hole deeper, tap a shorter thread, or drill through.",
+        )),
+        Err(mismatch) => Err((
+            "planning.cad_hole_thread_unknown",
+            format!(
+                "The fastener library's {} thread is not the one machine files are checked by: \
+                 {mismatch}.",
+                thread.size
+            ),
+            "Use the built-in prelude.",
+        )),
     }
-    Ok(HoleThread {
-        size: thread.size.clone(),
-        pitch_mm: metric.pitch_mm,
-        depth_mm: thread.depth_mm,
-        modeled: thread.modeled_thread,
-    })
 }
 
 /// The library thread tapped into `hole`, refused like a `drill_holes`
@@ -339,57 +380,15 @@ pub(crate) fn admit_hole_thread(
     let Some(thread) = &hole.thread else {
         return Ok(None);
     };
-    let thread = admit_thread(thread, hole.diameter_mm, tolerance)?;
-    admit_thread_depth(&thread, hole.depth_mm, hole.through, tolerance).map_err(
-        |(code, invariant, hint)| (code, format!("Hole {}: {invariant}", hole.id), hint),
-    )?;
-    Ok(Some(thread))
-}
-
-/// Refuses a thread deeper than a `through` hole `hole_depth_mm` deep, or
-/// than a blind one less the runout its tap needs below the thread.
-fn admit_thread_depth(
-    thread: &HoleThread,
-    hole_depth_mm: f64,
-    through: bool,
-    tolerance: f64,
-) -> Result<(), (&'static str, String, &'static str)> {
-    let metric = ketchup_program::library_metric_threads()
-        .ok()
-        .and_then(|library| library.get(&thread.size))
-        .ok_or_else(|| {
-            (
-                "planning.cad_hole_thread_unknown",
-                format!("The fastener library has no thread {:?}.", thread.size),
-                "Use the built-in prelude.",
-            )
-        })?;
-    if thread.depth_mm <= metric.deepest_thread_mm(hole_depth_mm, through) + tolerance {
-        return Ok(());
-    }
-    if through {
-        return Err((
-            "planning.cad_hole_thread_too_deep",
-            format!(
-                "The thread is {} mm deep, deeper than the {} mm hole.",
-                thread.depth_mm, hole_depth_mm
-            ),
-            "Thread at most as deep as the hole.",
-        ));
-    }
-    Err((
-        "planning.cad_hole_thread_too_deep",
-        format!(
-            "A {} mm deep {} thread needs a blind hole at least {} mm deep: the tap needs {} mm \
-             below the thread (DIN 76-1 runout e1); this hole is {} mm.",
-            thread.depth_mm,
-            thread.size,
-            metric.blind_hole_depth_mm(thread.depth_mm),
-            metric.blind_hole_runout_mm,
-            hole_depth_mm
-        ),
-        "Drill the blind hole deeper, tap a shorter thread, or drill through.",
-    ))
+    admit_thread(
+        thread,
+        hole.diameter_mm,
+        hole.depth_mm,
+        hole.through,
+        tolerance,
+    )
+    .map(Some)
+    .map_err(|(code, invariant, hint)| (code, format!("Hole {}: {invariant}", hole.id), hint))
 }
 
 /// The tessellated body in hole coordinates: depth `t` along the inward axis

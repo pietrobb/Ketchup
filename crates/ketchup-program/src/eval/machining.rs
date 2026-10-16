@@ -1,6 +1,7 @@
 //! The machining builtins `hole` and `pocket`, which drill and mill a part's
 //! faces, and the thread a hole is tapped with.
 use super::*;
+use ketchup_geometry::tapping::{TappedHole, TappedHoleMismatch};
 use ketchup_model::document::HoleThread;
 
 #[starlark_module]
@@ -191,27 +192,38 @@ fn tapped<'v>(
         );
     };
     let diameter_mm = diameter_mm.unwrap_or(metric.tap_drill_mm);
-    if !metric.fits_drill(diameter_mm, CONTACT_FIT_MM) {
-        anyhow::bail!(
+    // The rule every export checks the hole by again, at the default model
+    // tolerance: a hole made here is one the machine files take.
+    let hole = TappedHole {
+        size: &size,
+        pitch_mm: metric.pitch_mm,
+        thread_depth_mm: thread_depth,
+        hole_diameter_mm: diameter_mm,
+        hole_depth_mm: depth_mm,
+        through,
+    };
+    match hole.check(ketchup_tolerance::DEFAULT_LINEAR_TOLERANCE_MM) {
+        Ok(()) => {}
+        Err(TappedHoleMismatch::Drill { .. }) => anyhow::bail!(
             "an {size} thread (pitch {}) is tapped into its {} mm tap drill hole; this hole is \
              {diameter_mm} mm (omit diameter to drill the tap drill)",
             metric.pitch_mm,
             metric.tap_drill_mm
-        );
-    }
-    if thread_depth > metric.deepest_thread_mm(depth_mm, through) + CONTACT_FIT_MM {
-        if through {
-            anyhow::bail!(
-                "the thread is {thread_depth} mm deep, deeper than the {depth_mm} mm hole"
-            );
-        }
-        anyhow::bail!(
+        ),
+        Err(TappedHoleMismatch::TooDeep { .. }) if through => anyhow::bail!(
+            "the thread is {thread_depth} mm deep, deeper than the {depth_mm} mm hole"
+        ),
+        Err(TappedHoleMismatch::TooDeep { .. }) => anyhow::bail!(
             "a {thread_depth} mm deep {size} thread needs a blind hole at least {} mm deep: the \
              tap needs {} mm below the thread (DIN 76-1 runout e1, METRIC_BLIND_HOLE_RUNOUT); \
              this hole is {depth_mm} mm",
             metric.blind_hole_depth_mm(thread_depth),
             metric.blind_hole_runout_mm
-        );
+        ),
+        Err(mismatch) => anyhow::bail!(
+            "the fastener library's {size} thread is not the one machine files are checked by: \
+             {mismatch}"
+        ),
     }
     Ok((
         diameter_mm,

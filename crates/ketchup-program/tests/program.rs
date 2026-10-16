@@ -926,6 +926,17 @@ fn a_thread_that_does_not_fit_its_hole_is_refused_by_name() {
             "depth = 15, thread = (\"M5\", 20)",
             "needs a blind hole at least 24.2 mm deep",
         ),
+        // At the rule's own tolerance, as every export checks it: neither a
+        // hole 0.055 mm off the tap drill nor a thread 5 µm deeper than the
+        // blind hole takes passes here to be refused by the machine file.
+        (
+            "diameter = 6.855, depth = 19, thread = (\"M8\", 12)",
+            "its 6.8 mm tap drill hole",
+        ),
+        (
+            "depth = 18.195, thread = (\"M8\", 12)",
+            "needs a blind hole at least 18.2 mm deep",
+        ),
         ("depth = 15", "give diameter="),
         (
             "depth = 15, thread = \"M5\"",
