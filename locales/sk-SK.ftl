@@ -600,6 +600,7 @@ menu-help = Pomocník
 menu-plugins = Pluginy
 plugins-open-folder = Otvoriť priečinok pluginov
 plugins-refresh = Obnoviť zoznam
+plugins-reading = Čítam priečinky pluginov…
 plugins-none = Žiadne pluginy v { $folder }
 plugins-unavailable = { $name } (nedostupný)
 plugins-running = Beží { $name }…

@@ -1,6 +1,6 @@
 //! The Plugins menu: the plugin folders under `%APPDATA%\Ketchup\plugins`,
-//! read when the menu first opens or on Refresh, never watched in the
-//! background. A folder that could not run is listed with the reason a run
+//! read on a thread of their own when the menu first opens or on Refresh,
+//! never watched in the background. A folder that could not run is listed with the reason a run
 //! would give. A run from the menu is the MCP `run_plugin` request on a bridge
 //! without a socket: the same consent and folder hash, the same job, one Undo
 //! step. Its inputs come from a form built from the manifest's declarations
@@ -127,6 +127,9 @@ struct Outcome {
 pub(crate) struct PluginMenu {
     root: Option<PathBuf>,
     listed: Option<io::Result<Vec<ListedPlugin>>>,
+    /// The folders being read on their own thread: a slow or large folder
+    /// (a network drive) must not hold up the window's frames.
+    scanning: Option<mpsc::Receiver<io::Result<Vec<ListedPlugin>>>>,
     form: Option<InputForm>,
     /// A plugin started from the menu, by name.
     run: Option<WindowRequest<String>>,
@@ -142,6 +145,7 @@ impl PluginMenu {
         Self {
             root,
             listed: None,
+            scanning: None,
             form: None,
             run: None,
             outcome: None,
@@ -152,19 +156,54 @@ impl PluginMenu {
         self.run.is_some()
     }
 
-    fn refresh(&mut self) {
-        self.listed = Some(match &self.root {
-            Some(root) => scan(root),
-            None => Err(no_root()),
-        });
+    pub(crate) const fn is_scanning(&self) -> bool {
+        self.scanning.is_some()
+    }
+
+    /// Reads the plugin folders again on a thread of their own.
+    fn refresh(&mut self, context: &egui::Context) {
+        self.listed = None;
+        let Some(root) = self.root.clone() else {
+            self.listed = Some(Err(no_root()));
+            return;
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let repaint = context.clone();
+        let spawned = std::thread::Builder::new()
+            .name("ketchup-plugin-scan".into())
+            .spawn(move || {
+                let _ = sender.try_send(scan(&root));
+                repaint.request_repaint();
+            });
+        match spawned {
+            Ok(_) => self.scanning = Some(receiver),
+            Err(error) => self.listed = Some(Err(error)),
+        }
+    }
+
+    /// Takes the folders read by `refresh` once they are there.
+    fn poll_scan(&mut self) {
+        let Some(receiver) = &self.scanning else {
+            return;
+        };
+        let listed = match receiver.try_recv() {
+            Ok(listed) => listed,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => Err(io::Error::other(
+                "reading the plugin folders stopped without an answer",
+            )),
+        };
+        self.listed = Some(listed);
+        self.scanning = None;
     }
 }
 
 impl KetchupApp {
     pub(crate) fn show_plugins_menu(&mut self, ui: &mut egui::Ui) {
         ui.set_max_width(480.0);
-        if self.live.plugin_menu.listed.is_none() {
-            self.live.plugin_menu.refresh();
+        self.live.plugin_menu.poll_scan();
+        if self.live.plugin_menu.listed.is_none() && !self.live.plugin_menu.is_scanning() {
+            self.live.plugin_menu.refresh(ui.ctx());
         }
         let menu = &self.live.plugin_menu;
         let mut chosen = None;
@@ -216,7 +255,9 @@ impl KetchupApp {
                 let reason = format!("{root}: {error}");
                 ui.add(egui::Label::new(egui::RichText::new(reason).weak()).wrap());
             }
-            None => {}
+            None => {
+                ui.weak(self.catalog.text("plugins-reading"));
+            }
         }
         ui.separator();
         if ui
@@ -227,7 +268,7 @@ impl KetchupApp {
             ui.close();
         }
         if ui.button(self.catalog.text("plugins-refresh")).clicked() {
-            self.live.plugin_menu.refresh();
+            self.live.plugin_menu.refresh(ui.ctx());
         }
         if let Some(index) = chosen {
             self.choose_plugin(ui.ctx(), index);

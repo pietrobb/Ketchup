@@ -600,6 +600,7 @@ menu-help = Help
 menu-plugins = Plugins
 plugins-open-folder = Open plugins folder
 plugins-refresh = Refresh list
+plugins-reading = Reading the plugin folders…
 plugins-none = No plugins in { $folder }
 plugins-unavailable = { $name } (unavailable)
 plugins-running = Running { $name }…

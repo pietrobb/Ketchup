@@ -68,6 +68,49 @@ fn open_menu(harness: &mut Harness<'_, KetchupApp>) {
     let menu = harness.state().catalog.text("menu-plugins");
     harness.get_by_role_and_label(Role::Button, &menu).click();
     harness.run_steps(2);
+    wait_for_scan(harness);
+}
+
+/// Steps the open menu until its folders have been read and are shown.
+fn wait_for_scan(harness: &mut Harness<'_, KetchupApp>) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while harness.state().live.plugin_menu.is_scanning() {
+        assert!(
+            Instant::now() < deadline,
+            "the plugin folders were not read"
+        );
+        harness.step();
+    }
+    harness.run_steps(2);
+}
+
+/// Review 2026-10-15 status: the menu walked every plugin folder in the
+/// window's frame, so a large or slow folder (a network drive) froze the
+/// window. The frame that opens the menu only starts the reading and says so;
+/// the folders appear once their thread has read them.
+#[test]
+fn the_plugins_menu_reads_its_folders_outside_the_frame() {
+    let root = tempfile::tempdir().unwrap();
+    height_folder(root.path());
+    let mut app = KetchupApp::new();
+    app.live.plugin_menu = PluginMenu::at(Some(root.path().to_owned()));
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run_steps(3);
+    let menu = harness.state().catalog.text("menu-plugins");
+    harness.get_by_role_and_label(Role::Button, &menu).click();
+    harness.step();
+    assert!(harness.state().live.plugin_menu.is_scanning());
+    let reading = harness.state().catalog.text("plugins-reading");
+    assert!(harness.query_by_label(&reading).is_some());
+
+    wait_for_scan(&mut harness);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Height")
+            .is_some()
+    );
 }
 
 #[test]
