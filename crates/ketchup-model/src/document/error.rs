@@ -458,10 +458,7 @@ impl fmt::Display for CanonicalError {
             Self::MissingDependency(id) => write!(formatter, "dependency {} does not exist", id.0),
             Self::UnsupportedCommandSchema => formatter.write_str("unsupported command schema"),
             Self::EmptyCommandBatch => formatter.write_str("command batch is empty"),
-            Self::CommandOutsideFamily(family) => write!(
-                formatter,
-                "the command reached the {family} commands, which do not apply it"
-            ),
+            Self::CommandOutsideFamily(f) => write!(formatter, "the {f} family cannot apply it"),
             Self::ReservedProductId => formatter.write_str("product entity ID zero is reserved"),
             Self::EmptyProductName => formatter.write_str("product entity name is empty"),
             Self::InvalidTransform => {
