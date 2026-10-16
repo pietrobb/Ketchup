@@ -120,7 +120,10 @@ reproduced failure that they catch, or explicit approval by the owner.
    `cargo clippy --locked --workspace --all-targets -- -D warnings` and
    `cargo fmt --all -- --check` pass. A block of steps, an installer build or a push: also the
    unfiltered `cargo test --locked --workspace --all-targets`, the large-house tests
-   (`-- --ignored large_house`) and all `scripts/check_*.py`.
+   (`-- --ignored large_house`) and all `scripts/check_*.py`. Push once per block, not per
+   commit: a push sooner than CI finishes (~30 min) cancels the run before it. The hook
+   `scripts/hooks/pre-push` runs fmt, every `scripts/check_*.py` and clippy before each push;
+   install it once per clone with `git config core.hooksPath scripts/hooks`.
 2. The named-product check passes, once `scripts/check_no_named_products.py` exists. It is a
    ratchet: the baseline may only shrink.
 3. Manual smoke test:

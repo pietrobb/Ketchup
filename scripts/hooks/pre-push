@@ -1,0 +1,16 @@
+#!/bin/sh
+# What CI fails on first, checked in seconds to minutes before a push instead of
+# in a fix commit after it: formatting, every scripts/check_*.py and clippy.
+# The full suite still runs once per block of steps (AGENTS.md §8).
+# Install once per clone: git config core.hooksPath scripts/hooks
+set -e
+cd "$(git rev-parse --show-toplevel)"
+cargo fmt --all -- --check
+for check in scripts/check_*.py; do
+  if ! output=$("${PYTHON:-python}" "$check" 2>&1); then
+    echo "$output"
+    echo "pre-push: $check failed" >&2
+    exit 1
+  fi
+done
+cargo clippy --locked --workspace --all-targets -- -D warnings
