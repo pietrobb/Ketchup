@@ -484,6 +484,10 @@ impl LiveBridge {
         take_error_details();
         let result = if let Err(error) = Self::require_request_authority(&job.answer.cancelled) {
             Err(error)
+        } else if let Err(error) = Self::guard(app, &Some(job.page.expected.clone())) {
+            // The document changed while the report was made: it would be the
+            // report of another revision, so it is neither kept nor paged.
+            Err(error)
         } else {
             match job.receiver.try_recv() {
                 Ok(Ok(report)) => {

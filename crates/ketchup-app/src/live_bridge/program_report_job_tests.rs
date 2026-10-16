@@ -108,3 +108,30 @@ fn a_report_page_that_needs_a_slow_check_does_not_hold_up_the_frame() {
     assert!(response.ok, "{response:?}");
     assert_eq!(response.result.unwrap()["basis"], "program_evaluation");
 }
+
+/// Review 2026-10-15 status: a report made in the worker while the document
+/// changed is the report of the old revision. It is answered as stale and not
+/// kept, so no page of it is served for the revision it does not describe.
+#[test]
+fn a_report_finished_after_the_document_changed_is_stale_and_not_kept() {
+    let (mut app, mut bridge) = setup();
+    app.new_document();
+    app.apply_program_source(program("box('a', (10, 20, 30))"), false)
+        .unwrap();
+    let (sender, queue) = mpsc::sync_channel(4);
+    bridge.queue = queue;
+    app.live.bridge = Some(bridge);
+
+    let page = issues_page(&app);
+    let pending = request(&mut app, &sender, page);
+    app.document
+        .replace_rule_program_source(program("box('b', (40, 50, 60))"))
+        .unwrap();
+    let response = pending.wait(&mut app);
+    assert_eq!(
+        response.error.as_deref(),
+        Some("stale_document"),
+        "{response:?}"
+    );
+    assert!(app.live.bridge.as_ref().unwrap().program_report.is_none());
+}
