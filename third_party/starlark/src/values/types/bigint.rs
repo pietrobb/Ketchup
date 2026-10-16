@@ -86,6 +86,11 @@ impl StarlarkBigInt {
         Self { value }
     }
 
+    /// Ketchup patch: the bytes of its digits, held outside the heap arena.
+    pub(crate) fn digit_bytes(&self) -> usize {
+        self.value.bits().div_ceil(8) as usize
+    }
+
     pub(crate) fn get(&self) -> &BigInt {
         &self.value
     }
@@ -146,7 +151,7 @@ impl Serialize for StarlarkBigInt {
 impl<'v> AllocValue<'v> for StarlarkBigInt {
     fn alloc_value(self, heap: &'v Heap) -> Value<'v> {
         // Ketchup patch: the digits live outside the arena; the bound counts them.
-        heap.note_external_bytes(self.value.bits().div_ceil(8) as usize);
+        heap.note_external_bytes(self.digit_bytes());
         heap.alloc_simple(self)
     }
 }

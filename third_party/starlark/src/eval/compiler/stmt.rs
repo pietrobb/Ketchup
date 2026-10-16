@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: a collection is due by the bytes the heap bound counts, big integer digits included. See PATCH.md.
+
 //! Evaluation environment, provide converters from Ast* element to value.
 //!
 //! # <a name="build_file"></a>Starlark and BUILD dialect
@@ -546,12 +548,14 @@ impl Compiler<'_, '_, '_, '_> {
 // We also require that `extra_v` is None, since otherwise the user might have
 // additional values stashed somewhere.
 pub(crate) fn possible_gc(eval: &mut Evaluator) {
-    if !eval.disable_gc && eval.heap().allocated_bytes() >= eval.next_gc_level {
+    // Ketchup patch: big integer digits outside the arena count too, so a
+    // program replacing big integers collects them before the heap bound.
+    if !eval.disable_gc && eval.heap().bounded_bytes() >= eval.next_gc_level {
         // When we are at a module scope (as checked above) the eval contains
         // references to all values, so walking covers everything and the unsafe
         // is satisfied.
         unsafe { eval.garbage_collect() }
-        eval.next_gc_level = cmp::max(eval.heap().allocated_bytes() * 2, GC_THRESHOLD);
+        eval.next_gc_level = cmp::max(eval.heap().bounded_bytes() * 2, GC_THRESHOLD);
     }
 }
 

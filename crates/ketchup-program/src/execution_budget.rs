@@ -231,6 +231,21 @@ mod tests {
         .unwrap();
     }
 
+    /// Review 2026-10-15 status PRG-6: the digits of big integers counted against the
+    /// bound only grew, so a long program replacing one big integer reached the
+    /// bound with a few kilobytes alive.
+    #[test]
+    fn big_integers_no_longer_alive_do_not_count_against_the_bound() {
+        let source = format!("x = 1 << 100000\n{}", "x = x + 1\n".repeat(60));
+        run_with_heap(&source, 1 << 18).unwrap();
+        let kept = format!(
+            "L = []\n{}",
+            "L.append((1 << 100000) + len(L))\n".repeat(60)
+        );
+        let error = run_with_heap(&kept, 1 << 18).unwrap_err();
+        assert!(error.to_string().contains("memory limit exceeded"), "{error}");
+    }
+
     /// One multiplication of huge integers is uninterruptible work; products past
     /// a million bits fail, like upstream's left shift past 100 000 bits.
     #[test]

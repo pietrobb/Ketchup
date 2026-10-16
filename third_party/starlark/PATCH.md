@@ -18,7 +18,10 @@ The bound also covers operations that build their result outside the heap first 
 container `repr` stops adding elements once the text passes the bound of the heap last
 limited on the thread (`repr_limit_reached`). Big integers count their digits against the
 bound (`Heap::bounded_bytes`), and a product past 2^20 bits fails like upstream's left
-shift past 100 000 bits, since one such multiplication cannot be interrupted.
+shift past 100 000 bits, since one such multiplication cannot be interrupted. A garbage
+collection counts the digits of the big integers that survive it again, and it is due by
+`bounded_bytes` instead of the arena alone (`src/eval/compiler/stmt.rs`), so replaced big
+integers no longer count until the program reaches the bound (review 2026-10-15 status PRG-6).
 
 `Heap::memory_limit_reached` tells whether the bound refused an operation or the heap holds
 more than it. The refusal's error loses its type when a method returns it as
@@ -29,7 +32,7 @@ worker's own memory limit.
 code (`deprecated`, `mismatched_lifetime_syntaxes`), so the build stays quiet.
 
 Changed files, each marked with a "Modified for Kecup" line under its license header
-(Apache-2.0 §4(b)): `src/lib.rs`, `src/eval/bc/writer.rs`,
+(Apache-2.0 §4(b)): `src/lib.rs`, `src/eval/bc/writer.rs`, `src/eval/compiler/stmt.rs`,
 `src/values/layout/heap/heap_type.rs`, `src/values/layout/value.rs`,
 `src/values/types/{list,tuple}/{globals,value}.rs`,
 `src/values/types/string/{methods,str_type,dot_format,globals,interpolation}.rs`,

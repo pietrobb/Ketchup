@@ -75,16 +75,19 @@ use crate::values::layout::heap::call_enter_exit::NoDrop;
 use crate::values::layout::heap::fast_cell::FastCell;
 use crate::values::layout::heap::maybe_uninit_slice_util::maybe_uninit_write_from_exact_size_iter;
 use crate::values::layout::heap::profile::by_type::HeapSummary;
+use crate::values::layout::heap::repr::AValueOrForward;
 use crate::values::layout::heap::repr::AValueOrForwardUnpack;
 use crate::values::layout::heap::repr::AValueRepr;
 use crate::values::layout::static_string::constant_string;
 use crate::values::layout::typed::string::StringValueLike;
 use crate::values::layout::value::FrozenValue;
 use crate::values::layout::value::Value;
+use crate::values::layout::value::ValueLike;
 use crate::values::list::value::VALUE_EMPTY_FROZEN_LIST;
 use crate::values::string::intern::interner::FrozenStringValueInterner;
 use crate::values::string::intern::interner::StringValueInterner;
 use crate::values::string::str_type::StarlarkStr;
+use crate::values::types::bigint::StarlarkBigInt;
 use crate::values::AllocFrozenValue;
 use crate::values::AllocValue;
 use crate::values::ComplexValue;
@@ -133,6 +136,27 @@ impl fmt::Display for MemoryLimit {
 }
 
 impl std::error::Error for MemoryLimit {}
+
+/// Ketchup patch: the digit bytes of the big integers on an arena.
+struct BigIntDigits(usize);
+
+impl<'v> ArenaVisitor<'v> for BigIntDigits {
+    fn enter_bump(&mut self) {}
+
+    fn regular_value(&mut self, value: &'v AValueOrForward) {
+        if let AValueOrForwardUnpack::Header(header) = value.unpack() {
+            // SAFETY: the arena just built by the collection holds live values only.
+            let value = unsafe { header.unpack_value(HeapKind::Unfrozen) };
+            if let Some(int) = value.downcast_ref::<StarlarkBigInt>() {
+                self.0 = self.0.saturating_add(int.digit_bytes());
+            }
+        }
+    }
+
+    fn call_enter(&mut self, _function: Value<'v>, _time: ProfilerInstant) {}
+
+    fn call_exit(&mut self, _time: ProfilerInstant) {}
+}
 
 thread_local! {
     /// Ketchup patch: the bound of the heap last limited on this thread, for
@@ -1004,6 +1028,10 @@ impl Heap {
         };
         f(&tracer);
         self.arena.set(tracer.arena);
+        // Ketchup patch: only the big integers that survived still hold digits.
+        let mut digits = BigIntDigits(0);
+        self.visit_arena(HeapKind::Unfrozen, &mut digits);
+        self.external_bytes.set(digits.0);
     }
 
     /// Obtain a summary of how much memory is currently allocated by this heap.
