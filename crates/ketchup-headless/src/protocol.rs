@@ -269,6 +269,29 @@ impl From<SessionError> for Error {
 }
 type Result<T> = std::result::Result<T, Error>;
 
+/// A Save refused because the Undo history is past what a file stores or a
+/// reader accepts; the current revision still saves with `discard_history`.
+fn history_too_large(error: SessionError) -> Error {
+    use ketchup_model::persistence::{FilePersistenceError, PersistenceError};
+    let too_large = matches!(
+        &error,
+        SessionError::Persistence(FilePersistenceError::Format(
+            PersistenceError::ResourceLimit | PersistenceError::TooLarge { .. }
+        ))
+    );
+    let mut answer = Error::from(error);
+    if too_large {
+        answer.code = "history_too_large".into();
+        answer.message = format!(
+            "{}; the Undo history is past what a file stores, so nothing was written. \
+             Save again with \"discard_history\": true to keep only the current revision \
+             and its program (the Undo history is dropped).",
+            answer.message
+        );
+    }
+    answer
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -875,7 +898,7 @@ impl Server {
             "run_validators" => (&["ids"], false),
             "set_grounded" => (&["occurrence_ids", "grounded"], true),
             "undo" | "redo" => (&[], true),
-            "save" => (&["path", "overwrite"], true),
+            "save" => (&["path", "overwrite", "discard_history"], true),
             _ => {
                 return Err(Error::new(
                     "unknown_method",
@@ -950,14 +973,30 @@ impl Server {
                 Ok(result)
             }
             "save" => {
-                self.session.save(
-                    string(p, "path")?,
-                    SaveOptions {
-                        overwrite: boolean(p, "overwrite", false)?,
-                    },
-                )?;
+                let path = string(p, "path")?;
+                let options = SaveOptions {
+                    overwrite: boolean(p, "overwrite", false)?,
+                };
+                // Dropping the Undo history needs consent, as the window asks
+                // for it: a history past the file's limits is refused with a
+                // code naming the explicit way to save the current revision.
+                let discard_history = boolean(p, "discard_history", false)?;
+                if discard_history {
+                    self.session.save_current_snapshot(path, options)?;
+                } else {
+                    self.session
+                        .save(path, options)
+                        .map_err(history_too_large)?;
+                }
                 self.initial_placeholder = false;
-                Ok(self.state_result())
+                let mut result = self.state_result();
+                if discard_history {
+                    result["warnings"] = json!([{
+                        "kind": "history_discarded",
+                        "message": "only the current revision was saved; the Undo history was dropped",
+                    }]);
+                }
+                Ok(result)
             }
             "apply" => {
                 let program: AssistantCadEditProgram = serde_json::from_value(
@@ -1759,6 +1798,75 @@ mod tests {
             .unwrap()
             .as_bytes(),
         )
+    }
+
+    /// PS-9 follow-up: an agent whose Undo history is past what a file stores
+    /// is told so and can save the current revision with explicit consent,
+    /// as the window asks the user; nothing is dropped without it.
+    #[test]
+    fn a_history_past_the_file_limits_saves_the_current_revision_on_consent() {
+        use ketchup_model::document::{Dimension, NodeId};
+        let mut server = Server::new(SessionSettings::default());
+        let mut apply = |command| {
+            let proposal = server
+                .session
+                .plan_commands(CommandBatch::new(vec![command]))
+                .unwrap();
+            server.session.apply_proposal(&proposal).unwrap();
+        };
+        apply(CanonicalCommand::CreateEvaluatorNode {
+            id: NodeId(1),
+            name: "parameter".into(),
+            dimension: Dimension::new("10", 10.0).unwrap(),
+            dependencies: vec![],
+        });
+        // Each revision brings 256 KiB nothing else shares: 200 of them
+        // outgrow the 32 MiB a file stores for the history.
+        let mut state = 1_u64;
+        for _ in 0..limits::UNDO_REVISIONS {
+            let name = (0..256 * 1024)
+                .map(|_| {
+                    state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1_442_695_040_888_963_407);
+                    char::from(b"0123456789abcdef"[(state >> 60) as usize])
+                })
+                .collect();
+            apply(CanonicalCommand::RenameEvaluatorNode {
+                id: NodeId(1),
+                name,
+            });
+        }
+        let current = server.session.snapshot();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("model.ketchup");
+        let stamp = |server: &Server| {
+            let state = server.state_result();
+            json!({
+                "expected_revision": state["state"]["revision"],
+                "expected_digest": state["state"]["canonical_digest"],
+                "path": path,
+            })
+        };
+        let params = stamp(&server);
+        let refused = request(&mut server, "save", params);
+        assert_eq!(refused["error"]["code"], "history_too_large", "{refused}");
+        assert!(!path.exists());
+        assert!(server.session.visible_undo_steps() > 0);
+
+        let mut params = stamp(&server);
+        params["discard_history"] = json!(true);
+        let saved = request(&mut server, "save", params);
+        assert_eq!(
+            saved["result"]["warnings"][0]["kind"], "history_discarded",
+            "{saved}"
+        );
+        assert_eq!(server.session.visible_undo_steps(), 0);
+        let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+        assert_eq!(
+            reopened.snapshot().canonical_digest(),
+            current.canonical_digest()
+        );
     }
 
     #[test]
