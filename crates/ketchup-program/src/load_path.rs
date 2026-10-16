@@ -168,6 +168,8 @@ fn corners((min, max): ([f64; 3], [f64; 3])) -> Vec<[f64; 3]> {
         .collect()
 }
 
+/// Whether `part` stands on the floor. Booleans (a trim at the floor) can end
+/// a part exactly at the floor although its uncut box reaches below.
 pub(crate) fn on_floor(part: &Part, floor: f64) -> bool {
     let (min, max) = part.world_bounds();
     if part.booleans().next().is_none() {

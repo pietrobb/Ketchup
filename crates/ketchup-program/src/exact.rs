@@ -40,10 +40,17 @@ impl ExactPair {
         !self.penetrating() && self.distance_mm.is_some_and(|d| d <= CONTACT_FIT_MM)
     }
 
+    /// The solids overlap or touch: the one contact predicate of supports,
+    /// groups and gaps.
+    #[must_use]
+    pub fn in_contact(&self) -> bool {
+        self.penetrating() || self.touching()
+    }
+
     /// Clearance between the solids, when they are apart and it is known.
     #[must_use]
     pub fn gap_mm(&self) -> Option<f64> {
-        if self.penetrating() || self.touching() {
+        if self.in_contact() {
             return Some(0.0);
         }
         self.distance_mm

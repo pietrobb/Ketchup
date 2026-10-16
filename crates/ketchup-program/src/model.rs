@@ -1030,27 +1030,40 @@ impl Part {
     }
 
     /// Bounds in this part's frame of its own body and of each body joined in,
-    /// one by one (a bolt's head and its shank).
+    /// one by one (a bolt's head and its shank), where they are on the
+    /// finished part.
     pub(crate) fn piece_bounds(&self) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_ {
-        std::iter::once(self.body_bounds()).chain(self.joined().map(|tool| {
-            let (tool_min, tool_max) = tool.local_bounds();
-            let (mut min, mut max) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
-            for corner in 0..8 {
-                let local: [f64; 3] = std::array::from_fn(|axis| {
-                    if corner >> axis & 1 == 0 {
-                        tool_min[axis]
-                    } else {
-                        tool_max[axis]
-                    }
-                });
-                let point = self.to_local(tool.to_world(local));
-                for axis in 0..3 {
-                    min[axis] = min[axis].min(point[axis]);
-                    max[axis] = max[axis].max(point[axis]);
+        let joined = self
+            .operations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, operation)| match operation {
+                ProgramOperation::Boolean(boolean) if boolean.kind == ProgramBooleanKind::Union => {
+                    Some((index + 1, &boolean.tool))
                 }
-            }
-            (min, max)
-        }))
+                _ => None,
+            });
+        std::iter::once(self.bounds_after(0, self.body_bounds())).chain(joined.map(
+            |(after, tool)| {
+                let (tool_min, tool_max) = tool.local_bounds();
+                let (mut min, mut max) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+                for corner in 0..8 {
+                    let local: [f64; 3] = std::array::from_fn(|axis| {
+                        if corner >> axis & 1 == 0 {
+                            tool_min[axis]
+                        } else {
+                            tool_max[axis]
+                        }
+                    });
+                    let point = self.to_local(tool.to_world(local));
+                    for axis in 0..3 {
+                        min[axis] = min[axis].min(point[axis]);
+                        max[axis] = max[axis].max(point[axis]);
+                    }
+                }
+                self.bounds_after(after, (min, max))
+            },
+        ))
     }
 
     /// Bodies union() joined into this part.
@@ -1306,8 +1319,10 @@ impl Part {
     /// Whether the volume `other` occupies now was already subtracted from this part.
     #[must_use]
     pub fn subtracts(&self, other: &Self) -> bool {
-        self.booleans_in_place().any(|boolean| {
-            boolean.kind == ProgramBooleanKind::Subtract
+        // A mirror after the boolean moved the removed volume off `other`.
+        self.finished_booleans().any(|(boolean, finished)| {
+            finished == boolean.tool.obb()
+                && boolean.kind == ProgramBooleanKind::Subtract
                 && boolean.tool.name == other.name
                 && boolean.tool.body == other.body
                 && boolean.tool.size_mm == other.size_mm

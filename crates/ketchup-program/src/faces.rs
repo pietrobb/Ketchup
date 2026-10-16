@@ -9,7 +9,7 @@
 
 #[path = "faces_boundary.rs"]
 mod boundary;
-use crate::frame::{self, Mat3};
+use crate::frame::{self, Mat3, Obb};
 use crate::model::{
     FaceNameError, Hole, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind,
     ProgramOperation, ProgramPartBody, ProgramProfileSegment, profile_bounds,
@@ -762,33 +762,58 @@ impl Part {
         (point, direction)
     }
 
-    /// Index of the last mirror operation, after which nothing is moved again.
-    fn last_mirror(&self) -> Option<usize> {
+    /// Where bounds in the part's frame, written before operation `first`,
+    /// end up on the finished part: a mirror reflects them along its axis.
+    pub(crate) fn bounds_after(
+        &self,
+        first: usize,
+        (mut min, mut max): ([f64; 3], [f64; 3]),
+    ) -> ([f64; 3], [f64; 3]) {
+        for operation in self.operations.iter().skip(first) {
+            if let ProgramOperation::Mirror(mirror) = operation {
+                let (low, high) = (min[mirror.axis], max[mirror.axis]);
+                min[mirror.axis] = 2.0 * mirror.center_mm - high;
+                max[mirror.axis] = 2.0 * mirror.center_mm - low;
+            }
+        }
+        (min, max)
+    }
+
+    /// Where a world box placed before operation `index` ends up on the
+    /// finished part: [`Self::after_operation`] of its centre and axes.
+    fn obb_after_operation(&self, index: usize, obb: Obb) -> Obb {
+        let mirrored = self.operations[index + 1..]
+            .iter()
+            .any(|operation| matches!(operation, ProgramOperation::Mirror(_)));
+        if !mirrored {
+            return obb;
+        }
+        let centre = self.to_local(obb.centre);
+        Obb {
+            centre: self.to_world(self.after_operation(index, (centre, [0.0; 3])).0),
+            axes: obb.axes.map(|axis| {
+                let local = frame::apply_transposed(&self.rotation, axis);
+                frame::apply(
+                    &self.rotation,
+                    self.after_operation(index, ([0.0; 3], local)).1,
+                )
+            }),
+            half: obb.half,
+        }
+    }
+
+    /// Each boolean with its tool's box on the finished part: a mirror
+    /// written after the boolean carries what it removed, kept or joined
+    /// (review PRG-2), as it carries holes and pockets.
+    pub fn finished_booleans(&self) -> impl Iterator<Item = (&ProgramBoolean, Obb)> {
         self.operations
             .iter()
-            .rposition(|operation| matches!(operation, ProgramOperation::Mirror(_)))
-    }
-
-    /// Whether a mirror written after a boolean carried its result away from
-    /// where the tool stands, so the tool's box no longer says what it removed,
-    /// kept or joined.
-    #[must_use]
-    pub fn mirrors_a_boolean(&self) -> bool {
-        self.last_mirror().is_some_and(|last| {
-            self.operations[..last]
-                .iter()
-                .any(|operation| matches!(operation, ProgramOperation::Boolean(_)))
-        })
-    }
-
-    /// The booleans whose result still lies where their tool stands: no mirror
-    /// is written after them.
-    pub fn booleans_in_place(&self) -> impl Iterator<Item = &ProgramBoolean> {
-        let first = self.last_mirror().map_or(0, |last| last + 1);
-        self.operations[first..]
-            .iter()
-            .filter_map(|operation| match operation {
-                ProgramOperation::Boolean(boolean) => Some(&**boolean),
+            .enumerate()
+            .filter_map(|(index, operation)| match operation {
+                ProgramOperation::Boolean(boolean) => Some((
+                    &**boolean,
+                    self.obb_after_operation(index, boolean.tool.obb()),
+                )),
                 _ => None,
             })
     }

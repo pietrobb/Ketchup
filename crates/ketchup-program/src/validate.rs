@@ -263,15 +263,15 @@ pub(crate) fn seated_in_pocket(a: &Part, b: &Part) -> bool {
 
 /// False when `a`'s booleans certainly removed the volume it shares with `b`:
 /// `a` had `b` itself subtracted, or one subtracted plain box tool covers the
-/// whole shared volume, or an intersect tool leaves none of it. A boolean a
-/// later mirror carried away from its tool proves nothing.
+/// whole shared volume, or an intersect tool leaves none of it. Each tool
+/// stands where it is on the finished part.
 pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
     if a.subtracts(b) {
         return false;
     }
     let shared = [a.obb(), b.obb()];
     let corners = frame::intersection_vertices(&shared, CONTACT_FIT_MM);
-    a.booleans_in_place().all(|boolean| {
+    a.finished_booleans().all(|(boolean, finished)| {
         let tool = &boolean.tool;
         match boolean.kind {
             // Only a plain box is exactly its bounding box; anything else
@@ -282,12 +282,12 @@ pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
                     && !corners.is_empty()
                     && corners
                         .iter()
-                        .all(|corner| tool.obb().contains(*corner, CONTACT_FIT_MM)))
+                        .all(|corner| finished.contains(*corner, CONTACT_FIT_MM)))
             }
             // The tool's box holds the whole tool, so no common volume with
             // the box means none with the tool.
             ProgramBooleanKind::Intersect => {
-                frame::common_region(&[shared[0], shared[1], tool.obb()], CONTACT_FIT_MM).is_some()
+                frame::common_region(&[shared[0], shared[1], finished], CONTACT_FIT_MM).is_some()
             }
             // Joining adds volume; it removes none.
             ProgramBooleanKind::Union => true,
@@ -300,24 +300,18 @@ pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
 /// box then removes exactly everything beyond that face.
 fn kept_half_spaces(part: &Part) -> Vec<([f64; 3], f64)> {
     let corners = frame::intersection_vertices(&[part.obb()], CONTACT_FIT_MM);
-    part.booleans_in_place()
-        .filter(|boolean| {
+    part.finished_booleans()
+        .filter(|(boolean, _)| {
             boolean.kind == ProgramBooleanKind::Subtract
                 && is_box(&boolean.tool)
                 && boolean.tool.booleans().next().is_none()
         })
-        .filter_map(|boolean| {
-            let mut crossing =
-                boolean
-                    .tool
-                    .obb()
-                    .planes()
-                    .into_iter()
-                    .filter(|(normal, offset)| {
-                        corners
-                            .iter()
-                            .any(|corner| dot(*normal, *corner) > offset + CONTACT_FIT_MM)
-                    });
+        .filter_map(|(_, finished)| {
+            let mut crossing = finished.planes().into_iter().filter(|(normal, offset)| {
+                corners
+                    .iter()
+                    .any(|corner| dot(*normal, *corner) > offset + CONTACT_FIT_MM)
+            });
             match (crossing.next(), crossing.next()) {
                 (Some((normal, offset)), None) => Some((normal.map(|value| -value), -offset)),
                 _ => None,
@@ -383,24 +377,25 @@ pub(crate) fn is_box(part: &Part) -> bool {
 /// Two boxes overlap by a convex volume; one box tool subtracted from it or
 /// intersected with it leaves a decidable convex question, which
 /// `booleans_leave_overlap` already answered. Profile bodies, and two or more
-/// tools reaching into the shared volume, or a boolean a later mirror moved
-/// away from its tool, need the exact solids.
+/// tools reaching into the shared volume, need the exact solids.
 pub(crate) fn needs_exact_shapes(a: &Part, b: &Part) -> bool {
     if [a, b].iter().any(|part| {
-        !is_box(part)
-            || part.holes().next().is_some()
-            || part.pockets().next().is_some()
-            || part.mirrors_a_boolean()
+        !is_box(part) || part.holes().next().is_some() || part.pockets().next().is_some()
     }) {
         return true;
     }
     let shared = [a.obb(), b.obb()];
-    let mut reaching = a.booleans().chain(b.booleans()).filter(|boolean| {
-        frame::common_region(&[shared[0], shared[1], boolean.tool.obb()], CONTACT_FIT_MM).is_some()
-    });
+    let mut reaching =
+        a.finished_booleans()
+            .chain(b.finished_booleans())
+            .filter(|(_, finished)| {
+                frame::common_region(&[shared[0], shared[1], *finished], CONTACT_FIT_MM).is_some()
+            });
     match (reaching.next(), reaching.next()) {
         (None, _) => false,
-        (Some(boolean), None) => !is_box(&boolean.tool) || boolean.tool.booleans().next().is_some(),
+        (Some((boolean, _)), None) => {
+            !is_box(&boolean.tool) || boolean.tool.booleans().next().is_some()
+        }
         (Some(_), Some(_)) => true,
     }
 }
@@ -716,19 +711,7 @@ fn support<'a>(
     let mut supported: Vec<bool> = model
         .parts
         .iter()
-        .map(|part| {
-            if grounded.contains(&part.name) {
-                return true;
-            }
-            // Booleans (a trim at the floor) can end a part exactly at the floor
-            // although its uncut box reaches below.
-            let (min, max) = part.world_bounds();
-            if part.booleans().next().is_none() {
-                (min[2] - floor).abs() <= CONTACT_FIT_MM
-            } else {
-                min[2] <= floor + CONTACT_FIT_MM && max[2] > floor + CONTACT_FIT_MM
-            }
-        })
+        .map(|part| grounded.contains(&part.name) || crate::load_path::on_floor(part, floor))
         .collect();
     if model.floor_z_mm.is_none() && !supported.iter().any(|value| *value) {
         return;
@@ -752,7 +735,7 @@ fn support<'a>(
             }
             let (part, other) = (&model.parts[left], &model.parts[right]);
             let touching = match exact.decides(part, other) {
-                Some(pair) => pair.penetrating() || pair.touching(),
+                Some(pair) => pair.in_contact(),
                 None => {
                     faces.contact(part, other).is_some()
                         || overlap(part, other).is_some()

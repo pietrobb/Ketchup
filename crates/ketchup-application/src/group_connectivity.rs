@@ -114,7 +114,7 @@ fn report(snapshot: &Snapshot, facts: &ExactPairFacts, coverage: &Value) -> Valu
                     .get(&(a.min(b).clone(), a.max(b).clone()))
                     // The program's contact rule, not the document tolerance:
                     // both report the same group (review PRG-5).
-                    .is_some_and(|pair| pair.penetrating() || pair.touching())
+                    .is_some_and(ketchup_program::ExactPair::in_contact)
                 {
                     let (a, b) = (root(&parents, left), root(&parents, right));
                     parents[b] = a;

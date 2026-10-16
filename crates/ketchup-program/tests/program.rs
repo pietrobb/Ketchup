@@ -1525,8 +1525,9 @@ fn a_notch_cut_by_a_tool_makes_room_for_the_part_that_sits_in_it() {
 }
 
 /// A notch cut before a mirror is mirrored with the part: the volume where
-/// the tool stood is solid again, so a part there is no longer let in; boxes
-/// cannot place the mirrored notch and leave it to the exact solids.
+/// the tool stood is solid again, so a part there is no longer let in, and a
+/// part in the mirrored notch sits in it on boxes alone: the tool's box stands
+/// where the mirror carried it (review 2026-10-15 §5 S4).
 #[test]
 fn a_notch_mirrored_after_its_cut_no_longer_makes_room_where_the_tool_stood() {
     let notched = |extra: &str| {
@@ -1543,16 +1544,34 @@ fn a_notch_mirrored_after_its_cut_no_longer_makes_room_where_the_tool_stood() {
         mirrored.contains(&COLLISION_UNVERIFIED) || mirrored.contains(&"collision"),
         "the notch moved to x 80-100, q at x 0-20 is in solid wood: {mirrored:?}"
     );
-    // A part in the mirrored notch is not called a collision by boxes.
     let in_notch = notched("mirror(p, axis = \"x\")\n").replace(
         "q = box(\"q\", (20, 20, 20))",
         "q = box(\"q\", (20, 20, 20), at = (80, 0, 0))",
     );
-    assert!(
-        !kinds(&in_notch).contains(&"collision"),
-        "{:?}",
-        kinds(&in_notch)
-    );
+    assert!(kinds(&in_notch).is_empty(), "{:?}", kinds(&in_notch));
+}
+
+/// A screw mirrored end for end has its head where its shank was: the head,
+/// thicker than the thread, does not engage the tapped hole.
+#[test]
+fn a_screw_mirrored_end_for_end_puts_its_head_in_the_tapped_hole() {
+    let collisions = |extra: &str| {
+        let source = format!(
+            "L = bolt_lengths(\"M5\", norm = \"ISO 4762\")[0]\n\
+             p = box(\"p\", (40, 40, 30))\n\
+             hole(p, \"z+\", world = (20, 20, 30), depth = L + 5, thread = (\"M5\", L))\n\
+             s = bolt(\"s\", \"M5\", L, norm = \"ISO 4762\", at = (20, 20, 30))\n{extra}"
+        );
+        let (_, report) =
+            run("screw.star", &source, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
+        report
+            .issues
+            .iter()
+            .filter(|issue| issue.kind.starts_with("collision"))
+            .count()
+    };
+    assert_eq!(collisions(""), 0, "the shank engages the thread");
+    assert_eq!(collisions("mirror(s, axis = \"z\")\n"), 1);
 }
 
 /// A side and a shelf doweled together, optionally turned as one unit.

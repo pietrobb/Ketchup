@@ -106,7 +106,6 @@ pub(crate) fn polygon_area(points: &[[f64; 3]]) -> f64 {
 
 fn approximate(part: &Part) -> bool {
     !validate::is_box(part)
-        || part.mirrors_a_boolean()
         || part
             .booleans()
             .any(|boolean| boolean.kind == ProgramBooleanKind::Intersect)
@@ -117,18 +116,18 @@ fn approximate(part: &Part) -> bool {
 /// that acts on that volume like a half-space (a trim): it covers the volume
 /// except beyond one of its faces. Other subtract tools are ignored.
 fn shared_volume(a: &Part, b: &Part) -> Vec<[f64; 3]> {
-    let booleans = || a.booleans_in_place().chain(b.booleans_in_place());
+    let booleans = || a.finished_booleans().chain(b.finished_booleans());
     let mut planes: Vec<([f64; 3], f64)> = [a.obb(), b.obb()]
         .iter()
         .flat_map(Obb::planes)
         .chain(
             booleans()
-                .filter(|boolean| boolean.kind == ProgramBooleanKind::Intersect)
-                .flat_map(|boolean| boolean.tool.obb().planes()),
+                .filter(|(boolean, _)| boolean.kind == ProgramBooleanKind::Intersect)
+                .flat_map(|(_, finished)| finished.planes()),
         )
         .collect();
     let mut vertices = frame::polytope_vertices(&planes, CONTACT_FIT_MM);
-    for boolean in booleans() {
+    for (boolean, finished) in booleans() {
         let tool = &boolean.tool;
         if boolean.kind != ProgramBooleanKind::Subtract
             || tool.name == a.name
@@ -139,7 +138,7 @@ fn shared_volume(a: &Part, b: &Part) -> Vec<[f64; 3]> {
         {
             continue;
         }
-        let tool_planes = tool.obb().planes();
+        let tool_planes = finished.planes();
         let outside = |plane: &([f64; 3], f64)| {
             vertices
                 .iter()

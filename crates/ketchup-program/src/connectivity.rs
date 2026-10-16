@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Unknown is not contact: a non-box pair needs the native solids to settle it.
 fn touching(a: &Part, b: &Part, exact: &ExactShapes) -> Option<bool> {
-    if let Some(pair) = exact.pair(&a.name, &b.name) {
-        return Some(pair.penetrating() || pair.touching());
+    if let Some(pair) = exact.between(a, b) {
+        return Some(pair.in_contact());
     }
     let separated = a.obb().separation(&b.obb()) > CONTACT_FIT_MM;
     if separated || (box_is_solid(a) && box_is_solid(b)) {
