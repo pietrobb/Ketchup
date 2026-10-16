@@ -1772,7 +1772,21 @@ impl HoleThread {
     /// The machining text, e.g. "M8×1.25 depth 12".
     #[must_use]
     pub fn label(&self) -> String {
-        format!("{}×{} depth {}", self.size, self.pitch_mm, self.depth_mm)
+        // To the nanometre, as the machine files write their numbers: a pitch
+        // computed as 0.1 + 0.2 reads 0.3, not 0.30000000000000004.
+        let number = |value: f64| {
+            let formatted = format!("{value:.9}");
+            formatted
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_owned()
+        };
+        format!(
+            "{}×{} depth {}",
+            self.size,
+            number(self.pitch_mm),
+            number(self.depth_mm)
+        )
     }
 }
 
@@ -2483,5 +2497,23 @@ mod transform_tests {
         let back = composed.inverse().unwrap().transform_point(expected);
         assert!(close(back, point));
         assert_eq!(sample().rigid_inverse(), None);
+    }
+}
+
+#[cfg(test)]
+mod hole_thread_tests {
+    use super::*;
+
+    /// MF-4: a pitch or depth computed in floating point reads as the machine
+    /// files write it, not with its binary noise.
+    #[test]
+    fn a_thread_label_writes_its_numbers_as_the_machine_files_do() {
+        let thread = HoleThread {
+            size: "M8".to_owned(),
+            pitch_mm: 0.1 + 0.2,
+            depth_mm: 12.000_000_000_000_002,
+            modeled: None,
+        };
+        assert_eq!(thread.label(), "M8×0.3 depth 12");
     }
 }

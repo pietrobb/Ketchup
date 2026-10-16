@@ -1424,7 +1424,7 @@ METRIC_TAP_DRILL = {
 }
 
 # size: how much deeper than its thread a blind tapped hole is drilled, for the tap's lead
-# and the chips (DIN 76-1:2004 table 2, e1 regular case, by the pitch: 6.3 to 4 P).
+# and the chips (DIN 76-1:2004 table 2, e1 regular case, by the pitch: 5.6 P for M3 down to 4.4 P for M24).
 METRIC_BLIND_HOLE_RUNOUT = {
     "M3": 2.8, "M4": 3.8, "M5": 4.2, "M6": 5.1, "M8": 6.2, "M10": 7.3, "M12": 8.3, "M14": 9.3,
     "M16": 9.3, "M18": 11.2, "M20": 11.2, "M22": 11.2, "M24": 13.1,

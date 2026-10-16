@@ -717,7 +717,7 @@ fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f6
     }
     page.text(
         [f64::midpoint(left, right), below - 1.0],
-        &format!("{width:.0}"),
+        &whole_mm(width),
         DIMENSION_TEXT_MM,
         Anchor::Middle,
     );
@@ -732,7 +732,7 @@ fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f6
     }
     page.marks.push(Mark::Text {
         at: [aside - 1.0, f64::midpoint(bottom, top)],
-        text: format!("{height:.0}"),
+        text: whole_mm(height),
         height_mm: DIMENSION_TEXT_MM,
         anchor: Anchor::Middle,
         angle_deg: 90.0,
@@ -886,6 +886,12 @@ pub fn project_sheet(
     })
 }
 
+/// A dimension in whole millimetres, a half rounded up as a drawing reads:
+/// `{:.0}` alone rounds 2450.5 to the even 2450.
+fn whole_mm(value: f64) -> String {
+    format!("{:.0}", value.round())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -949,6 +955,20 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    /// MF-4: a half millimetre rounds up, as a drawing reads, not to the even neighbour.
+    #[test]
+    fn overall_dimensions_round_a_half_millimetre_up() {
+        let sheet = project_sheet(
+            &[cuboid("block", [0.0, 0.0, 0.0], [2450.5, 1000.0, 2.5])],
+            &ProjectSheetOptions::default(),
+        )
+        .unwrap();
+        let texts = sheet.page.texts().collect::<Vec<_>>();
+        assert!(texts.contains(&"2451"), "{texts:?}");
+        assert!(texts.contains(&"3"), "{texts:?}");
+        assert!(!texts.contains(&"2450"), "{texts:?}");
     }
 
     #[test]
