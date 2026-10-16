@@ -257,6 +257,70 @@ fn embeds_parent_dir(argument: &str) -> bool {
         .any(|part| part != ".." && part.ends_with(".."))
 }
 
+/// One argument of a plugin's command line, resolved once into the text the
+/// process gets and the consent shows, and the file outside `folder` it
+/// names, hashed with `held` (left unhashed without it: a listing does not
+/// read files). Both a plugin folder and a command line resolve their words
+/// here (review 2026-10-15 structural point 7). A relative argument is
+/// relative to `base`. Inside `folder`, whose files are staged, the argument
+/// stays as given, with `..` resolved so it cannot lead out of the stage; a
+/// file outside is given by its absolute path; an argument naming no file
+/// reaches the process as given only when it cannot leave the run's private
+/// directory. `refuse` gives the caller's refusal for an argument that joins
+/// `..` to an option.
+pub(super) fn resolve_argument(
+    argument: &str,
+    base: &Path,
+    folder: Option<&Path>,
+    held: Option<&mut HeldFiles>,
+    refuse: impl FnOnce(String) -> &'static str,
+) -> Result<(String, Option<HashedFile>), &'static str> {
+    if embeds_parent_dir(argument) {
+        return Err(refuse(format!(
+            "argument {argument:?} joins `..` to an option; give the path as its own argument"
+        )));
+    }
+    let candidate = lexical(&base.join(argument));
+    let parent_dir = Path::new(argument)
+        .components()
+        .any(|component| component == Component::ParentDir);
+    if folder.is_some_and(|folder| candidate.starts_with(folder)) {
+        let given = if parent_dir {
+            candidate.display().to_string()
+        } else {
+            argument.to_owned()
+        };
+        return Ok((given, None));
+    }
+    // Before `is_file`: asking a network share whether a file exists
+    // already sends it the user's credentials.
+    if !local_absolute_path(&candidate.to_string_lossy()) {
+        return Err(failure(
+            "invalid_path",
+            "No plugin argument names a network share, device or stream.",
+            json!({"canonical_mutation": false}),
+        ));
+    }
+    if candidate.is_file() {
+        let sha256 = match held {
+            Some(held) => held
+                .hash(&candidate)
+                .map_err(|error| failed_because("plugin_failed", error))?,
+            None => String::new(),
+        };
+        return Ok((candidate.display().to_string(), Some((candidate, sha256))));
+    }
+    if folder.is_none()
+        && Path::new(argument)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        // Resolves in the run's empty private directory, if at all.
+        return Ok((argument.to_owned(), None));
+    }
+    Err(not_a_file(&candidate))
+}
+
 /// The executable, the arguments and every file outside the folder they name,
 /// hashed (with `held`, through handles held until the run ends). A relative
 /// argument naming a file outside the folder is given as its absolute path,
@@ -290,60 +354,22 @@ fn outside_files(
         )));
     };
     let mut outside = Vec::new();
+    if !executable.starts_with(folder) {
+        // A listing does not read the file; a run hashes it.
+        let sha256 = match held.as_deref_mut() {
+            Some(held) => held
+                .hash(&executable)
+                .map_err(|error| failed_because("plugin_failed", error))?,
+            None => String::new(),
+        };
+        outside.push((executable.clone(), sha256));
+    }
     let mut arguments = Vec::new();
-    let candidates = std::iter::once((None, executable.clone())).chain(
-        manifest
-            .arguments
-            .iter()
-            .map(|argument| (Some(argument), lexical(&folder.join(argument)))),
-    );
-    for (argument, candidate) in candidates {
-        if let Some(argument) = argument
-            && embeds_parent_dir(argument)
-        {
-            return Err(invalid(format!(
-                "argument {argument:?} joins `..` to an option; give the path as its own argument"
-            )));
-        }
-        let mut given = argument.cloned();
-        if candidate.starts_with(folder) {
-            // Through `..` the text would lead out of the stage the process
-            // runs in; it gets the folder's file it names, which is staged.
-            if let Some(given) = given.as_mut()
-                && Path::new(given.as_str())
-                    .components()
-                    .any(|component| component == Component::ParentDir)
-            {
-                *given = candidate.display().to_string();
-            }
-            arguments.extend(given);
-            continue;
-        }
-        // Before `is_file`: asking a network share whether a file exists
-        // already sends it the user's credentials.
-        if !local_absolute_path(&candidate.to_string_lossy()) {
-            return Err(failure(
-                "invalid_path",
-                "No plugin argument names a network share, device or stream.",
-                json!({"canonical_mutation": false}),
-            ));
-        }
-        if candidate.is_file() {
-            // A listing does not read the file; a run hashes it.
-            let sha256 = match held.as_deref_mut() {
-                Some(held) => held
-                    .hash(&candidate)
-                    .map_err(|error| failed_because("plugin_failed", error))?,
-                None => String::new(),
-            };
-            if let Some(given) = given.as_mut() {
-                *given = candidate.display().to_string();
-            }
-            outside.push((candidate, sha256));
-        } else {
-            return Err(not_a_file(&candidate));
-        }
-        arguments.extend(given);
+    for argument in &manifest.arguments {
+        let (given, file) =
+            resolve_argument(argument, folder, Some(folder), held.as_deref_mut(), invalid)?;
+        arguments.push(given);
+        outside.extend(file);
     }
     Ok((executable, arguments, outside))
 }

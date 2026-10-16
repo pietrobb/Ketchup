@@ -949,13 +949,49 @@ fn a_command_lines_relative_arguments_resolve_in_an_empty_private_directory() {
     assert_ne!(directory, here);
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
     assert_eq!(launch.command.arguments[0], "later.py");
+    let given = Path::new(&launch.command.arguments[1]);
+    assert!(given.is_absolute());
+    assert!(
+        given
+            .components()
+            .all(|component| component != std::path::Component::ParentDir),
+        "{given:?}"
+    );
     assert_eq!(
-        Path::new(&launch.command.arguments[1]),
-        std::path::absolute(&relative).unwrap()
+        std::fs::canonicalize(given).unwrap(),
+        std::fs::canonicalize(&script).unwrap()
     );
     launch.held.unchanged().unwrap();
     std::fs::write(directory.join("later.py"), "raise SystemExit\n").unwrap();
     assert!(launch.held.unchanged().is_err());
+}
+
+/// Review 2026-10-15 structural point 7: a command line's words are resolved
+/// by the rule a plugin folder's are. `..` joined to an option is no path
+/// component, so it reached the process as given and the plugin opened a file
+/// beside its empty private directory that nobody hashed.
+#[test]
+fn a_dot_dot_joined_to_an_option_of_a_command_line_is_refused() {
+    let _turn = file_turn();
+    let script = example_script().to_string_lossy().into_owned();
+    for argument in [
+        "--script=../plugin.py",
+        "--script=..\\plugin.py",
+        "-s../plugin.py",
+        "--dir=..",
+    ] {
+        let request = plugin_request(vec![script.clone(), argument.to_owned()]);
+        assert_eq!(
+            crate::live_bridge::plugin::launch(&request).err(),
+            Some("invalid_path"),
+            "{argument:?}"
+        );
+    }
+    for argument in ["--range=1..5", "--script=plugin.py"] {
+        let request = plugin_request(vec![script.clone(), argument.to_owned()]);
+        let launch = crate::live_bridge::plugin::launch(&request);
+        assert!(launch.is_ok(), "{argument:?}");
+    }
 }
 
 /// `path` relative to `base`, through `..` where it must.

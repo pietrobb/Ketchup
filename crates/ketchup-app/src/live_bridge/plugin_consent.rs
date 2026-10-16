@@ -91,11 +91,6 @@ impl PluginConsent {
         operations: &[String],
         held: &mut HeldFiles,
     ) -> Result<Self, &'static str> {
-        let hashed = |path: &Path, held: &mut HeldFiles| {
-            let absolute = std::path::absolute(path)?;
-            let hash = held.hash(&absolute)?;
-            Ok::<_, std::io::Error>((absolute, hash))
-        };
         // A network, device or stream path is refused before it is read.
         let remote = |path: &str| Path::new(path).is_absolute() && !local_absolute_path(path);
         if !local_absolute_path(executable) || arguments.iter().any(|a| remote(a)) {
@@ -106,28 +101,23 @@ impl PluginConsent {
             ));
         }
         let executable = started_executable(Path::new(executable), Path::is_file)?;
-        let mut files = vec![
-            hashed(&executable, held).map_err(|error| failed_because("plugin_failed", error))?,
-        ];
+        let sha256 = held
+            .hash(&executable)
+            .map_err(|error| failed_because("plugin_failed", error))?;
         let mut command = vec![executable.display().to_string()];
+        let mut files = vec![(executable, sha256)];
+        let here =
+            std::env::current_dir().map_err(|error| failed_because("invalid_path", error))?;
         for argument in arguments {
-            let path = Path::new(argument);
-            if path.is_file() {
-                let (absolute, sha256) =
-                    hashed(path, held).map_err(|error| failed_because("plugin_failed", error))?;
-                command.push(absolute.display().to_string());
-                files.push((absolute, sha256));
-            } else if path
-                .components()
-                .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
-            {
-                // Resolves in the run's empty private directory (`launch`).
-                command.push(argument.clone());
-            } else {
-                let absolute = std::path::absolute(path)
-                    .map_err(|error| failed_because("invalid_path", error))?;
-                return Err(super::plugin_manifest::not_a_file(&absolute));
-            }
+            let (given, file) = super::plugin_manifest::resolve_argument(
+                argument,
+                &here,
+                None,
+                Some(held),
+                |reason| failure("invalid_path", reason, json!({"canonical_mutation": false})),
+            )?;
+            command.push(given);
+            files.extend(file);
         }
         Ok(Self {
             folder: None,
