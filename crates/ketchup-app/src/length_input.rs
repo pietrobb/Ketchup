@@ -29,9 +29,10 @@ pub fn parse_length_mm(input: &str) -> Option<f64> {
 /// Several lengths typed in one field, such as a rectangle's sides or a Move
 /// vector, each one a full length expression. The values are split at `;`
 /// when there is one (so `12,5;0` keeps its decimal comma), else at `x`, else
-/// at commas, and only then at one `*` or `×` between two values (`80*60`).
-/// With one `*` or `×` a comma is decimal, as with `x`: `12,5*3` is 12.5 and
-/// 3, not 12 and 15. `None` unless the number of values is in `counts`.
+/// at one `*` or `×` between two values (`80*60`), else at commas. Text with
+/// one `*` and a comma that reads two ways (`2*20,30`: 40 and 30, or 2 and
+/// 20.3) is refused rather than guessed; `;` or `x` says which is meant.
+/// `None` unless the number of values is in `counts`.
 #[must_use]
 pub fn parse_length_list(input: &str, counts: RangeInclusive<usize>) -> Option<Vec<f64>> {
     let split = |separators: &[char]| -> Option<Vec<f64>> {
@@ -46,7 +47,14 @@ pub fn parse_length_list(input: &str, counts: RangeInclusive<usize>) -> Option<V
     } else if input.contains(['x', 'X']) {
         split(&['x', 'X'])
     } else if input.matches(['*', '×']).count() == 1 {
-        split(&['*', '×'])
+        let star = split(&['*', '×']);
+        if !input.contains(',') {
+            return star;
+        }
+        match (star, split(&[','])) {
+            (Some(star), Some(comma)) if star != comma => None,
+            (star, comma) => star.or(comma),
+        }
     } else {
         split(&[','])
     }
@@ -344,11 +352,32 @@ mod tests {
         assert_eq!(list("80*60"), Some(vec![80.0, 60.0]));
         assert_eq!(list("80×60"), Some(vec![80.0, 60.0]));
         assert_eq!(list("2*20;12,5"), Some(vec![40.0, 12.5]));
-        assert_eq!(list("12,5*3"), Some(vec![12.5, 3.0]));
-        assert_eq!(list("12,5×3"), list("12,5x3"));
+        assert_eq!(list("12,5x3"), Some(vec![12.5, 3.0]));
+        assert_eq!(list("2*20;30"), Some(vec![40.0, 30.0]));
         for input in ["80", "1;2;3;4", "1*2*3", "1m*1m;2", "a;b", ""] {
             assert_eq!(list(input), None, "{input:?}");
         }
+    }
+
+    /// Review 2026-10-16 R-1: with one `*` and a comma both the comma and the
+    /// `*` may separate. `2*20,30` (40 by 30 before a7c4e47) was read as 2 by
+    /// 20.3 and `12,5*3` as 12 by 15 before it; each guess was wrong for
+    /// someone and nothing said so. When the two readings differ the field
+    /// refuses the text, and its message asks for `;` or `x`.
+    #[test]
+    fn a_comma_beside_one_star_that_reads_two_ways_is_refused() {
+        let rectangle = |input: &str| parse_length_list(input, 2..=2);
+        for input in ["2*20,30", "600+2*18,400", "12,5*3", "12,5×3", "2m*1,5m"] {
+            assert_eq!(rectangle(input), None, "{input:?}");
+            assert_eq!(parse_length_list(input, 2..=3), None, "{input:?}");
+        }
+        assert_eq!(rectangle("2*20;30"), Some(vec![40.0, 30.0]));
+        assert_eq!(rectangle("600+2*18;400"), Some(vec![636.0, 400.0]));
+        assert_eq!(rectangle("12,5;3"), Some(vec![12.5, 3.0]));
+        // Text with one reading keeps it: `5*1m` is a length but `1m,2m`
+        // none, and `5m*2m` is an area.
+        assert_eq!(rectangle("5*1m,2m"), Some(vec![5000.0, 2000.0]));
+        assert_eq!(rectangle("1,5m*2m"), Some(vec![1500.0, 2000.0]));
     }
 
     #[test]

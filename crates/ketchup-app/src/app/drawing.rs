@@ -3526,7 +3526,8 @@ pub(crate) fn create_box_batch(
 
 /// Width and depth typed as two lengths, each with units, arithmetic and a
 /// decimal comma like any length: `80;60`, `8 cm x 6 cm`, `80*60`, or `80,60`
-/// when no other separator leaves the comma free.
+/// when no other separator leaves the comma free (`2*20,30`, which reads two
+/// ways, is refused).
 pub(crate) fn parse_rectangle_dimensions(input: &str) -> Option<[f64; 2]> {
     let sides = length_input::parse_length_list(input, 2..=2)?;
     let side = |side: f64| (side > limits::MIN_LENGTH_MM).then_some(side);
