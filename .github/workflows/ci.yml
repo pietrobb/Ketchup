@@ -137,12 +137,21 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      # OCCT built by one Visual Studio may not link with another's, so a
+      # runner image with a newer one builds it again.
+      - name: Visual Studio version
+        id: vs
+        shell: pwsh
+        run: |
+          $version = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationVersion
+          if (-not $version) { throw "vswhere found no Visual Studio" }
+          "version=$(($version -split '\.')[0..1] -join '.')" >> $env:GITHUB_OUTPUT
       - name: OCCT from the cache
         id: occt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: third_party/occt-install-r0-v1
-          key: occt-8.0.1-b8f597c6-windows-${{ hashFiles('scripts/windows/build-occt.ps1') }}
+          key: occt-8.0.1-b8f597c6-windows-vs${{ steps.vs.outputs.version }}-${{ hashFiles('scripts/windows/build-occt.ps1') }}
       - name: OCCT build
         if: steps.occt.outputs.cache-hit != 'true'
         shell: pwsh
