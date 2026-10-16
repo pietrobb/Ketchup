@@ -534,6 +534,12 @@ fn create_revolved_part_round_trips_state_view_and_one_step_undo_redo() {
     apply_program(&mut shell, request, &program_request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    // Exact evaluation publishes reference evidence into the revision; the view
+    // compared after Redo must be captured once it has arrived.
+    shell.wait_until(|shell| {
+        shell.settle();
+        shell.app().exact_render_body_count() == baseline_occurrences + 1
+    });
     let committed = shell.app().document_snapshot();
     assert_eq!(committed.occurrences().count(), baseline_occurrences + 1);
     let definition = committed
