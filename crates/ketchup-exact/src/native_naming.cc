@@ -473,7 +473,7 @@ namespace {
 // A point strictly inside `face`: its UV centre when that lies on the face
 // (not in a hole of it), else one OCCT finds inside its boundary. A grid of
 // sample points misses the rim of a shell whose walls are thin against its
-// size (12 mm walls of a 500 mm drawer), leaving that face unnamed.
+// size (12 mm walls of a 500 mm open box), leaving that face unnamed.
 bool interior_point(const TopoDS_Face& face, gp_Pnt& point,
                     const Handle(IntTools_Context)& context) {
   Standard_Real u_min = 0.0, u_max = 0.0, v_min = 0.0, v_max = 0.0;

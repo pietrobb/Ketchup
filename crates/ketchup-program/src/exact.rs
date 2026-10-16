@@ -107,7 +107,7 @@ impl ExactShapes {
 /// overlap by no more than [`CONTACT_FIT_MM`] touch, so solids whose common
 /// solid is no thicker than that touch too. The thickness is the common
 /// solid's own, not the face where the parts' boxes overlap: a box holding
-/// the other part whole (a drawer, a frame) makes that face large while a
+/// the other part whole (an open box, a frame) makes that face large while a
 /// corner cuts deep into a wall (review status N-1).
 fn within_contact(pair: ExactPair) -> ExactPair {
     if pair.common_volume_mm3 <= 0.0 {

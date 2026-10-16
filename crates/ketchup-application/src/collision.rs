@@ -846,6 +846,15 @@ fn collision_hulls(graphs: &[ExactBRepGraph], bodies: &[Body]) -> Vec<Option<hul
 /// Exact answers by the full paths of two leaf instances, smaller path first.
 pub type ExactPairFacts = BTreeMap<(InstancePath, InstancePath), ExactPair>;
 
+fn exact_pair(result: &ExactPairQueryResult) -> ExactPair {
+    ExactPair {
+        common_volume_mm3: result.common_volume_mm3,
+        common_thickness_mm: result.common_thickness_mm,
+        contact_area_mm2: result.common_contact_area_mm2,
+        distance_mm: Some(result.distance_mm),
+    }
+}
+
 /// Merges body pairs only within the same two leaf instances.
 fn add_pair_fact(
     facts: Option<&mut ExactPairFacts>,
@@ -1588,12 +1597,7 @@ fn collision_report(
                                         pair_facts.as_deref_mut(),
                                         &bodies,
                                         (left, right),
-                                        ExactPair {
-                                            common_volume_mm3: result.common_volume_mm3,
-                                            common_thickness_mm: result.common_thickness_mm,
-                                            contact_area_mm2: result.common_contact_area_mm2,
-                                            distance_mm: Some(result.distance_mm),
-                                        },
+                                        exact_pair(&result),
                                         tolerance,
                                     );
                                     if result.relation == ExactPairRelation::Penetrating {
