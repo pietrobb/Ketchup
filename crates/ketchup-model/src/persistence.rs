@@ -17,8 +17,6 @@ use crate::document::{
 use crate::graph::SlotResolution;
 
 pub(crate) mod history_chunks;
-// Reads only formats no longer written; its casts are of constant read limits.
-#[allow(clippy::cast_possible_truncation)]
 mod legacy;
 mod work_recovery;
 #[cfg(feature = "testing")]

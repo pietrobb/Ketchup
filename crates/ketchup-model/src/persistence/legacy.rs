@@ -708,7 +708,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Decoded, PersistenceError> {
     }
     let mut migration_losses = Vec::new();
     let (revision_id, product) = if schema >= ENVELOPE_SCHEMA {
-        let manifest_length = reader.count_with_limit(MAX_MANIFEST_BYTES as u32)? as usize;
+        let manifest_length = reader.count_with_limit(MAX_MANIFEST_BYTES)? as usize;
         if manifest_length != MANIFEST_BYTES || bytes.len() < HEADER_BYTES + MANIFEST_BYTES {
             return Err(PersistenceError::Legacy(LegacyError::InvalidEnvelopeLength));
         }
@@ -1434,7 +1434,7 @@ fn read_import_receipt(
     let parser_id = reader.string()?;
     let parser_version = reader.string()?;
     let mut diagnostics = Vec::new();
-    for _ in 0..reader.count_with_limit(MAX_IMPORT_DIAGNOSTICS as u32)? {
+    for _ in 0..reader.count_with_limit(MAX_IMPORT_DIAGNOSTICS)? {
         let severity = match reader.u8()? {
             1 => ImportDiagnosticSeverity::Info,
             2 => ImportDiagnosticSeverity::Warning,
@@ -1461,7 +1461,7 @@ fn read_import_receipt(
         );
     }
     let mut outputs = Vec::new();
-    for _ in 0..reader.count_with_limit(MAX_IMPORT_OUTPUTS as u32)? {
+    for _ in 0..reader.count_with_limit(MAX_IMPORT_OUTPUTS)? {
         outputs.push(match reader.u8()? {
             1 => ImportOutputRef::Definition(DefinitionId(reader.u64()?)),
             2 => ImportOutputRef::Feature(FeatureId(reader.u64()?)),
@@ -1586,7 +1586,7 @@ fn read_sketch(
         Ok([f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)])
     };
     let mut entities = Vec::new();
-    for _ in 0..reader.count_with_limit(MAX_SKETCH_ENTITIES as u32)? {
+    for _ in 0..reader.count_with_limit(MAX_SKETCH_ENTITIES)? {
         entities.push(match reader.u8()? {
             1 => SketchEntity::Line {
                 id: SketchEntityId(reader.u64()?),
@@ -1620,7 +1620,7 @@ fn read_sketch(
         });
     }
     let mut constraints = Vec::new();
-    for _ in 0..reader.count_with_limit(MAX_SKETCH_CONSTRAINTS as u32)? {
+    for _ in 0..reader.count_with_limit(MAX_SKETCH_CONSTRAINTS)? {
         let id = SketchConstraintId(reader.u64()?);
         let kind = match reader.u8()? {
             1 => SketchConstraintKind::Horizontal {
@@ -2167,7 +2167,7 @@ fn read_drawing_sheet_with_annotations(
         },
         3 if nested_drawing_paths => {
             let mut instance_paths = Vec::new();
-            for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+            for _ in 0..reader.count()? {
                 instance_paths.push(read_instance_path(reader)?);
             }
             DrawingSource::RigidAssemblyInstances { instance_paths }
@@ -2217,7 +2217,7 @@ fn read_drawing_sheet_with_annotations(
             PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error))
         });
     }
-    let view_count = reader.count_with_limit(MAX_DRAWING_VIEWS as u32)?;
+    let view_count = reader.count_with_limit(MAX_DRAWING_VIEWS)?;
     let mut views = Vec::with_capacity(view_count as usize);
     for _ in 0..view_count {
         let view = match reader.u8()? {
@@ -2292,7 +2292,7 @@ fn read_drawing_sheet_with_annotations(
                 PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error))
             });
     }
-    let dimension_count = reader.count_with_limit(MAX_DRAWING_DIMENSIONS as u32)?;
+    let dimension_count = reader.count_with_limit(MAX_DRAWING_DIMENSIONS)?;
     let mut linear_dimensions = Vec::with_capacity(dimension_count as usize);
     for _ in 0..dimension_count {
         let dimension_id = DrawingDimensionId(reader.u64()?);
@@ -2337,7 +2337,7 @@ fn read_drawing_sheet_with_annotations(
             parametric,
         )
         .map_err(invalid_drawing)?;
-        let note_count = reader.count_with_limit(MAX_DRAWING_NOTES as u32)?;
+        let note_count = reader.count_with_limit(MAX_DRAWING_NOTES)?;
         let mut notes = Vec::with_capacity(note_count as usize);
         for _ in 0..note_count {
             notes.push(
@@ -2354,7 +2354,7 @@ fn read_drawing_sheet_with_annotations(
         (title_block, Vec::new())
     };
     let (angular_dimensions, circular_dimensions) = if typed_drawing_dimensions {
-        let angular_count = reader.count_with_limit(MAX_DRAWING_DIMENSIONS as u32)?;
+        let angular_count = reader.count_with_limit(MAX_DRAWING_DIMENSIONS)?;
         let mut angular_dimensions = Vec::with_capacity(angular_count as usize);
         for _ in 0..angular_count {
             angular_dimensions.push(
@@ -2368,7 +2368,7 @@ fn read_drawing_sheet_with_annotations(
                 .map_err(invalid_drawing)?,
             );
         }
-        let circular_count = reader.count_with_limit(MAX_DRAWING_DIMENSIONS as u32)?;
+        let circular_count = reader.count_with_limit(MAX_DRAWING_DIMENSIONS)?;
         let mut circular_dimensions = Vec::with_capacity(circular_count as usize);
         for _ in 0..circular_count {
             let dimension_id = DrawingDimensionId(reader.u64()?);
@@ -2397,7 +2397,7 @@ fn read_drawing_sheet_with_annotations(
         (Vec::new(), Vec::new())
     };
     let (datum_symbols, feature_control_frames) = if drawing_gdt {
-        let datum_count = reader.count_with_limit(MAX_DRAWING_NOTES as u32)?;
+        let datum_count = reader.count_with_limit(MAX_DRAWING_NOTES)?;
         let mut datum_symbols = Vec::with_capacity(datum_count as usize);
         for _ in 0..datum_count {
             datum_symbols.push(
@@ -2411,7 +2411,7 @@ fn read_drawing_sheet_with_annotations(
                 .map_err(invalid_drawing)?,
             );
         }
-        let frame_count = reader.count_with_limit(MAX_DRAWING_NOTES as u32)?;
+        let frame_count = reader.count_with_limit(MAX_DRAWING_NOTES)?;
         let mut feature_control_frames = Vec::with_capacity(frame_count as usize);
         for _ in 0..frame_count {
             let frame_id = DrawingFeatureControlFrameId(reader.u64()?);
@@ -2456,7 +2456,7 @@ fn read_drawing_sheet_with_annotations(
         (Vec::new(), Vec::new())
     };
     let bom_balloons = if drawing_bom_balloons {
-        let balloon_count = reader.count_with_limit(MAX_DRAWING_BOM_BALLOONS as u32)?;
+        let balloon_count = reader.count_with_limit(MAX_DRAWING_BOM_BALLOONS)?;
         let mut bom_balloons = Vec::with_capacity(balloon_count as usize);
         for _ in 0..balloon_count {
             bom_balloons.push(
@@ -2675,7 +2675,7 @@ fn read_dowel_joint(
         Vec::new()
     };
     let physical_hole_pairs = if read_physical_hole_bindings && reader.u8()? != 0 {
-        let count = reader.count_with_limit(MAX_COLLECTION_ITEMS)?;
+        let count = reader.count()?;
         let mut bindings = Vec::with_capacity(count as usize);
         for _ in 0..count {
             bindings.push(PinPhysicalHolePair {
@@ -3906,7 +3906,7 @@ fn read_product(
             }
         }
         if capabilities.import_receipts {
-            for _ in 0..reader.count_with_limit(MAX_IMPORT_OUTPUTS as u32)? {
+            for _ in 0..reader.count_with_limit(MAX_IMPORT_OUTPUTS)? {
                 let receipt = read_import_receipt(
                     reader,
                     capabilities.sketchup_scene,
@@ -4233,7 +4233,7 @@ fn read_product(
             }
         }
         if capabilities.cam_plans && !reader.is_finished() {
-            for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+            for _ in 0..reader.count()? {
                 let plan = read_cam_plan(reader)?;
                 if product
                     .cam_plans
@@ -4247,7 +4247,7 @@ fn read_product(
             }
         }
         if capabilities.nested_instance_transforms && !reader.is_finished() {
-            for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+            for _ in 0..reader.count()? {
                 let path = read_instance_path(reader)?;
                 let transform = reader.transform()?;
                 if product
@@ -4262,7 +4262,7 @@ fn read_product(
             }
         }
         if capabilities.dowel_joinery && !reader.is_finished() {
-            for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+            for _ in 0..reader.count()? {
                 let joint = read_dowel_joint(
                     reader,
                     capabilities.dowel_physical_hole_bindings,
@@ -4282,7 +4282,7 @@ fn read_product(
     }
     if capabilities.production_codes && !reader.is_finished() {
         let mut codes = BTreeSet::new();
-        for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+        for _ in 0..reader.count()? {
             let path = read_instance_path(reader)?;
             let length = reader.count_with_limit(64)? as usize;
             let code = std::str::from_utf8(reader.take(length)?)
@@ -4372,9 +4372,13 @@ impl<'a> Reader<'a> {
         )?))
     }
     fn count(&mut self) -> Result<u32, PersistenceError> {
-        self.count_with_limit(MAX_COLLECTION_ITEMS)
+        self.count_within(MAX_COLLECTION_ITEMS)
     }
-    fn count_with_limit(&mut self, limit: u32) -> Result<u32, PersistenceError> {
+    /// A count of at most `limit`; a limit past `u32` admits every count.
+    fn count_with_limit(&mut self, limit: usize) -> Result<u32, PersistenceError> {
+        self.count_within(u32::try_from(limit).unwrap_or(u32::MAX))
+    }
+    fn count_within(&mut self, limit: u32) -> Result<u32, PersistenceError> {
         let value = self.u32()?;
         self.collection_items = self
             .collection_items
@@ -4387,7 +4391,7 @@ impl<'a> Reader<'a> {
         }
     }
     fn string(&mut self) -> Result<String, PersistenceError> {
-        let length = usize::try_from(self.count_with_limit(MAX_STRING_BYTES as u32)?)
+        let length = usize::try_from(self.count_with_limit(MAX_STRING_BYTES)?)
             .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         self.string_bytes = self
             .string_bytes
