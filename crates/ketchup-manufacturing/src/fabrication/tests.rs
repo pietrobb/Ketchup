@@ -774,3 +774,143 @@ fn svg_arc_flags_draw_the_arc_btlx_machines() {
         }
     }
 }
+
+/// The value of `key="…"` in a woodWOP macro.
+fn macro_value(text: &str, key: &str) -> Option<f64> {
+    let start = text.find(&format!("\n{key}=\""))? + key.len() + 3;
+    text[start..].split('"').next()?.parse().ok()
+}
+
+/// Review §5 point 6: a hole drilled into each face of a blank whose extents
+/// lie along the definition axes in each of the six orders (and with two
+/// equal extents) enters at the same definition-local point, in the same
+/// direction, in BTLx and woodWOP, and the production job's stock frame maps
+/// the woodWOP machine coordinates back to that point.
+#[test]
+fn btlx_woodwop_and_the_job_frame_place_a_hole_alike_in_every_axis_order() {
+    use production::{JobStockFrame, job_stock_frame};
+    let unit = |axis: usize, sign: f64| {
+        let mut vector = [0.0; 3];
+        vector[axis] = sign;
+        vector
+    };
+    let close = |left: [f64; 3], right: [f64; 3]| {
+        left.iter()
+            .zip(right)
+            .all(|(left, right)| (left - right).abs() <= 1e-9)
+    };
+    let mut woodwop_holes = 0;
+    for sizes in [[600.0, 400.0, 19.0], [400.0, 400.0, 19.0]] {
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let extents = order.map(|index| sizes[index]);
+            let stock = test_stock_geometry(PieceDimensions {
+                length_mm: extents[0],
+                width_mm: extents[1],
+                height_mm: extents[2],
+            });
+            let blank = rectangular_stock(&stock).unwrap();
+            let woodwop = woodwop_stock_frame(&stock).unwrap();
+            let JobStockFrame {
+                origin_mm,
+                axes,
+                dimensions_mm,
+                ..
+            } = job_stock_frame(&stock).unwrap();
+            assert_eq!(dimensions_mm, woodwop.dimensions_mm, "{extents:?}");
+            for axis in 0..3 {
+                for sign in [-1.0, 1.0] {
+                    let case = format!("extents {extents:?}, drilled along {sign} × axis {axis}");
+                    // Off the middle of the face, so a turned axis shows.
+                    let mut entry: [f64; 3] = std::array::from_fn(|other| {
+                        if extents[other] < 20.0 {
+                            7.0
+                        } else {
+                            0.3 * extents[other]
+                        }
+                    });
+                    entry[axis] = if sign < 0.0 { extents[axis] } else { 0.0 };
+                    let normal = unit(axis, sign);
+                    let x_axis = unit((axis + 1) % 3, 1.0);
+                    let drill = GeneralMachiningGeometry::CircularDrill {
+                        frame: GeneralMachiningFrame {
+                            origin_mm: entry,
+                            x_axis,
+                            y_axis: cross(normal, x_axis),
+                            normal,
+                        },
+                        center_mm: [0.0, 0.0],
+                        diameter_mm: 5.0,
+                        through: false,
+                        start_mm: 0.0,
+                        end_mm: 10.0,
+                    };
+
+                    let btlx = btlx_drilling(&drill, blank).unwrap();
+                    let start =
+                        [&btlx.start_x, &btlx.start_y].map(|value| value.parse::<f64>().unwrap());
+                    let part: [f64; 3] = std::array::from_fn(|index| {
+                        btlx.reference_point_mm[index]
+                            + btlx.x_vector[index] * start[0]
+                            + btlx.y_vector[index] * start[1]
+                    });
+                    let from_part = |[x, y, z]: [f64; 3]| [y, z, x];
+                    let btlx_entry: [f64; 3] = std::array::from_fn(|index| {
+                        from_part(part)[index] + blank.corner_mm[index]
+                    });
+                    assert!(close(btlx_entry, entry), "BTLx {btlx_entry:?}, {case}");
+                    assert!(
+                        close(from_part(cross(btlx.x_vector, btlx.y_vector)), normal),
+                        "BTLx direction, {case}"
+                    );
+
+                    // woodWOP drills vertically from the top only.
+                    let Some(text) = woodwop_drilling_macro(&drill, woodwop) else {
+                        assert_eq!(
+                            woodwop_direction(normal, woodwop),
+                            [0.0, 0.0, 1.0],
+                            "woodWOP refused a hole it can drill, {case}"
+                        );
+                        continue;
+                    };
+                    woodwop_holes += 1;
+                    let machine = [
+                        macro_value(&text, "XA").unwrap(),
+                        macro_value(&text, "YA").unwrap(),
+                        macro_value(&text, "ZA").unwrap_or(woodwop.dimensions_mm[2]),
+                    ];
+                    let mut local = [0.0; 3];
+                    for (index, definition_axis) in woodwop.definition_axes.into_iter().enumerate()
+                    {
+                        local[definition_axis] = if index == 1 && woodwop.reversed_y {
+                            woodwop.dimensions_mm[1] - machine[1]
+                        } else {
+                            machine[index]
+                        };
+                    }
+                    let woodwop_entry = blank_point(blank, local);
+                    assert!(
+                        close(woodwop_entry, entry),
+                        "woodWOP {woodwop_entry:?}, {case}\n{text}"
+                    );
+                    let job_entry: [f64; 3] = std::array::from_fn(|index| {
+                        origin_mm[index] + (0..3).map(|k| axes[k][index] * machine[k]).sum::<f64>()
+                    });
+                    assert!(close(job_entry, entry), "job {job_entry:?}, {case}");
+                }
+            }
+        }
+    }
+    // woodWOP drills five faces of each blank: the four sides and the top.
+    assert_eq!(woodwop_holes, 2 * 6 * 5);
+}
+
+fn blank_point(blank: StockBlank, local: [f64; 3]) -> [f64; 3] {
+    std::array::from_fn(|axis| local[axis] + blank.corner_mm[axis])
+}

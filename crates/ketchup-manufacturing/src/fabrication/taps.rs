@@ -3,24 +3,6 @@
 use super::*;
 use ketchup_geometry::tapping::TappedHole;
 
-/// Refuses a woodWOP program for `part` if one of its drillings is tapped:
-/// the drilling macro would make the core hole and lose the thread.
-pub(super) fn check_woodwop_taps_nothing(
-    machining: &[&GeneralManufacturingOperation],
-    part: &str,
-) -> Result<(), GeneralFabricationError> {
-    match machining
-        .iter()
-        .find_map(|operation| operation.thread.as_ref())
-    {
-        Some(thread) => Err(GeneralFabricationError::WoodwopTappedHole {
-            part: part.to_owned(),
-            thread: thread.label(),
-        }),
-        None => Ok(()),
-    }
-}
-
 impl GeneralFabricationProjection {
     /// The support report lines that name what a BTLx file loses of the threads:
     /// BTLx 2.3.1 has no tapping processing, so a thread is only its drilling's
@@ -43,7 +25,8 @@ impl GeneralFabricationProjection {
         let mut report = format!("tapped_drillings={}\n", tapped.len());
         if !tapped.is_empty() {
             report.push_str(&format!(
-                "thread_loss=BTLx 2.3.1 has no tapping processing; each thread is only the Drilling's Comment and its ThreadSize, ThreadPitch and ThreadDepth user attributes, and a machine that ignores them drills the core hole without the thread: {}\n",
+                "thread_loss={}: {}\n",
+                super::capabilities::BTLX_THREAD_LOSS,
                 tapped.join("; ")
             ));
         }

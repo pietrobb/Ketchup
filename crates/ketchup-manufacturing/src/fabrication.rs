@@ -27,8 +27,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::TryFromIntError;
 
+mod capabilities;
 pub mod production;
 mod taps;
+
+pub use capabilities::{Carriage, ShopElement, ShopFormat, ShopLoss, carriage};
 
 pub const FABRICATION_PROJECTION_V1: &str = "ketchup.fabrication-projection.v1";
 pub const BEAM_FABRICATION_EVALUATOR_V1: &str = "ketchup.beam-fabrication-evaluator.v1";
@@ -231,18 +234,18 @@ pub enum GeneralFabricationError {
     BtlxProfileRequestUnsupported {
         part: String,
     },
-    /// A mirrored instance cannot share the machining of its definition.
-    MirroredInstance,
     ScaledPlacement(ScaledPlacement),
     /// The machine file cannot describe this part's stock or machining.
     PartExportBlocked {
         part: String,
     },
-    /// A woodWOP drilling macro drills the core hole only and cannot tap
-    /// the `thread` of a hole of `part`.
-    WoodwopTappedHole {
+    /// `format` cannot carry `element` of `part`, for `reason` (the
+    /// capability table, [`carriage`]).
+    CannotCarry {
+        format: ShopFormat,
         part: String,
-        thread: String,
+        element: ShopElement,
+        reason: &'static str,
     },
     /// A drilling of `part` does not take the `thread` recorded on its hole
     /// (the hole or the thread changed after it was tapped), so no machine
@@ -309,16 +312,18 @@ impl fmt::Display for GeneralFabricationError {
                 "the requested BTLx profile strategy cannot cut a contour of part \"{part}\": edge saw cuts then milling takes only rectangular line contours with at most 32 intermediate cuts; choose the portable FreeContour strategy for this part",
             ),
             Self::ScaledPlacement(error) => write!(formatter, "a part cannot be fabricated: {error}"),
-            Self::MirroredInstance => formatter.write_str(
-                "a mirrored copy cannot reuse the machining of its original; make the mirrored part its own definition",
-            ),
             Self::PartExportBlocked { part } => write!(
                 formatter,
                 "part \"{part}\" cannot be written to the machine file: its stock is not a rectangular box, a cut is not one the format describes, reaches outside the stock or starts inside the material (a cavity, or a cut that opens only to a side and is not rectangular), or its exact result is stale; let each cut tool reach past the face it enters, or evaluate the model again",
             ),
-            Self::WoodwopTappedHole { part, thread } => write!(
+            Self::CannotCarry {
+                format,
+                part,
+                element,
+                reason,
+            } => write!(
                 formatter,
-                "part \"{part}\" has a tapped hole ({thread}) that a woodWOP program cannot tap: its drilling macro drills the core hole only, so the part would be made without the thread; export BTLx or the production job, which carry the thread, or remove the thread",
+                "part \"{part}\" has {element}, which {format} cannot carry: {reason}",
             ),
             Self::TappedHoleInvalid {
                 part,
@@ -741,6 +746,7 @@ impl GeneralFabricationProjection {
     pub fn drawing_svg(&self, snapshot: &Snapshot) -> Result<Vec<u8>, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         taps::check_tapped_holes(&self.manufacturing.operations, snapshot)?;
+        self.admit(snapshot, ShopFormat::Drawing)?;
         if self.drawings.drawings.len() != self.bom.rows.len()
             || self
                 .drawings
@@ -968,9 +974,12 @@ impl GeneralFabricationProjection {
         self.manufacturing_export(snapshot)?;
         // One program machines every copy of the row, so a part with its mirrored
         // copies, a row of their own, is refused as mirrored rather than as two rows.
-        for row in &self.bom.rows {
-            check_copies_share_machining(snapshot, row)?;
-        }
+        self.admit(
+            snapshot,
+            ShopFormat::Woodwop {
+                vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
+            },
+        )?;
         let [row] = self.bom.rows.as_slice() else {
             return Err(GeneralFabricationError::ExportBlocked);
         };
@@ -1010,14 +1019,6 @@ impl GeneralFabricationProjection {
         {
             return Err(GeneralFabricationError::ExportBlocked);
         }
-        // One program machines every copy of the row.
-        check_copies_share_machining(snapshot, row)?;
-        taps::check_woodwop_taps_nothing(
-            machining,
-            snapshot
-                .definition(row.definition_id)
-                .map_or("", |definition| definition.name()),
-        )?;
         let stock_frame =
             woodwop_stock_frame(&stock.machining).ok_or(GeneralFabricationError::ExportBlocked)?;
         let macros = machining
@@ -1083,6 +1084,12 @@ impl GeneralFabricationProjection {
         {
             return Err(GeneralFabricationError::ExportBlocked);
         }
+        self.admit(
+            snapshot,
+            ShopFormat::Woodwop {
+                vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
+            },
+        )?;
         let mut holes = Vec::new();
         for joint in snapshot.pin_joints() {
             let projection = project_pin_joint_contract(snapshot, joint)
@@ -1128,7 +1135,6 @@ impl GeneralFabricationProjection {
                 {
                     return Err(GeneralFabricationError::ExportBlocked);
                 }
-                taps::check_woodwop_taps_nothing(machining, part)?;
                 let stock_frame = woodwop_stock_frame(&stock.machining)
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
                 for instance_path in &row.instances {
@@ -1209,6 +1215,7 @@ impl GeneralFabricationProjection {
     ) -> Result<Vec<u8>, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         self.manufacturing_export(snapshot)?;
+        self.admit(snapshot, ShopFormat::Btlx)?;
         if !self
             .bom
             .rows
@@ -1258,8 +1265,6 @@ impl GeneralFabricationProjection {
                 {
                     return Err(GeneralFabricationError::ExportBlocked);
                 }
-                // One BTLx part carries one set of processings for all `Count` copies.
-                check_copies_share_machining(snapshot, row)?;
                 let Some((count, single_member_number)) =
                     btlx_component_identifiers(row.quantity, index)
                 else {
@@ -4512,28 +4517,6 @@ fn mirrored_operation(
         }
     }
     operation
-}
-
-/// Every copy in `row` is placed by a proper rigid motion. The copies of a row share
-/// one set of machining, so a mirrored copy would be machined as its original.
-fn check_copies_share_machining(
-    snapshot: &Snapshot,
-    row: &GeneralBomRow,
-) -> Result<(), GeneralFabricationError> {
-    for instance_path in &row.instances {
-        let resolved = snapshot
-            .resolve_instance_path(instance_path)
-            .map_err(GeneralFabricationError::UnresolvedInstance)?;
-        if resolved.definition_id != row.definition_id {
-            return Err(GeneralFabricationError::ExportBlocked);
-        }
-        if !is_production_transform(resolved.world_transform) {
-            ScaledPlacement::check(instance_path.root_occurrence(), resolved.world_transform)
-                .map_err(GeneralFabricationError::ScaledPlacement)?;
-            return Err(GeneralFabricationError::MirroredInstance);
-        }
-    }
-    Ok(())
 }
 
 fn local_dimensions(

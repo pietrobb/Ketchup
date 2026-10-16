@@ -72,6 +72,7 @@ impl GeneralFabricationProjection {
     ) -> Result<Value, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         self.manufacturing_export(snapshot)?;
+        self.admit(snapshot, ShopFormat::ProductionJob)?;
         let mut parts = Vec::new();
         let mut paths = BTreeSet::new();
         let mut codes = BTreeSet::new();
@@ -119,55 +120,13 @@ impl GeneralFabricationProjection {
             if stock.kind != GeneralManufacturingKind::Stock || !stock.semantic_inputs.is_empty() {
                 return Err(GeneralFabricationError::ExportBlocked);
             }
-            let GeneralMachiningGeometry::PrismaticStock {
-                frame,
-                cross_section,
-                start_mm,
-                length_axis,
-                length_mm,
-                cross_section_width_mm,
-                cross_section_height_mm,
-            } = &stock.machining
-            else {
-                return Err(GeneralFabricationError::ExportBlocked);
-            };
-            let stock_dimensions = [
-                *cross_section_width_mm,
-                *cross_section_height_mm,
-                *length_mm,
-            ];
-            let mut order = [0, 1, 2];
-            order.sort_by(|left, right| {
-                stock_dimensions[*right]
-                    .total_cmp(&stock_dimensions[*left])
-                    .then(left.cmp(right))
-            });
-            let dimensions_mm = order.map(|axis| stock_dimensions[axis]);
-            let axes = [frame.x_axis, frame.y_axis, *length_axis];
-            let minimum =
-                profile_minimum(cross_section).ok_or(GeneralFabricationError::ExportBlocked)?;
-            let mut origin_mm: [f64; 3] = std::array::from_fn(|axis| {
-                start_mm[axis] + frame.x_axis[axis] * minimum[0] + frame.y_axis[axis] * minimum[1]
-            });
-            let mut stock_axes = order.map(|axis| axes[axis]);
-            // Sorting the axes may reflect them. Like the woodWOP program, the second
-            // axis then runs from the far edge, so the frame stays right-handed and a
-            // postprocessor following it machines the part, not its mirror image.
-            let [x, y, z] = stock_axes;
-            if dot(x, cross(y, z)) < 0.0 {
-                for axis in 0..3 {
-                    origin_mm[axis] += stock_axes[1][axis] * dimensions_mm[1];
-                    stock_axes[1][axis] = -stock_axes[1][axis];
-                }
-            }
-            let stock_shape = if rectangular_stock_profile(
-                cross_section,
-                *length_mm,
-                *cross_section_width_mm,
-                *cross_section_height_mm,
-            )
-            .is_some()
-            {
+            let JobStockFrame {
+                origin_mm,
+                axes: stock_axes,
+                dimensions_mm,
+                rectangular,
+            } = job_stock_frame(&stock.machining).ok_or(GeneralFabricationError::ExportBlocked)?;
+            let stock_shape = if rectangular {
                 "rectangular_prism"
             } else {
                 "profile_extrusion"
@@ -258,4 +217,71 @@ impl GeneralFabricationProjection {
             "parts": parts, "outputs": outputs,
         }))
     }
+}
+
+/// The frame a production job gives a piece: its blank's axes from the
+/// longest to the shortest extent, from a corner of the blank, in
+/// definition-local mm. Sorting the axes may reflect them; like the woodWOP
+/// program, the second axis then runs from the far edge, so the frame stays
+/// right-handed and a postprocessor following it machines the part, not its
+/// mirror image.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct JobStockFrame {
+    pub origin_mm: [f64; 3],
+    pub axes: [[f64; 3]; 3],
+    pub dimensions_mm: [f64; 3],
+    /// The blank is a rectangular prism, not a profile extrusion.
+    pub rectangular: bool,
+}
+
+pub(super) fn job_stock_frame(stock: &GeneralMachiningGeometry) -> Option<JobStockFrame> {
+    let GeneralMachiningGeometry::PrismaticStock {
+        frame,
+        cross_section,
+        start_mm,
+        length_axis,
+        length_mm,
+        cross_section_width_mm,
+        cross_section_height_mm,
+    } = stock
+    else {
+        return None;
+    };
+    let stock_dimensions = [
+        *cross_section_width_mm,
+        *cross_section_height_mm,
+        *length_mm,
+    ];
+    let mut order = [0, 1, 2];
+    order.sort_by(|left, right| {
+        stock_dimensions[*right]
+            .total_cmp(&stock_dimensions[*left])
+            .then(left.cmp(right))
+    });
+    let dimensions_mm = order.map(|axis| stock_dimensions[axis]);
+    let axes = [frame.x_axis, frame.y_axis, *length_axis];
+    let minimum = profile_minimum(cross_section)?;
+    let mut origin_mm: [f64; 3] = std::array::from_fn(|axis| {
+        start_mm[axis] + frame.x_axis[axis] * minimum[0] + frame.y_axis[axis] * minimum[1]
+    });
+    let mut stock_axes = order.map(|axis| axes[axis]);
+    let [x, y, z] = stock_axes;
+    if dot(x, cross(y, z)) < 0.0 {
+        for axis in 0..3 {
+            origin_mm[axis] += stock_axes[1][axis] * dimensions_mm[1];
+            stock_axes[1][axis] = -stock_axes[1][axis];
+        }
+    }
+    Some(JobStockFrame {
+        origin_mm,
+        axes: stock_axes,
+        dimensions_mm,
+        rectangular: rectangular_stock_profile(
+            cross_section,
+            *length_mm,
+            *cross_section_width_mm,
+            *cross_section_height_mm,
+        )
+        .is_some(),
+    })
 }

@@ -6,11 +6,12 @@ use ketchup_geometry::prismatic::Aabb;
 use ketchup_geometry::tapping::TappedHoleMismatch;
 use ketchup_manufacturing::fabrication::{
     BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
-    BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,
+    BtlxProfileProcessingRequest, Carriage, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,
     GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
     GeneralMachiningFrame, GeneralMachiningGeometry, GeneralManufacturingKind,
     MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus,
-    TIMBER_MATERIAL_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication, shown_parts,
+    ShopElement, ShopFormat, TIMBER_MATERIAL_V1, TIMBER_MEMBER_ROLE_V1, carriage,
+    project_general_fabrication, shown_parts,
 };
 use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
@@ -1473,58 +1474,60 @@ fn transformed_production_fixture(
         GRAPH_BOOLEAN,
     )
 }
-#[test]
-fn neutral_production_rejects_reflected_blind_drilling() {
-    for axis in 0..3 {
-        for inherited in [false, true] {
-            let mut linear = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-            linear[axis * 4] = -1.0;
-            let (snapshot, projection) = transformed_production_fixture(linear, inherited);
-            assert!(projection.bom_export(&snapshot).is_ok());
-            assert!(projection.manufacturing_export(&snapshot).is_ok());
-            assert_eq!(
-                projection.production_job(&snapshot, &[]),
-                Err(GeneralFabricationError::ExportBlocked),
-                "axis={axis}, inherited={inherited}"
-            );
-        }
+/// The refusal `format` gives for `element` of `part` by the capability table.
+fn cannot_carry(format: ShopFormat, part: &str, element: ShopElement) -> GeneralFabricationError {
+    let Carriage::Refuses(reason) = carriage(format, &element) else {
+        panic!("{format} carries {element}")
+    };
+    GeneralFabricationError::CannotCarry {
+        format,
+        part: part.to_owned(),
+        element,
+        reason,
     }
 }
+
+/// Every shop format that cannot carry a mirrored copy refuses it by the
+/// part's name and the capability table's reason, directly placed or
+/// inherited from a group, about each axis; the drawing carries it.
 #[test]
-fn homag_production_rejects_reflected_blind_drilling() {
+fn every_shop_format_refuses_a_mirrored_copy_by_name_from_one_table() {
+    let part = "Timber with circular drilling";
+    let woodwop = ShopFormat::Woodwop {
+        vertical_pocket_tool: false,
+    };
     for axis in 0..3 {
         for inherited in [false, true] {
             let mut linear = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
             linear[axis * 4] = -1.0;
             let (snapshot, projection) = transformed_production_fixture(linear, inherited);
-            assert!(
-                matches!(
-                    projection.woodwop_mpr_4_0_production_package(&snapshot, Default::default()),
-                    Err(GeneralFabricationError::PartExportBlocked { part })
-                        if part == "Timber with circular drilling"
-                ),
-                "axis={axis}, inherited={inherited}"
-            );
-        }
-    }
-}
-#[test]
-fn btlx_and_woodwop_reject_a_mirrored_copy_that_would_reuse_its_original_machining() {
-    for axis in 0..3 {
-        for inherited in [false, true] {
-            let mut linear = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-            linear[axis * 4] = -1.0;
-            let (snapshot, projection) = transformed_production_fixture(linear, inherited);
+            let case = format!("axis={axis}, inherited={inherited}");
+            assert!(projection.bom_export(&snapshot).is_ok(), "{case}");
+            assert!(projection.manufacturing_export(&snapshot).is_ok(), "{case}");
+            assert!(projection.drawing_svg(&snapshot).is_ok(), "{case}");
+            let refused = |format| Some(cannot_carry(format, part, ShopElement::MirroredCopy));
             assert_eq!(
-                projection.btlx_2_3_1_export(&snapshot),
-                Err(GeneralFabricationError::MirroredInstance),
-                "axis={axis}, inherited={inherited}"
+                projection.production_job(&snapshot, &[]).err(),
+                refused(ShopFormat::ProductionJob),
+                "{case}"
+            );
+            assert_eq!(
+                projection.btlx_2_3_1_export(&snapshot).err(),
+                refused(ShopFormat::Btlx),
+                "{case}"
             );
             // One woodWOP program machines both copies of the part (MF-N1).
             assert_eq!(
-                projection.woodwop_mpr_4_0_drill_export(&snapshot),
-                Err(GeneralFabricationError::MirroredInstance),
-                "axis={axis}, inherited={inherited}"
+                projection.woodwop_mpr_4_0_drill_export(&snapshot).err(),
+                refused(woodwop),
+                "{case}"
+            );
+            assert_eq!(
+                projection
+                    .woodwop_mpr_4_0_production_package(&snapshot, Default::default())
+                    .err(),
+                refused(woodwop),
+                "{case}"
             );
         }
     }
@@ -2177,10 +2180,13 @@ fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_a
         "{drawing}"
     );
 
-    let refused = Some(GeneralFabricationError::WoodwopTappedHole {
-        part: "Timber with circular drilling".to_owned(),
-        thread: "M12×1.75 depth 40".to_owned(),
-    });
+    let refused = Some(cannot_carry(
+        ShopFormat::Woodwop {
+            vertical_pocket_tool: false,
+        },
+        "Timber with circular drilling",
+        ShopElement::Thread("M12×1.75 depth 40".to_owned()),
+    ));
     assert_eq!(
         projection.woodwop_mpr_4_0_drill_export(&snapshot).err(),
         refused
