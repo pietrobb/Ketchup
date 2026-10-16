@@ -5,7 +5,12 @@ import sys
 PROTOCOL_V1 = "ketchup.plugin.v1"
 QUERY_AGENT_STATE = "query.agent-state.v1"
 EDIT_CAD_PROGRAM = "edit.cad-program.v1"
-_MAX_HOST_LINE_BYTES = 128 * 1024
+# The host's own limits (ketchup-scheduler MAX_PLUGIN_REQUEST_LINE_BYTES and
+# MAX_PLUGIN_RESPONSE_LINE_BYTES): a StateView of HOST_MAX max_query_bytes
+# arrives as hex, twice as long, behind its envelope.
+_MAX_REQUEST_LINE_BYTES = 4 * 1024
+_HOST_MAX_QUERY_BYTES = 64 * 1024
+_MAX_HOST_LINE_BYTES = 2 * _HOST_MAX_QUERY_BYTES + 32
 
 
 class ProtocolError(RuntimeError):
@@ -115,19 +120,24 @@ class Client:
     @staticmethod
     def _send(line: str) -> None:
         encoded = line.encode("utf-8")
-        if len(encoded) > 4 * 1024:
+        if len(encoded) > _MAX_REQUEST_LINE_BYTES:
             raise ProtocolError("plugin request exceeds the SDK byte limit")
-        sys.stdout.write(line + "\n")
+        # UTF-8 bytes and a bare newline whatever the console code page, as the host reads them.
         sys.stdout.flush()
+        sys.stdout.buffer.write(encoded + b"\n")
+        sys.stdout.buffer.flush()
 
     @staticmethod
     def _receive() -> str:
-        line = sys.stdin.buffer.readline(_MAX_HOST_LINE_BYTES + 1)
+        line = sys.stdin.buffer.readline(_MAX_HOST_LINE_BYTES + 2)
         if not line:
             raise ProtocolError("host closed the protocol")
-        if len(line) > _MAX_HOST_LINE_BYTES:
+        content = line.rstrip(b"\r\n")
+        if len(content) > _MAX_HOST_LINE_BYTES or (
+            len(line) > _MAX_HOST_LINE_BYTES + 1 and not line.endswith(b"\n")
+        ):
             raise ProtocolError("host response exceeds the SDK byte limit")
         try:
-            return line.rstrip(b"\r\n").decode("utf-8")
+            return content.decode("utf-8")
         except UnicodeDecodeError as error:
             raise ProtocolError("host response is not UTF-8") from error
