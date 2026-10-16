@@ -73,10 +73,14 @@ jobs:
         run: cargo deny --locked check
 
   rust-without-occt:
-    name: format, clippy and tests of the crates without OCCT
-    # Runs for every pull request, forks included. The windowed crates need a
-    # platform winit.
-    runs-on: ubuntu-latest
+    name: format, clippy and tests of the crates without OCCT on ${{ matrix.os }}
+    # Runs for every pull request, forks included, on GitHub-hosted Linux and
+    # macOS. The windowed crates need a platform winit.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
       CRATES: >-
@@ -180,11 +184,43 @@ jobs:
       - name: clippy
         run: cargo clippy --locked -p ketchup-viewer-macos -p ketchup-viewer --all-targets -- -D warnings
 
+  fuzz:
+    name: fuzzing of the document and Viewer package readers
+    # libFuzzer with AddressSanitizer gives load() and
+    # Package::read_with_comments any bytes, from the seed files on, for two
+    # minutes each; one input may take 10 s and the process 2 GiB.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      NIGHTLY: nightly-2026-10-01
+      FUZZ_VERSION: 0.13.2
+      LIMITS: -max_total_time=120 -timeout=10 -rss_limit_mb=2048 -malloc_limit_mb=2048
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: nightly toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          cargo install cargo-fuzz --version "$FUZZ_VERSION" --locked
+      - name: build
+        run: cargo "+$NIGHTLY" fuzz build --fuzz-dir fuzz -O
+      - name: a .ketchup document
+        run: |
+          mkdir -p "$RUNNER_TEMP/load" "$RUNNER_TEMP/load-seeds"
+          cp crates/ketchup-assistant/tests/fixtures/intent_entities.ketchup examples/programs/table.ketchup "$RUNNER_TEMP/load-seeds/"
+          cargo "+$NIGHTLY" fuzz run --fuzz-dir fuzz -O load "$RUNNER_TEMP/load" "$RUNNER_TEMP/load-seeds" -- $LIMITS
+      - name: a Viewer package
+        run: |
+          mkdir -p "$RUNNER_TEMP/view" "$RUNNER_TEMP/view-seeds"
+          cp viewer/samples/kitchen.ketchup-view "$RUNNER_TEMP/view-seeds/"
+          cargo "+$NIGHTLY" fuzz run --fuzz-dir fuzz -O view_package "$RUNNER_TEMP/view" "$RUNNER_TEMP/view-seeds" -- $LIMITS
+
   rust-required:
     name: CI passed
     # A skipped job counts as passed for a required check; this job fails
     # unless every job it needs ran and passed.
-    needs: [checks, dependencies, rust-without-occt, rust-with-occt, viewer-targets, viewer-macos]
+    needs: [checks, dependencies, rust-without-occt, rust-with-occt, viewer-targets, viewer-macos, fuzz]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

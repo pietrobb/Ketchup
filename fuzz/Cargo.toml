@@ -1,0 +1,34 @@
+[package]
+name = "ketchup-fuzz"
+description = "cargo-fuzz targets for the readers of untrusted files: a .ketchup document and a Viewer package"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+ketchup-model = { path = "../crates/ketchup-model" }
+ketchup-view-format = { path = "../crates/ketchup-view-format" }
+
+# Not a member of the Ketchup workspace: it builds only on a nightly toolchain
+# with the sanitizer flags `cargo fuzz` gives it.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "load"
+path = "fuzz_targets/load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "view_package"
+path = "fuzz_targets/view_package.rs"
+test = false
+doc = false
+bench = false
