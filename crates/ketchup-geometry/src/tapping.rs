@@ -123,10 +123,12 @@ impl MetricTapping {
         }
     }
 
-    /// The shallowest blind hole a thread `thread_depth_mm` deep takes, to the µm.
+    /// The shallowest blind hole a thread `thread_depth_mm` deep takes, rounded
+    /// up to the µm: rounded down it would be too shallow for [`TappedHole::check`].
+    /// The nanometre slack keeps a depth already whole in µm from gaining one.
     #[must_use]
     pub fn blind_hole_depth_mm(&self, thread_depth_mm: f64) -> f64 {
-        ((thread_depth_mm + self.blind_hole_runout_mm) * 1000.0).round() / 1000.0
+        ((thread_depth_mm + self.blind_hole_runout_mm) * 1000.0 - 1e-6).ceil() / 1000.0
     }
 }
 
@@ -203,6 +205,24 @@ mod tests {
             ..m8(12.0, 6.8, 12.0)
         };
         assert_eq!(through.check(1e-6), Ok(()));
+    }
+
+    #[test]
+    fn the_hole_sized_for_a_thread_takes_it_at_the_model_tolerance() {
+        let tapping = metric_coarse_tapping("M8").unwrap();
+        for thread_depth_mm in [10.0 / 3.0, 2.0 / 3.0, 12.0, 0.0004, 5.0 + 1e-9] {
+            let hole_depth_mm = tapping.blind_hole_depth_mm(thread_depth_mm);
+            assert_eq!(
+                m8(thread_depth_mm, 6.8, hole_depth_mm).check(1e-7),
+                Ok(()),
+                "{thread_depth_mm} mm thread in a {hole_depth_mm} mm hole"
+            );
+            assert!(
+                hole_depth_mm < thread_depth_mm + tapping.blind_hole_runout_mm + 0.001,
+                "{hole_depth_mm} is more than a µm deeper than needed"
+            );
+        }
+        assert_eq!(tapping.blind_hole_depth_mm(12.0), 18.2);
     }
 
     #[test]
