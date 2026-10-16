@@ -1411,6 +1411,62 @@ fn a_format_4_history_opens_with_the_program_of_every_revision() {
     assert_eq!(revision_programs(&reopened(&resaved)), expected);
 }
 
+/// Review 2026-10-15 status PS-1: a file written before `program.json` keeps its
+/// program only in the Undo history. A damaged older step costs the steps, not
+/// the program of the revision the file opens at, and not the file.
+#[test]
+fn a_file_without_program_json_keeps_the_current_program_when_an_older_step_is_damaged() {
+    let golden = include_bytes!("fixtures/persistence/legacy/history-format4-programs.bin");
+    assert!(
+        !golden
+            .windows(b"program.json".len())
+            .any(|window| window == b"program.json"),
+        "the file predates program.json"
+    );
+    let current = reopened(golden)
+        .current_rule_program()
+        .cloned()
+        .expect("the file opens at a programmed revision");
+    assert_eq!(&*current.source, "w = param('width', 900)\n");
+
+    let (checksum_offset, offset, len) = container_entry_offsets(golden, "history.bin");
+    let first_program = offset
+        + golden[offset..offset + len]
+            .windows(br#""source":"w = param('width', 600)"#.len())
+            .position(|window| window == br#""source":"w = param('width', 600)"#)
+            .expect("the first step's program is stored whole");
+    for (name, damage) in [
+        // Not a program at all.
+        ("malformed", br#""sourcX""#.as_slice()),
+        // A program whose source is missing.
+        ("incomplete", br#""unused""#.as_slice()),
+    ] {
+        let mut damaged = golden.to_vec();
+        damaged[first_program..first_program + damage.len()].copy_from_slice(damage);
+        rehash_container_entry(&mut damaged, checksum_offset, offset, len);
+        let Ok(LoadOutcome::Editable {
+            document, audit, ..
+        }) = persistence::load(&damaged)
+        else {
+            panic!("{name}: a damaged older step must not refuse the file");
+        };
+        assert_eq!(document.revision_count(), 1, "{name}");
+        assert!(audit.history_discarded.is_some(), "{name}");
+        assert_eq!(document.current_rule_program(), Some(&current), "{name}");
+    }
+
+    // The program of the revision the file opens at is refused, never dropped.
+    let current_program = offset
+        + golden[offset..offset + len]
+            .windows(br#""source":"w = param('width', 900)"#.len())
+            .position(|window| window == br#""source":"w = param('width', 900)"#)
+            .expect("the current program is stored whole");
+    let mut damaged = golden.to_vec();
+    damaged[current_program..current_program + 8].copy_from_slice(br#""sourcX""#);
+    rehash_container_entry(&mut damaged, checksum_offset, offset, len);
+    assert!(persistence::load(&damaged).is_err());
+}
+
 /// PS-2: a program near the window's 690 KB house edited 60 times. Stored whole
 /// in every revision it passed `history.bin`'s 32 MB after ≈ 47 edits, so Save
 /// offered to drop Undo; as chunks each edit stores only those around it.

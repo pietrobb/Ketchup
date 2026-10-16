@@ -1874,14 +1874,38 @@ fn load_container(bytes: &[u8], with_history: bool) -> Result<LoadOutcome, Persi
             &history_container_data,
             HISTORY_BUDGET,
         );
-        match (&mut outcome, restored) {
-            // Without program.json the history is the program's only home, so a
-            // program that breaks its rules is refused by name; dropping the
-            // history would silently drop the program too. With it, a bad
-            // program of an Undo step costs the steps, not the file (N-5).
-            (_, Err(error @ PersistenceError::InvalidRuleProgram(_))) if program.is_none() => {
-                return Err(error);
+        if program.is_none()
+            && let Err(error) = &restored
+            && !matches!(error, PersistenceError::UnsupportedHistorySchema(schema) if *schema > HISTORY_SCHEMA)
+        {
+            // Without program.json the history is the program's only home. A
+            // history that does not open whole costs the Undo steps, but the
+            // revision the file opens at keeps its program (PS-1); a current
+            // program that does not decode is refused by name.
+            match current_history_program(
+                &revision_history,
+                &document,
+                outcome.snapshot().revision_id(),
+            ) {
+                Ok(Ok(Some(current))) => match &mut outcome {
+                    LoadOutcome::Editable { document, .. } => {
+                        document.restore_opened_rule_program(Arc::new(current));
+                    }
+                    LoadOutcome::ReviewOnly(candidate) => {
+                        candidate.program = Some(Arc::new(current));
+                    }
+                },
+                Ok(Ok(None)) => {}
+                Ok(Err(current)) => return Err(current),
+                // The current program cannot be read apart from the steps, so
+                // one that breaks its rules may be the current one.
+                Err(_) if matches!(error, PersistenceError::InvalidRuleProgram(_)) => {
+                    return restored.map(|_| unreachable!("the history did not open"));
+                }
+                Err(_) => {}
             }
+        }
+        match (&mut outcome, restored) {
             // A history a newer Kečup wrote is not damaged: opened without it,
             // the next Save would overwrite its steps with this one revision.
             (_, Err(error @ PersistenceError::UnsupportedHistorySchema(schema)))
@@ -1941,6 +1965,120 @@ fn decode_revision_history(
 ) -> Result<DocumentStore, PersistenceError> {
     #[cfg(test)]
     tests::HISTORY_DECODES.with(|count| count.set(count.get() + 1));
+    let ParsedHistory {
+        schema,
+        cursor,
+        next_revision_id,
+        chunks,
+        mut records,
+    } = read_history_records(bytes, document_bytes, budget)?;
+    // A file written before the shared Undo limit can hold up to 4 096 revisions; the
+    // store keeps those within the limit around the cursor, so only they are loaded
+    // (PS-12). Older formats load whole: their migrated digests chain across revisions.
+    let cursor = if schema >= 4 {
+        let first = cursor.saturating_sub(crate::tolerance::limits::UNDO_REVISIONS);
+        records.drain(..first);
+        records.truncate(cursor - first + crate::tolerance::limits::UNDO_REVISIONS + 1);
+        cursor - first
+    } else {
+        cursor
+    };
+    // Only the kept revisions' programs are assembled and checked (N-5); one the
+    // history names again is decoded once and shared.
+    let mut decoded = BTreeMap::new();
+    let rule_programs = records
+        .iter()
+        .map(|record| {
+            record
+                .rule_program
+                .map(|program| {
+                    if let Some(shared) = decoded.get(&program) {
+                        return Ok(Arc::clone(shared));
+                    }
+                    let source = Arc::new(decode_history_program(program, &chunks)?);
+                    decoded.insert(program, Arc::clone(&source));
+                    Ok(source)
+                })
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, PersistenceError>>()?;
+    decode_history_revisions(
+        ParsedHistory {
+            schema,
+            cursor,
+            next_revision_id,
+            chunks,
+            records,
+        },
+        rule_programs,
+        expected_current,
+        container_data,
+    )
+}
+
+/// The program of the revision a history names as current, read without the
+/// other revisions' snapshots or programs. A file written before
+/// `program.json` keeps its program only there, so a history that does not
+/// open whole must not take that program with it (review 2026-10-15 status PS-1).
+/// The outer error is a history that cannot be read as far as that revision,
+/// the inner one a program that is there but does not decode.
+fn current_history_program(
+    bytes: &[u8],
+    document_bytes: &[u8],
+    expected_revision_id: u64,
+) -> Result<Result<Option<crate::document::RuleProgramSource>, PersistenceError>, PersistenceError>
+{
+    let ParsedHistory {
+        cursor,
+        chunks,
+        records,
+        ..
+    } = read_history_records(bytes, document_bytes, HISTORY_BUDGET)?;
+    let current = &records[cursor];
+    if current.revision_id != expected_revision_id {
+        return Err(PersistenceError::InvalidRevisionHistory);
+    }
+    Ok(current
+        .rule_program
+        .map(|program| decode_history_program(program, &chunks))
+        .transpose())
+}
+
+fn decode_history_program(
+    program: HistoryProgram<'_>,
+    chunks: &[&[u8]],
+) -> Result<crate::document::RuleProgramSource, PersistenceError> {
+    match program {
+        HistoryProgram::Inline(bytes) => decode_rule_program(bytes),
+        HistoryProgram::Chunks {
+            length,
+            checksum,
+            numbers,
+        } => decode_rule_program(
+            &HistorySnapshot::Chunks {
+                length,
+                checksum,
+                numbers,
+            }
+            .assemble(chunks)?,
+        ),
+    }
+}
+
+/// A history as the file names it: every revision's place, nothing assembled.
+struct ParsedHistory<'a> {
+    schema: u16,
+    cursor: usize,
+    next_revision_id: u64,
+    chunks: Vec<&'a [u8]>,
+    records: Vec<HistoryRecord<'a>>,
+}
+
+fn read_history_records<'a>(
+    bytes: &'a [u8],
+    document_bytes: &'a [u8],
+    budget: HistoryBudget,
+) -> Result<ParsedHistory<'a>, PersistenceError> {
     if bytes.len() > MAX_SIDECAR_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
@@ -2106,51 +2244,29 @@ fn decode_revision_history(
     {
         return Err(PersistenceError::InvalidRevisionHistory);
     }
-    // A file written before the shared Undo limit can hold up to 4 096 revisions; the
-    // store keeps those within the limit around the cursor, so only they are loaded
-    // (PS-12). Older formats load whole: their migrated digests chain across revisions.
-    let cursor = if schema >= 4 {
-        let first = cursor.saturating_sub(crate::tolerance::limits::UNDO_REVISIONS);
-        records.drain(..first);
-        records.truncate(cursor - first + crate::tolerance::limits::UNDO_REVISIONS + 1);
-        cursor - first
-    } else {
-        cursor
-    };
-    // Only the kept revisions' programs are assembled and checked (N-5); one the
-    // history names again is decoded once and shared.
-    let mut decoded = BTreeMap::new();
-    let rule_programs = records
-        .iter()
-        .map(|record| {
-            record
-                .rule_program
-                .map(|program| {
-                    if let Some(shared) = decoded.get(&program) {
-                        return Ok(Arc::clone(shared));
-                    }
-                    let source = Arc::new(match program {
-                        HistoryProgram::Inline(bytes) => decode_rule_program(bytes)?,
-                        HistoryProgram::Chunks {
-                            length,
-                            checksum,
-                            numbers,
-                        } => decode_rule_program(
-                            &HistorySnapshot::Chunks {
-                                length,
-                                checksum,
-                                numbers,
-                            }
-                            .assemble(&chunks)?,
-                        )?,
-                    });
-                    decoded.insert(program, Arc::clone(&source));
-                    Ok(source)
-                })
-                .transpose()
-        })
-        .collect::<Result<Vec<_>, PersistenceError>>()?;
+    Ok(ParsedHistory {
+        schema,
+        cursor,
+        next_revision_id,
+        chunks,
+        records,
+    })
+}
 
+/// The kept revisions of `history` loaded into a store, each with its program.
+fn decode_history_revisions(
+    history: ParsedHistory<'_>,
+    rule_programs: Vec<Option<Arc<crate::document::RuleProgramSource>>>,
+    expected_current: &LoadOutcome,
+    container_data: &ContainerData,
+) -> Result<DocumentStore, PersistenceError> {
+    let ParsedHistory {
+        schema,
+        cursor,
+        next_revision_id,
+        chunks,
+        records,
+    } = history;
     let snapshots = if schema >= 4 {
         // Every revision a format-4 history holds was written in the current format,
         // so each loads on its own: on all cores, as a revision of 1800 parts takes ~0.4 s.
@@ -2197,7 +2313,7 @@ fn decode_revision_history(
             .collect::<Result<Vec<_>, _>>()?
     };
     let current_source_digest = Some(snapshots[cursor].1.clone());
-    let mut revisions = Vec::with_capacity(count);
+    let mut revisions = Vec::with_capacity(records.len());
     let mut document_id = None;
     for ((record, (validated, _)), rule_program) in
         records.into_iter().zip(snapshots).zip(rule_programs)
