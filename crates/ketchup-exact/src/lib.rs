@@ -125,6 +125,7 @@ mod ffi {
         status: u8,
         diagnostic: String,
         common_volume_mm3: f64,
+        common_thickness_mm: f64,
         common_contact_area_mm2: f64,
         distance_mm: f64,
     }

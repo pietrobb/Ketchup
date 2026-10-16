@@ -340,12 +340,19 @@ fn pair_result(measure: PairMeasure, tolerance: f64) -> Result<ExactPairQueryRes
     let invalid = || WorkerError::Protocol(format!("invalid exact pair evidence {measure:?}"));
     let PairMeasure {
         common_volume_mm3,
+        common_thickness_mm,
         common_contact_area_mm2,
         distance_mm,
     } = measure;
-    if [common_volume_mm3, common_contact_area_mm2, distance_mm]
-        .iter()
-        .any(|value| !value.is_finite() || *value < 0.0)
+    if [
+        common_volume_mm3,
+        common_thickness_mm,
+        common_contact_area_mm2,
+        distance_mm,
+    ]
+    .iter()
+    .any(|value| !value.is_finite() || *value < 0.0)
+        || (common_volume_mm3 > 0.0) != (common_thickness_mm > 0.0)
         || (common_volume_mm3 > 0.0 && (common_contact_area_mm2 > 0.0 || distance_mm != 0.0))
         || (common_contact_area_mm2 > 0.0 && distance_mm != 0.0)
     {
@@ -360,6 +367,7 @@ fn pair_result(measure: PairMeasure, tolerance: f64) -> Result<ExactPairQueryRes
             ExactPairRelation::Separated
         },
         common_volume_mm3,
+        common_thickness_mm,
         common_contact_area_mm2,
         distance_mm,
     })
@@ -461,12 +469,21 @@ mod tests {
 
     #[test]
     fn pair_protocol_never_converts_invalid_evidence_to_separated() {
-        let measure = |common_volume_mm3, common_contact_area_mm2, distance_mm| PairMeasure {
+        let measure = |common_volume_mm3: f64, common_contact_area_mm2, distance_mm| PairMeasure {
             common_volume_mm3,
+            common_thickness_mm: common_volume_mm3.min(1.0),
             common_contact_area_mm2,
             distance_mm,
         };
         for invalid in [
+            PairMeasure {
+                common_thickness_mm: 0.0,
+                ..measure(1.0, 0.0, 0.0)
+            },
+            PairMeasure {
+                common_thickness_mm: 1.0,
+                ..measure(0.0, 0.0, 0.0)
+            },
             measure(f64::NAN, 0.0, 0.0),
             measure(1.0, 1.0, 0.0),
             measure(1.0, 0.0, 1.0),

@@ -8,7 +8,6 @@
 //! of the boxes.
 
 use crate::expect::Measure;
-use crate::frame;
 use crate::model::{Part, ProgramModel};
 use crate::validate;
 use ketchup_model::tolerance::CONTACT_FIT_MM;
@@ -19,6 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct ExactPair {
     pub common_volume_mm3: f64,
+    /// How deep the solids overlap: the thickness of the thickest solid they
+    /// share, as twice its volume over its surface area. Zero when unknown.
+    pub common_thickness_mm: f64,
     /// Area of the faces the solids share without overlapping.
     pub contact_area_mm2: f64,
     /// Smallest distance between the solids; `None` when only known to be
@@ -88,8 +90,7 @@ impl ExactShapes {
     /// [`within_contact`].
     #[must_use]
     pub fn between(&self, a: &Part, b: &Part) -> Option<ExactPair> {
-        self.pair(&a.name, &b.name)
-            .map(|pair| within_contact(pair, a, b))
+        self.pair(&a.name, &b.name).map(within_contact)
     }
 
     /// The exact answer when the boxes of `a` and `b` misstate their solids.
@@ -103,28 +104,16 @@ impl ExactShapes {
 }
 
 /// One contact rule for boxes and exact solids (review PRG-5): boxes that
-/// overlap by no more than [`CONTACT_FIT_MM`] touch, so solids sharing no more
-/// volume than a slab that thick across the face where their boxes overlap
-/// touch too. The face is measured in the frame of either part, whichever
-/// fits the overlap tighter.
-fn within_contact(pair: ExactPair, a: &Part, b: &Part) -> ExactPair {
+/// overlap by no more than [`CONTACT_FIT_MM`] touch, so solids whose common
+/// solid is no thicker than that touch too. The thickness is the common
+/// solid's own, not the face where the parts' boxes overlap: a box holding
+/// the other part whole (a drawer, a frame) makes that face large while a
+/// corner cuts deep into a wall (review status N-1).
+fn within_contact(pair: ExactPair) -> ExactPair {
     if pair.common_volume_mm3 <= 0.0 {
         return pair;
     }
-    let shared = frame::intersection_vertices(&[a.obb(), b.obb()], CONTACT_FIT_MM);
-    let face_mm2 = [a, b]
-        .into_iter()
-        .map(|part| {
-            let mut extent: [f64; 3] = std::array::from_fn(|axis| {
-                let along = shared.iter().map(|vertex| part.to_local(*vertex)[axis]);
-                along.clone().fold(f64::NEG_INFINITY, f64::max)
-                    - along.fold(f64::INFINITY, f64::min)
-            });
-            extent.sort_by(f64::total_cmp);
-            extent[1] * extent[2]
-        })
-        .fold(f64::INFINITY, f64::min);
-    if face_mm2.is_finite() && pair.common_volume_mm3 <= CONTACT_FIT_MM * face_mm2 {
+    if pair.common_thickness_mm > 0.0 && pair.common_thickness_mm <= CONTACT_FIT_MM {
         ExactPair {
             common_volume_mm3: 0.0,
             distance_mm: Some(0.0),

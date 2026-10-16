@@ -214,6 +214,53 @@ fn a_top_raised_by_push_pull_collides_with_the_part_above() {
     assert!(clear.is_empty(), "{clear:?} {summary}");
 }
 
+/// A 600 x 500 x 150 drawer with 12 mm walls, open at the top, holding a
+/// board turned 45° (a 420 mm diamond, 10 thick) on its floor with its left
+/// corner at `corner_x`, and a 6 x 6 rod spanning the inside, `rod_extra` mm
+/// past the inner face of each side wall.
+fn drawer_with_board_and_rod(corner_x: f64, rod_extra: f64) -> String {
+    let (cx, inner) = (corner_x + 210.0, 576.0 + 2.0 * rod_extra);
+    format!(
+        "drawer = box(\"drawer\", (600, 500, 150))\n\
+         shell(drawer, thickness = 12, open = [\"z+\"])\n\
+         board = extrude(\"board\", distance = 10, at = (0, 0, 12), profile = [\
+         ({}, 250), ({cx}, 40), ({}, 250), ({cx}, 460)])\n\
+         rod = box(\"rod\", ({inner}, 6, 6), at = ({}, 100, 50))\n",
+        cx - 210.0,
+        cx + 210.0,
+        12.0 - rod_extra,
+    )
+}
+
+/// N-1 (review status 2026-10-16): the drawer's box holds the board and the
+/// rod whole, so the overlap of the boxes is the entire board or rod. Only
+/// overlap as thin as the contact fit is a touch, however large the boxes'
+/// common face is.
+#[test]
+fn a_board_corner_cut_into_a_drawer_wall_and_a_rod_too_long_for_it_collide() {
+    // The corner reaches 9.5 mm into the 12 mm wall (902.5 mm³), the rod
+    // 0.4 mm into each wall (28.8 mm³).
+    let (hit, summary) = exact_kinds(&drawer_with_board_and_rod(2.5, 0.4));
+    assert_eq!(hit, ["collision", "collision"], "{summary}");
+    // At the wall's inner face and 0.005 mm into each wall they touch.
+    let (clear, summary) = exact_kinds(&drawer_with_board_and_rod(12.0, 0.005));
+    assert!(clear.is_empty(), "{clear:?} {summary}");
+}
+
+/// The rim of a 500 mm drawer with 12 mm walls is too narrow for a grid of
+/// sample points; it lost its name and the exact check of the drawer failed.
+#[test]
+fn a_drawer_with_walls_thin_against_its_size_is_checked_on_its_exact_solid() {
+    let (report, summary) = verified(
+        "drawer = box(\"drawer\", (500, 500, 150))\n\
+         shell(drawer, thickness = 12, open = [\"z+\"])\n\
+         block = box(\"block\", (100, 100, 50), at = (200, 200, 12))\n"
+            .to_owned(),
+    );
+    assert_eq!(summary["state"], "verified", "{summary}");
+    assert!(kinds(&report).is_empty(), "{:#?}", report.issues);
+}
+
 #[test]
 fn a_part_inside_the_empty_corner_of_a_triangle_is_cleared() {
     // The cube sits in the corner the triangle leaves empty; the boxes overlap.

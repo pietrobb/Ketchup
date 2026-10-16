@@ -359,6 +359,34 @@ bool shells_outside(const TopoDS_Shape& body, const TopoDS_Shape& other,
   return true;
 }
 
+// Total volume of the solids of `shape`, and the thickness of the thickest:
+// twice its volume over its surface area, which is the thickness of a thin
+// slab and grows with how deep two bodies sharing that solid overlap.
+bool common_solids(const TopoDS_Shape& shape, double& volume, double& thickness) {
+  volume = 0.0;
+  thickness = 0.0;
+  for (TopExp_Explorer solids(shape, TopAbs_SOLID); solids.More(); solids.Next()) {
+    GProp_GProps volume_properties;
+    BRepGProp::VolumeProperties(solids.Current(), volume_properties);
+    GProp_GProps surface_properties;
+    BRepGProp::SurfaceProperties(solids.Current(), surface_properties);
+    const double solid_volume = volume_properties.Mass();
+    const double area = surface_properties.Mass();
+    if (!std::isfinite(solid_volume) || !std::isfinite(area) || area < 0.0) {
+      return false;
+    }
+    if (solid_volume <= 0.0) {
+      continue;
+    }
+    if (area <= 0.0) {
+      return false;
+    }
+    volume += solid_volume;
+    thickness = std::max(thickness, 2.0 * solid_volume / area);
+  }
+  return std::isfinite(volume) && std::isfinite(thickness);
+}
+
 }  // namespace
 
 NativePairQuery query_body_pair_native(
@@ -380,18 +408,14 @@ NativePairQuery query_body_pair_native(
         result.diagnostic = "OCCT pair self query requires a verified solid";
         return result;
       }
-      GProp_GProps properties;
-      for (TopExp_Explorer solids(left.impl().shape, TopAbs_SOLID); solids.More(); solids.Next()) {
-        GProp_GProps solid_properties;
-        BRepGProp::VolumeProperties(solids.Current(), solid_properties);
-        properties.Add(solid_properties);
-      }
-      const double volume = properties.Mass();
-      if (!std::isfinite(volume) || volume <= 0.0) {
+      double volume = 0.0;
+      double thickness = 0.0;
+      if (!common_solids(left.impl().shape, volume, thickness) || volume <= 0.0) {
         result.diagnostic = "OCCT pair self query requires finite positive volume";
         return result;
       }
       result.common_volume_mm3 = volume;
+      result.common_thickness_mm = thickness;
       result.distance_mm = 0.0;
       result.status = STATUS_OK;
       return result;
@@ -461,6 +485,7 @@ NativePairQuery query_body_pair_native(
       }
     }
     double volume = 0.0;
+    double thickness = 0.0;
     double contact_area = 0.0;
     if (slab_axis < 0) {
       // Non-destructive: the same native shapes are reused by subsequent pairs.
@@ -487,13 +512,10 @@ NativePairQuery query_body_pair_native(
       }
       // An empty compound is a successful common query, unlike Intersect features.
       // Only solids contribute volume; face/edge/vertex contact has zero volume.
-      GProp_GProps properties;
-      for (TopExp_Explorer solids(common.Shape(), TopAbs_SOLID); solids.More(); solids.Next()) {
-        GProp_GProps solid_properties;
-        BRepGProp::VolumeProperties(solids.Current(), solid_properties);
-        properties.Add(solid_properties);
+      if (!common_solids(common.Shape(), volume, thickness)) {
+        result.diagnostic = "OCCT pair volume query failed";
+        return result;
       }
-      volume = properties.Mass();
     }
     if (!std::isfinite(volume) || volume < 0.0 || !std::isfinite(contact_area) ||
         contact_area < 0.0) {
@@ -503,6 +525,7 @@ NativePairQuery query_body_pair_native(
     // A verified positive common volume proves zero solid-set distance.
     if (volume > 0.0) {
       result.common_volume_mm3 = volume;
+      result.common_thickness_mm = thickness;
       result.common_contact_area_mm2 = 0.0;
       result.distance_mm = 0.0;
       result.status = STATUS_OK;

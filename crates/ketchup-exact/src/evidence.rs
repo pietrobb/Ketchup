@@ -287,6 +287,10 @@ pub enum ExactPairRelation {
 pub struct ExactPairQueryResult {
     pub relation: ExactPairRelation,
     pub common_volume_mm3: f64,
+    /// Twice the volume over the surface area of the thickest common solid:
+    /// the thickness of a thin slab, so how deep the bodies overlap there.
+    /// Positive exactly when the common volume is.
+    pub common_thickness_mm: f64,
     /// Area of zero-volume common faces; positive only for face contact.
     pub common_contact_area_mm2: f64,
     /// Minimum solid-set distance; zero for penetrating/contained bodies.

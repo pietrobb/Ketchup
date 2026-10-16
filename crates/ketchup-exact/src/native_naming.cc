@@ -1,5 +1,8 @@
 #include "native_common.hxx"
 
+#include <BOPTools_AlgoTools3D.hxx>
+#include <IntTools_Context.hxx>
+
 namespace ketchup::exact {
 
 namespace {
@@ -468,26 +471,21 @@ std::unique_ptr<NativeOperationResult> named_offset_face_native(
 namespace {
 
 // A point strictly inside `face`: its UV centre when that lies on the face
-// (not in a hole of it), else the first grid point that does.
-bool interior_point(const TopoDS_Face& face, gp_Pnt& point) {
+// (not in a hole of it), else one OCCT finds inside its boundary. A grid of
+// sample points misses the rim of a shell whose walls are thin against its
+// size (12 mm walls of a 500 mm drawer), leaving that face unnamed.
+bool interior_point(const TopoDS_Face& face, gp_Pnt& point,
+                    const Handle(IntTools_Context)& context) {
   Standard_Real u_min = 0.0, u_max = 0.0, v_min = 0.0, v_max = 0.0;
   BRepTools::UVBounds(face, u_min, u_max, v_min, v_max);
-  const BRepAdaptor_Surface surface(face);
-  constexpr int GRID = 9;
-  for (int step = 0; step <= GRID * GRID; ++step) {
-    double u_fraction = 0.5, v_fraction = 0.5;
-    if (step > 0) {
-      u_fraction = ((step - 1) % GRID + 0.5) / GRID;
-      v_fraction = ((step - 1) / GRID + 0.5) / GRID;
-    }
-    const gp_Pnt2d uv(u_min + (u_max - u_min) * u_fraction, v_min + (v_max - v_min) * v_fraction);
-    BRepClass_FaceClassifier classifier(face, uv, tolerances().linear_mm);
-    if (classifier.State() == TopAbs_IN) {
-      point = surface.Value(uv.X(), uv.Y());
-      return true;
-    }
+  const gp_Pnt2d centre((u_min + u_max) / 2.0, (v_min + v_max) / 2.0);
+  BRepClass_FaceClassifier classifier(face, centre, tolerances().linear_mm);
+  if (classifier.State() == TopAbs_IN) {
+    point = BRepAdaptor_Surface(face).Value(centre.X(), centre.Y());
+    return true;
   }
-  return false;
+  gp_Pnt2d parameters;
+  return BOPTools_AlgoTools3D::PointInFace(face, point, parameters, context) == 0;
 }
 
 } // namespace
@@ -538,10 +536,11 @@ std::unique_ptr<NativeOperationResult> named_shell_native(
     const double tolerance = tolerances().approximation * std::max(1.0, thickness);
     const std::string inner_prefix = std::string(prefix) + ".";
     std::vector<HistoryRecord> history;
+    const Handle(IntTools_Context) context = new IntTools_Context;
     for (Standard_Integer index = 1; index <= result_faces.Extent(); ++index) {
       const TopoDS_Face face = TopoDS::Face(result_faces(index));
       gp_Pnt point;
-      if (!interior_point(face, point)) continue;
+      if (!interior_point(face, point, context)) continue;
       const TopoDS_Vertex vertex = BRepBuilderAPI_MakeVertex(point).Vertex();
       double nearest = std::numeric_limits<double>::infinity();
       Standard_Integer owner = 0;

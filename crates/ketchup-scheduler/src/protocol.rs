@@ -431,6 +431,7 @@ pub struct WorkerImportPart {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PairMeasure {
     pub common_volume_mm3: f64,
+    pub common_thickness_mm: f64,
     pub common_contact_area_mm2: f64,
     pub distance_mm: f64,
 }
@@ -545,6 +546,7 @@ mod tests {
             },
             WorkerReply::Pair(PairMeasure {
                 common_volume_mm3: 0.0,
+                common_thickness_mm: 0.0,
                 common_contact_area_mm2: -0.0,
                 distance_mm: f64::MIN_POSITIVE,
             }),

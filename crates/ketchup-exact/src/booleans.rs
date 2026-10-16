@@ -141,6 +141,9 @@ impl ExactBackend {
             || result.common_contact_area_mm2 < 0.0
             || !result.distance_mm.is_finite()
             || result.distance_mm < 0.0
+            || !result.common_thickness_mm.is_finite()
+            || (result.common_volume_mm3 > 0.0) != (result.common_thickness_mm > 0.0)
+            || result.common_thickness_mm < 0.0
             || (result.common_volume_mm3 > 0.0
                 && (result.common_contact_area_mm2 > 0.0 || result.distance_mm != 0.0))
             || (result.common_contact_area_mm2 > 0.0 && result.distance_mm != 0.0)
@@ -159,6 +162,7 @@ impl ExactBackend {
                 ExactPairRelation::Separated
             },
             common_volume_mm3: result.common_volume_mm3,
+            common_thickness_mm: result.common_thickness_mm,
             common_contact_area_mm2: result.common_contact_area_mm2,
             distance_mm: result.distance_mm,
         })

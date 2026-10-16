@@ -869,6 +869,7 @@ fn add_pair_fact(
         .entry((left.min(right).clone(), left.max(right).clone()))
         .and_modify(|known| {
             known.common_volume_mm3 += fact.common_volume_mm3;
+            known.common_thickness_mm = known.common_thickness_mm.max(fact.common_thickness_mm);
             known.contact_area_mm2 += fact.contact_area_mm2;
             known.distance_mm = match (known.distance_mm, fact.distance_mm) {
                 (Some(a), Some(b)) => Some(a.min(b)),
@@ -1519,6 +1520,7 @@ fn collision_report(
                         (left, right),
                         ExactPair {
                             common_volume_mm3: 0.0,
+                            common_thickness_mm: 0.0,
                             contact_area_mm2: area_mm2,
                             distance_mm,
                         },
@@ -1588,6 +1590,7 @@ fn collision_report(
                                         (left, right),
                                         ExactPair {
                                             common_volume_mm3: result.common_volume_mm3,
+                                            common_thickness_mm: result.common_thickness_mm,
                                             contact_area_mm2: result.common_contact_area_mm2,
                                             distance_mm: Some(result.distance_mm),
                                         },
