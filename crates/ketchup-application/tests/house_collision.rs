@@ -3,15 +3,17 @@ use ketchup_application::{DocumentSession, SessionSettings, verify_rule_program_
 use ketchup_model::document::RuleProgramSource;
 use ketchup_model::persistence::ContainerData;
 use std::sync::{Arc, atomic::AtomicBool};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const HOUSE: &str = include_str!("../../../examples/programs/tiny-house.star");
 
+/// The check's deadline: past it the pairs it did not reach are `not_evaluated`.
 /// In release the check takes about 20 s on 12 cores; it once took over 3 minutes.
 const BUDGET: Duration = Duration::from_secs(if cfg!(debug_assertions) { 600 } else { 90 });
 
 #[test]
-fn the_whole_house_is_checked_for_collisions_exactly_and_in_time() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_is_checked_for_collisions_exactly_and_in_time() {
     let mut session = DocumentSession::new(SessionSettings::default());
     let applied = session
         .apply_rule_program(
@@ -30,7 +32,6 @@ fn the_whole_house_is_checked_for_collisions_exactly_and_in_time() {
         applied.model.parts.len()
     );
     let mut report = applied.report;
-    let started = Instant::now();
     let summary = verify_rule_program_all(
         &applied.snapshot,
         &applied.model,
@@ -41,7 +42,6 @@ fn the_whole_house_is_checked_for_collisions_exactly_and_in_time() {
         Arc::new(AtomicBool::new(false)),
     )
     .expect("the house has a collision summary");
-    let elapsed = started.elapsed();
     assert_eq!(summary["state"], "verified", "{summary:#}");
     assert_eq!(summary["collisions"], 0, "{summary:#}");
     assert_eq!(summary["unresolved"], 0, "{summary:#}");
@@ -50,5 +50,4 @@ fn the_whole_house_is_checked_for_collisions_exactly_and_in_time() {
         serde_json::json!([]),
         "{summary:#}"
     );
-    assert!(elapsed < BUDGET, "{elapsed:?}");
 }
