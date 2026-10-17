@@ -17,7 +17,9 @@ use ketchup_model::exact_validation::{
     GeneralBodySource, GeneralBodyValidationError, GeneralClearanceCase, general_body_input_bytes,
 };
 use ketchup_model::graph::{DerivedIdentity, sha256_hex};
-use ketchup_model::pin_joint::{PinHole, PinJointError, project_pin_joint_contract};
+use ketchup_model::pin_joint::{
+    PinHole, PinJointContract, PinJointError, project_pin_joint_contract,
+};
 use ketchup_model::tolerance::{ROUNDING, TolerancePolicy};
 use ketchup_model::validation::{
     EvidenceClass, EvidenceCounts, PermittedErrorDirection, TolerantEvidence, ValidationReport,
@@ -1095,15 +1097,10 @@ impl GeneralFabricationProjection {
             vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
         };
         self.admit(snapshot, format)?;
-        let mut holes = Vec::new();
-        for joint in snapshot.pin_joints() {
-            let projection = project_pin_joint_contract(snapshot, joint)
-                .map_err(GeneralFabricationError::PinJoint)?;
-            for pair in projection.pairs {
-                holes.push(pair.first);
-                holes.push(pair.second);
-            }
-        }
+        let holes = capabilities::undrilled_pin_holes(snapshot)?
+            .into_iter()
+            .map(|(_, hole)| hole)
+            .collect::<Vec<_>>();
         let mut programs = Vec::new();
         let mut program_paths = BTreeSet::new();
         for row in self

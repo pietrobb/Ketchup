@@ -480,20 +480,16 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
                 serde_json::json!([100.0, 50.0, if lower { expected_height } else { 18.0 }])
             );
             assert_eq!(part["code"].as_str().unwrap().len(), 12);
-            let holes = part["pin_holes"].as_array().unwrap();
-            assert_eq!(holes.len(), 2);
-            for (hole, x) in holes.iter().zip([20.0, 52.0]) {
-                assert_eq!(hole["diameter_mm"], 8.0);
-                assert_eq!(hole["depth_mm"], 16.0);
-                assert_eq!(
-                    hole["entry_local_mm"],
-                    serde_json::json!([x, 20.0, if lower { expected_height } else { 0.0 }])
-                );
-                assert_eq!(
-                    hole["inward_unit_local"],
-                    serde_json::json!([0.0, 0.0, if lower { -1.0 } else { 1.0 }])
-                );
-            }
+            // The drilled dowel holes are the part's own drillings, not
+            // the joint's holes a second time.
+            assert_eq!(part["pin_holes"], serde_json::json!([]));
+            let drillings = part["operations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|operation| operation["kind"] == "circular-drill")
+                .count();
+            assert_eq!(drillings, 2, "{part:#}");
         }
         // Previously generated exports cannot be reused against the opposite history state.
         let other = if stage == "undo" { &after } else { &before };

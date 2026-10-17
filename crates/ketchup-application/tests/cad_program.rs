@@ -184,4 +184,5 @@ fn cuboid_part(
 }
 
 mod joints_patterns_and_targets;
+mod pin_joint_fabrication;
 mod profiles_and_construction;

@@ -50,6 +50,8 @@ pub enum ShopElement {
     Operation(GeneralManufacturingKind),
     /// A thread tapped into a drilling, by its label.
     Thread(String),
+    /// A pin hole only the pin joint of this name holds, not drilled into the part.
+    PinHole(String),
 }
 
 impl fmt::Display for ShopElement {
@@ -58,6 +60,7 @@ impl fmt::Display for ShopElement {
             Self::MirroredCopy => formatter.write_str("a mirrored copy"),
             Self::Operation(kind) => write!(formatter, "a {} operation", kind.token()),
             Self::Thread(label) => write!(formatter, "a tapped hole ({label})"),
+            Self::PinHole(joint) => write!(formatter, "a pin hole of pin joint {joint}"),
         }
     }
 }
@@ -80,6 +83,9 @@ pub(super) const BTLX_THREAD_LOSS: &str = "BTLx 2.3.1 has no tapping processing;
 const WOODWOP_THREAD: &str = "its drilling macro drills the core hole only, so the part would be \
      made without the thread; export BTLx or the production job, which carry the thread, or \
      remove the thread";
+const UNDRILLED_PIN_HOLE: &str = "it takes only the machining modelled in the part, and the \
+     joint's holes are not drilled into it; drill them into the parts (pin joint holes: drill), \
+     or export a woodWOP program or the production job, which drill the joint's holes";
 const WOODWOP_PROFILE_WITHOUT_TOOL: &str =
     "a profile cut is milled as a vertical pocket; choose the vertical pocket tool number";
 const WOODWOP_OTHER_CUT: &str =
@@ -90,7 +96,11 @@ const WOODWOP_OTHER_CUT: &str =
 pub fn carriage(format: ShopFormat, element: &ShopElement) -> Carriage {
     use GeneralManufacturingKind as Kind;
     match (format, element) {
-        (ShopFormat::Drawing, _)
+        (ShopFormat::Drawing | ShopFormat::Btlx, ShopElement::PinHole(_)) => {
+            Carriage::Refuses(UNDRILLED_PIN_HOLE)
+        }
+        (ShopFormat::ProductionJob | ShopFormat::Woodwop { .. }, ShopElement::PinHole(_))
+        | (ShopFormat::Drawing, _)
         | (ShopFormat::ProductionJob | ShopFormat::Btlx, ShopElement::Operation(_))
         | (ShopFormat::ProductionJob, ShopElement::Thread(_))
         | (ShopFormat::Woodwop { .. }, ShopElement::Operation(Kind::Stock | Kind::CircularDrill))
@@ -135,6 +145,7 @@ impl GeneralFabricationProjection {
         format: ShopFormat,
     ) -> Result<Vec<ShopLoss>, GeneralFabricationError> {
         let mut losses = Vec::new();
+        let pin_holes = undrilled_pin_holes(snapshot)?;
         for row in self
             .bom
             .rows
@@ -159,6 +170,12 @@ impl GeneralFabricationProjection {
                     elements.push(ShopElement::Thread(thread.label()));
                 }
             }
+            if let Some((joint, _)) = pin_holes
+                .iter()
+                .find(|(_, hole)| row.instances.contains(&hole.instance_path))
+            {
+                elements.push(ShopElement::PinHole(joint.name.clone()));
+            }
             for element in elements {
                 match carriage(format, &element) {
                     Carriage::Carries => {}
@@ -180,6 +197,27 @@ impl GeneralFabricationProjection {
         }
         Ok(losses)
     }
+}
+
+/// The pin holes only their pin joint holds, with the joint. A joint whose
+/// holes are drilled into its parts adds none: those pockets are the parts'
+/// own drilling operations, so every format machines them once.
+pub(super) fn undrilled_pin_holes(
+    snapshot: &Snapshot,
+) -> Result<Vec<(&PinJointContract, PinHole)>, GeneralFabricationError> {
+    let mut holes = Vec::new();
+    for joint in snapshot
+        .pin_joints()
+        .filter(|joint| joint.physical_hole_pairs.is_none())
+    {
+        let projection = project_pin_joint_contract(snapshot, joint)
+            .map_err(GeneralFabricationError::PinJoint)?;
+        for pair in projection.pairs {
+            holes.push((joint, pair.first));
+            holes.push((joint, pair.second));
+        }
+    }
+    Ok(holes)
 }
 
 /// Whether a copy of `row` is placed mirrored; a scaled or sheared copy is

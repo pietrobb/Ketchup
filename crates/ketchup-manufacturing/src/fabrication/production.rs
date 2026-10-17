@@ -78,22 +78,16 @@ impl GeneralFabricationProjection {
         let mut codes = BTreeSet::new();
         let mut matched_operations = BTreeSet::new();
         let mut pins = BTreeMap::<InstancePath, Vec<Value>>::new();
-        for joint in snapshot.pin_joints() {
-            let projection = project_pin_joint_contract(snapshot, joint)
-                .map_err(GeneralFabricationError::PinJoint)?;
-            for pair in projection.pairs {
-                for hole in [pair.first, pair.second] {
-                    pins.entry(hole.instance_path.clone())
-                        .or_default()
-                        .push(json!({
-                            "kind": "pin_drill", "joint_id": joint.id.0,
-                            "hole_id": hole.stable_hole_id,
-                            "entry_local_mm": hole.entry_local_mm,
-                            "inward_unit_local": hole.inward_unit_local,
-                            "diameter_mm": hole.diameter_mm, "depth_mm": hole.depth_mm,
-                        }));
-                }
-            }
+        for (joint, hole) in super::capabilities::undrilled_pin_holes(snapshot)? {
+            pins.entry(hole.instance_path.clone())
+                .or_default()
+                .push(json!({
+                    "kind": "pin_drill", "joint_id": joint.id.0,
+                    "hole_id": hole.stable_hole_id,
+                    "entry_local_mm": hole.entry_local_mm,
+                    "inward_unit_local": hole.inward_unit_local,
+                    "diameter_mm": hole.diameter_mm, "depth_mm": hole.depth_mm,
+                }));
         }
         for row in self
             .bom
