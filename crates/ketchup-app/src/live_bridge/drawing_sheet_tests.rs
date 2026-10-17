@@ -178,6 +178,7 @@ struct Entity {
     layer: String,
     codes: BTreeMap<u16, f64>,
     id: String,
+    text: String,
 }
 
 /// The entities of the ENTITIES section, read pair by pair (a code may be
@@ -207,9 +208,11 @@ fn entities(dxf: &str) -> Vec<Entity> {
                 layer: String::new(),
                 codes: BTreeMap::new(),
                 id: String::new(),
+                text: String::new(),
             }),
             "8" => entities.last_mut().unwrap().layer = (*value).to_owned(),
             "1000" => entities.last_mut().unwrap().id = (*value).to_owned(),
+            "1" => entities.last_mut().unwrap().text = (*value).to_owned(),
             code => {
                 if let (Ok(code), Ok(number)) = (code.parse::<u16>(), value.parse::<f64>()) {
                     entities.last_mut().unwrap().codes.insert(code, number);
@@ -541,6 +544,23 @@ fn drawn(dxf: &str) -> Vec<String> {
     drawn
 }
 
+/// The `\U+XXXX` escapes of an R12 string as the characters they stand for.
+fn decode_dxf_unicode(value: &str) -> String {
+    let mut units = Vec::new();
+    let mut rest = value;
+    while let Some(character) = rest.chars().next() {
+        if let Some(hex) = rest.strip_prefix("\\U+").and_then(|tail| tail.get(..4)) {
+            units.push(u16::from_str_radix(hex, 16).unwrap());
+            rest = &rest[7..];
+        } else {
+            let mut buffer = [0; 2];
+            units.extend_from_slice(character.encode_utf16(&mut buffer));
+            rest = &rest[character.len_utf8()..];
+        }
+    }
+    String::from_utf16(&units).unwrap()
+}
+
 /// The same sheet as DWG: an AutoCAD 2018 file that reads back with every
 /// line, circle and arc of the DXF on its layer, at its place, with its id.
 fn assert_the_dwg_carries_the_dxf(
@@ -566,11 +586,17 @@ fn assert_the_dwg_carries_the_dxf(
     assert!(expected.iter().any(|entity| entity.starts_with("CIRCLE ")));
     assert!(expected.iter().any(|entity| entity.starts_with("ARC ")));
     assert_eq!(drawn(&back), expected);
+    // The R12 sheet writes a character outside ASCII as its \U+XXXX escape;
+    // the DWG holds the character itself.
     let texts = |dxf: &str| {
-        entities(dxf)
-            .iter()
+        let mut texts = entities(dxf)
+            .into_iter()
             .filter(|entity| entity.kind == "TEXT")
-            .count()
+            .map(|entity| (entity.id, decode_dxf_unicode(&entity.text)))
+            .collect::<Vec<_>>();
+        texts.sort();
+        texts
     };
+    assert!(!texts(dxf).is_empty());
     assert_eq!(texts(&back), texts(dxf));
 }

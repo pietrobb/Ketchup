@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use acadrust::types::Vector3;
 use acadrust::{Arc, CadDocument, Circle, DxfReader, DxfWriter, EntityType, Line};
 
 use super::*;
@@ -56,6 +57,33 @@ fn a_dxf_drawing_written_as_dwg_reads_back_with_the_same_lines_circle_and_arc() 
             ("ARC", 42.25)
         ]
     );
+}
+
+/// The shape of a drawing sheet's DXF (review 2026-10-17 F-3): ASCII R12, the
+/// KETCHUP id at the end of each entity and a character outside ASCII as its
+/// `\U+XXXX` escape.
+const R12_SHEET: &str = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nAPPID\n70\n1\n0\nAPPID\n2\nKETCHUP\n70\n0\n0\nENDTAB\n0\nENDSEC\n\
+0\nSECTION\n2\nENTITIES\n\
+0\nLINE\n8\nVISIBLE\n6\nCONTINUOUS\n10\n20\n20\n10\n30\n0\n11\n410\n21\n10\n31\n0\n1001\nKETCHUP\n1000\nsheet-border-0\n\
+0\nTEXT\n8\nANNOTATION\n10\n30\n20\n60\n30\n0\n40\n3.5\n1\nKe\\U+010Dup \\U+230010 \\U+00B10.2 mm\n1001\nKETCHUP\n1000\ntitle-block/author\n\
+0\nENDSEC\n0\nEOF\n";
+
+#[test]
+fn an_r12_sheet_written_as_dwg_keeps_its_line_and_its_text_with_the_escaped_characters() {
+    let dwg = dxf_to_dwg(R12_SHEET.as_bytes()).expect("the R12 sheet is written as DWG");
+    let read = dwg_to_dxf(&dwg, LIMIT, 64 * 1024 * 1024).expect("the DWG reads");
+    let document = DxfReader::from_reader(Cursor::new(read.dxf))
+        .and_then(DxfReader::read)
+        .expect("the DXF of the DWG reads");
+    let entities = document.entities().collect::<Vec<_>>();
+    let [EntityType::Line(line), EntityType::Text(text)] = entities.as_slice() else {
+        panic!("a line and a text: {entities:?}");
+    };
+    assert_eq!(line.start, Vector3::new(20.0, 10.0, 0.0));
+    assert_eq!(line.end, Vector3::new(410.0, 10.0, 0.0));
+    assert_eq!(text.value, "Kečup ⌀10 ±0.2 mm");
+    assert_eq!(text.insertion_point, Vector3::new(30.0, 60.0, 0.0));
 }
 
 #[test]

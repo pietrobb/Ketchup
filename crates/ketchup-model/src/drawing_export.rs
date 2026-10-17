@@ -903,6 +903,9 @@ fn export_svg(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
     svg.into_bytes()
 }
 
+/// The sheet as AutoCAD R12 (AC1009) DXF, like the profile export: R12 needs no
+/// handles, BLOCK_RECORD table or OBJECTS section, and each entity ends with
+/// its KETCHUP id as extended data, after all of its own groups.
 fn export_dxf(
     drawing: &OrthographicDrawing,
     lines: &[PageLine],
@@ -911,7 +914,7 @@ fn export_dxf(
     replaced_lines: &BTreeSet<String>,
 ) -> Vec<u8> {
     let mut dxf = format!(
-        "999\n{DRAWING_EXPORT_SCHEMA_V1}\n999\nresult={} layout={}\n0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1027\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n2\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0\n0\nLTYPE\n2\nHIDDEN\n70\n0\n3\nHidden line\n72\n65\n73\n2\n40\n3\n49\n2\n74\n0\n49\n-1\n74\n0\n0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n5\n0\nLAYER\n2\nBORDER\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nVISIBLE\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nHIDDEN\n70\n0\n62\n8\n6\nHIDDEN\n0\nLAYER\n2\nDIMENSION\n70\n0\n62\n3\n6\nCONTINUOUS\n0\nLAYER\n2\nANNOTATION\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nENDTAB\n0\nTABLE\n2\nAPPID\n70\n1\n0\nAPPID\n2\nKETCHUP\n70\n0\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n",
+        "999\n{DRAWING_EXPORT_SCHEMA_V1}\n999\nresult={} layout={}\n0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n2\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0\n0\nLTYPE\n2\nHIDDEN\n70\n0\n3\nHidden line\n72\n65\n73\n2\n40\n3\n49\n2\n49\n-1\n0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n5\n0\nLAYER\n2\nBORDER\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nVISIBLE\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nHIDDEN\n70\n0\n62\n8\n6\nHIDDEN\n0\nLAYER\n2\nDIMENSION\n70\n0\n62\n3\n6\nCONTINUOUS\n0\nLAYER\n2\nANNOTATION\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nENDTAB\n0\nTABLE\n2\nAPPID\n70\n1\n0\nAPPID\n2\nKETCHUP\n70\n0\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n",
         drawing.result_digest, drawing.layout.digest
     );
     for line in lines
@@ -919,14 +922,14 @@ fn export_dxf(
         .filter(|line| !replaced_lines.contains(&line.id))
     {
         dxf.push_str(&format!(
-            "0\nLINE\n8\n{}\n6\n{}\n1001\nKETCHUP\n1000\n{}\n10\n{}\n20\n{}\n30\n0\n11\n{}\n21\n{}\n31\n0\n",
+            "0\nLINE\n8\n{}\n6\n{}\n10\n{}\n20\n{}\n30\n0\n11\n{}\n21\n{}\n31\n0\n1001\nKETCHUP\n1000\n{}\n",
             line.style.name(),
             line.style.dxf_linetype(),
-            dxf_text(&line.id),
             number(line.start[0]),
             number(line.start[1]),
             number(line.end[0]),
             number(line.end[1]),
+            dxf_text(&line.id),
         ));
     }
     for arc in arcs {
@@ -952,12 +955,12 @@ fn export_dxf(
     }
     for text in texts {
         dxf.push_str(&format!(
-            "0\nTEXT\n8\nANNOTATION\n1001\nKETCHUP\n1000\n{}\n10\n{}\n20\n{}\n30\n0\n40\n{}\n1\n{}\n",
-            dxf_text(&text.id),
+            "0\nTEXT\n8\nANNOTATION\n10\n{}\n20\n{}\n30\n0\n40\n{}\n1\n{}\n1001\nKETCHUP\n1000\n{}\n",
             number(text.position[0]),
             number(text.position[1]),
             number(text.height_mm),
             dxf_text(&text.value),
+            dxf_text(&text.id),
         ));
     }
     dxf.push_str("0\nENDSEC\n0\nEOF\n");
@@ -1118,8 +1121,24 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// A string of the R12 file: a line break becomes a space and a character
+/// outside ASCII its `\U+XXXX` escape (UTF-16 units), so the file needs no
+/// code page and AutoCAD, ezdxf and acadrust read the same text.
 fn dxf_text(value: &str) -> String {
-    value.replace(['\r', '\n'], " ")
+    let mut output = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\r' | '\n' => output.push(' '),
+            ascii if ascii.is_ascii() => output.push(ascii),
+            other => {
+                let mut units = [0; 2];
+                for unit in other.encode_utf16(&mut units) {
+                    output.push_str(&format!("\\U+{unit:04X}"));
+                }
+            }
+        }
+    }
+    output
 }
 
 fn pdf_text_hex(value: &str) -> Result<String, DrawingExportError> {

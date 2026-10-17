@@ -2074,8 +2074,9 @@ fn svg_text_renders_at_viewbox_scale_without_annotation_collisions() {
     assert!(title_rows.windows(2).all(|rows| rows[0][3] < rows[1][1]));
 }
 
-#[test]
-fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
+/// The seeded box with a sheet of its front view, a toleranced dimension, a
+/// Slovak note and a parametric title block, and the drawing of that sheet.
+fn annotated_sheet() -> (DocumentStore, ketchup_model::drawing::OrthographicDrawing) {
     let mut document = seeded_document();
     let initial_registry = registry(
         &document.current(),
@@ -2138,6 +2139,12 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
     let (create, initial_drawing) =
         prepare_create_drawing_sheet(&document, &initial_registry, sheet).unwrap();
     document.commit_proposal(&create).unwrap();
+    (document, initial_drawing)
+}
+
+#[test]
+fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
+    let (mut document, initial_drawing) = annotated_sheet();
     let initial = export_drawing(&document.current(), &initial_drawing).unwrap();
     assert_eq!(
         export_drawing(&document.current(), &initial_drawing).unwrap(),
@@ -2165,7 +2172,7 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
     {
         assert_eq!(&dxf_lines[index - 2..index], &["1001", "KETCHUP"]);
     }
-    assert!(dxf.contains("30 ±0.2 mm"));
+    assert!(dxf.contains("30 \\U+00B10.2 mm"));
     let pdf = std::str::from_utf8(initial.pdf()).unwrap();
     assert!(pdf.starts_with("%PDF-1.7"));
     assert!(pdf.contains("/Encoding 6 0 R /ToUnicode 7 0 R"));
@@ -2935,4 +2942,128 @@ fn stale_failed_ambiguous_lost_and_stale_confirmation_leave_state_unchanged() {
         Err(DrawingError::SourceStale)
     );
     assert!(!accepted_output.is_current(&document.current()));
+}
+
+/// The `\U+XXXX` escapes of an R12 string as the characters they stand for.
+fn decode_dxf_unicode(value: &str) -> String {
+    let mut units = Vec::new();
+    let mut rest = value;
+    while let Some(character) = rest.chars().next() {
+        if let Some(hex) = rest.strip_prefix("\\U+").and_then(|tail| tail.get(..4)) {
+            units.push(u16::from_str_radix(hex, 16).unwrap());
+            rest = &rest[7..];
+        } else {
+            let mut buffer = [0; 2];
+            units.extend_from_slice(character.encode_utf16(&mut buffer));
+            rest = &rest[character.len_utf8()..];
+        }
+    }
+    String::from_utf16(&units).unwrap()
+}
+
+/// Review 2026-10-17 F-3: the drawing DXF put the KETCHUP extended data of a
+/// line and a text before their coordinates, where a strict reader takes the
+/// coordinates for extended data, and announced AC1027 without the handles,
+/// BLOCK_RECORD table and OBJECTS section that version needs. Read pair by pair
+/// as the DXF reference demands, it is an ASCII R12 file without handles or
+/// subclass markers, and every entity ends with its extended data.
+#[test]
+fn the_drawing_dxf_is_r12_and_every_entity_ends_with_its_extended_data() {
+    let (document, drawing) = annotated_sheet();
+    let export = export_drawing(&document.current(), &drawing).unwrap();
+    assert!(
+        export.dxf().is_ascii(),
+        "an R12 file without a code page is ASCII"
+    );
+    let text = std::str::from_utf8(export.dxf()).unwrap();
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len() % 2, 0, "the file is whole pairs");
+    let pairs = lines
+        .chunks(2)
+        .map(|pair| (pair[0].trim().parse::<u16>().unwrap(), pair[1]))
+        .collect::<Vec<_>>();
+    let after = |pair: (u16, &str)| {
+        let index = pairs
+            .iter()
+            .position(|candidate| *candidate == pair)
+            .unwrap();
+        pairs[index + 1]
+    };
+    assert_eq!(after((9, "$ACADVER")), (1, "AC1009"));
+    let sections = pairs
+        .windows(2)
+        .filter(|window| window[0] == (0, "SECTION"))
+        .map(|window| window[1])
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sections,
+        [(2, "HEADER"), (2, "TABLES"), (2, "ENTITIES")],
+        "R12 has no CLASSES, BLOCK_RECORD or OBJECTS"
+    );
+    assert!(
+        pairs
+            .iter()
+            .all(|(code, _)| !matches!(code, 5 | 74 | 100 | 102 | 105 | 330 | 360)),
+        "no handles, owners, subclass markers or R13 linetype flags"
+    );
+
+    let start = pairs
+        .iter()
+        .position(|pair| *pair == (2, "ENTITIES"))
+        .unwrap()
+        + 1;
+    let end = start
+        + pairs[start..]
+            .iter()
+            .position(|pair| *pair == (0, "ENDSEC"))
+            .unwrap();
+    let mut entities = Vec::<(&str, Vec<(u16, &str)>)>::new();
+    for &(code, value) in &pairs[start..end] {
+        if code == 0 {
+            entities.push((value, Vec::new()));
+        } else {
+            entities.last_mut().unwrap().1.push((code, value));
+        }
+    }
+    for kind in ["LINE", "TEXT"] {
+        assert!(entities.iter().any(|(entity, _)| *entity == kind), "{kind}");
+    }
+    for (kind, groups) in &entities {
+        let xdata = groups
+            .iter()
+            .position(|(code, _)| *code == 1001)
+            .unwrap_or_else(|| panic!("{kind} has its KETCHUP id"));
+        let (data, extended) = groups.split_at(xdata);
+        assert_eq!(extended.len(), 2, "{kind}: {extended:?}");
+        assert_eq!(extended[0], (1001, "KETCHUP"));
+        assert_eq!(extended[1].0, 1000);
+        let codes = data.iter().map(|(code, _)| *code).collect::<Vec<_>>();
+        let required: &[u16] = match *kind {
+            "LINE" => &[8, 10, 20, 30, 11, 21, 31],
+            "TEXT" => &[8, 10, 20, 30, 40, 1],
+            "ARC" => &[8, 10, 20, 30, 40, 50, 51],
+            "CIRCLE" => &[8, 10, 20, 30, 40],
+            other => panic!("unexpected entity {other}"),
+        };
+        assert!(
+            required.iter().all(|code| codes.contains(code)),
+            "{kind} keeps {required:?} before its extended data: {groups:?}"
+        );
+    }
+    let notes = entities
+        .iter()
+        .filter(|(kind, _)| *kind == "TEXT")
+        .flat_map(|(_, groups)| groups.iter().filter(|(code, _)| *code == 1))
+        .map(|(_, value)| decode_dxf_unicode(value))
+        .collect::<Vec<_>>();
+    for expected in [
+        "Priemer ⌀10 mm; hĺbka 5 mm; tolerancia ±0.2 mm",
+        "Výkres súčiastky",
+        "30 ±0.2 mm",
+    ] {
+        assert!(
+            notes.iter().any(|note| note == expected),
+            "{expected}: {notes:?}"
+        );
+    }
 }
