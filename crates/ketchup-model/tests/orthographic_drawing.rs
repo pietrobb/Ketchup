@@ -2479,6 +2479,108 @@ fn invalid_lost_and_excessive_linear_dimensions_fail_without_mutation() {
     assert_eq!(stamp(&document), before);
 }
 
+/// Review 2026-10-17 MF-7: a line drawn shorter than its edge cannot carry
+/// the edge's length. On the isometric view every edge of the 20 × 10 × 30 box
+/// is foreshortened (the 30 mm edge is drawn 24.495 mm long) and every length
+/// or angle dimension is refused by name; an auxiliary view the vertical edges
+/// lie parallel to still dimensions them at their true 30 mm.
+#[test]
+fn dimensions_on_foreshortened_edges_are_refused_by_name() {
+    let document = seeded_document();
+    let exact = registry(
+        &document.current(),
+        "foreshortened-dimensions",
+        [[0.0, 0.0, 0.0], [20.0, 10.0, 30.0]],
+    );
+    let auxiliary = OrthographicViewKind::auxiliary([1.0, 1.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+    let views = vec![OrthographicViewKind::Isometric, auxiliary];
+    let sheet_with = |annotations| {
+        DrawingSheet::with_contract_views_and_annotations(
+            SHEET,
+            "Foreshortened",
+            DrawingSource::Definition(DEFINITION),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Foreshortened", "", "", "").unwrap(),
+            views.clone(),
+            annotations,
+        )
+        .unwrap()
+    };
+    let plain = project_orthographic_drawing(
+        &document.current(),
+        &exact,
+        &sheet_with(DrawingAnnotations::new(vec![], vec![])),
+    )
+    .unwrap();
+    let line_of_length = |view: usize, length: f64| {
+        plain.views[view]
+            .visible_lines
+            .iter()
+            .find(|line| {
+                let delta = [
+                    line.end_mm[0] - line.start_mm[0],
+                    line.end_mm[1] - line.start_mm[1],
+                ];
+                (ketchup_geometry::linalg::dot2(delta, delta).sqrt() - length).abs() <= 1.0e-6
+            })
+            .unwrap_or_else(|| panic!("no {length} mm line in view {view}"))
+            .stable_line_id
+            .clone()
+    };
+    let linear = |view: OrthographicViewKind, line: String| {
+        DrawingAnnotations::new(
+            vec![DrawingLinearDimension::new(DrawingDimensionId(1), view, line, 8.0).unwrap()],
+            vec![],
+        )
+    };
+    let isometric_vertical = line_of_length(0, 30.0 * (2.0_f64 / 3.0).sqrt());
+    let isometric_width = line_of_length(0, 20.0 * (2.0_f64 / 3.0).sqrt());
+    let auxiliary_vertical = line_of_length(1, 30.0);
+    let auxiliary_width = line_of_length(1, 20.0 / 2.0_f64.sqrt());
+
+    for (view, line) in [
+        (OrthographicViewKind::Isometric, isometric_vertical.clone()),
+        (OrthographicViewKind::Isometric, isometric_width.clone()),
+        (auxiliary, auxiliary_width),
+    ] {
+        assert_eq!(
+            project_orthographic_drawing(
+                &document.current(),
+                &exact,
+                &sheet_with(linear(view, line))
+            ),
+            Err(DrawingError::DimensionForeshortened)
+        );
+    }
+    let right_angle = DrawingAnnotations::with_typed_dimensions(
+        vec![],
+        vec![
+            DrawingAngularDimension::new(
+                DrawingDimensionId(2),
+                OrthographicViewKind::Isometric,
+                [isometric_vertical, isometric_width],
+                12.0,
+                DrawingDimensionTolerance::None,
+            )
+            .unwrap(),
+        ],
+        vec![],
+        vec![],
+    );
+    assert_eq!(
+        project_orthographic_drawing(&document.current(), &exact, &sheet_with(right_angle)),
+        Err(DrawingError::DimensionForeshortened)
+    );
+
+    let true_length = project_orthographic_drawing(
+        &document.current(),
+        &exact,
+        &sheet_with(linear(auxiliary, auxiliary_vertical)),
+    )
+    .unwrap();
+    assert!((true_length.layout.linear_dimensions[0].value_mm - 30.0).abs() <= 1.0e-9);
+}
+
 #[test]
 fn malformed_geometry_is_rejected_without_mutation() {
     let document = seeded_document();

@@ -2016,6 +2016,9 @@ pub struct ProjectedVisibleLine {
     pub stable_line_id: String,
     pub start_mm: [f64; 2],
     pub end_mm: [f64; 2],
+    /// The edge is not parallel to the view plane, so the drawn line is
+    /// shorter than the edge and cannot carry a length dimension.
+    pub foreshortened: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2196,6 +2199,7 @@ pub enum DrawingError {
     InvalidDimension,
     InvalidAnnotation,
     DimensionSourceLost,
+    DimensionForeshortened,
     AnnotationSourceLost,
     LayoutOverflow,
     SourceLost,
@@ -2234,6 +2238,9 @@ impl fmt::Display for DrawingError {
             Self::InvalidDimension => "drawing dimension contract is invalid",
             Self::InvalidAnnotation => "drawing annotation contract is invalid",
             Self::DimensionSourceLost => "drawing dimension source line is lost",
+            Self::DimensionForeshortened => {
+                "drawing dimension source edge is not parallel to its view, so the drawn line is shorter than the edge; dimension it on a view the edge lies in"
+            }
             Self::AnnotationSourceLost => "drawing annotation source line is lost",
             Self::LayoutOverflow => {
                 "drawing views or dimensions do not fit inside the selected sheet layout"
@@ -2854,6 +2861,10 @@ fn project_view(
         if projected_length_squared <= VISIBILITY_EPSILON {
             continue;
         }
+        let edge_length =
+            ketchup_geometry::linalg::length_squared(sub(evidence.end, evidence.start)).sqrt();
+        let foreshortened =
+            edge_length - projected_length_squared.sqrt() > DEFAULT_LINEAR_TOLERANCE_MM;
         generated_splits = generated_splits
             .checked_add(2)
             .ok_or(DrawingError::ResourceLimit)?;
@@ -3041,6 +3052,7 @@ fn project_view(
                 stable_line_id,
                 start_mm,
                 end_mm,
+                foreshortened,
             };
             if hidden {
                 hidden_lines.push(line);
@@ -3634,6 +3646,11 @@ fn layout_linear_dimensions(
         if matching_lines.next().is_some() {
             return Err(DrawingError::DimensionSourceLost);
         }
+        // Review 2026-10-17 MF-7: on an isometric or oblique view the drawn
+        // line is shorter than the edge; its 2D length is not the edge's.
+        if source_line.foreshortened {
+            return Err(DrawingError::DimensionForeshortened);
+        }
         let source_delta = subtract_2d(source_line.end_mm, source_line.start_mm);
         let value_mm = dot2(source_delta, source_delta).sqrt();
         if !value_mm.is_finite() || value_mm <= INTERSECTION_EPSILON {
@@ -3723,6 +3740,11 @@ fn layout_angular_dimensions(
             let line = matching.next().ok_or(DrawingError::DimensionSourceLost)?;
             if matching.next().is_some() {
                 return Err(DrawingError::DimensionSourceLost);
+            }
+            // The drawn angle between two edges is their angle only when both
+            // lie parallel to the view (review 2026-10-17 MF-7).
+            if line.foreshortened {
+                return Err(DrawingError::DimensionForeshortened);
             }
             source_lines.push(line);
         }
