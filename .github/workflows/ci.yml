@@ -107,6 +107,15 @@ jobs:
         run: cargo clippy --locked $CRATES --all-targets -- -D warnings
       - name: tests
         run: cargo test --locked $CRATES --no-fail-fast
+      # The plugin host's Unix process group lives in the vendored process-wrap
+      # (PATCH.md); ketchup-scheduler, which uses it, needs OCCT and is tested
+      # on Windows only, so the group's own unit tests run here (review
+      # 2026-10-17 EX-3).
+      - name: unit tests of the vendored process-wrap
+        run: >-
+          cargo test --locked --manifest-path third_party/process-wrap/Cargo.toml
+          --target-dir target/process-wrap --lib --no-default-features
+          --features std,process-group,kill-on-drop
       # The desktop Viewer renders its own pixels in tests; on Linux the
       # Vulkan software rasterizer (lavapipe) is the adapter.
       - name: lavapipe

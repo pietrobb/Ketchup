@@ -162,7 +162,12 @@ impl ChildWrapper for ProcessGroupChild {
 
 	#[cfg_attr(feature = "tracing", instrument(level = "debug", skip(self)))]
 	fn start_kill(&mut self) -> Result<()> {
-		self.signal_imp(Signal::SIGKILL)
+		match self.signal_imp(Signal::SIGKILL) {
+			// No process is left in the group: `wait`/`try_wait` reaped it.
+			// Like `std::process::Child::kill` on an exited child, that is success.
+			Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+			result => result,
+		}
 	}
 
 	#[cfg_attr(feature = "tracing", instrument(level = "debug", skip(self)))]
@@ -206,5 +211,34 @@ impl ChildWrapper for ProcessGroupChild {
 
 	fn signal(&self, sig: i32) -> Result<()> {
 		self.signal_imp(Signal::try_from(sig)?)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::time::{Duration, Instant};
+
+	/// Ketchup review 2026-10-17 EX-3: `try_wait` reaps the whole group, so the
+	/// kill that every finished plugin run ends with finds no process. That is
+	/// success, as `std::process::Child::kill` on an exited child.
+	#[test]
+	fn killing_a_group_that_try_wait_reaped_succeeds() {
+		let mut command = Command::new("sh");
+		command.args(["-c", "exit 0"]);
+		let mut command = CommandWrap::from(command);
+		command.wrap(ProcessGroup::leader());
+		let mut child = command.spawn().unwrap();
+		let deadline = Instant::now() + Duration::from_secs(10);
+		let status = loop {
+			if let Some(status) = child.try_wait().unwrap() {
+				break status;
+			}
+			assert!(Instant::now() < deadline, "sh did not exit");
+			std::thread::sleep(Duration::from_millis(10));
+		};
+		assert!(status.success());
+		child.start_kill().unwrap();
+		assert!(child.wait().unwrap().success());
 	}
 }

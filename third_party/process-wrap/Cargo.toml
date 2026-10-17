@@ -85,42 +85,6 @@ tracing = ["dep:tracing"]
 name = "process_wrap"
 path = "src/lib.rs"
 
-[[test]]
-name = "child_wrapper_contract"
-path = "tests/child_wrapper_contract.rs"
-
-[[test]]
-name = "multiproc_helper"
-path = "tests/multiproc_helper.rs"
-
-[[test]]
-name = "spawn_with_child"
-path = "tests/spawn_with_child.rs"
-
-[[test]]
-name = "std_unix"
-path = "tests/std_unix.rs"
-
-[[test]]
-name = "std_windows"
-path = "tests/std_windows.rs"
-
-[[test]]
-name = "tokio_unix"
-path = "tests/tokio_unix.rs"
-
-[[test]]
-name = "tokio_windows"
-path = "tests/tokio_windows.rs"
-
-[[test]]
-name = "wrapper_hooks"
-path = "tests/wrapper_hooks.rs"
-
-[[test]]
-name = "wrapper_lookup"
-path = "tests/wrapper_lookup.rs"
-
 [dependencies.futures]
 version = "0.3.30"
 optional = true
@@ -141,24 +105,6 @@ optional = true
 [dependencies.tracing]
 version = "0.1.40"
 optional = true
-
-[dev-dependencies.remoteprocess]
-version = "0.5.0"
-
-[dev-dependencies.tempfile]
-version = "3.20.0"
-default-features = false
-
-[dev-dependencies.tokio]
-version = "1.38.2"
-features = [
-    "io-util",
-    "macros",
-    "process",
-    "rt",
-    "rt-multi-thread",
-    "time",
-]
 
 [target."cfg(unix)".dependencies.nix]
 version = "0.31.1"

@@ -1,9 +1,11 @@
 # process-wrap 10.0.0, patched for Ketchup
 
 Unmodified copy of `process-wrap` 10.0.0 from crates.io (Apache-2.0 OR MIT, see the license
-files) except five changes (the fourth: `JobMemoryLimit` on Unix; the fifth: `KillOnDrop` on Linux, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
-has, a `JobMemoryLimit` wrapper, and its job object starts the child without suspending it (below). The upstream `tests/` directory is left out; this
-workspace never builds a dependency's tests.
+files) except six changes (the fourth: `JobMemoryLimit` on Unix; the fifth: `KillOnDrop` on Linux;
+the sixth: killing a reaped process group, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
+has, a `JobMemoryLimit` wrapper, and its job object starts the child without suspending it (below). The upstream `tests/` directory is left out, and
+with it the `[[test]]` targets and dev-dependencies of `Cargo.toml`. The unit tests in `src/` run in
+CI on Linux and macOS with this directory's own `Cargo.lock` (`.github/workflows/ci.yml`).
 
 - `src/std/kill_on_drop.rs` (new): `KillOnDrop` marker wrapper. `std::process::Command` has no
   kill-on-drop flag, so `pre_spawn` does nothing; the wrapper only records the request.
@@ -56,6 +58,17 @@ Why: on Unix there is no kill-on-close job, so a plugin kept running after the e
 was killed (review 2026-10-17 EX-7). The signal follows the spawning thread, which suits a plugin
 whose host thread waits for it; Ketchup's pooled exact and program workers watch their parent
 themselves instead (`ketchup-scheduler`, `child_process::exit_with_parent`).
+
+## Killing a reaped process group
+
+- `src/std/process_group.rs` (`ProcessGroupChild::start_kill`): `ESRCH` from `killpg` is success.
+  A unit test in the same file.
+
+Why: `try_wait` reaps every process of the group (`waitpid(-pgid)` until `ECHILD`), so the kill
+that follows finds no process and `killpg` fails with `ESRCH`. Ketchup's plugin host waits for the
+plugin and then kills its group so no descendant outlives it; every successful plugin run on Unix
+ended in a transport error (review 2026-10-17 EX-3). `std::process::Child::kill` on a child that
+has exited returns `Ok` as well.
 
 ## No suspended start
 
