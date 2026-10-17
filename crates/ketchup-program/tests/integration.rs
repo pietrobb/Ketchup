@@ -28,6 +28,7 @@ mod revolve_bounds;
 mod support;
 mod sweep_loft;
 mod takeoff_house;
+mod unverified_report;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;

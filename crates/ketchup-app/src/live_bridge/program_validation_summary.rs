@@ -12,11 +12,17 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
     let distances = exact.map(|value| &value["distance_measurements_state"]);
     let distance_incomplete = distances.is_some_and(|value| value == "incomplete");
     let required_exact_distances = !ketchup_program::exact::measured_pairs(model).is_empty();
+    // A report that lists only part of itself may have left out a failure,
+    // and one whose checks stopped checked nothing.
+    let partial = report.truncated.is_some()
+        || has(ketchup_program::REPORT_TRUNCATED)
+        || has(ketchup_program::CHECKS_UNVERIFIED);
     let dimensions = if model.expectations.is_empty() {
         "not_requested"
     } else if has("expectation_failed") {
         "failed"
-    } else if has("expectation_unverified")
+    } else if partial
+        || has("expectation_unverified")
         || (required_exact_distances && (!exact_complete || distance_incomplete))
     {
         "incomplete"
@@ -75,6 +81,7 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
     let state = if report.errors > 0 || load_state == Some("failed") {
         "failed"
     } else if !exact_complete
+        || partial
         || unverified
         || distance_incomplete
         || load_state == Some("incomplete")
@@ -135,6 +142,39 @@ mod tests {
             partial["joints_and_holes"]["exact_manufacturing_verification"],
             "not_evaluated"
         );
+    }
+
+    /// D-3, D-4 (review 2026-10-17): a report that lists only part of itself,
+    /// or whose checks stopped, neither passes nor passes the declared intent.
+    #[test]
+    fn a_shortened_or_unchecked_report_never_passes() {
+        let source =
+            "a=box('a',(10,10,10))\nb=box('b',(10,10,10),at=(0,0,660))\nexpect_gap(a,b,650)";
+        let (evaluated, report) =
+            ketchup_program::run("apart.star", source, &BTreeMap::new()).unwrap();
+        let exact = json!({"state":"verified", "distance_measurements_state":"complete"});
+        let whole = summary(&report, &evaluated.model, Some(&exact));
+        assert_eq!(whole["state"], "passed", "{whole}");
+        assert_eq!(whole["declared_intent"]["state"], "passed");
+        let stopped = ketchup_program::ProgramError {
+            code: "check_deadline",
+            message: "out of time".to_owned(),
+            location: None,
+        };
+        for (name, partial) in [
+            ("shortened", report.first(0, 0)),
+            (
+                "unfinished",
+                ketchup_program::Report::unfinished(&evaluated, &stopped),
+            ),
+        ] {
+            let partial = summary(&partial, &evaluated.model, Some(&exact));
+            assert_eq!(partial["state"], "incomplete", "{name}: {partial}");
+            assert_eq!(
+                partial["declared_intent"]["state"], "incomplete",
+                "{name}: {partial}"
+            );
+        }
     }
 
     #[test]

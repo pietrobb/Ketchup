@@ -90,13 +90,27 @@ pub struct Report {
     pub design: member_check::DesignReport,
     pub log: Vec<String>,
     pub unused_overrides: Vec<String>,
+    /// The counts of the whole report when this one lists only its first issues
+    /// and relations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<Truncated>,
     /// The program lines of every part, to name the lines of later issues.
     #[serde(skip)]
     part_sources: BTreeMap<String, Vec<SourceLines>>,
 }
 
+/// How many issues (errors among them) and relations a whole report holds,
+/// kept on a report that lists only its first ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Truncated {
+    pub issues: usize,
+    pub errors: usize,
+    pub relations: usize,
+}
+
 impl Report {
-    /// Replaces the issues (e.g. after an exact check) and recounts them.
+    /// Replaces the issues (e.g. after an exact check) and recounts them. A
+    /// report whose checks did not finish is not `ok`: nothing says it is.
     pub fn set_issues(&mut self, mut issues: Vec<Issue>) {
         locate_issues(&mut issues, &self.part_sources);
         issues.sort_by_key(|issue| issue.severity);
@@ -105,7 +119,7 @@ impl Report {
             .filter(|issue| issue.severity == Severity::Error)
             .count();
         self.warnings = issues.len() - self.errors;
-        self.ok = self.errors == 0;
+        self.ok = self.errors == 0 && !issues.iter().any(|issue| issue.kind == CHECKS_UNVERIFIED);
         relations::sync_with_issues(&mut self.relations, &issues);
         self.issues = issues;
     }
@@ -137,6 +151,7 @@ impl Report {
             design: member_check::DesignReport::default(),
             log: evaluated.log.clone(),
             unused_overrides: evaluated.unused_overrides.clone(),
+            truncated: None,
             part_sources: evaluated.part_sources.clone(),
         };
         report.set_issues(vec![Issue {
@@ -154,10 +169,20 @@ impl Report {
         report
     }
 
-    /// Takes the issues and relations [`refine`] re-derived.
+    /// Takes the issues and relations [`refine`] re-derived. Refining checks
+    /// collisions and relations only, so a report whose checks stopped keeps
+    /// saying that joints and loads were not checked.
     pub fn apply_refined(&mut self, refined: Refined) {
+        let mut issues = refined.issues;
+        issues.extend(
+            self.issues
+                .iter()
+                .filter(|issue| issue.kind == CHECKS_UNVERIFIED)
+                .cloned(),
+        );
         self.relations = refined.relations;
-        self.set_issues(refined.issues);
+        self.truncated = refined.truncated;
+        self.set_issues(issues);
     }
 
     /// This report listing only its first `issues` issues, errors first, and
@@ -166,8 +191,15 @@ impl Report {
     #[must_use]
     pub fn first(&self, issues: usize, relations: usize) -> Self {
         let mut report = self.clone();
-        let listed = first_listed(&self.issues, &self.relations, issues, relations);
+        let listed = first_listed(
+            &self.issues,
+            &self.relations,
+            self.truncated,
+            issues,
+            relations,
+        );
         report.relations = listed.relations;
+        report.truncated = listed.truncated;
         report.set_issues(listed.issues);
         report
     }
@@ -177,16 +209,24 @@ impl Refined {
     /// [`Report::first`] for the issues and relations [`refine`] re-derived.
     #[must_use]
     pub fn first(&self, issues: usize, relations: usize) -> Self {
-        first_listed(&self.issues, &self.relations, issues, relations)
+        first_listed(
+            &self.issues,
+            &self.relations,
+            self.truncated,
+            issues,
+            relations,
+        )
     }
 }
 
 /// The first `kept` issues, errors first, and `kept_relations` relations, and
 /// one more issue naming what is left out: an error when an error is, so a
-/// shortened report is never `ok` when the whole one is not.
+/// shortened report is never `ok` when the whole one is not. The counts of the
+/// whole report go along (`whole` when the issues were shortened before).
 fn first_listed(
     issues: &[Issue],
     relations: &[Relation],
+    whole: Option<Truncated>,
     kept: usize,
     kept_relations: usize,
 ) -> Refined {
@@ -221,6 +261,11 @@ fn first_listed(
     Refined {
         issues: listed,
         relations: first_relations,
+        truncated: Some(whole.unwrap_or(Truncated {
+            issues: issues.len(),
+            errors,
+            relations: relations.len(),
+        })),
     }
 }
 
@@ -230,6 +275,9 @@ pub struct Refined {
     #[serde(deserialize_with = "validate::report_issues")]
     pub issues: Vec<Issue>,
     pub relations: Vec<Relation>,
+    /// The counts of the whole list when this one holds only its first entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<Truncated>,
 }
 
 /// Re-derives the issues and relations of `model` with the exact answers for
@@ -240,6 +288,7 @@ pub fn refine(model: &ProgramModel, exact: &ExactShapes) -> Refined {
     Refined {
         relations: relations_with(model, &[], exact),
         issues: validate_with(model, exact),
+        truncated: None,
     }
 }
 
@@ -285,6 +334,7 @@ pub fn report(evaluated: &Evaluated) -> Report {
         loads,
         log: evaluated.log.clone(),
         unused_overrides: evaluated.unused_overrides.clone(),
+        truncated: None,
         part_sources: evaluated.part_sources.clone(),
     }
 }

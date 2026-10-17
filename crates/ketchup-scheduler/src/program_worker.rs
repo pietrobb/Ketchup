@@ -457,8 +457,8 @@ pub fn run_stdio() {
 }
 
 /// Writes `reply`; a report or refined list larger than `max_bytes` goes with
-/// only its first issues and relations, halved until it fits, and any other
-/// too large reply as its failure.
+/// only its first relations, halved until it fits, and only then with fewer
+/// issues, halved as well; any other too large reply goes as its failure.
 fn write_reply(
     out: &mut impl std::io::Write,
     reply: &WorkerReply,
@@ -469,9 +469,13 @@ fn write_reply(
         Err(error) if too_large(&error) => {}
         written => return written,
     }
-    let (mut issues, mut relations) = listed(reply);
-    while issues + relations > 0 {
-        (issues, relations) = (issues / 2, relations / 2);
+    let (issues, relations) = listed(reply);
+    let halved =
+        |count: usize| std::iter::successors(Some(count), |k| (*k > 0).then(|| k / 2)).skip(1);
+    let attempts = halved(relations)
+        .map(|kept| (issues, kept))
+        .chain(halved(issues).map(|kept| (kept, 0)));
+    for (issues, relations) in attempts {
         let Some(first) = first_listed(reply, issues, relations) else {
             break;
         };
@@ -700,6 +704,30 @@ mod tests {
         assert_eq!(first.params, whole.params);
         assert_eq!(first.bom, whole.bom);
         assert_names_the_rest(&first.issues, whole.issues.len());
+    }
+
+    /// D-3 (review 2026-10-17): relations go first, so a report too large only
+    /// for its relations keeps every issue, and it counts the whole report.
+    #[test]
+    fn a_report_too_large_for_its_relations_leaves_out_relations_before_issues() {
+        let mut whole = ketchup_program::report(&overlapping());
+        let few = whole.issues[..3].to_vec();
+        let relations = whole.relations.clone();
+        whole.set_issues(few.clone());
+        whole.relations = relations;
+        assert!(whole.relations.len() > 400, "{}", whole.relations.len());
+        let reply = WorkerReply::Report(Box::new(ReportOutcome::Reported(Box::new(whole.clone()))));
+        let WorkerReply::Report(outcome) = written_in_a_third(&reply) else {
+            panic!("not a report");
+        };
+        let ReportOutcome::Reported(first) = *outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(first.relations.len() < whole.relations.len());
+        for issue in &few {
+            assert!(first.issues.contains(issue), "{issue:?} left out");
+        }
+        assert_eq!(first.issues.len(), few.len() + 1, "{:?}", first.issues);
     }
 
     #[test]
