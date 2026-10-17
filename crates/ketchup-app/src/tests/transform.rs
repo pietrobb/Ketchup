@@ -1,6 +1,7 @@
 //! Move, rotate, copy, arrays, patterns, alignment and distribution.
 
 use super::*;
+use crate::length_input::DecimalSeparator;
 
 /// The Rotate tool is useless if the user cannot see what will turn and
 /// about which axis, so the protractor is asserted on the painted frame
@@ -568,13 +569,13 @@ fn exact_topological_selection_ends_numeric_move_correction() {
     let initial_steps = app.undo_step_count();
 
     app.dispatch_command(AppCommand::Move);
-    app.value_box.input = "25,0,0".to_owned();
+    app.value_box.input = "25;0;0".to_owned();
     assert!(app.apply_value_input());
     assert_eq!(app.undo_step_count(), initial_steps + 1);
 
     install_initial_graph_result(&mut app);
     select_initial_topological(&mut app, TopologicalElementKind::Face, 3);
-    app.value_box.input = "40,0,0".to_owned();
+    app.value_box.input = "40;0;0".to_owned();
     assert!(app.apply_value_input());
 
     assert_eq!(
@@ -585,124 +586,136 @@ fn exact_topological_selection_ends_numeric_move_correction() {
     assert_eq!(app.undo_step_count(), initial_steps + 2);
 }
 
-#[test]
-fn a_decimal_comma_on_a_pinned_axis_is_one_distance_not_a_vector() {
+/// The Move field's preview, whether the move happened, and how far the
+/// part went, for `input` typed on a system whose decimal separator is
+/// `decimal`.
+fn typed_move(
+    decimal: DecimalSeparator,
+    axis: Option<Axis>,
+    input: &str,
+) -> (Option<String>, bool, Vec3) {
     let mut app = KetchupApp::new();
+    app.value_box.decimal = decimal;
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
-
     app.dispatch_command(AppCommand::Move);
-    app.set_move_axis_lock(Some(Axis::Z));
-    app.value_box.input = "12,5".to_owned();
-    assert!(app.apply_value_input());
+    app.set_move_axis_lock(axis);
+    app.value_box.input = input.to_owned();
+    let preview = app.value_box_length_preview();
+    let moved = app.apply_value_input();
+    let travel = app.occurrence_box_geometry(1).unwrap().0 - initial_origin;
+    (preview, moved, travel)
+}
 
-    assert_eq!(
-        app.occurrence_box_geometry(1).unwrap().0,
-        initial_origin + Vec3::new(0.0, 0.0, 12.5)
-    );
+#[test]
+fn a_decimal_comma_on_a_pinned_axis_is_one_distance_not_a_vector() {
+    let (_, moved, travel) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "12,5");
+    assert!(moved);
+    assert_eq!(travel, Vec3::new(0.0, 0.0, 12.5));
 }
 
 /// UI-6 (review 2026-10-15): each value of a typed Move vector is a length
-/// like any other, with units, arithmetic and a decimal comma. Text that reads
-/// as one length (`10+5,20`, `30*20`) is a distance, not a vector (N-10).
+/// like any other, with units and arithmetic, separated by `;`, `x` or `:`
+/// (operator decision D-2, 2026-10-17). One value is a distance.
 #[test]
 fn a_typed_move_vector_reads_each_value_as_a_length() {
-    for (input, expected) in [
-        ("12,5;0", Vec3::new(12.5, 0.0, 0.0)),
-        ("1cm;2cm;0,5", Vec3::new(10.0, 20.0, 0.5)),
-        ("10+5;20", Vec3::new(15.0, 20.0, 0.0)),
-        ("30;2*10", Vec3::new(30.0, 20.0, 0.0)),
-        ("10,20,0 mm", Vec3::new(10.0, 20.0, 0.0)),
-        ("-5x7", Vec3::new(-5.0, 7.0, 0.0)),
-        // R-1 (review 2026-10-16): one `*` beside a comma splits at the comma.
-        ("2*20,30", Vec3::new(40.0, 30.0, 0.0)),
-        ("600+2*18,400", Vec3::new(636.0, 400.0, 0.0)),
-    ] {
-        let mut app = KetchupApp::new();
-        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
-        let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
-        app.dispatch_command(AppCommand::Move);
-        app.value_box.input = input.to_owned();
-        assert!(app.apply_value_input(), "{input:?}: {}", app.digest);
-        assert_eq!(
-            app.occurrence_box_geometry(1).unwrap().0,
-            initial_origin + expected,
-            "{input:?}"
-        );
+    for decimal in [DecimalSeparator::Comma, DecimalSeparator::Point] {
+        for (input, expected) in [
+            ("12.5;0", Vec3::new(12.5, 0.0, 0.0)),
+            ("1cm;2cm;0.5", Vec3::new(10.0, 20.0, 0.5)),
+            ("10+5;20", Vec3::new(15.0, 20.0, 0.0)),
+            ("30;2*10", Vec3::new(30.0, 20.0, 0.0)),
+            ("10:20:0 mm", Vec3::new(10.0, 20.0, 0.0)),
+            ("-5x7", Vec3::new(-5.0, 7.0, 0.0)),
+            ("2*20;30", Vec3::new(40.0, 30.0, 0.0)),
+        ] {
+            let (_, moved, travel) = typed_move(decimal, None, input);
+            assert!(moved, "{input:?} {decimal:?}");
+            assert_eq!(travel, expected, "{input:?} {decimal:?}");
+        }
     }
-    for (input, distance) in [("10+5,20", 15.2), ("30*20", 600.0)] {
-        let mut app = KetchupApp::new();
-        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
-        let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
-        app.dispatch_command(AppCommand::Move);
-        app.value_box.input = input.to_owned();
-        app.apply_value_input();
-        let travel = app.occurrence_box_geometry(1).unwrap().0 - initial_origin;
+    for (input, distance) in [("10+5,20", 15.2), ("2*20,30", 40.6), ("30*20", 600.0)] {
+        let (_, _, travel) = typed_move(DecimalSeparator::Comma, None, input);
         assert!(
             (travel.length() - distance).abs() < 0.01,
-            "{input:?} moved {travel:?}: {}",
-            app.digest
+            "{input:?} moved {travel:?}"
         );
     }
 }
 
 #[test]
 fn a_typed_length_expression_moves_by_its_value_and_previews_it() {
-    let mut app = KetchupApp::new();
-    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
-    let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
-
-    app.dispatch_command(AppCommand::Move);
-    app.set_move_axis_lock(Some(Axis::Z));
-    app.value_box.input = "25".to_owned();
-    assert_eq!(app.value_box_length_preview(), None);
-    app.value_box.input = "2cm + 2*2,5".to_owned();
-    assert!(app.value_box_length_preview().unwrap().contains("25 mm"));
-    assert!(app.apply_value_input());
-
-    assert_eq!(
-        app.occurrence_box_geometry(1).unwrap().0,
-        initial_origin + Vec3::new(0.0, 0.0, 25.0)
-    );
+    let (preview, _, _) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "25");
+    assert_eq!(preview, None);
+    let (preview, moved, travel) =
+        typed_move(DecimalSeparator::Comma, Some(Axis::Z), "2cm + 2*2,5");
+    assert!(preview.unwrap().contains("25 mm"));
+    assert!(moved);
+    assert_eq!(travel, Vec3::new(0.0, 0.0, 25.0));
 }
 
-/// D-1 (review 2026-10-17): with no pinned axis the preview above the Move
-/// field reads the text the way the move does: a vector where the move goes by
-/// a vector, a distance where it goes a distance.
+/// D-1 and D-2 (review 2026-10-17): the preview above the Move field reads the
+/// text the way the move does, on a comma and on a point system: a vector
+/// where the move goes by a vector, a distance where it goes a distance.
 #[test]
 fn the_move_preview_shows_what_the_move_does() {
-    for (input, preview, expected) in [
-        ("2*1,5", "= 2; 5; 0 mm", Vec3::new(2.0, 5.0, 0.0)),
-        ("12,5*3", "= 12; 15; 0 mm", Vec3::new(12.0, 15.0, 0.0)),
-        ("1,5*2m", "= 1; 10000; 0 mm", Vec3::new(1.0, 10_000.0, 0.0)),
-        ("10;20", "= 10; 20; 0 mm", Vec3::new(10.0, 20.0, 0.0)),
+    use DecimalSeparator::{Comma, Point};
+    for (decimal, input, preview, expected) in [
+        (Comma, "2*20,30", "= 40.6 mm", Vec3::new(40.6, 0.0, 0.0)),
+        (Comma, "2*1,5", "= 3 mm", Vec3::new(3.0, 0.0, 0.0)),
+        (
+            Comma,
+            "12,5x3",
+            "= 12.5; 3; 0 mm",
+            Vec3::new(12.5, 3.0, 0.0),
+        ),
+        (Point, "2*20.30", "= 40.6 mm", Vec3::new(40.6, 0.0, 0.0)),
+        (Point, "10;20", "= 10; 20; 0 mm", Vec3::new(10.0, 20.0, 0.0)),
+        (
+            Point,
+            "10x20x5",
+            "= 10; 20; 5 mm",
+            Vec3::new(10.0, 20.0, 5.0),
+        ),
+        (Point, "1,5*2m:3", "", Vec3::ZERO),
     ] {
+        let (shown, moved, travel) = typed_move(decimal, None, input);
+        if expected == Vec3::ZERO {
+            assert!(!moved, "{input:?} {decimal:?}");
+            assert!(shown.unwrap().contains("80;60"), "{input:?}");
+        } else {
+            assert_eq!(shown.as_deref(), Some(preview), "{input:?} {decimal:?}");
+            assert!(moved, "{input:?} {decimal:?}");
+            assert!(
+                (travel - expected).length() < 1e-9,
+                "{input:?} moved {travel:?}"
+            );
+        }
+    }
+}
+
+/// D-2 (review 2026-10-17): where the decimal separator is a point a comma is
+/// refused in every field with the hint `80;60`, and nothing moves.
+#[test]
+fn a_comma_on_a_point_system_is_refused_with_the_hint_in_every_field() {
+    for tool in [AppCommand::Move, AppCommand::Rotate, AppCommand::Scale] {
         let mut app = KetchupApp::new();
         app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
         let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
-        app.dispatch_command(AppCommand::Move);
-        app.value_box.input = input.to_owned();
+        let steps = app.undo_step_count();
+        app.dispatch_command(tool);
+        app.value_box.input = "80,60".to_owned();
+        let hint = app.catalog.text("value-comma-not-decimal");
+        assert!(hint.contains("80;60"));
         assert_eq!(
             app.value_box_length_preview().as_deref(),
-            Some(preview),
-            "{input:?}"
+            Some(hint.as_str())
         );
-        assert!(app.apply_value_input(), "{input:?}: {}", app.digest);
-        assert_eq!(
-            app.occurrence_box_geometry(1).unwrap().0,
-            initial_origin + expected,
-            "{input:?}"
-        );
+        assert!(!app.apply_value_input(), "{tool:?}");
+        assert_eq!(app.digest, hint, "{tool:?}");
+        assert_eq!(app.undo_step_count(), steps, "{tool:?}");
+        assert_eq!(app.occurrence_box_geometry(1).unwrap().0, initial_origin);
     }
-    let mut app = KetchupApp::new();
-    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
-    let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
-    app.dispatch_command(AppCommand::Move);
-    app.value_box.input = "10+5,20".to_owned();
-    assert_eq!(app.value_box_length_preview().as_deref(), Some("= 15.2 mm"));
-    app.apply_value_input();
-    let travel = app.occurrence_box_geometry(1).unwrap().0 - initial_origin;
-    assert!((travel.length() - 15.2).abs() < 0.01, "{travel:?}");
 }
 
 #[test]
@@ -1248,7 +1261,7 @@ fn stale_numeric_transform_confirmation_ends_the_copy_toggle_without_mutation() 
     move_app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
     let digest = move_app.canonical_digest();
     let undo_steps = move_app.undo_step_count();
-    move_app.value_box.input = "25, 0, 0".to_owned();
+    move_app.value_box.input = "25; 0; 0".to_owned();
 
     assert!(!move_app.apply_value_input());
     assert!(!move_app.gesture.transform.move_copy);
@@ -1380,7 +1393,7 @@ fn move_vcb_accepts_last_direction_distance_and_exact_vector() {
     assert_eq!(transform.matrix()[7], 80.0);
     assert_eq!(app.document.visible_undo_steps(), 1);
 
-    app.value_box.input = "10,-20,5".to_owned();
+    app.value_box.input = "10;-20;5".to_owned();
     assert!(app.apply_value_input());
     let transform = app
         .document

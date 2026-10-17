@@ -1,4 +1,5 @@
 use super::*;
+use crate::length_input::DecimalSeparator;
 use egui_kittest::Harness;
 
 fn drag(app: &KetchupApp, selection: SelectionId) -> PushPullDrag {
@@ -134,7 +135,10 @@ fn push_pull_snaps_oblique_scaled_face_using_world_normal() {
         let steps = app.undo_step_count();
         assert!(app.update_push_pull_gesture(&drag, Pos2::ZERO));
         assert!(
-            (parse_distance_mm(&app.push_pull.distance_input).unwrap() - distance).abs() < 1e-10
+            (parse_distance_mm(&app.push_pull.distance_input, app.value_box.decimal).unwrap()
+                - distance)
+                .abs()
+                < 1e-10
         );
         planar_push_pull::tests::wait_preview(&mut app);
         assert!(app.confirm_push_pull_preview());
@@ -147,7 +151,12 @@ fn push_pull_snaps_oblique_scaled_face_using_world_normal() {
         };
         let local_distance = distance / face.local_to_world_scale;
         assert!((stored.millimetres() - local_distance).abs() < 1e-10);
-        assert!((parse_distance_mm(stored.source_token()).unwrap() - local_distance).abs() < 1e-10);
+        assert!(
+            (parse_distance_mm(stored.source_token(), DecimalSeparator::Point).unwrap()
+                - local_distance)
+                .abs()
+                < 1e-10
+        );
         assert_eq!(app.undo_step_count(), steps + 1);
         let after = app.canonical_digest();
         assert!(app.undo());

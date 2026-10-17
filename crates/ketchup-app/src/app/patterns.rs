@@ -881,7 +881,8 @@ impl KetchupApp {
                     pending.centre_x.trim().parse::<f64>(),
                     pending.centre_y.trim().parse::<f64>(),
                     pending.centre_z.trim().parse::<f64>(),
-                    crate::length_input::parse_decimal(&pending.angle).ok_or(()),
+                    crate::length_input::parse_number(&pending.angle, self.value_box.decimal)
+                        .ok_or(()),
                     pending.count.trim().parse::<usize>(),
                 ) else {
                     return false;
@@ -909,7 +910,7 @@ impl KetchupApp {
             pending.centre_x.trim().parse::<f64>(),
             pending.centre_y.trim().parse::<f64>(),
             pending.centre_z.trim().parse::<f64>(),
-            crate::length_input::parse_decimal(&pending.angle).ok_or(()),
+            crate::length_input::parse_number(&pending.angle, self.value_box.decimal).ok_or(()),
             pending.count.trim().parse::<usize>(),
         ) else {
             return false;
@@ -1393,13 +1394,14 @@ impl KetchupApp {
         let mut centre_z = previous_centre_z.clone();
         let mut angle = previous_angle.clone();
         let mut count = previous_count.clone();
+        let decimal = self.value_box.decimal;
         let parse = |axis: Axis, x: &str, y: &str, z: &str, angle: &str, count: &str| {
             let centre = Vec3::new(
                 x.trim().parse::<f64>().ok()?,
                 y.trim().parse::<f64>().ok()?,
                 z.trim().parse::<f64>().ok()?,
             );
-            let angle = crate::length_input::parse_decimal(angle)?;
+            let angle = crate::length_input::parse_number(angle, decimal)?;
             let count = count.trim().parse::<usize>().ok()?;
             (centre.x.is_finite()
                 && centre.y.is_finite()

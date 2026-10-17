@@ -1126,7 +1126,9 @@ impl KetchupApp {
             self.feature_history_error(self.catalog.text("feature-history-error-no-parameter"));
             return false;
         };
-        let Some(dimension) = parse_dimension(&self.feature_history.value_input) else {
+        let Some(dimension) =
+            parse_dimension(&self.feature_history.value_input, self.value_box.decimal)
+        else {
             self.feature_history_error(self.catalog.text("feature-history-error-invalid-value"));
             return false;
         };

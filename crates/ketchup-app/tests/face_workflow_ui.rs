@@ -307,7 +307,7 @@ fn serial_rectangle_push_pull(exact: ExactGeometry) {
 
     shell.click_command(AppCommand::Rectangle);
     shell.click_at(anchor);
-    shell.type_text("30,20");
+    shell.type_text("30;20");
     shell.press_key(Key::Enter);
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
     assert_eq!(shell.app().undo_step_count(), initial_undo + 1);

@@ -710,7 +710,7 @@ fn circle_through_hole_moves_by_dragging_its_inner_wall() {
     let value_label = shell.catalog().text("value-label-distance");
     shell.focus_text_input(&value_label);
     shell.key(Key::A, ctrl());
-    shell.type_text("5,0,0");
+    shell.type_text("5;0;0");
     shell.press_key(Key::Enter);
 
     assert_eq!(
@@ -2705,7 +2705,7 @@ fn ctrl_does_not_offer_copy_for_a_group_move() {
     assert_eq!(shell.app().action_digest(), move_digest);
 
     shell.set_modifiers(Modifiers::NONE);
-    shell.type_text("25,0,0");
+    shell.type_text("25;0;0");
     shell.press_key(Key::Enter);
     assert_eq!(shell.app().active_box_count(), 2);
     for (index, id) in [1, 2].into_iter().enumerate() {
@@ -2759,7 +2759,7 @@ fn copy_toggle_applies_to_typed_move_and_rotate_during_a_live_gesture() {
     move_shell.set_modifiers(ctrl());
     move_shell.set_modifiers(Modifiers::NONE);
     assert!(move_shell.app().move_copy_mode_active());
-    move_shell.type_text("25,0,0");
+    move_shell.type_text("25;0;0");
     move_shell.press_key(Key::Enter);
 
     assert_eq!(move_shell.app().active_box_count(), 2);
@@ -2843,7 +2843,7 @@ fn typed_distance_and_vector_correct_the_last_move_copy_in_one_undo_step() {
         "correcting a Move/Copy must replace its history tip"
     );
 
-    shell.type_text("30,40,0");
+    shell.type_text("30;40;0");
     shell.press_key(Key::Enter);
     assert_eq!(
         shell.app().occurrence_box_geometry(2).unwrap().0,

@@ -245,7 +245,7 @@ fn typed_move_handles_small_and_large_finite_distances_with_repeatable_history()
     let initial_undo_steps = shell.app().undo_step_count();
 
     shell.click_command(AppCommand::Move);
-    shell.type_text("0.001,0,0");
+    shell.type_text("0.001;0;0");
     shell.press_key(Key::Enter);
     let small_digest = shell.app().canonical_digest();
     let small_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
@@ -254,7 +254,7 @@ fn typed_move_handles_small_and_large_finite_distances_with_repeatable_history()
 
     shell.click_command(AppCommand::Select);
     shell.click_command(AppCommand::Move);
-    shell.type_text("1000000,0,0");
+    shell.type_text("1000000;0;0");
     shell.press_key(Key::Enter);
     let large_digest = shell.app().canonical_digest();
     let large_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
@@ -284,7 +284,7 @@ fn typed_move_correction_replaces_the_last_distance_in_one_undo_step() {
     let initial_undo_steps = shell.app().undo_step_count();
 
     shell.click_command(AppCommand::Move);
-    shell.type_text("30,40,0");
+    shell.type_text("30;40;0");
     shell.press_key(Key::Enter);
     assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
 
@@ -314,7 +314,7 @@ fn typed_move_distance_correction_accepts_zero_in_one_undo_step() {
     let initial_undo_steps = shell.app().undo_step_count();
 
     shell.click_command(AppCommand::Move);
-    shell.type_text("30,40,0");
+    shell.type_text("30;40;0");
     shell.press_key(Key::Enter);
     assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
 
@@ -344,11 +344,11 @@ fn typed_move_vector_correction_replaces_the_last_vector_in_one_undo_step() {
     let initial_undo_steps = shell.app().undo_step_count();
 
     shell.click_command(AppCommand::Move);
-    shell.type_text("30,40,0");
+    shell.type_text("30;40;0");
     shell.press_key(Key::Enter);
     assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
 
-    shell.type_text("60,80,0");
+    shell.type_text("60;80;0");
     shell.press_key(Key::Enter);
 
     assert_eq!(
@@ -374,11 +374,11 @@ fn typed_move_vector_correction_accepts_zero_in_one_undo_step() {
     let initial_undo_steps = shell.app().undo_step_count();
 
     shell.click_command(AppCommand::Move);
-    shell.type_text("30,40,0");
+    shell.type_text("30;40;0");
     shell.press_key(Key::Enter);
     assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
 
-    shell.type_text("0,0,0");
+    shell.type_text("0;0;0");
     shell.press_key(Key::Enter);
 
     assert_eq!(
@@ -470,7 +470,7 @@ fn stale_numeric_move_correction_targets_the_current_selection() {
     let mut shell = Shell::new();
     shell.click_at(shell.viewport_rect().center());
     shell.click_command(AppCommand::Move);
-    shell.type_text("25,0,0");
+    shell.type_text("25;0;0");
     shell.press_key(Key::Enter);
     let first_after_move = shell.app().occurrence_box_geometry(1).unwrap().0;
 
@@ -663,7 +663,7 @@ fn escape_ends_numeric_move_correction_before_reselecting_the_same_occurrence() 
     let initial_undo_steps = shell.app().undo_step_count();
     shell.click_at(shell.viewport_rect().center());
     shell.click_command(AppCommand::Move);
-    shell.type_text("25,0,0");
+    shell.type_text("25;0;0");
     shell.press_key(Key::Enter);
     let first_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
     assert_eq!(first_origin, initial_origin + Vec3::new(25.0, 0.0, 0.0));
@@ -1022,7 +1022,7 @@ fn undo_redo_ends_numeric_move_correction() {
     let before_steps = shell.app().undo_step_count();
 
     shell.click_command(AppCommand::Move);
-    shell.type_text("25,0,0");
+    shell.type_text("25;0;0");
     shell.press_key(Key::Enter);
     let first_move = shell.app().canonical_digest();
     let first_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
@@ -1087,7 +1087,7 @@ fn changing_and_releasing_the_move_axis_ends_numeric_correction() {
     let before_steps = shell.app().undo_step_count();
 
     shell.click_command(AppCommand::Move);
-    shell.type_text("25,0,0");
+    shell.type_text("25;0;0");
     shell.press_key(Key::Enter);
     let first_move = shell.app().canonical_digest();
     let first_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
@@ -1143,7 +1143,7 @@ fn switching_away_from_move_ends_numeric_correction() {
     let before_steps = shell.app().undo_step_count();
 
     shell.click_command(AppCommand::Move);
-    shell.type_text("25,0,0");
+    shell.type_text("25;0;0");
     shell.press_key(Key::Enter);
     let first_move = shell.app().canonical_digest();
     let first_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
@@ -1363,7 +1363,7 @@ fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
     // still reach the blue axis on its own.
     shell.press_key(Key::ArrowUp);
     let before_steps = shell.app().undo_step_count();
-    shell.type_text("0,0,-15");
+    shell.type_text("0;0;-15");
     shell.press_key(Key::Enter);
     assert_eq!(shell.app().undo_step_count(), before_steps + 1);
     assert!(
@@ -1474,7 +1474,7 @@ fn a_typed_scale_factor_grows_the_part_and_a_second_one_replaces_it() {
 
     shell.click_menu_command("menu-tools", AppCommand::Scale);
     // A Slovak decimal comma (GX-15).
-    enter_value(&mut shell, "1,5");
+    enter_value(&mut shell, "1.5");
     assert_eq!(
         shell.app().undo_step_count(),
         undo + 1,
@@ -1534,7 +1534,7 @@ fn a_refused_scale_correction_keeps_the_correction_and_one_takes_the_scale_back(
         shell.app().action_digest()
     );
     assert_exact_bounds(&mut shell, &[stretched(origin, size, [1.0; 3])]);
-    enter_value(&mut shell, "1,5");
+    enter_value(&mut shell, "1.5");
     assert_eq!(shell.app().undo_step_count(), undo + 1);
     assert_exact_bounds(&mut shell, &[stretched(origin, size, [1.5; 3])]);
 }
@@ -2367,7 +2367,7 @@ fn solid_subtract_previews_consumes_the_tool_and_undo_restores_both_solids() {
         .unwrap();
     shell.click_command(AppCommand::Rectangle);
     shell.click_at(rectangle_start);
-    shell.type_text("30,20");
+    shell.type_text("30;20");
     shell.press_key(Key::Enter);
     shell.click_command(AppCommand::PushPull);
     push_pull_typed_depth(&mut shell, "20");
@@ -2434,7 +2434,7 @@ fn solid_trim_subtracts_the_overlap_and_keeps_the_cutter() {
         .unwrap();
     shell.click_command(AppCommand::Rectangle);
     shell.click_at(rectangle_start);
-    shell.type_text("30,20");
+    shell.type_text("30;20");
     shell.press_key(Key::Enter);
     shell.click_command(AppCommand::PushPull);
     push_pull_typed_depth(&mut shell, "20");

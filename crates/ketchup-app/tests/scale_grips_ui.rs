@@ -193,8 +193,8 @@ fn a_typed_factor_per_axis_scales_each_axis_about_the_centre() {
     let (mut shell, origin, size) = armed_scale_shell();
     let undo = shell.app().undo_step_count();
     // The decimal comma stays free because axes are separated by semicolons.
-    shell.type_text("1,5;2;1");
-    assert_eq!(shell.app().value_input(), "1,5;2;1");
+    shell.type_text("1.5;2;1");
+    assert_eq!(shell.app().value_input(), "1.5;2;1");
     shell.press_key(Key::Enter);
     assert_eq!(
         shell.app().undo_step_count(),

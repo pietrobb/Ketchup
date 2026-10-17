@@ -59,7 +59,11 @@ impl KetchupApp {
         let thread = if remove {
             None
         } else {
-            let Some(thread) = typed_thread(&self.feature_history.thread_input, current) else {
+            let Some(thread) = typed_thread(
+                &self.feature_history.thread_input,
+                current,
+                self.value_box.decimal,
+            ) else {
                 self.digest = self.catalog.text("digest-hole-thread-invalid");
                 return;
             };
@@ -86,8 +90,12 @@ impl KetchupApp {
 
 /// The library thread `input` names with its depth, e.g. "M8 12", keeping
 /// whether the `current` thread is modelled.
-fn typed_thread(input: &str, current: &HoleThread) -> Option<HoleThread> {
-    let thread = crate::app::hole::hole_spec(input)?.thread?;
+fn typed_thread(
+    input: &str,
+    current: &HoleThread,
+    decimal: crate::length_input::DecimalSeparator,
+) -> Option<HoleThread> {
+    let thread = crate::app::hole::hole_spec(input, decimal)?.thread?;
     let pitch_mm = ketchup_program::library_metric_threads()
         .ok()?
         .get(&thread.size)?

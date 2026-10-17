@@ -55,7 +55,7 @@ impl KetchupApp {
         let offset_mm = if input.is_empty() {
             0.0
         } else {
-            parse_distance_mm(input)?
+            parse_distance_mm(input, self.value_box.decimal)?
         };
         let unit = plane.normal * (1.0 / length(plane.normal));
         Some(MirrorPlane {

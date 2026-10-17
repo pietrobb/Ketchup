@@ -98,7 +98,7 @@ fn draw(shell: &mut Shell, plane: PrincipalPlane) -> [Vec3; 4] {
             shell.press_key(Key::Escape);
             assert_eq!(shell.app().canonical_digest(), before);
         } else {
-            shell.type_text("30,15");
+            shell.type_text("30;15");
             shell.press_key(Key::Enter);
         }
     }

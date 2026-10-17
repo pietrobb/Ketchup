@@ -1352,7 +1352,8 @@ impl KetchupApp {
         principal: ProposalPrincipal,
     ) -> bool {
         let distance_expression = self.push_pull.distance_input.clone();
-        if parse_distance_mm(&distance_expression).map(f64::to_bits) != Some(distance_mm.to_bits())
+        if parse_distance_mm(&distance_expression, self.value_box.decimal).map(f64::to_bits)
+            != Some(distance_mm.to_bits())
         {
             return false;
         }
@@ -1660,7 +1661,7 @@ impl KetchupApp {
         } else if matches!(
             self.status_key,
             "status-program-planning" | "status-exact-pending"
-        ) && parse_distance_mm(&self.push_pull.distance_input)
+        ) && parse_distance_mm(&self.push_pull.distance_input, self.value_box.decimal)
             .is_some_and(|distance| distance.abs() >= 0.01)
         {
             // The drag adds a step, as its preview did; it does not correct the last one.

@@ -1,6 +1,8 @@
-//! One length field for every typed distance: units (mm, cm, m, feet and
-//! inches), arithmetic such as `600+2*18`, and a decimal comma. A bare number
-//! is millimetres. A product of two lengths is an area, not a length, and is
+//! One reading for every value typed into a field of the window: units (mm,
+//! cm, m, feet and inches), arithmetic such as `600+2*18`, and several values
+//! separated by `;`, `x` or `:`. The decimal separator is the system's, and a
+//! point always; a comma never separates values. A bare number is
+//! millimetres. A product of two lengths is an area, not a length, and is
 //! refused rather than silently read as millimetres.
 
 use std::ops::RangeInclusive;
@@ -9,41 +11,128 @@ const MAX_INPUT_CHARS: usize = 256;
 const MAX_NESTING: usize = 32;
 const MM_PER_INCH: f64 = 25.4;
 const MM_PER_FOOT: f64 = 304.8;
+const VALUE_SEPARATORS: [char; 4] = [';', 'x', 'X', ':'];
+
+/// The decimal separator of the system's number format. A point is read as a
+/// decimal separator with either one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DecimalSeparator {
+    #[default]
+    Point,
+    Comma,
+}
+
+impl DecimalSeparator {
+    /// The user's number format, read once when the window starts.
+    #[must_use]
+    pub fn at_startup() -> Self {
+        system_decimal_separator()
+    }
+}
+
+/// Windows keeps the user's decimal separator in the Region settings.
+#[cfg(windows)]
+fn system_decimal_separator() -> DecimalSeparator {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    let separator: Option<String> = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Control Panel\International")
+        .and_then(|key| key.get_value("sDecimal"))
+        .ok();
+    if separator.is_some_and(|separator| separator.trim() == ",") {
+        DecimalSeparator::Comma
+    } else {
+        DecimalSeparator::Point
+    }
+}
+
+/// Elsewhere the numeric locale names a language, whose usual separator it is.
+#[cfg(not(windows))]
+fn system_decimal_separator() -> DecimalSeparator {
+    let locale = ["LC_ALL", "LC_NUMERIC", "LANG"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|value| !value.is_empty())
+        .or_else(sys_locale::get_locale)
+        .unwrap_or_default();
+    decimal_separator_of_locale(&locale)
+}
+
+/// The usual decimal separator of a locale such as `sk_SK.UTF-8` or `de-CH`.
+#[cfg_attr(windows, allow(dead_code))]
+fn decimal_separator_of_locale(locale: &str) -> DecimalSeparator {
+    const COMMA_LANGUAGES: [&str; 46] = [
+        "af", "az", "be", "bg", "bs", "ca", "cs", "da", "de", "el", "es", "et", "eu", "fi", "fo",
+        "fr", "gl", "hr", "hu", "hy", "id", "is", "it", "ka", "kk", "ky", "lt", "lv", "mk", "mn",
+        "nb", "nl", "nn", "no", "pl", "pt", "ro", "ru", "sk", "sl", "sq", "sr", "sv", "tr", "uk",
+        "vi",
+    ];
+    let mut parts = locale.split(['_', '-', '.', '@']);
+    let language = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let territory = parts.next().unwrap_or_default().to_ascii_uppercase();
+    let point_in_territory = territory == "CH" && matches!(language.as_str(), "de" | "it");
+    if COMMA_LANGUAGES.contains(&language.as_str()) && !point_in_territory {
+        DecimalSeparator::Comma
+    } else {
+        DecimalSeparator::Point
+    }
+}
+
+/// Why typed text is not values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    Unreadable,
+    /// A comma where the decimal separator is a point: values are separated
+    /// by `;`, `x` or `:` (`80;60`), so the comma is refused, not guessed.
+    Comma,
+}
+
+/// A typed value with its power of length: 0 for a factor, a count or an
+/// angle, 1 for a length in millimetres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Quantity {
+    pub mm: f64,
+    pub power: i8,
+}
+
+/// The one reading of every field of the window: the values separated by
+/// `;`, `x` or `:`, each one full expression. Every field, its preview and
+/// what it does read the text through here.
+pub fn read_values(input: &str, decimal: DecimalSeparator) -> Result<Vec<Quantity>, Refusal> {
+    if decimal == DecimalSeparator::Point && input.contains(',') {
+        return Err(Refusal::Comma);
+    }
+    if input.chars().count() > MAX_INPUT_CHARS {
+        return Err(Refusal::Unreadable);
+    }
+    input
+        .split(VALUE_SEPARATORS)
+        .map(|part| evaluate(part, decimal))
+        .collect::<Option<Vec<_>>>()
+        .ok_or(Refusal::Unreadable)
+}
+
+/// The one value of `input` when there is exactly one.
+fn read_one(input: &str, decimal: DecimalSeparator) -> Option<Quantity> {
+    match read_values(input, decimal).ok()?.as_slice() {
+        [value] => Some(*value),
+        _ => None,
+    }
+}
 
 /// Millimetres for a typed length expression, or `None` when it is not one.
 #[must_use]
-pub fn parse_length_mm(input: &str) -> Option<f64> {
-    evaluate(input).map(|value| value.mm)
+pub fn parse_length_mm(input: &str, decimal: DecimalSeparator) -> Option<f64> {
+    read_one(input, decimal).map(|value| value.mm)
 }
 
-/// A typed value in a field that takes a factor or a length, such as Scale.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum FactorOrLength {
-    Factor(f64),
-    LengthMm(f64),
-}
-
-/// Reads `input` with the same units and arithmetic as [`parse_length_mm`],
-/// but a value without a unit (`1,5`, `3/4`) is a factor, not millimetres.
-#[must_use]
-pub fn parse_factor_or_length(input: &str) -> Option<FactorOrLength> {
-    evaluate(input).map(|value| {
-        if value.power == 0 {
-            FactorOrLength::Factor(value.mm)
-        } else {
-            FactorOrLength::LengthMm(value.mm)
-        }
-    })
-}
-
-fn evaluate(input: &str) -> Option<Quantity> {
-    if input.chars().count() > MAX_INPUT_CHARS {
-        return None;
-    }
+fn evaluate(input: &str, decimal: DecimalSeparator) -> Option<Quantity> {
     let mut parser = Parser {
         chars: input.chars().collect(),
         at: 0,
         depth: 0,
+        decimal,
     };
     let value = parser.expression()?;
     parser.skip_spaces();
@@ -51,67 +140,55 @@ fn evaluate(input: &str) -> Option<Quantity> {
 }
 
 /// Several lengths typed in one field, such as a rectangle's sides or a Move
-/// vector, each one a full length expression. The values are split at `;`
-/// when there is one (so `12,5;0` keeps its decimal comma), else at `x`, else
-/// at commas when every part is a length (`2*20,30` is 40 and 30), else at one
-/// `*` or `×` between two values (`80*60`, `1,5m*2m`). A decimal comma beside
-/// a `*` separator needs `;` or `x`: `12,5;3`.
-/// `None` unless the number of values is in `counts`.
+/// vector: `None` unless every value is a length and their number is in
+/// `counts`.
 #[must_use]
-pub fn parse_length_list(input: &str, counts: RangeInclusive<usize>) -> Option<Vec<f64>> {
-    let split = |separators: &[char]| -> Option<Vec<f64>> {
-        let values = input
-            .split(separators)
-            .map(parse_length_mm)
-            .collect::<Option<Vec<_>>>()?;
-        counts.contains(&values.len()).then_some(values)
-    };
-    if input.contains(';') {
-        split(&[';'])
-    } else if input.contains(['x', 'X']) {
-        split(&['x', 'X'])
-    } else if input.matches(['*', '×']).count() == 1 {
-        let comma = input.contains(',').then(|| split(&[','])).flatten();
-        comma.or_else(|| split(&['*', '×']))
-    } else {
-        split(&[','])
-    }
+pub fn parse_length_list(
+    input: &str,
+    decimal: DecimalSeparator,
+    counts: RangeInclusive<usize>,
+) -> Option<Vec<f64>> {
+    let values = read_values(input, decimal).ok()?;
+    counts.contains(&values.len()).then_some(())?;
+    Some(values.iter().map(|value| value.mm).collect())
 }
 
-/// A plain number with a decimal point or a decimal comma (`0,5`), as typed
-/// in a field that takes no length units, such as an angle or a scale factor.
+/// A number without a unit, as typed in a field that takes none, such as an
+/// angle or a count.
 #[must_use]
-pub fn parse_decimal(input: &str) -> Option<f64> {
-    let trimmed = input.trim();
-    let value = if trimmed.contains('.') || trimmed.matches(',').count() > 1 {
-        trimmed.parse::<f64>().ok()?
-    } else {
-        trimmed.replacen(',', ".", 1).parse::<f64>().ok()?
-    };
-    value.is_finite().then_some(value)
+pub fn parse_number(input: &str, decimal: DecimalSeparator) -> Option<f64> {
+    read_one(input, decimal)
+        .filter(|value| value.power == 0)
+        .map(|value| value.mm)
 }
 
 /// The evaluated value of a typed expression, shown next to the field. A
 /// plain number needs no preview, so only expressions and unit conversions
 /// get one.
 #[must_use]
-pub fn length_preview_mm(input: &str) -> Option<f64> {
-    if is_plain_mm(input) {
+pub fn length_preview_mm(input: &str, decimal: DecimalSeparator) -> Option<f64> {
+    if is_plain_mm(input, decimal) {
         return None;
     }
-    parse_length_mm(input)
+    parse_length_mm(input, decimal)
 }
 
 /// Whether the text is a plain number of millimetres, which needs no preview.
 #[must_use]
-pub fn is_plain_mm(input: &str) -> bool {
+pub fn is_plain_mm(input: &str, decimal: DecimalSeparator) -> bool {
     let trimmed = input.trim();
     let plain = trimmed
         .strip_suffix("mm")
         .or_else(|| trimmed.strip_suffix("MM"))
         .unwrap_or(trimmed)
         .trim();
-    plain.parse::<f64>().is_ok()
+    let mut number = Parser {
+        chars: plain.chars().collect(),
+        at: 0,
+        depth: 0,
+        decimal,
+    };
+    !plain.is_empty() && number.number().is_some() && number.at == number.chars.len()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -139,17 +216,11 @@ fn digit(chars: &[char], at: usize) -> bool {
     chars.get(at).is_some_and(char::is_ascii_digit)
 }
 
-/// A value with its power of length: 0 for a plain factor, 1 for a length.
-#[derive(Clone, Copy)]
-struct Quantity {
-    mm: f64,
-    power: i8,
-}
-
 struct Parser {
     chars: Vec<char>,
     at: usize,
     depth: usize,
+    decimal: DecimalSeparator,
 }
 
 impl Parser {
@@ -264,9 +335,14 @@ impl Parser {
         while digit(&self.chars, self.at) {
             self.at += 1;
         }
-        // A comma is a decimal separator only between digits, so the Slovak
-        // "12,5" and the English "12.5" read the same.
-        if matches!(self.chars.get(self.at), Some('.' | ',')) && digit(&self.chars, self.at + 1) {
+        // A point is always a decimal separator, and a comma between digits
+        // where it is the system's, so the Slovak "12,5" reads as "12.5".
+        let separator = match self.chars.get(self.at) {
+            Some('.') => true,
+            Some(',') => self.decimal == DecimalSeparator::Comma,
+            _ => false,
+        };
+        if separator && digit(&self.chars, self.at + 1) {
             self.at += 1;
             while digit(&self.chars, self.at) {
                 self.at += 1;
@@ -322,9 +398,10 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use DecimalSeparator::{Comma, Point};
 
     fn mm(input: &str) -> Option<f64> {
-        parse_length_mm(input)
+        parse_length_mm(input, Comma)
     }
 
     #[test]
@@ -359,7 +436,7 @@ mod tests {
     fn non_lengths_and_garbage_are_refused() {
         for input in [
             "", " ", "abc", "1m*1m", "2/0", "2/1m", "1,2,3", "12,", "(1+2", "1+", "1 min", "5 5",
-            "1e3",
+            "1e3", "80;60",
         ] {
             assert_eq!(mm(input), None, "{input:?}");
         }
@@ -367,52 +444,83 @@ mod tests {
         assert_eq!(mm(&"1+".repeat(200)), None);
     }
 
+    /// Operator decision 2026-10-17 (review D-2): the decimal separator is
+    /// the system's and a point always; a comma never separates values.
     #[test]
-    fn a_list_of_lengths_splits_at_one_separator_kind() {
-        let list = |input: &str| parse_length_list(input, 2..=3);
-        assert_eq!(list("12,5;0"), Some(vec![12.5, 0.0]));
-        assert_eq!(list("8 cm x 6 cm"), Some(vec![80.0, 60.0]));
-        assert_eq!(list("10+5,20,1m"), Some(vec![15.0, 20.0, 1000.0]));
-        assert_eq!(list("80*60"), Some(vec![80.0, 60.0]));
-        assert_eq!(list("80×60"), Some(vec![80.0, 60.0]));
-        assert_eq!(list("2*20;12,5"), Some(vec![40.0, 12.5]));
-        assert_eq!(list("12,5x3"), Some(vec![12.5, 3.0]));
-        assert_eq!(list("2*20;30"), Some(vec![40.0, 30.0]));
-        for input in ["80", "1;2;3;4", "1*2*3", "1m*1m;2", "a;b", ""] {
-            assert_eq!(list(input), None, "{input:?}");
-        }
+    fn the_decimal_separator_is_the_systems_and_a_point_always() {
+        assert_eq!(parse_length_mm("12,5", Comma), Some(12.5));
+        assert_eq!(parse_length_mm("12.5", Comma), Some(12.5));
+        assert_eq!(parse_length_mm("12.5", Point), Some(12.5));
+        assert_eq!(parse_length_mm("2*20,30", Comma), Some(40.6));
+        assert_eq!(parse_length_mm("2*20.30", Point), Some(40.6));
+        assert_eq!(parse_number("0,5", Comma), Some(0.5));
+        assert_eq!(parse_number("90/2", Point), Some(45.0));
+        assert_eq!(parse_number("5 mm", Point), None);
     }
 
-    /// Review 2026-10-16 R-1: `2*20,30` was 40 by 30 before a7c4e47 and then
-    /// silently 2 by 20.3. With one `*` and a comma, the comma separates when
-    /// every part is a length, so arithmetic in a side works as it did; the `*`
-    /// separates only when the comma split is not lengths.
+    /// Where the decimal separator is a point a comma is refused as such, so
+    /// the field can say `80;60` instead of guessing what was meant.
     #[test]
-    fn a_comma_beside_one_star_separates_when_its_parts_are_lengths() {
-        let rectangle = |input: &str| parse_length_list(input, 2..=2);
-        assert_eq!(rectangle("2*20,30"), Some(vec![40.0, 30.0]));
-        assert_eq!(rectangle("600+2*18,400"), Some(vec![636.0, 400.0]));
-        assert_eq!(rectangle("12,5*3"), Some(vec![12.0, 15.0]));
-        assert_eq!(rectangle("12,5×3"), Some(vec![12.0, 15.0]));
-        assert_eq!(
-            parse_length_list("600+2*18,400", 2..=3),
-            Some(vec![636.0, 400.0])
-        );
-        assert_eq!(rectangle("2*20;30"), Some(vec![40.0, 30.0]));
-        assert_eq!(rectangle("600+2*18;400"), Some(vec![636.0, 400.0]));
-        assert_eq!(rectangle("12,5;3"), Some(vec![12.5, 3.0]));
-        // Text with one reading keeps it: `5*1m` is a length but `1m,2m`
-        // none, and `5m*2m` is an area.
-        assert_eq!(rectangle("5*1m,2m"), Some(vec![5000.0, 2000.0]));
-        assert_eq!(rectangle("1,5m*2m"), Some(vec![1500.0, 2000.0]));
+    fn a_comma_where_the_decimal_separator_is_a_point_is_refused_as_a_comma() {
+        for input in ["80,60", "12,5", "2*20,30", "1,5;2"] {
+            assert_eq!(read_values(input, Point), Err(Refusal::Comma), "{input}");
+            assert_eq!(parse_length_mm(input, Point), None, "{input}");
+            assert_eq!(parse_length_list(input, Point, 2..=3), None, "{input}");
+        }
+        assert_eq!(read_values("8O", Point), Err(Refusal::Unreadable));
+    }
+
+    #[test]
+    fn values_are_separated_by_semicolon_x_or_colon_alike() {
+        for decimal in [Comma, Point] {
+            let list = |input: &str| parse_length_list(input, decimal, 2..=3);
+            for input in [
+                "80;60",
+                "80x60",
+                "80X60",
+                "80:60",
+                " 80 ; 60 ",
+                "8 cm x 6 cm",
+            ] {
+                assert_eq!(list(input), Some(vec![80.0, 60.0]), "{input} {decimal:?}");
+            }
+            assert_eq!(list("2*20;30"), Some(vec![40.0, 30.0]));
+            assert_eq!(list("10+5:20:1m"), Some(vec![15.0, 20.0, 1000.0]));
+            assert_eq!(list("12.5;0"), Some(vec![12.5, 0.0]));
+            for input in [
+                "80", "80*60", "80×60", "1;2;3;4", "1m*1m;2", "a;b", "80;", "",
+            ] {
+                assert_eq!(list(input), None, "{input:?} {decimal:?}");
+            }
+        }
+        let list = |input: &str| parse_length_list(input, Comma, 2..=2);
+        assert_eq!(list("12,5x3"), Some(vec![12.5, 3.0]));
+        assert_eq!(list("2*20,30;12,5"), Some(vec![40.6, 12.5]));
+        // One value, not two: on a comma system `80,60` is 80.6 mm.
+        assert_eq!(list("80,60"), None);
     }
 
     #[test]
     fn only_expressions_and_conversions_get_a_preview() {
-        assert_eq!(length_preview_mm("25"), None);
-        assert_eq!(length_preview_mm("25 mm"), None);
-        assert_eq!(length_preview_mm("600+2*18"), Some(636.0));
-        assert_eq!(length_preview_mm("2,5 cm"), Some(25.0));
-        assert_eq!(length_preview_mm("1m*1m"), None);
+        assert_eq!(length_preview_mm("25", Point), None);
+        assert_eq!(length_preview_mm("25 mm", Point), None);
+        assert_eq!(length_preview_mm("12,5", Comma), None);
+        assert_eq!(length_preview_mm("600+2*18", Point), Some(636.0));
+        assert_eq!(length_preview_mm("2,5 cm", Comma), Some(25.0));
+        assert_eq!(length_preview_mm("1m*1m", Point), None);
+    }
+
+    #[test]
+    fn a_locale_names_its_usual_decimal_separator() {
+        for (locale, decimal) in [
+            ("sk_SK.UTF-8", Comma),
+            ("de-DE", Comma),
+            ("de_CH.UTF-8", Point),
+            ("en_US.UTF-8", Point),
+            ("C", Point),
+            ("", Point),
+        ] {
+            assert_eq!(decimal_separator_of_locale(locale), decimal, "{locale}");
+        }
     }
 }

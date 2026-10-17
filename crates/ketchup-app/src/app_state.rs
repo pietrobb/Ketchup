@@ -78,6 +78,9 @@ pub(crate) struct TransformToolState {
 pub(crate) struct ValueBox {
     pub(crate) input: String,
     pub(crate) focus: bool,
+    /// How every field of the window reads a decimal number: the system's
+    /// separator, read once at startup.
+    pub(crate) decimal: crate::length_input::DecimalSeparator,
 }
 
 /// The parameter editor and the provenance of the last recompute.

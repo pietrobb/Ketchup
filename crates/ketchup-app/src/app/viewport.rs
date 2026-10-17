@@ -2450,13 +2450,13 @@ impl KetchupApp {
                         let frame_x = Vec3::new(frame.x_axis[0], frame.x_axis[1], frame.x_axis[2]);
                         let frame_y = Vec3::new(frame.y_axis[0], frame.y_axis[1], frame.y_axis[2]);
                         format!(
-                            "{},{}",
+                            "{};{}",
                             format_height(dot(cursor - start, frame_x).abs()),
                             format_height(dot(cursor - start, frame_y).abs())
                         )
                     }
                     _ => format!(
-                        "{},{}",
+                        "{};{}",
                         format_height((cursor.x - start.x).abs()),
                         format_height((cursor.y - start.y).abs())
                     ),

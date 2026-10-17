@@ -259,7 +259,7 @@ fn an_exact_rectangle_becomes_a_solid_through_exact_push_pull() {
         .app()
         .project_to_screen(Vec3::new(115.0, 20.0, 0.0), rect);
     shell.click_at(rectangle_start);
-    shell.type_text("30,20");
+    shell.type_text("30;20");
     shell.press_key(Key::Enter);
 
     assert_eq!(

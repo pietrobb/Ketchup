@@ -1,6 +1,7 @@
 //! Drawing profiles and Push/Pull.
 
 use super::*;
+use crate::length_input::DecimalSeparator;
 
 #[test]
 fn new_document_starts_empty_without_an_inactive_tool_preview() {
@@ -841,13 +842,57 @@ fn shared_definition_push_pull_previews_each_occurrence_and_explains_impact() {
     assert_eq!(rendered[1].size_mm.x, 130.0);
 }
 
+/// The sides of a typed rectangle, or `None` when the value was refused,
+/// with the digest it left.
+fn typed_rectangle(decimal: DecimalSeparator, input: &str) -> (Option<Vec3>, String) {
+    let mut app = KetchupApp::new();
+    app.value_box.decimal = decimal;
+    app.dispatch_command(AppCommand::Rectangle);
+    app.gesture.sketch.start = Some(Vec3::new(0.0, 0.0, 0.0));
+    app.gesture.sketch.cursor = Some(Vec3::new(10.0, 10.0, 0.0));
+    app.value_box.input = input.to_owned();
+    let drawn = app
+        .apply_value_input()
+        .then(|| app.active_boxes()[1].size_mm);
+    (drawn, app.digest.clone())
+}
+
+/// D-2 (review 2026-10-17, operator decision): a rectangle's sides are
+/// separated by `;`, `x` or `:` on any system, a comma is decimal where the
+/// system's separator is one, and refused with the hint `80;60` elsewhere.
+#[test]
+fn a_rectangle_reads_its_sides_with_the_one_rule_of_the_window() {
+    use DecimalSeparator::{Comma, Point};
+    for decimal in [Comma, Point] {
+        for input in ["80;60", "80x60", "80:60", "8cm x 600mm/10"] {
+            let (drawn, digest) = typed_rectangle(decimal, input);
+            assert_eq!(
+                drawn,
+                Some(Vec3::new(80.0, 60.0, 0.0)),
+                "{input} {decimal:?} {digest}"
+            );
+        }
+        assert_eq!(typed_rectangle(decimal, "80*60").0, None, "{decimal:?}");
+    }
+    let (drawn, _) = typed_rectangle(Comma, "2*20,30;12,5");
+    assert!((drawn.unwrap() - Vec3::new(40.6, 12.5, 0.0)).length() < 1e-9);
+    assert_eq!(
+        typed_rectangle(Comma, "80,60").0,
+        None,
+        "80,60 is 80.6 mm there"
+    );
+    let (drawn, digest) = typed_rectangle(Point, "80,60");
+    assert_eq!(drawn, None);
+    assert!(digest.contains("80;60"), "{digest}");
+}
+
 #[test]
 fn exact_rectangle_and_push_pull_are_atomic_undo_steps() {
     let mut app = KetchupApp::new();
     app.dispatch_command(AppCommand::Rectangle);
     app.gesture.sketch.start = Some(Vec3::new(40.0, 30.0, 20.0));
     app.gesture.sketch.cursor = Some(Vec3::new(20.0, 10.0, 20.0));
-    app.value_box.input = "300,200".to_owned();
+    app.value_box.input = "300;200".to_owned();
 
     assert!(app.apply_value_input());
     assert_eq!(app.active_box_count(), 2);

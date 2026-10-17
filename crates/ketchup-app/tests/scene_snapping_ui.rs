@@ -46,7 +46,7 @@ fn second_rectangle_snaps_to_own_rectangle_preview_commit_undo_save_open() {
         .unwrap();
     shell.click_at(first);
     shell.move_pointer(last);
-    shell.type_text("80,60");
+    shell.type_text("80;60");
     shell.press_key(Key::Enter);
     let corners = last_rectangle(&shell);
     let corner = corners[0];
@@ -63,7 +63,7 @@ fn second_rectangle_snaps_to_own_rectangle_preview_commit_undo_save_open() {
     shell.move_pointer(to);
     assert_eq!(shell.app().hovered_snap_kind(), Some(SnapKind::Midpoint));
     assert_eq!(shell.app().hovered_snap_position(), Some(midpoint));
-    assert_eq!(shell.app().value_input(), "80,30");
+    assert_eq!(shell.app().value_input(), "80;30");
     assert_eq!(shell.app().canonical_digest(), before);
     shell.click_at(to);
     let result = last_rectangle(&shell);

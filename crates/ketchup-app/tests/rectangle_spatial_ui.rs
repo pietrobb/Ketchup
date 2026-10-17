@@ -115,7 +115,7 @@ fn rectangle_endpoint_and_midpoint_snap_match_committed_corners_on_every_datum()
         let dimensions: Vec<f64> = shell
             .app()
             .value_input()
-            .split(',')
+            .split(';')
             .map(|v| v.trim().parse().unwrap())
             .collect();
         let expected = if plane == PrincipalPlane::Xy {
@@ -161,7 +161,7 @@ fn datum_origin_and_endpoint_support_exact_dimensions_and_save_open() {
             let end_screen = shell.app().viewport_position(end).unwrap();
             shell.click_at(start_screen);
             shell.move_pointer(end_screen);
-            shell.type_text("30,15");
+            shell.type_text("30;15");
             shell.press_key(Key::Enter);
             assert_corner(&rectangle_points(&shell), start);
             assert_corner(&rectangle_points(&shell), end);

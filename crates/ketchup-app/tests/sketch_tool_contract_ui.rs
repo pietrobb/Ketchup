@@ -276,15 +276,14 @@ fn latest_rectangle_size(shell: &Shell) -> [f64; 2] {
 }
 
 #[test]
-fn a_typed_rectangle_size_takes_units_arithmetic_and_a_decimal_comma_per_side() {
+fn a_typed_rectangle_size_takes_units_and_arithmetic_per_side() {
     for (input, expected) in [
-        ("30,20", [30.0, 20.0]),
+        ("30:20", [30.0, 20.0]),
         ("8 cm;6 cm", [80.0, 60.0]),
-        ("2*20;12,5", [40.0, 12.5]),
+        ("2*20;12.5", [40.0, 12.5]),
         ("45x15", [45.0, 15.0]),
-        // UI-6 (review 2026-10-15): a product sign between two plain sizes.
-        ("80*60", [80.0, 60.0]),
-        ("80×60", [80.0, 60.0]),
+        // D-2 (review 2026-10-17): `*` multiplies, it never separates sides.
+        ("2*40:3*20", [80.0, 60.0]),
     ] {
         let mut shell = Shell::new();
         shell.click_command(AppCommand::Rectangle);

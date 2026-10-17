@@ -1075,7 +1075,7 @@ fn move_tool_repositions_exact_pocket_floor_instead_of_the_panel_occurrence() {
     let value_label = shell.catalog().text("value-label-distance");
     shell.focus_text_input(&value_label);
     shell.key(Key::A, ctrl());
-    shell.type_text("2,3,0");
+    shell.type_text("2;3;0");
     shell.press_key(Key::Enter);
     assert_eq!(
         shell.app().document_revision(),

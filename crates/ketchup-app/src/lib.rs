@@ -2561,12 +2561,12 @@ fn arc_geometry(start: Vec3, end: Vec3, bulge: Vec3) -> Option<ArcGeometry> {
     })
 }
 
-fn parse_distance_mm(input: &str) -> Option<f64> {
-    length_input::parse_length_mm(input)
+fn parse_distance_mm(input: &str, decimal: length_input::DecimalSeparator) -> Option<f64> {
+    length_input::parse_length_mm(input, decimal)
 }
 
-fn parse_dimension(input: &str) -> Option<Dimension> {
-    let millimetres = parse_distance_mm(input)?;
+fn parse_dimension(input: &str, decimal: length_input::DecimalSeparator) -> Option<Dimension> {
+    let millimetres = parse_distance_mm(input, decimal)?;
     Dimension::new(input.trim().to_owned(), millimetres).ok()
 }
 

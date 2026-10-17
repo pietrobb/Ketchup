@@ -322,6 +322,7 @@ fn the_draft_tool_drafts_the_selected_faces_about_the_clicked_one_in_one_undo_st
     assert_eq!(app.active_tool, ActiveTool::Draft);
     assert_eq!(app.value_box.input, "5");
     // A Slovak decimal comma is the same angle (GX-15).
+    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
     app.value_box.input = "5,0".to_owned();
     assert!(app.draft_at_screen(click, rect), "{}", app.digest);
     app.finish_window_edit();

@@ -187,7 +187,9 @@ impl KetchupApp {
             ui.checkbox(&mut fields.required, required);
         }
         let parsed = |values: &[String; 3]| {
-            let [x, y, z] = values.each_ref().map(|value| parse_distance_mm(value));
+            let [x, y, z] = values
+                .each_ref()
+                .map(|value| parse_distance_mm(value, self.value_box.decimal));
             Some([x?, y?, z?])
         };
         let boxed = parsed(&fields.position)

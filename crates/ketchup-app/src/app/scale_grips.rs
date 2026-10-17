@@ -7,7 +7,7 @@
 //! while Ctrl is held.
 
 use crate::drawing_plane::DRAWING_SNAP_PIXELS;
-use crate::length_input::{FactorOrLength, parse_factor_or_length};
+use crate::length_input::{DecimalSeparator, read_values};
 use crate::*;
 
 /// What a value typed into the Scale box asks for.
@@ -15,30 +15,24 @@ use crate::*;
 pub(crate) enum ScaleInput {
     /// One factor for the axes the gesture or the axis lock drives (`1,5`).
     Factor(f64),
-    /// One factor per world axis, typed `x;y;z` so a decimal comma stays free.
+    /// One factor per world axis, typed `x;y;z`, `xXyXz` or `x:y:z`.
     PerAxis([f64; 3]),
     /// The size the one driven axis should reach, typed with a unit (`150 mm`).
     Length(f64),
 }
 
 impl ScaleInput {
-    /// Read with the one length parser: arithmetic everywhere, and a value
-    /// without a unit is a factor (`150` is 150×, `150 mm` a size).
-    pub(crate) fn parse(text: &str) -> Option<Self> {
-        if text.contains(';') {
-            let factors: Vec<f64> = text
-                .split(';')
-                .map(|part| match parse_factor_or_length(part)? {
-                    FactorOrLength::Factor(factor) => Some(factor),
-                    FactorOrLength::LengthMm(_) => None,
-                })
-                .collect::<Option<_>>()?;
-            return <[f64; 3]>::try_from(factors).ok().map(Self::PerAxis);
+    /// Read like every value of the window: arithmetic everywhere, and a
+    /// value without a unit is a factor (`150` is 150×, `150 mm` a size).
+    pub(crate) fn parse(text: &str, decimal: DecimalSeparator) -> Option<Self> {
+        match read_values(text, decimal).ok()?.as_slice() {
+            [value] if value.power == 0 => Some(Self::Factor(value.mm)),
+            [value] => Some(Self::Length(value.mm)),
+            [x, y, z] if [x, y, z].iter().all(|value| value.power == 0) => {
+                Some(Self::PerAxis([x.mm, y.mm, z.mm]))
+            }
+            _ => None,
         }
-        Some(match parse_factor_or_length(text)? {
-            FactorOrLength::Factor(factor) => Self::Factor(factor),
-            FactorOrLength::LengthMm(length_mm) => Self::Length(length_mm),
-        })
     }
 
     /// The world factors for a gesture that drives `drives` on a selection
@@ -237,13 +231,15 @@ impl KetchupApp {
 #[cfg(test)]
 mod tests {
     use super::ScaleInput;
+    use crate::length_input::DecimalSeparator;
 
     /// Scale reads its value with the one length parser: a value without a unit is a
     /// factor, arithmetic included, and one with a unit the size to reach (UI-6).
     #[test]
     fn a_typed_scale_is_a_factor_or_a_length_with_arithmetic() {
-        let parse = ScaleInput::parse;
+        let parse = |text: &str| ScaleInput::parse(text, DecimalSeparator::Comma);
         assert_eq!(parse("1,5"), Some(ScaleInput::Factor(1.5)));
+        assert_eq!(parse("1.5"), Some(ScaleInput::Factor(1.5)));
         assert_eq!(parse("150"), Some(ScaleInput::Factor(150.0)));
         assert_eq!(parse("3/4"), Some(ScaleInput::Factor(0.75)));
         assert_eq!(parse("1 + 0,5"), Some(ScaleInput::Factor(1.5)));
@@ -253,6 +249,12 @@ mod tests {
         assert_eq!(
             parse("2*1,5; 1; 1/2"),
             Some(ScaleInput::PerAxis([3.0, 1.0, 0.5]))
+        );
+        assert_eq!(parse("2x1:3"), Some(ScaleInput::PerAxis([2.0, 1.0, 3.0])));
+        assert_eq!(
+            ScaleInput::parse("1,5", DecimalSeparator::Point),
+            None,
+            "a comma is no decimal separator here"
         );
         for refused in ["", "abc", "1m*1m", "100mm;1;1", "1;2", "1,2,3", "2/0"] {
             assert_eq!(parse(refused), None, "{refused}");

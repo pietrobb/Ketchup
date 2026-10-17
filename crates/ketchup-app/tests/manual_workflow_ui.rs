@@ -613,7 +613,7 @@ fn one_typed_length_during_a_move_gesture_is_a_distance_not_a_vector() {
     shell.press_key(Key::Space);
     shell.click_at(screen(&shell, origin + Vec3::new(50.0, 30.0, 20.0)));
     for (input, expected) in [
-        ("12,5", Vec3::new(0.0, 12.5, 0.0)),
+        ("12.5", Vec3::new(0.0, 12.5, 0.0)),
         ("2*20", Vec3::new(0.0, 40.0, 0.0)),
         ("12;5", Vec3::new(12.0, 5.0, 0.0)),
     ] {

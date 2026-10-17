@@ -5,6 +5,7 @@
 //! typed value go through. Whether a gesture still stands, what ends it and
 //! which tool a typed value is for are decided once, not once per tool.
 
+use crate::length_input::DecimalSeparator;
 use crate::*;
 
 /// A tool that can have a gesture in progress and takes typed values.
@@ -258,6 +259,12 @@ impl KetchupApp {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
         }
+        // A comma is refused the same way in every field, before any tool
+        // reads it, so nothing is guessed from `80,60`.
+        if self.value_box_refuses_comma() {
+            self.digest = self.catalog.text("value-comma-not-decimal");
+            return false;
+        }
         if let Some(tool) = GESTURES.iter().find(|tool| tool.takes_typed(self)) {
             return tool.apply_typed(self);
         }
@@ -281,7 +288,7 @@ impl KetchupApp {
     }
 
     fn apply_typed_scale(&mut self) -> bool {
-        let Some(input) = ScaleInput::parse(&self.value_box.input) else {
+        let Some(input) = ScaleInput::parse(&self.value_box.input, self.value_box.decimal) else {
             self.digest = self.catalog.text("digest-scale-invalid-factor");
             return false;
         };
@@ -306,8 +313,9 @@ impl KetchupApp {
     }
 
     fn apply_typed_rotate(&mut self) -> bool {
-        let Some(angle_degrees) = super::commands::parse_angle_degrees(&self.value_box.input)
-            .filter(|angle| angle.abs() <= 360.0)
+        let Some(angle_degrees) =
+            super::commands::parse_angle_degrees(&self.value_box.input, self.value_box.decimal)
+                .filter(|angle| angle.abs() <= 360.0)
         else {
             self.digest = self.catalog.text("digest-rotate-invalid-angle");
             return false;
@@ -340,7 +348,7 @@ impl KetchupApp {
                 .as_ref()
                 .is_none_or(|primary| *primary == last.selection)
         });
-        if parse_distance_mm(&self.value_box.input)
+        if parse_distance_mm(&self.value_box.input, self.value_box.decimal)
             .is_none_or(|distance| !corrects_last && distance.abs() <= limits::MIN_LENGTH_MM)
         {
             self.digest = self.catalog.text("digest-push-pull-invalid-distance");
@@ -381,7 +389,7 @@ impl KetchupApp {
                 "digest-exact-value-applied",
                 &BTreeMap::from([(
                     "value",
-                    parse_distance_mm(&self.value_box.input)
+                    parse_distance_mm(&self.value_box.input, self.value_box.decimal)
                         .map_or_else(String::new, format_signed_mm),
                 )]),
             );
@@ -427,18 +435,17 @@ impl KetchupApp {
     pub(crate) fn typed_move(&self) -> Option<TypedMove> {
         let input = &self.value_box.input;
         // A pinned axis turns a plain number into travel along that axis,
-        // which is how a part gets set down exactly 25 mm higher. There a
-        // single comma is a decimal comma ("12,5"), not a two-value vector.
+        // which is how a part gets set down exactly 25 mm higher.
         let axis_travel = self.gesture.transform.move_axis_lock.and_then(|axis| {
-            let distance_mm = parse_distance_mm(input)?;
+            let distance_mm = parse_distance_mm(input, self.value_box.decimal)?;
             (distance_mm.abs() >= 0.01).then(|| TypedMove::AlongAxis {
                 delta_mm: axis_direction(axis) * distance_mm,
                 distance_mm,
             })
         });
         axis_travel
-            .or_else(|| parse_move_vector(input).map(TypedMove::Vector))
-            .or_else(|| parse_distance_mm(input).map(TypedMove::Distance))
+            .or_else(|| parse_move_vector(input, self.value_box.decimal).map(TypedMove::Vector))
+            .or_else(|| parse_distance_mm(input, self.value_box.decimal).map(TypedMove::Distance))
     }
 
     /// Moves by `delta_mm`; `exact_vector` when it was typed as a vector, which
@@ -605,16 +612,11 @@ pub(crate) enum TypedMove {
     Distance(f64),
 }
 
-/// A typed Move vector: two or three lengths read like any other length. Text
-/// that reads as one length (`12,5`, `2*20`) is a distance along the shown
-/// way, never a vector; `12;5` is the vector. With one `*` beside a comma the
-/// comma separates, as in a rectangle: `2*20,30` is (40, 30, 0), not 40.6 mm.
-fn parse_move_vector(input: &str) -> Option<Vec3> {
-    let star_beside_comma = input.matches(['*', '×']).count() == 1 && input.contains(',');
-    if !star_beside_comma && crate::length_input::parse_length_mm(input).is_some() {
-        return None;
-    }
-    let values = crate::length_input::parse_length_list(input, 2..=3)?;
+/// A typed Move vector: two or three lengths separated like any values of
+/// the window (`12,5;0`, `30x40x0`, `2:5`). One value is a distance, never a
+/// vector.
+fn parse_move_vector(input: &str, decimal: DecimalSeparator) -> Option<Vec3> {
+    let values = crate::length_input::parse_length_list(input, decimal, 2..=3)?;
     let vector = match values.as_slice() {
         [x, y] => Vec3::new(*x, *y, 0.0),
         [x, y, z] => Vec3::new(*x, *y, *z),

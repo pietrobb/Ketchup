@@ -198,6 +198,7 @@ impl KetchupApp {
             value_box: app_state::ValueBox {
                 input: String::new(),
                 focus: false,
+                decimal: crate::length_input::DecimalSeparator::Point,
             },
             clipboard: app_state::Clipboard {
                 occurrences: Vec::new(),
@@ -252,6 +253,7 @@ impl KetchupApp {
         let mut app =
             Self::with_catalog_and_initial_box(language::UiLanguage::at_startup().catalog(), false);
         app.remember_language = true;
+        app.value_box.decimal = crate::length_input::DecimalSeparator::at_startup();
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
         ));
@@ -611,6 +613,9 @@ impl KetchupApp {
     /// What a typed length expression comes to, shown above the value box
     /// ("600+2*18" â†’ "= 636 mm"). Angles, counts and factors get none.
     pub(crate) fn value_box_length_preview(&self) -> Option<String> {
+        if self.value_box_refuses_comma() {
+            return Some(self.catalog.text("value-comma-not-decimal"));
+        }
         if self.active_tool == ActiveTool::Move {
             return self.move_preview();
         }
@@ -625,12 +630,24 @@ impl KetchupApp {
                 | "value-label-mirror-offset"
         );
         let value = length_field
-            .then(|| crate::length_input::length_preview_mm(&self.value_box.input))
+            .then(|| {
+                crate::length_input::length_preview_mm(
+                    &self.value_box.input,
+                    self.value_box.decimal,
+                )
+            })
             .flatten()?;
         Some(self.catalog.format(
             "value-length-preview",
             &BTreeMap::from([("value", format_height(value))]),
         ))
+    }
+
+    /// A comma typed where the decimal separator is a point: every field
+    /// refuses it and says to separate values with `;` (`80;60`).
+    pub(crate) fn value_box_refuses_comma(&self) -> bool {
+        crate::length_input::read_values(&self.value_box.input, self.value_box.decimal)
+            == Err(crate::length_input::Refusal::Comma)
     }
 
     /// The Move field's preview, read by the same `typed_move` the move is:
@@ -646,7 +663,7 @@ impl KetchupApp {
                 .map(format_height)
                 .join("; "),
             TypedMove::AlongAxis { distance_mm, .. } | TypedMove::Distance(distance_mm) => {
-                if crate::length_input::is_plain_mm(input) {
+                if crate::length_input::is_plain_mm(input, self.value_box.decimal) {
                     return None;
                 }
                 format_height(distance_mm)

@@ -1,6 +1,7 @@
 //! Hole tool: a click on a planar face of an exact part drills one round hole
 //! there, the same `drill_holes` edit an MCP client sends.
 
+use crate::length_input::DecimalSeparator;
 use crate::live_bridge::window_edit::Repick;
 use crate::*;
 use ketchup_assistant::sidecar::AssistantHoleThread;
@@ -15,13 +16,13 @@ pub(crate) struct HoleSpec {
     pub thread: Option<AssistantHoleThread>,
 }
 
-pub(crate) fn hole_spec(input: &str) -> Option<HoleSpec> {
+pub(crate) fn hole_spec(input: &str, decimal: DecimalSeparator) -> Option<HoleSpec> {
     let mut words = input
-        .split(|c: char| c.is_whitespace() || matches!(c, 'x' | 'X' | '×'))
+        .split(|c: char| c.is_whitespace() || matches!(c, ';' | ':' | 'x' | 'X' | '×'))
         .filter(|word| !word.is_empty());
     let size = words.next()?;
     let depth_mm = match words.next() {
-        Some(word) => Some(parse_distance_mm(word).filter(|depth| *depth > 0.0)?),
+        Some(word) => Some(parse_distance_mm(word, decimal).filter(|depth| *depth > 0.0)?),
         None => None,
     };
     if words.next().is_some() {
@@ -42,7 +43,7 @@ pub(crate) fn hole_spec(input: &str) -> Option<HoleSpec> {
         });
     }
     Some(HoleSpec {
-        diameter_mm: parse_distance_mm(size).filter(|diameter| *diameter > 0.0)?,
+        diameter_mm: parse_distance_mm(size, decimal).filter(|diameter| *diameter > 0.0)?,
         depth_mm,
         thread: None,
     })
@@ -52,7 +53,7 @@ impl KetchupApp {
     /// Hands a hole at the exact face under `pointer` to the bridge as the MCP
     /// `drill_holes` edit: one Undo step or a named refusal.
     pub(crate) fn drill_hole_at_screen(&mut self, pointer: Pos2, rect: Rect) -> bool {
-        let Some(spec) = hole_spec(&self.value_box.input) else {
+        let Some(spec) = hole_spec(&self.value_box.input, self.value_box.decimal) else {
             self.digest = self.catalog.text("digest-hole-invalid-size");
             return false;
         };

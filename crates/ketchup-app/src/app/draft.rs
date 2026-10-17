@@ -24,7 +24,9 @@ impl KetchupApp {
     /// Hands a draft of the selected faces about the exact face under `pointer`
     /// to the bridge as the MCP `draft_faces` edit: one Undo step or a named refusal.
     pub(crate) fn draft_at_screen(&mut self, pointer: Pos2, rect: Rect) -> bool {
-        let Some(angle_degrees) = parse_angle_degrees(&self.value_box.input) else {
+        let Some(angle_degrees) =
+            parse_angle_degrees(&self.value_box.input, self.value_box.decimal)
+        else {
             self.digest = self.catalog.text("digest-draft-invalid-angle");
             return false;
         };

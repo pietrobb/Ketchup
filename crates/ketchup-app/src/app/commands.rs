@@ -1204,14 +1204,17 @@ pub(crate) fn format_vector_mm(vector: Vec3) -> String {
     )
 }
 
-pub(super) fn parse_angle_degrees(input: &str) -> Option<f64> {
+pub(super) fn parse_angle_degrees(
+    input: &str,
+    decimal: crate::length_input::DecimalSeparator,
+) -> Option<f64> {
     let trimmed = input.trim();
     let numeric = trimmed
         .strip_suffix('\u{b0}')
         .or_else(|| trimmed.strip_suffix("deg"))
         .or_else(|| trimmed.strip_suffix("DEG"))
         .unwrap_or(trimmed);
-    crate::length_input::parse_decimal(numeric)
+    crate::length_input::parse_number(numeric, decimal)
 }
 
 pub(crate) fn format_signed_mm(distance: f64) -> String {

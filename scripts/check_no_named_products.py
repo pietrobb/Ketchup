@@ -41,6 +41,8 @@ STANDARD_VALIDATORS = {
 }
 STANDARD_VALIDATOR_LINE = re.compile(r"^.*(?:EN 1995|timber_strength|timber_design|TimberClass).*$",
                                      re.MULTILINE)
+# The Windows registry key holding the user's number format is named by the operating system.
+OS_REGISTRY_LINE = re.compile(r"^.*Control Panel\\International.*$", re.MULTILINE)
 WORDS = [
     "bottle", "teapot", "balloon_text", "balloon_glyph", "gable_roof", "staircase",
     "oriented_beam", "hettich", "quadro", "nightstand", "capsule", "d_profile",
@@ -79,6 +81,7 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
                     or relative.as_posix() in OLD_FORMAT_READERS | STANDARD_VALIDATORS):
                 continue
             text = STANDARD_VALIDATOR_LINE.sub("", path.read_text(encoding="utf-8", errors="replace"))
+            text = OS_REGISTRY_LINE.sub("", text)
             if path.suffix == ".rs":
                 text = TEST_MODULE.sub("", text)
             for match in PATTERN.finditer(text):

@@ -173,7 +173,7 @@ impl KetchupApp {
         let Some(axis_end_mm) = tool.axis_end_mm else {
             return false;
         };
-        let Some(angle_degrees) = parse_distance_mm(&self.value_box.input)
+        let Some(angle_degrees) = parse_distance_mm(&self.value_box.input, self.value_box.decimal)
             .filter(|angle| *angle > 0.0 && *angle <= 360.0)
         else {
             self.digest = self.catalog.text("digest-revolve-invalid-angle");
@@ -209,7 +209,7 @@ impl KetchupApp {
         tool.source == preview.plan.source
             && tool.axis_start_mm == Some(preview.plan.axis_start_mm)
             && tool.axis_end_mm == Some(preview.plan.axis_end_mm)
-            && parse_distance_mm(&self.value_box.input).map(f64::to_bits)
+            && parse_distance_mm(&self.value_box.input, self.value_box.decimal).map(f64::to_bits)
                 == Some(preview.plan.angle_degrees_bits)
             && self
                 .derive_revolve_preview_plan(
@@ -373,7 +373,7 @@ impl KetchupApp {
         } else {
             self.value_box.input.clone()
         };
-        let distance_mm = parse_distance_mm(&expression)?;
+        let distance_mm = parse_distance_mm(&expression, self.value_box.decimal)?;
         Some((expression, distance_mm))
     }
 
@@ -916,7 +916,8 @@ impl KetchupApp {
         {
             return None;
         }
-        let amount_mm = parse_distance_mm(amount_input).filter(|amount| *amount > 0.0)?;
+        let amount_mm = parse_distance_mm(amount_input, self.value_box.decimal)
+            .filter(|amount| *amount > 0.0)?;
         let dimension = Dimension::new(amount_input.to_owned(), amount_mm).ok()?;
         let snapshot = self.document.current();
         let generated_feature_id = snapshot
@@ -1923,7 +1924,9 @@ impl KetchupApp {
         if !self.occurrence_in_active_context(&selection.instance_path) {
             return false;
         }
-        let Some(distance_mm) = parse_distance_mm(&self.push_pull.distance_input) else {
+        let Some(distance_mm) =
+            parse_distance_mm(&self.push_pull.distance_input, self.value_box.decimal)
+        else {
             return false;
         };
         if let Some(failure) = self.face_workflow.take_headless_failure() {
@@ -1975,7 +1978,8 @@ impl KetchupApp {
             return false;
         };
         if self.push_pull.distance_input != preview.plan.distance_expression
-            || parse_distance_mm(&self.push_pull.distance_input).map(f64::to_bits)
+            || parse_distance_mm(&self.push_pull.distance_input, self.value_box.decimal)
+                .map(f64::to_bits)
                 != Some(preview.plan.distance_mm_bits)
             || self.selection.primary.as_ref() != Some(&preview.plan.source.target)
         {
@@ -2159,7 +2163,7 @@ impl KetchupApp {
                 &BTreeMap::from([
                     (
                         "distance",
-                        parse_distance_mm(&self.push_pull.distance_input)
+                        parse_distance_mm(&self.push_pull.distance_input, self.value_box.decimal)
                             .map_or_else(String::new, format_signed_mm),
                     ),
                     (
@@ -2214,7 +2218,10 @@ impl KetchupApp {
             return Some(format!(
                 "{}: {}",
                 definition.name(),
-                format_signed_mm(parse_distance_mm(&self.push_pull.distance_input)?)
+                format_signed_mm(parse_distance_mm(
+                    &self.push_pull.distance_input,
+                    self.value_box.decimal
+                )?)
             ));
         }
         let from = self
@@ -3430,7 +3437,9 @@ impl KetchupApp {
             .button(self.catalog.text("pocket-properties-apply"))
             .clicked();
         if apply {
-            if let Some(depth_mm) = parse_distance_mm(&self.solid_tools.pocket_depth_input) {
+            if let Some(depth_mm) =
+                parse_distance_mm(&self.solid_tools.pocket_depth_input, self.value_box.decimal)
+            {
                 if self.set_selected_pocket_depth(depth_mm) {
                     self.solid_tools.pocket_depth_input = format_height(depth_mm);
                     self.solid_tools.pocket_depth_source = format_height(depth_mm);
@@ -3524,11 +3533,13 @@ pub(crate) fn create_box_batch(
     ])
 }
 
-/// Width and depth typed as two lengths, each with units, arithmetic and a
-/// decimal comma like any length: `80;60`, `8 cm x 6 cm`, `80*60`, or `80,60`
-/// when every part is a length (`2*20,30` is 40 by 30).
-pub(crate) fn parse_rectangle_dimensions(input: &str) -> Option<[f64; 2]> {
-    let sides = length_input::parse_length_list(input, 2..=2)?;
+/// Width and depth typed as two lengths like any values of the window:
+/// `80;60`, `8 cm x 6 cm` or `80:60`.
+pub(crate) fn parse_rectangle_dimensions(
+    input: &str,
+    decimal: length_input::DecimalSeparator,
+) -> Option<[f64; 2]> {
+    let sides = length_input::parse_length_list(input, decimal, 2..=2)?;
     let side = |side: f64| (side > limits::MIN_LENGTH_MM).then_some(side);
     Some([side(sides[0])?, side(sides[1])?])
 }

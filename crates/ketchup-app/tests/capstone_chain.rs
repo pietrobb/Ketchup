@@ -58,7 +58,7 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
     // 2. An exact rectangle becomes a profile-only occurrence in one step.
     shell.click_command(AppCommand::Rectangle);
     shell.click_at(home);
-    shell.type_text("1200,800");
+    shell.type_text("1200;800");
     shell.press_key(Key::Enter);
     assert_eq!(
         shell.app().active_box_count(),
@@ -423,7 +423,7 @@ fn empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence() {
     let home = shell.viewport_rect().center();
     shell.click_command(AppCommand::Rectangle);
     shell.click_at(home);
-    shell.type_text("120,80");
+    shell.type_text("120;80");
     shell.press_key(Key::Enter);
     shell.click_command(AppCommand::Select);
     shell.click_at(shell.top_face_centre(1));
@@ -463,7 +463,7 @@ fn empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence() {
         .unwrap();
     shell.click_at(start);
     shell.move_pointer(end);
-    shell.type_text("30,20");
+    shell.type_text("30;20");
     shell.press_key(Key::Enter);
     assert_eq!(shell.app().active_box_count(), 2);
     assert!(
