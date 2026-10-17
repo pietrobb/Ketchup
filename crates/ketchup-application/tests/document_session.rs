@@ -1997,3 +1997,74 @@ fn planar_offset_is_evaluated_as_an_exact_surface_body() {
     assert_eq!(offset.bounds_mm, [[17.5, 27.5, 0.0], [102.5, 92.5, 0.0]]);
     assert!((offset.area_mm2 - 85.0 * 65.0).abs() <= 1.0e-6);
 }
+
+/// Review 2026-10-17 M-3: a program that replaces the open document, unsaved
+/// edits discarded, still saves over the file it was opened from, keeps the
+/// file's extensions and leaves no work-recovery checkpoint behind.
+#[test]
+fn a_program_replacing_the_open_document_keeps_its_file_extensions_and_recovery() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("replaced.ketchup");
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Hand-made part".into(),
+            },
+        ]))
+        .unwrap();
+    let mut sidecars = ContainerData::default();
+    sidecars
+        .insert_extension(
+            persistence::ExtensionEntry::new(
+                "org.example.viewer",
+                "settings.bin",
+                false,
+                b"view settings".to_vec(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    std::fs::write(
+        &path,
+        persistence::save_container(&document.current(), &sidecars).unwrap(),
+    )
+    .unwrap();
+
+    let mut session = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    let edit = session
+        .plan_commands(CommandBatch::new(vec![CanonicalCommand::SetFloorHeight {
+            z_mm: Some(250.),
+        }]))
+        .unwrap();
+    session.apply_proposal(&edit).unwrap();
+    assert!(persistence::work_recovery_path(&path).exists());
+    let program = RuleProgramSource {
+        file_name: "replacement.star".into(),
+        source: "box(\"a\", (10,20,30))\n".into(),
+        overrides: Default::default(),
+        variants: Default::default(),
+    };
+    let applied = session.apply_rule_program(program.clone(), true).unwrap();
+    assert!(applied.replaced_document);
+    assert!(persistence::work_recovery_path(&path).exists());
+    assert_eq!(session.path(), Some(path.as_path()));
+    assert_eq!(
+        session.container_data().extensions().count(),
+        1,
+        "the replaced document keeps the file's extensions"
+    );
+    session
+        .save(&path, SaveOptions { overwrite: true })
+        .expect("a save over the opened file is not an external conflict");
+    drop(session);
+
+    assert!(!persistence::work_recovery_path(&path).exists());
+    let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    assert_eq!(reopened.load_notices(), []);
+    assert_eq!(reopened.rule_program(), Some(&program));
+    let extension = reopened.container_data().extensions().next().unwrap();
+    assert_eq!(extension.namespace(), "org.example.viewer");
+    assert_eq!(extension.bytes(), b"view settings");
+}

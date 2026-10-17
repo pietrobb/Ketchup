@@ -477,7 +477,9 @@ impl DocumentSession {
         self.apply_proposal(&proposal)
     }
     /// Replaces the document with the model of a program already evaluated,
-    /// without evaluating it again, as the program's `source`.
+    /// without evaluating it again, as the program's `source`. The session
+    /// keeps its file, the file's other container entries and its recovery
+    /// checkpoint, which now holds the replacement (review 2026-10-17 M-3).
     ///
     /// # Errors
     /// The model cannot be published as a document.
@@ -488,9 +490,15 @@ impl DocumentSession {
     ) -> Result<Snapshot, crate::RuleProgramApplyError> {
         let mut replacement = Self::new(self.settings.clone());
         let batch = crate::rule_groups::plan_rule_model_batch(&replacement.document, model)?;
-        let snapshot = replacement.apply_rule_commands_with_source(batch, source)?;
-        *self = replacement;
-        Ok(snapshot)
+        replacement.apply_rule_commands_with_source(batch, source)?;
+        let before = self.snapshot();
+        self.mutate_with_work_recovery(|document| {
+            *document = replacement.document;
+            Ok(())
+        })?;
+        self.update_incremental_exact_plan(&before);
+        self.rebind();
+        Ok(self.snapshot())
     }
 
     /// Publishes a canonical program edit and its source in one undoable transaction.
