@@ -758,7 +758,7 @@ impl ExactWorkerClient {
     }
 
     /// Sends one request; a failure reply becomes an error and, unless it is a
-    /// geometry refusal, retires the worker.
+    /// geometry refusal or a result too large for one reply, retires the worker.
     pub(crate) fn call(
         &mut self,
         request: &WorkerRequest,
@@ -774,6 +774,7 @@ impl ExactWorkerClient {
                     self.fail(error)
                 }
             }
+            WorkerReply::TooLarge { faces } => Err(WorkerError::ResourceLimit { faces }),
             reply => Ok(reply),
         }
     }

@@ -159,7 +159,9 @@ pub struct PairQuery {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum WorkerReply {
-    Hello { protocol: String },
+    Hello {
+        protocol: String,
+    },
     Done,
     Graph(WorkerExactBRepGraphResult),
     Mesh(MeshReceipt),
@@ -168,13 +170,40 @@ pub enum WorkerReply {
     Cam(CamSimulationWireEvidence),
     Xde(StepXdeWorkerEvidence),
     ImportPart(WorkerImportPart),
-    PairLoaded { slot: usize },
+    PairLoaded {
+        slot: usize,
+    },
     Pair(PairMeasure),
     Program(Box<ProgramOutcome>),
     Report(Box<ReportOutcome>),
     Refined(Box<RefineOutcome>),
     Dwg(Box<DwgOutcome>),
     Failure(WorkerFailure),
+    /// The result did not fit one reply frame; the worker stays usable.
+    TooLarge {
+        faces: Option<u64>,
+    },
+}
+
+impl WorkerReply {
+    /// What the worker answers instead of this reply when it does not fit one frame.
+    pub fn too_large(&self) -> Self {
+        let faces = |counts: &[u32; 5]| u64::from(counts[2]);
+        Self::TooLarge {
+            faces: match self {
+                Self::Graph(result) => Some(faces(&result.topology_counts)),
+                Self::ImportPart(part) => Some(faces(&part.topology_counts)),
+                Self::Xde(evidence) => Some(
+                    evidence
+                        .parts
+                        .iter()
+                        .map(|part| faces(&part.topology_counts))
+                        .sum(),
+                ),
+                _ => None,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

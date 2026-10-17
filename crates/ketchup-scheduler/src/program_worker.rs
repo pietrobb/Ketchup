@@ -416,6 +416,7 @@ impl Running {
 /// files until its input closes. The parent kills it to cancel or stop it, so
 /// it needs no token.
 pub fn run_stdio() {
+    crate::child_process::exit_with_parent();
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
     loop {

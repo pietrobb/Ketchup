@@ -130,13 +130,26 @@ const SLEEPING_WORKER_ARGS: [&str; 4] = [
     "--nocapture",
 ];
 
+// Like a real exact or program worker, it ends once its parent is gone.
+#[test]
+#[ignore = "subprocess used by request timeout tests"]
+fn sleeping_worker_watching_its_parent() {
+    crate::child_process::exit_with_parent();
+    sleeping_worker();
+}
+
 // Stand in for a crashed scheduler or plugin host: hold a busy child and get killed from outside.
 #[test]
 #[ignore = "subprocess used by request timeout tests"]
 fn parent_holding_a_busy_worker() {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
-        .args(SLEEPING_WORKER_ARGS)
+        .args([
+            "--exact",
+            "request_timeout_tests::sleeping_worker_watching_its_parent",
+            "--ignored",
+            "--nocapture",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -173,19 +186,61 @@ fn process_is_running(pid: u32) -> bool {
     String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
 }
 
+/// Returns when the process exits (at once if it is already gone) or after 5 s.
 #[cfg(windows)]
+fn wait_for_exit(pid: u32) {
+    let _ = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("Wait-Process -Id {pid} -Timeout 5 -ErrorAction SilentlyContinue"),
+        ])
+        .output();
+}
+
+#[cfg(windows)]
+fn kill_process(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output();
+}
+
+// A zombie has ended; only its new parent's wait is missing.
+#[cfg(target_os = "linux")]
+fn process_is_running(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit(')')
+            .next()
+            .is_some_and(|state| !state.trim_start().starts_with('Z'))
+    })
+}
+
+/// Returns when the process exits (at once if it is already gone) or after 5 s.
+#[cfg(target_os = "linux")]
+fn wait_for_exit(pid: u32) {
+    let _ = Command::new("timeout")
+        .args(["5", "tail", &format!("--pid={pid}"), "-f", "/dev/null"])
+        .output();
+}
+
+#[cfg(target_os = "linux")]
+fn kill_process(pid: u32) {
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+}
+
+#[cfg(any(windows, target_os = "linux"))]
 #[test]
 fn a_busy_exact_worker_dies_with_its_killed_parent() {
     assert_child_dies_with_its_killed_parent("parent_holding_a_busy_worker");
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 #[test]
 fn a_busy_plugin_dies_with_its_killed_host() {
     assert_child_dies_with_its_killed_parent("parent_holding_a_busy_plugin");
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn assert_child_dies_with_its_killed_parent(parent_test: &str) {
     let mut parent = Command::new(std::env::current_exe().unwrap())
         .args([
@@ -215,19 +270,10 @@ fn assert_child_dies_with_its_killed_parent(parent_test: &str) {
 
     parent.kill().unwrap();
     parent.wait().unwrap();
-    // Wait-Process returns when the worker exits (at once if it is already gone) or after 5 s.
-    let _ = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!("Wait-Process -Id {worker_pid} -Timeout 5 -ErrorAction SilentlyContinue"),
-        ])
-        .output();
+    wait_for_exit(worker_pid);
     let survived = process_is_running(worker_pid);
     if survived {
-        let _ = Command::new("taskkill")
-            .args(["/F", "/PID", &worker_pid.to_string()])
-            .output();
+        kill_process(worker_pid);
     }
     assert!(
         !survived,
@@ -606,4 +652,55 @@ fn geometry_refusal_keeps_the_worker_and_other_failures_retire_it() {
         Err(WorkerError::Protocol(message)) if message.ends_with("invalid_request")
     ));
     assert!(worker.terminated);
+}
+
+#[test]
+fn a_result_too_large_is_refused_with_its_faces_and_keeps_the_worker() {
+    let (mut worker, writes, responses) = controlled_worker();
+    answer(
+        writes,
+        responses,
+        WorkerReply::TooLarge {
+            faces: Some(120_000),
+        },
+    );
+    let error = worker
+        .call(
+            &WorkerRequest::PairBegin,
+            &NEVER_CANCELLED,
+            DEFAULT_WORKER_REQUEST_TIMEOUT,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        WorkerError::ResourceLimit {
+            faces: Some(120_000)
+        }
+    );
+    assert!(error.to_string().ends_with("(120000 faces)"));
+    assert!(!error.permits_restart());
+    assert!(!worker.terminated);
+}
+
+#[test]
+fn only_a_lost_worker_is_asked_again() {
+    for lost in [
+        WorkerError::Transport("pipe closed".to_owned()),
+        WorkerError::WorkerExited,
+        WorkerError::MalformedTransport("short frame".to_owned()),
+    ] {
+        assert!(lost.permits_restart(), "{lost}");
+    }
+    for deterministic in [
+        WorkerError::RequestTimedOut(Duration::from_secs(60)),
+        WorkerError::ResponseTooLarge {
+            max_bytes: protocol::MAX_REPLY_FRAME_BYTES,
+        },
+        WorkerError::Protocol("worker refused the request: invalid_request".to_owned()),
+        WorkerError::ResourceLimit { faces: None },
+        WorkerError::Geometry("invalid_profile".to_owned()),
+        WorkerError::Cancelled,
+    ] {
+        assert!(!deterministic.permits_restart(), "{deterministic}");
+    }
 }

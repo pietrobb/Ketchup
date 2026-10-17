@@ -13,6 +13,25 @@ pub(crate) fn terminate(child: &mut dyn ChildWrapper) -> io::Result<()> {
     Ok(())
 }
 
+/// Ends this worker process once the process that started it is gone, also in
+/// the middle of a request: the worker sees its input close only between
+/// requests (review 2026-10-17 EX-7). On Windows the parent's kill-on-close
+/// job object ends it. A thread rather than `PR_SET_PDEATHSIG`, which follows
+/// the spawning thread, and a pooled worker outlives that.
+pub(crate) fn exit_with_parent() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::parent_id;
+        let parent = parent_id();
+        std::thread::spawn(move || {
+            while parent_id() == parent {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            std::process::exit(1);
+        });
+    }
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;

@@ -1,7 +1,7 @@
 # process-wrap 10.0.0, patched for Ketchup
 
 Unmodified copy of `process-wrap` 10.0.0 from crates.io (Apache-2.0 OR MIT, see the license
-files) except four changes (the fourth: `JobMemoryLimit` on Unix, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
+files) except five changes (the fourth: `JobMemoryLimit` on Unix; the fifth: `KillOnDrop` on Linux, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
 has, a `JobMemoryLimit` wrapper, and its job object starts the child without suspending it (below). The upstream `tests/` directory is left out; this
 workspace never builds a dependency's tests.
 
@@ -45,6 +45,17 @@ On Unix, where there is no job object, `JobMemoryLimit` is exported too (any fea
 needs nix's `resource` feature (`Cargo.toml`). Ketchup's crates forbid `unsafe`, and `pre_exec`
 is unsafe. The limit caps address space, not committed memory as on Windows; the program worker
 reserves little beyond what it uses, so the same number serves both (review 2026-10-15 PRG-1).
+
+## KillOnDrop on Linux
+
+- `src/std/kill_on_drop.rs`: on Linux `pre_spawn` asks, through `pre_exec` before `exec`, for
+  `SIGKILL` when the parent dies (`prctl(PR_SET_PDEATHSIG)`). Elsewhere it still only records the
+  request. Needs nix's `process` feature (`Cargo.toml`).
+
+Why: on Unix there is no kill-on-close job, so a plugin kept running after the editor crashed or
+was killed (review 2026-10-17 EX-7). The signal follows the spawning thread, which suits a plugin
+whose host thread waits for it; Ketchup's pooled exact and program workers watch their parent
+themselves instead (`ketchup-scheduler`, `child_process::exit_with_parent`).
 
 ## No suspended start
 

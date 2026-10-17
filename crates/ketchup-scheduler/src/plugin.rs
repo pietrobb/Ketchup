@@ -3,11 +3,11 @@ use ketchup_assistant::extension::{
     PluginLimits, PluginManifest, PluginProgram, PluginRequest, PluginResponse,
 };
 use ketchup_model::document::Snapshot;
+#[cfg(windows)]
+use process_wrap::std::JobObject;
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
-use process_wrap::std::{ChildWrapper, CommandWrap};
-#[cfg(windows)]
-use process_wrap::std::{JobObject, KillOnDrop};
+use process_wrap::std::{ChildWrapper, CommandWrap, KillOnDrop};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
@@ -45,9 +45,10 @@ pub(crate) fn spawn_plugin_process(
     #[cfg(windows)]
     command.wrap(KillOnDrop).wrap(JobObject);
     // Its own process group: stopping the plugin signals the group, so a
-    // process the plugin started does not outlive it (SEC-6).
+    // process the plugin started does not outlive it (SEC-6). On Linux it is
+    // also killed when the host dies (EX-7); the thread that spawns it waits for it.
     #[cfg(unix)]
-    command.wrap(ProcessGroup::leader());
+    command.wrap(ProcessGroup::leader()).wrap(KillOnDrop);
     command
         .spawn()
         .map_err(|error| PluginHostError::Spawn(error.to_string()))

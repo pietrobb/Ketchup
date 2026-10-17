@@ -760,10 +760,16 @@ pub enum WorkerError {
     WorkerExited,
     Cancelled,
     RequestTimedOut(Duration),
-    ResponseTooLarge { max_bytes: usize },
+    ResponseTooLarge {
+        max_bytes: usize,
+    },
     MalformedTransport(String),
     Protocol(String),
     Geometry(String),
+    /// The worker computed a result too large for one reply.
+    ResourceLimit {
+        faces: Option<u64>,
+    },
 }
 
 impl fmt::Display for WorkerError {
@@ -787,6 +793,17 @@ impl fmt::Display for WorkerError {
             }
             Self::Protocol(message) => write!(formatter, "worker protocol error: {message}"),
             Self::Geometry(code) => write!(formatter, "worker geometry error: {code}"),
+            Self::ResourceLimit { faces } => {
+                write!(
+                    formatter,
+                    "worker refused the result: it does not fit one {} MiB reply",
+                    protocol::MAX_REPLY_FRAME_BYTES >> 20
+                )?;
+                match faces {
+                    Some(faces) => write!(formatter, " ({faces} faces)"),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }
@@ -794,15 +811,12 @@ impl fmt::Display for WorkerError {
 impl std::error::Error for WorkerError {}
 
 impl WorkerError {
+    /// Whether a fresh worker may repeat the request: only when the worker was
+    /// lost. A timeout, an oversized reply or a refusal would recur.
     fn permits_restart(&self) -> bool {
         matches!(
             self,
-            Self::Transport(_)
-                | Self::WorkerExited
-                | Self::RequestTimedOut(_)
-                | Self::ResponseTooLarge { .. }
-                | Self::MalformedTransport(_)
-                | Self::Protocol(_)
+            Self::Transport(_) | Self::WorkerExited | Self::MalformedTransport(_)
         )
     }
 }

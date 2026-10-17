@@ -59,6 +59,7 @@ mod output_cache;
 mod pair_query;
 
 pub fn run_stdio() {
+    crate::child_process::exit_with_parent();
     let backend = ExactBackend::new();
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
@@ -72,11 +73,9 @@ pub fn run_stdio() {
         };
         let reply = reply.unwrap_or_else(WorkerReply::Failure);
         let written = match write_frame(&mut stdout, &reply, MAX_REPLY_FRAME_BYTES) {
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => write_frame(
-                &mut stdout,
-                &WorkerReply::Failure(WorkerFailure::code("resource_limit")),
-                MAX_REPLY_FRAME_BYTES,
-            ),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                write_frame(&mut stdout, &reply.too_large(), MAX_REPLY_FRAME_BYTES)
+            }
             written => written,
         };
         if written.is_err() {
