@@ -170,6 +170,23 @@ fn a_dxf_without_units_needs_a_unit_and_nothing_changes_until_it_has_one() {
     assert_eq!(std::fs::read(&target).unwrap(), b"user drawing");
 }
 
+/// Review 2026-10-17 MCP-1: the answer guessed `<path>.<extension>.loss.txt`,
+/// but a `.stp` export writes `x.step.loss.txt`, so a client was told nothing
+/// was lost. The answer names the files the exporter wrote.
+#[test]
+fn a_stp_export_answers_with_the_loss_report_it_wrote() {
+    let (mut app, mut bridge, directory) = window();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let target = directory.path().join("x.stp");
+    let exported = bridge
+        .execute(&mut app, export(&target, "step"), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let report = target.with_extension("step.loss.txt");
+    assert!(report.is_file());
+    assert_eq!(exported["loss_report"], report.display().to_string());
+    assert_eq!(exported["companions"], json!([]));
+}
+
 #[test]
 fn unknown_formats_and_mismatched_extensions_write_and_change_nothing() {
     let (mut app, mut bridge, directory) = window();

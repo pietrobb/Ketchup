@@ -88,7 +88,7 @@ impl KetchupApp {
     pub(crate) fn export_current_profiles_dxf_to(
         &mut self,
         path: &Path,
-    ) -> Result<(), ExportError> {
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = if path
@@ -123,18 +123,16 @@ impl KetchupApp {
                 &precondition,
                 &evidence,
             )?;
-            Ok(write_export_bundle(
-                path,
-                &bundle.dxf,
-                &report_path,
-                bundle.loss_report.as_bytes(),
-                &precondition,
-            )?)
+            write_export_bundle(path, &bundle.dxf, &report_path, bundle.loss_report.as_bytes(), &precondition)?;
+            Ok(Written::with_loss_report(path, &report_path))
         });
         self.report_export_outcome("dxf", path, result)
     }
 
-    pub(crate) fn export_current_model_stl_to(&mut self, path: &Path) -> Result<(), ExportError> {
+    pub(crate) fn export_current_model_stl_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = self
@@ -181,13 +179,14 @@ impl KetchupApp {
                     &precondition,
                     &evidence,
                 )?;
-                Ok(write_export_bundle(
+                write_export_bundle(
                     path,
                     bundle.mesh_stl.as_bytes(),
                     &report_path,
                     bundle.loss_report.as_bytes(),
                     &precondition,
-                )?)
+                )?;
+                Ok(Written::with_loss_report(path, &report_path))
             });
         self.report_export_outcome("stl", path, result)
     }
@@ -195,7 +194,7 @@ impl KetchupApp {
     pub(crate) fn export_current_model_three_mf_to(
         &mut self,
         path: &Path,
-    ) -> Result<(), ExportError> {
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = self
@@ -231,18 +230,22 @@ impl KetchupApp {
                     &precondition,
                     &evidence,
                 )?;
-                Ok(write_export_bundle(
+                write_export_bundle(
                     path,
                     &bundle.three_mf,
                     &report_path,
                     bundle.loss_report.as_bytes(),
                     &precondition,
-                )?)
+                )?;
+                Ok(Written::with_loss_report(path, &report_path))
             });
         self.report_export_outcome("3mf", path, result)
     }
 
-    pub(crate) fn export_current_model_glb_to(&mut self, path: &Path) -> Result<(), ExportError> {
+    pub(crate) fn export_current_model_glb_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = self
@@ -278,13 +281,14 @@ impl KetchupApp {
                     &precondition,
                     &evidence,
                 )?;
-                Ok(write_export_bundle(
+                write_export_bundle(
                     path,
                     &bundle.glb,
                     &report_path,
                     bundle.loss_report.as_bytes(),
                     &precondition,
-                )?)
+                )?;
+                Ok(Written::with_loss_report(path, &report_path))
             });
         self.report_export_outcome("glb", path, result)
     }
@@ -330,10 +334,10 @@ impl KetchupApp {
         &mut self,
         feature_id: FeatureId,
         path: &Path,
-    ) -> Result<(), ExportError> {
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
-        let result = (|| -> Result<(), ExportError> {
+        let result = (|| -> Result<Written, ExportError> {
             if !path
                 .extension()
                 .and_then(|extension| extension.to_str())
@@ -377,13 +381,14 @@ impl KetchupApp {
             projection
                 .artifacts(&self.document.current())
                 .map_err(ExportError::failed)?;
-            Ok(write_export_bundle(
+            write_export_bundle(
                 path,
                 &artifacts.flat_pattern_dxf,
                 &bend_table_path,
                 &artifacts.bend_table_csv,
                 &precondition,
-            )?)
+            )?;
+            Ok(Written::with_companion(path, &bend_table_path))
         })();
         self.report_export_outcome("general-fabrication", path, result)
     }
@@ -391,10 +396,10 @@ impl KetchupApp {
     pub(crate) fn export_current_general_fabrication_to(
         &mut self,
         path: &Path,
-    ) -> Result<(), ExportError> {
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
-        let result = (|| -> Result<(), ExportError> {
+        let result = (|| -> Result<Written, ExportError> {
             if !path
                 .extension()
                 .and_then(|extension| extension.to_str())
@@ -437,13 +442,8 @@ impl KetchupApp {
                 &precondition,
                 &evidence,
             )?;
-            Ok(write_export_bundle(
-                path,
-                &bom,
-                &drawing_path,
-                &drawings,
-                &precondition,
-            )?)
+            write_export_bundle(path, &bom, &drawing_path, &drawings, &precondition)?;
+            Ok(Written::with_companion(path, &drawing_path))
         })();
         self.report_export_outcome("general-fabrication", path, result)
     }
@@ -451,10 +451,10 @@ impl KetchupApp {
     pub(crate) fn export_current_member_cut_list_to(
         &mut self,
         path: &Path,
-    ) -> Result<(), ExportError> {
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
-        let result = (|| -> Result<(), ExportError> {
+        let result = (|| -> Result<Written, ExportError> {
             if !path
                 .extension()
                 .and_then(|extension| extension.to_str())
@@ -520,13 +520,8 @@ impl KetchupApp {
             {
                 return Err(ExportError::ChangedDuringConsent);
             }
-            Ok(write_export_bundle(
-                path,
-                &cut_list,
-                &drawing_path,
-                &drawing,
-                &precondition,
-            )?)
+            write_export_bundle(path, &cut_list, &drawing_path, &drawing, &precondition)?;
+            Ok(Written::with_companion(path, &drawing_path))
         })();
         self.report_export_outcome("general-fabrication", path, result)
     }
@@ -534,10 +529,10 @@ impl KetchupApp {
     pub(crate) fn export_current_model_homag_mpr_to(
         &mut self,
         path: &Path,
-    ) -> Result<(), ExportError> {
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
-        let result = (|| -> Result<(), ExportError> {
+        let result = (|| -> Result<Written, ExportError> {
             Self::validate_homag_mpr_path(path)?;
             let projection = self.current_general_fabrication_projection()?;
             let mpr = projection
@@ -578,16 +573,16 @@ impl KetchupApp {
             {
                 return Err(ExportError::ChangedDuringConsent);
             }
-            Ok(write_export_artifact_if_unchanged(
-                path,
-                &mpr,
-                expected_sha256.as_deref(),
-            )?)
+            write_export_artifact_if_unchanged(path, &mpr, expected_sha256.as_deref())?;
+            Ok(Written::alone(path))
         })();
         self.report_export_outcome("homag-mpr", path, result)
     }
 
-    pub(crate) fn export_current_model_btlx_to(&mut self, path: &Path) -> Result<(), ExportError> {
+    pub(crate) fn export_current_model_btlx_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
@@ -607,7 +602,7 @@ impl KetchupApp {
                     "rectangular only",
                 ),
             };
-        let result = (|| -> Result<(), ExportError> {
+        let result = (|| -> Result<Written, ExportError> {
             let projection = self.current_general_fabrication_projection()?;
             let btlx = projection
                 .btlx_2_3_1_export_with_options(&snapshot, options)
@@ -641,22 +636,29 @@ impl KetchupApp {
                 &precondition,
                 &evidence,
             )?;
-            Ok(write_export_bundle(
+            write_export_bundle(
                 path,
                 &btlx,
                 &report_path,
                 support_report.as_bytes(),
                 &precondition,
-            )?)
+            )?;
+            Ok(Written::with_support_report(path, &report_path))
         })();
         self.report_export_outcome("btlx", path, result)
     }
 
-    pub(crate) fn export_current_model_step_to(&mut self, path: &Path) -> Result<(), ExportError> {
+    pub(crate) fn export_current_model_step_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<Written, ExportError> {
         self.export_exchange_to(super::exchange_export::ExchangeFormat::Step, path)
     }
 
-    pub(crate) fn export_current_model_iges_to(&mut self, path: &Path) -> Result<(), ExportError> {
+    pub(crate) fn export_current_model_iges_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<Written, ExportError> {
         self.export_exchange_to(super::exchange_export::ExchangeFormat::Iges, path)
     }
 

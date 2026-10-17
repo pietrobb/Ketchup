@@ -14,9 +14,9 @@ impl KetchupApp {
     pub(crate) fn export_current_model_viewer_to(
         &mut self,
         path: &Path,
-    ) -> Result<(), ExportError> {
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
-        let result = (|| -> Result<(), ExportError> {
+        let result = (|| -> Result<Written, ExportError> {
             let input = self.viewer_file_input(path)?;
             let prepared = super::viewer_export_activity::PreparedExport::prepare(path, input)?;
             let precondition = ExportBundlePrecondition::capture(

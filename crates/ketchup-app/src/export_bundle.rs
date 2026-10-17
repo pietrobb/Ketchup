@@ -298,10 +298,10 @@ impl KetchupApp {
         &mut self,
         catalog_key: &str,
         path: &Path,
-        result: Result<(), ExportError>,
-    ) -> Result<(), ExportError> {
+        result: Result<Written, ExportError>,
+    ) -> Result<Written, ExportError> {
         match &result {
-            Ok(()) => {
+            Ok(_) => {
                 self.digest = self.catalog.format(
                     &format!("digest-exported-{catalog_key}"),
                     &BTreeMap::from([("path", path.display().to_string())]),
@@ -318,6 +318,50 @@ impl KetchupApp {
             }
         }
         result
+    }
+}
+
+/// The files one export wrote: the chosen file and what was written beside it
+/// (review 2026-10-17 MCP-1, §5.8). A client is told these paths instead of
+/// guessing the names of the reports.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Written {
+    pub(crate) primary: PathBuf,
+    /// What the conversion lost (`x.step.loss.txt`).
+    pub(crate) loss_report: Option<PathBuf>,
+    /// What the target format cannot carry (`x.btlx.support.txt`).
+    pub(crate) support_report: Option<PathBuf>,
+    /// Further files of the release (`x.drawings.svg`, `x.bends.csv`).
+    pub(crate) companions: Vec<PathBuf>,
+}
+
+impl Written {
+    pub(crate) fn alone(primary: &Path) -> Self {
+        Self {
+            primary: primary.to_owned(),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn with_loss_report(primary: &Path, report: &Path) -> Self {
+        Self {
+            loss_report: Some(report.to_owned()),
+            ..Self::alone(primary)
+        }
+    }
+
+    pub(crate) fn with_support_report(primary: &Path, report: &Path) -> Self {
+        Self {
+            support_report: Some(report.to_owned()),
+            ..Self::alone(primary)
+        }
+    }
+
+    pub(crate) fn with_companion(primary: &Path, companion: &Path) -> Self {
+        Self {
+            companions: vec![companion.to_owned()],
+            ..Self::alone(primary)
+        }
     }
 }
 

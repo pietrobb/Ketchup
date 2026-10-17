@@ -139,7 +139,7 @@ mod gesture;
 mod glb_import_ui;
 mod helix_ui;
 use export_bundle::{
-    ExportBundlePrecondition, ExportConsent, ExportError, export_target_sha256,
+    ExportBundlePrecondition, ExportConsent, ExportError, Written, export_target_sha256,
     write_export_artifact_if_unchanged, write_export_bundle,
 };
 mod import_source;

@@ -172,7 +172,7 @@ impl KetchupApp {
         &mut self,
         format: ExchangeFormat,
         path: &Path,
-    ) -> Result<(), ExportError> {
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let result = self.exchange_export_job(format, path).and_then(|job| {
             let bytes = job.run(&AtomicBool::new(false))?;
@@ -274,7 +274,7 @@ impl KetchupApp {
         snapshot: &Snapshot,
         model: &[(ExactBodyPackage, SceneOccurrence)],
         bytes: Vec<u8>,
-    ) -> Result<(), ExportError> {
+    ) -> Result<Written, ExportError> {
         let (report, domain, consent) = match format {
             ExchangeFormat::Step => (
                 exact_model_step_loss_report(snapshot, model),
@@ -317,13 +317,8 @@ impl KetchupApp {
         );
         let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
         self.authorize_export_bundle(consent, path, &report_path, &precondition, &evidence)?;
-        Ok(write_export_bundle(
-            path,
-            &bytes,
-            &report_path,
-            report.as_bytes(),
-            &precondition,
-        )?)
+        write_export_bundle(path, &bytes, &report_path, report.as_bytes(), &precondition)?;
+        Ok(Written::with_loss_report(path, &report_path))
     }
 }
 

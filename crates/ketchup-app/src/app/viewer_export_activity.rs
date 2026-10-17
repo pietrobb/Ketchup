@@ -59,21 +59,23 @@ impl PreparedExport {
         self,
         path: &Path,
         precondition: &ExportBundlePrecondition,
-    ) -> Result<(), ExportError> {
-        Ok(write_export_bundle(
+    ) -> Result<Written, ExportError> {
+        let report = path.with_extension("ketchup-view.loss.txt");
+        write_export_bundle(
             path,
             &self.bytes,
-            &path.with_extension("ketchup-view.loss.txt"),
+            &report,
             self.report.as_bytes(),
             precondition,
-        )?)
+        )?;
+        Ok(Written::with_loss_report(path, &report))
     }
 }
 
 enum Stage {
     Preparing(Receiver<Result<PreparedExport, ExportError>>),
     Inspecting(Receiver<Result<(PreparedExport, ExportBundlePrecondition), ExportError>>),
-    Writing(Receiver<Result<(), ExportError>>),
+    Writing(Receiver<Result<Written, ExportError>>),
 }
 
 pub(super) struct ViewerExportTask {

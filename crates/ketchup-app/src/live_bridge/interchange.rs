@@ -6,14 +6,14 @@
 
 use super::{LiveBridge, Request, drawings::local_absolute_path, failure, record_rejection};
 use crate::app::import_file::{import_format, parse_unit};
-use crate::export_bundle::ExportError;
+use crate::export_bundle::{ExportError, Written};
 use crate::{ImportError, ImportFormat, ImportLengthUnit, KetchupApp};
 use ketchup_application::rejections::rejected;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
-type Exporter = fn(&mut KetchupApp, &Path) -> Result<(), ExportError>;
+type Exporter = fn(&mut KetchupApp, &Path) -> Result<Written, ExportError>;
 
 /// Records why the import of `path` failed for the answer.
 pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
@@ -171,12 +171,11 @@ impl LiveBridge {
             ));
         };
         let target = Path::new(&path);
-        let extension = target
+        let known_extension = target
             .extension()
             .and_then(|extension| extension.to_str())
-            .map(str::to_ascii_lowercase)
-            .filter(|extension| extensions.contains(&extension.as_str()));
-        let Some(extension) = extension.filter(|_| local_absolute_path(&path)) else {
+            .is_some_and(|extension| extensions.contains(&extension.to_ascii_lowercase().as_str()));
+        if !known_extension || !local_absolute_path(&path) {
             return Err(failure(
                 "invalid_path",
                 format!(
@@ -185,27 +184,29 @@ impl LiveBridge {
                 ),
                 json!({"path": path}),
             ));
-        };
+        }
         Self::require_request_authority(cancelled)?;
         app.live.client_export = true;
         let exported = exporter(app, target);
         app.live.client_export = false;
-        exported.map_err(|error| {
+        let written = exported.map_err(|error| {
             record_rejection(
                 &rejected("export_failed").caused_by(error),
                 json!({"path": path, "export_format": export_format}),
             );
             "export_failed"
         })?;
-        let loss_report = target.with_extension(format!("{extension}.loss.txt"));
-        // BTLx names what it cannot carry, such as threads, in its support report.
-        let support_report = target.with_extension(format!("{extension}.support.txt"));
+        // The files the exporter wrote, not names guessed from the path
+        // (review 2026-10-17 MCP-1).
+        let shown = |path: &Path| path.display().to_string();
         Ok(json!({
             "exported": true,
-            "path": path,
+            "path": shown(&written.primary),
             "export_format": export_format,
-            "loss_report": loss_report.is_file().then(|| loss_report.display().to_string()),
-            "support_report": support_report.is_file().then(|| support_report.display().to_string()),
+            "loss_report": written.loss_report.as_deref().map(shown),
+            // BTLx names what it cannot carry, such as threads, in its support report.
+            "support_report": written.support_report.as_deref().map(shown),
+            "companions": written.companions.iter().map(|path| shown(path)).collect::<Vec<_>>(),
             "basis": "visible_parts",
         }))
     }
