@@ -22,19 +22,9 @@ pub(super) fn height(app: &KetchupApp) -> f64 {
 
 /// A window whose user answers the plugin consent prompts from `dialogs`.
 pub(super) fn plugin_wire_answering(dialogs: ScriptedFileDialogs) -> Wire {
-    let mut wire = Wire::new();
-    wire.app.dialogs = Box::new(dialogs);
-    wire.app
-        .document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetOccurrenceGrounded {
-                id: OccurrenceId(1),
-                grounded: true,
-            },
-        ]))
-        .unwrap();
-    crate::tests::install_initial_graph_result(&mut wire.app);
-    wire
+    let mut app = grounded_app();
+    app.dialogs = Box::new(dialogs);
+    Wire::connect(app)
 }
 
 /// A window whose user allows every plugin.

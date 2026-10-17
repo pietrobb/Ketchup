@@ -955,17 +955,7 @@ fn apply_and_verify_is_one_undo_step_and_refuses_a_stale_resend() {
 
 #[test]
 fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication() {
-    let mut wire = Wire::new();
-    wire.app
-        .document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetOccurrenceGrounded {
-                id: OccurrenceId(1),
-                grounded: true,
-            },
-        ]))
-        .unwrap();
-    crate::tests::install_initial_graph_result(&mut wire.app);
+    let mut wire = Wire::connect(grounded_app());
     let expected = wire.app.live_bridge_stamp();
     let before_steps = wire.app.undo_step_count();
     wire.send(
@@ -1041,17 +1031,7 @@ fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication()
 
 #[test]
 fn queued_apply_and_verify_refuses_post_validation_selection_change() {
-    let mut wire = Wire::new();
-    wire.app
-        .document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetOccurrenceGrounded {
-                id: OccurrenceId(1),
-                grounded: true,
-            },
-        ]))
-        .unwrap();
-    crate::tests::install_initial_graph_result(&mut wire.app);
+    let mut wire = Wire::connect(grounded_app());
     let expected = wire.app.live_bridge_stamp();
     let before_steps = wire.app.undo_step_count();
     wire.send(
@@ -2397,10 +2377,31 @@ struct Wire {
     token: String,
     id: u64,
 }
+/// A window with occurrence 1 grounded and its graph evaluated.
+pub(super) fn grounded_app() -> KetchupApp {
+    let mut app = KetchupApp::new();
+    app.selection.clear();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    app
+}
+
 impl Wire {
     fn new() -> Self {
         let mut app = KetchupApp::new();
         app.selection.clear();
+        Self::connect(app)
+    }
+    /// Connects only now: the bridge drops a client that shows no token within 2 s,
+    /// so a slow window setup must happen before this.
+    pub(super) fn connect(mut app: KetchupApp) -> Self {
         let context = egui::Context::default();
         let address = app.enable_live_bridge(&context).unwrap();
         let token = app.live_bridge_credentials().unwrap().token;
