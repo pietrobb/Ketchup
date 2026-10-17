@@ -350,8 +350,22 @@ impl Files {
             let failed = |target: String| rejection().target(target);
             app.report(match outcome {
                 Interrupted::Restored { target } => failed(target)
-                    .reason("A save was cut off when Android ended the app; the file holds what it held before.")
+                    .reason("A save was cut off when Android ended the app; its earlier content was put back.")
                     .fix_hint("Save again."),
+                Interrupted::Unchanged { target } => failed(target)
+                    .reason("A save was cut off when Android ended the app before it changed the file, which holds what it held before.")
+                    .fix_hint("Save again."),
+                Interrupted::GivenUp {
+                    target,
+                    kept,
+                    error,
+                } => failed(target)
+                    .caused_by(error)
+                    .reason(format!(
+                        "A save cut off when Android ended the app could not be finished at several starts; it is no longer tried, and the file's earlier content is kept in {}.",
+                        kept.display()
+                    ))
+                    .fix_hint("Check the file, and save again if it should hold your comments."),
                 Interrupted::Kept {
                     target,
                     backup,

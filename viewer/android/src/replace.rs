@@ -22,6 +22,11 @@ const RECORD_PART: &str = "target-part";
 const NEW: &str = "new";
 /// The last line of a complete record.
 const END: &str = "end";
+/// The extension of the count of starts that could not finish a replacement.
+const STARTS: &str = "starts";
+/// After this many starts a replacement that cannot be finished is given up,
+/// so the document's write grant is not kept for ever (review 2026-10-17 D-7).
+const MAX_STARTS: u32 = 3;
 
 /// The length and checksum of some bytes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -117,7 +122,7 @@ impl Write for Summing {
 /// Removes the record before the bytes: without a record nothing was
 /// written to the document yet, so the bytes are dropped at the next start.
 fn forget(backup: &Path) {
-    for extension in [RECORD, RECORD_PART, NEW] {
+    for extension in [RECORD, RECORD_PART, NEW, STARTS] {
         drop(std::fs::remove_file(backup.with_extension(extension)));
     }
     drop(std::fs::remove_file(backup));
@@ -234,11 +239,21 @@ fn sync_directory(backup: &Path) -> io::Result<()> {
 pub(crate) enum Interrupted {
     /// The document held a cut-off write and has its old bytes back.
     Restored { target: String },
+    /// The document holds its old bytes: the save wrote nothing that stayed,
+    /// and this start wrote nothing either.
+    Unchanged { target: String },
     /// The document could not be read or put back; its old bytes stay at
     /// `backup` and the next start tries again.
     Kept {
         target: String,
         backup: PathBuf,
+        error: io::Error,
+    },
+    /// [`MAX_STARTS`] starts could not finish the replacement: its old bytes
+    /// are set aside at `kept` and it is no longer tried.
+    GivenUp {
+        target: String,
+        kept: PathBuf,
         error: io::Error,
     },
     /// The document holds bytes the save did not write (another app wrote
@@ -320,10 +335,29 @@ fn recover<R: Read, W: Write>(
     open_read: &mut impl FnMut(&str) -> io::Result<R>,
     open_write: &mut impl FnMut(&str) -> io::Result<W>,
 ) -> Option<Interrupted> {
-    let kept = |error: io::Error| Interrupted::Kept {
-        target: record.target.clone(),
-        backup: backup.to_owned(),
-        error,
+    let kept = |error: io::Error| {
+        let count = backup.with_extension(STARTS);
+        let starts = std::fs::read_to_string(&count)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+            .unwrap_or(0)
+            + 1;
+        if starts >= MAX_STARTS
+            && let Some(kept) = put_aside(backup)
+        {
+            return Interrupted::GivenUp {
+                target: record.target.clone(),
+                kept,
+                error,
+            };
+        }
+        // Not counted when it cannot be written: the next start tries again.
+        drop(std::fs::write(&count, starts.to_string()));
+        Interrupted::Kept {
+            target: record.target.clone(),
+            backup: backup.to_owned(),
+            error,
+        }
     };
     let new = backup.with_extension(NEW);
     let held = check(&new, record.new)
@@ -340,7 +374,9 @@ fn recover<R: Read, W: Write>(
         }
         Ok((_, Prefix::Whole)) => {
             forget(backup);
-            Some(restored())
+            Some(Interrupted::Unchanged {
+                target: record.target.clone(),
+            })
         }
         Ok((Prefix::Part, _) | (_, Prefix::Part)) => {
             match restore(&mut || open_write(&record.target), backup) {
@@ -359,19 +395,21 @@ fn recover<R: Read, W: Write>(
 /// Moves the old bytes at `backup` out of the replacements, under a name
 /// of their own, and drops the rest of the replacement.
 fn set_aside(backup: &Path, target: Option<String>) -> Interrupted {
+    // When it cannot be moved, the next start tries again.
+    let kept = put_aside(backup).unwrap_or_else(|| backup.to_owned());
+    Interrupted::Left { target, kept }
+}
+
+/// Moves the old bytes at `backup` to a name of their own and drops the
+/// rest of the replacement; `None` when they cannot be moved.
+fn put_aside(backup: &Path) -> Option<PathBuf> {
     let name = backup.file_name().map_or_else(Default::default, |name| {
         name.to_string_lossy().replacen("replacing-", "kept-", 1)
     });
     let kept = backup.with_file_name(name);
-    if std::fs::rename(backup, &kept).is_err() {
-        // The next start tries again.
-        return Interrupted::Left {
-            target,
-            kept: backup.to_owned(),
-        };
-    }
+    std::fs::rename(backup, &kept).ok()?;
     forget(backup);
-    Interrupted::Left { target, kept }
+    Some(kept)
 }
 
 /// Fails unless the file at `path` still holds the bytes `summary` names.
@@ -745,6 +783,61 @@ mod tests {
         };
         assert_set_aside(kept, b"old");
         assert_eq!(*document.bytes.borrow(), b"untouched");
+        assert_eq!(left_in(&backup), 0);
+    }
+
+    /// Review 2026-10-17 D-7: kept bytes that no longer match their record
+    /// cannot be finished at any start; after three starts the old bytes are
+    /// set aside with a report and the document's write grant is let go,
+    /// instead of keeping it for ever.
+    #[test]
+    fn a_replacement_that_cannot_be_finished_is_given_up_after_three_starts() {
+        let backup = backup("given-up");
+        let document = Document::new(b"old", &[]);
+        document.replace_ending_after(&backup, b"new comments", 4);
+        std::fs::write(backup.with_extension(NEW), b"damaged").unwrap();
+        let private = backup.parent().unwrap();
+        for _ in 0..2 {
+            let outcomes = document.recover(private);
+            assert!(
+                matches!(outcomes.as_slice(), [Interrupted::Kept { .. }]),
+                "{outcomes:?}"
+            );
+            assert_eq!(pending_targets(private), [TARGET]);
+        }
+        let outcomes = document.recover(private);
+        let [
+            Interrupted::GivenUp {
+                target,
+                kept,
+                error,
+            },
+        ] = outcomes.as_slice()
+        else {
+            panic!("{outcomes:?}");
+        };
+        assert_eq!(target, TARGET);
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_set_aside(kept, b"old");
+        assert!(pending_targets(private).is_empty());
+        assert_eq!(left_in(&backup), 0);
+        assert!(document.recover(private).is_empty());
+        assert_eq!(*document.bytes.borrow(), b"new ");
+    }
+
+    /// D-7: a save cut off before it wrote anything leaves the document as it
+    /// was; the next start writes nothing and does not say it put it back.
+    #[test]
+    fn a_save_cut_off_before_it_wrote_anything_is_not_reported_as_put_back() {
+        let backup = backup("nothing-written");
+        let document = Document::new(b"old", &[]);
+        keep(&b"old"[..], TARGET, &backup, b"new comments").unwrap();
+        let outcomes = document.recover(backup.parent().unwrap());
+        assert!(
+            matches!(outcomes.as_slice(), [Interrupted::Unchanged { target }] if target == TARGET),
+            "{outcomes:?}"
+        );
+        assert_eq!(*document.bytes.borrow(), b"old");
         assert_eq!(left_in(&backup), 0);
     }
 
