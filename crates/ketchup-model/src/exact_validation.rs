@@ -1312,13 +1312,8 @@ fn body_support_contact(
     let Ok(supporter_obb) = general_body_obb(supporter) else {
         return GravityContactEvidence::None;
     };
-    let candidate_lower_mm = dot(candidate_obb.center, support_direction)
-        - obb_projection_radius(candidate_obb, support_direction);
-    let supporter_upper_mm = dot(supporter_obb.center, support_direction)
-        + obb_projection_radius(supporter_obb, support_direction);
-    if (candidate_lower_mm - supporter_upper_mm).abs() > tolerance.linear_mm() {
-        return GravityContactEvidence::None;
-    }
+    // A measured contact decides first: a part can bear below the supporter's
+    // highest point (a step, a notch), where the envelopes alone say nothing.
     let complete = input.exact_coverage_complete;
     if let Some(contact) = input
         .exact_contacts()
@@ -1333,6 +1328,19 @@ fn body_support_contact(
         if complete {
             return GravityContactEvidence::None;
         }
+    }
+    let candidate_lower_mm = dot(candidate_obb.center, support_direction)
+        - obb_projection_radius(candidate_obb, support_direction);
+    let supporter_center_mm = dot(supporter_obb.center, support_direction);
+    let supporter_radius_mm = obb_projection_radius(supporter_obb, support_direction);
+    let on_top = (candidate_lower_mm - (supporter_center_mm + supporter_radius_mm)).abs()
+        <= tolerance.linear_mm();
+    // Unchecked pairs: the part may bear anywhere within the supporter's height.
+    let within = !complete
+        && (candidate_lower_mm - supporter_center_mm).abs()
+            <= supporter_radius_mm + tolerance.linear_mm();
+    if !on_top && !within {
+        return GravityContactEvidence::None;
     }
     let Ok(narrow_phase) = general_body_narrow_phase(candidate, supporter, tolerance) else {
         return GravityContactEvidence::None;

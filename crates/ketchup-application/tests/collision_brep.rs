@@ -1083,6 +1083,54 @@ fn gravity_without_the_exact_pairs_checked_does_not_call_parts_unsupported() {
 }
 
 #[test]
+fn gravity_finds_a_part_resting_below_its_supporters_highest_point() {
+    // A stepped beam on the floor, stood on its side (profile y becomes z):
+    // 20 mm high at x 0..20, 10 mm at x 20..40. A cube rests on the lower step.
+    let mut document = DocumentStore::new();
+    let stepped = vec![
+        [0.0, 0.0],
+        [40.0, 0.0],
+        [40.0, 10.0],
+        [20.0, 10.0],
+        [20.0, 20.0],
+        [0.0, 20.0],
+    ];
+    add(&mut document, 1, stepped, 0.0);
+    add(&mut document, 2, rectangle(), 0.0);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(1),
+                transform: Transform::from_matrix([
+                    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ])
+                .unwrap(),
+            },
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(2),
+                transform: Transform::from_translation(25.0, -10.0, 10.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+
+    let checked = gravity_with_collision(&document, false);
+    assert_eq!(checked["collision"]["complete"], true, "{checked}");
+    assert_eq!(checked["gravity_support"]["state"], "passed", "{checked}");
+
+    let unchecked = gravity_with_collision(&document, true);
+    let gravity = &unchecked["gravity_support"];
+    assert_eq!(gravity["state"], "not_evaluated", "{gravity}");
+    assert_eq!(gravity["unsupported_count"], 0, "{gravity}");
+    assert!(
+        gravity_issues(&unchecked, "gravity.contact-unproven")
+            .iter()
+            .any(|evidence| evidence.starts_with("body=occurrence:2;")),
+        "{gravity}"
+    );
+    assert_ne!(unchecked["state"], "failed", "{unchecked}");
+}
+
+#[test]
 fn an_edit_is_checked_over_the_parts_it_changed_and_their_neighbours() {
     // Cubes 20 mm apart; 1 and 2 already overlap, then the edit moves cube 5
     // into its unchanged neighbour 6.
