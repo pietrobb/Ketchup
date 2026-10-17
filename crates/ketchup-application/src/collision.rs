@@ -1582,7 +1582,6 @@ fn collision_report(
                 if let Some((patches, distance_mm)) = decided {
                     checked += 1;
                     hull_decided += 1;
-                    let area_mm2 = patches.iter().map(|patch| patch.area_mm2).sum();
                     if collect_gravity_contacts {
                         add_contact_area(&mut exact_contact_areas, &bodies, left, right, &patches);
                     }
@@ -1593,7 +1592,7 @@ fn collision_report(
                         ExactPair {
                             common_volume_mm3: 0.0,
                             common_thickness_mm: 0.0,
-                            contact_area_mm2: area_mm2,
+                            contact_area_mm2: patches.iter().map(|patch| patch.area_mm2).sum(),
                             distance_mm,
                         },
                         tolerance,

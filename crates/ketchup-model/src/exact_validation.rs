@@ -1074,7 +1074,8 @@ pub fn gravity_support_input_bytes(input: &GravitySupportInput) -> Vec<u8> {
     for contact in input.exact_contacts() {
         push_instance_path(&mut output, &contact.left);
         push_instance_path(&mut output, &contact.right);
-        output.extend_from_slice(&(contact.patches.len() as u64).to_le_bytes());
+        let patch_count = u64::try_from(contact.patches.len()).unwrap_or(u64::MAX);
+        output.extend_from_slice(&patch_count.to_le_bytes());
         for patch in &contact.patches {
             for value in patch.normal.into_iter().chain([patch.area_mm2]) {
                 output.extend_from_slice(&value.to_bits().to_le_bytes());
