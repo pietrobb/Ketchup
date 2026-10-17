@@ -588,9 +588,11 @@ fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
 
 /// A typed Move vector: two or three lengths read like any other length. Text
 /// that reads as one length (`12,5`, `2*20`) is a distance along the shown
-/// way, never a vector; `12;5` is the vector.
+/// way, never a vector; `12;5` is the vector. With one `*` beside a comma the
+/// comma separates, as in a rectangle: `2*20,30` is (40, 30, 0), not 40.6 mm.
 fn parse_move_vector(input: &str) -> Option<Vec3> {
-    if crate::length_input::parse_length_mm(input).is_some() {
+    let star_beside_comma = input.matches(['*', '×']).count() == 1 && input.contains(',');
+    if !star_beside_comma && crate::length_input::parse_length_mm(input).is_some() {
         return None;
     }
     let values = crate::length_input::parse_length_list(input, 2..=3)?;

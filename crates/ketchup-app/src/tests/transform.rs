@@ -614,6 +614,9 @@ fn a_typed_move_vector_reads_each_value_as_a_length() {
         ("30;2*10", Vec3::new(30.0, 20.0, 0.0)),
         ("10,20,0 mm", Vec3::new(10.0, 20.0, 0.0)),
         ("-5x7", Vec3::new(-5.0, 7.0, 0.0)),
+        // R-1 (review 2026-10-16): one `*` beside a comma splits at the comma.
+        ("2*20,30", Vec3::new(40.0, 30.0, 0.0)),
+        ("600+2*18,400", Vec3::new(636.0, 400.0, 0.0)),
     ] {
         let mut app = KetchupApp::new();
         app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
