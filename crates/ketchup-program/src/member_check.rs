@@ -308,8 +308,9 @@ fn horizontal(v: [f64; 3]) -> f64 {
     length([v[0], v[1], 0.0])
 }
 
-/// Total length of the profile's cuts by the line local[long] = u.
-fn chord(segments: &[ProgramProfileSegment], long: usize, u: f64) -> f64 {
+/// Where the line local[long] = u crosses the profile, along the other local
+/// axis, in order: the cuts run between the first and second, third and fourth...
+fn crossings(segments: &[ProgramProfileSegment], long: usize, u: f64) -> Vec<f64> {
     let other = 1 - long;
     let mut hits: Vec<f64> = segments
         .iter()
@@ -320,7 +321,13 @@ fn chord(segments: &[ProgramProfileSegment], long: usize, u: f64) -> f64 {
         })
         .collect();
     hits.sort_by(f64::total_cmp);
-    hits.chunks(2)
+    hits
+}
+
+/// Total length of the profile's cuts by the line local[long] = u.
+fn chord(segments: &[ProgramProfileSegment], long: usize, u: f64) -> f64 {
+    crossings(segments, long, u)
+        .chunks(2)
         .filter(|pair| pair.len() == 2)
         .map(|pair| pair[1] - pair[0])
         .sum()
@@ -344,32 +351,164 @@ fn integrals(segments: &[ProgramProfileSegment]) -> [f64; 6] {
 }
 
 /// Section of a line profile less the line profiles `bores` cut through the
-/// whole member inside it: area, second moment about the centroidal axis
-/// across `depth` (a local profile axis), the farthest fibre's distance from
-/// that axis, and the least second moment (about the weak principal axis).
-fn section(
-    segments: &[ProgramProfileSegment],
-    bores: &[&[ProgramProfileSegment]],
+/// whole member inside it, under a load along `depth` (a local profile axis)
+/// that bends it freely: about the axis across `depth` when that is a principal
+/// axis, and sideways too when it is not (an angle, a parallelogram).
+struct Section<'a> {
+    segments: &'a [ProgramProfileSegment],
+    bores: &'a [&'a [ProgramProfileSegment]],
     depth: usize,
-) -> (f64, f64, f64, f64) {
-    let mut sum = integrals(segments);
-    for bore in bores {
-        let hole = integrals(bore);
-        sum = std::array::from_fn(|i| sum[i] - hole[i]);
+    area: f64,
+    centre: [f64; 2],
+    /// Second moments about the centroidal axes across and along `depth`,
+    /// and their product.
+    across: f64,
+    along: f64,
+    product: f64,
+}
+
+impl<'a> Section<'a> {
+    fn new(
+        segments: &'a [ProgramProfileSegment],
+        bores: &'a [&'a [ProgramProfileSegment]],
+        depth: usize,
+    ) -> Self {
+        let mut sum = integrals(segments);
+        for bore in bores {
+            let hole = integrals(bore);
+            sum = std::array::from_fn(|i| sum[i] - hole[i]);
+        }
+        let [area, first_x, first_y, second_x, second_y, product] = sum;
+        let centre = [first_x / area, first_y / area];
+        // About the centroidal axes along local y and x, and their product.
+        let about_y = second_x - area * centre[0] * centre[0];
+        let about_x = second_y - area * centre[1] * centre[1];
+        let (across, along) = if depth == 1 {
+            (about_x, about_y)
+        } else {
+            (about_y, about_x)
+        };
+        Self {
+            segments,
+            bores,
+            depth,
+            area,
+            centre,
+            across,
+            along,
+            product: product - area * centre[0] * centre[1],
+        }
     }
-    let [area, first_x, first_y, second_x, second_y, product] = sum;
-    let centre = [first_x / area, first_y / area];
-    // About the centroidal axes along local y and x, and their product.
-    let about_y = second_x - area * centre[0] * centre[0];
-    let about_x = second_y - area * centre[1] * centre[1];
-    let product = product - area * centre[0] * centre[1];
-    let inertia = if depth == 1 { about_x } else { about_y };
-    let least = (about_x + about_y) / 2.0 - ((about_x - about_y) / 2.0).hypot(product);
-    let reach = segments
-        .iter()
-        .map(|s| (s.start_mm[depth] - centre[depth]).abs())
-        .fold(0.0, f64::max);
-    (area, inertia, reach, least)
+
+    /// The least second moment, about the weak principal axis.
+    fn least(&self) -> f64 {
+        (self.across + self.along) / 2.0 - ((self.across - self.along) / 2.0).hypot(self.product)
+    }
+
+    fn determinant(&self) -> f64 {
+        self.across * self.along - self.product * self.product
+    }
+
+    /// The second moment that gives the deflection along `depth`: `across`
+    /// when that axis is principal, less when the member bends sideways too.
+    fn inertia(&self) -> f64 {
+        self.determinant() / self.along
+    }
+
+    /// Bending stress per unit moment at offsets `along_depth` and `across_depth`
+    /// from the centroid; with the first moments of an area beyond a cut
+    /// instead, its shear flow per unit shear force.
+    fn per_unit(&self, along_depth: f64, across_depth: f64) -> f64 {
+        (self.along * along_depth - self.product * across_depth) / self.determinant()
+    }
+
+    /// Section modulus at the farthest fibre.
+    fn modulus(&self) -> f64 {
+        let other = 1 - self.depth;
+        let farthest = self
+            .segments
+            .iter()
+            .map(|s| {
+                let p = s.start_mm;
+                self.per_unit(
+                    p[self.depth] - self.centre[self.depth],
+                    p[other] - self.centre[other],
+                )
+                .abs()
+            })
+            .fold(0.0, f64::max);
+        1.0 / farthest
+    }
+
+    /// Material width of the cut at local[depth] = t and the first moment of
+    /// that strip about the centroid, across `depth`.
+    fn strip(&self, t: f64) -> (f64, f64) {
+        let centre = self.centre[1 - self.depth];
+        let cuts = |segments: &[ProgramProfileSegment]| {
+            crossings(segments, self.depth, t)
+                .chunks(2)
+                .filter(|pair| pair.len() == 2)
+                .fold((0.0, 0.0), |(width, first), pair| {
+                    let (a, b) = (pair[0] - centre, pair[1] - centre);
+                    (width + b - a, first + (b * b - a * a) / 2.0)
+                })
+        };
+        let (mut width, mut first) = cuts(self.segments);
+        for bore in self.bores {
+            let (w, f) = cuts(bore);
+            width -= w;
+            first -= f;
+        }
+        (width, first)
+    }
+
+    /// The area the shear force is divided by for the largest shear stress,
+    /// the shear flow V Q / I over the material width b of a cut across
+    /// `depth` (a rectangle: 2/3 of its area). Q and I as in free bending.
+    fn shear_area(&self) -> f64 {
+        let depth = self.depth;
+        let mut levels: Vec<f64> = std::iter::once(self.segments)
+            .chain(self.bores.iter().copied())
+            .flatten()
+            .map(|s| s.start_mm[depth])
+            .collect();
+        levels.sort_by(f64::total_cmp);
+        levels.dedup_by(|a, b| (*a - *b).abs() < ROUNDING);
+        // Between two levels the strip's width is linear in t and its first
+        // moment quadratic, so two-point Gauss integrates both exactly.
+        let centre = self.centre[depth];
+        let beyond = |a: f64, b: f64| {
+            let (mid, half) = ((a + b) / 2.0, (b - a) / 2.0);
+            let offset = half / 3f64.sqrt();
+            [mid - offset, mid + offset]
+                .into_iter()
+                .fold([0.0, 0.0], |sum, t| {
+                    let (width, first) = self.strip(t);
+                    [sum[0] + half * (t - centre) * width, sum[1] + half * first]
+                })
+        };
+        // Cuts within each span and through the centroid, from the top down.
+        let mut above = [0.0, 0.0];
+        let mut largest: f64 = 0.0;
+        for pair in levels.windows(2).rev() {
+            let (a, b) = (pair[0], pair[1]);
+            let steps = 32;
+            let cuts = (1..steps)
+                .map(|k| a + (b - a) * f64::from(k) / f64::from(steps))
+                .chain((a < centre && centre < b).then_some(centre));
+            for cut in cuts {
+                let (width, _) = self.strip(cut);
+                if width > ROUNDING {
+                    let part = beyond(cut, b);
+                    let flow = self.per_unit(above[0] + part[0], above[1] + part[1]);
+                    largest = largest.max(flow.abs() / width);
+                }
+            }
+            let part = beyond(a, b);
+            above = [above[0] + part[0], above[1] + part[1]];
+        }
+        1.0 / largest
+    }
 }
 
 /// Whether `point` lies inside the closed line profile (even-odd rule).
@@ -416,6 +555,8 @@ struct Shape {
     buckling_area: f64,
     inertia: f64,
     modulus: f64,
+    /// Area the shear force is divided by for the largest shear stress.
+    shear_area: f64,
     /// Least radius of gyration of the `buckling_area` section, about its
     /// weak principal axis.
     radius: f64,
@@ -509,8 +650,9 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         let depth = usize::from(world[1][2].abs() >= world[0][2].abs());
         let (bores, unmodelled) =
             changes(part, Some(segments), [0.0, 0.0, 1.0], size[0].min(size[1]));
-        let (area, inertia, reach, least) = section(segments, &bores, depth);
-        let radius = (least / area).sqrt();
+        let section = Section::new(segments, &bores, depth);
+        let area = section.area;
+        let radius = (section.least() / area).sqrt();
         if !(area > 0.0 && radius > 0.0 && radius.is_finite()) {
             return Err("the member's section has no area");
         }
@@ -521,8 +663,9 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             area,
             net_area: area,
             buckling_area: area,
-            inertia,
-            modulus: inertia / reach,
+            inertia: section.inertia(),
+            modulus: section.modulus(),
+            shear_area: section.shear_area(),
             radius,
             unmodelled,
             arc: 1.0,
@@ -597,6 +740,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         buckling_area: distance_mm * thinnest_inside,
         inertia: b * h.powi(3) / 12.0,
         modulus: b * h * h / 6.0,
+        shear_area: b * h / 1.5,
         radius: distance_mm.min(thinnest_inside) / 12f64.sqrt(),
         unmodelled,
         arc: 1.0 / along,
@@ -1013,7 +1157,7 @@ fn beam_checks(
                 })
                 .collect();
             let force = ends[0].max(ends[1]) * cos_t;
-            let tau = 1.5 * force / (KCR * shape.area);
+            let tau = force / (KCR * shape.shear_area);
             shear.offer(
                 "shear",
                 tau / design.strength(class.fv_k, combination.duration),

@@ -281,6 +281,99 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
     );
 }
 
+/// The span of `beam` with a beam of cross-section `profile` (local XY within
+/// 200 x 200, local Y up) extruded 4000 mm along world X, `then` run on it.
+fn profiled_beam(profile: &str, then: &str) -> String {
+    format!(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+timber_design({{\"C24\": \"C24\"}})
+box(\"post a\", (100, 200, 2000), material = \"C24\", grounded = True)
+box(\"post b\", (100, 200, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+part = extrude(\"beam\", profile = {profile}, distance = 4000, material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 0, 2000), z = (1, 0, 0), x = (0, 1, 0))
+{then}
+box(\"deck\", (4000, 600, 20), at = (0, -200, 2200), material = \"OSB\", tags = [\"deck\"])
+"
+    )
+}
+
+#[test]
+fn a_hollow_beam_is_checked_in_shear_on_its_walls_at_the_neutral_axis() {
+    // Review 2026-10-17 PG-6: a 200 x 200 tube with 20 mm walls. tau = V Q / (I b)
+    // at the neutral axis, where only the two walls (b = 40 mm) carry it;
+    // 1.5 V / A understates it by a third.
+    let report = report(
+        &profiled_beam(
+            "[(0, 0), (200, 0), (200, 200), (0, 200)]",
+            "cut(part, profile = [(20, 20), (180, 20), (180, 180), (20, 180)], through = True, name = \"bore\")",
+        ),
+        &[],
+    );
+    let beam = member(&report, "beam");
+    assert_eq!(beam.role, "beam");
+    assert_eq!(beam.missing, Vec::<String>::new());
+    let q_first = 200.0 * 100.0 * 50.0 - 160.0 * 80.0 * 40.0;
+    let inertia = (200f64.powi(4) - 160f64.powi(4)) / 12.0;
+    let shear = 1.5 * 1.2 * 3900.0 / 2.0;
+    let tau = shear * q_first / (inertia * 0.67 * 40.0);
+    assert!(
+        tau > 1.4 * 1.5 * shear / (0.67 * (200.0 * 200.0 - 160.0 * 160.0)),
+        "{tau}"
+    );
+    close(utilization(beam, "shear"), tau / (0.8 * 4.0 / 1.3));
+    close(
+        utilization(beam, "bending"),
+        1.5 * 1.2 * 3900f64.powi(2) / 8.0 / (inertia / 100.0) / (0.8 * 24.0 / 1.3),
+    );
+}
+
+#[test]
+fn an_angle_beam_bends_about_its_principal_axes_not_its_horizontal_one() {
+    // Review 2026-10-17 PG-6: an L 200 x 200 with 50 mm legs under a vertical
+    // load bends sideways too (free unsymmetric bending); the second moment
+    // about its horizontal axis understates its stress and deflection.
+    let corners = [
+        (0.0, 0.0),
+        (200.0, 0.0),
+        (200.0, 50.0),
+        (50.0, 50.0),
+        (50.0, 200.0),
+        (0.0, 200.0),
+    ];
+    let profile = format!(
+        "[{}]",
+        corners
+            .iter()
+            .map(|(x, y)| format!("({x}, {y})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let report = report(&profiled_beam(&profile, ""), &[]);
+    let beam = member(&report, "beam");
+    assert_eq!(beam.role, "beam");
+    assert_eq!(beam.missing, Vec::<String>::new());
+    let (_, [cx, cy], ix, iy, ixy) =
+        moments(&[[0.0, 0.0, 200.0, 50.0], [0.0, 50.0, 50.0, 150.0]], &[]);
+    let det = ix * iy - ixy * ixy;
+    // sigma = M (Iy y - Ixy x) / (Ix Iy - Ixy²), largest at a corner.
+    let per_moment = corners
+        .iter()
+        .map(|(x, y)| ((iy * (y - cy) - ixy * (x - cx)) / det).abs())
+        .fold(0.0, f64::max);
+    let (q, l) = (1.2, 3900.0);
+    let bending = 1.5 * q * l * l / 8.0 * per_moment / (0.8 * 24.0 / 1.3);
+    let about_horizontal = 1.5 * q * l * l / 8.0 * (200.0 - cy) / ix / (0.8 * 24.0 / 1.3);
+    assert!(
+        bending > 1.3 * about_horizontal,
+        "{bending} {about_horizontal}"
+    );
+    close(utilization(beam, "bending"), bending);
+    // The vertical deflection takes Ix - Ixy² / Iy.
+    let w = 5.0 * q * l.powi(4) / (384.0 * 11000.0 * det / iy);
+    close(utilization(beam, "deflection_inst"), w / (l / 300.0));
+}
+
 /// The 100 x 200 beam of `beam` with `then` run on it (the beam is `part`):
 /// its status, check names and what the check could not model.
 fn changed_beam(then: &str) -> (String, Vec<String>, Vec<String>) {
@@ -418,6 +511,14 @@ box(\"deck\", (200, 200, 20), at = (0, 0, 3050), material = \"OSB\", tags = [\"d
 /// Area and least second moment of rectangles `(x, y, width, depth)` less
 /// rectangles `holes`, by hand: parallel axes and the principal-axis formula.
 fn least_inertia(solid: &[[f64; 4]], holes: &[[f64; 4]]) -> (f64, f64) {
+    let (area, _, ix, iy, ixy) = moments(solid, holes);
+    let least = (ix + iy) / 2.0 - ((ix - iy) / 2.0).hypot(ixy);
+    (area, least)
+}
+
+/// Area, centroid and centroidal second moments Ix, Iy, Ixy of rectangles
+/// `(x, y, width, depth)` less rectangles `holes`, by parallel axes.
+fn moments(solid: &[[f64; 4]], holes: &[[f64; 4]]) -> (f64, [f64; 2], f64, f64, f64) {
     let parts: Vec<([f64; 4], f64)> = solid
         .iter()
         .map(|r| (*r, 1.0))
@@ -441,8 +542,7 @@ fn least_inertia(solid: &[[f64; 4]], holes: &[[f64; 4]]) -> (f64, f64) {
         iy += s * (d * w.powi(3) / 12.0 + a * dx * dx);
         ixy += s * a * dx * dy;
     }
-    let least = (ix + iy) / 2.0 - ((ix - iy) / 2.0).hypot(ixy);
-    (area, least)
+    (area, [cx, cy], ix, iy, ixy)
 }
 
 /// EC5 6.3.2 compression utilization of the column of `column` with the
