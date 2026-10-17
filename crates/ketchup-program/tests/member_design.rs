@@ -323,7 +323,7 @@ fn a_beam_notched_pocketed_or_drilled_in_its_span_is_not_checked_as_the_full_sec
 }
 
 #[test]
-fn a_notch_in_a_side_of_a_short_post_governs_its_compression_on_the_net_section() {
+fn a_notch_in_a_side_of_a_short_post_governs_its_compression_on_its_thinnest_section() {
     let compression = |notched: bool| {
         let report = report(&post(notched), &[]);
         let post = member(&report, "post");
@@ -339,9 +339,63 @@ fn a_notch_in_a_side_of_a_short_post_governs_its_compression_on_the_net_section(
     let (plain, plain_at) = compression(false);
     let (notched, notched_at) = compression(true);
     assert!(plain_at.starts_with("length"), "{plain_at}");
-    assert_eq!(notched_at, "net section 7000 mm² at a notch");
-    // Short: kc is near 1, so the net 50 x 140 section is what decides.
+    // The notch is away from the ends: it buckles on 50 x 140, with kc near 1.
+    assert_eq!(notched_at, "length 500 mm, thinnest section 7000 mm²");
     assert!(notched > plain * 1.1, "{notched} {plain}");
+    let lambda = 500.0 * 12f64.sqrt() / 50.0 / std::f64::consts::PI * (21.0f64 / 7400.0).sqrt();
+    let k = 0.5 * (1.0 + 0.2 * (lambda - 0.3) + lambda * lambda);
+    let kc = 1.0 / (k + (k * k - lambda * lambda).sqrt());
+    let force = 1.5 * 2000.0e-3 * 60.0 * 140.0;
+    close(notched, force / (50.0 * 140.0) / (kc * 0.8 * 21.0 / 1.3));
+}
+
+/// The compression check of the post of `post` with each `(from, to)` replaced.
+fn post_compression(replacements: &[(&str, &str)]) -> (f64, String) {
+    let mut source = post(false);
+    for (from, to) in replacements {
+        assert!(source.contains(from), "{from}");
+        source = source.replace(from, to);
+    }
+    let report = report(&source, &[]);
+    let post = member(&report, "post");
+    assert_eq!(post.role, "column");
+    let check = post
+        .checks
+        .iter()
+        .find(|c| c.name == "compression")
+        .unwrap_or_else(|| panic!("{:?} {:?}", post.checks, post.missing));
+    (check.utilization, check.at.clone())
+}
+
+#[test]
+fn a_lap_at_the_top_of_a_post_is_checked_on_its_net_section() {
+    // Review 2026-10-17 PG-5: the 60 x 140 post halved to 30 mm over its top
+    // 100 mm carries the whole load there on 30 x 140 mm.
+    let (utilization, at) = post_compression(&[("(60, 500)", "(60, 400), (30, 400), (30, 500)")]);
+    assert_eq!(at, "net section 4200 mm² at a notch");
+    let force = 1.5 * 2000.0e-3 * 60.0 * 140.0;
+    close(utilization, force / (30.0 * 140.0) / (0.8 * 21.0 / 1.3));
+}
+
+#[test]
+fn a_tall_post_notched_at_mid_height_buckles_on_its_thinnest_section() {
+    // The post of `post` 3000 mm high, cut to 40 mm over 1400..1600 mm.
+    let (utilization, at) = post_compression(&[
+        (
+            "(60, 500), (0, 500)",
+            "(60, 1400), (40, 1400), (40, 1600), (60, 1600), (60, 3000), (0, 3000)",
+        ),
+        ("at = (0, 0, 550)", "at = (0, 0, 3050)"),
+    ]);
+    let lambda = 3000.0 * 12f64.sqrt() / 40.0 / std::f64::consts::PI * (21.0f64 / 7400.0).sqrt();
+    let k = 0.5 * (1.0 + 0.2 * (lambda - 0.3) + lambda * lambda);
+    let kc = 1.0 / (k + (k * k - lambda * lambda).sqrt());
+    let force = 1.5 * 2000.0e-3 * 60.0 * 140.0;
+    close(
+        utilization,
+        force / (40.0 * 140.0) / (kc * 0.8 * 21.0 / 1.3),
+    );
+    assert_eq!(at, "length 3000 mm, thinnest section 5600 mm²");
 }
 
 /// A C24 column 3000 mm high of `profile` (local XY, extruded up) within a

@@ -409,11 +409,15 @@ struct Shape {
     h: f64,
     /// Section area, second moment and modulus about the bending axis.
     area: f64,
-    /// Area of the thinnest section away from the ends (notches cut into a side).
+    /// Area of the thinnest section anywhere along the member, ends included
+    /// (notches and laps cut into a side).
     net_area: f64,
+    /// Area of the thinnest section away from the ends, for buckling.
+    buckling_area: f64,
     inertia: f64,
     modulus: f64,
-    /// Least radius of gyration, about the weak principal axis.
+    /// Least radius of gyration of the `buckling_area` section, about its
+    /// weak principal axis.
     radius: f64,
     /// Why the section above is not the member's along its whole length.
     unmodelled: Option<&'static str>,
@@ -516,6 +520,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             h: size[depth],
             area,
             net_area: area,
+            buckling_area: area,
             inertia,
             modulus: inertia / reach,
             radius,
@@ -555,17 +560,24 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         })
         .fold(0.0, f64::max)
         * along;
-    // The chord is linear between the profile's corners, so its least value lies at
-    // one of them; the ends (cut to a slope, seated) stay out, twice the width deep.
+    // The chord is linear between the profile's corners, so its least value lies
+    // between two of them. A notch or lap anywhere, ends included, takes the
+    // whole force on its net section; buckling, which the pinned ends hardly
+    // affect, takes the thinnest section more than twice the width from them.
     let mut corners: Vec<f64> = segments.iter().map(|s| s.start_mm[long]).collect();
     corners.sort_by(f64::total_cmp);
     corners.dedup_by(|a, b| (*a - *b).abs() < ROUNDING);
     let reach = 2.0 * thickest / along;
-    let thinnest = corners
+    let stations: Vec<(f64, f64)> = corners
         .windows(2)
         .map(|pair| (pair[0] + pair[1]) / 2.0)
-        .filter(|u| *u - start > reach && start + length - *u > reach)
-        .map(|u| chord(segments, long, u) * along)
+        .map(|u| (u, chord(segments, long, u) * along))
+        .collect();
+    let thinnest = stations.iter().map(|s| s.1).fold(thickest, f64::min);
+    let thinnest_inside = stations
+        .iter()
+        .filter(|(u, _)| *u - start > reach && start + length - *u > reach)
+        .map(|s| s.1)
         .fold(thickest, f64::min);
     let depth_in_plane = across[2].abs() >= world[2][2].abs();
     let (b, h) = if depth_in_plane {
@@ -582,9 +594,10 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         h,
         area: b * h,
         net_area: distance_mm * thinnest,
+        buckling_area: distance_mm * thinnest_inside,
         inertia: b * h.powi(3) / 12.0,
         modulus: b * h * h / 6.0,
-        radius: b.min(h) / 12f64.sqrt(),
+        radius: distance_mm.min(thinnest_inside) / 12f64.sqrt(),
         unmodelled,
         arc: 1.0 / along,
         depth_at: depth_in_plane.then(|| {
@@ -1220,10 +1233,16 @@ fn column_check(load: &MemberLoad, shape: &Shape, design: &Design, uls: &[Combin
     for combination in uls {
         let force = factor(&combination.factors, &load.loads_n);
         let strength = design.strength(class.fc0_k, combination.duration);
-        let buckling = force / shape.area / (kc * strength);
+        let buckling = force / shape.buckling_area / (kc * strength);
         let net = force / shape.net_area / strength;
         let detail = if net > buckling {
             format!("net section {} mm² at a notch", shape.net_area.round())
+        } else if shape.buckling_area < shape.area - ROUNDING {
+            format!(
+                "length {} mm, thinnest section {} mm²",
+                length.round(),
+                shape.buckling_area.round()
+            )
         } else {
             format!("length {} mm", length.round())
         };
