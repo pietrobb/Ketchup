@@ -6,11 +6,13 @@ use ketchup_application::{AssistantValidationSelection, DocumentSession, Session
 use ketchup_model::document::RuleProgramSource;
 use ketchup_model::exact_product::ExactResultRegistry;
 use ketchup_model::persistence::ContainerData;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const HOUSE: &str = include_str!("../../../examples/programs/tiny-house.star");
 
-/// About 6 s in release on 12 cores; the panel gives the check 30 s.
+/// The panel's limit. The check takes about 6 s in release on 12 cores and
+/// longer on the CI runner's fewer cores. A check that runs out of time reports
+/// `complete: false`, so the assertions below catch it without a stopwatch.
 const PANEL_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
@@ -35,7 +37,6 @@ fn the_panel_checks_every_visible_part_of_the_house_for_collision_and_gravity() 
         .filter(|occurrence| occurrence.visible)
         .count();
     assert!(visible > 512, "{visible}");
-    let started = Instant::now();
     let report = assistant_validation_context_with_worker(
         &applied.snapshot,
         &ExactResultRegistry::default(),
@@ -44,7 +45,6 @@ fn the_panel_checks_every_visible_part_of_the_house_for_collision_and_gravity() 
         None,
         PANEL_TIMEOUT,
     );
-    assert!(started.elapsed() < PANEL_TIMEOUT, "{:?}", started.elapsed());
     // Concept walls and their construction are both shown in a bare session,
     // so the check finds their overlaps; what matters is that it ran.
     let collision = &report["collision"];
