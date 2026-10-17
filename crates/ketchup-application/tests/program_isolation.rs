@@ -98,8 +98,11 @@ fn a_model_too_large_to_check_is_applied_with_an_unfinished_report_and_the_sessi
     assert_eq!(applied.report.issues.len(), 1);
     assert!(applied.report.relations.is_empty());
     assert_eq!(applied.report.bom, ketchup_program::bom(&applied.model));
+    // The stopped check above proves the deadline; this only catches a wait
+    // far past it. Under CI load evaluating and applying took 23 s besides.
     assert!(
-        started.elapsed() < Duration::from_secs(80),
+        started.elapsed()
+            < ketchup_application::program_isolation::PROGRAM_CHECK_TIME + Duration::from_secs(60),
         "{:?}",
         started.elapsed()
     );
