@@ -173,19 +173,17 @@ pub fn assistant_validation_context(
 
 /// The exact bearing contacts the collision pass measured, and whether that
 /// pass checked every pair. A pass that stopped early leaves pairs unchecked.
+#[derive(Default)]
 pub(crate) struct ExactGravityContacts {
-    pub(crate) contacts: Vec<GravitySupportContact>,
-    pub(crate) complete: bool,
+    contacts: Vec<GravitySupportContact>,
+    complete: bool,
 }
 
 impl ExactGravityContacts {
     pub(crate) fn bind(&self, input: GravitySupportInput) -> GravitySupportInput {
-        let input = input.with_exact_contacts(self.contacts.clone());
-        if self.complete {
-            input
-        } else {
-            input.with_incomplete_exact_coverage()
-        }
+        input
+            .with_exact_contacts(self.contacts.clone())
+            .with_exact_coverage(self.complete)
     }
 
     /// A pass that stopped early still hands over the pairs it did check;
@@ -274,10 +272,7 @@ pub fn local_validation_context_with_worker_cancellation(
         !selection.requested.contains("gravity_support")
             && !selection.requested.contains("group_connectivity")
     });
-    let mut gravity_contacts = ExactGravityContacts {
-        contacts: Vec::new(),
-        complete: false,
-    };
+    let mut gravity_contacts = ExactGravityContacts::default();
     let collision = collision_report(
         snapshot,
         selection,
