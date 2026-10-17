@@ -102,25 +102,23 @@ impl SessionKeeper {
         }
     }
 
-    /// Whether a package is being written; its comments follow once it is on
-    /// disk, so the caller keeps calling [`Self::keep`] until then.
+    /// Whether a package is being written; the caller keeps calling
+    /// [`Self::keep`] until it is on disk, which tells whether it got there.
     pub fn writing(&self) -> bool {
         self.writing.is_some()
     }
 
     /// Keeps what changed in `app` since the last call. Another package first
     /// drops the kept comments, so a process ended halfway never pairs them
-    /// with it, and is then written on a thread of its own; its comments wait
-    /// until it is on disk. The unsaved marker is written before the comments
-    /// and removed after them, so unsaved comments never show as saved. A
-    /// failed comments write keeps the package, so the next edit writes only
-    /// the comments again.
+    /// with it, and is then written on a thread of its own. Its comments are
+    /// written at once beside it and with every edit while it is written, not
+    /// after it, so a process ended meanwhile loses none of them: they name
+    /// their package and open only on it (review 2026-10-17 D-7). The unsaved
+    /// marker is written before the comments and removed after them, so
+    /// unsaved comments never show as saved. A failed comments write keeps the
+    /// package, so the next edit writes only the comments again.
     pub fn keep(&mut self, app: &ViewerApp) -> Result<(), Rejection> {
-        if let Some(writing) = self.writing.take() {
-            if !writing.handle.is_finished() {
-                self.writing = Some(writing);
-                return Ok(());
-            }
+        if let Some(writing) = self.writing.take_if(|writing| writing.handle.is_finished()) {
             let path = self.dir.join(PACKAGE);
             let written = writing.handle.join().unwrap_or_else(|_| {
                 Err(session_error(
@@ -158,7 +156,12 @@ impl SessionKeeper {
         let dir = &self.dir;
         let marker = dir.join(UNSAVED);
         let comments_path = dir.join(COMMENTS);
-        if self.package != Some(mark.package) {
+        let written = self.writing.as_ref().map(|writing| writing.mark.package);
+        if self.package != Some(mark.package) && written != Some(mark.package) {
+            if written.is_some() {
+                // Another package is still being written; this one follows.
+                return Ok(());
+            }
             std::fs::create_dir_all(dir).map_err(|error| session_error(dir, error))?;
             self.package = None;
             self.comments = None;
@@ -173,7 +176,6 @@ impl SessionKeeper {
                     write_durably(&path, |writer| package.write(writer))
                 }),
             });
-            return Ok(());
         }
         if self.comments == Some((mark.revision, mark.unsaved)) {
             return Ok(());

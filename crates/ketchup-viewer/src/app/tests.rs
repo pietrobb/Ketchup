@@ -1080,7 +1080,7 @@ fn a_comment_edit_keeps_only_the_comments_not_the_whole_package() {
         keeper.writing(),
         "the package is written apart from the frame"
     );
-    assert!(!dir.join("session.ketchup-comments").exists());
+    assert!(dir.join("session.ketchup-comments").exists());
     keep_all(&mut keeper, &app).unwrap();
     let package = dir.join("session.ketchup-view");
     assert_eq!(std::fs::read(&package).unwrap(), bytes);
@@ -1117,6 +1117,41 @@ fn a_comment_edit_keeps_only_the_comments_not_the_whole_package() {
     let mut restarted = ViewerApp::new(None);
     restarted.restore_session(&dir).unwrap();
     assert_eq!(restarted.opened_counts().map(|[_, _, c]| c), Some(1));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Review 2026-10-17 D-7: Android may end the process while a large package
+/// is written on its own thread. The comments made meanwhile are on disk
+/// beside the mark of that package at once, not waiting for it, so they open
+/// with it at the next start.
+#[test]
+fn comments_made_while_the_package_is_written_survive_the_end_of_the_process() {
+    let dir = std::env::temp_dir().join(format!("ketchup-viewer-ended-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let mut app = customer_with_comment(&bytes, "Darker oak");
+    let mut keeper = SessionKeeper::new(dir.clone(), None);
+    keeper.keep(&app).unwrap();
+    let comments = dir.join("session.ketchup-comments");
+    assert!(comments.exists(), "the comments wait for the package");
+    add_comment(&mut app, "And brass handles");
+    keeper.keep(&app).unwrap();
+    // The process ends: no further keep, only the package writer finishes.
+    drop(keeper);
+    let package = dir.join("session.ketchup-view");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !package.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the package was never written"
+        );
+        std::thread::yield_now();
+    }
+    let mut restarted = ViewerApp::new(None);
+    assert!(restarted.restore_session(&dir).unwrap().is_some());
+    assert_eq!(restarted.opened_counts().map(|[_, _, c]| c), Some(2));
+    assert!(restarted.has_unsaved_comments());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
