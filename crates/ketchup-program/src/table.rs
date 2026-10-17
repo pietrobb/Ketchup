@@ -6,7 +6,11 @@ use std::fmt::Write as _;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cell {
     Text(String),
+    /// Written to a thousandth (millimetres to a micrometre).
     Number(f64),
+    /// Written to the given number of decimals, for a value its producer
+    /// rounded finer than a thousandth (cubic metres to a ten-thousandth).
+    Decimal(f64, u8),
     Count(usize),
 }
 
@@ -31,6 +35,14 @@ impl DecimalSeparator {
             Self::Point => ',',
         }
     }
+
+    fn number(self, value: f64, decimals: u8) -> String {
+        let text = number_text(value, decimals);
+        match self {
+            Self::Comma => text.replace('.', ","),
+            Self::Point => text,
+        }
+    }
 }
 
 /// A text cell. A leading `=`, `+`, `-`, `@` or control character would make
@@ -49,9 +61,10 @@ fn csv_text(text: &str, column: char) -> String {
     }
 }
 
-fn number_text(value: f64) -> String {
-    // Millimetres to a thousandth: no binary noise such as 0.30000000000000004.
-    let rounded = (value * 1000.0).round() / 1000.0;
+fn number_text(value: f64, decimals: u8) -> String {
+    // Rounded, so no binary noise such as 0.30000000000000004.
+    let scale = 10.0_f64.powi(i32::from(decimals));
+    let rounded = (value * scale).round() / scale;
     let rounded = if rounded == 0.0 { 0.0 } else { rounded };
     rounded.to_string()
 }
@@ -75,10 +88,8 @@ impl Table {
                 .iter()
                 .map(|cell| match cell {
                     Cell::Text(text) => csv_text(text, column),
-                    Cell::Number(value) => match decimal {
-                        DecimalSeparator::Comma => number_text(*value).replace('.', ","),
-                        DecimalSeparator::Point => number_text(*value),
-                    },
+                    Cell::Number(value) => decimal.number(*value, 3),
+                    Cell::Decimal(value, decimals) => decimal.number(*value, *decimals),
                     Cell::Count(count) => count.to_string(),
                 })
                 .collect();
@@ -114,11 +125,12 @@ impl Table {
                         );
                     }
                     Cell::Number(value) => {
-                        let _ = write!(
-                            sheet,
-                            "<c r=\"{reference}\"><v>{}</v></c>",
-                            number_text(*value)
-                        );
+                        let text = number_text(*value, 3);
+                        let _ = write!(sheet, "<c r=\"{reference}\"><v>{text}</v></c>");
+                    }
+                    Cell::Decimal(value, decimals) => {
+                        let text = number_text(*value, *decimals);
+                        let _ = write!(sheet, "<c r=\"{reference}\"><v>{text}</v></c>");
                     }
                     Cell::Count(count) => {
                         let _ = write!(sheet, "<c r=\"{reference}\"><v>{count}</v></c>");

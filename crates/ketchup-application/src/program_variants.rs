@@ -252,7 +252,7 @@ pub fn takeoff_table(takeoff: &Takeoff) -> Table {
             Cell::Count(row.count),
             Cell::Number(row.length_m),
             Cell::Number(row.area_m2),
-            Cell::Number(row.volume_m3),
+            Cell::Decimal(row.volume_m3, 4),
             Cell::Text(row.volume_basis.as_str().to_owned()),
         ]
     });
@@ -265,7 +265,7 @@ pub fn takeoff_table(takeoff: &Takeoff) -> Table {
             Cell::Count(total.count),
             Cell::Number(total.length_m),
             Cell::Number(total.area_m2),
-            Cell::Number(total.volume_m3),
+            Cell::Decimal(total.volume_m3, 4),
             Cell::Text(total.volume_basis.as_str().to_owned()),
         ]
     });
@@ -350,6 +350,21 @@ mod tests {
             csv.contains("\nTOTAL;drevo;;;2;5;0,683;0,041;mixed\n"),
             "{csv}"
         );
+    }
+
+    /// The takeoff rounds volumes to a ten-thousandth of a cubic metre; the
+    /// table must not cut that to a thousandth (0,0084 m³, not 0,008).
+    #[test]
+    fn a_takeoff_csv_keeps_the_volume_to_a_ten_thousandth() {
+        let model = model("box(\"stena/stĺpik\", (60, 140, 1000), material = \"drevo\")\n");
+        let table = takeoff_table(&material_takeoff_of_all(&model));
+        let csv = table.csv(DecimalSeparator::Comma);
+        assert!(
+            csv.contains("\nstena;drevo;140;60;1;1;0,14;0,0084;blank\n"),
+            "{csv}"
+        );
+        let xlsx = String::from_utf8_lossy(&table.xlsx()).into_owned();
+        assert!(xlsx.contains("<v>0.0084</v>"), "{xlsx}");
     }
 
     /// Review 2026-10-09 (P3): a name like `=1+1` was written as a formula.
