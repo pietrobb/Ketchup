@@ -302,6 +302,132 @@ fn a_notch_in_a_side_of_a_short_post_governs_its_compression_on_the_net_section(
     assert!(notched > plain * 1.1, "{notched} {plain}");
 }
 
+/// A C24 column 3000 mm high of `profile` (local XY, extruded up) within a
+/// 200 x 200 mm square, on a grounded slab under a 200 x 200 mm deck loaded
+/// with 5000 kN/m² (1.5 Q = 300 kN), `then` run on the column part.
+fn column(profile: &str, then: &str) -> String {
+    format!(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"heavy\", kind = \"imposed\", kn_m2 = 5000.0, on = [\"deck\"], source = \"test\")
+timber_design({{\"C24\": \"C24\"}})
+box(\"slab\", (400, 400, 50), at = (-100, -100, 0), material = \"C24\", grounded = True)
+part = extrude(\"column\", profile = {profile}, distance = 3000, at = (0, 0, 50),
+               material = \"C24\", tags = [\"frame\"])
+{then}
+box(\"deck\", (200, 200, 20), at = (0, 0, 3050), material = \"OSB\", tags = [\"deck\"])
+"
+    )
+}
+
+/// Area and least second moment of rectangles `(x, y, width, depth)` less
+/// rectangles `holes`, by hand: parallel axes and the principal-axis formula.
+fn least_inertia(solid: &[[f64; 4]], holes: &[[f64; 4]]) -> (f64, f64) {
+    let parts: Vec<([f64; 4], f64)> = solid
+        .iter()
+        .map(|r| (*r, 1.0))
+        .chain(holes.iter().map(|r| (*r, -1.0)))
+        .collect();
+    let area: f64 = parts.iter().map(|(r, s)| s * r[2] * r[3]).sum();
+    let cx = parts
+        .iter()
+        .map(|(r, s)| s * r[2] * r[3] * (r[0] + r[2] / 2.0))
+        .sum::<f64>()
+        / area;
+    let cy = parts
+        .iter()
+        .map(|(r, s)| s * r[2] * r[3] * (r[1] + r[3] / 2.0))
+        .sum::<f64>()
+        / area;
+    let (mut ix, mut iy, mut ixy) = (0.0, 0.0, 0.0);
+    for ([x, y, w, d], s) in &parts {
+        let (dx, dy, a) = (x + w / 2.0 - cx, y + d / 2.0 - cy, w * d);
+        ix += s * (w * d.powi(3) / 12.0 + a * dy * dy);
+        iy += s * (d * w.powi(3) / 12.0 + a * dx * dx);
+        ixy += s * a * dx * dy;
+    }
+    let least = (ix + iy) / 2.0 - ((ix - iy) / 2.0).hypot(ixy);
+    (area, least)
+}
+
+/// EC5 6.3.2 compression utilization of the column of `column` with the
+/// real area and least radius of gyration (C24, medium term, 1.5 Q).
+fn buckling(area: f64, least: f64) -> f64 {
+    let radius = (least / area).sqrt();
+    let lambda = 3000.0 / radius / std::f64::consts::PI * (21.0f64 / 7400.0).sqrt();
+    let k = 0.5 * (1.0 + 0.2 * (lambda - 0.3) + lambda * lambda);
+    let kc = 1.0 / (k + (k * k - lambda * lambda).sqrt());
+    300_000.0 / area / (kc * 0.8 * 21.0 / 1.3)
+}
+
+#[test]
+fn an_angle_column_buckles_about_its_weak_principal_axis_on_its_real_area() {
+    // L 200 x 200 with 50 mm legs: 17 500 mm², not the 40 000 of its bounding
+    // square, and weakest about the 45° axis, not about a side.
+    let report = report(
+        &column(
+            "[(0, 0), (200, 0), (200, 50), (50, 50), (50, 200), (0, 200)]",
+            "",
+        ),
+        &[],
+    );
+    let column = member(&report, "column");
+    assert_eq!(column.role, "column");
+    let (area, least) = least_inertia(&[[0.0, 0.0, 200.0, 50.0], [0.0, 50.0, 50.0, 150.0]], &[]);
+    assert!((area - 17_500.0).abs() < 1e-6, "{area}");
+    let expected = buckling(area, least);
+    // Buckling of the bounding square gives 0.75 and the real area without
+    // kc 1.33: both far under the real utilization.
+    assert!(expected > 2.5, "{expected}");
+    close(utilization(column, "compression"), expected);
+    assert_eq!(column.status, "fail");
+}
+
+#[test]
+fn a_hollow_column_is_checked_on_its_walls_alone() {
+    // A 200 x 200 tube with 30 mm walls, bored through its whole length.
+    let report = report(
+        &column(
+            "[(0, 0), (200, 0), (200, 200), (0, 200)]",
+            "cut(part, profile = [(30, 30), (170, 30), (170, 170), (30, 170)], through = True, name = \"bore\")",
+        ),
+        &[],
+    );
+    let column = member(&report, "column");
+    assert_eq!(column.role, "column");
+    let (area, least) = least_inertia(&[[0.0, 0.0, 200.0, 200.0]], &[[30.0, 30.0, 140.0, 140.0]]);
+    assert!((area - 20_400.0).abs() < 1e-6, "{area}");
+    let expected = buckling(area, least);
+    assert!(expected > 1.2, "{expected}");
+    close(utilization(column, "compression"), expected);
+    assert_eq!(column.status, "fail");
+}
+
+#[test]
+fn a_column_whose_section_changes_along_its_length_is_not_verified() {
+    // Bored 1000 mm down from the top: the check models no such section.
+    let report = report(
+        &column(
+            "[(0, 0), (200, 0), (200, 200), (0, 200)]",
+            "cut(part, profile = [(30, 30), (170, 30), (170, 170), (30, 170)], depth = 1000, name = \"bore\")",
+        ),
+        &[],
+    );
+    let column = member(&report, "column");
+    assert_eq!(column.role, "column");
+    assert_eq!(column.status, "not_verified");
+    assert!(
+        column.checks.iter().all(|c| c.name != "compression"),
+        "{:?}",
+        column.checks
+    );
+    assert_eq!(column.missing.len(), 1, "{:?}", column.missing);
+    assert!(
+        column.missing[0].contains("section"),
+        "{:?}",
+        column.missing
+    );
+}
+
 #[test]
 fn a_beam_across_both_legs_of_one_sill_is_checked_over_the_span_between_them() {
     // One U-shaped sill part, legs 100 mm wide at both ends of a 45 x 145 beam:

@@ -8,7 +8,7 @@
 
 use crate::continuous_span;
 use crate::loads::{LOAD_KINDS, LoadReport, Loads, MemberLoad, axes, extents};
-use crate::model::{Part, ProgramModel, ProgramPartBody, ProgramProfileSegment};
+use crate::model::{Part, ProgramModel, ProgramOperation, ProgramPartBody, ProgramProfileSegment};
 use ketchup_geometry::linalg::{dot, length};
 use ketchup_tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
@@ -326,24 +326,78 @@ fn chord(segments: &[ProgramProfileSegment], long: usize, u: f64) -> f64 {
         .sum()
 }
 
-/// Area, second moment about the centroidal axis across `depth` (a local
-/// profile axis) and the farthest fibre's distance from it, of a line profile.
-fn section(segments: &[ProgramProfileSegment], depth: usize) -> (f64, f64, f64) {
-    let (mut area, mut first, mut second) = (0.0, 0.0, 0.0);
+/// Area integrals of a closed line profile taken counter-clockwise: area,
+/// ∫x, ∫y, ∫x², ∫y² and ∫xy over it.
+fn integrals(segments: &[ProgramProfileSegment]) -> [f64; 6] {
+    let mut sum = [0.0; 6];
     for s in segments {
-        let (a, b) = (s.start_mm, s.end_mm);
-        let cross = a[1 - depth] * b[depth] - b[1 - depth] * a[depth];
-        area += cross / 2.0;
-        first += (a[depth] + b[depth]) * cross / 6.0;
-        second += (a[depth] * a[depth] + a[depth] * b[depth] + b[depth] * b[depth]) * cross / 12.0;
+        let ([ax, ay], [bx, by]) = (s.start_mm, s.end_mm);
+        let cross = ax * by - bx * ay;
+        sum[0] += cross / 2.0;
+        sum[1] += (ax + bx) * cross / 6.0;
+        sum[2] += (ay + by) * cross / 6.0;
+        sum[3] += (ax * ax + ax * bx + bx * bx) * cross / 12.0;
+        sum[4] += (ay * ay + ay * by + by * by) * cross / 12.0;
+        sum[5] += (ax * by + 2.0 * ax * ay + 2.0 * bx * by + bx * ay) * cross / 24.0;
     }
-    let centre = first / area;
-    let inertia = (second - area * centre * centre).abs();
+    if sum[0] < 0.0 { sum.map(|v| -v) } else { sum }
+}
+
+/// Section of a line profile less the line profiles `bores` cut through the
+/// whole member inside it: area, second moment about the centroidal axis
+/// across `depth` (a local profile axis), the farthest fibre's distance from
+/// that axis, and the least second moment (about the weak principal axis).
+fn section(
+    segments: &[ProgramProfileSegment],
+    bores: &[&[ProgramProfileSegment]],
+    depth: usize,
+) -> (f64, f64, f64, f64) {
+    let mut sum = integrals(segments);
+    for bore in bores {
+        let hole = integrals(bore);
+        sum = std::array::from_fn(|i| sum[i] - hole[i]);
+    }
+    let [area, first_x, first_y, second_x, second_y, product] = sum;
+    let centre = [first_x / area, first_y / area];
+    // About the centroidal axes along local y and x, and their product.
+    let about_y = second_x - area * centre[0] * centre[0];
+    let about_x = second_y - area * centre[1] * centre[1];
+    let product = product - area * centre[0] * centre[1];
+    let inertia = if depth == 1 { about_x } else { about_y };
+    let least = (about_x + about_y) / 2.0 - ((about_x - about_y) / 2.0).hypot(product);
     let reach = segments
         .iter()
-        .map(|s| (s.start_mm[depth] - centre).abs())
+        .map(|s| (s.start_mm[depth] - centre[depth]).abs())
         .fold(0.0, f64::max);
-    (area.abs(), inertia, reach)
+    (area, inertia, reach, least)
+}
+
+/// Whether `point` lies inside the closed line profile (even-odd rule).
+fn inside(segments: &[ProgramProfileSegment], point: [f64; 2]) -> bool {
+    segments
+        .iter()
+        .filter(|s| {
+            let (a, b) = (s.start_mm, s.end_mm);
+            (a[1] > point[1]) != (b[1] > point[1])
+                && point[0] < a[0] + (point[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+        })
+        .count()
+        % 2
+        == 1
+}
+
+/// Whether the closed line profile `inner` lies within `outer` without
+/// touching or crossing its edges.
+fn encloses(outer: &[ProgramProfileSegment], inner: &[ProgramProfileSegment]) -> bool {
+    let side = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
+        (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    };
+    let crosses = |e: &ProgramProfileSegment, f: &ProgramProfileSegment| {
+        let (p, q, r, s) = (e.start_mm, e.end_mm, f.start_mm, f.end_mm);
+        side(p, q, r) * side(p, q, s) <= 0.0 && side(r, s, p) * side(r, s, q) <= 0.0
+    };
+    inner.iter().all(|s| inside(outer, s.start_mm))
+        && !inner.iter().any(|e| outer.iter().any(|f| crosses(e, f)))
 }
 
 /// A member's section and directions.
@@ -359,6 +413,10 @@ struct Shape {
     net_area: f64,
     inertia: f64,
     modulus: f64,
+    /// Least radius of gyration, about the weak principal axis.
+    radius: f64,
+    /// Why the section above is not the member's along its whole length.
+    unmodelled: Option<&'static str>,
     /// True length per unit of the load frame's position.
     arc: f64,
     /// Depth across the member at a load-frame position, when it varies (notches).
@@ -385,7 +443,39 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     if long == 2 {
         // The profile is the cross-section; depth along its more vertical local axis.
         let depth = usize::from(world[1][2].abs() >= world[0][2].abs());
-        let (area, inertia, reach) = section(segments, depth);
+        let mut bores = Vec::new();
+        let mut unmodelled = None;
+        for operation in &part.operations {
+            match operation {
+                ProgramOperation::Cut(cut)
+                    if cut.depth_mm.is_none()
+                        && cut.segments.iter().all(ProgramProfileSegment::is_line)
+                        && encloses(segments, &cut.segments) =>
+                {
+                    bores.push(cut.segments.as_slice());
+                }
+                ProgramOperation::Cut(_)
+                | ProgramOperation::Pocket(_)
+                | ProgramOperation::Shell(_)
+                | ProgramOperation::Boolean(_)
+                | ProgramOperation::FaceOffset(_) => {
+                    unmodelled = Some(
+                        "the member's section changes along its length (a cut, pocket, shell, \
+                         boolean or face offset other than a bore through it)",
+                    );
+                }
+                // Rounded or chamfered edges and drilled holes leave the
+                // section all but whole; a mirror leaves it the same.
+                ProgramOperation::Finish(_)
+                | ProgramOperation::Hole(_)
+                | ProgramOperation::Mirror(_) => {}
+            }
+        }
+        let (area, inertia, reach, least) = section(segments, &bores, depth);
+        let radius = (least / area).sqrt();
+        if !(area > 0.0 && radius > 0.0 && radius.is_finite()) {
+            return Err("the member's section has no area");
+        }
         return Ok(Shape {
             grain: frame_axis,
             b: size[1 - depth],
@@ -394,6 +484,8 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             net_area: area,
             inertia,
             modulus: inertia / reach,
+            radius,
+            unmodelled,
             arc: 1.0,
             depth_at: None,
         });
@@ -456,6 +548,8 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         net_area: distance_mm * thinnest,
         inertia: b * h.powi(3) / 12.0,
         modulus: b * h * h / 6.0,
+        radius: b.min(h) / 12f64.sqrt(),
+        unmodelled: None,
         arc: 1.0 / along,
         depth_at: depth_in_plane.then(|| {
             Box::new(move |x: f64| chord(&profile, long, start + x) * along)
@@ -1035,9 +1129,8 @@ fn zones(load: &MemberLoad) -> Vec<Zone> {
 fn column_check(load: &MemberLoad, shape: &Shape, design: &Design, uls: &[Combination]) -> Check {
     let class = design.class;
     let length = load.length_mm * shape.arc;
-    let lambda_rel = |side: f64| {
-        length * 12f64.sqrt() / side / std::f64::consts::PI * (class.fc0_k / class.e0_05).sqrt()
-    };
+    let lambda_rel =
+        |radius: f64| length / radius / std::f64::consts::PI * (class.fc0_k / class.e0_05).sqrt();
     let beta = if class.glulam { 0.1 } else { 0.2 };
     let kc = |lr: f64| {
         if lr <= 0.3 {
@@ -1046,12 +1139,12 @@ fn column_check(load: &MemberLoad, shape: &Shape, design: &Design, uls: &[Combin
         let k = 0.5 * (1.0 + beta * (lr - 0.3) + lr * lr);
         1.0 / (k + (k * k - lr * lr).sqrt())
     };
-    let kc = kc(lambda_rel(shape.b.min(shape.h)));
+    let kc = kc(lambda_rel(shape.radius));
     let mut best = Best(None);
     for combination in uls {
         let force = factor(&combination.factors, &load.loads_n);
         let strength = design.strength(class.fc0_k, combination.duration);
-        let buckling = force / (shape.b * shape.h) / (kc * strength);
+        let buckling = force / shape.area / (kc * strength);
         let net = force / shape.net_area / strength;
         let detail = if net > buckling {
             format!("net section {} mm² at a notch", shape.net_area.round())
@@ -1127,7 +1220,10 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         if load.reactions.is_empty() {
             missing.push("the member has no supports to check against".to_owned());
         } else if role == "column" {
-            check.checks.push(column_check(load, shape, &design, &uls));
+            match shape.unmodelled {
+                Some(reason) => missing.push(reason.to_owned()),
+                None => check.checks.push(column_check(load, shape, &design, &uls)),
+            }
         } else {
             let (checks, spans_checked) = beam_checks(load, shape, &design, &uls, &sls);
             check.checks = checks;

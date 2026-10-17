@@ -2278,9 +2278,12 @@ IMPOSED_LOADS = {
 #   The report's design.members lists every load-path member: role (beam or column),
 #   section [width, depth], the checks with their utilization, governing combination and
 #   place (bending, shear, shear_notch, deflection_inst, deflection_fin, bearing =
-#   compression perpendicular to the grain, compression with buckling for columns), the
+#   compression perpendicular to the grain, compression with buckling for columns on the
+#   real area and least radius of gyration of the profile less bores cut through it), the
 #   largest utilization and status: "pass", "fail" or "not_verified" when an input is
-#   missing (the utilization is then from the known loads only). design.basis states the
+#   missing (the utilization is then from the known loads only; also a column whose
+#   section changes along it by another cut, pocket, shell, boolean or face offset,
+#   which has no compression check). design.basis states the
 #   factors and assumptions. A computed check, not an authorized structural design.
 #   Example:
 #     timber_design({"KVH C24": "C24", "BSH GL24h": "GL24h"}, service_class = 1)
