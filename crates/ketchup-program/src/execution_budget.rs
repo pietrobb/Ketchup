@@ -151,7 +151,10 @@ mod tests {
         let mut eval = Evaluator::new(&module);
         install_with(&mut eval, MAX_STATEMENTS, &CancelToken::default());
         eval.heap().set_allocation_limit(Some(heap_bytes));
-        let globals = GlobalsBuilder::extended_by(&[LibraryExtension::Json]).build();
+        // Programs get no `set` (eval.rs); the bound still covers it.
+        let globals =
+            GlobalsBuilder::extended_by(&[LibraryExtension::Json, LibraryExtension::SetType])
+                .build();
         eval.eval_module(ast, &globals).map(|_| ())
     }
 
@@ -243,6 +246,55 @@ mod tests {
             "L.append((1 << 100000) + len(L))\n".repeat(60)
         );
         let error = run_with_heap(&kept, 1 << 18).unwrap_err();
+        assert!(
+            error.to_string().contains("memory limit exceeded"),
+            "{error}"
+        );
+    }
+
+    /// Review 2026-10-17 PG-7: dicts and sets keep their entries outside the arena,
+    /// so `[dict(zip(L, L)) for _ in range(20)]` over 10 M items built more than
+    /// 10 GB in about 22 counted steps and the bound never saw it. Here each case
+    /// holds 4 MB to 120 MB of entries on a 1 MiB heap.
+    #[test]
+    fn dicts_and_sets_count_their_entries_against_the_heap_bound() {
+        let huge = [
+            "D = [{i: i for i in range(10000)} for _ in range(200)]",
+            "P = zip(range(2000), range(2000))\nD = [dict(P) for _ in range(200)]",
+            "D0 = {i: i for i in range(2000)}\nD = [dict(D0) for _ in range(200)]",
+            "D0 = {i: i for i in range(2000)}\nD = [D0 | D0 for _ in range(200)]",
+            "D = {i: i for i in range(200000)}",
+            "D = {}\nfor i in range(200000):\n    D[i] = i",
+            "D0 = {i: i for i in range(2000)}\nC = []\nfor k in range(200):\n    D = {}\n    D.update(D0)\n    C.append(D)",
+            "S = [set(range(10000)) for _ in range(200)]",
+            "S0 = set(range(2000))\nS = [S0 | S0 for _ in range(200)]",
+            "S = set()\nfor i in range(200000):\n    S.add(i)",
+        ];
+        for source in huge {
+            let error = run_with_heap(source, 1 << 20).unwrap_err();
+            assert!(
+                error.to_string().contains("memory limit exceeded"),
+                "{source}: {error}"
+            );
+        }
+        run_with_heap(
+            "D = {i: i for i in range(1000)}\nE = dict(D)\nE[-1] = 0\nE.update(D)\n\
+             S = set(range(1000))\nS.add(-1)\nT = S | S",
+            1 << 20,
+        )
+        .unwrap();
+    }
+
+    /// Dicts a garbage collection no longer finds alive stop counting, like big integers.
+    #[test]
+    fn dicts_no_longer_alive_do_not_count_against_the_bound() {
+        let source = "D = {i: i for i in range(3000)}\n".repeat(60);
+        run_with_heap(&source, 1 << 20).unwrap();
+        let kept = format!(
+            "L = []\n{}",
+            "L.append({i: i for i in range(3000)})\n".repeat(60)
+        );
+        let error = run_with_heap(&kept, 1 << 20).unwrap_err();
         assert!(
             error.to_string().contains("memory limit exceeded"),
             "{error}"

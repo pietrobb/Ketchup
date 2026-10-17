@@ -15,12 +15,15 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: `dict(...)` checks its entries against the heap bound before building. See PATCH.md.
+
 use starlark_derive::starlark_module;
 use starlark_map::small_map::SmallMap;
 
 use crate as starlark;
 use crate::environment::GlobalsBuilder;
 use crate::eval::Arguments;
+use crate::values::layout::heap::heap_type::map_bytes;
 use crate::values::dict::value::FrozenDict;
 use crate::values::dict::Dict;
 use crate::values::dict::DictRef;
@@ -96,12 +99,20 @@ pub(crate) fn register_dict(globals: &mut GlobalsBuilder) {
             Some(pos) => {
                 let mut result: Dict = match DictRef::from_value(pos) {
                     Some(pos) => {
+                        heap.check_allocation(
+                            pos.content.capacity() + kwargs.len(),
+                            map_bytes::<(Value, Value)>(1),
+                        )?;
                         let mut result = (*pos).clone();
                         result.reserve(kwargs.len());
                         result
                     }
                     None => {
                         let it = pos.iterate(heap)?;
+                        heap.check_allocation(
+                            it.size_hint().0 + kwargs.len(),
+                            map_bytes::<(Value, Value)>(1),
+                        )?;
                         let mut result = SmallMap::with_capacity(it.size_hint().0 + kwargs.len());
                         for el in it {
                             let (k, v) = unpack_pair(el, heap)?;

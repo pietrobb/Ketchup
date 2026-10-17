@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: counts what a mutably borrowed dict grew by against the heap bound. See PATCH.md.
+
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::cell::RefMut;
@@ -29,6 +31,7 @@ use crate::typing::Ty;
 use crate::values::dict::value::DictGen;
 use crate::values::dict::value::FrozenDictData;
 use crate::values::dict::Dict;
+use crate::values::layout::heap::heap_type::note_map_growth;
 use crate::values::type_repr::StarlarkTypeRepr;
 use crate::values::types::dict::dict_type::DictType;
 use crate::values::FrozenValue;
@@ -60,6 +63,14 @@ impl<'v> Dupe for DictRef<'v> {}
 /// Mutably borrowed `Dict`.
 pub struct DictMut<'v> {
     pub(crate) aref: RefMut<'v, Dict<'v>>,
+    /// Ketchup patch: the capacity when borrowed, to count growth against the heap bound.
+    capacity: usize,
+}
+
+impl Drop for DictMut<'_> {
+    fn drop(&mut self) {
+        note_map_growth::<(Value, Value)>(self.capacity, self.aref.content.capacity());
+    }
 }
 
 /// Reference to frozen `Dict`.
@@ -106,7 +117,10 @@ impl<'v> DictMut<'v> {
         match ptr {
             None => Err(error(x)),
             Some(ptr) => match ptr.0.try_borrow_mut() {
-                Ok(x) => Ok(DictMut { aref: x }),
+                Ok(x) => Ok(DictMut {
+                    capacity: x.content.capacity(),
+                    aref: x,
+                }),
                 Err(_) => Err(ValueError::MutationDuringIteration.into()),
             },
         }

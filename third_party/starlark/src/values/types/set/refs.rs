@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: counts what a mutably borrowed set grew by against the heap bound. See PATCH.md.
+
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::cell::RefMut;
@@ -27,6 +29,7 @@ use super::value::FrozenSetData;
 use super::value::SetData;
 use crate::coerce::coerce;
 use crate::typing::Ty;
+use crate::values::layout::heap::heap_type::note_map_growth;
 use crate::values::layout::value::ValueLike;
 use crate::values::set::value::SetGen;
 use crate::values::type_repr::SetType;
@@ -59,6 +62,14 @@ impl<'v> Dupe for SetRef<'v> {}
 /// Mutably borrowed `Set`.
 pub struct SetMut<'v> {
     pub(crate) aref: RefMut<'v, SetData<'v>>,
+    /// Ketchup patch: the capacity when borrowed, to count growth against the heap bound.
+    capacity: usize,
+}
+
+impl Drop for SetMut<'_> {
+    fn drop(&mut self) {
+        note_map_growth::<Value>(self.capacity, self.aref.content.capacity());
+    }
 }
 
 impl<'v> SetMut<'v> {
@@ -83,7 +94,10 @@ impl<'v> SetMut<'v> {
         match ptr {
             None => Err(error(x)),
             Some(ptr) => match ptr.0.try_borrow_mut() {
-                Ok(x) => Ok(SetMut { aref: x }),
+                Ok(x) => Ok(SetMut {
+                    capacity: x.content.capacity(),
+                    aref: x,
+                }),
                 Err(_) => Err(ValueError::MutationDuringIteration.into()),
             },
         }

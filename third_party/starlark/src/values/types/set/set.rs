@@ -15,10 +15,13 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: `set(iterable)` checks its entries against the heap bound before building. See PATCH.md.
+
 use starlark_derive::starlark_module;
 
 use crate as starlark;
 use crate::environment::GlobalsBuilder;
+use crate::values::layout::heap::heap_type::map_bytes;
 use crate::values::function::SpecialBuiltinFunction;
 use crate::values::set::refs::SetRef;
 use crate::values::set::value::FrozenSet;
@@ -42,9 +45,13 @@ pub(crate) fn register_set(globals: &mut GlobalsBuilder) {
     ) -> starlark::Result<SetData<'v>> {
         let set = match arg {
             Some(pos) => match SetRef::unpack_value_opt(pos.get()) {
-                Some(set) => (set.aref).clone(),
+                Some(set) => {
+                    heap.check_allocation(set.aref.content.capacity(), map_bytes::<Value>(1))?;
+                    (set.aref).clone()
+                }
                 None => {
                     let it = pos.get().iterate(heap)?;
+                    heap.check_allocation(it.size_hint().0, map_bytes::<Value>(1))?;
                     let mut data = SetData::default();
                     for el in it {
                         let el = el.get_hashed()?;

@@ -88,6 +88,8 @@ use crate::values::string::intern::interner::FrozenStringValueInterner;
 use crate::values::string::intern::interner::StringValueInterner;
 use crate::values::string::str_type::StarlarkStr;
 use crate::values::types::bigint::StarlarkBigInt;
+use crate::values::types::dict::value::MutableDict;
+use crate::values::types::set::value::MutableSet;
 use crate::values::AllocFrozenValue;
 use crate::values::AllocValue;
 use crate::values::ComplexValue;
@@ -119,7 +121,8 @@ pub struct Heap {
     allocation_limit: Cell<Option<usize>>,
     /// Ketchup patch: an operation was refused because of the bound.
     allocation_refused: Cell<bool>,
-    /// Ketchup patch: bytes values on this heap hold outside the arena (integer digits).
+    /// Ketchup patch: bytes values on this heap hold outside the arena (integer
+    /// digits, dict and set entries).
     external_bytes: Cell<usize>,
     arena: FastCell<Arena<Bump>>,
     str_interner: RefCell<StringValueInterner<'static>>,
@@ -137,19 +140,27 @@ impl fmt::Display for MemoryLimit {
 
 impl std::error::Error for MemoryLimit {}
 
-/// Ketchup patch: the digit bytes of the big integers on an arena.
-struct BigIntDigits(usize);
+/// Ketchup patch: the bytes the values on an arena hold outside it: the digits of
+/// big integers and the entries of mutable dicts and sets.
+struct OutsideBytes(usize);
 
-impl<'v> ArenaVisitor<'v> for BigIntDigits {
+impl<'v> ArenaVisitor<'v> for OutsideBytes {
     fn enter_bump(&mut self) {}
 
     fn regular_value(&mut self, value: &'v AValueOrForward) {
         if let AValueOrForwardUnpack::Header(header) = value.unpack() {
             // SAFETY: the arena just built by the collection holds live values only.
             let value = unsafe { header.unpack_value(HeapKind::Unfrozen) };
-            if let Some(int) = value.downcast_ref::<StarlarkBigInt>() {
-                self.0 = self.0.saturating_add(int.digit_bytes());
-            }
+            let bytes = if let Some(int) = value.downcast_ref::<StarlarkBigInt>() {
+                int.digit_bytes()
+            } else if let Some(dict) = value.downcast_ref::<MutableDict<'v>>() {
+                dict.0.try_borrow().map_or(0, |dict| dict.outside_bytes())
+            } else if let Some(set) = value.downcast_ref::<MutableSet<'v>>() {
+                set.0.try_borrow().map_or(0, |set| set.outside_bytes())
+            } else {
+                0
+            };
+            self.0 = self.0.saturating_add(bytes);
         }
     }
 
@@ -162,6 +173,26 @@ thread_local! {
     /// Ketchup patch: the bound of the heap last limited on this thread, for
     /// `repr` building, which has no heap at hand.
     static REPR_LIMIT: Cell<Option<usize>> = const { Cell::new(None) };
+    /// Ketchup patch: bytes dicts and sets on this thread grew by outside the arena
+    /// since the last count, for mutation, which has no heap at hand. They count
+    /// against the heap last limited on this thread, like `REPR_LIMIT`.
+    static MAP_GROWTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Ketchup patch: the bytes a dict or set with room for `capacity` entries of
+/// `T` holds outside the arena: the entry, its 32-bit hash, and about two words
+/// of the hash index a map past 16 entries keeps.
+pub(crate) fn map_bytes<T>(capacity: usize) -> usize {
+    let entry = mem::size_of::<T>() + mem::size_of::<u32>() + 2 * mem::size_of::<usize>();
+    capacity.saturating_mul(entry)
+}
+
+/// Ketchup patch: a dict or set of `T` grew from room for `before` entries to `after`.
+pub(crate) fn note_map_growth<T>(before: usize, after: usize) {
+    if after > before {
+        let bytes = map_bytes::<T>(after - before);
+        MAP_GROWTH.with(|grown| grown.set(grown.get().saturating_add(bytes)));
+    }
 }
 
 /// Ketchup patch: whether a `repr` being built into `len` bytes is past the bound
@@ -673,13 +704,20 @@ impl Heap {
     pub fn set_allocation_limit(&self, bytes: Option<usize>) {
         self.allocation_limit.set(bytes);
         REPR_LIMIT.with(|limit| limit.set(bytes));
+        MAP_GROWTH.with(|grown| grown.set(0));
     }
 
     /// Bytes the bound counts: [`Heap::allocated_bytes`] plus what values on this
-    /// heap hold outside it (the digits of big integers).
+    /// heap hold outside it (the digits of big integers, the entries of dicts and
+    /// sets, and on a limited heap what they grew by since the last collection).
     pub fn bounded_bytes(&self) -> usize {
+        let grown = match self.allocation_limit.get() {
+            Some(_) => MAP_GROWTH.with(Cell::get),
+            None => 0,
+        };
         self.allocated_bytes()
             .saturating_add(self.external_bytes.get())
+            .saturating_add(grown)
     }
 
     pub(crate) fn note_external_bytes(&self, bytes: usize) {
@@ -1028,10 +1066,14 @@ impl Heap {
         };
         f(&tracer);
         self.arena.set(tracer.arena);
-        // Ketchup patch: only the big integers that survived still hold digits.
-        let mut digits = BigIntDigits(0);
-        self.visit_arena(HeapKind::Unfrozen, &mut digits);
-        self.external_bytes.set(digits.0);
+        // Ketchup patch: only the big integers, dicts and sets that survived still
+        // hold memory outside the arena; the count includes what they grew by.
+        let mut outside = OutsideBytes(0);
+        self.visit_arena(HeapKind::Unfrozen, &mut outside);
+        self.external_bytes.set(outside.0);
+        if self.allocation_limit.get().is_some() {
+            MAP_GROWTH.with(|grown| grown.set(0));
+        }
     }
 
     /// Obtain a summary of how much memory is currently allocated by this heap.

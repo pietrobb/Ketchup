@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: counts dict entries against the heap bound. See PATCH.md.
+
 use std::any::TypeId;
 use std::cell::Ref;
 use std::cell::RefCell;
@@ -51,6 +53,8 @@ use crate::values::error::ValueError;
 use crate::values::layout::avalue::alloc_static;
 use crate::values::layout::avalue::AValueImpl;
 use crate::values::layout::avalue::AValueSimple;
+use crate::values::layout::heap::heap_type::map_bytes;
+use crate::values::layout::heap::heap_type::note_map_growth;
 use crate::values::layout::heap::repr::AValueRepr;
 use crate::values::string::str_type::hash_string_value;
 use crate::values::type_repr::StarlarkTypeRepr;
@@ -123,6 +127,8 @@ unsafe impl<'v> Coerce<Dict<'v>> for FrozenDictData {}
 
 impl<'v> AllocValue<'v> for Dict<'v> {
     fn alloc_value(self, heap: &'v Heap) -> Value<'v> {
+        // Ketchup patch: the entries live outside the arena; the bound counts them.
+        heap.note_external_bytes(self.outside_bytes());
         heap.alloc_complex(DictGen(RefCell::new(self)))
     }
 }
@@ -293,6 +299,11 @@ impl<'v> Dict<'v> {
     pub fn clear(&mut self) {
         self.content.clear();
     }
+
+    /// Ketchup patch: the bytes the entries hold outside the arena.
+    pub(crate) fn outside_bytes(&self) -> usize {
+        map_bytes::<(Value, Value)>(self.content.capacity())
+    }
 }
 
 impl FrozenDictData {
@@ -356,7 +367,9 @@ impl<'v> DictLike<'v> for RefCell<Dict<'v>> {
     fn set_at(&self, index: Hashed<Value<'v>>, alloc_value: Value<'v>) -> crate::Result<()> {
         match self.try_borrow_mut() {
             Ok(mut xs) => {
+                let capacity = xs.content.capacity();
                 xs.content.insert_hashed(index, alloc_value);
+                note_map_growth::<(Value, Value)>(capacity, xs.content.capacity());
                 Ok(())
             }
             Err(_) => Err(crate::Error::new_other(ValueError::MutationDuringIteration)),

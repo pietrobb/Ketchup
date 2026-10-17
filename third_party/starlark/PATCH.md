@@ -23,6 +23,15 @@ collection counts the digits of the big integers that survive it again, and it i
 `bounded_bytes` instead of the arena alone (`src/eval/compiler/stmt.rs`), so replaced big
 integers no longer count until the program reaches the bound (review 2026-10-15 status PRG-6).
 
+Dicts and sets keep their entries in a `SmallMap` outside the arena, so
+`[dict(zip(L, L)) for _ in range(20)]` over 10 M items built more than 10 GB unseen
+(review 2026-10-17 PG-7). Their entries now count in `Heap::bounded_bytes` like big integer
+digits: a dict or set notes its capacity when it is allocated, a garbage collection counts
+the ones that survive, and `dict(...)` and `set(...)` check the entries they would build
+before building them. Growth after allocation (`DictMut`, `SetMut`, `d[k] = v`, a dict
+comprehension) has no heap at hand; it adds to a thread-local count that the heap last
+limited on the thread includes until its next collection, like the `repr` bound.
+
 `Heap::memory_limit_reached` tells whether the bound refused an operation or the heap holds
 more than it. The refusal's error loses its type when a method returns it as
 `anyhow::Error`, and `ketchup-program` must report it with the code `memory_limit` like the
@@ -36,8 +45,9 @@ Changed files, each marked with a "Modified for Kecup" line under its license he
 `src/values/layout/heap/heap_type.rs`, `src/values/layout/value.rs`,
 `src/values/types/{list,tuple}/{globals,value}.rs`,
 `src/values/types/string/{methods,str_type,dot_format,globals,interpolation}.rs`,
-`src/values/types/bigint.rs`, `src/values/types/int/pointer_i32.rs` and
-`src/stdlib/json.rs`. `LICENSE` is the Apache License 2.0 the
+`src/values/types/bigint.rs`, `src/values/types/int/pointer_i32.rs`,
+`src/values/types/dict/{globals,refs,value}.rs`, `src/values/types/set/{refs,set,value}.rs`,
+`src/eval/bc/instr_impl.rs` and `src/stdlib/json.rs`. `LICENSE` is the Apache License 2.0 the
 upstream project (https://github.com/facebook/starlark-rust) is published under; the
 crates.io package does not carry it.
 
