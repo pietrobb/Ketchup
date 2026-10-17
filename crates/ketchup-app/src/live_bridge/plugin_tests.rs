@@ -1074,6 +1074,58 @@ fn an_absolute_path_joined_to_a_plugin_option_is_refused() {
     }
 }
 
+/// Review 2026-10-17 D-6: a list of refused shapes was never complete. A URL
+/// joined to an option (`--import=file:///…`) or given alone, and a file of
+/// further arguments (`@/tmp/args`), named code nobody staged or hashed. Only
+/// the shapes of a white list pass: an option name, with a value of plain
+/// words and relative paths, or a word that is a local path or plain text.
+#[test]
+fn only_white_listed_argument_shapes_reach_a_plugin() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    let script = example_script().to_string_lossy().into_owned();
+    let load = |manifest: &Value| {
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        let inputs = json!({"height_mm": 35});
+        crate::live_bridge::plugin_manifest::load(&folder.to_string_lossy(), inputs.as_object())
+    };
+    for argument in [
+        "--import=file:///tmp/x.mjs",
+        "--loader=file:///tmp/x.mjs",
+        "--import=data:text/javascript,1",
+        "--require=https://example.invalid/x.js",
+        "file:///tmp/x.mjs",
+        "@/tmp/args",
+        "@args",
+        "-Dx=$(evil)",
+        "--x=~/x.js",
+    ] {
+        manifest["arguments"] = json!(["plugin.py", argument]);
+        assert_eq!(
+            load(&manifest).err(),
+            Some("plugin_manifest_invalid"),
+            "{argument:?}"
+        );
+        let request = plugin_request(vec![script.clone(), argument.to_owned()]);
+        assert_eq!(
+            crate::live_bridge::plugin::launch(&request).err(),
+            Some("invalid_path"),
+            "{argument:?}"
+        );
+    }
+    for argument in ["-Dkey=value", "--", "-5", "--mode=fast", "a+b,c"] {
+        manifest["arguments"] = json!(["plugin.py", argument]);
+        assert!(load(&manifest).is_ok(), "{argument:?}");
+        let request = plugin_request(vec![script.clone(), argument.to_owned()]);
+        assert!(
+            crate::live_bridge::plugin::launch(&request).is_ok(),
+            "{argument:?}"
+        );
+    }
+}
+
 /// `path` relative to `base`, through `..` where it must.
 fn pathdiff_relative(path: &Path, base: &Path) -> PathBuf {
     let path = std::path::absolute(path).unwrap();

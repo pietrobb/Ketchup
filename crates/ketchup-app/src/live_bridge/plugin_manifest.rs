@@ -248,31 +248,66 @@ fn plugin_folder(plugin: &str) -> Result<PathBuf, &'static str> {
     Ok(lexical(&std::path::absolute(folder).map_err(unreadable)?))
 }
 
-/// Whether `..` ends a part of the argument without being that whole part
-/// (`--script=../x`, `-s..`): the plugin splits the option off itself and
-/// resolves the rest against its stage, outside the files that were hashed.
-/// Also whether `..` follows an option (`--s=a/../x`): resolving it would drop
-/// the option with its name (review 2026-10-16).
-fn embeds_parent_dir(argument: &str) -> bool {
-    let first = argument.split(['/', '\\']).next().unwrap_or_default();
-    let option = first.starts_with('-') || first.contains('=');
-    argument
-        .split(['/', '\\'])
-        .any(|part| (part != ".." && part.ends_with("..")) || (option && part == ".."))
+/// Why the shape of an argument is refused, if it is. A plugin splits an
+/// option off its value itself and opens what the value names, which is no
+/// path of the argument, so nothing it names is staged or hashed; listing
+/// refused shapes (`..`, an absolute path, a URL, `@file`) never ended
+/// (review 2026-10-16 R-2, 2026-10-17 D-6). Only these shapes pass:
+/// `-x`, `-xVALUE`, `--name`, `--name=VALUE` and `name=VALUE`, with a name
+/// of letters, digits, `-` and `_` and a value of plain words and relative
+/// paths ([`plain_value`]); or a word with no `=` and no leading `-` or `@`,
+/// a path given as its own argument or plain text, never a URL or a stream.
+fn refused_shape(argument: &str) -> Option<&'static str> {
+    const JOINED: &str = "joins a path that is not relative, a URL or other text than plain words \
+                          to an option; give a path as its own argument";
+    if argument.starts_with('@') {
+        return Some("reads further arguments from a file; give the arguments themselves");
+    }
+    let (name, value) = if let Some(long) = argument.strip_prefix("--") {
+        long.split_once('=')
+            .map_or((long, None), |(name, value)| (name, Some(value)))
+    } else if let Some(short) = argument.strip_prefix('-') {
+        let letter = short.chars().next().map_or(0, char::len_utf8);
+        (
+            &short[..letter],
+            Some(&short[letter..]).filter(|value| !value.is_empty()),
+        )
+    } else if let Some((name, value)) = argument.split_once('=') {
+        (name, Some(value))
+    } else if starts_with_scheme(argument) {
+        return Some("is a URL or a stream, not a local path");
+    } else {
+        return None;
+    };
+    let name_ok = name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+    (!name_ok || value.is_some_and(|value| !plain_value(value))).then_some(JOINED)
 }
 
-/// Whether an absolute path starts inside the argument (`--require=/x.js`,
-/// `x=/x.js`, `-r/x.js`, `--x=C:\x.js`): the plugin splits the option off
-/// itself and opens that path, which is no path of the argument, so it was
-/// neither staged nor hashed. A long option or a word splits only after `=`;
-/// a short option may take its value anywhere after its letter.
-fn embeds_rooted_path(argument: &str) -> bool {
-    let short_option = argument.starts_with('-') && !argument.starts_with("--");
-    argument.char_indices().skip(1).any(|(index, _)| {
-        let path = Path::new(&argument[index..]);
-        let splits = (short_option && index >= 2) || argument[..index].ends_with('=');
-        splits
-            && (path.has_root() || matches!(path.components().next(), Some(Component::Prefix(_))))
+/// Whether the text starts with a URL scheme (`file:`, `data:`, `https:`): two
+/// or more letters, digits or `+.-` from a letter up to a colon. A drive
+/// letter (`C:`) is one letter, so a Windows path is no URL.
+fn starts_with_scheme(text: &str) -> bool {
+    text.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.len() >= 2
+            && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+    })
+}
+
+/// Whether an option's value is plain words and relative paths: letters,
+/// digits and `-_.,+/\` only, no part that starts at a root or leads up a
+/// folder (`..`, `x..`), and so again after every `=` (`-Dkey=value`).
+fn plain_value(value: &str) -> bool {
+    value.split('=').all(|piece| {
+        piece
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_.,+/\\".contains(c))
+            && !piece.starts_with(['/', '\\'])
+            && piece.split(['/', '\\']).all(|part| !part.ends_with(".."))
     })
 }
 
@@ -294,15 +329,8 @@ pub(super) fn resolve_argument(
     held: Option<&mut HeldFiles>,
     refuse: impl FnOnce(String) -> &'static str,
 ) -> Result<(String, Option<HashedFile>), &'static str> {
-    if embeds_parent_dir(argument) {
-        return Err(refuse(format!(
-            "argument {argument:?} joins `..` to an option; give the path as its own argument"
-        )));
-    }
-    if embeds_rooted_path(argument) {
-        return Err(refuse(format!(
-            "argument {argument:?} joins an absolute path to an option; give the path as its own argument"
-        )));
+    if let Some(reason) = refused_shape(argument) {
+        return Err(refuse(format!("argument {argument:?} {reason}")));
     }
     let candidate = lexical(&base.join(argument));
     let parent_dir = Path::new(argument)
