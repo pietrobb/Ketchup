@@ -901,6 +901,13 @@ fn parse_entities(
             index += 1;
         }
         let record = &pairs[start..index];
+        if !matches!(kind.as_str(), "ATTRIB" | "SEQEND")
+            && let Some((severity, code)) = left_out(record)?
+        {
+            skip_sub_entities(&kind, record, pairs, &mut index, &mut ordinal, entity_count)?;
+            diagnostics.add(severity, code, Some(kind), 1)?;
+            continue;
+        }
         match kind.as_str() {
             "LINE" => {
                 let segment = parse_line(record, units, diagnostics)?;
@@ -1034,6 +1041,58 @@ fn parse_entities(
         // of profiles before the whole drawing is checked.
         if output.explicit_profiles.len() > MAX_DXF_PROFILES {
             return Err(DxfImportError::TooManyProfiles);
+        }
+    }
+    Ok(())
+}
+
+/// Why an entity is no part of the model, if it is not: it belongs to a
+/// layout (paper space, group 67 = 1), such as a frame or a title block, or
+/// its author hid it (group 60 = 1). Either is left out and counted, never
+/// made a profile (review 2026-10-17 F-2).
+fn left_out(
+    record: &[DxfPair<'_>],
+) -> Result<Option<(ImportDiagnosticSeverity, &'static str)>, DxfImportError> {
+    Ok(if parse_optional_i64(record, 67)? == Some(1) {
+        Some((ImportDiagnosticSeverity::Info, "dxf.entity-paper-space"))
+    } else if parse_optional_i64(record, 60)? == Some(1) {
+        Some((ImportDiagnosticSeverity::Warning, "dxf.entity-invisible"))
+    } else {
+        None
+    })
+}
+
+/// Steps over what follows an entity left out up to its SEQEND: the
+/// vertices of a POLYLINE, the attributes of an INSERT that has them.
+fn skip_sub_entities(
+    kind: &str,
+    record: &[DxfPair<'_>],
+    pairs: &[DxfPair<'_>],
+    index: &mut usize,
+    ordinal: &mut usize,
+    entity_count: &mut usize,
+) -> Result<(), DxfImportError> {
+    let followed = match kind {
+        "POLYLINE" => true,
+        "INSERT" => parse_optional_i64(record, 66)? == Some(1),
+        _ => false,
+    };
+    if !followed {
+        return Ok(());
+    }
+    loop {
+        if *index >= pairs.len() || pairs[*index].code != 0 || pairs[*index].value.is_empty() {
+            return Err(DxfImportError::MalformedPairs);
+        }
+        *ordinal += 1;
+        bump_entity_count(entity_count)?;
+        let ended = pairs[*index].value.eq_ignore_ascii_case("SEQEND");
+        *index += 1;
+        while *index < pairs.len() && pairs[*index].code != 0 {
+            *index += 1;
+        }
+        if ended {
+            break;
         }
     }
     Ok(())

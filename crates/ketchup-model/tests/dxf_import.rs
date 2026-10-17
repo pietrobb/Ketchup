@@ -3432,3 +3432,40 @@ fn dxf_plan_is_deterministic_one_step_undoable_and_persistent() {
         committed_digest
     );
 }
+
+/// Review 2026-10-17 F-2: a layout's frame or title block (paper space, group
+/// 67 = 1) and an entity the author hid (group 60 = 1) are no part of the
+/// model. They used to import as profiles, and a frame on the model's layer
+/// sharing its corners made the whole file ambiguous. They are left out and
+/// counted; a POLYLINE's vertices and an INSERT's block go with them.
+#[test]
+fn paper_space_and_invisible_entities_are_left_out_and_counted() {
+    let source = dxf(
+        Some(4),
+        concat!(
+            "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n",
+            "10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n10\n10\n0\n20\n10\n",
+            "0\nLINE\n8\n0\n67\n1\n10\n0\n20\n0\n11\n10\n21\n0\n",
+            "0\nPOLYLINE\n8\n0\n67\n1\n66\n1\n70\n1\n10\n0\n20\n0\n30\n0\n",
+            "0\nVERTEX\n8\n0\n10\n0\n20\n0\n",
+            "0\nVERTEX\n8\n0\n10\n10\n20\n0\n",
+            "0\nVERTEX\n8\n0\n10\n10\n20\n10\n",
+            "0\nSEQEND\n8\n0\n",
+            "0\nINSERT\n8\n0\n67\n1\n2\nTITLE\n10\n0\n20\n0\n",
+            "0\nCIRCLE\n8\n0\n60\n1\n10\n5\n20\n5\n40\n2\n",
+        ),
+    );
+    let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
+    assert_eq!(parsed.profiles().len(), 1, "{:?}", parsed.diagnostics());
+    assert!(parsed.profiles()[0].closed());
+    let counted = |code: &str| {
+        parsed
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code() == code)
+            .map(|diagnostic| diagnostic.count())
+            .sum::<u32>()
+    };
+    assert_eq!(counted("dxf.entity-paper-space"), 3);
+    assert_eq!(counted("dxf.entity-invisible"), 1);
+}

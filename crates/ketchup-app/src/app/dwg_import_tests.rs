@@ -163,3 +163,37 @@ fn the_window_reviews_and_imports_a_dwg_drawing() {
     );
     assert_eq!(app.undo_step_count(), undo + 1);
 }
+
+/// Review 2026-10-17 F-2: a DWG drawing reads as the DXF it converts to, so a
+/// layout's frame (paper space) and a hidden entity are left out and counted
+/// there too, not made profiles beside the model's.
+#[test]
+fn a_dwg_drawing_leaves_out_its_paper_space_and_invisible_entities() {
+    use ketchup_model::import::{DxfImportOptions, inspect_dxf};
+    let hidden = LAYERED_DRAWING_DXF.replace(
+        "0\nENDSEC\n0\nEOF\n",
+        concat!(
+            "0\nLINE\n8\noutline\n67\n1\n10\n0\n20\n0\n11\n10\n21\n0\n",
+            "0\nCIRCLE\n8\nholes\n60\n1\n10\n80\n20\n80\n40\n4\n",
+            "0\nENDSEC\n0\nEOF\n",
+        ),
+    );
+    let read = |dxf: &str| {
+        let dwg = ketchup_dwg::dxf_to_dwg(dxf.as_bytes()).unwrap();
+        let drawing = ketchup_dwg::dwg_to_dxf(&dwg, usize::MAX, usize::MAX).unwrap();
+        inspect_dxf(&drawing.dxf, DxfImportOptions::new(None)).unwrap()
+    };
+    let plain = read(LAYERED_DRAWING_DXF);
+    let parsed = read(&hidden);
+    assert_eq!(parsed.profiles(), plain.profiles());
+    let counted = |code: &str| {
+        parsed
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code() == code)
+            .map(|diagnostic| diagnostic.count())
+            .sum::<u32>()
+    };
+    assert_eq!(counted("dxf.entity-paper-space"), 1);
+    assert_eq!(counted("dxf.entity-invisible"), 1);
+}
