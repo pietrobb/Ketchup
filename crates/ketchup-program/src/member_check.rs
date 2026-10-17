@@ -9,7 +9,7 @@
 use crate::continuous_span;
 use crate::loads::{LOAD_KINDS, LoadReport, Loads, MemberLoad, axes, extents};
 use crate::model::{Part, ProgramModel, ProgramOperation, ProgramPartBody, ProgramProfileSegment};
-use ketchup_geometry::linalg::{dot, length};
+use ketchup_geometry::linalg::{cross2, dot, length};
 use ketchup_tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -405,21 +405,23 @@ impl<'a> Section<'a> {
         (self.across + self.along) / 2.0 - ((self.across - self.along) / 2.0).hypot(self.product)
     }
 
-    fn determinant(&self) -> f64 {
-        self.across * self.along - self.product * self.product
+    /// The determinant of the section's inertia tensor, the product of its
+    /// principal second moments.
+    fn inertia_determinant(&self) -> f64 {
+        cross2([self.across, self.product], [self.product, self.along])
     }
 
     /// The second moment that gives the deflection along `depth`: `across`
     /// when that axis is principal, less when the member bends sideways too.
     fn inertia(&self) -> f64 {
-        self.determinant() / self.along
+        self.inertia_determinant() / self.along
     }
 
     /// Bending stress per unit moment at offsets `along_depth` and `across_depth`
     /// from the centroid; with the first moments of an area beyond a cut
     /// instead, its shear flow per unit shear force.
     fn per_unit(&self, along_depth: f64, across_depth: f64) -> f64 {
-        (self.along * along_depth - self.product * across_depth) / self.determinant()
+        (self.along * along_depth - self.product * across_depth) / self.inertia_determinant()
     }
 
     /// Section modulus at the farthest fibre.
