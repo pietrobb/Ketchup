@@ -666,6 +666,45 @@ fn a_typed_length_expression_moves_by_its_value_and_previews_it() {
     );
 }
 
+/// D-1 (review 2026-10-17): with no pinned axis the preview above the Move
+/// field reads the text the way the move does: a vector where the move goes by
+/// a vector, a distance where it goes a distance.
+#[test]
+fn the_move_preview_shows_what_the_move_does() {
+    for (input, preview, expected) in [
+        ("2*1,5", "= 2; 5; 0 mm", Vec3::new(2.0, 5.0, 0.0)),
+        ("12,5*3", "= 12; 15; 0 mm", Vec3::new(12.0, 15.0, 0.0)),
+        ("1,5*2m", "= 1; 10000; 0 mm", Vec3::new(1.0, 10_000.0, 0.0)),
+        ("10;20", "= 10; 20; 0 mm", Vec3::new(10.0, 20.0, 0.0)),
+    ] {
+        let mut app = KetchupApp::new();
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
+        app.dispatch_command(AppCommand::Move);
+        app.value_box.input = input.to_owned();
+        assert_eq!(
+            app.value_box_length_preview().as_deref(),
+            Some(preview),
+            "{input:?}"
+        );
+        assert!(app.apply_value_input(), "{input:?}: {}", app.digest);
+        assert_eq!(
+            app.occurrence_box_geometry(1).unwrap().0,
+            initial_origin + expected,
+            "{input:?}"
+        );
+    }
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
+    app.dispatch_command(AppCommand::Move);
+    app.value_box.input = "10+5,20".to_owned();
+    assert_eq!(app.value_box_length_preview().as_deref(), Some("= 15.2 mm"));
+    app.apply_value_input();
+    let travel = app.occurrence_box_geometry(1).unwrap().0 - initial_origin;
+    assert!((travel.length() - 15.2).abs() < 0.01, "{travel:?}");
+}
+
 #[test]
 fn rotate_previews_commits_and_corrects_the_entire_multi_selection_atomically() {
     let mut app = KetchupApp::new();

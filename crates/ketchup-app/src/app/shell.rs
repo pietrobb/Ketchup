@@ -1,5 +1,6 @@
 //! Construction of the application, the per-frame entry point `ui`, theme, top bar, menu bar, status bar and About window.
 
+use super::tool_gesture::TypedMove;
 use crate::*;
 
 impl KetchupApp {
@@ -610,6 +611,9 @@ impl KetchupApp {
     /// What a typed length expression comes to, shown above the value box
     /// ("600+2*18" â†’ "= 636 mm"). Angles, counts and factors get none.
     pub(crate) fn value_box_length_preview(&self) -> Option<String> {
+        if self.active_tool == ActiveTool::Move {
+            return self.move_preview();
+        }
         let length_field = matches!(
             self.value_label_key(),
             "value-label-distance"
@@ -627,6 +631,31 @@ impl KetchupApp {
             "value-length-preview",
             &BTreeMap::from([("value", format_height(value))]),
         ))
+    }
+
+    /// The Move field's preview, read by the same `typed_move` the move is:
+    /// a typed vector always ("= 2; 5; 0 mm"), a distance when it is an
+    /// expression or a conversion, a copy array count never.
+    fn move_preview(&self) -> Option<String> {
+        let input = self.value_box.input.trim();
+        if input.starts_with(['x', 'X', '*', '×', '/']) {
+            return None;
+        }
+        let value = match self.typed_move()? {
+            TypedMove::Vector(delta_mm) => [delta_mm.x, delta_mm.y, delta_mm.z]
+                .map(format_height)
+                .join("; "),
+            TypedMove::AlongAxis { distance_mm, .. } | TypedMove::Distance(distance_mm) => {
+                if crate::length_input::is_plain_mm(input) {
+                    return None;
+                }
+                format_height(distance_mm)
+            }
+        };
+        Some(
+            self.catalog
+                .format("value-length-preview", &BTreeMap::from([("value", value)])),
+        )
     }
 
     /// Colours every surface of the shell paints with.

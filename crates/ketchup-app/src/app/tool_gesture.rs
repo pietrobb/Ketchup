@@ -409,25 +409,36 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-copy-array-unavailable");
             return false;
         }
+        match self.typed_move() {
+            Some(TypedMove::AlongAxis { delta_mm, .. }) => {
+                self.apply_typed_move_vector(delta_mm, false)
+            }
+            Some(TypedMove::Vector(delta_mm)) => self.apply_typed_move_vector(delta_mm, true),
+            Some(TypedMove::Distance(distance_mm)) => self.apply_typed_move_distance(distance_mm),
+            None => {
+                self.digest = self.catalog.text("digest-nothing-to-apply");
+                false
+            }
+        }
+    }
+
+    /// What the text in the Move field does, read once for both the move and
+    /// the preview above the field.
+    pub(crate) fn typed_move(&self) -> Option<TypedMove> {
+        let input = &self.value_box.input;
         // A pinned axis turns a plain number into travel along that axis,
         // which is how a part gets set down exactly 25 mm higher. There a
         // single comma is a decimal comma ("12,5"), not a two-value vector.
         let axis_travel = self.gesture.transform.move_axis_lock.and_then(|axis| {
-            let distance = parse_distance_mm(&self.value_box.input)?;
-            (distance.abs() >= 0.01).then(|| axis_direction(axis) * distance)
+            let distance_mm = parse_distance_mm(input)?;
+            (distance_mm.abs() >= 0.01).then(|| TypedMove::AlongAxis {
+                delta_mm: axis_direction(axis) * distance_mm,
+                distance_mm,
+            })
         });
-        let exact_vector = axis_travel
-            .is_none()
-            .then(|| parse_move_vector(&self.value_box.input))
-            .flatten();
-        if let Some(delta_mm) = axis_travel.or(exact_vector) {
-            return self.apply_typed_move_vector(delta_mm, exact_vector.is_some());
-        }
-        if let Some(distance_mm) = parse_distance_mm(&self.value_box.input) {
-            return self.apply_typed_move_distance(distance_mm);
-        }
-        self.digest = self.catalog.text("digest-nothing-to-apply");
-        false
+        axis_travel
+            .or_else(|| parse_move_vector(input).map(TypedMove::Vector))
+            .or_else(|| parse_distance_mm(input).map(TypedMove::Distance))
     }
 
     /// Moves by `delta_mm`; `exact_vector` when it was typed as a vector, which
@@ -584,6 +595,14 @@ fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
     (1..=MAX_CAD_GENERATED_OCCURRENCES)
         .contains(&count)
         .then_some((mode, count))
+}
+
+/// A typed Move value: a distance along the pinned axis, a vector, or a
+/// distance the way the gesture points.
+pub(crate) enum TypedMove {
+    AlongAxis { delta_mm: Vec3, distance_mm: f64 },
+    Vector(Vec3),
+    Distance(f64),
 }
 
 /// A typed Move vector: two or three lengths read like any other length. Text

@@ -96,16 +96,22 @@ pub fn parse_decimal(input: &str) -> Option<f64> {
 /// get one.
 #[must_use]
 pub fn length_preview_mm(input: &str) -> Option<f64> {
+    if is_plain_mm(input) {
+        return None;
+    }
+    parse_length_mm(input)
+}
+
+/// Whether the text is a plain number of millimetres, which needs no preview.
+#[must_use]
+pub fn is_plain_mm(input: &str) -> bool {
     let trimmed = input.trim();
     let plain = trimmed
         .strip_suffix("mm")
         .or_else(|| trimmed.strip_suffix("MM"))
         .unwrap_or(trimmed)
         .trim();
-    if plain.parse::<f64>().is_ok() {
-        return None;
-    }
-    parse_length_mm(input)
+    plain.parse::<f64>().is_ok()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
