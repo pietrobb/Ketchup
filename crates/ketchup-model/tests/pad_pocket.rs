@@ -1569,3 +1569,120 @@ fn universal_extent_contract_round_trips_changes_digest_and_fails_closed_before_
     );
     assert!(Dimension::new("1000001", 1_000_001.0).is_err());
 }
+
+/// Review 2026-10-17 M-2: a cut up to a face keeps the face's exact evidence in the
+/// batch that creates it and through any later edit, so its graph still compiles.
+#[test]
+fn a_cut_up_to_a_face_keeps_its_face_evidence_through_later_edits() {
+    const BASE_PLANE: FeatureId = FeatureId(30);
+    const BASE_SKETCH: FeatureId = FeatureId(31);
+    const BASE_PAD: FeatureId = FeatureId(32);
+    const CUT_SKETCH: FeatureId = FeatureId(33);
+    const CUT: FeatureId = FeatureId(34);
+
+    // An UpToFace extent is measured from the workplane origin, so the face
+    // spans it.
+    let base_sketch = rectangle_sketch(BASE_PLANE, [-50.0, -30.0], [50.0, 30.0]);
+    let base_region = base_sketch.solved_regions().unwrap()[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Through-cut part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BASE_PLANE,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BASE_SKETCH,
+                definition_id: DEFINITION,
+                name: "Base rectangle".into(),
+                kind: FeatureKind::Sketch(base_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BASE_PAD,
+                definition_id: DEFINITION,
+                name: "Base Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: BASE_SKETCH,
+                        region: base_region,
+                    },
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(Dimension::from_decimal("18").unwrap()),
+                    operation: PadOperation::NewBody,
+                }),
+            },
+        ]))
+        .unwrap();
+    let package = box_package(
+        &document.current(),
+        DEFINITION,
+        BASE_PAD,
+        "through-cut-base",
+        &[ExactFaceRole::Top, ExactFaceRole::Bottom],
+    )
+    .unwrap();
+    let top = package.reference(ExactFaceRole::Top).unwrap().clone();
+    for reference in package.references() {
+        document
+            .register_exact_reference_evidence(reference.clone())
+            .unwrap();
+    }
+    let cut_sketch = rectangle_sketch(BASE_PLANE, [-10.0, -10.0], [10.0, 10.0]);
+    let cut_region = cut_sketch.solved_regions().unwrap()[0].id;
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: CUT_SKETCH,
+                definition_id: DEFINITION,
+                name: "Cut rectangle".into(),
+                kind: FeatureKind::Sketch(cut_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: CUT,
+                definition_id: DEFINITION,
+                name: "Cut up to top".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: CUT_SKETCH,
+                        region: cut_region,
+                    },
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::UpToFace(Box::new(top.clone())),
+                    operation: PadOperation::Cut {
+                        target: BASE_PAD,
+                        start: CutStart::ProfilePlane,
+                    },
+                }),
+            },
+        ]))
+        .unwrap();
+    let created = document.current();
+    assert_eq!(
+        created.exact_reference_by_lineage(&top.lineage_digest),
+        Some(&top),
+        "the batch that creates the cut keeps the evidence of the face it reaches"
+    );
+    producer_exact_graph(&created, DEFINITION, CUT).expect("cut graph in its own batch");
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::RenameDefinition {
+                id: DEFINITION,
+                name: "Renamed through-cut part".into(),
+            },
+        ]))
+        .unwrap();
+    let renamed = document.current();
+    assert_eq!(
+        renamed.exact_reference_by_lineage(&top.lineage_digest),
+        Some(&top),
+        "an unrelated edit keeps the evidence an UpToFace extent is anchored to"
+    );
+    producer_exact_graph(&renamed, DEFINITION, CUT).expect("cut graph after a rename");
+}

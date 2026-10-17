@@ -29,35 +29,36 @@ fn create_evaluator_input(
     Ok(())
 }
 
-/// Drops exact face evidence no feature is anchored to. Tag visibility and saved
-/// views leave every exact input as it was, so their evidence stays current.
-fn retain_anchored_evidence(
-    product: &mut ProductModel,
-    anchored: &BTreeSet<String>,
-    view_only: bool,
-) {
-    if !view_only {
-        product
-            .exact_reference_evidence
-            .retain(|lineage, _| anchored.contains(lineage));
+/// The face references a feature is anchored to: the face a workplane lies on,
+/// and the faces a pad's extent reaches and its cut starts from.
+fn anchored_references(kind: &FeatureKind) -> Vec<&BodySubshapeRef> {
+    match kind {
+        FeatureKind::Workplane(WorkplaneSpec {
+            support: WorkplaneSupport::PlanarFace { reference, .. },
+            ..
+        }) => vec![reference.as_ref()],
+        FeatureKind::Pad(spec) => spec.references(),
+        _ => Vec::new(),
     }
 }
 
+/// The lineages of every face reference some feature of `product` is anchored to.
+fn anchored_lineages(product: &ProductModel) -> BTreeSet<&str> {
+    product
+        .features
+        .values()
+        .flat_map(|feature| anchored_references(&feature.kind))
+        .map(|reference| reference.lineage_digest.as_str())
+        .collect()
+}
+
 /// Marks stale the face references whose producer changed and drops evidence no
-/// feature is anchored to any more.
+/// feature is anchored to any more. Tag visibility and saved views leave every
+/// exact input as it was, so their evidence stays current.
 fn refresh_reference_lineages(product: &mut ProductModel, current: &Snapshot, view_only: bool) {
-    let mut anchored_reference_lineages = BTreeSet::new();
     let mut stale_reference_lineages = BTreeSet::new();
     for feature in product.features.values() {
-        let references = match &feature.kind {
-            FeatureKind::Workplane(WorkplaneSpec {
-                support: WorkplaneSupport::PlanarFace { reference, .. },
-                ..
-            }) => vec![reference.as_ref()],
-            FeatureKind::Pad(spec) => spec.references(),
-            _ => Vec::new(),
-        };
-        for reference in references {
+        for reference in anchored_references(&feature.kind) {
             let mut producer_dependencies = BTreeSet::new();
             add_feature_dependency_closure(
                 current,
@@ -76,14 +77,21 @@ fn refresh_reference_lineages(product: &mut ProductModel, current: &Snapshot, vi
             if !producer_inputs_unchanged {
                 stale_reference_lineages.insert(reference.lineage_digest.clone());
             }
-            anchored_reference_lineages.insert(reference.lineage_digest.clone());
         }
     }
     for lineage in &stale_reference_lineages {
         set_planar_face_reference_health(product, lineage, WorkplaneSupportHealth::Stale);
         product.exact_reference_evidence.remove(lineage);
     }
-    retain_anchored_evidence(product, &anchored_reference_lineages, view_only);
+    if !view_only {
+        let anchored = anchored_lineages(product)
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        product
+            .exact_reference_evidence
+            .retain(|lineage, _| anchored.contains(lineage));
+    }
 }
 
 /// Stores the feature graph a revision was checked with; after a view-only change the
@@ -606,20 +614,7 @@ impl DocumentStore {
                 .exact_reference_evidence
                 .get(&reference.lineage_digest)
                 .is_some_and(|evidence| evidence.as_ref() == reference)
-                && !held.features.values().any(|feature| match &feature.kind {
-                    FeatureKind::Workplane(WorkplaneSpec {
-                        support:
-                            WorkplaneSupport::PlanarFace {
-                                reference: support, ..
-                            },
-                        ..
-                    }) => support.lineage_digest == reference.lineage_digest,
-                    FeatureKind::Pad(spec) => spec
-                        .operation
-                        .support()
-                        .is_some_and(|support| support.lineage_digest == reference.lineage_digest),
-                    _ => false,
-                })
+                && !anchored_lineages(held).contains(reference.lineage_digest.as_str())
             {
                 continue;
             }
@@ -1193,19 +1188,10 @@ impl DocumentStore {
 
         let current = self.current();
         let view_only = batch.commands.iter().all(CanonicalCommand::is_view_only);
-        let mut product = current.product.as_ref().clone();
-        let anchored_reference_lineages = product
-            .features
-            .values()
-            .filter_map(|feature| match &feature.kind {
-                FeatureKind::Workplane(WorkplaneSpec {
-                    support: WorkplaneSupport::PlanarFace { reference, .. },
-                    ..
-                }) => Some(reference.lineage_digest.clone()),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>();
-        retain_anchored_evidence(&mut product, &anchored_reference_lineages, view_only);
+        // Evidence no feature is anchored to yet stays through the commands: a
+        // feature this batch creates may anchor it. What is still unanchored after
+        // them is dropped by `refresh_reference_lineages`.
+        let product = current.product.as_ref().clone();
         let production_anchors = product
             .production_codes
             .keys()
