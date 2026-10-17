@@ -619,6 +619,9 @@ impl KetchupApp {
         if self.active_tool == ActiveTool::Move {
             return self.move_preview();
         }
+        if self.active_tool == ActiveTool::Rectangle {
+            return self.rectangle_preview();
+        }
         let length_field = matches!(
             self.value_label_key(),
             "value-label-distance"
@@ -663,12 +666,35 @@ impl KetchupApp {
                 .map(format_height)
                 .join("; "),
             TypedMove::AlongAxis { distance_mm, .. } | TypedMove::Distance(distance_mm) => {
-                if crate::length_input::is_plain_mm(input, self.value_box.decimal) {
+                // A comma once separated Move values: `80,60` is 80.6 mm now.
+                if crate::length_input::is_plain_mm(input, self.value_box.decimal)
+                    && !input.contains(',')
+                {
                     return None;
                 }
                 format_height(distance_mm)
             }
         };
+        Some(
+            self.catalog
+                .format("value-length-preview", &BTreeMap::from([("value", value)])),
+        )
+    }
+
+    /// The Rectangle field's width and depth, read by the same
+    /// `parse_rectangle_dimensions` the rectangle is, when either side is
+    /// more than a plain number of millimetres.
+    fn rectangle_preview(&self) -> Option<String> {
+        let input = &self.value_box.input;
+        let decimal = self.value_box.decimal;
+        if input
+            .split(crate::length_input::VALUE_SEPARATORS)
+            .all(|side| crate::length_input::is_plain_mm(side, decimal))
+        {
+            return None;
+        }
+        let sides = crate::parse_rectangle_dimensions(input, decimal)?;
+        let value = sides.map(format_height).join("; ");
         Some(
             self.catalog
                 .format("value-length-preview", &BTreeMap::from([("value", value)])),

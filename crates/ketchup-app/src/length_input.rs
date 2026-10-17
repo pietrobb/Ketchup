@@ -198,8 +198,13 @@ pub fn length_preview_mm(input: &str, decimal: DecimalSeparator) -> Option<f64> 
 }
 
 /// Whether the text is a plain number of millimetres, which needs no preview.
+/// A point on a comma system is never plain: there it is also the thousands
+/// separator, so `1.200` (read as 1.2 mm) is shown before it is taken.
 #[must_use]
 pub fn is_plain_mm(input: &str, decimal: DecimalSeparator) -> bool {
+    if decimal == DecimalSeparator::Comma && input.contains('.') {
+        return false;
+    }
     let trimmed = input.trim();
     let plain = trimmed
         .strip_suffix("mm")
@@ -532,6 +537,17 @@ mod tests {
         assert_eq!(length_preview_mm("600+2*18", Point), Some(636.0));
         assert_eq!(length_preview_mm("2,5 cm", Comma), Some(25.0));
         assert_eq!(length_preview_mm("1m*1m", Point), None);
+    }
+
+    /// UI-8 (review 2026-10-17): on a comma system a point is also the
+    /// thousands separator, so what `1.200` was read as is always shown.
+    #[test]
+    fn a_point_on_a_comma_system_is_never_plain() {
+        assert_eq!(length_preview_mm("1.200", Comma), Some(1.2));
+        assert_eq!(length_preview_mm("1.200 mm", Comma), Some(1.2));
+        assert_eq!(length_preview_mm("1.200", Point), None);
+        assert!(!is_plain_mm("1.5", Comma));
+        assert!(is_plain_mm("1,5", Comma));
     }
 
     #[test]

@@ -694,6 +694,38 @@ fn the_move_preview_shows_what_the_move_does() {
     }
 }
 
+/// UI-8 (review 2026-10-17): on a comma system a point is also the thousands
+/// separator, so `1.200` read as 1.2 mm is shown before Enter, never taken
+/// silently; so is `80,60` in Move, once two values and now 80.6 mm.
+#[test]
+fn a_separator_that_may_mean_something_else_on_a_comma_system_is_previewed() {
+    let preview_in = |tool: ActiveTool, input: &str| {
+        let mut app = KetchupApp::new();
+        app.value_box.decimal = DecimalSeparator::Comma;
+        app.active_tool = tool;
+        app.value_box.input = input.to_owned();
+        app.value_box_length_preview()
+    };
+    assert_eq!(
+        preview_in(ActiveTool::PushPull, "1.200").as_deref(),
+        Some("= 1.2 mm")
+    );
+    assert_eq!(
+        preview_in(ActiveTool::Rectangle, "1.200;600").as_deref(),
+        Some("= 1.2; 600 mm")
+    );
+    assert_eq!(preview_in(ActiveTool::PushPull, "1200"), None);
+    assert_eq!(preview_in(ActiveTool::PushPull, "12,5"), None);
+    assert_eq!(preview_in(ActiveTool::Rectangle, "80;60"), None);
+    let (preview, moved, _) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "80,60");
+    assert_eq!(preview.as_deref(), Some("= 80.6 mm"));
+    assert!(moved);
+    let (preview, _, _) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "1.200");
+    assert_eq!(preview.as_deref(), Some("= 1.2 mm"));
+    let (preview, _, _) = typed_move(DecimalSeparator::Point, Some(Axis::Z), "1.200");
+    assert_eq!(preview, None);
+}
+
 /// D-2 (review 2026-10-17): where the decimal separator is a point a comma is
 /// refused in every field with the hint `80;60`, and nothing moves.
 #[test]
