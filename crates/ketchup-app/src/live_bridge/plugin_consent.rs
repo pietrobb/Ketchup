@@ -118,6 +118,14 @@ impl PluginConsent {
             command.push(given);
             files.extend(file);
         }
+        // The first file is the executable; an argument names the script.
+        if files.len() < 2 {
+            return Err(failure(
+                "invalid_path",
+                super::plugin_manifest::NO_SCRIPT,
+                json!({"canonical_mutation": false}),
+            ));
+        }
         Ok(Self {
             folder: None,
             files,

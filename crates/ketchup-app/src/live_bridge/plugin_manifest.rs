@@ -263,6 +263,12 @@ fn refused_shape(argument: &str) -> Option<&'static str> {
     if argument.starts_with('@') {
         return Some("reads further arguments from a file; give the arguments themselves");
     }
+    if runs_unhashed_code(argument) {
+        return Some(
+            "runs code given as text, read from standard input or found by name, which nobody \
+             hashed; name a script file instead (review 2026-10-17 SEC-7)",
+        );
+    }
     let (name, value) = if let Some(long) = argument.strip_prefix("--") {
         long.split_once('=')
             .map_or((long, None), |(name, value)| (name, Some(value)))
@@ -283,6 +289,41 @@ fn refused_shape(argument: &str) -> Option<&'static str> {
         .chars()
         .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
     (!name_ok || value.is_some_and(|value| !plain_value(value))).then_some(JOINED)
+}
+
+/// Whether an interpreter option runs code that is no hashed file: `-` (standard
+/// input), a long option such as `--eval` or `--require`, or a short option
+/// such as `-c`, `-e`, `-m`, `-r` alone, with its value joined (`-mevil`) or
+/// at the end of a cluster of flags (`-Bm`). A short option's value with other
+/// than letters (`-Dkey=value`) is no cluster.
+fn runs_unhashed_code(argument: &str) -> bool {
+    const LONG: [&str; 11] = [
+        "eval",
+        "print",
+        "require",
+        "import",
+        "loader",
+        "experimental-loader",
+        "module",
+        "command",
+        "encodedcommand",
+        "interactive",
+        "include",
+    ];
+    const SHORT: &str = "ceEmMpri";
+    if argument == "-" {
+        return true;
+    }
+    if let Some(long) = argument.strip_prefix("--") {
+        let name = long.split_once('=').map_or(long, |(name, _)| name);
+        return LONG.iter().any(|code| name.eq_ignore_ascii_case(code));
+    }
+    let Some(short) = argument.strip_prefix('-') else {
+        return false;
+    };
+    short.starts_with(|c| SHORT.contains(c))
+        || (short.chars().all(|c| c.is_ascii_alphabetic())
+            && short.chars().any(|c| SHORT.contains(c)))
 }
 
 /// Whether the text starts with a URL scheme (`file:`, `data:`, `https:`): two
@@ -337,6 +378,9 @@ pub(super) fn resolve_argument(
         .components()
         .any(|component| component == Component::ParentDir);
     if folder.is_some_and(|folder| candidate.starts_with(folder)) {
+        if !plain_value(argument) && !candidate.is_file() {
+            return Err(refuse(format!("argument {argument:?} {NOT_PLAIN}")));
+        }
         let given = if parent_dir {
             candidate.display().to_string()
         } else {
@@ -367,11 +411,25 @@ pub(super) fn resolve_argument(
             .components()
             .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
     {
+        if !plain_value(argument) {
+            return Err(refuse(format!("argument {argument:?} {NOT_PLAIN}")));
+        }
         // Resolves in the run's empty private directory, if at all.
         return Ok((argument.to_owned(), None));
     }
     Err(not_a_file(&candidate))
 }
+
+/// Why a word that names no file is refused when it is not plain words: an
+/// interpreter could take it as code (`exec(open(…).read())`, review
+/// 2026-10-17 SEC-7).
+const NOT_PLAIN: &str = "names no file and is not plain words (letters, digits and -_.,+/\\); \
+                         text an interpreter could run is no plugin argument";
+
+/// The refusal of a command line that names no hashed script: an interpreter
+/// started without one reads its code from standard input or the environment.
+pub(super) const NO_SCRIPT: &str = "The plugin's command line names no script file: an \
+                                    interpreter is given the hashed script it runs.";
 
 /// The executable, the arguments and every file outside the folder they name,
 /// hashed (with `held`, through handles held until the run ends). A relative
@@ -416,12 +474,21 @@ fn outside_files(
         };
         outside.push((executable.clone(), sha256));
     }
+    let in_folder = |path: &Path| {
+        path.strip_prefix(folder)
+            .is_ok_and(|relative| files.iter().any(|(file, _)| *file == slashed(relative)))
+    };
+    let mut names_script = in_folder(&executable);
     let mut arguments = Vec::new();
     for argument in &manifest.arguments {
         let (given, file) =
             resolve_argument(argument, folder, Some(folder), held.as_deref_mut(), invalid)?;
+        names_script |= file.is_some() || in_folder(&lexical(&folder.join(&given)));
         arguments.push(given);
         outside.extend(file);
+    }
+    if !names_script {
+        return Err(invalid(NO_SCRIPT.to_owned()));
     }
     Ok((executable, arguments, outside))
 }

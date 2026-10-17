@@ -64,13 +64,18 @@ pub(super) struct HeldFiles {
 }
 
 impl HeldFiles {
-    /// A new private stage for a plugin folder's copy.
+    /// A new private stage for a plugin folder's copy, in the user's own
+    /// directory: from the shared temporary directory an interpreter could
+    /// load a module another user planted beside or above the stage (Node's
+    /// `node_modules`, review 2026-10-17 SEC-7).
     pub(super) fn staged() -> io::Result<Self> {
+        let root = stage_root()?;
+        fs::create_dir_all(&root)?;
         Ok(Self {
             stage: Some(
                 tempfile::Builder::new()
                     .prefix("ketchup-plugin-")
-                    .tempdir()?,
+                    .tempdir_in(root)?,
             ),
             ..Self::default()
         })
@@ -156,6 +161,27 @@ impl HeldFiles {
         self.files.push(file);
         Ok(bytes)
     }
+}
+
+/// Where plugin stages are made: `%LOCALAPPDATA%\Ketchup\plugin-stages` on
+/// Windows, `$XDG_RUNTIME_DIR` (or `~/.cache`) `/ketchup/plugin-stages`
+/// elsewhere. Without such a directory no plugin runs.
+fn stage_root() -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA").map(|path| PathBuf::from(path).join("Ketchup"));
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .map(|path| path.join("ketchup"));
+    base.filter(|path| path.is_absolute())
+        .map(|path| path.join("plugin-stages"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "no per-user directory for a plugin stage",
+            )
+        })
 }
 
 #[cfg(test)]

@@ -28,7 +28,12 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
 - `executable` is an absolute path (an interpreter) or a file inside the folder;
   the process runs in a copy of the folder (see Consent) with `arguments` and
   an empty environment. A relative argument naming a file outside the folder
-  is passed as its absolute path.
+  is passed as its absolute path. The command line names a script (or the
+  executable is in the folder), so everything that runs is hashed: an option
+  that runs code given as text, from standard input or found by name (`-c`,
+  `-e`, `-m`, `-r`, `-`, `--eval`, `--require`, `--import`, …) is refused, and
+  an argument that names no file must be plain words (letters, digits and
+  `-_.,+/\`).
 - MCP `run_plugin` takes `plugin` (the folder) and `inputs`; it cannot change
   or extend the command line or the permissions.
 - Inputs are `number`, `integer`, `boolean` or `string`. The plugin reads them
@@ -59,7 +64,8 @@ changed file, another command line or a further permission asks again; other
 input values do not.
 
 What runs is what was allowed. Each run first copies the plugin folder into a
-private temporary folder, hashes that copy for the consent and starts the
+private folder of the user (`%LOCALAPPDATA%\Ketchup\plugin-stages`, not the
+shared temporary folder), hashes that copy for the consent and starts the
 process there, in the copy; the copy is removed when the plugin has ended. A
 file changed or added in the plugin folder while the consent prompt is open, or
 during the run, is not run (the next run asks again). Files written by the

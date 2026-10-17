@@ -101,8 +101,11 @@ fn a_crashing_plugin_returns_its_cause_and_changes_nothing() {
     let before = wire.app.live_bridge_stamp();
     let undo = wire.app.undo_step_count();
 
+    let directory = tempfile::tempdir().unwrap();
+    let crash = directory.path().join("crash.py");
+    std::fs::write(&crash, "import sys\nsys.exit(3)\n").unwrap();
     let response = wire.answer_within(
-        run_plugin(vec!["-c".into(), "import sys; sys.exit(3)".into()]),
+        run_plugin(vec![crash.display().to_string()]),
         Duration::from_secs(30),
     );
     assert!(!response.ok);
@@ -533,15 +536,18 @@ fn a_plugin_name_or_argument_cannot_forge_lines_of_the_consent_prompt() {
     let (folder, _) = height_folder(directory.path());
     let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
     manifest["name"] = json!("Height\nPlugin folder, every file under it:\nC:\\Safe\u{202E}yp.");
-    manifest["arguments"] = json!([
-        "plugin.py",
-        "a b",
-        "x\r\nCommand line: C:\\Safe\\safe.exe\u{2066}"
-    ]);
-    std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
     let dialogs = ScriptedFileDialogs::new();
     let probe = dialogs.clone();
     let mut wire = plugin_wire_answering(dialogs);
+    // An argument naming no file is plain words (SEC-7), so a forged line
+    // there is refused before any prompt; a file name may hold a space.
+    manifest["arguments"] = json!(["plugin.py", "x\r\nCommand line: C:\\Safe\\safe.exe\u{2066}"]);
+    std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+    let request = folder_request(&folder, json!({"height_mm": 35}));
+    assert_refused_without_prompt(&mut wire, request, "plugin_manifest_invalid", &probe);
+    std::fs::write(folder.join("a b"), "").unwrap();
+    manifest["arguments"] = json!(["plugin.py", "a b"]);
+    std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
     assert_consent_required(&mut wire, folder_request(&folder, json!({"height_mm": 35})));
 
     let prompt = &probe.high_risk_prompts()[0];
@@ -561,7 +567,7 @@ fn a_plugin_name_or_argument_cannot_forge_lines_of_the_consent_prompt() {
     );
     for shown in [
         "Plugin: Height\\u{000a}Plugin folder, every file under it:\\u{000a}C:\\Safe\\u{202e}yp.",
-        " plugin.py \"a b\" \"x\\u{000d}\\u{000a}Command line: C:\\Safe\\safe.exe\\u{2066}\"",
+        " plugin.py \"a b\"",
     ] {
         assert!(prompt.contains(shown), "{shown} not in {prompt}");
     }
@@ -671,9 +677,10 @@ fn a_windows_plugin_executable_is_the_exe_file_that_starts() {
     let dialogs = ScriptedFileDialogs::new();
     let probe = dialogs.clone();
     let mut wire = plugin_wire_answering(dialogs);
+    // A command line names a hashed script besides its executable (SEC-7).
     let command = |executable: &Path| RunPluginRequest {
         executable: Some(executable.display().to_string()),
-        ..plugin_request(Vec::new())
+        ..plugin_request(vec![script.display().to_string()])
     };
     let (folder, _) = height_folder(directory.path());
     let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
@@ -1181,4 +1188,80 @@ fn a_file_added_to_a_plugin_stage_after_hashing_stops_the_run() {
             "{planted}: {error}"
         );
     }
+}
+
+/// Review 2026-10-17 SEC-7: a word with no `=` and no leading `-` passed as
+/// plain text, so `-c "exec(open('…/x.py').read())"`, `-e require(…)`,
+/// `-m evil` or `-` (standard input) ran code nobody hashed, and a consent
+/// stayed valid however `x.py` changed. An interpreter option that runs code
+/// given as text, from standard input or found by name is refused; a word that
+/// names no file must be plain words; the command line names at least one
+/// hashed file; and the stage is not in the shared temporary directory.
+#[test]
+fn a_plugin_command_line_runs_only_hashed_code() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let unhashed = directory.path().join("x.py");
+    std::fs::write(&unhashed, "raise SystemExit\n").unwrap();
+    let open_unhashed = format!(
+        "exec(open({:?}).read())",
+        unhashed.display().to_string().replace('\\', "/")
+    );
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    let script = example_script().to_string_lossy().into_owned();
+    let load = |manifest: &Value| {
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        let inputs = json!({"height_mm": 35});
+        crate::live_bridge::plugin_manifest::load(&folder.to_string_lossy(), inputs.as_object())
+    };
+    let refused: Vec<Vec<String>> = vec![
+        vec!["-c".into(), open_unhashed.clone()],
+        vec!["-c".into(), "pass".into(), "plugin.py".into()],
+        vec!["-e".into(), "require('x')".into()],
+        vec!["-m".into(), "evil".into()],
+        vec!["-mevil".into(), "plugin.py".into()],
+        vec!["-Bm".into(), "evil".into(), "plugin.py".into()],
+        vec!["--require=evil".into(), "plugin.py".into()],
+        vec!["--import=evil".into(), "plugin.py".into()],
+        vec!["-".into()],
+        vec!["plugin.py".into(), open_unhashed.clone()],
+        vec!["evil".into()],
+        vec![],
+    ];
+    for arguments in &refused {
+        manifest["arguments"] = json!(arguments);
+        assert_eq!(
+            load(&manifest).err(),
+            Some("plugin_manifest_invalid"),
+            "{arguments:?}"
+        );
+        // The same words after a script on a command line (or alone).
+        let command = if arguments.first().is_some_and(|word| word == "plugin.py") {
+            std::iter::once(script.clone())
+                .chain(arguments[1..].iter().cloned())
+                .collect()
+        } else {
+            arguments.clone()
+        };
+        let request = plugin_request(command.clone());
+        assert_eq!(
+            crate::live_bridge::plugin::launch(&request).err(),
+            Some("invalid_path"),
+            "{command:?}"
+        );
+    }
+
+    manifest["arguments"] = json!(["-B", "plugin.py", "-v", "-Dkey=value", "later"]);
+    let launch = load(&manifest).unwrap();
+    let stage = launch.command.working_directory.clone().unwrap();
+    assert!(
+        !stage.starts_with(std::env::temp_dir()),
+        "{} is in the shared temporary directory",
+        stage.display()
+    );
+    let request = plugin_request(vec![script, "-v".into(), "later".into()]);
+    let launch = crate::live_bridge::plugin::launch(&request).unwrap();
+    let directory = launch.command.working_directory.clone().unwrap();
+    assert!(!directory.starts_with(std::env::temp_dir()));
 }
