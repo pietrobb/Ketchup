@@ -423,6 +423,66 @@ struct Shape {
     depth_at: Option<Box<dyn Fn(f64) -> f64>>,
 }
 
+/// The through-cuts of `part` that bore along its whole grain (when `outline`
+/// is its cross-section) and, when another operation changes its section along
+/// the grain in a way the check does not model, why. `grain` is in the part's
+/// frame; `narrower` is the narrower side of the section.
+fn changes<'a>(
+    part: &'a Part,
+    outline: Option<&[ProgramProfileSegment]>,
+    grain: [f64; 3],
+    narrower: f64,
+) -> (Vec<&'a [ProgramProfileSegment]>, Option<&'static str>) {
+    let mut bores = Vec::new();
+    let mut unmodelled = None;
+    // A hole across the grain or a rounded or chamfered edge up to 5 % of
+    // the narrower side takes at most 5 % of the section at one place
+    // (a 10 mm bolt hole or an eased arris in a 200 mm column).
+    let small = 0.05 * narrower;
+    for operation in &part.operations {
+        match operation {
+            ProgramOperation::Cut(cut)
+                if outline.is_some_and(|outline| {
+                    cut.depth_mm.is_none()
+                        && cut.segments.iter().all(ProgramProfileSegment::is_line)
+                        && encloses(outline, &cut.segments)
+                }) =>
+            {
+                bores.push(cut.segments.as_slice());
+            }
+            ProgramOperation::Cut(_)
+            | ProgramOperation::Pocket(_)
+            | ProgramOperation::Shell(_)
+            | ProgramOperation::Boolean(_)
+            | ProgramOperation::FaceOffset(_) => {
+                unmodelled = Some(
+                    "the member's section changes along its length (a cut, pocket, shell, \
+                     boolean or face offset other than a bore through it)",
+                );
+            }
+            ProgramOperation::Hole(hole)
+                if dot(hole.inward, grain).abs() <= ROUNDING * length(hole.inward)
+                    && hole.diameter_mm <= small => {}
+            ProgramOperation::Finish(finish) if finish.radius_mm <= small => {}
+            ProgramOperation::Hole(_) => {
+                unmodelled = Some(
+                    "the member's section changes along its length (a hole along it, or one \
+                     across it wider than 5 % of its narrower side)",
+                );
+            }
+            ProgramOperation::Finish(_) => {
+                unmodelled = Some(
+                    "the member's section changes along its length (a rounded or chamfered \
+                     edge larger than 5 % of its narrower side)",
+                );
+            }
+            // A mirror leaves the section the same.
+            ProgramOperation::Mirror(_) => {}
+        }
+    }
+    (bores, unmodelled)
+}
+
 fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     let ProgramPartBody::Extrusion {
         segments,
@@ -443,51 +503,8 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     if long == 2 {
         // The profile is the cross-section; depth along its more vertical local axis.
         let depth = usize::from(world[1][2].abs() >= world[0][2].abs());
-        let mut bores = Vec::new();
-        let mut unmodelled = None;
-        // A hole across the grain or a rounded or chamfered edge up to 5 % of
-        // the narrower side takes at most 5 % of the section at one place
-        // (a 10 mm bolt hole or an eased arris in a 200 mm column).
-        let small = 0.05 * size[0].min(size[1]);
-        for operation in &part.operations {
-            match operation {
-                ProgramOperation::Cut(cut)
-                    if cut.depth_mm.is_none()
-                        && cut.segments.iter().all(ProgramProfileSegment::is_line)
-                        && encloses(segments, &cut.segments) =>
-                {
-                    bores.push(cut.segments.as_slice());
-                }
-                ProgramOperation::Cut(_)
-                | ProgramOperation::Pocket(_)
-                | ProgramOperation::Shell(_)
-                | ProgramOperation::Boolean(_)
-                | ProgramOperation::FaceOffset(_) => {
-                    unmodelled = Some(
-                        "the member's section changes along its length (a cut, pocket, shell, \
-                         boolean or face offset other than a bore through it)",
-                    );
-                }
-                ProgramOperation::Hole(hole)
-                    if hole.inward[2].abs() <= ROUNDING * length(hole.inward)
-                        && hole.diameter_mm <= small => {}
-                ProgramOperation::Finish(finish) if finish.radius_mm <= small => {}
-                ProgramOperation::Hole(_) => {
-                    unmodelled = Some(
-                        "the member's section changes along its length (a hole along it, or one \
-                         across it wider than 5 % of its narrower side)",
-                    );
-                }
-                ProgramOperation::Finish(_) => {
-                    unmodelled = Some(
-                        "the member's section changes along its length (a rounded or chamfered \
-                         edge larger than 5 % of its narrower side)",
-                    );
-                }
-                // A mirror leaves the section the same.
-                ProgramOperation::Mirror(_) => {}
-            }
-        }
+        let (bores, unmodelled) =
+            changes(part, Some(segments), [0.0, 0.0, 1.0], size[0].min(size[1]));
         let (area, inertia, reach, least) = section(segments, &bores, depth);
         let radius = (least / area).sqrt();
         if !(area > 0.0 && radius > 0.0 && radius.is_finite()) {
@@ -556,6 +573,8 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     } else {
         (thickest, *distance_mm)
     };
+    // The grain runs in the profile plane, so no cut along the extrusion bores along it.
+    let (_, unmodelled) = changes(part, None, [d[0], d[1], 0.0], b.min(h));
     let profile = segments.clone();
     Ok(Shape {
         grain,
@@ -566,7 +585,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         inertia: b * h.powi(3) / 12.0,
         modulus: b * h * h / 6.0,
         radius: b.min(h) / 12f64.sqrt(),
-        unmodelled: None,
+        unmodelled,
         arc: 1.0 / along,
         depth_at: depth_in_plane.then(|| {
             Box::new(move |x: f64| chord(&profile, long, start + x) * along)

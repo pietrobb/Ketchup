@@ -457,6 +457,53 @@ fn a_column_bored_along_its_length_is_not_checked_as_the_solid_square() {
     }
 }
 
+/// The 200 x 200 x 3000 column of `column` drawn instead as `post` draws its
+/// post: a side elevation extruded 200 mm and stood up, `then` run on it.
+fn side_column(then: &str) -> (String, Vec<String>) {
+    let report = report(
+        &format!(
+            "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"heavy\", kind = \"imposed\", kn_m2 = 5000.0, on = [\"deck\"], source = \"test\")
+timber_design({{\"C24\": \"C24\"}})
+box(\"slab\", (400, 400, 50), at = (-100, -100, 0), material = \"C24\", grounded = True)
+part = extrude(\"column\", profile = [(0, 0), (200, 0), (200, 3000), (0, 3000)], distance = 200,
+               material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 200, 50), z = (0, -1, 0), x = (1, 0, 0))
+{then}
+box(\"deck\", (200, 200, 20), at = (0, 0, 3050), material = \"OSB\", tags = [\"deck\"])
+"
+        ),
+        &[],
+    );
+    let column = member(&report, "column");
+    assert_eq!(column.role, "column");
+    (column.status.to_string(), column.missing.clone())
+}
+
+#[test]
+fn a_column_drawn_as_its_side_and_bored_or_cut_is_not_checked_as_the_solid_square() {
+    for then in [
+        "hole(part, \"segment3\", world = (100, 100, 3050), diameter = 160, depth = 3000, through = True)",
+        "hole(part, \"segment3\", world = (100, 100, 3050), diameter = 160, depth = 1000)",
+        "hole(part, \"segment2\", world = (200, 100, 1500), diameter = 60, depth = 200, through = True)",
+        "cut(part, profile = [(30, 30), (170, 30), (170, 2970), (30, 2970)], through = True, name = \"slot\")",
+    ] {
+        let (status, missing) = side_column(then);
+        assert_eq!(status, "not_verified", "{then}");
+        assert!(
+            missing.len() == 1 && missing[0].contains("section"),
+            "{then}: {missing:?}"
+        );
+    }
+    // A bolt hole across it leaves the section all but whole.
+    let (status, missing) = side_column(
+        "hole(part, \"segment2\", world = (200, 100, 1500), diameter = 10, depth = 200, through = True)",
+    );
+    assert_ne!(status, "not_verified", "{missing:?}");
+    let (plain, _) = side_column("");
+    assert_ne!(plain, "not_verified");
+}
+
 #[test]
 fn a_column_drilled_or_rounded_across_beyond_a_small_size_is_not_verified() {
     for then in [
