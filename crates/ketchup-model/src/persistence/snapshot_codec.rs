@@ -195,15 +195,12 @@ fn unknown_fields(
         };
     match (stored, known) {
         (ciborium::Value::Map(stored), ciborium::Value::Map(known)) => {
-            // Keys are looked up by hash; a map of a few hundred thousand entries
-            // scanned per key would never finish (review PS-4). Only a key the hash
-            // misses is compared with every known key, so that keys equal as values
-            // but written differently (0.0 and -0.0 inside a key) still match.
+            // Keys are looked up by hash only; a map of a few hundred thousand entries
+            // scanned per key would never finish (review PS-4), and neither would one
+            // of as many unknown keys scanned per miss (review 2026-10-16 PS-4).
             let mut index = std::collections::HashMap::with_capacity(known.len());
             for (key, value) in known {
-                if let Some(key) = MapKey::of(key) {
-                    index.entry(key).or_insert(value);
-                }
+                index.entry(MapKey::of(key)).or_insert(value);
             }
             for (key, value) in stored {
                 let segment = match key {
@@ -211,15 +208,7 @@ fn unknown_fields(
                     ciborium::Value::Integer(number) => i128::from(*number).to_string(),
                     other => format!("{other:?}"),
                 };
-                let counterpart = MapKey::of(key)
-                    .and_then(|key| index.get(&key).copied())
-                    .or_else(|| {
-                        known
-                            .iter()
-                            .find(|(candidate, _)| candidate == key)
-                            .map(|(_, value)| value)
-                    });
-                descend(segment, value, counterpart);
+                descend(segment, value, index.get(&MapKey::of(key)).copied());
             }
         }
         (ciborium::Value::Array(stored), ciborium::Value::Array(known))
@@ -238,7 +227,9 @@ fn unknown_fields(
 
 /// A CBOR map key that hashes: text and integer keys as they are, and the
 /// structured keys of the product model (an instance path, a local occurrence
-/// key) as their CBOR encoding.
+/// key) as their CBOR encoding. Values decoded from CBOR encode back one way,
+/// save -0.0, which equals 0.0 and is encoded as it, so keys equal as values
+/// are equal here.
 #[derive(Hash, PartialEq, Eq)]
 enum MapKey<'a> {
     Text(&'a str),
@@ -247,16 +238,37 @@ enum MapKey<'a> {
 }
 
 impl<'a> MapKey<'a> {
-    fn of(key: &'a ciborium::Value) -> Option<Self> {
+    fn of(key: &'a ciborium::Value) -> Self {
         match key {
-            ciborium::Value::Text(text) => Some(Self::Text(text)),
-            ciborium::Value::Integer(number) => Some(Self::Integer(i128::from(*number))),
+            ciborium::Value::Text(text) => Self::Text(text),
+            ciborium::Value::Integer(number) => Self::Integer(i128::from(*number)),
             other => {
                 let mut bytes = Vec::new();
-                ciborium::into_writer(other, &mut bytes).ok()?;
-                Some(Self::Encoded(bytes))
+                ciborium::into_writer(&without_negative_zero(other), &mut bytes)
+                    .expect("a decoded CBOR value encodes into memory");
+                Self::Encoded(bytes)
             }
         }
+    }
+}
+
+/// `value` with every -0.0 written as 0.0.
+fn without_negative_zero(value: &ciborium::Value) -> ciborium::Value {
+    match value {
+        ciborium::Value::Float(number) if *number == 0.0 => ciborium::Value::Float(0.0),
+        ciborium::Value::Array(items) => {
+            ciborium::Value::Array(items.iter().map(without_negative_zero).collect())
+        }
+        ciborium::Value::Map(entries) => ciborium::Value::Map(
+            entries
+                .iter()
+                .map(|(key, value)| (without_negative_zero(key), without_negative_zero(value)))
+                .collect(),
+        ),
+        ciborium::Value::Tag(tag, inner) => {
+            ciborium::Value::Tag(*tag, Box::new(without_negative_zero(inner)))
+        }
+        other => other.clone(),
     }
 }
 
@@ -857,6 +869,40 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_secs(30),
             "{ENTRIES} keys took {elapsed:?}"
+        );
+    }
+
+    /// Review 2026-10-16 PS-4: a key the hash missed was compared with every known
+    /// key, so a map of many keys this version does not know was scanned per key.
+    #[test]
+    fn many_unknown_keys_of_a_large_map_are_found_in_linear_time() {
+        const ENTRIES: u64 = 40_000;
+        let text = |key: u64| ciborium::Value::Text(format!("part-{key}"));
+        let path = |key: u64| {
+            ciborium::Value::Array(vec![
+                ciborium::Value::Integer(key.into()),
+                ciborium::Value::Float(0.0),
+            ])
+        };
+        let value = || ciborium::Value::Bool(true);
+        let known = ciborium::Value::Map(
+            (0..ENTRIES)
+                .flat_map(|key| [(text(key), value()), (path(key), value())])
+                .collect(),
+        );
+        let stored = ciborium::Value::Map(
+            (ENTRIES..2 * ENTRIES)
+                .flat_map(|key| [(text(key), value()), (path(key), value())])
+                .collect(),
+        );
+        let started = std::time::Instant::now();
+        let mut unknown = Vec::new();
+        unknown_fields(&stored, &known, &mut String::new(), &mut unknown);
+        let elapsed = started.elapsed();
+        assert_eq!(unknown.len() as u64, 2 * ENTRIES);
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "{ENTRIES} unknown keys took {elapsed:?}"
         );
     }
 
