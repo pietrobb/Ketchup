@@ -55,6 +55,9 @@ pub enum CanonicalError {
     FeatureAlreadyExists(FeatureId),
     FeatureNotFound(FeatureId),
     FeatureHasNoDimension(FeatureId),
+    /// A through-all, up-to-face or two-sided extent has no one distance to set;
+    /// `SetFeatureParameter` names the distance it changes.
+    FeatureExtentHasNoSingleDistance(FeatureId),
     InvalidHoleThread(FeatureId),
     /// The hole does not take the thread by the tapping rule every export
     /// checks again.
@@ -252,6 +255,9 @@ impl CanonicalError {
             Self::FeatureAlreadyExists(..) => "canonical.feature_already_exists",
             Self::FeatureNotFound(..) => "canonical.feature_not_found",
             Self::FeatureHasNoDimension(..) => "canonical.feature_has_no_dimension",
+            Self::FeatureExtentHasNoSingleDistance(..) => {
+                "canonical.feature_extent_has_no_single_distance"
+            }
             Self::InvalidHoleThread(..) => "canonical.invalid_hole_thread",
             Self::HoleThreadMismatch { .. } => "canonical.hole_thread_mismatch",
             Self::InvalidShaftThread(..) => "canonical.invalid_shaft_thread",
@@ -545,8 +551,8 @@ impl fmt::Display for CanonicalError {
             ),
             Self::FeatureAlreadyExists(id) => write!(formatter, "feature {} already exists", id.0),
             Self::FeatureNotFound(id) => write!(formatter, "feature {} does not exist", id.0),
-            Self::FeatureHasNoDimension(id) => {
-                write!(formatter, "feature {} has no editable dimension", id.0)
+            Self::FeatureHasNoDimension(id) | Self::FeatureExtentHasNoSingleDistance(id) => {
+                write_no_dimension(formatter, self, *id)
             }
             Self::InvalidHoleThread(id) | Self::InvalidShaftThread(id) => {
                 write_invalid_thread(formatter, self, *id)
@@ -843,6 +849,24 @@ fn write_thread_mismatch(
         "the hole of feature {} does not take its thread: {mismatch}",
         id.0
     )
+}
+
+/// Why `SetFeatureDimension` has no one distance of feature `id` to set.
+fn write_no_dimension(
+    formatter: &mut fmt::Formatter<'_>,
+    error: &CanonicalError,
+    id: FeatureId,
+) -> fmt::Result {
+    if matches!(error, CanonicalError::FeatureExtentHasNoSingleDistance(_)) {
+        write!(
+            formatter,
+            "feature {} does not extend by one distance; set the distance of one end \
+             with SetFeatureParameter",
+            id.0
+        )
+    } else {
+        write!(formatter, "feature {} has no editable dimension", id.0)
+    }
 }
 
 /// What a hole's or a shaft's thread `error` on feature `id` lacks.

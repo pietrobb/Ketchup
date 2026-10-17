@@ -97,7 +97,15 @@ pub(super) fn apply(
             let kind = match feature.kind {
                 FeatureKind::Pad(ref spec) => {
                     let mut updated = spec.clone();
-                    updated.extent = FeatureExtent::Blind(dimension.clone());
+                    updated.extent = match spec.extent {
+                        FeatureExtent::Blind(_) => FeatureExtent::Blind(dimension.clone()),
+                        FeatureExtent::Symmetric(_) => FeatureExtent::Symmetric(dimension.clone()),
+                        FeatureExtent::ThroughAll
+                        | FeatureExtent::UpToFace(_)
+                        | FeatureExtent::Bidirectional { .. } => {
+                            return Err(CanonicalError::FeatureExtentHasNoSingleDistance(*id));
+                        }
+                    };
                     FeatureKind::Pad(updated)
                 }
                 FeatureKind::Workplane(WorkplaneSpec {

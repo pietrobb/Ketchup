@@ -1301,6 +1301,63 @@ fn feature_dependency_cycle_is_rejected_atomically() {
 }
 
 #[test]
+fn a_dimension_edit_keeps_the_extent_kind_and_refuses_extents_without_one_distance() {
+    let mm = |text| Dimension::from_decimal(text).unwrap();
+    let edited = |extent: FeatureExtent| {
+        let mut document = pad_document();
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id: PAD,
+                definition_id: DEFINITION,
+                name: "Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    extent,
+                    ..pad_operation(&document)
+                }),
+            }]))
+            .unwrap();
+        let before = document.current().feature(PAD).unwrap().kind().clone();
+        let result = document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: PAD,
+                dimension: mm("20"),
+            },
+        ]));
+        let after = match document.current().feature(PAD).unwrap().kind() {
+            FeatureKind::Pad(spec) => spec.extent.clone(),
+            _ => unreachable!(),
+        };
+        if result.is_err() {
+            assert_eq!(document.current().feature(PAD).unwrap().kind(), &before);
+        }
+        (result.err(), after)
+    };
+
+    // A symmetric pad 16 mm thick stays centred on its sketch at 20 mm.
+    assert_eq!(
+        edited(FeatureExtent::Symmetric(mm("16"))),
+        (None, FeatureExtent::Symmetric(mm("20")))
+    );
+    assert_eq!(
+        edited(FeatureExtent::Blind(mm("25"))),
+        (None, FeatureExtent::Blind(mm("20")))
+    );
+    let bidirectional = FeatureExtent::Bidirectional {
+        along: FeatureExtentEnd::Blind(mm("8")),
+        opposite: FeatureExtentEnd::ThroughAll,
+    };
+    for extent in [FeatureExtent::ThroughAll, bidirectional] {
+        assert_eq!(
+            edited(extent.clone()),
+            (
+                Some(CanonicalError::FeatureExtentHasNoSingleDistance(PAD)),
+                extent
+            )
+        );
+    }
+}
+
+#[test]
 fn universal_extent_contract_round_trips_changes_digest_and_fails_closed_before_graph_resolution() {
     let mut document = pad_document();
     let proposal = document
