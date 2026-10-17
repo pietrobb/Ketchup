@@ -329,17 +329,24 @@ fn a_hollow_beam_is_checked_in_shear_on_its_walls_at_the_neutral_axis() {
 }
 
 #[test]
-fn an_angle_beam_bends_about_its_principal_axes_not_its_horizontal_one() {
-    // Review 2026-10-17 PG-6: an L 200 x 200 with 50 mm legs under a vertical
-    // load bends sideways too (free unsymmetric bending); the second moment
-    // about its horizontal axis understates its stress and deflection.
+fn a_z_beam_bends_about_its_principal_axes_not_its_horizontal_one() {
+    // Review 2026-10-17 PG-6: a Z 200 x 200 with 50 mm flanges and web under a
+    // vertical load bends sideways too (free unsymmetric bending); the second
+    // moment about its horizontal axis understates its stress and deflection.
+    // Symmetric about its centroid, it does not twist.
     let corners = [
-        (0.0, 0.0),
+        (100.0, 0.0),
         (200.0, 0.0),
         (200.0, 50.0),
-        (50.0, 50.0),
-        (50.0, 200.0),
+        (125.0, 50.0),
+        (125.0, 150.0),
+        (100.0, 150.0),
+        (100.0, 200.0),
         (0.0, 200.0),
+        (0.0, 150.0),
+        (75.0, 150.0),
+        (75.0, 50.0),
+        (100.0, 50.0),
     ];
     let profile = format!(
         "[{}]",
@@ -353,8 +360,14 @@ fn an_angle_beam_bends_about_its_principal_axes_not_its_horizontal_one() {
     let beam = member(&report, "beam");
     assert_eq!(beam.role, "beam");
     assert_eq!(beam.missing, Vec::<String>::new());
-    let (_, [cx, cy], ix, iy, ixy) =
-        moments(&[[0.0, 0.0, 200.0, 50.0], [0.0, 50.0, 50.0, 150.0]], &[]);
+    let (_, [cx, cy], ix, iy, ixy) = moments(
+        &[
+            [100.0, 0.0, 100.0, 50.0],
+            [75.0, 50.0, 50.0, 100.0],
+            [0.0, 150.0, 100.0, 50.0],
+        ],
+        &[],
+    );
     let det = ix * iy - ixy * ixy;
     // sigma = M (Iy y - Ixy x) / (Ix Iy - Ixy²), largest at a corner.
     let per_moment = corners
@@ -365,13 +378,39 @@ fn an_angle_beam_bends_about_its_principal_axes_not_its_horizontal_one() {
     let bending = 1.5 * q * l * l / 8.0 * per_moment / (0.8 * 24.0 / 1.3);
     let about_horizontal = 1.5 * q * l * l / 8.0 * (200.0 - cy) / ix / (0.8 * 24.0 / 1.3);
     assert!(
-        bending > 1.3 * about_horizontal,
+        bending > 2.5 * about_horizontal,
         "{bending} {about_horizontal}"
     );
     close(utilization(beam, "bending"), bending);
     // The vertical deflection takes Ix - Ixy² / Iy.
     let w = 5.0 * q * l.powi(4) / (384.0 * 11000.0 * det / iy);
     close(utilization(beam, "deflection_inst"), w / (l / 300.0));
+}
+
+#[test]
+fn a_beam_whose_load_passes_beside_its_shear_centre_is_not_verified() {
+    // Review 2026-10-17 PG-6: a vertical load through the centroid of an L, or
+    // of a channel open to the side, passes beside the shear centre and twists
+    // the beam; torsion is not checked, so neither is the beam. A channel open
+    // upward is symmetric about its vertical axis and only bends.
+    let angle = "[(0, 0), (200, 0), (200, 50), (50, 50), (50, 200), (0, 200)]";
+    let sideways =
+        "[(0, 0), (200, 0), (200, 50), (50, 50), (50, 150), (200, 150), (200, 200), (0, 200)]";
+    let upward =
+        "[(0, 0), (200, 0), (200, 200), (150, 200), (150, 50), (50, 50), (50, 200), (0, 200)]";
+    for (profile, twists) in [(angle, true), (sideways, true), (upward, false)] {
+        let report = report(&profiled_beam(profile, ""), &[]);
+        let beam = member(&report, "beam");
+        assert_eq!(beam.role, "beam");
+        let torsion = beam.missing.iter().any(|m| m.contains("shear centre"));
+        assert_eq!(torsion, twists, "{profile}: {:?}", beam.missing);
+        if twists {
+            assert_eq!(beam.status, "not_verified", "{profile}");
+            assert!(beam.checks.is_empty(), "{profile}");
+        } else {
+            assert_eq!(beam.missing, Vec::<String>::new(), "{profile}");
+        }
+    }
 }
 
 /// The 100 x 200 beam of `beam` with `then` run on it (the beam is `part`):

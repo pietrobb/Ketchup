@@ -511,6 +511,58 @@ impl<'a> Section<'a> {
         }
         1.0 / largest
     }
+
+    /// Where the material's edges cross the line local[depth] = t, in order.
+    fn edges_at(&self, t: f64) -> Vec<f64> {
+        let mut hits: Vec<f64> = std::iter::once(self.segments)
+            .chain(self.bores.iter().copied())
+            .flat_map(|segments| crossings(segments, self.depth, t))
+            .collect();
+        hits.sort_by(f64::total_cmp);
+        hits
+    }
+
+    /// Whether a load along `depth` through the centroid passes beside the
+    /// shear centre and twists the member: unless the section is symmetric
+    /// about its centroid, or `upright` (`depth` vertical) and symmetric about
+    /// the vertical line through it. An angle or a channel open to the side
+    /// twists; a sheared rectangle or a channel open upward does not.
+    fn twists(&self, upright: bool) -> bool {
+        let (centre, other) = (self.centre[self.depth], self.centre[1 - self.depth]);
+        let mut levels: Vec<f64> = std::iter::once(self.segments)
+            .chain(self.bores.iter().copied())
+            .flatten()
+            .flat_map(|s| {
+                [
+                    s.start_mm[self.depth],
+                    2.0 * centre - s.start_mm[self.depth],
+                ]
+            })
+            .collect();
+        levels.sort_by(f64::total_cmp);
+        levels.dedup_by(|a, b| (*a - *b).abs() < ROUNDING);
+        // Edges at t mirrored across the centre line onto edges at `there`.
+        let mirrored = |here: &[f64], there: &[f64]| {
+            here.len() == there.len()
+                && here
+                    .iter()
+                    .zip(there.iter().rev())
+                    .all(|(a, b)| (a + b - 2.0 * other).abs() <= ROUNDING)
+        };
+        // The edges move linearly between levels, so two cuts a span settle it.
+        let (mut about_centre, mut about_line) = (true, upright);
+        for pair in levels.windows(2) {
+            for t in [
+                (2.0 * pair[0] + pair[1]) / 3.0,
+                (pair[0] + 2.0 * pair[1]) / 3.0,
+            ] {
+                let here = self.edges_at(t);
+                about_centre &= mirrored(&here, &self.edges_at(2.0 * centre - t));
+                about_line &= mirrored(&here, &here);
+            }
+        }
+        !(about_centre || about_line)
+    }
 }
 
 /// Whether `point` lies inside the closed line profile (even-odd rule).
@@ -564,6 +616,9 @@ struct Shape {
     radius: f64,
     /// Why the section above is not the member's along its whole length.
     unmodelled: Option<&'static str>,
+    /// Why a vertical load would twist the member as a beam, which the check
+    /// does not model.
+    twists: Option<&'static str>,
     /// True length per unit of the load frame's position.
     arc: f64,
     /// Depth across the member at a load-frame position, when it varies (notches).
@@ -658,6 +713,11 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         if !(area > 0.0 && radius > 0.0 && radius.is_finite()) {
             return Err("the member's section has no area");
         }
+        let upright = 1.0 - world[depth][2].abs() <= ROUNDING;
+        let twists = section.twists(upright).then_some(
+            "a vertical load passes beside the section's shear centre (an angle, or a channel \
+             open to the side) and twists the member; torsion is not checked",
+        );
         return Ok(Shape {
             grain: frame_axis,
             b: size[1 - depth],
@@ -670,6 +730,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             shear_area: section.shear_area(),
             radius,
             unmodelled,
+            twists,
             arc: 1.0,
             depth_at: None,
         });
@@ -745,6 +806,8 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         shear_area: b * h / 1.5,
         radius: distance_mm.min(thinnest_inside) / 12f64.sqrt(),
         unmodelled,
+        // A rectangle's shear centre is its centroid.
+        twists: None,
         arc: 1.0 / along,
         depth_at: depth_in_plane.then(|| {
             Box::new(move |x: f64| chord(&profile, long, start + x) * along)
@@ -1466,9 +1529,10 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                 None => check.checks.push(column_check(load, shape, &design, &uls)),
             }
         } else {
-            if let Some(reason) = shape.unmodelled {
+            if let Some(reason) = shape.unmodelled.or(shape.twists) {
                 // Bending, shear, deflection and notches on the full section
-                // would overstate a beam that a cut, pocket or hole weakens.
+                // would overstate a beam that a cut, pocket or hole weakens,
+                // or that the load twists.
                 missing.push(reason.to_owned());
             } else {
                 let (checks, spans_checked) = beam_checks(load, shape, &design, &uls, &sls);
