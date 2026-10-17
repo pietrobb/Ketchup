@@ -85,6 +85,15 @@ fn native_pair_reports_positive_face_area_but_not_edge_contact() {
     assert!((reversed.common_contact_area_mm2 - 8.0).abs() < 1e-7);
     assert_eq!(reversed.common_volume_mm3, 0.0);
     assert_eq!(reversed.distance_mm, 0.0);
+    // The shared area faces out of each left body: up from the support, down
+    // from the load resting on it.
+    let direction = |result: &ketchup_exact::ExactPairQueryResult| {
+        assert_eq!(result.contact_patches.len(), 1, "{result:?}");
+        assert!((result.contact_patches[0].area_mm2 - 8.0).abs() < 1e-7);
+        result.contact_patches[0].normal.map(|c| c.round())
+    };
+    assert_eq!(direction(&face), [0.0, 0.0, 1.0]);
+    assert_eq!(direction(&reversed), [0.0, 0.0, -1.0]);
 
     let edge_load = box_at(
         Point3 {
@@ -104,6 +113,7 @@ fn native_pair_reports_positive_face_area_but_not_edge_contact() {
     assert_eq!(edge.relation, ExactPairRelation::Touching);
     assert_eq!(edge.common_volume_mm3, 0.0);
     assert_eq!(edge.common_contact_area_mm2, 0.0);
+    assert!(edge.contact_patches.is_empty());
     assert_eq!(edge.distance_mm, 0.0);
 }
 

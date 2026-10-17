@@ -1,6 +1,7 @@
 //! Analytic panel hulls: a rectangle extrusion, optionally reduced by cuts, is
 //! always contained in its rectangular box. Two such boxes that do not
 //! penetrate prove the solids do not penetrate either, at any rotation.
+use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_geometry::linalg::{cross, dot};
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
@@ -31,9 +32,10 @@ pub(super) struct WorldHull {
 pub(super) enum HullRelation {
     /// Farther apart than the contact tolerance.
     Separated,
-    /// No common volume; `area_mm2` is the shared outer face area. Cuts can only
-    /// remove material, so for cut panels it is an upper bound (e.g. pin holes).
-    Touching { area_mm2: f64 },
+    /// No common volume; `area_mm2` is the shared outer face area, on A's face
+    /// with outward unit `normal` (zero without area). Cuts can only remove
+    /// material, so for cut panels it is an upper bound (e.g. pin holes).
+    Touching { area_mm2: f64, normal: [f64; 3] },
     /// Hulls penetrate; only exact geometry can decide (e.g. pin in its hole).
     Overlapping,
 }
@@ -43,19 +45,26 @@ pub(super) fn measure(
     b: &WorldHull,
     graphs: [&ExactBRepGraph; 2],
     tolerance_mm: f64,
-) -> Option<(f64, Option<f64>)> {
+) -> Option<(Vec<ContactPatch>, Option<f64>)> {
     match relate(a, b, tolerance_mm) {
         HullRelation::Overlapping => None,
-        HullRelation::Separated => Some((0.0, None)),
-        HullRelation::Touching { area_mm2 } => graphs
-            .iter()
-            .all(|graph| {
-                matches!(
-                    graph.nodes.last().map(|node| &node.operation),
-                    Some(ExactBRepOperation::Extrude { .. })
-                )
-            })
-            .then_some((area_mm2, Some(0.0))),
+        HullRelation::Separated => Some((Vec::new(), None)),
+        HullRelation::Touching { area_mm2, normal } => {
+            let patches = if area_mm2 > 0.0 {
+                vec![ContactPatch { normal, area_mm2 }]
+            } else {
+                Vec::new()
+            };
+            graphs
+                .iter()
+                .all(|graph| {
+                    matches!(
+                        graph.nodes.last().map(|node| &node.operation),
+                        Some(ExactBRepOperation::Extrude { .. })
+                    )
+                })
+                .then_some((patches, Some(0.0)))
+        }
     }
 }
 fn axis_aligned(v: [f64; 3]) -> bool {
@@ -334,6 +343,7 @@ pub(super) fn relate(a: &WorldHull, b: &WorldHull, tolerance_mm: f64) -> HullRel
     }
     // Positive area needs a face of A coplanar with an opposite face of B.
     let mut area_mm2: f64 = 0.0;
+    let mut outward = [0.0; 3];
     for i in 0..3 {
         let normal = a.axes[i];
         let overlap = a.radius(normal) + b.radius(normal) - dot(offset, normal).abs();
@@ -348,9 +358,17 @@ pub(super) fn relate(a: &WorldHull, b: &WorldHull, tolerance_mm: f64) -> HullRel
         } else {
             1.0
         };
-        area_mm2 = area_mm2.max(shared_face_area(a, i, b.face(j, b_sign)));
+        let shared = shared_face_area(a, i, b.face(j, b_sign));
+        if shared > area_mm2 {
+            area_mm2 = shared;
+            // A's face toward B faces opposite B's face toward A.
+            outward = b.axes[j].map(|k| -b_sign * k);
+        }
     }
-    HullRelation::Touching { area_mm2 }
+    HullRelation::Touching {
+        area_mm2,
+        normal: outward,
+    }
 }
 
 #[cfg(test)]
@@ -382,13 +400,18 @@ mod tests {
     fn board_resting_on_bottom_touches_with_its_full_footprint() {
         let bottom = hull([0.0; 3], [500.0, 350.0, 18.0], IDENTITY);
         let board = hull([0.0; 3], [464.0, 330.0, 18.0], translated(18.0, 0.0, 18.0));
-        let HullRelation::Touching { area_mm2 } = relate(&bottom, &board, 1e-7) else {
+        let HullRelation::Touching { area_mm2, normal } = relate(&bottom, &board, 1e-7) else {
             panic!()
         };
         assert!((area_mm2 - 464.0 * 330.0).abs() < 1e-6, "{area_mm2}");
+        // The shared face looks up out of the bottom and down out of the board.
+        assert_eq!(normal, [0.0, 0.0, 1.0]);
         assert_eq!(
             relate(&board, &bottom, 1e-7),
-            HullRelation::Touching { area_mm2 }
+            HullRelation::Touching {
+                area_mm2,
+                normal: [0.0, 0.0, -1.0]
+            }
         );
     }
 
@@ -402,7 +425,10 @@ mod tests {
         let edge = hull([0.0; 3], [10.0, 10.0, 10.0], translated(100.0, 100.0, 0.0));
         assert_eq!(
             relate(&a, &edge, 1e-7),
-            HullRelation::Touching { area_mm2: 0.0 }
+            HullRelation::Touching {
+                area_mm2: 0.0,
+                normal: [0.0; 3]
+            }
         );
     }
 
@@ -425,10 +451,11 @@ mod tests {
             ],
         );
         let bottom = hull([0.0; 3], [500.0, 350.0, 18.0], IDENTITY);
-        let HullRelation::Touching { area_mm2 } = relate(&bottom, &side, 1e-7) else {
+        let HullRelation::Touching { area_mm2, normal } = relate(&bottom, &side, 1e-7) else {
             panic!("{:?}", relate(&bottom, &side, 1e-7))
         };
         assert!((area_mm2 - 350.0 * 18.0).abs() < 1e-6, "{area_mm2}");
+        assert!((normal[2] - 1.0).abs() < 1e-12, "{normal:?}");
         // Arbitrary rotation about Z: square on square rotated 30° overlaps in an octagon-like region.
         let top = hull(
             [-50.0, -50.0, 0.0],
@@ -436,7 +463,7 @@ mod tests {
             rotated_z(30.0, 0.0, 0.0, 18.0),
         );
         let base = hull([-50.0, -50.0, 0.0], [50.0, 50.0, 18.0], IDENTITY);
-        let HullRelation::Touching { area_mm2 } = relate(&base, &top, 1e-7) else {
+        let HullRelation::Touching { area_mm2, .. } = relate(&base, &top, 1e-7) else {
             panic!()
         };
         assert!(area_mm2 > 8000.0 && area_mm2 < 10000.0, "{area_mm2}");

@@ -3,6 +3,7 @@
 //! tolerance crate, so a change here never waits for the document model to build.
 #![forbid(unsafe_code)]
 
+pub mod contact_patch;
 pub mod derived;
 pub mod dimension;
 pub mod helix;

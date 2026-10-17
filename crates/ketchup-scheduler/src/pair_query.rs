@@ -2,6 +2,7 @@
 use super::*;
 use crate::protocol::{GraphInput, PairMeasure, PairQuery, WorkerReply, WorkerRequest};
 pub use ketchup_exact::{ExactPairQueryResult, ExactPairRelation};
+use ketchup_geometry::contact_patch::ContactPatch;
 
 pub const MAX_EXACT_PAIR_GRAPHS: usize = 512;
 pub const MAX_EXACT_PAIR_CANDIDATES: usize = 10_000;
@@ -337,11 +338,11 @@ fn valid_pair_transform(matrix: &[f64; 16]) -> bool {
 }
 
 fn pair_result(measure: PairMeasure, tolerance: f64) -> Result<ExactPairQueryResult, WorkerError> {
-    let invalid = || WorkerError::Protocol(format!("invalid exact pair evidence {measure:?}"));
     let PairMeasure {
         common_volume_mm3,
         common_thickness_mm,
         common_contact_area_mm2,
+        ref contact_patches,
         distance_mm,
     } = measure;
     if [
@@ -355,8 +356,11 @@ fn pair_result(measure: PairMeasure, tolerance: f64) -> Result<ExactPairQueryRes
         || (common_volume_mm3 > 0.0) != (common_thickness_mm > 0.0)
         || (common_volume_mm3 > 0.0 && (common_contact_area_mm2 > 0.0 || distance_mm != 0.0))
         || (common_contact_area_mm2 > 0.0 && distance_mm != 0.0)
+        || !ContactPatch::consistent(contact_patches, common_contact_area_mm2)
     {
-        return Err(invalid());
+        return Err(WorkerError::Protocol(format!(
+            "invalid exact pair evidence {measure:?}"
+        )));
     }
     Ok(ExactPairQueryResult {
         relation: if common_volume_mm3 > 0.0 {
@@ -369,6 +373,7 @@ fn pair_result(measure: PairMeasure, tolerance: f64) -> Result<ExactPairQueryRes
         common_volume_mm3,
         common_thickness_mm,
         common_contact_area_mm2,
+        contact_patches: measure.contact_patches,
         distance_mm,
     })
 }
@@ -473,9 +478,20 @@ mod tests {
             common_volume_mm3,
             common_thickness_mm: common_volume_mm3.min(1.0),
             common_contact_area_mm2,
+            contact_patches: Vec::new(),
             distance_mm,
         };
+        let patch = |area_mm2| ContactPatch {
+            normal: [0.0, 0.0, -1.0],
+            area_mm2,
+        };
         for invalid in [
+            // Shared area must say which way it faces, and add up.
+            measure(0.0, 2.0, 0.0),
+            PairMeasure {
+                contact_patches: vec![patch(1.0)],
+                ..measure(0.0, 2.0, 0.0)
+            },
             PairMeasure {
                 common_thickness_mm: 0.0,
                 ..measure(1.0, 0.0, 0.0)
@@ -491,8 +507,15 @@ mod tests {
             measure(0.0, -1.0, 0.0),
             measure(0.0, 0.0, f64::INFINITY),
         ] {
-            assert!(pair_result(invalid, 1e-7).is_err(), "{invalid:?}");
+            assert!(pair_result(invalid.clone(), 1e-7).is_err(), "{invalid:?}");
         }
+        let touching = PairMeasure {
+            contact_patches: vec![patch(2.0)],
+            ..measure(0.0, 2.0, 0.0)
+        };
+        let touching = pair_result(touching, 1e-7).unwrap();
+        assert_eq!(touching.relation, ExactPairRelation::Touching);
+        assert_eq!(touching.contact_patches, vec![patch(2.0)]);
         assert_eq!(
             pair_result(measure(0.0, 0.0, 2.0), 1e-7).unwrap().relation,
             ExactPairRelation::Separated

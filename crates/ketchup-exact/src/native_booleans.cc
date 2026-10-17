@@ -2,9 +2,11 @@
 
 #include <BOPAlgo_Alerts.hxx>
 #include <BOPTools_AlgoTools3D.hxx>
+#include <BRepGProp_Face.hxx>
 #include <IntTools_Context.hxx>
 #include <Message_Report.hxx>
 
+#include <algorithm>
 #include <optional>
 
 namespace ketchup::exact {
@@ -537,6 +539,8 @@ NativePairQuery query_body_pair_native(
       gp_Pln plane;
       double tolerance;
       bool planar;
+      // Outward unit normal of a flat face; zero for a curved one.
+      gp_Vec outward;
     };
     // With a slab, only planar faces perpendicular to its axis and lying inside
     // it can share area; every other face pair has zero-area contact.
@@ -582,9 +586,40 @@ NativePairQuery query_body_pair_native(
             continue;
           }
         }
-        faces.push_back({face.Current(), bounds, plane, tolerance, planar});
+        // Inside a slab a face is flat whatever its surface type. BRepGProp_Face
+        // orients the normal by the face's orientation in the solid, so it points out.
+        gp_Vec outward(0.0, 0.0, 0.0);
+        if (planar || slab_axis >= 0) {
+          BRepGProp_Face geometry(topo_face);
+          Standard_Real u_first, u_last, v_first, v_last;
+          geometry.Bounds(u_first, u_last, v_first, v_last);
+          gp_Pnt point;
+          geometry.Normal(0.5 * (u_first + u_last), 0.5 * (v_first + v_last), point, outward);
+          if (outward.Magnitude() > gp::Resolution()) {
+            outward.Normalize();
+          } else {
+            outward = gp_Vec(0.0, 0.0, 0.0);
+          }
+        }
+        faces.push_back({face.Current(), bounds, plane, tolerance, planar, outward});
       }
       return faces;
+    };
+    // Shared area by the left face's outward normal: parallel faces share one
+    // patch, and all curved faces the one with no direction.
+    std::vector<std::pair<gp_Vec, double>> patches;
+    const auto add_patch = [&](const gp_Vec& outward, double area) {
+      const bool directed = outward.Magnitude() > 0.0;
+      const auto same = std::find_if(patches.begin(), patches.end(), [&](const auto& patch) {
+        return directed ? patch.first.Magnitude() > 0.0
+                && outward.Dot(patch.first) >= 1.0 - tolerances().rounding
+                        : patch.first.Magnitude() == 0.0;
+      });
+      if (same == patches.end()) {
+        patches.emplace_back(outward, area);
+      } else {
+        same->second += area;
+      }
     };
     const auto measure_contact_area = [&]() -> bool {
       const std::vector<ContactFace> left_faces = contact_faces(left.impl().shape);
@@ -625,6 +660,9 @@ NativePairQuery query_body_pair_native(
             return false;
           }
           contact_area += area;
+          if (area > 0.0) {
+            add_patch(left_face.outward, area);
+          }
         }
       }
       return true;
@@ -637,6 +675,10 @@ NativePairQuery query_body_pair_native(
     if (contact_area > 0.0) {
       result.common_volume_mm3 = 0.0;
       result.common_contact_area_mm2 = contact_area;
+      for (const auto& [normal, area] : patches) {
+        result.contact_patches.push_back(
+            NativeContactPatch{NativePoint{normal.X(), normal.Y(), normal.Z()}, area});
+      }
       result.distance_mm = 0.0;
       result.status = STATUS_OK;
       return result;

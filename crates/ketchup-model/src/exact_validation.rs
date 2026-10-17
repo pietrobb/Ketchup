@@ -17,6 +17,7 @@ use crate::validation::{
     ValidationInvocation, ValidationPolicyRef, ValidationReport, ValidationState,
     ValidatorDescriptor,
 };
+use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_geometry::linalg::{cross, dot, length};
 use ketchup_geometry::prismatic::{Aabb, PrismaticError};
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
@@ -41,11 +42,11 @@ pub const GENERAL_BODY_OBB_NARROW_PHASE_METHOD_V1: &str =
     "ketchup.method.general-body-obb-sat.cpu-f64.v1";
 pub const GRAVITY_SUPPORT_VALIDATOR_CONTRACT_V1: &str = "ketchup.validator.gravity-support.v1";
 pub const GRAVITY_SUPPORT_VALIDATOR_IMPLEMENTATION_V1: &str =
-    "ketchup.builtin.gravity-support.exact-contact-cpu-f64.v3";
-pub const GRAVITY_SUPPORT_VALIDATOR_INPUT_V1: &str = "ketchup.gravity-support-input.v1";
+    "ketchup.builtin.gravity-support.exact-contact-cpu-f64.v4";
+pub const GRAVITY_SUPPORT_VALIDATOR_INPUT_V1: &str = "ketchup.gravity-support-input.v2";
 pub const GRAVITY_SUPPORT_VALIDATION_POLICY_V1: &str = "ketchup.policy.gravity-support.v1";
 pub const GRAVITY_SUPPORT_EXACT_BOX_CONTACT_METHOD_V1: &str =
-    "ketchup.method.gravity-support-exact-positive-face-contact.cpu-f64.v2";
+    "ketchup.method.gravity-support-exact-positive-face-contact.cpu-f64.v3";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactValidationError {
@@ -634,31 +635,41 @@ impl GravitySupportParticipant {
     }
 }
 
+/// A face of a resting part bears on its support when its outward normal lies
+/// within 60° of gravity, as in the rule program's load paths.
+const BEARS_ALONG_GRAVITY: f64 = 0.5;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GravitySupportContact {
     left: InstancePath,
     right: InstancePath,
-    common_contact_area_mm2_bits: u64,
+    /// The shared face area by `left`'s outward normal.
+    patches: Vec<ContactPatch>,
 }
 
 impl GravitySupportContact {
+    /// `patches` face out of `left`; none when the bodies share no face area.
     pub fn new(
         left: InstancePath,
         right: InstancePath,
-        common_contact_area_mm2: f64,
+        patches: Vec<ContactPatch>,
     ) -> Result<Self, GeneralBodyValidationError> {
-        if left == right || !common_contact_area_mm2.is_finite() || common_contact_area_mm2 < 0.0 {
+        let total_mm2 = patches.iter().map(|patch| patch.area_mm2).sum();
+        if left == right || !ContactPatch::consistent(&patches, total_mm2) {
             return Err(GeneralBodyValidationError::InvalidGeometry);
         }
-        let (left, right) = if left <= right {
-            (left, right)
+        Ok(if left <= right {
+            Self {
+                left,
+                right,
+                patches,
+            }
         } else {
-            (right, left)
-        };
-        Ok(Self {
-            left,
-            right,
-            common_contact_area_mm2_bits: common_contact_area_mm2.to_bits(),
+            Self {
+                left: right,
+                right: left,
+                patches: patches.into_iter().map(ContactPatch::reversed).collect(),
+            }
         })
     }
 
@@ -667,9 +678,27 @@ impl GravitySupportContact {
         (&self.left == left && &self.right == right) || (&self.left == right && &self.right == left)
     }
 
+    /// Shared area where `body` rests on the other body: its own face there
+    /// faces along `gravity_direction`, so the other body is below it. A side or
+    /// underside contact carries no weight.
     #[must_use]
-    pub fn common_contact_area_mm2(&self) -> f64 {
-        f64::from_bits(self.common_contact_area_mm2_bits)
+    pub fn bearing_area_mm2(&self, body: &InstancePath, gravity_direction: [f64; 3]) -> f64 {
+        let sign = if body == &self.left { 1.0 } else { -1.0 };
+        self.patches
+            .iter()
+            .filter(|patch| sign * dot(patch.normal, gravity_direction) >= BEARS_ALONG_GRAVITY)
+            .map(|patch| patch.area_mm2)
+            .sum()
+    }
+
+    /// Shared area on curved faces, which face no single direction.
+    #[must_use]
+    pub fn undirected_area_mm2(&self) -> f64 {
+        self.patches
+            .iter()
+            .filter(|patch| !patch.is_directed())
+            .map(|patch| patch.area_mm2)
+            .sum()
     }
 }
 
@@ -1045,7 +1074,12 @@ pub fn gravity_support_input_bytes(input: &GravitySupportInput) -> Vec<u8> {
     for contact in input.exact_contacts() {
         push_instance_path(&mut output, &contact.left);
         push_instance_path(&mut output, &contact.right);
-        output.extend_from_slice(&contact.common_contact_area_mm2_bits.to_le_bytes());
+        output.extend_from_slice(&(contact.patches.len() as u64).to_le_bytes());
+        for patch in &contact.patches {
+            for value in patch.normal.into_iter().chain([patch.area_mm2]) {
+                output.extend_from_slice(&value.to_bits().to_le_bytes());
+            }
+        }
     }
     output.extend_from_slice(&(input.rigid_connections().len() as u64).to_le_bytes());
     for (left, right) in input.rigid_connections() {
@@ -1314,17 +1348,25 @@ fn body_support_contact(
     };
     // A measured contact decides first: a part can bear below the supporter's
     // highest point (a step, a notch), where the envelopes alone say nothing.
+    // Only area where the part's face looks down onto the supporter bears it.
     let complete = input.exact_coverage_complete;
+    let positive_mm2 = tolerance.linear_mm() * tolerance.linear_mm();
     if let Some(contact) = input
         .exact_contacts()
         .iter()
         .find(|contact| contact.connects(candidate.instance_path(), supporter.instance_path()))
     {
-        if contact.common_contact_area_mm2() > tolerance.linear_mm() * tolerance.linear_mm() {
+        if contact.bearing_area_mm2(candidate.instance_path(), input.gravity_direction())
+            > positive_mm2
+        {
             return GravityContactEvidence::ProvenExact;
         }
+        // Curved shared faces touch, but no single direction says whether they bear.
+        if contact.undirected_area_mm2() > positive_mm2 {
+            return GravityContactEvidence::UnprovenEnvelope;
+        }
         // A pass that stopped early may have checked only some of the bodies'
-        // solids, so a zero area is no proof of no bearing.
+        // solids, so no bearing area is no proof of no bearing.
         if complete {
             return GravityContactEvidence::None;
         }
@@ -1859,7 +1901,7 @@ mod tests {
         let validator = BuiltinGravitySupportValidator::new(TolerancePolicy::default());
         assert_eq!(
             validator.descriptor().implementation_id,
-            "ketchup.builtin.gravity-support.exact-contact-cpu-f64.v3"
+            "ketchup.builtin.gravity-support.exact-contact-cpu-f64.v4"
         );
         let policy = gravity_support_validation_policy();
         let input = gravity_support_input_bytes(&validator_input);
@@ -1918,6 +1960,41 @@ mod tests {
         assert_eq!(report.state, ValidationState::Failed);
         assert_eq!(report.diagnostics[1].code, "gravity.unsupported");
         assert!(report.unresolved_conditions.is_empty());
+    }
+
+    #[test]
+    fn only_area_a_part_faces_down_onto_bears_it_whichever_way_the_pair_is_given() {
+        let path = |id| InstancePath::root(crate::document::OccurrenceId(id));
+        let down = [0.0, 0.0, -1.0];
+        // Out of part 2: 30 mm² on its underside, 20 mm² on a side, 5 mm² on
+        // its top and 7 mm² on curved faces.
+        let patches = vec![
+            ContactPatch {
+                normal: down,
+                area_mm2: 30.0,
+            },
+            ContactPatch {
+                normal: [1.0, 0.0, 0.0],
+                area_mm2: 20.0,
+            },
+            ContactPatch {
+                normal: [0.0, 0.0, 1.0],
+                area_mm2: 5.0,
+            },
+            ContactPatch {
+                normal: [0.0; 3],
+                area_mm2: 7.0,
+            },
+        ];
+        let given = GravitySupportContact::new(path(2), path(1), patches).unwrap();
+        assert_eq!(given.bearing_area_mm2(&path(2), down), 30.0);
+        assert_eq!(given.bearing_area_mm2(&path(1), down), 5.0);
+        assert_eq!(given.undirected_area_mm2(), 7.0);
+        let bad = ContactPatch {
+            normal: [0.0, 0.0, -2.0],
+            area_mm2: 1.0,
+        };
+        assert!(GravitySupportContact::new(path(2), path(1), vec![bad]).is_err());
     }
 
     #[test]

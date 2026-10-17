@@ -136,6 +136,7 @@ impl PairQuerySession {
                 common_volume_mm3: 0.0,
                 common_thickness_mm: 0.0,
                 common_contact_area_mm2: 0.0,
+                contact_patches: Vec::new(),
                 distance_mm,
             }));
         }
@@ -146,7 +147,7 @@ impl PairQuerySession {
             query.right_transform.map(f64::to_bits),
             query.tolerance_mm.to_bits(),
         );
-        let cached = PAIR_RESULT_CACHE.with(|cache| cache.borrow().get(&cache_key).copied());
+        let cached = PAIR_RESULT_CACHE.with(|cache| cache.borrow().get(&cache_key).cloned());
         let measure = match cached {
             Some(measure) => measure,
             None => {
@@ -164,6 +165,7 @@ impl PairQuerySession {
                     common_volume_mm3: result.common_volume_mm3,
                     common_thickness_mm: result.common_thickness_mm,
                     common_contact_area_mm2: result.common_contact_area_mm2,
+                    contact_patches: result.contact_patches,
                     distance_mm: result.distance_mm,
                 };
                 PAIR_RESULT_CACHE.with(|cache| {
@@ -171,7 +173,7 @@ impl PairQuerySession {
                     if cache.len() >= MAX_CACHED_PAIR_RESULTS {
                         cache.clear();
                     }
-                    cache.insert(cache_key, measure);
+                    cache.insert(cache_key, measure.clone());
                 });
                 measure
             }

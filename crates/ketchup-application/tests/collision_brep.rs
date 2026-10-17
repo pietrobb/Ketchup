@@ -981,15 +981,8 @@ fn gravity_takes_every_visible_part_and_ignores_hidden_ones() {
 /// cube held only by a fixed joint to that block, hanging beside it.
 fn block_and_hanging_cube() -> DocumentStore {
     let mut document = DocumentStore::new();
-    let chamfered = vec![
-        [0.0, 0.0],
-        [10.0, 0.0],
-        [10.0, 10.0],
-        [5.0, 10.0],
-        [0.0, 5.0],
-    ];
     add(&mut document, 1, rectangle(), 0.0);
-    add(&mut document, 2, chamfered, 0.0);
+    add(&mut document, 2, chamfered(), 0.0);
     add(&mut document, 3, rectangle(), 20.0);
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -1128,6 +1121,65 @@ fn gravity_finds_a_part_resting_below_its_supporters_highest_point() {
         "{gravity}"
     );
     assert_ne!(unchecked["state"], "failed", "{unchecked}");
+}
+
+#[test]
+fn gravity_does_not_count_a_side_or_underside_contact_as_support() {
+    // Each part touches a supported one over a positive face area, but only from
+    // the side or from below, so nothing bears its weight.
+    let place = |document: &mut DocumentStore, id: u64, x: f64, z: f64| {
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: OccurrenceId(id),
+                    transform: Transform::from_translation(x, 0.0, z).unwrap(),
+                },
+            ]))
+            .unwrap();
+    };
+    // Measured by the worker: a cube against the side of a chamfered block on
+    // the floor, its x = 10 face shared over y 0..10, z 2..10.
+    let mut side = DocumentStore::new();
+    add(&mut side, 1, chamfered(), 0.0);
+    add(&mut side, 2, rectangle(), 0.0);
+    place(&mut side, 2, 10.0, 2.0);
+    // Measured by the box hulls: a plate on two stacked cubes, and a cube
+    // pressed against the plate's underside with nothing below it.
+    let mut underside = DocumentStore::new();
+    add(&mut underside, 1, rectangle(), 0.0);
+    add(&mut underside, 2, rectangle(), 0.0);
+    add(
+        &mut underside,
+        3,
+        vec![[0.0, 0.0], [30.0, 0.0], [30.0, 10.0], [0.0, 10.0]],
+        0.0,
+    );
+    add(&mut underside, 4, rectangle(), 0.0);
+    place(&mut underside, 2, 0.0, 10.0);
+    place(&mut underside, 3, 0.0, 20.0);
+    place(&mut underside, 4, 20.0, 10.0);
+    for (document, loose) in [(&side, "occurrence:2"), (&underside, "occurrence:4")] {
+        let report = gravity_with_collision(document, false);
+        assert_eq!(report["collision"]["complete"], true, "{report}");
+        let unsupported = gravity_issues(&report, "gravity.unsupported");
+        assert_eq!(unsupported.len(), 1, "{report}");
+        assert!(
+            unsupported[0].starts_with(&format!("body={loose};")),
+            "{report}"
+        );
+        assert_eq!(report["gravity_support"]["state"], "failed", "{report}");
+    }
+}
+
+/// A 10 mm square with one corner cut off: not a box, so the worker measures it.
+fn chamfered() -> Vec<[f64; 2]> {
+    vec![
+        [0.0, 0.0],
+        [10.0, 0.0],
+        [10.0, 10.0],
+        [5.0, 10.0],
+        [0.0, 5.0],
+    ]
 }
 
 #[test]

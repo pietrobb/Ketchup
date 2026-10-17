@@ -12,6 +12,7 @@ mod order;
 use crate::group_connectivity::validation_context as validation_context_with_groups;
 use crate::validation::AssistantValidationSelection;
 use crate::worker_pool::ExactWorkerUnavailable;
+use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_interaction::spatial::{
     SpatialQueryError, overlapping_bounds_for_sources_with_cancellation, overlapping_bounds_pairs,
 };
@@ -188,14 +189,10 @@ impl ExactGravityContacts {
 
     /// A pass that stopped early still hands over the pairs it did check;
     /// gravity treats the rest as unchecked rather than as no contact.
-    fn collect(
-        &mut self,
-        areas: BTreeMap<(InstancePath, InstancePath), f64>,
-        failures: &mut Vec<Value>,
-    ) {
+    fn collect(&mut self, areas: ContactAreas, failures: &mut Vec<Value>) {
         let contacts = areas
             .into_iter()
-            .map(|((left, right), area)| GravitySupportContact::new(left, right, area))
+            .map(|((left, right), patches)| GravitySupportContact::new(left, right, patches))
             .collect::<Result<Vec<_>, _>>();
         match contacts {
             Ok(contacts) => {
@@ -834,24 +831,38 @@ fn issue(left: &Body, right: &Body, evidence: Value) -> Value {
         "left": identity(left), "right": identity(right), "evidence": evidence})
 }
 
+/// Shared face area of each pair of parts, by the first part's outward normal.
+type ContactAreas = BTreeMap<(InstancePath, InstancePath), Vec<ContactPatch>>;
+
+/// Adds the shared area of bodies `left` and `right`, `patches` facing out of `left`.
 fn add_contact_area(
-    areas: &mut BTreeMap<(InstancePath, InstancePath), f64>,
+    areas: &mut ContactAreas,
     bodies: &[Body],
     left: usize,
     right: usize,
-    area_mm2: f64,
+    patches: &[ContactPatch],
 ) {
     let (left, right) = (
         &bodies[left].occurrence.instance_path,
         &bodies[right].occurrence.instance_path,
     );
-    if left != right {
-        let key = if left <= right {
-            (left.clone(), right.clone())
-        } else {
-            (right.clone(), left.clone())
-        };
-        *areas.entry(key).or_default() += area_mm2;
+    if left == right {
+        return;
+    }
+    let (key, reversed) = if left <= right {
+        ((left.clone(), right.clone()), false)
+    } else {
+        ((right.clone(), left.clone()), true)
+    };
+    // Every pair the pass checked stays listed, with or without shared area.
+    let entry = areas.entry(key).or_default();
+    for patch in patches {
+        let patch = if reversed { patch.reversed() } else { *patch };
+        // Bodies of one part can share area in the same direction: one patch.
+        match entry.iter_mut().find(|known| known.normal == patch.normal) {
+            Some(known) => known.area_mm2 += patch.area_mm2,
+            None => entry.push(patch),
+        }
     }
 }
 
@@ -1355,7 +1366,7 @@ fn collision_report(
         bodies.len() * bodies.len().saturating_sub(1) / 2
     };
     let mut issues = Vec::new();
-    let mut exact_contact_areas = BTreeMap::<(InstancePath, InstancePath), f64>::new();
+    let mut exact_contact_areas = ContactAreas::new();
     let mut checked = 0;
     let mut broad_rejected = 0;
     let mut checked_bodies = BTreeSet::new();
@@ -1568,11 +1579,12 @@ fn collision_report(
             {
                 let decided = hull::measure(a, b, [&graphs[l], &graphs[r]], tolerance.linear_mm());
 
-                if let Some((area_mm2, distance_mm)) = decided {
+                if let Some((patches, distance_mm)) = decided {
                     checked += 1;
                     hull_decided += 1;
+                    let area_mm2 = patches.iter().map(|patch| patch.area_mm2).sum();
                     if collect_gravity_contacts {
-                        add_contact_area(&mut exact_contact_areas, &bodies, left, right, area_mm2);
+                        add_contact_area(&mut exact_contact_areas, &bodies, left, right, &patches);
                     }
                     add_pair_fact(
                         pair_facts.as_deref_mut(),
@@ -1641,7 +1653,7 @@ fn collision_report(
                                             &bodies,
                                             left,
                                             right,
-                                            result.common_contact_area_mm2,
+                                            &result.contact_patches,
                                         );
                                     }
                                     add_pair_fact(

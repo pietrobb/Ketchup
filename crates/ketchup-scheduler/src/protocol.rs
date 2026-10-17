@@ -9,6 +9,7 @@ use crate::{
     StepAssemblyManifest, StepXdeWorkerEvidence, WorkerExactBRepGraphResult,
 };
 use ketchup_dwg::MAX_DWG_SOURCE_BYTES;
+use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_GRAPH_BYTES};
 use ketchup_model::graph::sha256_hex;
 use ketchup_program::{
@@ -449,11 +450,13 @@ pub struct WorkerImportPart {
     pub tolerance: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PairMeasure {
     pub common_volume_mm3: f64,
     pub common_thickness_mm: f64,
     pub common_contact_area_mm2: f64,
+    /// `common_contact_area_mm2` by the left body's outward normal.
+    pub contact_patches: Vec<ContactPatch>,
     pub distance_mm: f64,
 }
 
@@ -569,6 +572,7 @@ mod tests {
                 common_volume_mm3: 0.0,
                 common_thickness_mm: 0.0,
                 common_contact_area_mm2: -0.0,
+                contact_patches: Vec::new(),
                 distance_mm: f64::MIN_POSITIVE,
             }),
             WorkerReply::Failure(WorkerFailure::invalid_request()),

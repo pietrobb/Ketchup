@@ -283,7 +283,7 @@ pub enum ExactPairRelation {
     Separated,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ExactPairQueryResult {
     pub relation: ExactPairRelation,
     pub common_volume_mm3: f64,
@@ -293,6 +293,8 @@ pub struct ExactPairQueryResult {
     pub common_thickness_mm: f64,
     /// Area of zero-volume common faces; positive only for face contact.
     pub common_contact_area_mm2: f64,
+    /// `common_contact_area_mm2` by the left body's outward normal.
+    pub contact_patches: Vec<ContactPatch>,
     /// Minimum solid-set distance; zero for penetrating/contained bodies.
     pub distance_mm: f64,
 }

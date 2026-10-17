@@ -22,6 +22,7 @@ mod thread;
 mod validation;
 pub use evidence::*;
 pub use exchange::*;
+pub use ketchup_geometry::contact_patch::ContactPatch;
 use output::*;
 use segments::*;
 pub use spec::*;
@@ -121,12 +122,20 @@ mod ffi {
         spline_point_count: u32,
     }
 
+    /// Shared face area in one direction: `normal` is the left body's outward
+    /// unit normal, zero for curved faces.
+    struct NativeContactPatch {
+        normal: NativePoint,
+        area_mm2: f64,
+    }
+
     struct NativePairQuery {
         status: u8,
         diagnostic: String,
         common_volume_mm3: f64,
         common_thickness_mm: f64,
         common_contact_area_mm2: f64,
+        contact_patches: Vec<NativeContactPatch>,
         distance_mm: f64,
     }
 

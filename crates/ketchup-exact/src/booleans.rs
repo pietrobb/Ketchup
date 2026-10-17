@@ -125,6 +125,14 @@ impl ExactBackend {
             )
         })?;
         let result = ffi::query_body_pair_native(left, right, contact_tolerance_mm);
+        let contact_patches = result
+            .contact_patches
+            .iter()
+            .map(|patch| ContactPatch {
+                normal: [patch.normal.x, patch.normal.y, patch.normal.z],
+                area_mm2: patch.area_mm2,
+            })
+            .collect::<Vec<_>>();
         if result.status != 0 {
             return Err(error(
                 if result.status == 6 {
@@ -147,6 +155,7 @@ impl ExactBackend {
             || (result.common_volume_mm3 > 0.0
                 && (result.common_contact_area_mm2 > 0.0 || result.distance_mm != 0.0))
             || (result.common_contact_area_mm2 > 0.0 && result.distance_mm != 0.0)
+            || !ContactPatch::consistent(&contact_patches, result.common_contact_area_mm2)
         {
             return Err(error(
                 GeometryErrorCode::InvalidShape,
@@ -164,6 +173,7 @@ impl ExactBackend {
             common_volume_mm3: result.common_volume_mm3,
             common_thickness_mm: result.common_thickness_mm,
             common_contact_area_mm2: result.common_contact_area_mm2,
+            contact_patches,
             distance_mm: result.distance_mm,
         })
     }
