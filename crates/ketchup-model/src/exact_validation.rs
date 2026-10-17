@@ -680,6 +680,9 @@ pub struct GravitySupportInput {
     /// Verified rigid connections (joinery, fixed joints): a supported part
     /// carries every part rigidly attached to it, whatever the direction.
     rigid_connections: Vec<(InstancePath, InstancePath)>,
+    /// False when the exact pair pass stopped early: a pair without a
+    /// positive-area exact contact may then simply not have been checked.
+    exact_coverage_complete: bool,
     gravity_vector_m_s2: [f64; 3],
     gravity_direction: [f64; 3],
     gravity_magnitude_m_s2: f64,
@@ -704,6 +707,7 @@ impl GravitySupportInput {
             participants,
             exact_contacts: Vec::new(),
             rigid_connections: Vec::new(),
+            exact_coverage_complete: true,
             gravity_vector_m_s2,
             gravity_direction: gravity_vector_m_s2
                 .map(|component| component / gravity_magnitude_m_s2),
@@ -730,6 +734,18 @@ impl GravitySupportInput {
     #[must_use]
     pub fn exact_contacts(&self) -> &[GravitySupportContact] {
         &self.exact_contacts
+    }
+
+    /// The exact contacts cover only the pairs checked before the pass stopped.
+    #[must_use]
+    pub const fn with_incomplete_exact_coverage(mut self) -> Self {
+        self.exact_coverage_complete = false;
+        self
+    }
+
+    #[must_use]
+    pub const fn exact_coverage_complete(&self) -> bool {
+        self.exact_coverage_complete
     }
 
     #[must_use]
@@ -1041,7 +1057,15 @@ pub fn gravity_support_input_bytes(input: &GravitySupportInput) -> Vec<u8> {
         push_instance_path(&mut output, left);
         push_instance_path(&mut output, right);
     }
+    output.push(u8::from(input.exact_coverage_complete()));
     output
+}
+
+#[derive(Clone, Copy, Debug)]
+enum UnprovenSupport {
+    Envelope,
+    UncheckedPair,
+    UnprovenConnection,
 }
 
 #[derive(Clone, Debug)]
@@ -1049,12 +1073,12 @@ enum GravitySupportSource {
     ExplicitGrounding,
     ProvenContact(usize),
     RigidConnection(usize),
-    UnprovenContact(usize),
+    UnprovenContact(usize, UnprovenSupport),
 }
 
 impl GravitySupportSource {
     const fn is_proven(&self) -> bool {
-        !matches!(self, Self::UnprovenContact(_))
+        !matches!(self, Self::UnprovenContact(..))
     }
 }
 
@@ -1062,6 +1086,9 @@ impl GravitySupportSource {
 enum GravityContactEvidence {
     None,
     UnprovenEnvelope,
+    /// The bodies may bear on each other, but the exact pass stopped before
+    /// checking this pair.
+    UncheckedPair,
     ProvenExact,
 }
 
@@ -1117,7 +1144,7 @@ fn evaluate_gravity_support(
                     && body_support_contact(
                         candidate,
                         &participants[supporter_index].body,
-                        input.exact_contacts(),
+                        input,
                         support_direction,
                         tolerance,
                     ) == GravityContactEvidence::ProvenExact
@@ -1128,23 +1155,46 @@ fn evaluate_gravity_support(
                 changed = true;
                 continue;
             }
+            // Whatever only might carry the part, or carries it through a part
+            // that is itself unproven, leaves its support unproven, not absent.
             if support[candidate_index].is_none()
-                && let Some(supporter_index) = (0..participants.len()).find(|&supporter_index| {
-                    supporter_index != candidate_index
-                        && support[supporter_index].is_some()
-                        && participants[candidate_index].support_group
-                            == participants[supporter_index].support_group
-                        && body_support_contact(
+                && let Some((supporter_index, reason)) =
+                    (0..participants.len()).find_map(|supporter_index| {
+                        if supporter_index == candidate_index
+                            || support[supporter_index].is_none()
+                            || participants[candidate_index].support_group
+                                != participants[supporter_index].support_group
+                        {
+                            return None;
+                        }
+                        let supporter = &participants[supporter_index].body;
+                        if input
+                            .rigidly_connected(candidate.instance_path(), supporter.instance_path())
+                        {
+                            return Some((supporter_index, UnprovenSupport::UnprovenConnection));
+                        }
+                        match body_support_contact(
                             candidate,
-                            &participants[supporter_index].body,
-                            input.exact_contacts(),
+                            supporter,
+                            input,
                             support_direction,
                             tolerance,
-                        ) != GravityContactEvidence::None
-                })
+                        ) {
+                            GravityContactEvidence::None => None,
+                            GravityContactEvidence::UncheckedPair => {
+                                Some((supporter_index, UnprovenSupport::UncheckedPair))
+                            }
+                            GravityContactEvidence::UnprovenEnvelope
+                            | GravityContactEvidence::ProvenExact => {
+                                Some((supporter_index, UnprovenSupport::Envelope))
+                            }
+                        }
+                    })
             {
-                support[candidate_index] =
-                    Some(GravitySupportSource::UnprovenContact(supporter_index));
+                support[candidate_index] = Some(GravitySupportSource::UnprovenContact(
+                    supporter_index,
+                    reason,
+                ));
                 changed = true;
             }
         }
@@ -1163,7 +1213,7 @@ fn evaluate_gravity_support(
             Some(
                 GravitySupportSource::ProvenContact(supporter_index)
                 | GravitySupportSource::RigidConnection(supporter_index)
-                | GravitySupportSource::UnprovenContact(supporter_index),
+                | GravitySupportSource::UnprovenContact(supporter_index, _),
             ) => EvidenceClass::weakest(
                 [
                     &participant.body.evidence_class,
@@ -1208,15 +1258,26 @@ fn evaluate_gravity_support(
                     instance_path_label(&participants[supporter_index].body.instance_path),
                 ),
             ),
-            Some(GravitySupportSource::UnprovenContact(supporter_index)) => {
+            Some(GravitySupportSource::UnprovenContact(supporter_index, reason)) => {
                 unproven = true;
+                let supporter =
+                    instance_path_label(&participants[supporter_index].body.instance_path);
+                let detail = match reason {
+                    UnprovenSupport::Envelope => format!(
+                        "potentially_supported_by={supporter}; envelope_contact_method={GENERAL_BODY_OBB_NARROW_PHASE_METHOD_V1}; exact_positive_area_contact_required=true"
+                    ),
+                    UnprovenSupport::UncheckedPair => format!(
+                        "potentially_supported_by={supporter}; exact_pair_checked=false; exact_positive_area_contact_required=true"
+                    ),
+                    UnprovenSupport::UnprovenConnection => format!(
+                        "rigidly_connected_to={supporter}; connected_part_support_unproven=true"
+                    ),
+                };
                 let evidence = format!(
-                    "body={}; gravity_direction={:?}; support_group={}; potentially_supported_by={}; envelope_contact_method={}; exact_positive_area_contact_required=true",
+                    "body={}; gravity_direction={:?}; support_group={}; {detail}",
                     instance_path_label(&participant.body.instance_path),
                     input.gravity_direction(),
                     participant.support_group,
-                    instance_path_label(&participants[supporter_index].body.instance_path),
-                    GENERAL_BODY_OBB_NARROW_PHASE_METHOD_V1
                 );
                 unresolved_conditions.push(evidence.clone());
                 (
@@ -1281,7 +1342,7 @@ fn evaluate_gravity_support(
 fn body_support_contact(
     candidate: &GeneralBodyParticipant,
     supporter: &GeneralBodyParticipant,
-    exact_contacts: &[GravitySupportContact],
+    input: &GravitySupportInput,
     support_direction: [f64; 3],
     tolerance: TolerancePolicy,
 ) -> GravityContactEvidence {
@@ -1298,22 +1359,35 @@ fn body_support_contact(
     if (candidate_lower_mm - supporter_upper_mm).abs() > tolerance.linear_mm() {
         return GravityContactEvidence::None;
     }
-    if let Some(contact) = exact_contacts
+    let complete = input.exact_coverage_complete();
+    if let Some(contact) = input
+        .exact_contacts()
         .iter()
         .find(|contact| contact.connects(candidate.instance_path(), supporter.instance_path()))
     {
-        return if contact.common_contact_area_mm2() > tolerance.linear_mm() * tolerance.linear_mm()
-        {
-            GravityContactEvidence::ProvenExact
-        } else {
-            GravityContactEvidence::None
-        };
+        if contact.common_contact_area_mm2() > tolerance.linear_mm() * tolerance.linear_mm() {
+            return GravityContactEvidence::ProvenExact;
+        }
+        // A pass that stopped early may have checked only some of the bodies'
+        // solids, so a zero area is no proof of no bearing.
+        if complete {
+            return GravityContactEvidence::None;
+        }
     }
     let Ok(narrow_phase) = general_body_narrow_phase(candidate, supporter, tolerance) else {
         return GravityContactEvidence::None;
     };
-    if narrow_phase.relation != GeneralBodyNarrowPhaseRelation::Touching {
-        return GravityContactEvidence::None;
+    match narrow_phase.relation {
+        GeneralBodyNarrowPhaseRelation::Touching => {}
+        // The envelopes enclose the bodies: overlapping envelopes of
+        // non-box bodies say nothing until the exact pair is checked.
+        GeneralBodyNarrowPhaseRelation::Intersecting
+            if !complete && matches!(narrow_phase.evidence_class, EvidenceClass::Tolerant(_)) =>
+        {
+            return GravityContactEvidence::UncheckedPair;
+        }
+        GeneralBodyNarrowPhaseRelation::Separated
+        | GeneralBodyNarrowPhaseRelation::Intersecting => return GravityContactEvidence::None,
     }
     match narrow_phase.evidence_class {
         EvidenceClass::Exact
@@ -1327,6 +1401,7 @@ fn body_support_contact(
             GravityContactEvidence::ProvenExact
         }
         EvidenceClass::Exact => GravityContactEvidence::None,
+        EvidenceClass::Tolerant(_) if !complete => GravityContactEvidence::UncheckedPair,
         EvidenceClass::Tolerant(_) => GravityContactEvidence::UnprovenEnvelope,
     }
 }

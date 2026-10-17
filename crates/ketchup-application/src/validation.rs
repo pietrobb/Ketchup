@@ -3450,7 +3450,7 @@ pub(crate) fn assistant_validation_context_base(
     exact_results: &ExactResultRegistry,
     selection: &AssistantValidationSelection,
     collision: serde_json::Value,
-    exact_gravity_contacts: &[GravitySupportContact],
+    exact_gravity_contacts: &crate::collision::ExactGravityContacts,
 ) -> serde_json::Value {
     let tolerance = snapshot.tolerance();
     let needs_participant_projection = selection.requested.iter().any(|id| *id != "collision");
@@ -3671,8 +3671,8 @@ pub(crate) fn assistant_validation_context_base(
             GravitySupportInput::new(gravity_participants.clone(), vector_m_s2).ok()
         })
         .map(|input| {
-            input
-                .with_exact_contacts(exact_gravity_contacts.to_vec())
+            exact_gravity_contacts
+                .bind(input)
                 .with_rigid_connections(gravity_rigid_connections(snapshot, &gravity_participants))
         });
     // Collision coverage and BRep evidence are independent of the bounded

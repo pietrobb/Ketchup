@@ -7,6 +7,7 @@ use ketchup_application::validation::{
 };
 use ketchup_application::{AssistantValidationSelection, DocumentSession, SessionSettings};
 use ketchup_model::{
+    assembly_joint::{AssemblyJoint, AssemblyJointId, AssemblyJointKind},
     document::*,
     exact_product::ExactResultRegistry,
     persistence::{self, ContainerData},
@@ -974,6 +975,111 @@ fn gravity_takes_every_visible_part_and_ignores_hidden_ones() {
     assert_eq!(gravity["state"], "passed", "{gravity}");
     assert_eq!(gravity["checked_occurrence_count"], 120, "{gravity}");
     assert_eq!(report["complete"], true, "{report}");
+}
+
+/// A 10 mm cube on the floor, a chamfered 10 mm block standing on it, and a
+/// cube held only by a fixed joint to that block, hanging beside it.
+fn block_and_hanging_cube() -> DocumentStore {
+    let mut document = DocumentStore::new();
+    let chamfered = vec![
+        [0.0, 0.0],
+        [10.0, 0.0],
+        [10.0, 10.0],
+        [5.0, 10.0],
+        [0.0, 5.0],
+    ];
+    add(&mut document, 1, rectangle(), 0.0);
+    add(&mut document, 2, chamfered, 0.0);
+    add(&mut document, 3, rectangle(), 20.0);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(2),
+                transform: Transform::from_translation(0.0, 0.0, 10.0).unwrap(),
+            },
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(3),
+                transform: Transform::from_translation(20.0, 0.0, 12.0).unwrap(),
+            },
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                AssemblyJointId(1),
+                OccurrenceId(2),
+                OccurrenceId(3),
+                AssemblyJointKind::Fixed,
+            )),
+        ]))
+        .unwrap();
+    document
+}
+
+fn gravity_with_collision(document: &DocumentStore, cancelled: bool) -> serde_json::Value {
+    assistant_validation_context_with_worker_cancellation(
+        &document.current(),
+        &ExactResultRegistry::default(),
+        &AssistantValidationSelection::only(&["collision", "gravity_support"]),
+        &ContainerData::default(),
+        None,
+        Duration::from_secs(120),
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(cancelled)),
+    )
+}
+
+fn gravity_issues(report: &serde_json::Value, code: &str) -> Vec<String> {
+    report["gravity_support"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|issue| issue["code"] == code)
+        .map(|issue| issue["evidence"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn gravity_without_the_exact_pairs_checked_does_not_call_parts_unsupported() {
+    let document = block_and_hanging_cube();
+    let checked = gravity_with_collision(&document, false);
+    assert_eq!(checked["collision"]["complete"], true, "{checked}");
+    assert_eq!(checked["gravity_support"]["state"], "passed", "{checked}");
+
+    // A request cancelled before it starts checks no pair: the block's
+    // bearing on the cube is unproven, and so is the cube hanging from it.
+    let unchecked = gravity_with_collision(&document, true);
+    assert_eq!(unchecked["collision"]["complete"], false, "{unchecked}");
+    let gravity = &unchecked["gravity_support"];
+    assert_eq!(gravity["state"], "not_evaluated", "{gravity}");
+    assert_eq!(gravity["complete"], false, "{gravity}");
+    assert_eq!(gravity["unsupported_count"], 0, "{gravity}");
+    assert!(
+        gravity_issues(&unchecked, "gravity.unsupported").is_empty(),
+        "{gravity}"
+    );
+    let unproven = gravity_issues(&unchecked, "gravity.contact-unproven");
+    for occurrence in ["occurrence:2", "occurrence:3"] {
+        assert!(
+            unproven
+                .iter()
+                .any(|evidence| evidence.starts_with(&format!("body={occurrence};"))),
+            "{gravity}"
+        );
+    }
+    assert_ne!(unchecked["state"], "failed", "{unchecked}");
+
+    // A part with no support candidate at all is still unsupported.
+    let mut floating = block_and_hanging_cube();
+    add(&mut floating, 4, rectangle(), 40.0);
+    floating
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(4),
+                transform: Transform::from_translation(40.0, 0.0, 30.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let report = gravity_with_collision(&floating, true);
+    let unsupported = gravity_issues(&report, "gravity.unsupported");
+    assert_eq!(unsupported.len(), 1, "{report}");
+    assert!(unsupported[0].starts_with("body=occurrence:4;"), "{report}");
+    assert_eq!(report["gravity_support"]["state"], "failed", "{report}");
 }
 
 #[test]

@@ -25,8 +25,8 @@ use ketchup_model::exact_product::{
 };
 use ketchup_model::exact_validation::{
     GeneralBodyParticipant, GeneralBodyValidationError, GeneralClearanceCase,
-    GravitySupportContact, general_body_input_bytes, general_body_narrow_phase,
-    general_body_validation_policy, general_body_validator_descriptor,
+    GravitySupportContact, GravitySupportInput, general_body_input_bytes,
+    general_body_narrow_phase, general_body_validation_policy, general_body_validator_descriptor,
 };
 use ketchup_model::persistence::ContainerData;
 use ketchup_model::tolerance::limits;
@@ -163,7 +163,53 @@ pub fn assistant_validation_context(
     selection: &AssistantValidationSelection,
 ) -> Value {
     let collision = collision_report(snapshot, selection, None, None, None, None, None);
-    validation_context_with_groups(snapshot, exact_results, selection, collision, &[])
+    // No exact pass: gravity decides from the analytic envelopes alone.
+    let contacts = ExactGravityContacts {
+        contacts: Vec::new(),
+        complete: true,
+    };
+    validation_context_with_groups(snapshot, exact_results, selection, collision, &contacts)
+}
+
+/// The exact bearing contacts the collision pass measured, and whether that
+/// pass checked every pair. A pass that stopped early leaves pairs unchecked.
+pub(crate) struct ExactGravityContacts {
+    pub(crate) contacts: Vec<GravitySupportContact>,
+    pub(crate) complete: bool,
+}
+
+impl ExactGravityContacts {
+    pub(crate) fn bind(&self, input: GravitySupportInput) -> GravitySupportInput {
+        let input = input.with_exact_contacts(self.contacts.clone());
+        if self.complete {
+            input
+        } else {
+            input.with_incomplete_exact_coverage()
+        }
+    }
+
+    /// A pass that stopped early still hands over the pairs it did check;
+    /// gravity treats the rest as unchecked rather than as no contact.
+    fn collect(
+        &mut self,
+        areas: BTreeMap<(InstancePath, InstancePath), f64>,
+        failures: &mut Vec<Value>,
+    ) {
+        let contacts = areas
+            .into_iter()
+            .map(|((left, right), area)| GravitySupportContact::new(left, right, area))
+            .collect::<Result<Vec<_>, _>>();
+        match contacts {
+            Ok(contacts) => {
+                self.complete = failures.is_empty();
+                self.contacts = contacts;
+            }
+            Err(error) => failures.push(json!({
+                "reason": "invalid_exact_gravity_contact",
+                "detail": format!("{error:?}"),
+            })),
+        }
+    }
 }
 
 /// Shared desktop/session/repair entry point. `None` discovers the worker beside
@@ -228,7 +274,10 @@ pub fn local_validation_context_with_worker_cancellation(
         !selection.requested.contains("gravity_support")
             && !selection.requested.contains("group_connectivity")
     });
-    let mut gravity_contacts = Vec::new();
+    let mut gravity_contacts = ExactGravityContacts {
+        contacts: Vec::new(),
+        complete: false,
+    };
     let collision = collision_report(
         snapshot,
         selection,
@@ -993,7 +1042,7 @@ fn collision_report(
     worker: Option<(&ContainerData, Option<PathBuf>, Duration)>,
     scope: Option<&CollisionScope>,
     cancellation: Option<Arc<AtomicBool>>,
-    mut gravity_contacts: Option<&mut Vec<GravitySupportContact>>,
+    mut gravity_contacts: Option<&mut ExactGravityContacts>,
     pair_facts: Option<&mut ExactPairFacts>,
 ) -> Value {
     let started = Instant::now();
@@ -1654,22 +1703,8 @@ fn collision_report(
             "unchecked_pair_count": total_pairs.saturating_sub(checked),
             "unchecked_scoped_body_count": scoped_body_count.saturating_sub(checked_bodies.len())}));
     }
-    if collect_gravity_contacts && failures.is_empty() {
-        let contacts = exact_contact_areas
-            .into_iter()
-            .map(|((left, right), area)| GravitySupportContact::new(left, right, area))
-            .collect::<Result<Vec<_>, _>>();
-        match contacts {
-            Ok(contacts) => {
-                if let Some(output) = gravity_contacts.take() {
-                    *output = contacts;
-                }
-            }
-            Err(error) => failures.push(json!({
-                "reason": "invalid_exact_gravity_contact",
-                "detail": format!("{error:?}"),
-            })),
-        }
+    if collect_gravity_contacts && let Some(output) = gravity_contacts.take() {
+        output.collect(exact_contact_areas, &mut failures);
     }
     let checked_occurrences = checked_bodies
         .iter()

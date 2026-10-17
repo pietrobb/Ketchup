@@ -1,9 +1,8 @@
 //! Physical connectivity of canonical groups, independent of program ownership and grounding.
-use crate::collision::ExactPairFacts;
+use crate::collision::{ExactGravityContacts, ExactPairFacts};
 use crate::validation::AssistantValidationSelection;
 use ketchup_model::document::{GroupId, InstancePath, SceneOccurrence, Snapshot};
 use ketchup_model::exact_product::ExactResultRegistry;
-use ketchup_model::exact_validation::GravitySupportContact;
 use ketchup_model::tolerance::limits;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -193,7 +192,7 @@ pub(crate) fn validation_context(
     exact_results: &ExactResultRegistry,
     selection: &AssistantValidationSelection,
     mut collision: Value,
-    contacts: &[GravitySupportContact],
+    contacts: &ExactGravityContacts,
 ) -> Value {
     if selection.is_valid() && selection.requested.contains(ID) && collision.get(ID).is_none() {
         collision = finish_collision(collision, snapshot, selection, None);
