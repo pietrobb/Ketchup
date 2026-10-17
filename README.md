@@ -148,18 +148,24 @@ When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-s
 The supported development platform is **Windows x86-64** with Rust 1.97.0 and OCCT 8.0.1. See the [Windows toolchain guide](docs/toolchain/WINDOWS.md) for the pinned native environment.
 
 ```powershell
-cargo build -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker
-cargo run -p ketchup-app
+cargo build --locked --release
+target\release\ketchup-app.exe
 ```
 
-Validate the workspace:
+The release build includes the exact and program workers the window starts beside itself.
+
+Validate the workspace with the commands of [AGENTS.md](AGENTS.md) §6 and §8:
 
 ```powershell
-cargo test --locked --workspace --all-targets --no-fail-fast -- --test-threads=1
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --all-targets -- --ignored large_house
+cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
-python scripts/check_no_named_products.py
+Get-ChildItem scripts\check_*.py | ForEach-Object { python $_.FullName }
+python scripts\run_production_tests.py
 ```
+
+Filter a run after `--` (for example `-- member_design::`). The last command runs the Python tests that drive the built headless CLI and fails on any skip. Install the pre-push hook, which runs fmt, the checks and Clippy, once per clone with `git config core.hooksPath scripts/hooks`.
 
 The Rust workspace also builds on Linux against an OCCT 8.0.1 install in the Unix layout (`include/opencascade`, `lib`). Point `KETCHUP_OCCT_ROOT` at it and make the libraries loadable, for example with `RUSTFLAGS="-C link-arg=-Wl,-rpath,$KETCHUP_OCCT_ROOT/lib"`.
 
