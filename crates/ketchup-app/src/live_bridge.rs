@@ -74,6 +74,7 @@ mod program_check;
 mod program_dry_run;
 mod program_navigation;
 pub use program_access::{ReportSection, SourceEdit};
+pub use program_variant_export::CsvDecimal;
 mod measurement;
 mod plugin;
 pub(crate) mod plugin_consent;
@@ -298,6 +299,8 @@ pub enum Request {
     ExportProgramVariants {
         expected: Stamp,
         path: String,
+        #[serde(default)]
+        decimal: CsvDecimal,
     },
     ProgramReport {
         expected: Stamp,

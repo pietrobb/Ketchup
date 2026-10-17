@@ -76,7 +76,11 @@ impl KetchupApp {
                     ),
                     VariantAction::Export(path) => {
                         let path = path.display().to_string();
-                        let request = Request::ExportProgramVariants { expected, path };
+                        let request = Request::ExportProgramVariants {
+                            expected,
+                            path,
+                            decimal: app.value_box.decimal.into(),
+                        };
                         runner.start_queued_variant_export(app, context, queued, request);
                     }
                     VariantAction::Save(name) => {

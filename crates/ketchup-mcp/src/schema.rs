@@ -97,6 +97,7 @@ pub fn tools() -> Value {
                 "overrides": {"type": "object", "additionalProperties": {"type": "number"}, "description": "For apply and check: parameter values by name, e.g. {\"width\": 900}. Omitted keeps the values the window stored for this program (e.g. after Push/Pull); {} clears them."},
                 "file_name": {"type": "string", "description": "For apply: program file name for a new program."},
                 "path": {"type": "string", "description": "For export_variants: new local absolute path ending in .csv or .xlsx for the cut lists; the takeoffs go beside it as <name>.takeoff.<ext>."},
+                "decimal": {"type": "string", "enum": ["point", "comma"], "description": "For export_variants to .csv: the decimal separator, default point (columns split on ,); comma splits columns on ; as a spreadsheet with a decimal comma expects."},
                 "replace_document": {"type": "boolean", "description": "For apply: replace a saved document that no program owns."},
                 "name": {"type": "string", "description": "For docs: topic id or example file. For save_variant, use_variant and delete_variant: the variant name."},
                 "expected": {"type": "object", "description": "Required for patch/report: existing stamp from the read/apply result. Optional guard for other actions."},

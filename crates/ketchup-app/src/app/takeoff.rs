@@ -9,7 +9,7 @@ use ketchup_program::ProgramModel;
 use ketchup_program::bom::{bar_schedule_table, bom, hardware_table};
 use ketchup_program::cut_list::cut_list_table;
 use ketchup_program::table::DecimalSeparator;
-use ketchup_program::takeoff::{Takeoff, material_takeoff, takeoff_csv};
+use ketchup_program::takeoff::{Takeoff, material_takeoff};
 
 /// A list of the program's parts the takeoff window exports as a table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,10 +136,13 @@ impl KetchupApp {
         Ok(material_takeoff(model, &counted))
     }
 
-    /// Writes the takeoff of the counted parts as semicolon-separated CSV.
+    /// Writes the takeoff of the counted parts as CSV with the system's
+    /// decimal separator.
     pub fn export_material_takeoff_to(&mut self, path: &Path) -> bool {
+        let decimal = self.csv_decimal();
         let result = self.material_takeoff().and_then(|takeoff| {
-            write_atomically(path, takeoff_csv(&takeoff).as_bytes())
+            let csv = ketchup_application::program_variants::takeoff_table(&takeoff).csv(decimal);
+            write_atomically(path, csv.as_bytes())
                 .map_err(|error| TakeoffError::Write(Arc::new(error)))
         });
         let (key, mut arguments) = match &result {
@@ -154,8 +157,17 @@ impl KetchupApp {
         result.is_ok()
     }
 
+    /// How a CSV from the window writes numbers: with the separator its value
+    /// fields read (the system's), never the interface language's (UI-9).
+    fn csv_decimal(&self) -> DecimalSeparator {
+        match self.value_box.decimal {
+            crate::length_input::DecimalSeparator::Point => DecimalSeparator::Point,
+            crate::length_input::DecimalSeparator::Comma => DecimalSeparator::Comma,
+        }
+    }
+
     /// Writes `list` as a table: XLSX for a `.xlsx` path, otherwise CSV with
-    /// the decimal separator of the interface language. The cut list has the
+    /// the system's decimal separator. The cut list has the
     /// counted parts, the hardware list and the bar schedule are the rows the
     /// program report gives (MCP report sections `hardware`, `bar_schedule`).
     pub(crate) fn export_list_to(&mut self, list: PartList, path: &Path) -> bool {
@@ -183,11 +195,7 @@ impl KetchupApp {
             let bytes = if xlsx {
                 table.xlsx()
             } else {
-                let decimal = match self.language {
-                    Some(language::UiLanguage::English) => DecimalSeparator::Point,
-                    Some(language::UiLanguage::Slovak) | None => DecimalSeparator::Comma,
-                };
-                table.csv(decimal).into_bytes()
+                table.csv(self.csv_decimal()).into_bytes()
             };
             write_atomically(path, &bytes).map_err(|error| TakeoffError::Write(Arc::new(error)))
         });

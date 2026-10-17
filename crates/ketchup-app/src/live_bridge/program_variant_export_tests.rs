@@ -49,6 +49,7 @@ fn export(app: &KetchupApp, path: &Path) -> Request {
     Request::ExportProgramVariants {
         expected: app.live_bridge_stamp(),
         path: path.display().to_string(),
+        decimal: CsvDecimal::Point,
     }
 }
 
@@ -128,6 +129,34 @@ fn every_variant_is_exported_from_a_worker_and_the_document_stays_as_it_is() {
     );
     assert_eq!(app.undo_step_count(), undo);
     assert_eq!(app.document.current_rule_program().cloned(), program);
+}
+
+/// UI-9 (review 2026-10-17): a client names how CSV numbers are written
+/// (`decimal`), a point unless it asks; the window's language plays no part.
+#[test]
+fn a_variant_export_writes_numbers_as_the_request_names_them() {
+    let (mut app, mut bridge) = cabinet_with_variants();
+    app.set_ui_language(crate::language::UiLanguage::Slovak);
+    let folder = tempfile::tempdir().unwrap();
+    for (decimal, name, header) in [
+        (None, "plain.csv", "variant,position,"),
+        (Some("comma"), "comma.csv", "variant;position;"),
+        (Some("point"), "point.csv", "variant,position,"),
+    ] {
+        let path = folder.path().join(name);
+        let mut request = json!({
+            "method": "export_program_variants",
+            "expected": app.live_bridge_stamp(),
+            "path": path,
+        });
+        if let Some(decimal) = decimal {
+            request["decimal"] = json!(decimal);
+        }
+        let request: Request = serde_json::from_value(request).unwrap();
+        run(&mut bridge, &mut app, request);
+        let cut_list = read(&path);
+        assert!(cut_list.starts_with(header), "{decimal:?}\n{cut_list}");
+    }
 }
 
 #[test]

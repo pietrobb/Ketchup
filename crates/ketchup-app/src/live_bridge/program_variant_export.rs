@@ -33,6 +33,26 @@ enum Failed {
     Write(std::io::Error),
 }
 
+/// How a CSV export writes numbers, named by the request: a client's choice
+/// (a point unless it asks), the window's value fields' separator from the
+/// window, never the interface language.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CsvDecimal {
+    #[default]
+    Point,
+    Comma,
+}
+
+impl From<crate::length_input::DecimalSeparator> for CsvDecimal {
+    fn from(decimal: crate::length_input::DecimalSeparator) -> Self {
+        match decimal {
+            crate::length_input::DecimalSeparator::Point => Self::Point,
+            crate::length_input::DecimalSeparator::Comma => Self::Comma,
+        }
+    }
+}
+
 /// Where the two tables go and how numbers are written.
 struct Targets {
     cut_list: PathBuf,
@@ -151,7 +171,12 @@ impl LiveBridge {
         app: &KetchupApp,
         request: Request,
     ) -> Result<(RuleProgramSource, Targets), &'static str> {
-        let Request::ExportProgramVariants { expected, path } = request else {
+        let Request::ExportProgramVariants {
+            expected,
+            path,
+            decimal,
+        } = request
+        else {
             return Err("invalid_request");
         };
         Self::guard(app, &Some(expected))?;
@@ -197,15 +222,14 @@ impl LiveBridge {
                 json!({"path": existing}),
             ));
         }
-        let decimal = match app.language {
-            Some(crate::language::UiLanguage::English) => DecimalSeparator::Point,
-            Some(crate::language::UiLanguage::Slovak) | None => DecimalSeparator::Comma,
-        };
         let targets = Targets {
             cut_list: target.to_path_buf(),
             takeoff,
             xlsx: extension == "xlsx",
-            decimal,
+            decimal: match decimal {
+                CsvDecimal::Point => DecimalSeparator::Point,
+                CsvDecimal::Comma => DecimalSeparator::Comma,
+            },
         };
         Ok((program, targets))
     }

@@ -302,6 +302,7 @@ fn takeoff_csv_export_writes_the_visible_parts() {
     .unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("vykaz.csv");
+    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
     std::fs::write(&path, "an older takeoff").unwrap();
     assert!(app.export_material_takeoff_to(&path));
     let csv = std::fs::read_to_string(&path).unwrap();
@@ -313,6 +314,46 @@ fn takeoff_csv_export_writes_the_visible_parts() {
     assert!(app.digest.contains("vykaz.csv"));
     // Written through a temporary file that replaced the old export.
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+/// UI-9 (review 2026-10-17): CSV numbers follow the system's decimal
+/// separator, the one the value fields read, not the interface language: an
+/// English window on a Slovak system writes what Excel there splits.
+#[test]
+fn a_csv_export_follows_the_systems_decimal_separator_not_the_language() {
+    use crate::language::UiLanguage::{English, Slovak};
+    use crate::length_input::DecimalSeparator::{Comma, Point};
+    let mut app = KetchupApp::new();
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "house.star".into(),
+            source: SOURCE.into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("vykaz.csv");
+    for (language, decimal, row) in [
+        (
+            English,
+            Comma,
+            "stena;drevo;140;60;5;12,5;1,75;0,105;blank\n",
+        ),
+        (
+            Slovak,
+            Point,
+            "stena,drevo,140,60,5,12.5,1.75,0.105,blank\n",
+        ),
+    ] {
+        app.set_ui_language(language);
+        app.value_box.decimal = decimal;
+        assert!(app.export_material_takeoff_to(&path), "{}", app.digest);
+        let csv = std::fs::read_to_string(&path).unwrap();
+        assert!(csv.contains(row), "{language:?} {decimal:?}\n{csv}");
+    }
 }
 
 /// The window exports the hardware list and the bar schedule the program
@@ -335,7 +376,7 @@ fn hardware_and_bar_schedule_export_the_report_rows() {
         true,
     )
     .unwrap();
-    app.set_ui_language(crate::language::UiLanguage::Slovak);
+    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
     let directory = tempfile::tempdir().unwrap();
     let (_, report) = ketchup_program::run("bars.star", source, &BTreeMap::new()).unwrap();
 
@@ -379,7 +420,7 @@ fn hardware_and_bar_schedule_export_the_report_rows() {
 
 /// Review 2026-10-09 §5.1 (8) and CSV-1: the cut list is a real table, one row
 /// per group of identical visible parts, with a header; CSV follows the
-/// interface language's decimal separator and XLSX is a workbook.
+/// system's decimal separator (UI-9) and XLSX is a workbook.
 #[test]
 fn cut_list_export_is_a_table_of_the_visible_parts_in_csv_or_xlsx() {
     let mut app = KetchupApp::new();
@@ -403,7 +444,7 @@ fn cut_list_export_is_a_table_of_the_visible_parts_in_csv_or_xlsx() {
     assert!(app.set_tag_visibility(concept, false));
     let directory = tempfile::tempdir().unwrap();
 
-    app.set_ui_language(crate::language::UiLanguage::Slovak);
+    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
     let path = directory.path().join("kusovnik.csv");
     assert!(
         app.export_list_to(PartList::CutList, &path),
@@ -418,7 +459,7 @@ fn cut_list_export_is_a_table_of_the_visible_parts_in_csv_or_xlsx() {
     );
     assert!(app.digest.contains("kusovnik.csv"), "{}", app.digest);
 
-    app.set_ui_language(crate::language::UiLanguage::English);
+    app.value_box.decimal = crate::length_input::DecimalSeparator::Point;
     assert!(app.export_list_to(PartList::CutList, &path));
     let csv = std::fs::read_to_string(&path).unwrap();
     assert!(csv.starts_with("\u{feff}position,parts,material,"), "{csv}");
