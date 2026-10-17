@@ -57,6 +57,8 @@ struct StepXdeData {
 // STEP sources this thread has parsed for an XDE document or a length unit,
 // so a test can prove one parse per request (review 2026-10-17 EX-2).
 thread_local std::uint64_t step_source_parses = 0;
+// The same count for IGES sources.
+thread_local std::uint64_t iges_source_parses = 0;
 
 std::string file_length_unit(STEPControl_Reader& reader) {
   NCollection_Sequence<TCollection_AsciiString> length_units;
@@ -67,6 +69,22 @@ std::string file_length_unit(STEPControl_Reader& reader) {
     return std::string();
   }
   std::string unit(length_units.Value(1).ToCString());
+  std::transform(unit.begin(), unit.end(), unit.begin(), [](unsigned char character) {
+    return static_cast<char>(std::tolower(character));
+  });
+  return unit;
+}
+
+// The IGES global section's unit name, lower case; empty when missing.
+std::string iges_file_length_unit(IGESControl_Reader& reader) {
+  if (reader.IGESModel().IsNull()) {
+    return std::string();
+  }
+  const auto unit_name = reader.IGESModel()->GlobalSection().UnitName();
+  if (unit_name.IsNull()) {
+    return std::string();
+  }
+  std::string unit(unit_name->ToCString());
   std::transform(unit.begin(), unit.end(), unit.begin(), [](unsigned char character) {
     return static_cast<char>(std::tolower(character));
   });
@@ -137,6 +155,8 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
   reader.SetNameMode(true);
   if constexpr (std::is_same_v<Reader, STEPCAFControl_Reader>) {
     ++step_source_parses;
+  } else {
+    ++iges_source_parses;
   }
   if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
     error = "STEP XDE reader could not read the source";
@@ -144,6 +164,8 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
   }
   if constexpr (std::is_same_v<Reader, STEPCAFControl_Reader>) {
     data.length_unit = file_length_unit(reader.ChangeReader());
+  } else {
+    data.length_unit = iges_file_length_unit(reader);
   }
   if (!reader.Transfer(data.document)) {
     error = "STEP XDE source contains no transferable roots";
@@ -589,19 +611,32 @@ NativeXdeDocument::~NativeXdeDocument() = default;
 
 const NativeXdeDocument::Impl& NativeXdeDocument::impl() const noexcept { return *impl_; }
 
-std::unique_ptr<NativeXdeDocument> open_step_xde_document_native(rust::Str path) noexcept {
+std::unique_ptr<NativeXdeDocument> open_xde_document_native(rust::Str path, bool iges) noexcept {
   try {
     auto impl = std::make_unique<NativeXdeDocument::Impl>();
     const std::string native_path(path.data(), path.size());
     if (native_path.empty()) {
-      impl->error = "invalid STEP XDE path";
-    } else if (!load_step_xde(native_path, impl->data, impl->error) && impl->error.empty()) {
-      impl->error = "STEP XDE document could not be loaded";
+      impl->error = "invalid XDE path";
+    } else {
+      const bool loaded = iges
+          ? load_iges_xde(native_path, impl->data, impl->error)
+          : load_step_xde(native_path, impl->data, impl->error);
+      if (!loaded && impl->error.empty()) {
+        impl->error = "XDE document could not be loaded";
+      }
     }
     return std::make_unique<NativeXdeDocument>(std::move(impl));
   } catch (...) {
     return nullptr;
   }
+}
+
+std::unique_ptr<NativeXdeDocument> open_step_xde_document_native(rust::Str path) noexcept {
+  return open_xde_document_native(path, false);
+}
+
+std::unique_ptr<NativeXdeDocument> open_iges_xde_document_native(rust::Str path) noexcept {
+  return open_xde_document_native(path, true);
 }
 
 rust::String xde_document_manifest_native(const NativeXdeDocument& document) noexcept {
@@ -839,24 +874,13 @@ std::unique_ptr<NativeOperationResult> import_xde_part_native(
     rust::Str path, std::uint32_t part_index, bool iges) noexcept {
   return guarded([&] {
     const std::string native_path(path.data(), path.size());
-    if (iges) {
-      IGESControl_Reader reader;
-      if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {
-        return error_result(STATUS_INVALID_PARAMETER, "IGES reader could not read the source");
-      }
-      const int roots = reader.NbRootsForTransfer();
-      if (part_index >= static_cast<std::uint32_t>(std::max(roots, 0))
-          || !reader.TransferOneRoot(static_cast<int>(part_index) + 1)
-          || reader.NbShapes() == 0) {
-        return error_result(STATUS_INVALID_PARAMETER, "IGES part index is outside the transferable roots");
-      }
-      const TopoDS_Shape shape = reader.Shape(reader.NbShapes());
-      const std::uint32_t solids = count_subshapes(shape, TopAbs_SOLID);
-      return success_result(shape, {}, solids >= 2, false, {}, solids == 0);
-    }
+    // IGES parts are the manifest's parts, as for STEP, so a part request and
+    // a whole-document inspection answer with the same body for one index.
     StepXdeData data;
     std::string error;
-    const bool loaded = load_step_xde(native_path, data, error);
+    const bool loaded = iges
+        ? load_iges_xde(native_path, data, error)
+        : load_step_xde(native_path, data, error);
     if (!loaded) {
       return error_result(STATUS_INVALID_PARAMETER, error);
     }
@@ -928,10 +952,13 @@ rust::String step_length_unit_native(rust::Str path) noexcept {
 
 std::uint64_t step_source_parses_on_this_thread_native() noexcept { return step_source_parses; }
 
+std::uint64_t iges_source_parses_on_this_thread_native() noexcept { return iges_source_parses; }
+
 std::unique_ptr<NativeOperationResult> import_iges_native(rust::Str path) noexcept {
   return guarded([&] {
     const std::string native_path(path.data(), path.size());
     IGESControl_Reader reader;
+    ++iges_source_parses;
     if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {
       return error_result(STATUS_INVALID_PARAMETER, "IGES reader could not read the source");
     }
@@ -948,18 +975,11 @@ rust::String iges_length_unit_native(rust::Str path) noexcept {
   try {
     const std::string native_path(path.data(), path.size());
     IGESControl_Reader reader;
-    if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone || reader.IGESModel().IsNull()) {
+    ++iges_source_parses;
+    if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {
       return rust::String();
     }
-    const auto unit_name = reader.IGESModel()->GlobalSection().UnitName();
-    if (unit_name.IsNull()) {
-      return rust::String();
-    }
-    std::string unit(unit_name->ToCString());
-    std::transform(unit.begin(), unit.end(), unit.begin(), [](unsigned char character) {
-      return static_cast<char>(std::tolower(character));
-    });
-    return rust::String(unit);
+    return rust::String(iges_file_length_unit(reader));
   } catch (...) {
     return rust::String();
   }

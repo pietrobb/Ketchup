@@ -3125,11 +3125,10 @@ fn xde_evidence_reply(
 }
 
 fn iges_source_unit(
-    backend: &ExactBackend,
-    source_path: &str,
+    raw_unit: Option<String>,
     operation: &'static str,
 ) -> Result<&'static str, WorkerFailure> {
-    let Some(raw_unit) = backend.iges_length_unit_name(source_path) else {
+    let Some(raw_unit) = raw_unit else {
         return Err(backend_failure(
             operation,
             "IGES source has missing or ambiguous representation length units",
@@ -3168,14 +3167,25 @@ fn m21_iges_xde_inspection_response(backend: &ExactBackend, source: &SourceFile)
         .metadata()
         .map_err(|error| backend_failure("inspect_iges_xde", &error.to_string()))?
         .len();
-    let source_path = temp_path(&copy);
-    let source_unit = iges_source_unit(backend, &source_path, "inspect_iges_xde")?;
-    let manifest = backend
-        .iges_xde_manifest(&source_path)
+    let document = open_iges_xde(backend, &copy, "inspect_iges_xde")?;
+    let source_unit = iges_source_unit(document.length_unit_name(), "inspect_iges_xde")?;
+    let manifest = document
+        .manifest()
         .map_err(|error| backend_failure("inspect_iges_xde", &error.to_string()))?;
     xde_evidence_reply(source, source_byte_len, source_unit, manifest, |index| {
-        backend.import_iges_xde_part(&source_path, index)
+        document.part(index)
     })
+}
+
+/// The IGES counterpart of [`open_step_xde`]: one parse for the whole request.
+fn open_iges_xde(
+    backend: &ExactBackend,
+    copy: &tempfile::NamedTempFile,
+    operation: &'static str,
+) -> Result<ketchup_exact::StepXdeDocument, WorkerFailure> {
+    backend
+        .open_iges_xde(&temp_path(copy))
+        .map_err(|error| backend_failure(operation, &error.to_string()))
 }
 
 fn m21_iges_part_inspection_response(
@@ -3183,14 +3193,23 @@ fn m21_iges_part_inspection_response(
     source: &SourceFile,
     part_index: Option<u32>,
 ) -> WorkerResult {
-    let copy = verified_iges_copy(source, "inspect_iges_part")?;
-    let source_path = temp_path(&copy);
-    let source_unit = iges_source_unit(backend, &source_path, "inspect_iges_part")?;
-    let output = match part_index {
-        Some(index) => backend.import_iges_xde_part(&source_path, index),
-        None => backend.import_iges(&source_path),
-    }
-    .map_err(|error| geometry_failure(&error))?;
+    const OPERATION: &str = "inspect_iges_part";
+    let copy = verified_iges_copy(source, OPERATION)?;
+    let (raw_unit, output) = match part_index {
+        Some(index) => {
+            let document = open_iges_xde(backend, &copy, OPERATION)?;
+            (document.length_unit_name(), document.part(index))
+        }
+        None => {
+            let source_path = temp_path(&copy);
+            (
+                backend.iges_length_unit_name(&source_path),
+                backend.import_iges(&source_path),
+            )
+        }
+    };
+    let source_unit = iges_source_unit(raw_unit, OPERATION)?;
+    let output = output.map_err(|error| geometry_failure(&error))?;
     Ok(import_part_reply(&source.sha256, &output, source_unit))
 }
 
@@ -3734,6 +3753,47 @@ mod tests {
             m21_step_xde_to_iges_response(&backend, &source, &output.path().join("flat.igs"))
         });
         assert_eq!((inspection, conversion), (1, 1));
+    }
+
+    // Review 2026-10-17 EX-2 (IGES half): inspecting an N-part IGES parsed it
+    // N + 2 times (unit, manifest, one per part); one part took two parses.
+    #[test]
+    fn iges_xde_inspection_parses_the_source_once() {
+        let step = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/independent-xde-assembly.step");
+        let backend = ExactBackend::new();
+        let output = tempfile::tempdir().unwrap();
+        let path = output.path().join("flat.igs");
+        m21_step_xde_to_iges_response(
+            &backend,
+            &SourceFile {
+                sha256: sha256_hex(&std::fs::read(&step).unwrap()),
+                path: step,
+            },
+            &path,
+        )
+        .unwrap();
+        let source = SourceFile {
+            sha256: sha256_hex(&std::fs::read(&path).unwrap()),
+            path,
+        };
+        let parses_during = |request: &dyn Fn() -> WorkerResult| {
+            let before = ExactBackend::iges_source_parses_on_this_thread();
+            request().unwrap();
+            ExactBackend::iges_source_parses_on_this_thread() - before
+        };
+
+        let inspection = parses_during(&|| {
+            let reply = m21_iges_xde_inspection_response(&backend, &source)?;
+            let WorkerReply::Xde(evidence) = &reply else {
+                panic!("inspection answered {reply:?}");
+            };
+            assert_eq!(evidence.parts.len(), 3);
+            Ok(reply)
+        });
+        let one_part =
+            parses_during(&|| m21_iges_part_inspection_response(&backend, &source, Some(1)));
+        assert_eq!((inspection, one_part), (1, 1));
     }
 
     #[test]

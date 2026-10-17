@@ -281,7 +281,9 @@ mod ffi {
 
         fn route_kernel_messages_to_stderr_native() -> bool;
         fn step_source_parses_on_this_thread_native() -> u64;
+        fn iges_source_parses_on_this_thread_native() -> u64;
         fn open_step_xde_document_native(path: &str) -> UniquePtr<NativeXdeDocument>;
+        fn open_iges_xde_document_native(path: &str) -> UniquePtr<NativeXdeDocument>;
         fn xde_document_manifest_native(document: &NativeXdeDocument) -> String;
         fn xde_document_length_unit_native(document: &NativeXdeDocument) -> String;
         fn xde_document_part_native(
@@ -616,6 +618,12 @@ impl ExactBackend {
     #[must_use]
     pub fn step_source_parses_on_this_thread() -> u64 {
         ffi::step_source_parses_on_this_thread_native()
+    }
+
+    /// The same count for IGES sources.
+    #[must_use]
+    pub fn iges_source_parses_on_this_thread() -> u64 {
+        ffi::iges_source_parses_on_this_thread_native()
     }
 }
 

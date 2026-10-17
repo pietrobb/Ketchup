@@ -68,11 +68,12 @@ impl std::fmt::Display for StepXdeManifestError {
 
 impl std::error::Error for StepXdeManifestError {}
 
-/// One STEP file read once into an XDE document: its manifest, length unit and
-/// every part come from that single parse (review 2026-10-17 EX-2).
+/// One STEP or IGES file read once into an XDE document: its manifest, length
+/// unit and every part come from that single parse (review 2026-10-17 EX-2).
 pub struct StepXdeDocument {
     native: cxx::UniquePtr<ffi::NativeXdeDocument>,
     path: String,
+    operation: &'static str,
 }
 
 impl StepXdeDocument {
@@ -87,24 +88,46 @@ impl StepXdeDocument {
         (!unit.is_empty()).then_some(unit)
     }
 
-    /// The same body [`ExactBackend::import_step_xde_part`] reads for `part_index`.
+    /// The same body [`ExactBackend::import_step_xde_part`] (or
+    /// [`ExactBackend::import_iges_xde_part`]) reads for `part_index`.
     pub fn part(&self, part_index: u32) -> Result<ExactOpOutput, GeometryError> {
-        let input = format!("import_step_xde_part:{}:{part_index}", self.path);
+        let input = format!("{}:{}:{part_index}", self.operation, self.path);
         if !usize::try_from(part_index).is_ok_and(|index| index < MAX_STEP_XDE_NODES) {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidParameter,
-                "import_step_xde_part",
+                self.operation,
                 &input,
-                "STEP XDE path or part index is invalid".to_owned(),
+                "XDE path or part index is invalid".to_owned(),
             ));
         }
         collect_output(
             ffi::xde_document_part_native(&self.native, part_index),
-            "import_step_xde_part",
+            self.operation,
             &input,
             HistoryConfidence::None,
         )
     }
+}
+
+fn open_xde(
+    path: &str,
+    open: fn(&str) -> cxx::UniquePtr<ffi::NativeXdeDocument>,
+    operation: &'static str,
+) -> Result<StepXdeDocument, StepXdeManifestError> {
+    if path.trim().is_empty() {
+        return Err(StepXdeManifestError::InvalidPath);
+    }
+    let native = open(path);
+    if native.is_null() {
+        return Err(StepXdeManifestError::Reader(
+            "XDE document could not be allocated".to_owned(),
+        ));
+    }
+    Ok(StepXdeDocument {
+        native,
+        path: path.to_owned(),
+        operation,
+    })
 }
 
 pub(super) fn decode_manifest_hex(value: &str) -> Option<Vec<u8>> {
@@ -353,19 +376,20 @@ impl ExactBackend {
 
     /// Reads `path` once; ask the document for its manifest, unit and parts.
     pub fn open_step_xde(&self, path: &str) -> Result<StepXdeDocument, StepXdeManifestError> {
-        if path.trim().is_empty() {
-            return Err(StepXdeManifestError::InvalidPath);
-        }
-        let native = ffi::open_step_xde_document_native(path);
-        if native.is_null() {
-            return Err(StepXdeManifestError::Reader(
-                "STEP XDE document could not be allocated".to_owned(),
-            ));
-        }
-        Ok(StepXdeDocument {
-            native,
-            path: path.to_owned(),
-        })
+        open_xde(
+            path,
+            ffi::open_step_xde_document_native,
+            "import_step_xde_part",
+        )
+    }
+
+    /// Reads an IGES `path` once, like [`Self::open_step_xde`].
+    pub fn open_iges_xde(&self, path: &str) -> Result<StepXdeDocument, StepXdeManifestError> {
+        open_xde(
+            path,
+            ffi::open_iges_xde_document_native,
+            "import_iges_xde_part",
+        )
     }
 
     pub fn export_step_xde_assembly(
