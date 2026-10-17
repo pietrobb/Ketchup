@@ -40,10 +40,22 @@ def test_skip_plugin_changes_success_to_failure():
     assert plugin.skipped == ["tests/test_module.py", "tests/test_native.py::test_real"]
 
 
-def test_required_production_set_covers_acceptance_and_model_tools():
-    assert runner.NATIVE_TESTS == (
+def test_the_native_set_is_every_file_that_skips_without_the_built_cli():
+    # Review 2026-10-17 TST-2: five of the eight such files ran nowhere.
+    tests = runner.native_tests()
+    assert tests == [
         "tests/test_headless_acceptance.py",
         "tests/test_model_tools_errors.py",
         "tests/test_model_tools_protocol.py",
-    )
-    assert all((ROOT / relative).is_file() for relative in runner.NATIVE_TESTS)
+        "tests/test_opposing_holes_headless.py",
+        "tests/test_production_setups.py",
+        "tests/test_production_stock_frames.py",
+        "tests/test_production_workflow.py",
+        "tests/test_program_headless.py",
+    ]
+    for path in (ROOT / "tests").glob("test_*.py"):
+        text = path.read_text(encoding="utf-8")
+        skips = "skip" in text and "KETCHUP_HEADLESS" in text
+        if skips and path.relative_to(ROOT).as_posix() not in tests:
+            # Unit tests of the client with a mocked CLI, and this file.
+            assert path.name in ("test_ketchup_headless.py", Path(__file__).name), path

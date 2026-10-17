@@ -1,7 +1,13 @@
-"""Build and run the required native Python production tests without skips."""
+"""Build and run the required native Python production tests without skips.
+
+`--prebuilt` runs only the native tests against the debug `ketchup-headless` and
+`ketchup-exact-worker` a CI job already built, without the workspace build and
+the release window check.
+"""
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -16,11 +22,17 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NATIVE_TESTS = (
-    "tests/test_headless_acceptance.py",
-    "tests/test_model_tools_errors.py",
-    "tests/test_model_tools_protocol.py",
-)
+# A native test reads the built CLI from this variable and skips without it.
+NATIVE_MARKER = 'os.environ.get("KETCHUP_HEADLESS")'
+
+
+def native_tests() -> list[str]:
+    """Every test file that needs the built CLI, so a new one cannot stay out."""
+    return sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "tests").glob("test_*.py")
+        if NATIVE_MARKER in path.read_text(encoding="utf-8")
+    )
 
 
 class RunnerError(RuntimeError):
@@ -131,13 +143,7 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def main() -> int:
-    cargo = shutil.which("cargo")
-    if cargo is None:
-        raise RunnerError("cargo is required on PATH")
-
-    target_directory = cargo_target_directory(cargo)
-    run([cargo, "test", "--locked", "--workspace", "--all-targets", "--no-run"])
+def verify_app(cargo: str, target_directory: Path) -> None:
     os.environ["KETCHUP_BUILD_VERSION"] = "production-test"
     run([
         cargo,
@@ -149,11 +155,6 @@ def main() -> int:
         "--bin",
         "ketchup-app",
     ])
-
-    headless_path, worker_path = native_paths(target_directory)
-    headless = require_component(headless_path, "ketchup-headless executable")
-    worker = require_component(worker_path, "ketchup-exact-worker executable")
-    worker_handshake(worker)
     suffix = ".exe" if os.name == "nt" else ""
     app = require_component(
         target_directory / "release" / f"ketchup-app{suffix}",
@@ -168,6 +169,31 @@ def main() -> int:
         expected = "Ketchup production-test verified"
         if verification != expected or not persistence_path.is_file():
             raise RunnerError("ketchup-app startup/persistence verification failed")
+    print(f"KETCHUP_APP={app} sha256={sha256(app)}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--prebuilt",
+        action="store_true",
+        help="test the debug binaries already built, without building",
+    )
+    prebuilt = parser.parse_args().prebuilt
+
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        raise RunnerError("cargo is required on PATH")
+
+    target_directory = cargo_target_directory(cargo)
+    if not prebuilt:
+        run([cargo, "test", "--locked", "--workspace", "--all-targets", "--no-run"])
+        verify_app(cargo, target_directory)
+
+    headless_path, worker_path = native_paths(target_directory)
+    headless = require_component(headless_path, "ketchup-headless executable")
+    worker = require_component(worker_path, "ketchup-exact-worker executable")
+    worker_handshake(worker)
 
     os.environ["KETCHUP_HEADLESS"] = str(headless)
     os.environ["KETCHUP_EXACT_WORKER"] = str(worker)
@@ -175,14 +201,13 @@ def main() -> int:
     print(f"Python: {Path(sys.executable).resolve()}")
     print(f"KETCHUP_HEADLESS={headless} sha256={sha256(headless)}")
     print(f"KETCHUP_EXACT_WORKER={worker} sha256={sha256(worker)}")
-    print(f"KETCHUP_APP={app} sha256={sha256(app)}")
 
-    missing_tests = [relative for relative in NATIVE_TESTS if not (ROOT / relative).is_file()]
-    if missing_tests:
-        raise RunnerError(f"Missing required production tests: {', '.join(missing_tests)}")
-
+    tests = native_tests()
+    if not tests:
+        raise RunnerError(f"No test file reads {NATIVE_MARKER}")
+    print("Native tests:", " ".join(tests))
     plugin = FailOnSkipPlugin()
-    return int(pytest.main([*NATIVE_TESTS, "-ra"], plugins=[plugin]))
+    return int(pytest.main([*tests, "-ra"], plugins=[plugin]))
 
 
 if __name__ == "__main__":
