@@ -989,7 +989,12 @@ fn comments_count_as_saved_only_for_the_file_the_host_kept() {
 /// package written on its own thread is on disk and its comments follow it.
 fn keep_all(keeper: &mut SessionKeeper, app: &ViewerApp) -> Result<(), Rejection> {
     keeper.keep(app)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while keeper.writing() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "keeper.writing() still true after 30 s: the package write never finished"
+        );
         std::thread::yield_now();
         keeper.keep(app)?;
     }

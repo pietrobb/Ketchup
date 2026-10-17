@@ -7,7 +7,7 @@
 //! while Ctrl is held.
 
 use crate::drawing_plane::DRAWING_SNAP_PIXELS;
-use crate::length_input::{parse_decimal, parse_length_mm};
+use crate::length_input::{FactorOrLength, parse_factor_or_length};
 use crate::*;
 
 /// What a value typed into the Scale box asks for.
@@ -22,16 +22,23 @@ pub(crate) enum ScaleInput {
 }
 
 impl ScaleInput {
+    /// Read with the one length parser: arithmetic everywhere, and a value
+    /// without a unit is a factor (`150` is 150×, `150 mm` a size).
     pub(crate) fn parse(text: &str) -> Option<Self> {
-        let text = text.trim();
         if text.contains(';') {
-            let factors: Vec<f64> = text.split(';').map(parse_decimal).collect::<Option<_>>()?;
+            let factors: Vec<f64> = text
+                .split(';')
+                .map(|part| match parse_factor_or_length(part)? {
+                    FactorOrLength::Factor(factor) => Some(factor),
+                    FactorOrLength::LengthMm(_) => None,
+                })
+                .collect::<Option<_>>()?;
             return <[f64; 3]>::try_from(factors).ok().map(Self::PerAxis);
         }
-        if text.chars().any(char::is_alphabetic) {
-            return parse_length_mm(text).map(Self::Length);
-        }
-        parse_decimal(text).map(Self::Factor)
+        Some(match parse_factor_or_length(text)? {
+            FactorOrLength::Factor(factor) => Self::Factor(factor),
+            FactorOrLength::LengthMm(length_mm) => Self::Length(length_mm),
+        })
     }
 
     /// The world factors for a gesture that drives `drives` on a selection
@@ -223,6 +230,32 @@ impl KetchupApp {
                 Stroke::new(1.2_f32, palette.accent),
                 egui::StrokeKind::Middle,
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScaleInput;
+
+    /// Scale reads its value with the one length parser: a value without a unit is a
+    /// factor, arithmetic included, and one with a unit the size to reach (UI-6).
+    #[test]
+    fn a_typed_scale_is_a_factor_or_a_length_with_arithmetic() {
+        let parse = ScaleInput::parse;
+        assert_eq!(parse("1,5"), Some(ScaleInput::Factor(1.5)));
+        assert_eq!(parse("150"), Some(ScaleInput::Factor(150.0)));
+        assert_eq!(parse("3/4"), Some(ScaleInput::Factor(0.75)));
+        assert_eq!(parse("1 + 0,5"), Some(ScaleInput::Factor(1.5)));
+        assert_eq!(parse("150 mm"), Some(ScaleInput::Length(150.0)));
+        assert_eq!(parse("1m - 2*18mm"), Some(ScaleInput::Length(964.0)));
+        assert_eq!(parse("60cm/2"), Some(ScaleInput::Length(300.0)));
+        assert_eq!(
+            parse("2*1,5; 1; 1/2"),
+            Some(ScaleInput::PerAxis([3.0, 1.0, 0.5]))
+        );
+        for refused in ["", "abc", "1m*1m", "100mm;1;1", "1;2", "1,2,3", "2/0"] {
+            assert_eq!(parse(refused), None, "{refused}");
         }
     }
 }

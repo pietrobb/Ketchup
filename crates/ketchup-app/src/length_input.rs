@@ -13,6 +13,30 @@ const MM_PER_FOOT: f64 = 304.8;
 /// Millimetres for a typed length expression, or `None` when it is not one.
 #[must_use]
 pub fn parse_length_mm(input: &str) -> Option<f64> {
+    evaluate(input).map(|value| value.mm)
+}
+
+/// A typed value in a field that takes a factor or a length, such as Scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FactorOrLength {
+    Factor(f64),
+    LengthMm(f64),
+}
+
+/// Reads `input` with the same units and arithmetic as [`parse_length_mm`],
+/// but a value without a unit (`1,5`, `3/4`) is a factor, not millimetres.
+#[must_use]
+pub fn parse_factor_or_length(input: &str) -> Option<FactorOrLength> {
+    evaluate(input).map(|value| {
+        if value.power == 0 {
+            FactorOrLength::Factor(value.mm)
+        } else {
+            FactorOrLength::LengthMm(value.mm)
+        }
+    })
+}
+
+fn evaluate(input: &str) -> Option<Quantity> {
     if input.chars().count() > MAX_INPUT_CHARS {
         return None;
     }
@@ -23,7 +47,7 @@ pub fn parse_length_mm(input: &str) -> Option<f64> {
     };
     let value = parser.expression()?;
     parser.skip_spaces();
-    (parser.at == parser.chars.len() && value.mm.is_finite()).then_some(value.mm)
+    (parser.at == parser.chars.len() && value.mm.is_finite()).then_some(value)
 }
 
 /// Several lengths typed in one field, such as a rectangle's sides or a Move
