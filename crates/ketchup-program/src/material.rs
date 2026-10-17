@@ -1,7 +1,7 @@
 //! How much of a part's material lies along a straight line from a point on
 //! it: the extruded profile less the cuts and pockets in it, not the reach of
 //! the profile before them (review 2026-10-17 PG-4). A 12 mm hole in an
-//! 18 mm board on the line of a 10 mm groove in its back meets the groove
+//! 18 mm thick part on the line of a 10 mm groove in its back meets the groove
 //! after 8 mm; in an L profile it ends where the 18 mm leg does.
 
 use crate::contact::polygon::{self, Rings};
@@ -11,6 +11,7 @@ use ketchup_geometry::linalg::{dot, sub};
 
 /// Steps along the line between material tests; a gap thinner than this
 /// can be missed.
+// not a tolerance: the probe step along the line, refined by bisection.
 const STEP_MM: f64 = 0.2;
 
 impl Part {
@@ -82,7 +83,7 @@ impl Part {
             (body_z[0]..=body_z[1]).contains(&point[2])
                 && polygon::contains(&outline, [point[0], point[1]])
         };
-        // To a millionth of a mm, so that an 18 mm board turned in space
+        // To a millionth of a mm, so that an 18 mm thick part turned in space
         // is 18 mm, not 17.99999999999.
         let round = |mm: f64| Some((mm * 1.0e6).round() / 1.0e6);
         let mut inside = 0.0;
