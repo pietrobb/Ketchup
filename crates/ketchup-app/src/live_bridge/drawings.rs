@@ -211,32 +211,7 @@ fn export(
     let sheet = app.write_project_drawings(target).map_err(|error| {
         app.store_sheet_settings(previous);
         app.drawings.unsaved = previously_unsaved;
-        match error {
-            ProjectDrawingsError::Drawing(_) => "drawings_unavailable",
-            ProjectDrawingsError::NotEvaluated(parts) => failure(
-                "drawings_unavailable",
-                format!(
-                    "{} visible parts have no exact solid, so the sheet would leave them out: {}. Fix or hide them, wait for the exact evaluation, then export again.",
-                    parts.len(),
-                    crate::app::project_drawings::missing_parts_list(&parts)
-                ),
-                json!({"parts_without_exact_solid": parts}),
-            ),
-            ProjectDrawingsError::ProgramPlanning => failure(
-                "drawings_unavailable",
-                "The program is still being evaluated, so the threads of its parts are not known yet. Export again when it is done.",
-                json!({"program_planning": true}),
-            ),
-            ProjectDrawingsError::SettingsUnreadable(_) => "drawings_unavailable",
-            ProjectDrawingsError::CosmeticThreads(part, cause) => failure(
-                "drawings_unavailable",
-                format!(
-                    "The modelled threads of {part} could not be drawn by ISO 6410 ({cause}); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic."
-                ),
-                json!({"part": part}),
-            ),
-            ProjectDrawingsError::Write(error) => failed_because("drawings_write_failed", error),
-        }
+        drawings_failed(error)
     })?;
     let settings = app.sheet_settings();
     Ok(json!({
@@ -250,6 +225,38 @@ fn export(
         "basis": "visible_layers_exact_solids",
         "dirty": app.is_dirty(),
     }))
+}
+
+/// The answer to a sheet that could not be written, its cause recorded.
+fn drawings_failed(error: ProjectDrawingsError) -> &'static str {
+    match error {
+        ProjectDrawingsError::Drawing(error) => failed_because("drawings_unavailable", error),
+        ProjectDrawingsError::NotEvaluated(parts) => failure(
+            "drawings_unavailable",
+            format!(
+                "{} visible parts have no exact solid, so the sheet would leave them out: {}. Fix or hide them, wait for the exact evaluation, then export again.",
+                parts.len(),
+                crate::app::project_drawings::missing_parts_list(&parts)
+            ),
+            json!({"parts_without_exact_solid": parts}),
+        ),
+        ProjectDrawingsError::ProgramPlanning => failure(
+            "drawings_unavailable",
+            "The program is still being evaluated, so the threads of its parts are not known yet. Export again when it is done.",
+            json!({"program_planning": true}),
+        ),
+        ProjectDrawingsError::SettingsUnreadable(error) => {
+            failed_because("drawings_unavailable", error)
+        }
+        ProjectDrawingsError::CosmeticThreads(part, cause) => failure(
+            "drawings_unavailable",
+            format!(
+                "The modelled threads of {part} could not be drawn by ISO 6410 ({cause}); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic."
+            ),
+            json!({"part": part}),
+        ),
+        ProjectDrawingsError::Write(error) => failed_because("drawings_write_failed", error),
+    }
 }
 
 #[cfg(test)]
@@ -323,5 +330,28 @@ mod tests {
         assert!(matches!(error, ProjectDrawingsError::SettingsUnreadable(_)));
         assert!(!target.exists());
         assert_eq!(stored(&app), Some(corrupt));
+    }
+
+    /// Review 2026-10-17 MCP-2: a sheet that could not be drawn, or settings
+    /// that did not read, answered a bare code and dropped why (AGENTS.md §2).
+    #[test]
+    fn a_sheet_that_cannot_be_written_answers_with_its_cause() {
+        let unreadable = serde_json::from_slice::<Value>(b"{").unwrap_err();
+        let unreadable_reason = unreadable.to_string();
+        let empty = ketchup_manufacturing::project_drawings::ProjectDrawingError::Empty;
+        for (error, cause) in [
+            (ProjectDrawingsError::Drawing(empty), empty.to_string()),
+            (
+                ProjectDrawingsError::SettingsUnreadable(unreadable),
+                unreadable_reason,
+            ),
+        ] {
+            assert_eq!(drawings_failed(error), "drawings_unavailable");
+            let details = crate::live_bridge::take_error_details().unwrap_or_default();
+            assert!(
+                details.to_string().contains(&cause),
+                "{cause} not in {details}"
+            );
+        }
     }
 }

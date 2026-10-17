@@ -26,6 +26,9 @@ Two forms are counted in production source (crates/*/src, test modules and
   sentence instead of fields (`Some`, `Ok` and `Err` are not error variants;
   `Err(format!)` is already a string_result).
 - unwrap: `.unwrap()` panics without saying which assumption broke.
+- dropped_variant: `SomeError::Variant(_) => "code"` answers an error that carries
+  a cause with a bare code and throws the cause away; record it
+  (`failed_because(code, cause)`) or map the variant to a typed error.
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
@@ -82,6 +85,8 @@ STRINGIFIED_VARIANT = re.compile(
     r"\s*\.\s*to_string\(\)\s*\)")
 FORMATTED_VARIANT = re.compile(r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*format!\(")
 UNWRAP = re.compile(r"\.unwrap\(\)")
+# A variant of an error type (`...Error::Name(_)`) matched to a bare string.
+DROPPED_VARIANT = re.compile(r"\b\w*Error::\w+\(\s*_\s*\)\s*=>\s*\"")
 # An inline test module at the top level of a Rust file: `#[cfg(test)]` or
 # `#[cfg(all(test, ...))]` before `mod name { ... }`.
 TEST_MODULE = re.compile(
@@ -106,7 +111,8 @@ def file_counts(text: str) -> dict[str, int]:
             "debug_formatted": len(DEBUG_FORMATTED.findall(text)),
             "stringified_variant": len(STRINGIFIED_VARIANT.findall(text)),
             "formatted_variant": len(FORMATTED_VARIANT.findall(text)),
-            "unwrap": len(UNWRAP.findall(text))}
+            "unwrap": len(UNWRAP.findall(text)),
+            "dropped_variant": len(DROPPED_VARIANT.findall(text))}
 
 
 def current_counts(root: Path = ROOT) -> dict[str, int]:

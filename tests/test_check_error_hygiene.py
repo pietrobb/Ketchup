@@ -138,6 +138,22 @@ def test_viewer_apps_are_scanned_and_text_or_debug_causes_count(tmp_path):
     }
 
 
+def test_an_error_variant_matched_to_a_bare_code_counts(tmp_path):
+    # Review 2026-10-17 MCP-2: `Variant(_) => "code"` dropped the cause unseen.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        'ProjectDrawingsError::Drawing(_) => "drawings_unavailable",\n'
+        'SessionError::Commit( _ ) =>"commit_rejected",\n'
+        '// Not an error type, a named cause, or no text answer: none count.\n'
+        'SpaceRow::Space(_) => "spaces-field-purpose",\n'
+        'Self::Geometry(_) => "geometry",\n'
+        'DrawError::Write(error) => failed_because("write", error),\n'
+        "DrawError::Empty(_) => Error::Empty,\n",
+    )
+    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs dropped_variant": 2}
+
+
 def test_the_baseline_has_no_way_to_grow(tmp_path):
     (tmp_path / "scripts").mkdir()
     write(tmp_path, "crates/a/src/lib.rs", "a.map_err(|_| 1);\n")

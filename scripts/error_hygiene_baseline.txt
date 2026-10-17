@@ -4,6 +4,7 @@ crates/ketchup-app/src/app/document.rs unreachable 2
 crates/ketchup-app/src/app/export.rs unreachable 1
 crates/ketchup-app/src/drawn_shape.rs stringified_variant 1
 crates/ketchup-app/src/live_bridge.rs debug_formatted 2
+crates/ketchup-app/src/live_bridge.rs dropped_variant 3
 crates/ketchup-app/src/live_bridge/image.rs debug_formatted 1
 crates/ketchup-application/src/cam_workflow.rs stringified_variant 8
 crates/ketchup-application/src/collision.rs debug_formatted 5
@@ -25,6 +26,7 @@ crates/ketchup-application/src/validation.rs unreachable 2
 crates/ketchup-exact/src/profiles.rs unreachable 1
 crates/ketchup-geometry/src/sketch/solver.rs unreachable 4
 crates/ketchup-headless/src/protocol.rs debug_formatted 1
+crates/ketchup-headless/src/protocol.rs dropped_variant 13
 crates/ketchup-headless/src/protocol.rs stringified_variant 2
 crates/ketchup-headless/src/protocol.rs unreachable 2
 crates/ketchup-headless/src/protocol/model_tools.rs debug_formatted 4
