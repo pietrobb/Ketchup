@@ -1946,12 +1946,16 @@ fn shift_click_adds_an_occurrence_without_replacing_the_primary_face() {
     shell.click_at(shell.viewport_rect().center());
     assert!(shell.app_mut().copy_selected(Vec3::new(180.0, 0.0, 0.0)));
     shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    // Picked before the solid arrives, the box face would become its exact
+    // face when the solid lands, before the Shift-click or not, by machine speed.
+    wait_for_one_exact_body(&mut shell);
     shell.click_command(AppCommand::Select);
     shell.click_at(shell.top_face_centre(1));
     let primary = shell
         .app()
         .selected_reference()
         .expect("the first click must retain an exact primary face");
+    assert!(matches!(primary.element, ElementId::TopologicalFace(_)));
 
     shell.click_at_with(shell.top_face_centre(2), shift());
 
