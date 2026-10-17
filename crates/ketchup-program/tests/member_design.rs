@@ -428,6 +428,58 @@ fn a_column_whose_section_changes_along_its_length_is_not_verified() {
     );
 }
 
+/// The column of `column` on a 200 x 200 square with `then` applied: its status
+/// and what the check could not model.
+fn square_column(then: &str) -> (String, Vec<String>) {
+    let report = report(
+        &column("[(0, 0), (200, 0), (200, 200), (0, 200)]", then),
+        &[],
+    );
+    let column = member(&report, "column");
+    assert_eq!(column.role, "column");
+    (column.status.to_string(), column.missing.clone())
+}
+
+#[test]
+fn a_column_bored_along_its_length_is_not_checked_as_the_solid_square() {
+    // A 160 mm bore through the whole length leaves a tube of about 19 900 mm²,
+    // half of the square the check would otherwise pass at about 0.75.
+    for then in [
+        "hole(part, \"end\", world = (100, 100, 3050), diameter = 160, depth = 3000, through = True)",
+        "hole(part, \"end\", world = (100, 100, 3050), diameter = 160, depth = 1000)",
+    ] {
+        let (status, missing) = square_column(then);
+        assert_eq!(status, "not_verified", "{then}");
+        assert!(
+            missing.len() == 1 && missing[0].contains("section"),
+            "{missing:?}"
+        );
+    }
+}
+
+#[test]
+fn a_column_drilled_or_rounded_across_beyond_a_small_size_is_not_verified() {
+    for then in [
+        "hole(part, \"segment2\", world = (200, 100, 1500), diameter = 60, depth = 200, through = True)",
+        "chamfer(part, edges = [[\"segment1\", \"segment2\"], [\"segment3\", \"segment4\"]], distance = 40)",
+    ] {
+        let (status, missing) = square_column(then);
+        assert_eq!(status, "not_verified", "{then}");
+        assert!(
+            missing.len() == 1 && missing[0].contains("section"),
+            "{missing:?}"
+        );
+    }
+    // A bolt hole and an eased arris leave the section all but whole.
+    for then in [
+        "hole(part, \"segment2\", world = (200, 100, 1500), diameter = 10, depth = 200, through = True)",
+        "chamfer(part, edges = [[\"segment2\", \"segment3\"]], distance = 5)",
+    ] {
+        let (status, missing) = square_column(then);
+        assert_ne!(status, "not_verified", "{then}: {missing:?}");
+    }
+}
+
 #[test]
 fn a_beam_across_both_legs_of_one_sill_is_checked_over_the_span_between_them() {
     // One U-shaped sill part, legs 100 mm wide at both ends of a 45 x 145 beam:

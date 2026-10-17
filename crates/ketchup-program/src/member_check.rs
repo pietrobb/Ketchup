@@ -445,6 +445,10 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         let depth = usize::from(world[1][2].abs() >= world[0][2].abs());
         let mut bores = Vec::new();
         let mut unmodelled = None;
+        // A hole across the grain or a rounded or chamfered edge up to 5 % of
+        // the narrower side takes at most 5 % of the section at one place
+        // (a 10 mm bolt hole or an eased arris in a 200 mm column).
+        let small = 0.05 * size[0].min(size[1]);
         for operation in &part.operations {
             match operation {
                 ProgramOperation::Cut(cut)
@@ -464,11 +468,24 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
                          boolean or face offset other than a bore through it)",
                     );
                 }
-                // Rounded or chamfered edges and drilled holes leave the
-                // section all but whole; a mirror leaves it the same.
-                ProgramOperation::Finish(_)
-                | ProgramOperation::Hole(_)
-                | ProgramOperation::Mirror(_) => {}
+                ProgramOperation::Hole(hole)
+                    if hole.inward[2].abs() <= 1e-6 * length(hole.inward)
+                        && hole.diameter_mm <= small => {}
+                ProgramOperation::Finish(finish) if finish.radius_mm <= small => {}
+                ProgramOperation::Hole(_) => {
+                    unmodelled = Some(
+                        "the member's section changes along its length (a hole along it, or one \
+                         across it wider than 5 % of its narrower side)",
+                    );
+                }
+                ProgramOperation::Finish(_) => {
+                    unmodelled = Some(
+                        "the member's section changes along its length (a rounded or chamfered \
+                         edge larger than 5 % of its narrower side)",
+                    );
+                }
+                // A mirror leaves the section the same.
+                ProgramOperation::Mirror(_) => {}
             }
         }
         let (area, inertia, reach, least) = section(segments, &bores, depth);
