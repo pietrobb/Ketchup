@@ -59,6 +59,29 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
+// One STEP file read into an XDE document once; its manifest, length unit
+// and parts all come from that single parse.
+class NativeXdeDocument final {
+public:
+  struct Impl;
+
+  explicit NativeXdeDocument(std::unique_ptr<Impl> impl) noexcept;
+  ~NativeXdeDocument();
+  NativeXdeDocument(const NativeXdeDocument&) = delete;
+  NativeXdeDocument& operator=(const NativeXdeDocument&) = delete;
+
+  const Impl& impl() const noexcept;
+
+private:
+  std::unique_ptr<Impl> impl_;
+};
+
+std::unique_ptr<NativeXdeDocument> open_step_xde_document_native(rust::Str path) noexcept;
+rust::String xde_document_manifest_native(const NativeXdeDocument& document) noexcept;
+rust::String xde_document_length_unit_native(const NativeXdeDocument& document) noexcept;
+std::unique_ptr<NativeOperationResult> xde_document_part_native(
+    const NativeXdeDocument& document, std::uint32_t part_index) noexcept;
+
 bool route_kernel_messages_to_stderr_native() noexcept;
 std::unique_ptr<NativeOperationResult> make_box_native(
     double origin_x, double origin_y, double origin_z,

@@ -50,7 +50,24 @@ struct StepXdeData {
   occ::handle<XCAFDoc_ColorTool> colors;
   std::vector<TDF_Label> parts;
   std::vector<StepXdeNode> nodes;
+  // The STEP file's single length unit, lower case; empty when missing or ambiguous.
+  std::string length_unit;
 };
+
+std::string file_length_unit(STEPControl_Reader& reader) {
+  NCollection_Sequence<TCollection_AsciiString> length_units;
+  NCollection_Sequence<TCollection_AsciiString> angle_units;
+  NCollection_Sequence<TCollection_AsciiString> solid_angle_units;
+  reader.FileUnits(length_units, angle_units, solid_angle_units);
+  if (length_units.Length() != 1) {
+    return std::string();
+  }
+  std::string unit(length_units.Value(1).ToCString());
+  std::transform(unit.begin(), unit.end(), unit.begin(), [](unsigned char character) {
+    return static_cast<char>(std::tolower(character));
+  });
+  return unit;
+}
 
 std::string hex_encode(const std::string& value) {
   static constexpr char digits[] = "0123456789abcdef";
@@ -117,6 +134,9 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
   if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
     error = "STEP XDE reader could not read the source";
     return false;
+  }
+  if constexpr (std::is_same_v<Reader, STEPCAFControl_Reader>) {
+    data.length_unit = file_length_unit(reader.ChangeReader());
   }
   if (!reader.Transfer(data.document)) {
     error = "STEP XDE source contains no transferable roots";
@@ -513,7 +533,104 @@ void set_xde_name(const TDF_Label& label, const std::string& name) {
   TDataStd_Name::Set(label, TCollection_ExtendedString(name.c_str(), true));
 }
 
+std::string encode_xde_manifest(const StepXdeData& data) {
+  std::ostringstream output;
+  output << "KETCHUP_STEP_XDE_V1\n";
+  for (std::size_t index = 0; index < data.parts.size(); ++index) {
+    const TDF_Label& part = data.parts[index];
+    std::string name = label_name(part);
+    const bool name_from_source = !name.empty();
+    if (!name_from_source) {
+      name = "Imported STEP part";
+    }
+    output << "P\t" << index << '\t' << hex_encode(name) << '\t'
+           << (name_from_source ? '1' : '0') << '\t'
+           << label_color(data.colors, part, TDF_Label()) << '\n';
+  }
+  for (const StepXdeNode& node : data.nodes) {
+    output << "N\t" << node.id << '\t' << node.parent_id << '\t' << node.part_index
+           << '\t' << hex_encode(node.name) << '\t' << (node.name_from_source ? '1' : '0')
+           << '\t' << node.color << matrix_fields(node.transform) << '\n';
+  }
+  return output.str();
+}
+
+std::unique_ptr<NativeOperationResult> xde_part_result(
+    const StepXdeData& data, std::uint32_t part_index) {
+  if (part_index >= data.parts.size()) {
+    return error_result(STATUS_INVALID_PARAMETER, "STEP XDE part index is outside the manifest");
+  }
+  const TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(data.parts[part_index]);
+  if (shape.IsNull()) {
+    return error_result(STATUS_INVALID_SHAPE, "STEP XDE part has no exact shape");
+  }
+  const std::uint32_t solids = count_subshapes(shape, TopAbs_SOLID);
+  return success_result(shape, {}, solids >= 2, false, {}, solids == 0);
+}
+
 } // namespace
+
+struct NativeXdeDocument::Impl {
+  StepXdeData data;
+  // Empty once the document loaded; the reason it did not otherwise.
+  std::string error;
+};
+
+NativeXdeDocument::NativeXdeDocument(std::unique_ptr<Impl> impl) noexcept
+    : impl_(std::move(impl)) {}
+NativeXdeDocument::~NativeXdeDocument() = default;
+
+const NativeXdeDocument::Impl& NativeXdeDocument::impl() const noexcept { return *impl_; }
+
+std::unique_ptr<NativeXdeDocument> open_step_xde_document_native(rust::Str path) noexcept {
+  try {
+    auto impl = std::make_unique<NativeXdeDocument::Impl>();
+    const std::string native_path(path.data(), path.size());
+    if (native_path.empty()) {
+      impl->error = "invalid STEP XDE path";
+    } else if (!load_step_xde(native_path, impl->data, impl->error) && impl->error.empty()) {
+      impl->error = "STEP XDE document could not be loaded";
+    }
+    return std::make_unique<NativeXdeDocument>(std::move(impl));
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+rust::String xde_document_manifest_native(const NativeXdeDocument& document) noexcept {
+  try {
+    const auto& impl = document.impl();
+    if (!impl.error.empty()) {
+      return rust::String("ERR\t" + hex_encode(impl.error));
+    }
+    return rust::String(encode_xde_manifest(impl.data));
+  } catch (const Standard_Failure& failure) {
+    return rust::String("ERR\t" + hex_encode(failure.GetMessageString()));
+  } catch (const std::exception& failure) {
+    return rust::String("ERR\t" + hex_encode(failure.what()));
+  } catch (...) {
+    return rust::String("ERR\t" + hex_encode("unknown STEP XDE exception"));
+  }
+}
+
+rust::String xde_document_length_unit_native(const NativeXdeDocument& document) noexcept {
+  try {
+    return rust::String(document.impl().data.length_unit);
+  } catch (...) {
+    return rust::String();
+  }
+}
+
+std::unique_ptr<NativeOperationResult> xde_document_part_native(
+    const NativeXdeDocument& document, std::uint32_t part_index) noexcept {
+  return guarded([&] {
+    const auto& impl = document.impl();
+    if (!impl.error.empty()) {
+      return error_result(STATUS_INVALID_PARAMETER, impl.error);
+    }
+    return xde_part_result(impl.data, part_index);
+  });
+}
 
 rust::String xde_manifest_native(rust::Str path, bool iges) noexcept {
   try {
@@ -526,25 +643,7 @@ rust::String xde_manifest_native(rust::Str path, bool iges) noexcept {
     if (native_path.empty() || !loaded) {
       return rust::String("ERR\t" + hex_encode(error.empty() ? "invalid STEP XDE path" : error));
     }
-    std::ostringstream output;
-    output << "KETCHUP_STEP_XDE_V1\n";
-    for (std::size_t index = 0; index < data.parts.size(); ++index) {
-      const TDF_Label& part = data.parts[index];
-      std::string name = label_name(part);
-      const bool name_from_source = !name.empty();
-      if (!name_from_source) {
-        name = "Imported STEP part";
-      }
-      output << "P\t" << index << '\t' << hex_encode(name) << '\t'
-             << (name_from_source ? '1' : '0') << '\t'
-             << label_color(data.colors, part, TDF_Label()) << '\n';
-    }
-    for (const StepXdeNode& node : data.nodes) {
-      output << "N\t" << node.id << '\t' << node.parent_id << '\t' << node.part_index
-             << '\t' << hex_encode(node.name) << '\t' << (node.name_from_source ? '1' : '0')
-             << '\t' << node.color << matrix_fields(node.transform) << '\n';
-    }
-    return rust::String(output.str());
+    return rust::String(encode_xde_manifest(data));
   } catch (const Standard_Failure& failure) {
     return rust::String("ERR\t" + hex_encode(failure.GetMessageString()));
   } catch (const std::exception& failure) {
@@ -754,15 +853,7 @@ std::unique_ptr<NativeOperationResult> import_xde_part_native(
     if (!loaded) {
       return error_result(STATUS_INVALID_PARAMETER, error);
     }
-    if (part_index >= data.parts.size()) {
-      return error_result(STATUS_INVALID_PARAMETER, "STEP XDE part index is outside the manifest");
-    }
-    const TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(data.parts[part_index]);
-    if (shape.IsNull()) {
-      return error_result(STATUS_INVALID_SHAPE, "STEP XDE part has no exact shape");
-    }
-    const std::uint32_t solids = count_subshapes(shape, TopAbs_SOLID);
-    return success_result(shape, {}, solids >= 2, false, {}, solids == 0);
+    return xde_part_result(data, part_index);
   });
 }
 
@@ -821,18 +912,7 @@ rust::String step_length_unit_native(rust::Str path) noexcept {
     if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {
       return rust::String();
     }
-    NCollection_Sequence<TCollection_AsciiString> length_units;
-    NCollection_Sequence<TCollection_AsciiString> angle_units;
-    NCollection_Sequence<TCollection_AsciiString> solid_angle_units;
-    reader.FileUnits(length_units, angle_units, solid_angle_units);
-    if (length_units.Length() != 1) {
-      return rust::String();
-    }
-    std::string unit(length_units.Value(1).ToCString());
-    std::transform(unit.begin(), unit.end(), unit.begin(), [](unsigned char character) {
-      return static_cast<char>(std::tolower(character));
-    });
-    return rust::String(unit);
+    return rust::String(file_length_unit(reader));
   } catch (...) {
     return rust::String();
   }

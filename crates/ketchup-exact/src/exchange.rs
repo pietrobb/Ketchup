@@ -68,6 +68,45 @@ impl std::fmt::Display for StepXdeManifestError {
 
 impl std::error::Error for StepXdeManifestError {}
 
+/// One STEP file read once into an XDE document: its manifest, length unit and
+/// every part come from that single parse (review 2026-10-17 EX-2).
+pub struct StepXdeDocument {
+    native: cxx::UniquePtr<ffi::NativeXdeDocument>,
+    path: String,
+}
+
+impl StepXdeDocument {
+    pub fn manifest(&self) -> Result<StepXdeManifest, StepXdeManifestError> {
+        parse_step_xde_manifest(&ffi::xde_document_manifest_native(&self.native))
+    }
+
+    /// The file's single length unit, lower case; `None` when missing or ambiguous.
+    #[must_use]
+    pub fn length_unit_name(&self) -> Option<String> {
+        let unit = ffi::xde_document_length_unit_native(&self.native);
+        (!unit.is_empty()).then_some(unit)
+    }
+
+    /// The same body [`ExactBackend::import_step_xde_part`] reads for `part_index`.
+    pub fn part(&self, part_index: u32) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!("import_step_xde_part:{}:{part_index}", self.path);
+        if !usize::try_from(part_index).is_ok_and(|index| index < MAX_STEP_XDE_NODES) {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "import_step_xde_part",
+                &input,
+                "STEP XDE path or part index is invalid".to_owned(),
+            ));
+        }
+        collect_output(
+            ffi::xde_document_part_native(&self.native, part_index),
+            "import_step_xde_part",
+            &input,
+            HistoryConfidence::None,
+        )
+    }
+}
+
 pub(super) fn decode_manifest_hex(value: &str) -> Option<Vec<u8>> {
     if !value.len().is_multiple_of(2) {
         return None;
@@ -310,6 +349,23 @@ impl ExactBackend {
             return Err(StepXdeManifestError::InvalidPath);
         }
         parse_step_xde_manifest(&ffi::step_xde_manifest_native(path))
+    }
+
+    /// Reads `path` once; ask the document for its manifest, unit and parts.
+    pub fn open_step_xde(&self, path: &str) -> Result<StepXdeDocument, StepXdeManifestError> {
+        if path.trim().is_empty() {
+            return Err(StepXdeManifestError::InvalidPath);
+        }
+        let native = ffi::open_step_xde_document_native(path);
+        if native.is_null() {
+            return Err(StepXdeManifestError::Reader(
+                "STEP XDE document could not be allocated".to_owned(),
+            ));
+        }
+        Ok(StepXdeDocument {
+            native,
+            path: path.to_owned(),
+        })
     }
 
     pub fn export_step_xde_assembly(

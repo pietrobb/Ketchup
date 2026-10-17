@@ -277,8 +277,16 @@ mod ffi {
         type NativeOperationResult;
         type NativeMeshResult;
         type NativeVolumeMeshResult;
+        type NativeXdeDocument;
 
         fn route_kernel_messages_to_stderr_native() -> bool;
+        fn open_step_xde_document_native(path: &str) -> UniquePtr<NativeXdeDocument>;
+        fn xde_document_manifest_native(document: &NativeXdeDocument) -> String;
+        fn xde_document_length_unit_native(document: &NativeXdeDocument) -> String;
+        fn xde_document_part_native(
+            document: &NativeXdeDocument,
+            part_index: u32,
+        ) -> UniquePtr<NativeOperationResult>;
         fn make_box_native(
             origin_x: f64,
             origin_y: f64,

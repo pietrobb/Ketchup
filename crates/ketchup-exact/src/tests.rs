@@ -1275,3 +1275,35 @@ fn kernel_messages_leave_stdout_after_routing() {
     // Routing again keeps a single stderr printer, not a second stdout one.
     assert!(ExactBackend::route_kernel_messages_to_stderr());
 }
+
+// Review 2026-10-17 EX-2: inspection used to parse the file once per part.
+#[test]
+fn one_step_xde_document_answers_like_a_parse_per_call() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/independent-xde-assembly.step");
+    let path = path.to_str().unwrap();
+    let backend = ExactBackend::new();
+    let document = backend.open_step_xde(path).unwrap();
+    let manifest = document.manifest().unwrap();
+    assert_eq!(manifest, backend.step_xde_manifest(path).unwrap());
+    assert_eq!(
+        document.length_unit_name(),
+        backend.step_length_unit_name(path)
+    );
+    assert!(document.length_unit_name().is_some());
+    for part in &manifest.parts {
+        let once = document.part(part.index).unwrap();
+        let again = backend.import_step_xde_part(path, part.index).unwrap();
+        assert_eq!(once.body.result_fingerprint, again.body.result_fingerprint);
+        assert_eq!(once.input_digest, again.input_digest);
+    }
+    let outside = u32::try_from(manifest.parts.len()).unwrap();
+    assert_eq!(
+        document.part(outside).unwrap_err().code,
+        GeometryErrorCode::InvalidParameter
+    );
+    let missing = backend.open_step_xde("missing.step").unwrap();
+    assert!(missing.manifest().is_err());
+    assert!(missing.length_unit_name().is_none());
+    assert!(missing.part(0).is_err());
+}

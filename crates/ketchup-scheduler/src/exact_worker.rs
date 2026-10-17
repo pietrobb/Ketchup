@@ -3264,9 +3264,9 @@ fn m21_step_xde_to_iges_response(
     const OPERATION: &str = "convert_step_xde_to_iges";
     let output_path = utf8_path(output_path)?;
     let copy = verified_step_copy(source, OPERATION)?;
-    let source_path = temp_path(&copy);
-    let manifest = backend
-        .step_xde_manifest(&source_path)
+    let document = open_step_xde(backend, &copy, OPERATION)?;
+    let manifest = document
+        .manifest()
         .map_err(|error| backend_failure(OPERATION, &error.to_string()))?;
     let directory = tempfile::Builder::new()
         .prefix("ketchup-iges-flat-roots-")
@@ -3314,8 +3314,8 @@ fn m21_step_xde_to_iges_response(
                 "STEP XDE occurrence references a missing part",
             ));
         };
-        let imported = backend
-            .import_step_xde_part(&source_path, source_part_index)
+        let imported = document
+            .part(source_part_index)
             .map_err(|error| geometry_failure(&error))?;
         let part_path = directory.path().join(format!("root-{}.step", nodes.len()));
         backend
@@ -3374,13 +3374,37 @@ fn m21_step_xde_inspection_response(backend: &ExactBackend, source: &SourceFile)
         .metadata()
         .map_err(|error| backend_failure("inspect_step_xde", &error.to_string()))?
         .len();
-    let source_path = temp_path(&copy);
-    let source_unit = step_source_unit(backend, &source_path, "inspect_step_xde")?;
-    let manifest = backend
-        .step_xde_manifest(&source_path)
+    let document = open_step_xde(backend, &copy, "inspect_step_xde")?;
+    let source_unit = step_document_unit(&document, "inspect_step_xde")?;
+    let manifest = document
+        .manifest()
         .map_err(|error| backend_failure("inspect_step_xde", &error.to_string()))?;
     xde_evidence_reply(source, source_byte_len, &source_unit, manifest, |index| {
-        backend.import_step_xde_part(&source_path, index)
+        document.part(index)
+    })
+}
+
+/// The verified copy read once; every manifest, unit and part answer of the
+/// request comes from this one parse (review 2026-10-17 EX-2).
+fn open_step_xde(
+    backend: &ExactBackend,
+    copy: &tempfile::NamedTempFile,
+    operation: &'static str,
+) -> Result<ketchup_exact::StepXdeDocument, WorkerFailure> {
+    backend
+        .open_step_xde(&temp_path(copy))
+        .map_err(|error| backend_failure(operation, &error.to_string()))
+}
+
+fn step_document_unit(
+    document: &ketchup_exact::StepXdeDocument,
+    operation: &'static str,
+) -> Result<String, WorkerFailure> {
+    document.length_unit_name().ok_or_else(|| {
+        backend_failure(
+            operation,
+            "STEP source has missing or ambiguous representation length units",
+        )
     })
 }
 
