@@ -1,4 +1,5 @@
-use super::{ActiveTool, KetchupApp};
+use super::{ActiveTool, KetchupApp, parse_distance_mm};
+use crate::length_input::DecimalSeparator;
 use eframe::egui;
 use ketchup_assistant::request_invalid::AssistantRequestInvalid;
 pub use ketchup_assistant::sidecar::{
@@ -90,6 +91,8 @@ pub(super) struct HelixUiState {
     circle_radius: String,
     preview_segments: Vec<SpatialPathSegment>,
     valid: bool,
+    /// The window's decimal separator, which its fields are read with.
+    decimal: DecimalSeparator,
 }
 
 impl Default for HelixUiState {
@@ -109,29 +112,42 @@ impl Default for HelixUiState {
             circle_radius: "1".into(),
             preview_segments: Vec::new(),
             valid: false,
+            decimal: DecimalSeparator::Point,
         }
     }
 }
 
 impl HelixUiState {
-    fn parse_vector(values: &[String; 3]) -> Option<[f64; 3]> {
-        Some([
-            values[0].trim().parse().ok()?,
-            values[1].trim().parse().ok()?,
-            values[2].trim().parse().ok()?,
-        ])
+    fn length(&self, text: &str) -> Option<f64> {
+        parse_distance_mm(text, self.decimal)
+    }
+
+    fn number(&self, text: &str) -> Option<f64> {
+        crate::length_input::parse_number(text, self.decimal)
+    }
+
+    /// A point in millimetres, or with `numbers` a direction without units.
+    fn parse_vector(&self, values: &[String; 3], numbers: bool) -> Option<[f64; 3]> {
+        let read = |text: &String| {
+            if numbers {
+                self.number(text)
+            } else {
+                self.length(text)
+            }
+        };
+        Some([read(&values[0])?, read(&values[1])?, read(&values[2])?])
     }
 
     fn helix_parameters(&self) -> Option<HelixToolParameters> {
         Some(HelixToolParameters {
             axis: AxisSpec::OriginDirection {
-                origin_mm: Self::parse_vector(&self.origin)?,
-                direction: Self::parse_vector(&self.axis)?,
+                origin_mm: self.parse_vector(&self.origin, false)?,
+                direction: self.parse_vector(&self.axis, true)?,
             },
-            radius_mm: self.radius.trim().parse().ok()?,
-            pitch_mm: self.pitch.trim().parse().ok()?,
-            turns: self.turns.trim().parse().ok()?,
-            start_angle_degrees: self.start_angle.trim().parse().ok()?,
+            radius_mm: self.length(&self.radius)?,
+            pitch_mm: self.length(&self.pitch)?,
+            turns: self.number(&self.turns)?,
+            start_angle_degrees: self.number(&self.start_angle)?,
             handedness: self.handedness,
         })
     }
@@ -139,7 +155,7 @@ impl HelixUiState {
     /// The profile swept along the helix, empty for a bare path; `None` when its
     /// numbers do not describe one that fits between two turns (narrower than the pitch).
     fn profile_entities(&self) -> Option<Vec<AssistantSketchEntity>> {
-        let number = |text: &String| text.trim().parse::<f64>().ok();
+        let number = |text: &String| self.length(text);
         let pitch = number(&self.pitch)?;
         let (entities, width) = match self.profile {
             HelixProfile::None => return Some(Vec::new()),
@@ -236,8 +252,10 @@ impl KetchupApp {
     }
 
     fn construction_input(&self) -> Option<([f64; 3], [f64; 3])> {
-        let origin = HelixUiState::parse_vector(&self.helix_tool.origin)?;
-        let direction = HelixUiState::parse_vector(&self.helix_tool.axis)?;
+        let origin = self
+            .helix_tool
+            .parse_vector(&self.helix_tool.origin, false)?;
+        let direction = self.helix_tool.parse_vector(&self.helix_tool.axis, true)?;
         let length_squared = direction.iter().map(|value| value * value).sum::<f64>();
         (origin
             .iter()
@@ -248,7 +266,9 @@ impl KetchupApp {
     }
 
     fn create_construction_geometry(&mut self, kind: ConstructionKind) -> bool {
-        let origin = HelixUiState::parse_vector(&self.helix_tool.origin)
+        let origin = self
+            .helix_tool
+            .parse_vector(&self.helix_tool.origin, false)
             .filter(|origin| origin.iter().all(|value| value.is_finite()));
         let direction = self.construction_input().map(|(_, direction)| direction);
         let Some(origin) = origin else {
@@ -335,7 +355,10 @@ impl KetchupApp {
     }
 
     pub(super) fn begin_helix_tool(&mut self) {
-        self.helix_tool = HelixUiState::default();
+        self.helix_tool = HelixUiState {
+            decimal: self.value_box.decimal,
+            ..HelixUiState::default()
+        };
         self.helix_tool.refresh();
         self.status_key = "status-helix-preview";
     }
@@ -453,7 +476,9 @@ impl KetchupApp {
             &mut self.helix_tool.axis,
         );
         ui.label(self.catalog.text("construction-tools"));
-        let point_valid = HelixUiState::parse_vector(&self.helix_tool.origin)
+        let point_valid = self
+            .helix_tool
+            .parse_vector(&self.helix_tool.origin, false)
             .is_some_and(|origin| origin.iter().all(|value| value.is_finite()));
         let axis_valid = self.construction_input().is_some();
         let mut construction = None;

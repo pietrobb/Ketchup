@@ -896,7 +896,7 @@ fn fitting_pocket_position_and_depth_edit_cancel_undo_and_persist_through_access
     assert!(shell.has_role_and_label(Role::Button, &preview_label));
     let before = stamp(&shell);
 
-    replace_move_value(&mut shell, "2, 3");
+    replace_move_value(&mut shell, "2; 3");
     shell.click_role_and_label(Role::Button, &preview_label);
     assert!(shell.app().feature_history_preview_pending());
     assert_eq!(stamp(&shell), before);
@@ -904,7 +904,7 @@ fn fitting_pocket_position_and_depth_edit_cancel_undo_and_persist_through_access
     assert!(!shell.app().feature_history_preview_pending());
     assert_eq!(stamp(&shell), before);
 
-    replace_move_value(&mut shell, "2, 3");
+    replace_move_value(&mut shell, "2; 3");
     shell.click_role_and_label(Role::Button, &preview_label);
     assert_eq!(stamp(&shell), before);
     confirm(&mut shell);

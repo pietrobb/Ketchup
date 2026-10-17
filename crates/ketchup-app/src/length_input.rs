@@ -11,7 +11,7 @@ const MAX_INPUT_CHARS: usize = 256;
 const MAX_NESTING: usize = 32;
 const MM_PER_INCH: f64 = 25.4;
 const MM_PER_FOOT: f64 = 304.8;
-const VALUE_SEPARATORS: [char; 4] = [';', 'x', 'X', ':'];
+pub const VALUE_SEPARATORS: [char; 4] = [';', 'x', 'X', ':'];
 
 /// The decimal separator of the system's number format. A point is read as a
 /// decimal separator with either one.
@@ -88,6 +88,17 @@ pub enum Refusal {
     Comma,
 }
 
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Unreadable => "not a number, length or expression",
+            Self::Comma => "a comma is no decimal separator here; separate values with ; x or :",
+        })
+    }
+}
+
+impl std::error::Error for Refusal {}
+
 /// A typed value with its power of length: 0 for a factor, a count or an
 /// angle, 1 for a length in millimetres.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -114,17 +125,32 @@ pub fn read_values(input: &str, decimal: DecimalSeparator) -> Result<Vec<Quantit
 }
 
 /// The one value of `input` when there is exactly one.
-fn read_one(input: &str, decimal: DecimalSeparator) -> Option<Quantity> {
-    match read_values(input, decimal).ok()?.as_slice() {
-        [value] => Some(*value),
-        _ => None,
+fn read_one(input: &str, decimal: DecimalSeparator) -> Result<Quantity, Refusal> {
+    match read_values(input, decimal)?.as_slice() {
+        [value] => Ok(*value),
+        _ => Err(Refusal::Unreadable),
+    }
+}
+
+/// Millimetres for a typed length expression, with why it is not one.
+pub fn read_length(input: &str, decimal: DecimalSeparator) -> Result<f64, Refusal> {
+    read_one(input, decimal).map(|value| value.mm)
+}
+
+/// A number without a unit, with why the text is not one.
+pub fn read_number(input: &str, decimal: DecimalSeparator) -> Result<f64, Refusal> {
+    let value = read_one(input, decimal)?;
+    if value.power == 0 {
+        Ok(value.mm)
+    } else {
+        Err(Refusal::Unreadable)
     }
 }
 
 /// Millimetres for a typed length expression, or `None` when it is not one.
 #[must_use]
 pub fn parse_length_mm(input: &str, decimal: DecimalSeparator) -> Option<f64> {
-    read_one(input, decimal).map(|value| value.mm)
+    read_length(input, decimal).ok()
 }
 
 fn evaluate(input: &str, decimal: DecimalSeparator) -> Option<Quantity> {
@@ -157,9 +183,7 @@ pub fn parse_length_list(
 /// angle or a count.
 #[must_use]
 pub fn parse_number(input: &str, decimal: DecimalSeparator) -> Option<f64> {
-    read_one(input, decimal)
-        .filter(|value| value.power == 0)
-        .map(|value| value.mm)
+    read_number(input, decimal).ok()
 }
 
 /// The evaluated value of a typed expression, shown next to the field. A

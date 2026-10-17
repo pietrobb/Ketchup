@@ -1247,15 +1247,14 @@ impl KetchupApp {
             joint.parent_occurrence_id() == selected_occurrences[0]
                 && joint.child_occurrence_id() == selected_occurrences[1]
         });
-        let position = self
-            .assembly_editor
-            .joint_position_input
-            .trim()
-            .parse::<f64>()
-            .map_err(|error| {
-                self.catalog
-                    .refusal_because("assembly-error-joint-position", error)
-            })?;
+        let position = crate::length_input::read_number(
+            &self.assembly_editor.joint_position_input,
+            self.value_box.decimal,
+        )
+        .map_err(|refusal| {
+            self.catalog
+                .refusal_because("assembly-error-joint-position", refusal)
+        })?;
         let kind = match self.assembly_editor.joint_kind {
             AssemblyJointKindChoice::Prismatic => AssemblyJointKind::Prismatic {
                 axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
@@ -1263,15 +1262,14 @@ impl KetchupApp {
                 position_mm: position,
             },
             AssemblyJointKindChoice::Helical => {
-                let lead_mm_per_revolution = self
-                    .assembly_editor
-                    .joint_lead_input
-                    .trim()
-                    .parse::<f64>()
-                    .map_err(|error| {
-                        self.catalog
-                            .refusal_because("assembly-error-joint-lead", error)
-                    })?;
+                let lead_mm_per_revolution = crate::length_input::read_length(
+                    &self.assembly_editor.joint_lead_input,
+                    self.value_box.decimal,
+                )
+                .map_err(|refusal| {
+                    self.catalog
+                        .refusal_because("assembly-error-joint-lead", refusal)
+                })?;
                 if !lead_mm_per_revolution.is_finite() || lead_mm_per_revolution <= 0.0 {
                     return Err(self.catalog.refusal("assembly-error-joint-lead"));
                 }
@@ -1319,24 +1317,22 @@ impl KetchupApp {
         {
             return Err(self.catalog.refusal("assembly-error-coupling-joints"));
         }
-        let input_reference_position = self
-            .assembly_editor
-            .coupling_input_reference
-            .trim()
-            .parse::<f64>()
-            .map_err(|error| {
-                self.catalog
-                    .refusal_because("assembly-error-coupling-parameter", error)
-            })?;
-        let output_reference_position = self
-            .assembly_editor
-            .coupling_output_reference
-            .trim()
-            .parse::<f64>()
-            .map_err(|error| {
-                self.catalog
-                    .refusal_because("assembly-error-coupling-parameter", error)
-            })?;
+        let input_reference_position = crate::length_input::read_number(
+            &self.assembly_editor.coupling_input_reference,
+            self.value_box.decimal,
+        )
+        .map_err(|refusal| {
+            self.catalog
+                .refusal_because("assembly-error-coupling-parameter", refusal)
+        })?;
+        let output_reference_position = crate::length_input::read_number(
+            &self.assembly_editor.coupling_output_reference,
+            self.value_box.decimal,
+        )
+        .map_err(|refusal| {
+            self.catalog
+                .refusal_because("assembly-error-coupling-parameter", refusal)
+        })?;
         let first = &self.assembly_editor.coupling_first_parameter;
         let second = &self.assembly_editor.coupling_second_parameter;
         let option = self.assembly_editor.coupling_option;
@@ -1357,13 +1353,21 @@ impl KetchupApp {
                 },
             },
             AssemblyCouplingKindChoice::Belt => AssemblyTransmissionKind::Belt {
-                input_pitch_diameter_mm: first.trim().parse::<f64>().map_err(|error| {
+                input_pitch_diameter_mm: crate::length_input::read_length(
+                    first,
+                    self.value_box.decimal,
+                )
+                .map_err(|refusal| {
                     self.catalog
-                        .refusal_because("assembly-error-coupling-parameter", error)
+                        .refusal_because("assembly-error-coupling-parameter", refusal)
                 })?,
-                output_pitch_diameter_mm: second.trim().parse::<f64>().map_err(|error| {
+                output_pitch_diameter_mm: crate::length_input::read_length(
+                    second,
+                    self.value_box.decimal,
+                )
+                .map_err(|refusal| {
                     self.catalog
-                        .refusal_because("assembly-error-coupling-parameter", error)
+                        .refusal_because("assembly-error-coupling-parameter", refusal)
                 })?,
                 crossed: option,
             },
@@ -1378,9 +1382,13 @@ impl KetchupApp {
                 })?,
             },
             AssemblyCouplingKindChoice::RackAndPinion => AssemblyTransmissionKind::RackAndPinion {
-                pinion_pitch_diameter_mm: first.trim().parse::<f64>().map_err(|error| {
+                pinion_pitch_diameter_mm: crate::length_input::read_length(
+                    first,
+                    self.value_box.decimal,
+                )
+                .map_err(|refusal| {
                     self.catalog
-                        .refusal_because("assembly-error-coupling-parameter", error)
+                        .refusal_because("assembly-error-coupling-parameter", refusal)
                 })?,
                 direction: if option {
                     AssemblyMotionDirection::Opposite
@@ -1389,9 +1397,13 @@ impl KetchupApp {
                 },
             },
             AssemblyCouplingKindChoice::LeadScrew => AssemblyTransmissionKind::LeadScrew {
-                lead_mm_per_revolution: first.trim().parse::<f64>().map_err(|error| {
+                lead_mm_per_revolution: crate::length_input::read_length(
+                    first,
+                    self.value_box.decimal,
+                )
+                .map_err(|refusal| {
                     self.catalog
-                        .refusal_because("assembly-error-coupling-parameter", error)
+                        .refusal_because("assembly-error-coupling-parameter", refusal)
                 })?,
                 handedness: if option {
                     ScrewHandedness::Left
@@ -1444,15 +1456,14 @@ impl KetchupApp {
         if joint.kind().position().is_none() {
             return Err(self.catalog.refusal("assembly-error-drag-joint"));
         }
-        let requested_position = self
-            .assembly_editor
-            .drag_position_input
-            .trim()
-            .parse::<f64>()
-            .map_err(|error| {
-                self.catalog
-                    .refusal_because("assembly-error-drag-position", error)
-            })?;
+        let requested_position = crate::length_input::read_number(
+            &self.assembly_editor.drag_position_input,
+            self.value_box.decimal,
+        )
+        .map_err(|refusal| {
+            self.catalog
+                .refusal_because("assembly-error-drag-position", refusal)
+        })?;
         if !requested_position.is_finite() {
             return Err(self.catalog.refusal("assembly-error-drag-position"));
         }
@@ -1475,15 +1486,14 @@ impl KetchupApp {
                     && joint.child_occurrence_id() == selected_occurrences[1]
             })
             .ok_or_else(|| self.catalog.refusal("assembly-error-motion-joint"))?;
-        let position = self
-            .assembly_editor
-            .motion_position_input
-            .trim()
-            .parse::<f64>()
-            .map_err(|error| {
-                self.catalog
-                    .refusal_because("assembly-error-motion-position", error)
-            })?;
+        let position = crate::length_input::read_number(
+            &self.assembly_editor.motion_position_input,
+            self.value_box.decimal,
+        )
+        .map_err(|refusal| {
+            self.catalog
+                .refusal_because("assembly-error-motion-position", refusal)
+        })?;
         let name = self.assembly_editor.motion_name_input.trim();
         if name.is_empty() {
             return Err(self.catalog.refusal("assembly-error-motion-name"));
@@ -1784,12 +1794,10 @@ impl KetchupApp {
     }
 
     fn editor_mate_kind(&self) -> Option<AssemblyMateKind> {
-        let value = self
-            .assembly_editor
-            .value_input
-            .trim()
-            .parse::<f64>()
-            .ok()?;
+        let value = crate::length_input::parse_number(
+            &self.assembly_editor.value_input,
+            self.value_box.decimal,
+        )?;
         let kind = match self.assembly_editor.kind {
             MateKindChoice::CoincidentPlanar => AssemblyMateKind::CoincidentPlanar {
                 offset_mm: value,

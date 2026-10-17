@@ -1442,3 +1442,32 @@ fn move_inference_targets_origin_and_world_axes_only_with_snapping_enabled() {
         None
     );
 }
+
+/// D-2 (review 2026-10-17): the fields of a dialog read their text with the
+/// window's one rule, so a pattern spacing takes the system's decimal comma
+/// and arithmetic, and a comma on a point system is refused, not guessed.
+#[test]
+fn a_pattern_spacing_reads_with_the_window_rule() {
+    for (decimal, spacing, copy_x) in [
+        (DecimalSeparator::Comma, "2*62,5", Some(125.0)),
+        (DecimalSeparator::Point, "2*62.5", Some(125.0)),
+        (DecimalSeparator::Point, "62,5", None),
+    ] {
+        let mut app = KetchupApp::new();
+        app.value_box.decimal = decimal;
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        app.begin_linear_pattern();
+        app.modal.get_mut::<PendingLinearPattern>().unwrap().spacing = spacing.to_owned();
+        assert_eq!(
+            app.preview_pending_linear_pattern(),
+            copy_x.is_some(),
+            "{spacing:?} {decimal:?}"
+        );
+        assert_eq!(
+            app.occurrence_operation_preview_geometry(OccurrenceId(2))
+                .map(|(origin, _)| origin.x),
+            copy_x,
+            "{spacing:?} {decimal:?}"
+        );
+    }
+}

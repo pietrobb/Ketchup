@@ -9,6 +9,7 @@ use super::plugin::{PluginAnswer, RunPluginRequest, default_plugin_timeout_ms};
 use super::plugin_manifest::{self, Description, InputType};
 use super::window_request::{Polled, WindowRequest};
 use super::*;
+use crate::length_input::DecimalSeparator;
 use std::fs;
 
 /// `%APPDATA%\Ketchup\plugins`.
@@ -89,22 +90,18 @@ struct FormField {
 impl FormField {
     /// The typed value; text that is no number goes as text, so the run
     /// refuses it with the manifest's type. An empty number is left out.
-    fn value(&self) -> Option<Value> {
+    fn value(&self, decimal: DecimalSeparator) -> Option<Value> {
         let text = self.text.trim();
-        let number = text.replace(',', ".");
         match self.kind {
             InputType::Boolean => Some(Value::Bool(self.checked)),
             InputType::String => Some(Value::String(self.text.clone())),
             _ if text.is_empty() => None,
             InputType::Integer => Some(
-                number
-                    .parse::<i64>()
+                text.parse::<i64>()
                     .map_or_else(|_| json!(text), Value::from),
             ),
             InputType::Number => Some(
-                number
-                    .parse::<f64>()
-                    .ok()
+                crate::length_input::parse_number(text, decimal)
                     .and_then(serde_json::Number::from_f64)
                     .map_or_else(|| json!(text), Value::Number),
             ),
@@ -332,12 +329,13 @@ impl KetchupApp {
     }
 
     fn start_window_plugin(&mut self, context: &egui::Context, form: InputForm) {
+        let decimal = self.value_box.decimal;
         let request = RunPluginRequest {
             plugin: Some(form.folder.to_string_lossy().into_owned()),
             inputs: Some(
                 form.fields
                     .iter()
-                    .filter_map(|field| Some((field.name.clone(), field.value()?)))
+                    .filter_map(|field| Some((field.name.clone(), field.value(decimal)?)))
                     .collect(),
             ),
             timeout_ms: default_plugin_timeout_ms(),

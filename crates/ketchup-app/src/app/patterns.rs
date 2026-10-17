@@ -293,7 +293,7 @@ impl KetchupApp {
             .get::<PendingLinearPattern>()
             .is_some_and(|pending| {
                 let (Ok(spacing_mm), Ok(count)) = (
-                    pending.spacing.trim().parse::<f64>(),
+                    parse_distance_mm(&pending.spacing, self.value_box.decimal).ok_or(()),
                     pending.count.trim().parse::<usize>(),
                 ) else {
                     return false;
@@ -314,7 +314,7 @@ impl KetchupApp {
             return false;
         };
         let (Ok(spacing_mm), Ok(count)) = (
-            pending.spacing.trim().parse::<f64>(),
+            parse_distance_mm(&pending.spacing, self.value_box.decimal).ok_or(()),
             pending.count.trim().parse::<usize>(),
         ) else {
             return false;
@@ -559,9 +559,9 @@ impl KetchupApp {
                     Ok(secondary_spacing_mm),
                     Ok(secondary_count),
                 ) = (
-                    pending.primary_spacing.trim().parse::<f64>(),
+                    parse_distance_mm(&pending.primary_spacing, self.value_box.decimal).ok_or(()),
                     pending.primary_count.trim().parse::<usize>(),
-                    pending.secondary_spacing.trim().parse::<f64>(),
+                    parse_distance_mm(&pending.secondary_spacing, self.value_box.decimal).ok_or(()),
                     pending.secondary_count.trim().parse::<usize>(),
                 )
                 else {
@@ -596,9 +596,9 @@ impl KetchupApp {
             Ok(secondary_spacing_mm),
             Ok(secondary_count),
         ) = (
-            pending.primary_spacing.trim().parse::<f64>(),
+            parse_distance_mm(&pending.primary_spacing, self.value_box.decimal).ok_or(()),
             pending.primary_count.trim().parse::<usize>(),
-            pending.secondary_spacing.trim().parse::<f64>(),
+            parse_distance_mm(&pending.secondary_spacing, self.value_box.decimal).ok_or(()),
             pending.secondary_count.trim().parse::<usize>(),
         )
         else {
@@ -878,9 +878,9 @@ impl KetchupApp {
             .get::<PendingCircularPattern>()
             .is_some_and(|pending| {
                 let (Ok(centre_x), Ok(centre_y), Ok(centre_z), Ok(angle), Ok(count)) = (
-                    pending.centre_x.trim().parse::<f64>(),
-                    pending.centre_y.trim().parse::<f64>(),
-                    pending.centre_z.trim().parse::<f64>(),
+                    parse_distance_mm(&pending.centre_x, self.value_box.decimal).ok_or(()),
+                    parse_distance_mm(&pending.centre_y, self.value_box.decimal).ok_or(()),
+                    parse_distance_mm(&pending.centre_z, self.value_box.decimal).ok_or(()),
                     crate::length_input::parse_number(&pending.angle, self.value_box.decimal)
                         .ok_or(()),
                     pending.count.trim().parse::<usize>(),
@@ -907,9 +907,9 @@ impl KetchupApp {
             return false;
         };
         let (Ok(centre_x), Ok(centre_y), Ok(centre_z), Ok(angle), Ok(count)) = (
-            pending.centre_x.trim().parse::<f64>(),
-            pending.centre_y.trim().parse::<f64>(),
-            pending.centre_z.trim().parse::<f64>(),
+            parse_distance_mm(&pending.centre_x, self.value_box.decimal).ok_or(()),
+            parse_distance_mm(&pending.centre_y, self.value_box.decimal).ok_or(()),
+            parse_distance_mm(&pending.centre_z, self.value_box.decimal).ok_or(()),
             crate::length_input::parse_number(&pending.angle, self.value_box.decimal).ok_or(()),
             pending.count.trim().parse::<usize>(),
         ) else {
@@ -1110,8 +1110,9 @@ impl KetchupApp {
         let mut axis = previous_axis;
         let mut spacing = previous_spacing.clone();
         let mut count = previous_count.clone();
+        let decimal = self.value_box.decimal;
         let parse = |axis: Axis, spacing: &str, count: &str| {
-            let spacing = spacing.trim().parse::<f64>().ok()?;
+            let spacing = parse_distance_mm(spacing, decimal)?;
             let count = count.trim().parse::<usize>().ok()?;
             (spacing.is_finite() && spacing.abs() > f64::EPSILON && pattern_places_fit(count))
                 .then_some((axis, spacing, count))
@@ -1221,15 +1222,16 @@ impl KetchupApp {
         let mut secondary_axis = previous_secondary_axis;
         let mut secondary_spacing = previous_secondary_spacing.clone();
         let mut secondary_count = previous_secondary_count.clone();
+        let decimal = self.value_box.decimal;
         let parse = |primary_axis: Axis,
                      primary_spacing: &str,
                      primary_count: &str,
                      secondary_axis: Axis,
                      secondary_spacing: &str,
                      secondary_count: &str| {
-            let primary_spacing = primary_spacing.trim().parse::<f64>().ok()?;
+            let primary_spacing = parse_distance_mm(primary_spacing, decimal)?;
             let primary_count = primary_count.trim().parse::<usize>().ok()?;
-            let secondary_spacing = secondary_spacing.trim().parse::<f64>().ok()?;
+            let secondary_spacing = parse_distance_mm(secondary_spacing, decimal)?;
             let secondary_count = secondary_count.trim().parse::<usize>().ok()?;
             let total_count = primary_count.checked_mul(secondary_count)?;
             (primary_axis != secondary_axis
@@ -1397,9 +1399,9 @@ impl KetchupApp {
         let decimal = self.value_box.decimal;
         let parse = |axis: Axis, x: &str, y: &str, z: &str, angle: &str, count: &str| {
             let centre = Vec3::new(
-                x.trim().parse::<f64>().ok()?,
-                y.trim().parse::<f64>().ok()?,
-                z.trim().parse::<f64>().ok()?,
+                parse_distance_mm(x, decimal)?,
+                parse_distance_mm(y, decimal)?,
+                parse_distance_mm(z, decimal)?,
             );
             let angle = crate::length_input::parse_number(angle, decimal)?;
             let count = count.trim().parse::<usize>().ok()?;

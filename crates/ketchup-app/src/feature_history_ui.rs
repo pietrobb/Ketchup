@@ -1185,14 +1185,12 @@ impl KetchupApp {
             self.feature_history_error(self.catalog.text("feature-history-error-no-parameter"));
             return false;
         };
-        let values = self
-            .feature_history
-            .move_input
-            .split([',', ';'])
-            .map(str::trim)
-            .map(str::parse::<f64>)
-            .collect::<Result<Vec<_>, _>>();
-        let Ok(values) = values else {
+        let values = crate::length_input::parse_length_list(
+            &self.feature_history.move_input,
+            self.value_box.decimal,
+            2..=2,
+        );
+        let Some(values) = values else {
             self.feature_history_error(self.catalog.text("feature-history-error-invalid-move"));
             return false;
         };
@@ -2718,7 +2716,7 @@ impl KetchupApp {
             }
             if is_cut_profile(&snapshot, feature_id) {
                 if self.feature_history.move_input.is_empty() {
-                    self.feature_history.move_input = "0, 0".to_owned();
+                    self.feature_history.move_input = "0; 0".to_owned();
                 }
                 let move_label = self.catalog.text("feature-history-move-profile-value");
                 let response = ui.add(

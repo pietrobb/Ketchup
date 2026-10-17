@@ -960,7 +960,7 @@ fn all_motion_couplings_are_authored_edited_and_reopened_through_accesskit() {
     shell.app_mut().headless_set_assembly_coupling_parameters(
         [109, 110],
         [0.0, 0.0],
-        ["8 mm", ""],
+        ["8 apples", ""],
         true,
     );
     shell.settle();
@@ -968,10 +968,10 @@ fn all_motion_couplings_are_authored_edited_and_reopened_through_accesskit() {
     shell.click_button_label(&preview);
     assert!(!shell.app().assembly_preview_pending());
     assert_eq!(shell.app().canonical_digest(), digest);
-    let cause = "8 mm".parse::<f64>().unwrap_err();
+    let cause = "not a number, length or expression";
     let reason = shell
         .catalog()
-        .text_because("assembly-error-coupling-parameter", &cause);
+        .text_because("assembly-error-coupling-parameter", cause);
     assert!(reason.ends_with(&cause.to_string()), "{reason}");
     assert_eq!(
         shell.app().action_digest(),

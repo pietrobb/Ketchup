@@ -82,9 +82,9 @@ impl KetchupApp {
             });
         if run {
             let result = (|| {
+                let decimal = self.value_box.decimal;
                 let parse_f64 = |value: &str, name: &str| {
-                    value
-                        .parse::<f64>()
+                    crate::length_input::read_number(value, decimal)
                         .map_err(|error| invalid_field(name, "a finite number", error))
                 };
                 let youngs_modulus_mpa = parse_f64(&pending.youngs_modulus_mpa, "Young's modulus")?;
@@ -92,13 +92,13 @@ impl KetchupApp {
                 let yield_strength_mpa = parse_f64(&pending.yield_strength_mpa, "Yield strength")?;
                 let constrained_face_ordinals = pending
                     .constrained_face_ordinals
-                    .split(',')
+                    .split(crate::length_input::VALUE_SEPARATORS)
                     .map(str::trim)
                     .map(|value| {
                         value.parse::<u32>().map_err(|error| {
                             invalid_field(
                                 "Fixed face ordinals",
-                                "comma-separated u32 values",
+                                "u32 values separated by ; x or :",
                                 error,
                             )
                         })
