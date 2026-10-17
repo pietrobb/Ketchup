@@ -469,7 +469,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
                     );
                 }
                 ProgramOperation::Hole(hole)
-                    if hole.inward[2].abs() <= 1e-6 * length(hole.inward)
+                    if hole.inward[2].abs() <= ROUNDING * length(hole.inward)
                         && hole.diameter_mm <= small => {}
                 ProgramOperation::Finish(finish) if finish.radius_mm <= small => {}
                 ProgramOperation::Hole(_) => {
