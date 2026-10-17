@@ -35,6 +35,7 @@ fn missing_exact_result_and_worker_failure_never_claim_verified_or_revert_the_ed
             cancelled: Arc::new(AtomicBool::new(false)),
             worker_cancelled: Arc::new(AtomicBool::new(false)),
             started: Instant::now(),
+            time: PROGRAM_EXACT_TIMEOUT,
             applied,
             receiver,
         })));

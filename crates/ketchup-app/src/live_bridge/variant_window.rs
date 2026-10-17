@@ -72,6 +72,7 @@ impl KetchupApp {
                         queued.cancelled,
                         Request::UseProgramVariant { expected, name },
                         false,
+                        super::program_check::program_request_deadline(),
                     ),
                     VariantAction::Export(path) => {
                         let path = path.display().to_string();

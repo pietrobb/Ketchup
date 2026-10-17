@@ -8,23 +8,34 @@ mod failure_tests;
 mod tests;
 use super::*;
 use crate::program_edit::ProgramEdit;
+use ketchup_application::program_isolation::CheckDeadline;
 use ketchup_application::{RuleProgramApplyError, RuleProgramPlan};
 use ketchup_model::document::RuleProgramSource;
 use ketchup_program::{ProgramModel, Report, exact_candidates};
 
 /// Plans the program and lists its report, both off the UI thread when queued.
+/// `deadline` is the request's: its exact check gets only what the report left,
+/// applied or only checked alike, so both reach the same verdict.
 fn plan_with_report(
     document: &DocumentStore,
     source: &RuleProgramSource,
+    deadline: CheckDeadline,
 ) -> Result<(RuleProgramPlan, Report), RuleProgramApplyError> {
-    let deadline = ketchup_application::program_isolation::CheckDeadline::start();
     let plan = ketchup_application::plan_rule_program(document, source)?;
     let report = plan.report(deadline);
     Ok((plan, report))
 }
 
 pub(super) const PROGRAM_EXACT_TIMEOUT: Duration = Duration::from_secs(20);
-const PROGRAM_EXACT_GRACE: Duration = Duration::from_secs(5);
+/// How much longer than its deadline a program request's check is waited for.
+pub(super) const PROGRAM_EXACT_GRACE: Duration = Duration::from_secs(5);
+
+/// The one deadline of a program request, taken when it starts: its report and
+/// exact check share it, applied or only checked, and it ends early enough to
+/// answer before the connection gives up on the request.
+pub(super) fn program_request_deadline() -> CheckDeadline {
+    CheckDeadline::after(ketchup_mcp::PROGRAM_RESPONSE_WAIT.saturating_sub(PROGRAM_EXACT_GRACE))
+}
 
 pub(super) struct AppliedProgram {
     edit: ProgramEdit,
@@ -77,6 +88,7 @@ pub(super) struct ProgramPlanJob {
     source: RuleProgramSource,
     replace: bool,
     before: Stamp,
+    deadline: CheckDeadline,
     receiver: mpsc::Receiver<Result<(RuleProgramPlan, Report), RuleProgramApplyError>>,
 }
 
@@ -86,6 +98,8 @@ pub(super) struct ExactCheckJob {
     cancelled: Arc<AtomicBool>,
     worker_cancelled: Arc<AtomicBool>,
     started: Instant,
+    /// What the request's deadline left when the check started.
+    time: Duration,
     applied: AppliedProgram,
     receiver: mpsc::Receiver<(Report, Option<Value>)>,
 }
@@ -158,7 +172,8 @@ impl LiveBridge {
     ) -> Result<AppliedProgram, &'static str> {
         let (source, replace) = Self::program_source(app, request, ui_busy, cancelled)?;
         let before = app.live_bridge_stamp();
-        let planned = plan_with_report(&app.document, &source).map_err(program_failure)?;
+        let planned = plan_with_report(&app.document, &source, program_request_deadline())
+            .map_err(program_failure)?;
         self.publish_program(app, source, replace, planned, &before, cancelled)
     }
 
@@ -215,6 +230,7 @@ impl LiveBridge {
         cancelled: Arc<AtomicBool>,
         request: Request,
         ui_busy: bool,
+        deadline: CheckDeadline,
     ) {
         take_error_details();
         if self.program_check_job.is_some() {
@@ -245,7 +261,7 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-live-program-plan".into())
             .spawn(move || {
-                let result = plan_with_report(&document, &worker_source);
+                let result = plan_with_report(&document, &worker_source, deadline);
                 let _ = sender.try_send(result);
                 repaint.request_repaint();
             });
@@ -269,6 +285,7 @@ impl LiveBridge {
             source,
             replace,
             before,
+            deadline,
             receiver,
         }));
         context.request_repaint_after(Duration::from_millis(10));
@@ -314,9 +331,13 @@ impl LiveBridge {
             )
         });
         match result {
-            Ok(applied) => {
-                self.start_program_exact(app, context, job.id, job.reply, job.cancelled, applied)
-            }
+            Ok(applied) => self.start_program_exact(
+                app,
+                context,
+                (job.id, job.reply, job.cancelled),
+                applied,
+                job.deadline,
+            ),
             Err(code) => Self::reply(app, job.id, &job.reply, Err(code)),
         }
     }
@@ -325,10 +346,9 @@ impl LiveBridge {
         &mut self,
         app: &KetchupApp,
         context: &egui::Context,
-        id: u64,
-        reply: mpsc::SyncSender<Response>,
-        cancelled: Arc<AtomicBool>,
+        (id, reply, cancelled): (u64, mpsc::SyncSender<Response>, Arc<AtomicBool>),
         applied: AppliedProgram,
+        deadline: CheckDeadline,
     ) {
         if !applied.needs_exact_check() {
             Self::reply(app, id, &reply, Ok(applied.result(None)));
@@ -352,9 +372,7 @@ impl LiveBridge {
                     &mut report,
                     &container,
                     worker_path,
-                    ketchup_application::program_isolation::CheckDeadline::after(
-                        PROGRAM_EXACT_TIMEOUT,
-                    ),
+                    deadline,
                     thread_cancelled,
                 );
                 let _ = sender.try_send((report, exact));
@@ -375,6 +393,7 @@ impl LiveBridge {
             cancelled,
             worker_cancelled,
             started: Instant::now(),
+            time: deadline.remaining(),
             applied,
             receiver,
         })));
@@ -427,7 +446,7 @@ impl LiveBridge {
         let exact = if job.cancelled.load(Ordering::Acquire) {
             job.worker_cancelled.store(true, Ordering::Release);
             Some(unfinished("request_cancelled"))
-        } else if job.started.elapsed() > PROGRAM_EXACT_TIMEOUT + PROGRAM_EXACT_GRACE {
+        } else if job.started.elapsed() > job.time + PROGRAM_EXACT_GRACE {
             job.worker_cancelled.store(true, Ordering::Release);
             Some(unfinished("exact_collision_timeout"))
         } else {

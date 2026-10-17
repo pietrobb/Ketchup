@@ -4,8 +4,9 @@
 #[cfg(test)]
 #[path = "program_dry_run_tests.rs"]
 mod tests;
-use super::program_check::{PROGRAM_EXACT_TIMEOUT, ProgramCheckJob};
+use super::program_check::{PROGRAM_EXACT_GRACE, ProgramCheckJob};
 use super::*;
+use ketchup_application::program_isolation::CheckDeadline;
 use ketchup_application::{RuleProgramApplyError, RuleProgramChange, SessionError};
 use ketchup_model::document::{ProposalContext, RuleProgramSource};
 use ketchup_model::persistence::ContainerData;
@@ -16,6 +17,8 @@ pub(super) struct DryRunJob {
     cancelled: Arc<AtomicBool>,
     before: Stamp,
     started: Instant,
+    /// What the request's deadline left when the check started.
+    time: Duration,
     context: CheckContext,
     receiver: mpsc::Receiver<Result<Checked, RuleProgramApplyError>>,
 }
@@ -47,15 +50,16 @@ fn build(document: &mut DocumentStore, batch: CommandBatch) -> Result<(), RulePr
     Ok(())
 }
 
+/// Checks `source` as an apply would, within the same request `deadline` an apply
+/// gives its report and exact check, so both reach the same verdict.
 fn check(
     mut document: DocumentStore,
     source: &RuleProgramSource,
     container: &ContainerData,
     worker_path: Option<PathBuf>,
     cancelled: Arc<AtomicBool>,
+    deadline: CheckDeadline,
 ) -> Result<Checked, RuleProgramApplyError> {
-    let deadline =
-        ketchup_application::program_isolation::CheckDeadline::after(PROGRAM_EXACT_TIMEOUT);
     let plan = ketchup_application::plan_rule_program(&document, source)?;
     let mut report = plan.report(deadline);
     let before = document.current();
@@ -203,6 +207,7 @@ impl LiveBridge {
             &app.file.container_data,
             Self::worker_path(app),
             Arc::new(AtomicBool::new(false)),
+            super::program_check::program_request_deadline(),
         )
         .map_err(program_failure)?;
         Ok(checked.result(&app.live_bridge_stamp(), &context))
@@ -215,6 +220,7 @@ impl LiveBridge {
         queued: QueuedReply,
         request: Request,
         ui_busy: bool,
+        deadline: CheckDeadline,
     ) {
         let QueuedReply {
             id,
@@ -252,7 +258,14 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-program-dry-run".into())
             .spawn(move || {
-                let result = check(document, &source, &container, worker_path, worker_cancelled);
+                let result = check(
+                    document,
+                    &source,
+                    &container,
+                    worker_path,
+                    worker_cancelled,
+                    deadline,
+                );
                 let _ = sender.try_send(result);
                 repaint.request_repaint();
             });
@@ -271,6 +284,7 @@ impl LiveBridge {
             cancelled,
             before: app.live_bridge_stamp(),
             started: Instant::now(),
+            time: deadline.remaining(),
             context: check_context,
             receiver,
         }));
@@ -290,7 +304,7 @@ impl LiveBridge {
             Err(error)
         } else if let Err(error) = Self::require_request_authority(&job.cancelled) {
             Err(error)
-        } else if job.started.elapsed() > PROGRAM_EXACT_TIMEOUT + Duration::from_secs(5) {
+        } else if job.started.elapsed() > job.time + PROGRAM_EXACT_GRACE {
             job.cancelled.store(true, Ordering::Release);
             Err(failure(
                 "job_worker_unavailable",

@@ -18,7 +18,12 @@ fn cancelled_or_replaced_document_never_publishes_a_finished_plan() {
         let context = egui::Context::default();
         let source = source();
         let original = app.live_bridge_stamp();
-        let plan = plan_with_report(&app.document.fork_for_planning(), &source).unwrap();
+        let plan = plan_with_report(
+            &app.document.fork_for_planning(),
+            &source,
+            CheckDeadline::start(),
+        )
+        .unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         let (reply, response) = mpsc::sync_channel(1);
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -29,6 +34,7 @@ fn cancelled_or_replaced_document_never_publishes_a_finished_plan() {
             source,
             replace: false,
             before: original,
+            deadline: CheckDeadline::start(),
             receiver,
         }));
         bridge.poll_program_check_job(&mut app, &context);
@@ -86,6 +92,7 @@ fn client_eof_while_program_plan_is_pending_prevents_publication() {
         source: source.clone(),
         replace: false,
         before,
+        deadline: CheckDeadline::start(),
         receiver,
     }));
     bridge.poll_program_check_job(&mut app, &context);
@@ -94,7 +101,12 @@ fn client_eof_while_program_plan_is_pending_prevents_publication() {
     stream.shutdown(Shutdown::Write).unwrap();
     assert_eq!(stream.read(&mut [0]).unwrap(), 0);
     assert!(cancelled.load(Ordering::Acquire));
-    let plan = plan_with_report(&app.document.fork_for_planning(), &source).unwrap();
+    let plan = plan_with_report(
+        &app.document.fork_for_planning(),
+        &source,
+        CheckDeadline::start(),
+    )
+    .unwrap();
     sender.send(Ok(plan)).unwrap();
     bridge.poll_program_check_job(&mut app, &context);
     assert!(bridge.program_check_job.is_none());
@@ -125,6 +137,7 @@ fn live_program_planner_publishes_one_undo_step() {
             replace_document: false,
         },
         false,
+        CheckDeadline::start(),
     );
     assert!(bridge.program_check_job.is_some());
     let deadline = Instant::now() + Duration::from_secs(30);

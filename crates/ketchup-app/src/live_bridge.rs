@@ -1285,7 +1285,14 @@ impl KetchupApp {
                 | Request::SetProgramParams { .. }
                 | Request::UseProgramVariant { .. }) => {
                     bridge.start_queued_apply_program(
-                        self, context, id, reply, cancelled, request, ui_busy,
+                        self,
+                        context,
+                        id,
+                        reply,
+                        cancelled,
+                        request,
+                        ui_busy,
+                        program_check::program_request_deadline(),
                     );
                     continue;
                 }
@@ -1295,7 +1302,14 @@ impl KetchupApp {
                         reply,
                         cancelled,
                     };
-                    bridge.start_queued_check_program(self, context, queued, request, ui_busy);
+                    bridge.start_queued_check_program(
+                        self,
+                        context,
+                        queued,
+                        request,
+                        ui_busy,
+                        program_check::program_request_deadline(),
+                    );
                     continue;
                 }
                 Request::ProgramReport {
