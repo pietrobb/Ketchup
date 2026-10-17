@@ -8,7 +8,6 @@
 use crate::model::{Part, ProgramModel};
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 /// Where a row's volume comes from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -238,66 +237,6 @@ pub fn material_takeoff_of_all(model: &ProgramModel) -> Takeoff {
     material_takeoff(model, &counted)
 }
 
-/// A text cell. A leading `=`, `+`, `-`, `@` or control character would make
-/// a spreadsheet run the name as a formula, so such a name is written after an
-/// apostrophe, which the spreadsheet shows as plain text.
-fn csv_field(text: &str) -> String {
-    let text = if text.starts_with(['=', '+', '-', '@', '\t', '\r']) {
-        format!("'{text}")
-    } else {
-        text.to_owned()
-    };
-    if text.contains([';', '"', '\n', '\r']) {
-        format!("\"{}\"", text.replace('"', "\"\""))
-    } else {
-        text
-    }
-}
-
-/// A number with a decimal comma, which is what a spreadsheet that splits
-/// columns on `;` reads as a number.
-fn csv_number(value: f64) -> String {
-    value.to_string().replace('.', ",")
-}
-
-/// Semicolon-separated rows, then one total per material, for spreadsheets:
-/// UTF-8 with a byte order mark (so diacritics survive), decimal commas and
-/// the rounded values of the takeoff.
-#[must_use]
-pub fn takeoff_csv(takeoff: &Takeoff) -> String {
-    let mut csv = String::from(
-        "\u{feff}category;material;width_mm;thickness_mm;count;length_m;area_m2;volume_m3;volume_basis\n",
-    );
-    for row in &takeoff.rows {
-        let _ = writeln!(
-            csv,
-            "{};{};{};{};{};{};{};{};{}",
-            csv_field(&row.category),
-            csv_field(&row.material),
-            csv_number(row.section_mm[0]),
-            csv_number(row.section_mm[1]),
-            row.count,
-            csv_number(row.length_m),
-            csv_number(row.area_m2),
-            csv_number(row.volume_m3),
-            row.volume_basis.as_str()
-        );
-    }
-    for total in &takeoff.materials {
-        let _ = writeln!(
-            csv,
-            "TOTAL;{};;;{};{};{};{};{}",
-            csv_field(&total.material),
-            total.count,
-            csv_number(total.length_m),
-            csv_number(total.area_m2),
-            csv_number(total.volume_m3),
-            total.volume_basis.as_str()
-        );
-    }
-    csv
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,30 +329,6 @@ box("Stĺpik2", (100, 100, 100), at = (600, 600, 0), material = "drevo")
         let row = &takeoff.rows[0];
         assert_eq!(row.volume_basis, VolumeBasis::Mixed);
         assert_eq!(row.volume_m3, 0.041);
-        let csv = takeoff_csv(&takeoff);
-        assert!(csv.starts_with("\u{feff}category;material;width_mm"));
-        assert!(csv.contains("stena;drevo;140;60;2;5;0,683;0,041;mixed\n"));
-        assert!(csv.contains("TOTAL;drevo;;;2;5;0,683;0,041;mixed\n"));
-    }
-
-    /// Review 2026-10-09 (P3): the CSV had decimal points beside `;` columns,
-    /// no byte order mark, and wrote a name like `=1+1` as a formula.
-    #[test]
-    fn the_csv_opens_in_a_spreadsheet_as_numbers_and_plain_names() {
-        let source = "box(\"=HYPERLINK(1)/doska\", (1000, 200, 25), material = \"@drevo\")\n";
-        let model = crate::evaluate("csv.star", source, &BTreeMap::new())
-            .expect("program evaluates")
-            .model;
-        let csv = takeoff_csv(&material_takeoff_of_all(&model));
-        assert!(csv.starts_with('\u{feff}'), "{csv}");
-        assert!(
-            csv.contains("\n'=HYPERLINK(1);'@drevo;200;25;1;1;0,2;0,005;blank\n"),
-            "{csv}"
-        );
-        assert!(
-            csv.contains("\nTOTAL;'@drevo;;;1;1;0,2;0,005;blank\n"),
-            "{csv}"
-        );
     }
 
     /// Review 2026-10-09 (P3): a triangular part counted twice its area.

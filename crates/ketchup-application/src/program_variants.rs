@@ -314,3 +314,56 @@ fn unknown(program: &RuleProgramSource, name: &str) -> VariantError {
         known: program.variants.keys().cloned().collect(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ketchup_program::table::DecimalSeparator;
+    use ketchup_program::takeoff::material_takeoff;
+
+    fn model(source: &str) -> ketchup_program::ProgramModel {
+        ketchup_program::evaluate("takeoff.star", source, &BTreeMap::new())
+            .expect("program evaluates")
+            .model
+    }
+
+    #[test]
+    fn a_takeoff_csv_has_a_row_per_group_and_a_total_per_material() {
+        let model = model(concat!(
+            "box(\"stena/stĺpik 1\", (60, 140, 2500), material = \"drevo\")\n",
+            "box(\"stena/stĺpik 2\", (60, 140, 2500), at = (600, 0, 0), material = \"drevo\")\n",
+        ));
+        let counted = BTreeMap::from([
+            ("stena/stĺpik 1".to_owned(), Some(20_000_000.0)),
+            ("stena/stĺpik 2".to_owned(), None),
+        ]);
+        let csv = takeoff_table(&material_takeoff(&model, &counted)).csv(DecimalSeparator::Comma);
+        assert!(
+            csv.starts_with("\u{feff}category;material;width_mm"),
+            "{csv}"
+        );
+        assert!(
+            csv.contains("\nstena;drevo;140;60;2;5;0,683;0,041;mixed\n"),
+            "{csv}"
+        );
+        assert!(
+            csv.contains("\nTOTAL;drevo;;;2;5;0,683;0,041;mixed\n"),
+            "{csv}"
+        );
+    }
+
+    /// Review 2026-10-09 (P3): a name like `=1+1` was written as a formula.
+    #[test]
+    fn a_takeoff_csv_writes_formula_like_names_as_plain_text() {
+        let model = model("box(\"=HYPERLINK(1)/doska\", (1000, 200, 25), material = \"@drevo\")\n");
+        let csv = takeoff_table(&material_takeoff_of_all(&model)).csv(DecimalSeparator::Comma);
+        assert!(
+            csv.contains("\n'=HYPERLINK(1);'@drevo;200;25;1;1;0,2;0,005;blank\n"),
+            "{csv}"
+        );
+        assert!(
+            csv.contains("\nTOTAL;'@drevo;;;1;1;0,2;0,005;blank\n"),
+            "{csv}"
+        );
+    }
+}
