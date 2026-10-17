@@ -1,6 +1,7 @@
 //! One model for a tool gesture in progress: a Move, Rotate or Scale, a shape
-//! being drawn, or a Push/Pull. Each tool answers the same questions through
-//! [`ToolGesture`], and [`GESTURES`] is the one registry Esc, Ctrl+Z and a
+//! being drawn, a Push/Pull, or the face Mirror reflects across. Each tool
+//! answers the same questions through [`ToolGesture`], and [`GESTURES`] is
+//! the one registry Esc, Ctrl+Z and a
 //! typed value go through. Whether a gesture still stands, what ends it and
 //! which tool a typed value is for are decided once, not once per tool.
 
@@ -27,14 +28,21 @@ pub(crate) trait ToolGesture: Sync {
 }
 
 /// Every tool with a gesture, in the order a typed value is offered to them.
-pub(crate) static GESTURES: [&dyn ToolGesture; 5] =
-    [&DrawTool, &ScaleTool, &RotateTool, &PushPullTool, &MoveTool];
+pub(crate) static GESTURES: [&dyn ToolGesture; 6] = [
+    &DrawTool,
+    &ScaleTool,
+    &RotateTool,
+    &PushPullTool,
+    &MoveTool,
+    &MirrorTool,
+];
 
 struct DrawTool;
 struct ScaleTool;
 struct RotateTool;
 struct PushPullTool;
 struct MoveTool;
+struct MirrorTool;
 
 impl ToolGesture for DrawTool {
     fn is_open(&self, app: &KetchupApp) -> bool {
@@ -181,6 +189,34 @@ impl ToolGesture for MoveTool {
 
     fn apply_typed(&self, app: &mut KetchupApp) -> bool {
         app.apply_typed_move()
+    }
+}
+
+/// The face the pointer last rested on, which a typed offset mirrors across.
+impl ToolGesture for MirrorTool {
+    fn is_open(&self, app: &KetchupApp) -> bool {
+        app.gesture.mirror.is_some()
+    }
+
+    fn is_current(&self, app: &KetchupApp) -> bool {
+        app.mirror_plane_is_current()
+    }
+
+    fn cancel(&self, app: &mut KetchupApp) {
+        app.gesture.mirror = None;
+    }
+
+    /// A face under the pointer is no step of its own: Ctrl+Z undoes.
+    fn holds_undo(&self, _app: &KetchupApp) -> bool {
+        false
+    }
+
+    fn takes_typed(&self, app: &KetchupApp) -> bool {
+        app.active_tool == ActiveTool::Mirror
+    }
+
+    fn apply_typed(&self, app: &mut KetchupApp) -> bool {
+        app.commit_mirror()
     }
 }
 
@@ -500,11 +536,10 @@ impl KetchupApp {
         true
     }
 
-    /// A typed value for a tool without a gesture: Mirror, Hole, Draft,
-    /// Offset, Revolve, Shell, Fillet and Chamfer.
+    /// A typed value for a tool without a gesture: Hole, Draft, Offset,
+    /// Revolve, Shell, Fillet and Chamfer.
     fn apply_typed_without_gesture(&mut self) -> bool {
         match self.active_tool {
-            ActiveTool::Mirror => self.commit_mirror(),
             ActiveTool::Hole => {
                 // The size is typed first; the hole lands where the face is clicked.
                 self.digest = self.catalog.text("status-hole-face");

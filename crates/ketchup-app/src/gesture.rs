@@ -33,6 +33,8 @@ pub(crate) struct Gesture {
 pub(crate) struct MirrorPlane {
     pub(crate) point_mm: Vec3,
     pub(crate) normal: Vec3,
+    /// The document and revision the face was read from.
+    pub(crate) source: (DocumentId, u64),
 }
 
 /// A line, rectangle, circle, arc, polygon or ellipse being drawn.

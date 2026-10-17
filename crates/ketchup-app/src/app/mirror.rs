@@ -17,6 +17,8 @@ impl KetchupApp {
 
     /// The plane of the face under the pointer.
     pub(crate) fn mirror_plane_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<MirrorPlane> {
+        let snapshot = self.document.current();
+        let source = (snapshot.document_id(), snapshot.revision_id());
         self.surface_hit_at_screen(pointer, rect)
             .or_else(|| {
                 let pick = self.pick_result_at_screen(pointer, rect, 0.0)?;
@@ -26,13 +28,29 @@ impl KetchupApp {
                 let sign = if side == Side::Maximum { 1.0 } else { -1.0 };
                 Some((pick.primary.position_mm, axis_vector(axis, sign)))
             })
-            .map(|(point_mm, normal)| MirrorPlane { point_mm, normal })
+            .map(|(point_mm, normal)| MirrorPlane {
+                point_mm,
+                normal,
+                source,
+            })
+    }
+
+    /// The picked face was read from the model as it is now.
+    pub(crate) fn mirror_plane_is_current(&self) -> bool {
+        let snapshot = self.document.current();
+        self.gesture
+            .mirror
+            .is_some_and(|plane| plane.source == (snapshot.document_id(), snapshot.revision_id()))
     }
 
     /// The picked face's plane, moved along its outward normal by the distance
-    /// in the value box (none typed = the face itself).
+    /// in the value box (none typed = the face itself). A face read from an
+    /// earlier model is none.
     fn mirror_plane(&self) -> Option<MirrorPlane> {
-        let plane = self.gesture.mirror?;
+        let plane = self
+            .gesture
+            .mirror
+            .filter(|_| self.mirror_plane_is_current())?;
         let input = self.value_box.input.trim();
         let offset_mm = if input.is_empty() {
             0.0
@@ -42,7 +60,7 @@ impl KetchupApp {
         let unit = plane.normal * (1.0 / length(plane.normal));
         Some(MirrorPlane {
             point_mm: plane.point_mm + unit * offset_mm,
-            normal: plane.normal,
+            ..plane
         })
     }
 
@@ -104,7 +122,10 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-mirror-face-required");
             return false;
         }
-        let Some(MirrorPlane { point_mm, normal }) = self.mirror_plane() else {
+        let Some(MirrorPlane {
+            point_mm, normal, ..
+        }) = self.mirror_plane()
+        else {
             self.digest = self.catalog.text("digest-mirror-invalid-offset");
             return false;
         };

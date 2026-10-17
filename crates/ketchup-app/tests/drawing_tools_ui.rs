@@ -473,6 +473,54 @@ fn mirror_copies_the_selection_across_the_clicked_face_or_a_typed_offset_in_one_
     assert_eq!(shell.app().canonical_digest(), second_digest);
 }
 
+/// The face the pointer last rested on stands for the model it was read from.
+/// Undo and the Assistant's edits end it already; an edit from a menu or panel
+/// did not, so a typed offset then mirrored across where the face used to be.
+/// It is now refused by name, like any stale gesture (review 2026-10-16).
+#[test]
+fn a_typed_mirror_offset_after_the_model_changed_is_refused_not_applied_to_the_old_face() {
+    let mut shell = Shell::new();
+    let (origin, size) = occurrence_box(&shell, 1);
+    let side = shell
+        .app()
+        .viewport_position(origin + Vec3::new(size.x, size.y / 2.0, size.z / 2.0))
+        .unwrap();
+    shell.click_at(side);
+    shell.press_key(Key::I);
+    shell.move_pointer(side);
+    assert!(!shell.app().mirror_preview_corners().is_empty());
+
+    // The pointer leaves the viewport, so the face it read stays, and the
+    // part turns a quarter from the menu: that face now points elsewhere.
+    let viewport = shell.viewport_rect();
+    shell.move_pointer(eframe::egui::pos2(viewport.center().x, 10.0));
+    assert!(!shell.app().mirror_preview_corners().is_empty());
+    assert!(shell.app_mut().rotate_selected_90());
+    shell.step();
+    let revision = shell.app().document_revision();
+    assert!(
+        shell.app().mirror_preview_corners().is_empty(),
+        "no copy is previewed across the old face"
+    );
+
+    shell.type_text("10");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("error-preview-stale")
+    );
+    // Confirming again asks for a face rather than reaching for the old one.
+    shell.type_text("10");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("digest-mirror-face-required")
+    );
+    shell.step();
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().occurrence_count(), 1);
+}
+
 #[test]
 fn offset_follows_the_pointer_or_a_typed_distance_for_any_closed_profile_in_one_undo_step() {
     let mut shell = Shell::new();
