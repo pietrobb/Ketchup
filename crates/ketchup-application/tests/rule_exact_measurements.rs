@@ -5,10 +5,15 @@ use ketchup_model::persistence::ContainerData;
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;
 
+/// One deadline for the whole request, as in the app, but long enough that a
+/// slow runner never stops the checks: these tests check what the checks find,
+/// and a stopped check (`checks_unverified`) is tested in `program_isolation`.
 fn checked(source: String) -> (ketchup_program::Report, serde_json::Value) {
+    let deadline =
+        ketchup_application::program_isolation::CheckDeadline::after(Duration::from_secs(600));
     let mut session = DocumentSession::new(SessionSettings::default());
     let applied = session
-        .apply_rule_program(
+        .apply_rule_program_by(
             RuleProgramSource {
                 variants: Default::default(),
                 file_name: "clearance.star".into(),
@@ -16,6 +21,7 @@ fn checked(source: String) -> (ketchup_program::Report, serde_json::Value) {
                 overrides: Default::default(),
             },
             false,
+            deadline,
         )
         .unwrap();
     let mut report = applied.report;
@@ -25,7 +31,7 @@ fn checked(source: String) -> (ketchup_program::Report, serde_json::Value) {
         &mut report,
         &ContainerData::default(),
         None,
-        ketchup_application::program_isolation::CheckDeadline::after(Duration::from_secs(120)),
+        deadline,
         Arc::new(AtomicBool::new(false)),
     )
     .expect("declared clearance must be measured");
