@@ -22,7 +22,10 @@ use ketchup_model::shared_change::{
 };
 use ketchup_model::tolerance::ROUNDING;
 
+mod exact;
 mod thread;
+
+use exact::{FeatureHistoryExactPurpose, FeatureHistoryExactTask, evaluated_body};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum FeatureHistoryPreviewKind {
@@ -238,6 +241,7 @@ pub(super) struct FeatureHistoryUiState {
     change_scope: FeatureHistoryChangeScope,
     replacement_target: Option<DefinitionId>,
     preview: Option<FeatureHistoryUiPreview>,
+    exact_task: Option<FeatureHistoryExactTask>,
 }
 
 enum FeatureHistoryUiAction {
@@ -1316,49 +1320,21 @@ impl KetchupApp {
             })
             .collect::<Vec<_>>();
         if !missing_target_bodies.is_empty() {
-            let executable = match self.exact_worker_executable() {
-                Ok(executable) => executable,
-                Err(error) => {
-                    self.feature_history_error(error.reason_text());
-                    return false;
+            let graphs = missing_target_bodies
+                .into_iter()
+                .map(|body_id| body_exact_graph(&snapshot, target_definition_id, body_id))
+                .collect::<Result<Vec<_>, _>>();
+            match graphs {
+                // The preview is derived again once the worker publishes the bodies.
+                Ok(graphs) => {
+                    self.start_feature_history_exact(
+                        graphs,
+                        FeatureHistoryExactPurpose::ReplacementPreview,
+                    );
                 }
-            };
-            let mut worker = match ExactWorkerSupervisor::spawn(executable) {
-                Ok(worker) => worker,
-                Err(error) => {
-                    self.feature_history_error(error);
-                    return false;
-                }
-            };
-            let mut packages = Vec::with_capacity(missing_target_bodies.len());
-            for body_id in missing_target_bodies {
-                let graph = match body_exact_graph(&snapshot, target_definition_id, body_id) {
-                    Ok(graph) => graph,
-                    Err(error) => {
-                        self.feature_history_error(error);
-                        return false;
-                    }
-                };
-                let package = match worker.evaluate_exact_brep_graph(&graph) {
-                    Ok(package) => Arc::new(ExactBodyPackage::from(package)),
-                    Err(error) => {
-                        self.feature_history_error(error);
-                        return false;
-                    }
-                };
-                packages.push(package);
+                Err(error) => self.feature_history_error(error),
             }
-            self.exact.results = match ExactResultRegistry::publish_body_results(
-                &snapshot,
-                &self.exact.results,
-                packages,
-            ) {
-                Ok(results) => results,
-                Err(error) => {
-                    self.feature_history_error(error);
-                    return false;
-                }
-            };
+            return false;
         }
         let source =
             FeatureHistoryPreviewSource::Replacement(ComponentReplacementImpactRequest::new(
@@ -1382,31 +1358,37 @@ impl KetchupApp {
         true
     }
 
-    /// Starts the exact worker that recomputes the bodies a propagated change touches,
-    /// cancelling the background evaluation it replaces. Reports a failure and
-    /// answers `None` when no worker can run.
-    fn feature_history_exact_worker(&mut self) -> Option<ExactWorkerSupervisor> {
-        let executable = match self.exact_worker_executable() {
-            Ok(executable) => executable,
-            Err(error) => {
-                self.feature_history_error(error.reason_text());
-                return None;
-            }
-        };
-        let worker = match ExactWorkerSupervisor::spawn(executable) {
-            Ok(worker) => worker,
-            Err(error) => {
-                self.feature_history_error(error);
-                return None;
-            }
-        };
-        if let Some(task) = self.exact.task.take() {
-            task.cancelled.store(true, Ordering::Release);
-        }
-        Some(worker)
+    /// Commits the reviewed preview. A propagated change first has its bodies
+    /// evaluated on a thread; it commits when they arrive, and this answers false.
+    fn confirm_feature_history_preview(&mut self) -> bool {
+        self.confirm_feature_history_preview_with(None)
     }
 
-    fn confirm_feature_history_preview(&mut self) -> bool {
+    /// Starts evaluating `graphs` for the preview, which stays on view meanwhile.
+    fn evaluate_before_confirm<E: ToString>(
+        &mut self,
+        preview: FeatureHistoryUiPreview,
+        graphs: Result<Vec<ketchup_model::exact_brep_graph::ExactBRepGraph>, E>,
+    ) -> bool {
+        match graphs {
+            Ok(graphs) => {
+                self.feature_history.preview = Some(preview);
+                if !self.start_feature_history_exact(graphs, FeatureHistoryExactPurpose::Confirm) {
+                    self.feature_history.preview = None;
+                }
+            }
+            Err(error) => self.feature_history_error(error),
+        }
+        false
+    }
+
+    fn confirm_feature_history_preview_with(
+        &mut self,
+        evaluated: Option<&exact::EvaluatedBodies>,
+    ) -> bool {
+        if self.feature_history.exact_task.is_some() {
+            return false;
+        }
         let Some(preview) = self.feature_history.preview.take() else {
             return false;
         };
@@ -1436,34 +1418,36 @@ impl KetchupApp {
                 .map(|_| ())
                 .map_err(FeatureHistoryPreviewError::failed),
             FeatureHistoryExecutionPlan::Shared(impact) => {
-                let Some(mut worker) = self.feature_history_exact_worker() else {
-                    return false;
+                let Some(bodies) = evaluated else {
+                    let graphs = impact.exact_job_graphs(&self.document);
+                    return self.evaluate_before_confirm(preview, graphs);
                 };
                 self.complete_mutation_and_exact_results_with_work_recovery(
                     |document, exact_results, _topology_results| {
-                        commit_shared_definition_change(document, exact_results, impact, |graph| {
-                            worker
-                                .evaluate_exact_brep_graph(graph)
-                                .map(ExactBodyPackage::from)
-                                .map(Arc::new)
-                        })
+                        commit_shared_definition_change(
+                            document,
+                            exact_results,
+                            impact,
+                            evaluated_body(bodies),
+                        )
                     },
                 )
                 .map(|_| ())
                 .map_err(FeatureHistoryPreviewError::failed)
             }
             FeatureHistoryExecutionPlan::Fork(impact) => {
-                let Some(mut worker) = self.feature_history_exact_worker() else {
-                    return false;
+                let Some(bodies) = evaluated else {
+                    let graphs = impact.exact_job_graphs(&self.document);
+                    return self.evaluate_before_confirm(preview, graphs);
                 };
                 self.complete_mutation_and_exact_results_with_work_recovery(
                     |document, exact_results, _topology_results| {
-                        commit_occurrence_fork_change(document, exact_results, impact, |graph| {
-                            worker
-                                .evaluate_exact_brep_graph(graph)
-                                .map(ExactBodyPackage::from)
-                                .map(Arc::new)
-                        })
+                        commit_occurrence_fork_change(
+                            document,
+                            exact_results,
+                            impact,
+                            evaluated_body(bodies),
+                        )
                     },
                 )
                 .map(|_| ())
@@ -1496,6 +1480,7 @@ impl KetchupApp {
     }
 
     pub(super) fn cancel_feature_history_preview(&mut self) {
+        self.cancel_feature_history_exact();
         self.feature_history.preview = None;
         self.digest = self.catalog.text("feature-history-cancelled");
     }
@@ -2243,6 +2228,61 @@ impl KetchupApp {
         ui.separator();
     }
 
+    /// The replacement target picker and its preview button; Cancel stops a
+    /// running body evaluation.
+    fn show_component_replacement_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        replacement_targets: &[(DefinitionId, String)],
+        definition_id: DefinitionId,
+    ) -> Option<FeatureHistoryUiAction> {
+        let mut action = None;
+        if let Some(mut target) = self.feature_history.replacement_target {
+            let label = self.catalog.text("feature-history-replacement-target");
+            let selected_text = replacement_targets
+                .iter()
+                .find(|(id, _)| *id == target)
+                .map_or_else(|| target.0.to_string(), |(_, name)| name.clone());
+            let response = egui::ComboBox::from_id_salt("feature-history-replacement-target")
+                .width(ui.available_width())
+                .selected_text(selected_text)
+                .show_ui(ui, |ui| {
+                    for (id, name) in replacement_targets {
+                        ui.selectable_value(&mut target, *id, name);
+                    }
+                });
+            response.response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
+            });
+            if self.feature_history.replacement_target != Some(target) {
+                action = Some(FeatureHistoryUiAction::SelectReplacementTarget(target));
+            }
+        }
+        let evaluating = self.show_feature_history_exact_running(ui);
+        if evaluating
+            && ui
+                .button(self.catalog.text("feature-history-cancel"))
+                .clicked()
+        {
+            action = Some(FeatureHistoryUiAction::Cancel);
+        }
+        if ui
+            .add_enabled(
+                !evaluating
+                    && self.feature_history.replacement_target.is_some()
+                    && self.selected_fork_occurrence(definition_id).is_some(),
+                egui::Button::new(
+                    self.catalog
+                        .text("feature-history-preview-replace-component"),
+                ),
+            )
+            .clicked()
+        {
+            action = Some(FeatureHistoryUiAction::PreviewReplacement);
+        }
+        action
+    }
+
     fn show_feature_history_content(&mut self, ui: &mut egui::Ui) {
         self.show_revision_catalog(ui);
         let snapshot = self.document.current();
@@ -2498,8 +2538,12 @@ impl KetchupApp {
             if let Some(impact) = preview.execution.replacement_impact() {
                 self.show_component_replacement_impact(ui, impact);
             }
+            let evaluating = self.show_feature_history_exact_running(ui);
             if ui
-                .button(self.catalog.text("feature-history-confirm"))
+                .add_enabled(
+                    !evaluating,
+                    egui::Button::new(self.catalog.text("feature-history-confirm")),
+                )
                 .clicked()
             {
                 action = Some(FeatureHistoryUiAction::Confirm);
@@ -2511,41 +2555,12 @@ impl KetchupApp {
                 action = Some(FeatureHistoryUiAction::Cancel);
             }
         } else if self.feature_history.change_scope == FeatureHistoryChangeScope::ReplaceComponent {
-            if let Some(mut target) = self.feature_history.replacement_target {
-                let label = self.catalog.text("feature-history-replacement-target");
-                let selected_text = replacement_targets
-                    .iter()
-                    .find(|(id, _)| *id == target)
-                    .map_or_else(|| target.0.to_string(), |(_, name)| name.clone());
-                let response = egui::ComboBox::from_id_salt("feature-history-replacement-target")
-                    .width(ui.available_width())
-                    .selected_text(selected_text)
-                    .show_ui(ui, |ui| {
-                        for (id, name) in &replacement_targets {
-                            ui.selectable_value(&mut target, *id, name);
-                        }
-                    });
-                response.response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
-                });
-                if self.feature_history.replacement_target != Some(target) {
-                    action = Some(FeatureHistoryUiAction::SelectReplacementTarget(target));
-                }
-            }
-            if ui
-                .add_enabled(
-                    self.feature_history.replacement_target.is_some()
-                        && self
-                            .selected_fork_occurrence(projection.definition_id)
-                            .is_some(),
-                    egui::Button::new(
-                        self.catalog
-                            .text("feature-history-preview-replace-component"),
-                    ),
-                )
-                .clicked()
-            {
-                action = Some(FeatureHistoryUiAction::PreviewReplacement);
+            if let Some(chosen) = self.show_component_replacement_controls(
+                ui,
+                &replacement_targets,
+                projection.definition_id,
+            ) {
+                action = Some(chosen);
             }
         } else if let Some(feature_id) = self.feature_history.selected_feature {
             if let Some(feature) = snapshot.feature(feature_id)

@@ -66,7 +66,7 @@ MAX_FUNCTION_LINES = 400
 # shrink but not grow; an entry is removed once its function fits the limit.
 LONG_FUNCTIONS = {
     "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 756,
-    "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 655,
+    "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 630,
     "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 660,
     "crates/ketchup-application/src/collision.rs::collision_report": 702,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
@@ -80,7 +80,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 445,
     "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 575,
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1396,
-    "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 558,
+    "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 543,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 716,
     "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 529,

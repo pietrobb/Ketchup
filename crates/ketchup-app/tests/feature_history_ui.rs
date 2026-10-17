@@ -456,6 +456,11 @@ fn confirm(shell: &mut Shell) {
     assert!(shell.app().feature_history_preview_pending());
     let label = shell.catalog().text("feature-history-confirm");
     shell.click_button_label(&label);
+    // A propagated change commits once the worker has evaluated its bodies.
+    shell.wait_until(|shell| {
+        shell.settle();
+        !shell.app().feature_history_exact_running()
+    });
     assert!(
         !shell.app().feature_history_preview_pending(),
         "{}",
@@ -1226,6 +1231,44 @@ fn shared_change_impact_panel_is_accessible_observational_and_commits_atomically
     confirm(&mut shell);
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.2 + 1);
+    assert_eq!(shell.app().exact_render_bounds()[0][1][2], 35.0);
+}
+
+// Review 2026-10-17 EX-6: the window used to evaluate the changed body on its own
+// thread, frozen for as long as the worker took.
+#[test]
+fn a_shared_change_is_evaluated_off_the_window_and_cancel_stops_it_without_an_edit() {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_exact_body(&mut shell);
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-edit", AppCommand::Copy);
+    shell.click_menu_command("menu-edit", AppCommand::Paste);
+    wait_for_exact_body(&mut shell);
+    open_history(&mut shell);
+    let before = stamp(&shell);
+    let preview_edit = shell.catalog().text("feature-history-preview-edit");
+    let confirm_label = shell.catalog().text("feature-history-confirm");
+
+    replace_exact_value(&mut shell, "35");
+    shell.click_button_label(&preview_edit);
+    shell.click_button_label_once(&confirm_label);
+    assert!(shell.app().feature_history_exact_running());
+    assert!(shell.app().feature_history_preview_pending());
+    assert_eq!(stamp(&shell), before);
+    shell.press_key(Key::Escape);
+    assert!(!shell.app().feature_history_exact_running());
+    assert!(!shell.app().feature_history_preview_pending());
+    shell.settle();
+    assert_eq!(stamp(&shell), before);
+
+    replace_exact_value(&mut shell, "35");
+    shell.click_button_label(&preview_edit);
+    confirm(&mut shell);
+    assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().exact_render_bounds()[0][1][2], 35.0);
 }
 

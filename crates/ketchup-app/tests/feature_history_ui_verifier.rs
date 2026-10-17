@@ -122,6 +122,11 @@ fn confirm(shell: &mut Shell) {
     assert!(shell.app().feature_history_preview_pending());
     let label = shell.catalog().text("feature-history-confirm");
     shell.click_button_label(&label);
+    // A propagated change commits once the worker has evaluated its bodies.
+    shell.wait_until(|shell| {
+        shell.settle();
+        !shell.app().feature_history_exact_running()
+    });
     assert!(!shell.app().feature_history_preview_pending());
 }
 

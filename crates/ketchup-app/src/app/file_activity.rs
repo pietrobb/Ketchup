@@ -10,6 +10,7 @@ pub(crate) struct FileActivity {
     opening: Option<OpenTask>,
     pub(super) saving: Option<super::save_activity::SaveTask>,
     pub(super) viewer_export: Option<super::viewer_export_activity::ViewerExportTask>,
+    pub(super) exchange_export: Option<super::exchange_export::ExchangeExportTask>,
     pub(super) dwg_reading: Option<super::dwg_import::DwgReadTask>,
 }
 
@@ -117,6 +118,7 @@ impl KetchupApp {
             || self.file.activity.opening.is_some()
             || self.file.activity.saving.is_some()
             || self.file.activity.viewer_export.is_some()
+            || self.file.activity.exchange_export.is_some()
             || self.file.activity.dwg_reading.is_some()
         {
             return true;
@@ -163,6 +165,8 @@ impl KetchupApp {
             AppCommand::ImportDrawingDxf
         } else if self.file.activity.viewer_export.is_some() {
             AppCommand::ExportViewer
+        } else if let Some(task) = &self.file.activity.exchange_export {
+            task.format().command()
         } else if self.file.activity.saving.is_some() {
             AppCommand::Save
         } else {
@@ -188,6 +192,7 @@ impl KetchupApp {
             self.defer_close_until_exported(context);
             self.cancel_save_preparation();
             self.cancel_viewer_export_preparation();
+            self.cancel_exchange_export();
         }
         let Some(label) = self.file_activity_label() else {
             return;
@@ -211,7 +216,12 @@ impl KetchupApp {
             self.cancel_dwg_read();
             self.cancel_save_preparation();
             self.cancel_viewer_export_preparation();
+            self.cancel_exchange_export();
             context.request_repaint();
+            return;
+        }
+        if self.file.activity.exchange_export.is_some() {
+            self.poll_exchange_export(context);
             return;
         }
         if self.file.activity.saving.is_some() {
@@ -264,6 +274,14 @@ impl KetchupApp {
             } else if pending.command == AppCommand::ExportViewer {
                 if let Some(path) = self.choose_export_path("ketchup-view") {
                     self.start_viewer_export(path, context);
+                }
+            } else if let Some(format) = match pending.command {
+                AppCommand::ExportExactStep => Some(super::exchange_export::ExchangeFormat::Step),
+                AppCommand::ExportExactIges => Some(super::exchange_export::ExchangeFormat::Iges),
+                _ => None,
+            } {
+                if let Some(path) = self.choose_export_path(format.key()) {
+                    self.start_exchange_export(format, path, context);
                 }
             } else {
                 self.dispatch_command(pending.command);

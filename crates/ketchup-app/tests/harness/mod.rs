@@ -631,6 +631,16 @@ impl Shell {
         self.run_idle();
     }
 
+    /// Click a button and run the one frame that handles the click, so a test
+    /// sees the background work it starts before that work can finish.
+    pub fn click_button_label_once(&mut self, label: &str) {
+        self.gap();
+        self.harness
+            .get_by_role_and_label(Role::Button, label)
+            .click_accesskit();
+        self.harness.step();
+    }
+
     /// Open a menu of the menu bar, identified by its localization key.
     pub fn open_menu(&mut self, key: &str) {
         self.gap();

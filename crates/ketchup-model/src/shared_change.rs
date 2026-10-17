@@ -832,6 +832,100 @@ pub struct SharedChangeImpactProjection {
     pub proposal: Proposal,
 }
 
+impl SharedChangeImpactProjection {
+    /// The graphs [`commit_shared_definition_change`] evaluates, so a caller can
+    /// evaluate them off the window's thread before it commits.
+    pub fn exact_job_graphs(
+        &self,
+        document: &DocumentStore,
+    ) -> Result<Vec<ExactBRepGraph>, SharedChangePropagationError> {
+        let candidate = self.candidate(document)?;
+        self.exact_jobs
+            .iter()
+            .map(|job| self.job_graph(&candidate, job))
+            .collect()
+    }
+
+    fn candidate(
+        &self,
+        document: &DocumentStore,
+    ) -> Result<Snapshot, SharedChangePropagationError> {
+        let candidate = document
+            .preview_dependency_staging_batch(self.proposal.batch())
+            .map_err(|error| SharedChangePropagationError::InvalidImpact(error.to_string()))?;
+        if candidate.canonical_digest() != self.candidate_digest {
+            return Err(SharedChangePropagationError::InvalidImpact(
+                "shared-definition candidate digest changed".to_owned(),
+            ));
+        }
+        Ok(candidate)
+    }
+
+    fn job_graph(
+        &self,
+        candidate: &Snapshot,
+        job: &SharedChangeExactJob,
+    ) -> Result<ExactBRepGraph, SharedChangePropagationError> {
+        let graph = body_exact_graph(candidate, self.definition_id, job.body_id)
+            .map_err(|error| SharedChangePropagationError::InvalidImpact(error.to_string()))?;
+        if FeatureId(graph.producer_feature_id) != job.producer_feature_id
+            || graph.canonical_input_digest != job.canonical_input_digest
+        {
+            return Err(SharedChangePropagationError::InvalidImpact(
+                "shared-definition exact job changed".to_owned(),
+            ));
+        }
+        Ok(graph)
+    }
+}
+
+impl OccurrenceForkImpactProjection {
+    /// The graphs [`commit_occurrence_fork_change`] evaluates, so a caller can
+    /// evaluate them off the window's thread before it commits.
+    pub fn exact_job_graphs(
+        &self,
+        document: &DocumentStore,
+    ) -> Result<Vec<ExactBRepGraph>, OccurrenceForkPropagationError> {
+        let candidate = self.candidate(document)?;
+        self.exact_jobs
+            .iter()
+            .map(|job| self.job_graph(&candidate, job))
+            .collect()
+    }
+
+    fn candidate(
+        &self,
+        document: &DocumentStore,
+    ) -> Result<Snapshot, OccurrenceForkPropagationError> {
+        let candidate = document
+            .preview_batch(self.proposal.batch())
+            .map_err(|error| OccurrenceForkPropagationError::InvalidImpact(error.to_string()))?;
+        if candidate.canonical_digest() != self.candidate_digest {
+            return Err(OccurrenceForkPropagationError::InvalidImpact(
+                "occurrence fork candidate digest changed".to_owned(),
+            ));
+        }
+        Ok(candidate)
+    }
+
+    fn job_graph(
+        &self,
+        candidate: &Snapshot,
+        job: &SharedChangeExactJob,
+    ) -> Result<ExactBRepGraph, OccurrenceForkPropagationError> {
+        let graph = body_exact_graph(candidate, self.fork_definition_id, job.body_id)
+            .map_err(|error| OccurrenceForkPropagationError::InvalidImpact(error.to_string()))?;
+        if FeatureId(graph.producer_feature_id) != job.producer_feature_id
+            || graph.canonical_input_digest != job.canonical_input_digest
+        {
+            return Err(OccurrenceForkPropagationError::InvalidImpact(
+                "occurrence fork exact job changed".to_owned(),
+            ));
+        }
+        Ok(graph)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SharedChangeOccurrenceRefresh {
     pub occurrence_id: OccurrenceId,
@@ -1219,14 +1313,7 @@ where
         ));
     }
 
-    let candidate = document
-        .preview_batch(impact.proposal.batch())
-        .map_err(|error| OccurrenceForkPropagationError::InvalidImpact(error.to_string()))?;
-    if candidate.canonical_digest() != impact.candidate_digest {
-        return Err(OccurrenceForkPropagationError::InvalidImpact(
-            "occurrence fork candidate digest changed".to_owned(),
-        ));
-    }
+    let candidate = impact.candidate(document)?;
     if candidate.definition(impact.source_definition_id) != Some(source_definition) {
         return Err(OccurrenceForkPropagationError::InvalidImpact(
             "occurrence fork candidate changed the source definition".to_owned(),
@@ -1316,15 +1403,7 @@ where
     if previous.result_key().result_fingerprint != job.last_valid_result_fingerprint {
         return Err(OccurrenceForkPropagationError::Stale);
     }
-    let graph = body_exact_graph(&candidate, impact.fork_definition_id, *body_id)
-        .map_err(|error| OccurrenceForkPropagationError::InvalidImpact(error.to_string()))?;
-    if FeatureId(graph.producer_feature_id) != job.producer_feature_id
-        || graph.canonical_input_digest != job.canonical_input_digest
-    {
-        return Err(OccurrenceForkPropagationError::InvalidImpact(
-            "occurrence fork exact job changed".to_owned(),
-        ));
-    }
+    let graph = impact.job_graph(&candidate, job)?;
 
     let package = evaluate(&graph)
         .map_err(|error| OccurrenceForkPropagationError::Evaluation(error.to_string()))?;
@@ -1860,23 +1939,8 @@ where
         return Err(SharedChangePropagationError::Stale);
     }
 
-    let candidate = document
-        .preview_dependency_staging_batch(impact.proposal.batch())
-        .map_err(|error| SharedChangePropagationError::InvalidImpact(error.to_string()))?;
-    if candidate.canonical_digest() != impact.candidate_digest {
-        return Err(SharedChangePropagationError::InvalidImpact(
-            "shared-definition candidate digest changed".to_owned(),
-        ));
-    }
-    let graph = body_exact_graph(&candidate, impact.definition_id, body_id)
-        .map_err(|error| SharedChangePropagationError::InvalidImpact(error.to_string()))?;
-    if FeatureId(graph.producer_feature_id) != job.producer_feature_id
-        || graph.canonical_input_digest != job.canonical_input_digest
-    {
-        return Err(SharedChangePropagationError::InvalidImpact(
-            "shared-definition exact job changed".to_owned(),
-        ));
-    }
+    let candidate = impact.candidate(document)?;
+    let graph = impact.job_graph(&candidate, job)?;
 
     let package = evaluate(&graph)
         .map_err(|error| SharedChangePropagationError::Evaluation(error.to_string()))?;

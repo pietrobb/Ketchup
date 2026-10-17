@@ -1156,7 +1156,7 @@ impl KetchupApp {
             self.end_transform_correction();
         }
         self.face_workflow.set_xray_preview(false);
-        if self.feature_history_preview_pending() {
+        if self.feature_history_preview_pending() || self.feature_history_exact_running() {
             self.cancel_feature_history_preview();
         } else if matches!(
             self.active_tool,

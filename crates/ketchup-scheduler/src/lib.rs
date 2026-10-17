@@ -2282,6 +2282,7 @@ impl ExactWorkerSupervisor {
         result_fingerprint: &str,
         path: &Path,
         imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
         let sources = exact_brep_graph_sources_from_blobs(graph, imported_source_blobs)?;
         let prepared = prepare_exact_brep_graph_sources(graph, &sources)?;
@@ -2291,7 +2292,7 @@ impl ExactWorkerSupervisor {
             result_fingerprint,
             path,
             &source_paths,
-            &NEVER_CANCELLED,
+            cancelled,
         )
     }
 
@@ -2334,15 +2335,19 @@ impl ExactWorkerSupervisor {
             &matched,
             path,
             imported_source_blobs,
+            &NEVER_CANCELLED,
         )
     }
 
+    /// Writes the visible model as one STEP assembly; `cancelled` stops it
+    /// between and inside worker requests.
     pub fn export_current_model_step_scene_with_imported_sources(
         &mut self,
         snapshot: &Snapshot,
         occurrences: &[(ExactBodyPackage, SceneOccurrence)],
         path: &Path,
         imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        cancelled: &AtomicBool,
     ) -> Result<Vec<u8>, M6EvaluationError> {
         if occurrences.is_empty() {
             return Err(ExactProductError::EmptyModelExport.into());
@@ -2413,6 +2418,7 @@ impl ExactWorkerSupervisor {
                         &expected.identity.result_fingerprint,
                         &source,
                         imported_source_blobs,
+                        cancelled,
                     ),
                 ExactBodyPackage::Imported(expected) => {
                     if let Some(part_index) = expected.source_part_index {
@@ -2425,7 +2431,7 @@ impl ExactWorkerSupervisor {
                             part_index,
                             &expected.identity.result_fingerprint,
                             &source,
-                            &NEVER_CANCELLED,
+                            cancelled,
                         )
                     } else {
                         std::fs::write(&source, &expected.source_bytes)
@@ -2438,7 +2444,7 @@ impl ExactWorkerSupervisor {
                     self.client = Self::spawn_verified_client(
                         &self.executable,
                         &self.executable_sha256,
-                        &NEVER_CANCELLED,
+                        cancelled,
                     )?;
                     match package {
                         ExactBodyPackage::Graph(expected) => {
@@ -2447,6 +2453,7 @@ impl ExactWorkerSupervisor {
                                 &expected.identity.result_fingerprint,
                                 &source,
                                 imported_source_blobs,
+                                cancelled,
                             )?;
                         }
                         ExactBodyPackage::Imported(expected) => {
@@ -2461,7 +2468,7 @@ impl ExactWorkerSupervisor {
                                     part_index,
                                     &expected.identity.result_fingerprint,
                                     &source,
-                                    &NEVER_CANCELLED,
+                                    cancelled,
                                 )?;
                             } else {
                                 std::fs::write(&source, &expected.source_bytes)
@@ -2485,7 +2492,7 @@ impl ExactWorkerSupervisor {
                     &source,
                     &source_sha256,
                     None,
-                    &NEVER_CANCELLED,
+                    cancelled,
                 )?
                 .result_fingerprint;
             let definition = snapshot
@@ -2514,10 +2521,7 @@ impl ExactWorkerSupervisor {
             .map_err(|error| WorkerError::Transport(error.to_string()))?;
         let temporary = temporary.into_temp_path();
         let assembly = self.client.assemble_step_model_request_with_cancellation(
-            &manifest,
-            &sources,
-            &temporary,
-            &NEVER_CANCELLED,
+            &manifest, &sources, &temporary, cancelled,
         );
         let verified = match assembly {
             Ok(bytes) => bytes,
@@ -2525,13 +2529,10 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
-                    &NEVER_CANCELLED,
+                    cancelled,
                 )?;
                 self.client.assemble_step_model_request_with_cancellation(
-                    &manifest,
-                    &sources,
-                    &temporary,
-                    &NEVER_CANCELLED,
+                    &manifest, &sources, &temporary, cancelled,
                 )?
             }
             Err(error) => return Err(error.into()),
