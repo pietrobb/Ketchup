@@ -363,7 +363,7 @@ impl ExactWorkerClient {
         source_sha256: &str,
         cancelled: &AtomicBool,
     ) -> Result<StepXdeWorkerEvidence, WorkerError> {
-        match self.call(request, cancelled, DEFAULT_WORKER_REQUEST_TIMEOUT)? {
+        match self.call_exchange(request, cancelled)? {
             WorkerReply::Xde(evidence)
                 if evidence.source_sha256 == source_sha256
                     && evidence
@@ -428,7 +428,7 @@ impl ExactWorkerClient {
         source_sha256: &str,
         cancelled: &AtomicBool,
     ) -> Result<StepImportEvidence, WorkerError> {
-        let part = match self.call(request, cancelled, DEFAULT_WORKER_REQUEST_TIMEOUT)? {
+        let part = match self.call_exchange(request, cancelled)? {
             WorkerReply::ImportPart(part) => part,
             reply => return self.unexpected(reply),
         };
@@ -491,7 +491,7 @@ impl ExactWorkerClient {
             part_index,
             output: output_path.to_owned(),
         };
-        match self.call(&request, cancelled, DEFAULT_WORKER_REQUEST_TIMEOUT)? {
+        match self.call_exchange(&request, cancelled)? {
             WorkerReply::Mesh(receipt) => self.verified_mesh(
                 receipt,
                 result_fingerprint,
@@ -516,7 +516,7 @@ impl ExactWorkerClient {
             part_index,
             output: output_path.to_owned(),
         };
-        match self.call(&request, cancelled, DEFAULT_WORKER_REQUEST_TIMEOUT)? {
+        match self.call_exchange(&request, cancelled)? {
             WorkerReply::Mesh(receipt) => self.verified_mesh(
                 receipt,
                 result_fingerprint,
@@ -573,7 +573,7 @@ impl ExactWorkerClient {
             source: source_file(source_sha256, source_path),
             output: output_path.to_owned(),
         };
-        match self.call(&request, cancelled, DEFAULT_WORKER_REQUEST_TIMEOUT)? {
+        match self.call_exchange(&request, cancelled)? {
             WorkerReply::Exported(ExportReceipt {
                 result_fingerprint,
                 sha256: None,
@@ -602,7 +602,7 @@ impl ExactWorkerClient {
             result_fingerprint: result_fingerprint.to_owned(),
             output: output_path.to_owned(),
         };
-        let sha256 = match self.call(&request, cancelled, DEFAULT_WORKER_REQUEST_TIMEOUT)? {
+        let sha256 = match self.call_exchange(&request, cancelled)? {
             WorkerReply::Exported(ExportReceipt {
                 result_fingerprint: exported,
                 sha256: Some(sha256),
@@ -641,7 +641,7 @@ impl ExactWorkerClient {
             sources: sources.to_vec(),
             output: path.to_owned(),
         };
-        let sha256 = match self.call(&request, cancelled, DEFAULT_WORKER_REQUEST_TIMEOUT)? {
+        let sha256 = match self.call_exchange(&request, cancelled)? {
             WorkerReply::Exported(ExportReceipt {
                 result_fingerprint,
                 sha256: Some(sha256),
@@ -776,6 +776,19 @@ impl ExactWorkerClient {
             }
             reply => Ok(reply),
         }
+    }
+
+    /// Like [`Self::call`] for an exchange file request, within the time its
+    /// size is given ([`WorkerRequest::exchange_budget`]).
+    fn call_exchange(
+        &mut self,
+        request: &WorkerRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<WorkerReply, WorkerError> {
+        let budget = request
+            .exchange_budget()
+            .unwrap_or(DEFAULT_WORKER_REQUEST_TIMEOUT);
+        self.call(request, cancelled, budget)
     }
 
     /// Like [`Self::call`] for requests whose only success is `Done`.

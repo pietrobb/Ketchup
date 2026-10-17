@@ -8,6 +8,7 @@ pub mod pair_query;
 pub mod plugin;
 pub mod program_worker;
 pub mod protocol;
+mod request_budget;
 pub use pair_query::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation};
 pub mod validator_runtime;
 mod worker_client;

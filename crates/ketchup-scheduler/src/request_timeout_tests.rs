@@ -334,30 +334,51 @@ fn oversized_converted_iges_is_rejected_before_returning_bytes() {
     responder.join().unwrap();
 }
 
+/// A graph request and an exchange request (converting a STEP file) are
+/// given their own budgets, not the 5 s of a simple call (EX-2): both workers
+/// answer only after that and both answers are taken.
 #[test]
-fn graph_request_budget_accepts_response_beyond_simple_default() {
+fn graph_and_exchange_requests_outlast_the_simple_call_budget() {
     assert_eq!(DEFAULT_WORKER_REQUEST_TIMEOUT, Duration::from_secs(5));
     assert_eq!(EXACT_BREP_GRAPH_REQUEST_TIMEOUT, Duration::from_secs(60));
-    let (mut worker, writes, responses) = controlled_worker();
+    let (mut graph_worker, graph_writes, graph_responses) = controlled_worker();
+    let (mut exchange_worker, exchange_writes, exchange_responses) = controlled_worker();
+    let output = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(output.path(), b"converted IGES").unwrap();
+    let receipt = WorkerReply::Exported(ExportReceipt {
+        result_fingerprint: "fnv1a64:0123456789abcdef".to_owned(),
+        sha256: None,
+    });
     let responder = std::thread::spawn(move || {
-        let request = writes.recv().unwrap();
-        request.acknowledgment.send(Ok(())).unwrap();
-        std::thread::sleep(DEFAULT_WORKER_REQUEST_TIMEOUT + Duration::from_millis(200));
-        responses
+        for writes in [graph_writes, exchange_writes] {
+            writes.recv().unwrap().acknowledgment.send(Ok(())).unwrap();
+        }
+        std::thread::sleep(DEFAULT_WORKER_REQUEST_TIMEOUT + Duration::from_millis(500));
+        graph_responses
             .send(WorkerResponse::Reply(Box::new(WorkerReply::Done)))
+            .unwrap();
+        exchange_responses
+            .send(WorkerResponse::Reply(Box::new(receipt)))
             .unwrap();
     });
     let started = Instant::now();
-    assert_eq!(
-        worker
-            .request_with_timeout(
+    std::thread::scope(|scope| {
+        let graph = scope.spawn(|| {
+            graph_worker.request_with_timeout(
                 &WorkerRequest::Hello,
                 &NEVER_CANCELLED,
-                EXACT_BREP_GRAPH_REQUEST_TIMEOUT
+                EXACT_BREP_GRAPH_REQUEST_TIMEOUT,
             )
-            .unwrap(),
-        WorkerReply::Done
-    );
+        });
+        let converted = exchange_worker.convert_step_to_iges_request_with_cancellation(
+            Path::new("source.step"),
+            &"c".repeat(64),
+            output.path(),
+            &NEVER_CANCELLED,
+        );
+        assert_eq!(converted, Ok(b"converted IGES".to_vec()));
+        assert_eq!(graph.join().unwrap(), Ok(WorkerReply::Done));
+    });
     assert!(started.elapsed() > DEFAULT_WORKER_REQUEST_TIMEOUT);
     responder.join().unwrap();
 }
