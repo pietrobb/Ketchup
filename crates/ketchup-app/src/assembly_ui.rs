@@ -1693,13 +1693,11 @@ impl KetchupApp {
                 .iter()
                 .enumerate()
                 .map(|(index, path)| {
-                    let definition_id = snapshot
-                        .resolve_instance_path(path)
-                        .map_err(|error| {
-                            self.catalog.refusal_because("error-preview-stale", error)
-                        })?
-                        .definition_id;
-                    let position = *positions.entry(definition_id).or_insert_with(|| {
+                    let resolved = snapshot.resolve_instance_path(path).map_err(|error| {
+                        self.catalog.refusal_because("error-preview-stale", error)
+                    })?;
+                    let item = (resolved.definition_id, resolved.mirrored());
+                    let position = *positions.entry(item).or_insert_with(|| {
                         let assigned = next_position;
                         next_position += 1;
                         assigned

@@ -3167,7 +3167,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     )
                 })?;
                 next_drawing_sheet = id.0.checked_add(1);
-                let mut positions = BTreeMap::<DefinitionId, u32>::new();
+                let mut positions = BTreeMap::<(DefinitionId, bool), u32>::new();
                 let mut next_position = 1_u32;
                 let balloons = resolved_paths
                     .iter()
@@ -3181,12 +3181,12 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             )
                             .caused_by(&error)
                         })?;
-                        let position =
-                            *positions.entry(resolved.definition_id).or_insert_with(|| {
-                                let assigned = next_position;
-                                next_position += 1;
-                                assigned
-                            });
+                        let item = (resolved.definition_id, resolved.mirrored());
+                        let position = *positions.entry(item).or_insert_with(|| {
+                            let assigned = next_position;
+                            next_position += 1;
+                            assigned
+                        });
                         DrawingBomBalloon::new(
                             DrawingBomBalloonId(index as u64 + 1),
                             OrthographicViewKind::Front,

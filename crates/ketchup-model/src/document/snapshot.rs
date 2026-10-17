@@ -8,6 +8,15 @@ pub struct ResolvedInstance {
     pub world_transform: Transform,
 }
 
+impl ResolvedInstance {
+    /// The instance is placed mirrored: it is the opposite hand of its
+    /// definition, a part of its own in a bill of materials.
+    #[must_use]
+    pub fn mirrored(&self) -> bool {
+        self.world_transform.affine().determinant() < 0.0
+    }
+}
+
 /// Why the categories of one named classification dimension cannot be read.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClassificationError {

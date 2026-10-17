@@ -2129,6 +2129,9 @@ pub struct DrawingBomBalloonLayout {
 pub struct DrawingBomRowLayout {
     pub position: u32,
     pub definition_id: DefinitionId,
+    /// The row is the opposite hand of its definition: its copies are placed
+    /// mirrored.
+    pub mirrored: bool,
     pub part_name: String,
     pub quantity: u32,
     pub label: String,
@@ -4077,15 +4080,18 @@ fn layout_bom_annotations(
         return Err(DrawingError::InvalidAnnotation);
     }
 
-    let mut definition_positions = BTreeMap::<DefinitionId, u32>::new();
-    let mut positions = BTreeMap::<u32, (DefinitionId, String, u32)>::new();
+    // A mirrored copy is the opposite hand of its definition, a part of its
+    // own as in the fabrication bill of materials (review 2026-10-17 MF-6).
+    let mut item_positions = BTreeMap::<(DefinitionId, bool), u32>::new();
+    let mut positions = BTreeMap::<u32, ((DefinitionId, bool), String, u32)>::new();
     let mut balloons = Vec::with_capacity(sheet.bom_balloons().len());
     for balloon in sheet.bom_balloons() {
         let resolved = snapshot
             .resolve_instance_path(balloon.instance_path())
             .map_err(|error| unresolved_instance(balloon.instance_path(), error))?;
-        if definition_positions
-            .insert(resolved.definition_id, balloon.position())
+        let item = (resolved.definition_id, resolved.mirrored());
+        if item_positions
+            .insert(item, balloon.position())
             .is_some_and(|position| position != balloon.position())
         {
             return Err(DrawingError::InvalidAnnotation);
@@ -4095,10 +4101,10 @@ fn layout_bom_annotations(
             .ok_or(DrawingError::AnnotationSourceLost)?;
         match positions.entry(balloon.position()) {
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert((resolved.definition_id, definition.name().to_owned(), 1));
+                entry.insert((item, definition.name().to_owned(), 1));
             }
             std::collections::btree_map::Entry::Occupied(mut entry) => {
-                if entry.get().0 != resolved.definition_id {
+                if entry.get().0 != item {
                     return Err(DrawingError::InvalidAnnotation);
                 }
                 entry.get_mut().2 = entry
@@ -4204,7 +4210,7 @@ fn layout_bom_annotations(
         .max(1.0) as usize;
     let column_width = 70.0;
     let mut rows = Vec::with_capacity(positions.len());
-    for (index, (position, (definition_id, part_name, quantity))) in
+    for (index, (position, ((definition_id, mirrored), part_name, quantity))) in
         positions.into_iter().enumerate()
     {
         let column = index / rows_per_column;
@@ -4218,12 +4224,14 @@ fn layout_bom_annotations(
         {
             return Err(DrawingError::LayoutOverflow);
         }
+        let hand = if mirrored { " (mirrored)" } else { "" };
         rows.push(DrawingBomRowLayout {
             position,
             definition_id,
+            mirrored,
             part_name: part_name.clone(),
             quantity,
-            label: format!("{position} | {part_name} | QTY {quantity}"),
+            label: format!("{position} | {part_name}{hand} | QTY {quantity}"),
             text_position_mm,
         });
     }

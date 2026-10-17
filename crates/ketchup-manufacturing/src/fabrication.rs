@@ -2999,10 +2999,7 @@ pub fn project_general_fabrication(
         let mirrored = snapshot
             .resolve_instance_path(participant.instance_path())
             .map_err(GeneralFabricationError::UnresolvedInstance)?
-            .world_transform
-            .affine()
-            .determinant()
-            < 0.0;
+            .mirrored();
         grouped
             .entry((
                 participant.source().clone(),
