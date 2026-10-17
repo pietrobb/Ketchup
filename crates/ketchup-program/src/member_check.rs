@@ -164,7 +164,7 @@ pub const BASIS: [&str; 9] = [
     "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
     "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2, gamma_M 1.3 solid / 1.25 glulam (table 2.3)",
     "bending with kh (3.2, 3.3), kcrit = 1: members assumed braced against lateral torsional buckling by the decking",
-    "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, the reaction at half the bearing length from the notch",
+    "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
     "moments, shear and deflection: spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
     "a computed check, not an authorized structural design",
@@ -1060,7 +1060,7 @@ fn beam_checks(
             if h_ef < 0.95 * h {
                 let kn = if class.glulam { 6.5 } else { 5.0 };
                 let alpha = h_ef / h;
-                let x = (zone.hi - zone.lo) / 2.0 * shape.arc;
+                let x = notch_corner(depth_at, zone, load.length_mm, 0.95 * h, shape.arc);
                 let kv = (kn
                     / (h.sqrt()
                         * ((alpha * (1.0 - alpha)).sqrt()
@@ -1088,6 +1088,46 @@ fn beam_checks(
     checks.extend(notch.0);
     checks.extend(bearing.0);
     (checks, spans_checked)
+}
+
+/// EC5 6.5.2, fig. 6.11: `x`, mm, from the middle of the reaction in `zone`
+/// to the corner of the notch, where the member is `full` deep again. A
+/// notch with a corner on each side takes the farther one. `depth_at` and
+/// `length` are along the load frame, `arc` mm per unit of it (review
+/// 2026-10-17 PG-3: the half bearing length was taken instead).
+fn notch_corner(
+    depth_at: &dyn Fn(f64) -> f64,
+    zone: &Zone,
+    length: f64,
+    full: f64,
+    arc: f64,
+) -> f64 {
+    let middle = (zone.lo + zone.hi) / 2.0;
+    let step = 1.0 / arc;
+    let corner = |towards: f64| {
+        let mut notched = middle;
+        loop {
+            let next = notched + towards * step;
+            if !(0.0..=length).contains(&next) {
+                return 0.0;
+            }
+            if depth_at(next) >= full {
+                // The corner lies between the last notched step and this one.
+                let (mut a, mut b) = (notched, next);
+                for _ in 0..40 {
+                    let half = (a + b) / 2.0;
+                    if depth_at(half) >= full {
+                        b = half;
+                    } else {
+                        a = half;
+                    }
+                }
+                return (b - middle).abs() * arc;
+            }
+            notched = next;
+        }
+    };
+    corner(1.0).max(corner(-1.0))
 }
 
 /// Reactions of a member whose bearings touch or overlap, along its load frame.

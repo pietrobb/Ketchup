@@ -265,13 +265,14 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
     );
     let beam = member(&report, "beam");
     // 6.5.2 (6.62), right-angled (i = 0): h_ef = 160, alpha = 0.8, kn = 5,
-    // x = 50 mm (half the bearing).
-    let (h, alpha, x) = (200.0f64, 0.8f64, 50.0);
+    // x = 100 mm from the middle of the post (50 mm) to the corner of the
+    // notch (150 mm), fig. 6.11 (review 2026-10-17 PG-3).
+    let (h, alpha, x) = (200.0f64, 0.8f64, 100.0);
     let kv = 5.0
         / (h.sqrt()
             * ((alpha * (1.0 - alpha)).sqrt()
                 + 0.8 * x / h * (1.0 / alpha - alpha * alpha).sqrt()));
-    assert!((kv - 0.636).abs() < 0.001, "{kv}");
+    assert!((kv - 0.496).abs() < 0.001, "{kv}");
     // Half of 1.2 N/mm over 4000 mm, 1.5 Q, on the net 100 x 160 mm.
     let reaction = 1.5 * 1.2 * 4000.0 / 2.0;
     close(
