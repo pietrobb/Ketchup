@@ -24,8 +24,9 @@ const NEW: &str = "new";
 const END: &str = "end";
 /// The extension of the count of starts that could not finish a replacement.
 const STARTS: &str = "starts";
-/// After this many starts a replacement that cannot be finished is given up,
-/// so the document's write grant is not kept for ever (review 2026-10-17 D-7).
+/// After this many starts a replacement whose kept bytes no longer match
+/// their record is given up, so the document's write grant is not kept for
+/// ever (review 2026-10-17 D-7); other failures are not counted (VW-13).
 const MAX_STARTS: u32 = 3;
 
 /// The length and checksum of some bytes.
@@ -249,8 +250,8 @@ pub(crate) enum Interrupted {
         backup: PathBuf,
         error: io::Error,
     },
-    /// [`MAX_STARTS`] starts could not finish the replacement: its old bytes
-    /// are set aside at `kept` and it is no longer tried.
+    /// [`MAX_STARTS`] starts found the kept bytes not matching their record:
+    /// the old bytes are set aside at `kept` and it is no longer tried.
     GivenUp {
         target: String,
         kept: PathBuf,
@@ -336,6 +337,16 @@ fn recover<R: Read, W: Write>(
     open_write: &mut impl FnMut(&str) -> io::Result<W>,
 ) -> Option<Interrupted> {
     let kept = |error: io::Error| {
+        // Only kept bytes that no longer match their record never get
+        // through; a cloud offline or an SD card taken out does at a later
+        // start, so it is not counted (review 2026-10-17 VW-13).
+        if error.kind() != io::ErrorKind::InvalidData {
+            return Interrupted::Kept {
+                target: record.target.clone(),
+                backup: backup.to_owned(),
+                error,
+            };
+        }
         let count = backup.with_extension(STARTS);
         let starts = std::fs::read_to_string(&count)
             .ok()
@@ -823,6 +834,37 @@ mod tests {
         assert_eq!(left_in(&backup), 0);
         assert!(document.recover(private).is_empty());
         assert_eq!(*document.bytes.borrow(), b"new ");
+    }
+
+    /// Review 2026-10-17 VW-13: a document that cannot be reached for a while
+    /// (a cloud offline, an SD card taken out) is not given up however many
+    /// starts it takes; once it is back, its old bytes are put back.
+    #[test]
+    fn a_document_out_of_reach_for_many_starts_is_not_given_up() {
+        let backup = backup("out-of-reach");
+        let original = b"the customer's earlier comments".to_vec();
+        let document = Document::new(&original, &[]);
+        document.replace_ending_after(&backup, &[7; 64], 10);
+        let private = backup.parent().unwrap();
+        for _ in 0..MAX_STARTS + 2 {
+            let outcomes = recover_interrupted(
+                private,
+                |_| Err::<io::Cursor<Vec<u8>>, _>(io::Error::other("the provider is offline")),
+                |_| document.open_write(),
+            );
+            assert!(
+                matches!(outcomes.as_slice(), [Interrupted::Kept { .. }]),
+                "{outcomes:?}"
+            );
+            assert_eq!(pending_targets(private), [TARGET]);
+        }
+        let outcomes = document.recover(private);
+        assert!(
+            matches!(outcomes.as_slice(), [Interrupted::Restored { target }] if target == TARGET),
+            "{outcomes:?}"
+        );
+        assert_eq!(*document.bytes.borrow(), original);
+        assert_eq!(left_in(&backup), 0);
     }
 
     /// D-7: a save cut off before it wrote anything leaves the document as it
