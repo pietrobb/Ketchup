@@ -19,6 +19,11 @@ ignore = [
     { id = "RUSTSEC-2025-0057", reason = "fxhash: brought in by starlark_map 0.13 of the vendored starlark" },
     { id = "RUSTSEC-2024-0436", reason = "paste: brought in by the vendored starlark 0.13 and by metal 0.31 of wgpu" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: the font reader of egui (owned_ttf_parser); ketchup-manufacturing reads the drawing-sheet PDF font with the same version" },
+    # Merged into zbus 6. zbus 5 (Linux D-Bus) comes in through accesskit_unix
+    # (eframe 0.32 → egui-winit → accesskit_winit, and atspi) and ashpd (rfd 0.15).
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: in zbus 5, via accesskit_unix of eframe 0.32 and ashpd of rfd 0.15" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: in zbus 5 and atspi-common, via accesskit_unix of eframe 0.32 and ashpd of rfd 0.15" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: the derive macros of zvariant in zbus 5, via accesskit_unix of eframe 0.32 and ashpd of rfd 0.15" },
 ]
 
 [licenses]
