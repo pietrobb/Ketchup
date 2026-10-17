@@ -987,7 +987,7 @@ fn comments_count_as_saved_only_for_the_file_the_host_kept() {
 
 /// Keeps `app` in `keeper` as the phone does frame after frame, until the
 /// package written on its own thread is on disk and its comments follow it.
-fn keep_all(keeper: &mut SessionKeeper, app: &ViewerApp) -> Result<(), Rejection> {
+fn keep_all(keeper: &mut SessionKeeper, app: &mut ViewerApp) -> Result<(), Rejection> {
     keeper.keep(app)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while keeper.writing() {
@@ -1020,16 +1020,16 @@ fn a_viewer_ended_in_the_background_reopens_its_model_and_unsaved_comments() {
     scene_package().write(&mut bytes).expect("fixture");
     let mut app = customer_with_comment(&bytes, "Darker oak");
     let mut keeper = SessionKeeper::new(dir.clone(), None);
-    keep_all(&mut keeper, &ViewerApp::new(None)).unwrap();
+    keep_all(&mut keeper, &mut ViewerApp::new(None)).unwrap();
     assert!(!dir.exists(), "nothing open, nothing kept");
-    keep_all(&mut keeper, &app).unwrap();
+    keep_all(&mut keeper, &mut app).unwrap();
     // Unchanged, nothing is written again.
     std::fs::remove_file(dir.join("session.ketchup-view")).unwrap();
-    keep_all(&mut keeper, &app).unwrap();
+    keep_all(&mut keeper, &mut app).unwrap();
     assert!(!dir.join("session.ketchup-view").exists());
 
     let mut keeper = SessionKeeper::new(dir.clone(), None);
-    keep_all(&mut keeper, &app).unwrap();
+    keep_all(&mut keeper, &mut app).unwrap();
     let mut restarted = ViewerApp::new(None).with_host_files();
     assert_eq!(
         restarted.restore_session(&dir).unwrap(),
@@ -1045,10 +1045,10 @@ fn a_viewer_ended_in_the_background_reopens_its_model_and_unsaved_comments() {
     assert!(restarted.has_unsaved_comments());
     // A second comment, then a save the host kept: the session follows both.
     add_comment(&mut app, "And brass handles");
-    keep_all(&mut keeper, &app).unwrap();
+    keep_all(&mut keeper, &mut app).unwrap();
     let written = app.save_comments(&mut Vec::new()).unwrap();
     app.comments_written(written);
-    keep_all(&mut keeper, &app).unwrap();
+    keep_all(&mut keeper, &mut app).unwrap();
     let mut restarted = ViewerApp::new(None);
     restarted.restore_session(&dir).unwrap();
     assert_eq!(restarted.opened_counts().map(|[_, _, c]| c), Some(2));
@@ -1075,19 +1075,19 @@ fn a_comment_edit_keeps_only_the_comments_not_the_whole_package() {
     scene_package().write(&mut bytes).expect("fixture");
     let mut app = customer_with_comment(&bytes, "Darker oak");
     let mut keeper = SessionKeeper::new(dir.clone(), None);
-    keeper.keep(&app).unwrap();
+    keeper.keep(&mut app).unwrap();
     assert!(
         keeper.writing(),
         "the package is written apart from the frame"
     );
     assert!(dir.join("session.ketchup-comments").exists());
-    keep_all(&mut keeper, &app).unwrap();
+    keep_all(&mut keeper, &mut app).unwrap();
     let package = dir.join("session.ketchup-view");
     assert_eq!(std::fs::read(&package).unwrap(), bytes);
     std::fs::rename(&package, dir.join("aside")).unwrap();
 
     add_comment(&mut app, "And brass handles");
-    keeper.keep(&app).unwrap();
+    keeper.keep(&mut app).unwrap();
     assert!(!keeper.writing(), "the package was written again");
     assert!(!package.exists(), "the package was written again");
     assert!(dir.join("session.ketchup-comments").exists());
@@ -1102,8 +1102,8 @@ fn a_comment_edit_keeps_only_the_comments_not_the_whole_package() {
     other.manifest.source.revision += 1;
     let mut other_bytes = Vec::new();
     other.write(&mut other_bytes).expect("other");
-    let app = customer_with_comment(&other_bytes, "Other");
-    keep_all(&mut keeper, &app).unwrap();
+    let mut app = customer_with_comment(&other_bytes, "Other");
+    keep_all(&mut keeper, &mut app).unwrap();
     assert_eq!(std::fs::read(&package).unwrap(), other_bytes);
     let mut restarted = ViewerApp::new(None);
     restarted.restore_session(&dir).unwrap();
@@ -1132,11 +1132,11 @@ fn comments_made_while_the_package_is_written_survive_the_end_of_the_process() {
     scene_package().write(&mut bytes).expect("fixture");
     let mut app = customer_with_comment(&bytes, "Darker oak");
     let mut keeper = SessionKeeper::new(dir.clone(), None);
-    keeper.keep(&app).unwrap();
+    keeper.keep(&mut app).unwrap();
     let comments = dir.join("session.ketchup-comments");
     assert!(comments.exists(), "the comments wait for the package");
     add_comment(&mut app, "And brass handles");
-    keeper.keep(&app).unwrap();
+    keeper.keep(&mut app).unwrap();
     // The process ends: no further keep, only the package writer finishes.
     drop(keeper);
     let package = dir.join("session.ketchup-view");
@@ -1155,6 +1155,123 @@ fn comments_made_while_the_package_is_written_survive_the_end_of_the_process() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Holds the package writer for good in the child process of
+/// [`comments_beside_a_package_whose_writer_was_killed_open_with_it_again`],
+/// so it is killed with its `.part` not renamed.
+static HOLD_PACKAGE_WRITER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn hold_package_writer() {
+    if HOLD_PACKAGE_WRITER.load(std::sync::atomic::Ordering::SeqCst) {
+        loop {
+            std::thread::park();
+        }
+    }
+}
+
+/// The session folder the killed child keeps its session in.
+const KILLED_SESSION: &str = "KETCHUP_VIEWER_KILLED_SESSION";
+/// What the child prints once it may be killed.
+const KILL_NOW: &str = "kill-the-viewer-now";
+
+/// Package A and another export B of it.
+fn two_packages() -> (Vec<u8>, Vec<u8>) {
+    let mut first = Vec::new();
+    scene_package().write(&mut first).expect("fixture");
+    let mut other = scene_package();
+    other.manifest.source.revision += 1;
+    let mut second = Vec::new();
+    other.write(&mut second).expect("other");
+    (first, second)
+}
+
+/// The child of the next test: keeps A with its comments saved, opens B,
+/// comments on it and waits to be killed while B's writer holds its `.part`.
+#[test]
+#[ignore = "run in a child process by comments_beside_a_package_whose_writer_was_killed_open_with_it_again"]
+fn session_with_a_package_writer_to_kill() {
+    let Some(dir) = std::env::var_os(KILLED_SESSION) else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let (first, second) = two_packages();
+    let mut app = customer_with_comment(&first, "Darker oak");
+    let mut keeper = SessionKeeper::new(dir, None);
+    keep_all(&mut keeper, &mut app).unwrap();
+    let written = app.save_comments(&mut Vec::new()).unwrap();
+    app.comments_written(written);
+    keep_all(&mut keeper, &mut app).unwrap();
+
+    HOLD_PACKAGE_WRITER.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut app = customer_with_comment(&second, "Other");
+    keeper.keep(&mut app).unwrap();
+    add_comment(&mut app, "And brass handles");
+    keeper.keep(&mut app).unwrap();
+    assert!(keeper.writing());
+    println!("\n{KILL_NOW}");
+    loop {
+        std::thread::park();
+    }
+}
+
+/// Review 2026-10-17 VW-12: the process is killed while package B is
+/// written, so B's `.part` is never renamed and the next start opens A. B's
+/// unsaved marker does not mark A's comments, and opening B again brings
+/// back the comments kept beside it instead of dropping them.
+#[test]
+fn comments_beside_a_package_whose_writer_was_killed_open_with_it_again() {
+    use std::io::BufRead as _;
+    let dir = std::env::temp_dir().join(format!("ketchup-viewer-killed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "app::tests::session_with_a_package_writer_to_kill",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(KILLED_SESSION, &dir)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let ready = stdout
+        .lines()
+        .map_while(Result::ok)
+        .any(|line| line == KILL_NOW);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(ready, "the child ended before B was being written");
+    assert!(dir.join("session.ketchup-view.part").exists());
+    let (first, second) = two_packages();
+    assert_eq!(
+        std::fs::read(dir.join("session.ketchup-view")).unwrap(),
+        first
+    );
+
+    let mut restarted = ViewerApp::new(None);
+    let mark = restarted.restore_session(&dir).unwrap();
+    assert_eq!(restarted.opened_counts().map(|[_, _, c]| c), Some(0));
+    assert!(
+        !restarted.has_unsaved_comments(),
+        "B's unsaved marker marked A's comments"
+    );
+    let mut keeper = SessionKeeper::new(dir.clone(), mark);
+    keep_all(&mut keeper, &mut restarted).unwrap();
+
+    // The customer opens B again: its two unsaved comments are back.
+    restarted.open(second.as_slice()).unwrap();
+    keep_all(&mut keeper, &mut restarted).unwrap();
+    assert_eq!(restarted.opened_counts().map(|[_, _, c]| c), Some(2));
+    assert!(restarted.has_unsaved_comments());
+    let mut again = ViewerApp::new(None);
+    again.restore_session(&dir).unwrap();
+    assert_eq!(again.opened_counts().map(|[_, _, c]| c), Some(2));
+    assert!(again.has_unsaved_comments());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Review 2026-10-15 N-11: keeping another package fails (a full device);
 /// the phone does not retry every frame. The next comment then writes that
 /// package again instead of keeping its comments beside the previous
@@ -1166,9 +1283,9 @@ fn a_session_that_failed_to_keep_a_package_writes_it_with_the_next_change() {
     let _ = std::fs::remove_dir_all(&dir);
     let mut bytes = Vec::new();
     scene_package().write(&mut bytes).expect("fixture");
-    let first = customer_with_comment(&bytes, "Darker oak");
+    let mut first = customer_with_comment(&bytes, "Darker oak");
     let mut keeper = SessionKeeper::new(dir.clone(), None);
-    keep_all(&mut keeper, &first).unwrap();
+    keep_all(&mut keeper, &mut first).unwrap();
 
     let mut other = scene_package();
     other.manifest.source.revision += 1;
@@ -1177,13 +1294,13 @@ fn a_session_that_failed_to_keep_a_package_writes_it_with_the_next_change() {
     let mut app = customer_with_comment(&other_bytes, "Other");
     let blocked = dir.join("session.ketchup-view.part");
     std::fs::create_dir(&blocked).unwrap();
-    assert!(keep_all(&mut keeper, &app).is_err());
-    keeper.keep(&app).unwrap();
+    assert!(keep_all(&mut keeper, &mut app).is_err());
+    keeper.keep(&mut app).unwrap();
     assert!(!keeper.writing(), "retried");
     std::fs::remove_dir(&blocked).unwrap();
 
     add_comment(&mut app, "And brass handles");
-    keep_all(&mut keeper, &app).unwrap();
+    keep_all(&mut keeper, &mut app).unwrap();
     let package = dir.join("session.ketchup-view");
     assert_eq!(std::fs::read(&package).unwrap(), other_bytes);
     let mut restarted = ViewerApp::new(None);
@@ -1212,17 +1329,17 @@ fn a_failed_comments_write_does_not_write_the_package_again() {
     scene_package().write(&mut bytes).expect("fixture");
     let mut app = customer_with_comment(&bytes, "Darker oak");
     let mut keeper = SessionKeeper::new(dir.clone(), None);
-    keep_all(&mut keeper, &app).unwrap();
+    keep_all(&mut keeper, &mut app).unwrap();
 
     let blocked = dir.join("session.ketchup-comments.part");
     std::fs::create_dir(&blocked).unwrap();
     add_comment(&mut app, "And brass handles");
-    assert!(keeper.keep(&app).is_err());
-    keeper.keep(&app).unwrap();
+    assert!(keeper.keep(&mut app).is_err());
+    keeper.keep(&mut app).unwrap();
     std::fs::remove_dir(&blocked).unwrap();
 
     add_comment(&mut app, "Soft-close hinges");
-    keeper.keep(&app).unwrap();
+    keeper.keep(&mut app).unwrap();
     assert!(!keeper.writing(), "the package was written again");
     let mut restarted = ViewerApp::new(None);
     restarted.restore_session(&dir).unwrap();

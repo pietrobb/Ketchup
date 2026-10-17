@@ -199,7 +199,7 @@ impl eframe::App for AndroidViewer {
         // A package is written on a thread of its own (VW-10); its comments
         // follow on a later frame.
         if let Some(session) = &mut self.session {
-            if let Err(error) = session.keep(&self.app) {
+            if let Err(error) = session.keep(&mut self.app) {
                 log::error!("{error}; {}", error.fix_hint_text());
             }
             if session.writing() {

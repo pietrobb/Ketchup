@@ -52,16 +52,20 @@ impl ViewerApp {
         self.open(std::io::BufReader::new(file))?;
         // A session kept before the comments had a file of their own carries
         // them in the package. Comments that do not open on it (kept beside
-        // another package, or cut short) count as none: the package still opens.
+        // another package, or cut short) count as none: the package still
+        // opens, and the unsaved marker, which is theirs, stays with them
+        // (review 2026-10-17 VW-12).
         let comments = dir.join(COMMENTS);
-        if comments.exists()
-            && let Some(model) = &self.model
-            && let Ok(file) = std::fs::File::open(&comments)
-            && let Ok(review) = Review::open(std::io::BufReader::new(file), model)
-        {
+        let kept = match &self.model {
+            Some(model) if comments.exists() => Some(read_kept(&comments, model)),
+            _ => None,
+        };
+        let opened = kept.as_ref().is_none_or(Option::is_some);
+        if let Some(Some(review)) = kept {
             self.review = Some(review);
         }
-        if dir.join(UNSAVED).exists()
+        if opened
+            && dir.join(UNSAVED).exists()
             && let Some(review) = &mut self.review
         {
             review.still_unsaved();
@@ -117,7 +121,12 @@ impl SessionKeeper {
     /// marker is written before the comments and removed after them, so
     /// unsaved comments never show as saved. A failed comments write keeps the
     /// package, so the next edit writes only the comments again.
-    pub fn keep(&mut self, app: &ViewerApp) -> Result<(), Rejection> {
+    ///
+    /// A package whose write a process end cut short is still named by the
+    /// comments kept beside it; opened again, it gets them back instead of
+    /// dropping them, unless something was already changed on it (review
+    /// 2026-10-17 VW-12).
+    pub fn keep(&mut self, app: &mut ViewerApp) -> Result<(), Rejection> {
         if let Some(writing) = self.writing.take_if(|writing| writing.handle.is_finished()) {
             let path = self.dir.join(PACKAGE);
             let written = writing.handle.join().unwrap_or_else(|_| {
@@ -132,6 +141,7 @@ impl SessionKeeper {
             }
             self.package = Some(writing.mark.package);
         }
+        let reunited = self.writing.is_none() && self.reunite(app);
         let (Some(mark), Some(model), Some(review)) = (app.session_mark(), &app.model, &app.review)
         else {
             return Ok(());
@@ -140,18 +150,47 @@ impl SessionKeeper {
             return Ok(());
         }
         self.failed = None;
-        let kept = self.write(mark, model, review);
+        let kept = self.write(mark, model, review, reunited);
         if kept.is_err() {
             self.failed = Some(mark);
         }
         kept
     }
 
+    /// Opens the kept comments on `app`'s package when they name it and it
+    /// is not the kept one; `true` when they did.
+    fn reunite(&self, app: &mut ViewerApp) -> bool {
+        let (Some(model), Some(review)) = (&app.model, &app.review) else {
+            return false;
+        };
+        // Once per package: a write that failed is not retried every frame.
+        let opened = model.export().payload_digest().ok();
+        if review.unsaved()
+            || review.draft.is_some()
+            || opened.is_none_or(|digest| {
+                self.package == Some(digest)
+                    || self.failed.is_some_and(|failed| failed.package == digest)
+            })
+        {
+            return false;
+        }
+        let Some(mut kept) = read_kept(&self.dir.join(COMMENTS), model) else {
+            return false;
+        };
+        if self.dir.join(UNSAVED).exists() {
+            kept.still_unsaved();
+        }
+        app.review = Some(kept);
+        true
+    }
+
+    /// `reunited`: the kept comments are already this package's.
     fn write(
         &mut self,
         mark: SessionMark,
         model: &Model,
         review: &Review,
+        reunited: bool,
     ) -> Result<(), Rejection> {
         let dir = &self.dir;
         let marker = dir.join(UNSAVED);
@@ -165,15 +204,22 @@ impl SessionKeeper {
             std::fs::create_dir_all(dir).map_err(|error| session_error(dir, error))?;
             self.package = None;
             self.comments = None;
-            for stale in [&comments_path, &marker] {
-                remove_if_present(stale)?;
+            if !reunited {
+                for stale in [&comments_path, &marker] {
+                    remove_if_present(stale)?;
+                }
             }
             let path = dir.join(PACKAGE);
             let package = model.shared_export();
             self.writing = Some(Writing {
                 mark,
                 handle: std::thread::spawn(move || {
-                    write_durably(&path, |writer| package.write(writer))
+                    write_durably(&path, |writer| {
+                        package.write(writer)?;
+                        #[cfg(test)]
+                        super::tests::hold_package_writer();
+                        Ok(())
+                    })
                 }),
             });
         }
@@ -240,6 +286,12 @@ fn sync_directory(dir: &Path) -> std::io::Result<()> {
     #[cfg(not(unix))]
     let _ = dir;
     Ok(())
+}
+
+/// The comments kept at `path`, if they open on `model`'s package.
+fn read_kept(path: &Path, model: &Model) -> Option<Review> {
+    let file = std::fs::File::open(path).ok()?;
+    Review::open(std::io::BufReader::new(file), model).ok()
 }
 
 fn remove_if_present(path: &Path) -> Result<(), Rejection> {
