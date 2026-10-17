@@ -1261,12 +1261,18 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                 None => check.checks.push(column_check(load, shape, &design, &uls)),
             }
         } else {
-            let (checks, spans_checked) = beam_checks(load, shape, &design, &uls, &sls);
-            check.checks = checks;
-            // Separate bearings always leave a span; without one, bending,
-            // shear and deflection were never checked.
-            if !spans_checked {
-                missing.push("no span between its separate bearings was checked".to_owned());
+            if let Some(reason) = shape.unmodelled {
+                // Bending, shear, deflection and notches on the full section
+                // would overstate a beam that a cut, pocket or hole weakens.
+                missing.push(reason.to_owned());
+            } else {
+                let (checks, spans_checked) = beam_checks(load, shape, &design, &uls, &sls);
+                check.checks = checks;
+                // Separate bearings always leave a span; without one, bending,
+                // shear and deflection were never checked.
+                if !spans_checked {
+                    missing.push("no span between its separate bearings was checked".to_owned());
+                }
             }
             beams.insert(load.part.clone(), (class.clone(), design.gamma_m));
         }

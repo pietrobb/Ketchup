@@ -280,6 +280,47 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
     );
 }
 
+/// The 100 x 200 beam of `beam` with `then` run on it (the beam is `part`):
+/// its status, check names and what the check could not model.
+fn changed_beam(then: &str) -> (String, Vec<String>, Vec<String>) {
+    let source = format!(
+        "{}{then}\n",
+        beam("C24", 100.0, 200.0).replace("box(\"beam\"", "part = box(\"beam\"")
+    );
+    let report = report(&source, &[]);
+    let beam = member(&report, "beam");
+    assert_eq!(beam.role, "beam");
+    let checks = beam.checks.iter().map(|c| c.name.to_owned()).collect();
+    (beam.status.to_string(), checks, beam.missing.clone())
+}
+
+#[test]
+fn a_beam_notched_pocketed_or_drilled_in_its_span_is_not_checked_as_the_full_section() {
+    // Each halves the depth or takes 30 % of it at mid-span, where the moment
+    // is largest; on the full section the same beam passes.
+    for then in [
+        "subtract(part, box(\"notch\", (200, 100, 100), at = (1900, 0, 2000), tool = True), name = \"notch\")",
+        "pocket(part, \"z-\", rect = (1900, 20, 2100, 80), depth = 100)",
+        "hole(part, \"z+\", world = (2000, 50, 2200), diameter = 60, depth = 200, through = True)",
+    ] {
+        let (status, checks, missing) = changed_beam(then);
+        assert_eq!(status, "not_verified", "{then}: {checks:?} {missing:?}");
+        assert!(
+            checks.iter().all(|c| c != "bending" && c != "shear"),
+            "{then}: {checks:?}"
+        );
+        assert!(
+            missing.len() == 1 && missing[0].contains("section"),
+            "{then}: {missing:?}"
+        );
+    }
+    // A bolt hole across it leaves the section all but whole.
+    let (status, _, missing) = changed_beam(
+        "hole(part, \"y-\", world = (2000, 0, 2100), diameter = 5, depth = 100, through = True)",
+    );
+    assert_eq!(status, "pass", "{missing:?}");
+}
+
 #[test]
 fn a_notch_in_a_side_of_a_short_post_governs_its_compression_on_the_net_section() {
     let compression = |notched: bool| {
