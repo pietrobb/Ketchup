@@ -82,6 +82,7 @@ rust::String xde_document_length_unit_native(const NativeXdeDocument& document) 
 std::unique_ptr<NativeOperationResult> xde_document_part_native(
     const NativeXdeDocument& document, std::uint32_t part_index) noexcept;
 
+std::uint64_t step_source_parses_on_this_thread_native() noexcept;
 bool route_kernel_messages_to_stderr_native() noexcept;
 std::unique_ptr<NativeOperationResult> make_box_native(
     double origin_x, double origin_y, double origin_z,

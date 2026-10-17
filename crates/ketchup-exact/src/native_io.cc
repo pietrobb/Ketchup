@@ -54,6 +54,10 @@ struct StepXdeData {
   std::string length_unit;
 };
 
+// STEP sources this thread has parsed for an XDE document or a length unit,
+// so a test can prove one parse per request (review 2026-10-17 EX-2).
+thread_local std::uint64_t step_source_parses = 0;
+
 std::string file_length_unit(STEPControl_Reader& reader) {
   NCollection_Sequence<TCollection_AsciiString> length_units;
   NCollection_Sequence<TCollection_AsciiString> angle_units;
@@ -131,6 +135,9 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
   Reader reader;
   reader.SetColorMode(true);
   reader.SetNameMode(true);
+  if constexpr (std::is_same_v<Reader, STEPCAFControl_Reader>) {
+    ++step_source_parses;
+  }
   if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
     error = "STEP XDE reader could not read the source";
     return false;
@@ -909,6 +916,7 @@ rust::String step_length_unit_native(rust::Str path) noexcept {
   try {
     const std::string native_path(path.data(), path.size());
     STEPControl_Reader reader;
+    ++step_source_parses;
     if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {
       return rust::String();
     }
@@ -917,6 +925,8 @@ rust::String step_length_unit_native(rust::Str path) noexcept {
     return rust::String();
   }
 }
+
+std::uint64_t step_source_parses_on_this_thread_native() noexcept { return step_source_parses; }
 
 std::unique_ptr<NativeOperationResult> import_iges_native(rust::Str path) noexcept {
   return guarded([&] {

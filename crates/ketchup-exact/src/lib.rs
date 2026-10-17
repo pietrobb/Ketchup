@@ -280,6 +280,7 @@ mod ffi {
         type NativeXdeDocument;
 
         fn route_kernel_messages_to_stderr_native() -> bool;
+        fn step_source_parses_on_this_thread_native() -> u64;
         fn open_step_xde_document_native(path: &str) -> UniquePtr<NativeXdeDocument>;
         fn xde_document_manifest_native(document: &NativeXdeDocument) -> String;
         fn xde_document_length_unit_native(document: &NativeXdeDocument) -> String;
@@ -607,6 +608,14 @@ impl ExactBackend {
     #[must_use]
     pub fn route_kernel_messages_to_stderr() -> bool {
         ffi::route_kernel_messages_to_stderr_native()
+    }
+
+    /// How many times this thread has parsed a STEP source for an XDE
+    /// document or a length unit. A request that reads its source once raises
+    /// it by one, however many parts the file has.
+    #[must_use]
+    pub fn step_source_parses_on_this_thread() -> u64 {
+        ffi::step_source_parses_on_this_thread_native()
     }
 }
 

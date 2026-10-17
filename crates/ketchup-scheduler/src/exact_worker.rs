@@ -3703,6 +3703,39 @@ mod tests {
         }
     }
 
+    // Review 2026-10-17 EX-2: inspection and conversion each parsed a two-part
+    // source 4 times (unit, manifest, one per part).
+    #[test]
+    fn step_xde_inspection_and_iges_conversion_parse_the_source_once() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/independent-xde-assembly.step");
+        let source = SourceFile {
+            sha256: sha256_hex(&std::fs::read(&path).unwrap()),
+            path,
+        };
+        let backend = ExactBackend::new();
+        let parses_during = |request: &dyn Fn() -> WorkerResult| {
+            let before = ExactBackend::step_source_parses_on_this_thread();
+            request().unwrap();
+            ExactBackend::step_source_parses_on_this_thread() - before
+        };
+
+        let inspection = parses_during(&|| {
+            let reply = m21_step_xde_inspection_response(&backend, &source)?;
+            let WorkerReply::Xde(evidence) = &reply else {
+                panic!("inspection answered {reply:?}");
+            };
+            assert_eq!(evidence.parts.len(), 2);
+            Ok(reply)
+        });
+
+        let output = tempfile::tempdir().unwrap();
+        let conversion = parses_during(&|| {
+            m21_step_xde_to_iges_response(&backend, &source, &output.path().join("flat.igs"))
+        });
+        assert_eq!((inspection, conversion), (1, 1));
+    }
+
     #[test]
     fn cam_collision_uses_the_document_tolerance_not_the_default() {
         let backend = ExactBackend::new();
