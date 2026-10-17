@@ -765,6 +765,27 @@ impl GravitySupportInput {
         &self.exact_contacts
     }
 
+    /// The first measured contact of the two bodies. Contacts are sorted and
+    /// stored left <= right, so this is a binary search: support propagation
+    /// asks it for every part against every supporter, pass after pass.
+    fn exact_contact(
+        &self,
+        left: &InstancePath,
+        right: &InstancePath,
+    ) -> Option<&GravitySupportContact> {
+        let key = if left <= right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        let first = self
+            .exact_contacts
+            .partition_point(|contact| (&contact.left, &contact.right) < key);
+        self.exact_contacts
+            .get(first)
+            .filter(|contact| (&contact.left, &contact.right) == key)
+    }
+
     /// `false`: the exact contacts cover only the pairs checked before the pass stopped.
     #[must_use]
     pub const fn with_exact_coverage(mut self, complete: bool) -> Self {
@@ -1352,10 +1373,7 @@ fn body_support_contact(
     // Only area where the part's face looks down onto the supporter bears it.
     let complete = input.exact_coverage_complete;
     let positive_mm2 = tolerance.linear_mm() * tolerance.linear_mm();
-    if let Some(contact) = input
-        .exact_contacts()
-        .iter()
-        .find(|contact| contact.connects(candidate.instance_path(), supporter.instance_path()))
+    if let Some(contact) = input.exact_contact(candidate.instance_path(), supporter.instance_path())
     {
         if contact.bearing_area_mm2(candidate.instance_path(), input.gravity_direction())
             > positive_mm2
@@ -1961,6 +1979,32 @@ mod tests {
         assert_eq!(report.state, ValidationState::Failed);
         assert_eq!(report.diagnostics[1].code, "gravity.unsupported");
         assert!(report.unresolved_conditions.is_empty());
+    }
+
+    #[test]
+    fn a_measured_contact_is_found_from_either_body_and_only_for_its_own_pair() {
+        let path = |id| InstancePath::root(crate::document::OccurrenceId(id));
+        let patch = |area_mm2| ContactPatch {
+            normal: [0.0, 0.0, -1.0],
+            area_mm2,
+        };
+        let contact = |left, right, area_mm2| {
+            GravitySupportContact::new(path(left), path(right), vec![patch(area_mm2)]).unwrap()
+        };
+        let input = GravitySupportInput::new(Vec::new(), [0.0, 0.0, -9.81])
+            .unwrap()
+            .with_exact_contacts(vec![
+                contact(5, 1, 1.0),
+                contact(2, 3, 2.0),
+                contact(1, 3, 3.0),
+            ]);
+        for (left, right, area_mm2) in [(1, 5, 1.0), (5, 1, 1.0), (3, 2, 2.0), (1, 3, 3.0)] {
+            let found = input.exact_contact(&path(left), &path(right)).unwrap();
+            assert!(found.connects(&path(left), &path(right)));
+            assert_eq!(found.patches[0].area_mm2, area_mm2);
+        }
+        assert!(input.exact_contact(&path(1), &path(2)).is_none());
+        assert!(input.exact_contact(&path(4), &path(5)).is_none());
     }
 
     #[test]
