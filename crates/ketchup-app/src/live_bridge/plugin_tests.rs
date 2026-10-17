@@ -873,6 +873,11 @@ fn a_dot_dot_joined_to_a_plugin_option_is_refused() {
         "--script=..\\height\\plugin.py",
         "-s../height/plugin.py",
         "--dir=..",
+        // Review 2026-10-16: resolving `..` dropped the option with its name,
+        // and the plugin got only the folder's plugin.py.
+        "--s=a/../plugin.py",
+        "-sa/../plugin.py",
+        "script=a\\..\\plugin.py",
     ] {
         manifest["arguments"] = json!(["plugin.py", argument]);
         std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
@@ -979,6 +984,8 @@ fn a_dot_dot_joined_to_an_option_of_a_command_line_is_refused() {
         "--script=..\\plugin.py",
         "-s../plugin.py",
         "--dir=..",
+        "--s=a/../plugin.py",
+        "-sa/../plugin.py",
     ] {
         let request = plugin_request(vec![script.clone(), argument.to_owned()]);
         assert_eq!(

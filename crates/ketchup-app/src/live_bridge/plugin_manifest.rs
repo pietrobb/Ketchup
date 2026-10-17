@@ -251,10 +251,14 @@ fn plugin_folder(plugin: &str) -> Result<PathBuf, &'static str> {
 /// Whether `..` ends a part of the argument without being that whole part
 /// (`--script=../x`, `-s..`): the plugin splits the option off itself and
 /// resolves the rest against its stage, outside the files that were hashed.
+/// Also whether `..` follows an option (`--s=a/../x`): resolving it would drop
+/// the option with its name (review 2026-10-16).
 fn embeds_parent_dir(argument: &str) -> bool {
+    let first = argument.split(['/', '\\']).next().unwrap_or_default();
+    let option = first.starts_with('-') || first.contains('=');
     argument
         .split(['/', '\\'])
-        .any(|part| part != ".." && part.ends_with(".."))
+        .any(|part| (part != ".." && part.ends_with("..")) || (option && part == ".."))
 }
 
 /// Whether an absolute path starts inside the argument (`--require=/x.js`,
