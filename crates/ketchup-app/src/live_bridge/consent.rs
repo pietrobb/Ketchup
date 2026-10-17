@@ -433,7 +433,7 @@ fn start(
         available,
     }));
     let worker_discovery = Arc::clone(&discovery);
-    // Nonces of attach requests whose proof held: a captured request line
+    // Nonces of attach requests the window was handed: a captured request line
     // replayed later is rejected without asking the user again.
     let used_nonces = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
     let worker_instance_id = instance_id.clone();
@@ -540,15 +540,7 @@ fn serve(
             return write_list_response(&mut stream, &nonce, instance_id, &state, stop);
         }
         let expected = ketchup_mcp::local_auth::client_attach_proof(bootstrap, instance_id, &nonce);
-        let replayed = || -> io::Result<bool> {
-            Ok(!used_nonces
-                .lock()
-                .map_err(|_: std::sync::PoisonError<_>| {
-                    io::Error::other("nonce record unavailable")
-                })?
-                .insert(nonce.clone()))
-        };
-        if !ketchup_mcp::local_auth::proofs_match(&request.proof, &expected) || replayed()? {
+        if !ketchup_mcp::local_auth::proofs_match(&request.proof, &expected) {
             return write_response(
                 &mut stream,
                 &nonce,
@@ -564,15 +556,24 @@ fn serve(
             decision,
             abandoned: Arc::clone(&abandoned),
         };
-        if sender.try_send(pending).is_err() {
-            return write_response(
-                &mut stream,
-                &nonce,
-                instance_id,
-                bootstrap,
-                ConsentDecision::Busy,
-                stop,
-            );
+        // Only a nonce the window was handed is remembered: a busy answer asks
+        // nobody, so a requester answered busy again and again no longer grows
+        // the record for as long as the window lives (review 2026-10-16).
+        let answer = {
+            let mut used = used_nonces.lock().map_err(|_: std::sync::PoisonError<_>| {
+                io::Error::other("nonce record unavailable")
+            })?;
+            if used.contains(&nonce) {
+                Some(ConsentDecision::Reject)
+            } else if sender.try_send(pending).is_err() {
+                Some(ConsentDecision::Busy)
+            } else {
+                used.insert(nonce.clone());
+                None
+            }
+        };
+        if let Some(answer) = answer {
+            return write_response(&mut stream, &nonce, instance_id, bootstrap, answer, stop);
         }
         context.request_repaint();
         stream.set_nonblocking(true)?;
@@ -1012,6 +1013,61 @@ mod tests {
         assert!(
             broker.requests.try_recv().is_err(),
             "the UI was asked again"
+        );
+    }
+
+    /// Review 2026-10-16: every attach with a valid proof was remembered, also
+    /// one answered busy, which asks nobody, so the record grew for as long as
+    /// the window lived. Only a request the window was handed is remembered.
+    #[test]
+    fn a_nonce_answered_busy_is_not_remembered() {
+        let directory = tempfile::tempdir().unwrap();
+        let broker = start(
+            egui::Context::default(),
+            directory.path(),
+            "Untitled".to_owned(),
+            true,
+        )
+        .unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(
+            &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
+        )
+        .unwrap();
+        let attach = |nonce: &str| {
+            let mut stream = TcpStream::connect(broker.address).unwrap();
+            writeln!(stream, "{}", attach_line(&registry, nonce)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+            stream
+        };
+        let nonces = ["5".repeat(64), "6".repeat(64)];
+        let mut streams = [attach(&nonces[0]), attach(&nonces[1])];
+        // One waits in the window's queue, the other is answered busy at once.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let busy = 'answered: loop {
+            assert!(Instant::now() < deadline, "no attach was answered busy");
+            for (index, stream) in streams.iter_mut().enumerate() {
+                let mut response = String::new();
+                if stream.read_to_string(&mut response).is_ok() || response.ends_with('\n') {
+                    let response: serde_json::Value =
+                        serde_json::from_str(response.trim()).unwrap();
+                    assert_eq!(response["status"], "busy");
+                    break 'answered index;
+                }
+            }
+            std::thread::yield_now();
+        };
+        drop(
+            broker
+                .requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("the other attach asks the user"),
+        );
+        let _again = attach(&nonces[busy]);
+        assert!(
+            broker.requests.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "the attach answered busy was rejected as a replay"
         );
     }
 
