@@ -59,6 +59,7 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
+bool route_kernel_messages_to_stderr_native() noexcept;
 std::unique_ptr<NativeOperationResult> make_box_native(
     double origin_x, double origin_y, double origin_z,
     double size_x, double size_y, double size_z) noexcept;

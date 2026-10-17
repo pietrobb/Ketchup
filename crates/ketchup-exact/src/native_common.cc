@@ -1,6 +1,35 @@
 #include "native_common.hxx"
 
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <Message_PrinterOStream.hxx>
+
 namespace ketchup::exact {
+
+// OCCT's default messenger prints warnings (a STEP reader's, for one) on
+// std::cout. A worker's stdout carries its binary reply frames, so the kernel
+// prints on std::cerr instead (review 2026-10-17 EX-4). True only when every
+// printer left on the messenger writes to std::cerr.
+bool route_kernel_messages_to_stderr_native() noexcept {
+  try {
+    const occ::handle<Message_Messenger>& messenger = Message::DefaultMessenger();
+    messenger->RemovePrinters(STANDARD_TYPE(Message_PrinterOStream));
+    messenger->AddPrinter(new Message_PrinterOStream("cerr", false));
+    const auto& printers = messenger->Printers();
+    if (printers.IsEmpty()) {
+      return false;
+    }
+    for (const occ::handle<Message_Printer>& printer : printers) {
+      const auto stream = occ::down_cast<Message_PrinterOStream>(printer);
+      if (stream.IsNull() || &stream->GetStream() != &std::cerr) {
+        return false;
+      }
+    }
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
 
 
 // The tolerances and numeric guards of ketchup-tolerance; native code compares

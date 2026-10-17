@@ -278,6 +278,7 @@ mod ffi {
         type NativeMeshResult;
         type NativeVolumeMeshResult;
 
+        fn route_kernel_messages_to_stderr_native() -> bool;
         fn make_box_native(
             origin_x: f64,
             origin_y: f64,
@@ -590,6 +591,14 @@ impl ExactBackend {
     #[must_use]
     pub const fn new() -> Self {
         Self
+    }
+
+    /// Sends the kernel's own messages to stderr, keeping stdout free for a
+    /// process that writes binary frames there. False when the kernel could
+    /// still print on stdout.
+    #[must_use]
+    pub fn route_kernel_messages_to_stderr() -> bool {
+        ffi::route_kernel_messages_to_stderr_native()
     }
 }
 

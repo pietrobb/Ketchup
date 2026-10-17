@@ -60,6 +60,11 @@ mod pair_query;
 
 pub fn run_stdio() {
     crate::child_process::exit_with_parent();
+    if !ExactBackend::route_kernel_messages_to_stderr() {
+        // A kernel message on stdout would corrupt the reply frames.
+        eprintln!("exact worker: kernel messages could not be moved off stdout");
+        std::process::exit(2);
+    }
     let backend = ExactBackend::new();
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();

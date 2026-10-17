@@ -1268,3 +1268,10 @@ fn native_occt_exception_is_contained_by_the_facade() {
             .contains("intentional A0 exception-boundary probe")
     );
 }
+
+#[test]
+fn kernel_messages_leave_stdout_after_routing() {
+    assert!(ExactBackend::route_kernel_messages_to_stderr());
+    // Routing again keeps a single stderr printer, not a second stdout one.
+    assert!(ExactBackend::route_kernel_messages_to_stderr());
+}
