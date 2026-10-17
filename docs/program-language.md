@@ -203,6 +203,7 @@ topic it belongs to.
 | `collision_unverified` | warning | the boxes of two parts overlap, a part is not its box, and the exact solids were not measured |
 | `expectation_unverified` | warning | a condition needs the distance of two solids that are apart, but that distance was not measured |
 | `checks_unverified` | warning | the checks did not finish within the program worker's time, memory or size limit; the edit is still applied, and no collision, relation, joint or load was checked |
+| `report_truncated` | error or warning | the whole report did not fit one reply of the program worker, so it lists only its first issues (errors first) and relations; an error when an error was left out |
 
 Automatic checks use native solids where machining (holes, pockets, booleans)
 or another shape change makes a part differ from its box near another part.

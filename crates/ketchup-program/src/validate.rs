@@ -19,6 +19,10 @@ pub const COLLISION_UNVERIFIED: &str = "collision_unverified";
 /// worker's limits: nothing was checked, and nothing was found to pass.
 pub const CHECKS_UNVERIFIED: &str = "checks_unverified";
 
+/// Issue kind of a report that lists only its first issues and relations:
+/// the whole one did not fit the program worker's reply.
+pub const REPORT_TRUNCATED: &str = "report_truncated";
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {

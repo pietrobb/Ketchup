@@ -51,7 +51,8 @@ pub use model::{
 };
 pub use relations::{OverlapStatus, Relation, RelationKind, relations, relations_with};
 pub use validate::{
-    CHECKS_UNVERIFIED, COLLISION_UNVERIFIED, Issue, Severity, validate, validate_with,
+    CHECKS_UNVERIFIED, COLLISION_UNVERIFIED, Issue, REPORT_TRUNCATED, Severity, validate,
+    validate_with,
 };
 
 use serde::{Deserialize, Serialize};
@@ -157,6 +158,69 @@ impl Report {
     pub fn apply_refined(&mut self, refined: Refined) {
         self.relations = refined.relations;
         self.set_issues(refined.issues);
+    }
+
+    /// This report listing only its first `issues` issues, errors first, and
+    /// first `relations` relations, plus one issue naming what is left out,
+    /// for a reply that cannot hold the whole report.
+    #[must_use]
+    pub fn first(&self, issues: usize, relations: usize) -> Self {
+        let mut report = self.clone();
+        let listed = first_listed(&self.issues, &self.relations, issues, relations);
+        report.relations = listed.relations;
+        report.set_issues(listed.issues);
+        report
+    }
+}
+
+impl Refined {
+    /// [`Report::first`] for the issues and relations [`refine`] re-derived.
+    #[must_use]
+    pub fn first(&self, issues: usize, relations: usize) -> Self {
+        first_listed(&self.issues, &self.relations, issues, relations)
+    }
+}
+
+/// The first `kept` issues, errors first, and `kept_relations` relations, and
+/// one more issue naming what is left out: an error when an error is, so a
+/// shortened report is never `ok` when the whole one is not.
+fn first_listed(
+    issues: &[Issue],
+    relations: &[Relation],
+    kept: usize,
+    kept_relations: usize,
+) -> Refined {
+    let mut listed = issues.to_vec();
+    listed.sort_by_key(|issue| issue.severity);
+    let left_out = listed.split_off(kept.min(listed.len()));
+    let first_relations = relations[..kept_relations.min(relations.len())].to_vec();
+    let errors = issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::Error)
+        .count();
+    listed.push(Issue {
+        severity: if left_out.iter().any(|issue| issue.severity == Severity::Error) {
+            Severity::Error
+        } else {
+            Severity::Warning
+        },
+        kind: REPORT_TRUNCATED,
+        parts: Vec::new(),
+        message: format!(
+            "The report lists {} of its {} issues ({errors} errors) and {} of its {} relations; the whole one did not fit the program worker's reply.",
+            listed.len(),
+            issues.len(),
+            first_relations.len(),
+            relations.len(),
+        ),
+        where_mm: None,
+        hint: "Fix the issues listed and ask for the report again, or check fewer parts at a time."
+            .to_owned(),
+        source_lines: Vec::new(),
+    });
+    Refined {
+        issues: listed,
+        relations: first_relations,
     }
 }
 

@@ -450,25 +450,79 @@ pub fn run_stdio() {
             }
             Frame::Closed | Frame::TooLarge | Frame::Transport(_) => break,
         };
-        let written = match write_frame(&mut stdout, &reply, MAX_REPLY_FRAME_BYTES) {
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                write_frame(&mut stdout, &too_large(&reply), MAX_REPLY_FRAME_BYTES)
-            }
-            written => written,
-        };
-        if written.is_err() {
+        if write_reply(&mut stdout, &reply, MAX_REPLY_FRAME_BYTES).is_err() {
             break;
         }
     }
 }
 
+/// Writes `reply`; a report or refined list larger than `max_bytes` goes with
+/// only its first issues and relations, halved until it fits, and any other
+/// too large reply as its failure.
+fn write_reply(
+    out: &mut impl std::io::Write,
+    reply: &WorkerReply,
+    max_bytes: usize,
+) -> std::io::Result<()> {
+    let too_large = |error: &std::io::Error| error.kind() == std::io::ErrorKind::InvalidData;
+    match write_frame(out, reply, max_bytes) {
+        Err(error) if too_large(&error) => {}
+        written => return written,
+    }
+    let (mut issues, mut relations) = listed(reply);
+    while issues + relations > 0 {
+        (issues, relations) = (issues / 2, relations / 2);
+        let Some(first) = first_listed(reply, issues, relations) else {
+            break;
+        };
+        match write_frame(out, &first, max_bytes) {
+            Err(error) if too_large(&error) => {}
+            written => return written,
+        }
+    }
+    write_frame(out, &failed_too_large(reply), max_bytes)
+}
+
+/// How many issues and relations a report or refined list holds.
+fn listed(reply: &WorkerReply) -> (usize, usize) {
+    match reply {
+        WorkerReply::Report(outcome) => match outcome.as_ref() {
+            ReportOutcome::Reported(report) => (report.issues.len(), report.relations.len()),
+            ReportOutcome::Failed(_) => (0, 0),
+        },
+        WorkerReply::Refined(outcome) => match outcome.as_ref() {
+            RefineOutcome::Refined(refined) => (refined.issues.len(), refined.relations.len()),
+            RefineOutcome::Failed(_) => (0, 0),
+        },
+        _ => (0, 0),
+    }
+}
+
+fn first_listed(reply: &WorkerReply, issues: usize, relations: usize) -> Option<WorkerReply> {
+    match reply {
+        WorkerReply::Report(outcome) => match outcome.as_ref() {
+            ReportOutcome::Reported(report) => Some(WorkerReply::Report(Box::new(
+                ReportOutcome::Reported(Box::new(report.first(issues, relations))),
+            ))),
+            ReportOutcome::Failed(_) => None,
+        },
+        WorkerReply::Refined(outcome) => match outcome.as_ref() {
+            RefineOutcome::Refined(refined) => Some(WorkerReply::Refined(Box::new(
+                RefineOutcome::Refined(Box::new(refined.first(issues, relations))),
+            ))),
+            RefineOutcome::Failed(_) => None,
+        },
+        _ => None,
+    }
+}
+
 /// What the worker answers instead of a reply larger than its frame.
-fn too_large(reply: &WorkerReply) -> WorkerReply {
+fn failed_too_large(reply: &WorkerReply) -> WorkerReply {
     let error = || ProgramError {
         code: "report_too_large",
         message: format!(
-            "the program's model has more issues and relations than one report of {} MiB \
-             holds; fix the overlapping parts it reports in smaller groups",
+            "the program's report does not fit one reply of {} MiB even without its issues \
+             and relations; check fewer parts at a time",
             MAX_REPLY_FRAME_BYTES >> 20
         ),
         location: None,
@@ -576,5 +630,90 @@ impl Stopped {
             Self::MemoryLimit => DwgConversionError::MemoryLimit,
             Self::Failed(error) => DwgConversionError::WorkerFailed(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ketchup_program::{Issue, REPORT_TRUNCATED, Severity};
+
+    /// Thirty boxes that all overlap: 435 collisions.
+    fn overlapping() -> Evaluated {
+        let source =
+            "for i in range(30):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n";
+        ketchup_program::evaluate("test.star", source, &BTreeMap::new()).unwrap()
+    }
+
+    /// `reply` as written to a frame of a third of its size, and read back.
+    fn written_in_a_third(reply: &WorkerReply) -> WorkerReply {
+        let max_bytes = crate::protocol::encode_frame(reply, usize::MAX)
+            .unwrap()
+            .len()
+            / 3;
+        let mut out = Vec::new();
+        write_reply(&mut out, reply, max_bytes).unwrap();
+        match read_frame(&mut out.as_slice(), max_bytes) {
+            Frame::Message(reply) => reply,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn assert_names_the_rest(issues: &[Issue], whole: usize) {
+        let notes: Vec<_> = issues
+            .iter()
+            .filter(|issue| issue.kind == REPORT_TRUNCATED)
+            .collect();
+        assert_eq!(notes.len(), 1, "{issues:?}");
+        assert_eq!(
+            notes[0].severity,
+            Severity::Error,
+            "collisions were left out"
+        );
+        assert!(
+            notes[0].message.contains(&format!("of its {whole} issues")),
+            "{}",
+            notes[0].message
+        );
+    }
+
+    /// A report too large for one reply is no longer refused whole: it lists
+    /// its first issues and relations and says how many it leaves out (PRG-1).
+    #[test]
+    fn a_report_past_its_reply_lists_its_first_issues_and_names_the_rest() {
+        let whole = ketchup_program::report(&overlapping());
+        assert!(
+            !whole.ok && whole.issues.len() > 400,
+            "{}",
+            whole.issues.len()
+        );
+        let reply = WorkerReply::Report(Box::new(ReportOutcome::Reported(Box::new(whole.clone()))));
+        let WorkerReply::Report(outcome) = written_in_a_third(&reply) else {
+            panic!("not a report");
+        };
+        let ReportOutcome::Reported(first) = *outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(first.issues.len() < whole.issues.len());
+        assert!(first.relations.len() < whole.relations.len());
+        assert!(!first.ok);
+        assert_eq!(first.params, whole.params);
+        assert_eq!(first.bom, whole.bom);
+        assert_names_the_rest(&first.issues, whole.issues.len());
+    }
+
+    #[test]
+    fn a_refined_list_past_its_reply_keeps_its_first_issues_too() {
+        let evaluated = overlapping();
+        let whole = ketchup_program::refine(&evaluated.model, &ExactShapes::default());
+        let reply = WorkerReply::Refined(Box::new(RefineOutcome::Refined(Box::new(whole.clone()))));
+        let WorkerReply::Refined(outcome) = written_in_a_third(&reply) else {
+            panic!("not a refined list");
+        };
+        let RefineOutcome::Refined(first) = *outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(first.issues.len() < whole.issues.len());
+        assert_names_the_rest(&first.issues, whole.issues.len());
     }
 }
