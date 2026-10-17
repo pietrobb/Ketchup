@@ -9,7 +9,7 @@ constexpr std::size_t MAX_STEP_XDE_DEPTH = 64;
 
 class IgesBrepModeGuard {
 public:
-  IgesBrepModeGuard() : lock_(mutex()) {
+  IgesBrepModeGuard() : lock_(iges_translation_mutex()) {
     IGESControl_Controller::Init();
     previous_ = Interface_Static::IVal("write.iges.brep.mode");
     active_ = Interface_Static::SetIVal("write.iges.brep.mode", 1);
@@ -24,11 +24,6 @@ public:
   bool active() const noexcept { return active_; }
 
 private:
-  static std::mutex& mutex() {
-    static std::mutex value;
-    return value;
-  }
-
   std::unique_lock<std::mutex> lock_;
   int previous_ = 0;
   bool active_ = false;
@@ -287,6 +282,7 @@ bool load_step_xde(const std::string& path, StepXdeData& data, std::string& erro
 }
 
 bool load_iges_xde(const std::string& path, StepXdeData& data, std::string& error) {
+  const std::lock_guard<std::mutex> lock(iges_translation_mutex());
   if (!load_xde<IGESCAFControl_Reader>(path, data, error)) {
     return false;
   }
@@ -957,6 +953,7 @@ std::uint64_t iges_source_parses_on_this_thread_native() noexcept { return iges_
 std::unique_ptr<NativeOperationResult> import_iges_native(rust::Str path) noexcept {
   return guarded([&] {
     const std::string native_path(path.data(), path.size());
+    const std::lock_guard<std::mutex> lock(iges_translation_mutex());
     IGESControl_Reader reader;
     ++iges_source_parses;
     if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {
@@ -974,6 +971,7 @@ std::unique_ptr<NativeOperationResult> import_iges_native(rust::Str path) noexce
 rust::String iges_length_unit_native(rust::Str path) noexcept {
   try {
     const std::string native_path(path.data(), path.size());
+    const std::lock_guard<std::mutex> lock(iges_translation_mutex());
     IGESControl_Reader reader;
     ++iges_source_parses;
     if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {

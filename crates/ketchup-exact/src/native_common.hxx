@@ -146,6 +146,14 @@ inline constexpr std::uint8_t STATUS_INVALID_SHAPE = 5;
 inline constexpr std::uint8_t STATUS_BACKEND_EXCEPTION = 6;
 inline constexpr std::uint8_t STATUS_NULL_RESULT = 7;
 
+// OCCT's IGES translators share process-wide state (the IGES controller and
+// the Interface_Static parameters a writer switches), so every IGES read and
+// write in this process holds this one lock.
+inline std::mutex& iges_translation_mutex() {
+  static std::mutex value;
+  return value;
+}
+
 struct HistoryRecord {
   std::string semantic_role;
   std::string relation;

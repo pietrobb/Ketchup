@@ -3796,6 +3796,41 @@ mod tests {
         assert_eq!((inspection, one_part), (1, 1));
     }
 
+    // OCCT's IGES translators share process-wide state: an IGES read beside a
+    // writer switching its BRep mode ended the test process with an access
+    // violation. Every IGES read and write now holds one lock.
+    #[test]
+    fn iges_reads_and_writes_on_two_threads_do_not_race() {
+        let step = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/independent-xde-assembly.step");
+        let step = SourceFile {
+            sha256: sha256_hex(&std::fs::read(&step).unwrap()),
+            path: step,
+        };
+        let output = tempfile::tempdir().unwrap();
+        let iges = output.path().join("flat.igs");
+        m21_step_xde_to_iges_response(&ExactBackend::new(), &step, &iges).unwrap();
+        let iges = SourceFile {
+            sha256: sha256_hex(&std::fs::read(&iges).unwrap()),
+            path: iges,
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let backend = ExactBackend::new();
+                for round in 0..8 {
+                    let path = output.path().join(format!("written-{round}.igs"));
+                    m21_step_xde_to_iges_response(&backend, &step, &path).unwrap();
+                }
+            });
+            scope.spawn(|| {
+                let backend = ExactBackend::new();
+                for _ in 0..8 {
+                    m21_iges_xde_inspection_response(&backend, &iges).unwrap();
+                }
+            });
+        });
+    }
+
     #[test]
     fn cam_collision_uses_the_document_tolerance_not_the_default() {
         let backend = ExactBackend::new();
