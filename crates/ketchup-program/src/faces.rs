@@ -14,7 +14,8 @@ use crate::model::{
     FaceNameError, Hole, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind,
     ProgramOperation, ProgramPartBody, ProgramProfileSegment, profile_bounds,
 };
-use boundary::{extrusion_section, profile_outline};
+use boundary::extrusion_section;
+pub(crate) use boundary::profile_outline;
 use ketchup_geometry::linalg::{cross, dot, length};
 use ketchup_model::tolerance::{APPROXIMATION, CONTACT_FIT_MM};
 use serde::Serialize;

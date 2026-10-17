@@ -6,6 +6,7 @@ mod components;
 mod connectivity;
 mod contact_review;
 mod document;
+mod drill_material;
 mod exact_shapes;
 mod example_programs;
 mod expect;

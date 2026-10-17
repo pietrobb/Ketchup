@@ -524,7 +524,15 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
             let radius = hole.diameter_mm / 2.0;
             let entry = part.to_world(local_entry);
             let inward = frame::apply(&part.rotation, local_inward);
-            let thickness = part.reach(inward) - dot(entry, inward);
+            let span = part.reach(inward) - dot(entry, inward);
+            // A blind hole ends in the material on its line, which a cut or
+            // pocket behind it can cut short (review PG-4).
+            let thickness = if hole.through {
+                span
+            } else {
+                part.material_along(local_entry, local_inward, span)
+                    .unwrap_or(span)
+            };
             // The hole's circle, in face coordinates, must lie on the face.
             let fit = faces
                 .as_ref()

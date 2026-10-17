@@ -11,7 +11,7 @@ fn distance2(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 /// Curved edges are sampled with a BOUNDARY_CHORD_MM mm chord tolerance. Straight edges
 /// retain their exact vertices (including concave ones).
-pub(super) fn profile_outline(segments: &[ProgramProfileSegment]) -> Vec<[f64; 2]> {
+pub(crate) fn profile_outline(segments: &[ProgramProfileSegment]) -> Vec<[f64; 2]> {
     let mut points = Vec::new();
     for segment in segments {
         points.push(segment.start_mm);

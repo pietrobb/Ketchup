@@ -26,6 +26,7 @@ pub mod frame;
 pub mod joint_check;
 pub mod load_path;
 pub mod loads;
+mod material;
 pub mod member_check;
 pub mod model;
 pub mod motion;

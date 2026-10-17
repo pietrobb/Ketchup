@@ -2090,6 +2090,34 @@ fn builtins(builder: &mut GlobalsBuilder) {
         Ok(known_part(&model, &name)?.reach(direction))
     }
 
+    /// How many mm of the part's material lie along a world `direction` from
+    /// world `point` on it, its cuts and pockets taken out; None where only
+    /// `reach` can tell (not an extrusion; a shell, boolean or push_pull).
+    fn material_along<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] point: Value<'v>,
+        #[starlark(require = pos)] direction: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let name = part_name(part, heap)?;
+        let point = numbers::<3>(point, heap, "point")?;
+        let direction = numbers::<3>(direction, heap, "direction")?;
+        let direction = frame::normalized(direction).ok_or_else(|| {
+            anyhow::anyhow!(
+                "material_along({name:?}): direction must be non-zero, got {direction:?}"
+            )
+        })?;
+        let state = state(eval)?;
+        let model = state.model.borrow();
+        let part = known_part(&model, &name)?;
+        let span = part.reach(direction) - ketchup_geometry::linalg::dot(point, direction);
+        let local = frame::apply_transposed(&part.rotation, direction);
+        Ok(part
+            .material_along(part.to_local(point), local, span)
+            .map_or_else(Value::new_none, |mm| heap.alloc(mm)))
+    }
+
     /// Face `name` of a part as it is now, in world: struct(part, name, kind,
     /// origin, normal, u, v, min, max, radius, center). kind "planar": points
     /// origin + a*u + b*v for face coordinates (a, b) from min to max, normal
