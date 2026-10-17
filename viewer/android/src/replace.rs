@@ -310,6 +310,27 @@ pub(crate) fn recover_interrupted<R: Read, W: Write>(
     outcomes
 }
 
+/// The earlier contents set aside in `private` (given up or left), oldest
+/// first: only the Viewer can reach them there, so it offers to save them
+/// elsewhere (review 2026-10-17 VW-13).
+pub(crate) fn kept_files(private: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(private) else {
+        return Vec::new();
+    };
+    let mut kept: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.is_file()
+                && path.extension().is_some_and(|extension| extension == "bak")
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("kept-"))
+        })
+        .collect();
+    kept.sort();
+    kept
+}
+
 /// The documents a replacement in `private` still has to finish at a start:
 /// the only ones whose write grant is to be kept across starts.
 pub(crate) fn pending_targets(private: &Path) -> Vec<String> {
@@ -829,7 +850,10 @@ mod tests {
         };
         assert_eq!(target, TARGET);
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        // VW-13: offered for saving elsewhere until it is saved.
+        assert_eq!(kept_files(private), std::slice::from_ref(kept));
         assert_set_aside(kept, b"old");
+        assert!(kept_files(private).is_empty());
         assert!(pending_targets(private).is_empty());
         assert_eq!(left_in(&backup), 0);
         assert!(document.recover(private).is_empty());

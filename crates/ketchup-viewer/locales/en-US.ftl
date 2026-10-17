@@ -19,6 +19,7 @@ viewer-show-scene = Show scene
 viewer-viewport = Model view
 viewer-error = The model cannot be shown.
 viewer-error-file = The file could not be opened or saved.
+viewer-save-kept = Save earlier content as…
 viewer-view-iso = Iso
 viewer-view-front = Front
 viewer-view-back = Back

@@ -161,6 +161,8 @@ impl WebViewer {
             FileRequest::OpenComments => {
                 return pick_file(".ketchup-comments", true, self.inbox.clone(), ctx.clone());
             }
+            // The browser keeps no earlier content, so it never offers this.
+            FileRequest::SaveKept => return Ok(()),
             // The web Viewer offers no share button; a download is its way out.
             FileRequest::SaveComments | FileRequest::ShareComments => {
                 let mut bytes = Vec::new();

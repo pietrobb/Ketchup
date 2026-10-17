@@ -15,7 +15,8 @@ use ketchup_viewer::app::{FileRequest, ViewerApp};
 use ketchup_viewer::review::Written;
 
 use crate::replace::{
-    Interrupted, ReplaceFailure, pending_targets, recover_interrupted, replace_keeping_original,
+    Interrupted, ReplaceFailure, kept_files, pending_targets, recover_interrupted,
+    replace_keeping_original,
 };
 
 /// Request code ViewerActivity gives a file another app opened with the Viewer.
@@ -31,6 +32,7 @@ fn request_code(request: FileRequest) -> i32 {
         FileRequest::SaveComments => 3,
         FileRequest::SaveCommentedCopy => 4,
         FileRequest::ShareComments => 5,
+        FileRequest::SaveKept => 6,
     }
 }
 
@@ -54,6 +56,9 @@ pub(crate) struct Files {
     pending: HashMap<i32, (Vec<u8>, Option<Written>)>,
     /// File name of the opened package, for suggested save names.
     model_name: Option<String>,
+    /// The earlier content set aside in private storage whose save dialog
+    /// is open; removed once it is saved elsewhere.
+    saving_kept: Option<std::path::PathBuf>,
     /// A picker or save dialog is open and its answer is still to come.
     pub(crate) waiting: bool,
 }
@@ -64,6 +69,7 @@ impl Files {
             android_app,
             pending: HashMap::new(),
             model_name: None,
+            saving_kept: None,
             waiting: false,
         }
     }
@@ -97,6 +103,28 @@ impl Files {
                 let written = app.save_commented_copy(&mut bytes)?;
                 let name = ketchup_viewer::share::download_name(name, "-comments.ketchup-view");
                 Some((bytes, written, name))
+            }
+            FileRequest::SaveKept => {
+                let kept = self
+                    .android_app
+                    .internal_data_path()
+                    .map(|private| kept_files(&private));
+                let Some(path) = kept.and_then(|kept| kept.into_iter().next()) else {
+                    app.offer_kept(false);
+                    return Ok(());
+                };
+                let bytes = std::fs::read(&path).map_err(|error| {
+                    Rejection::new("viewer.android.read", RejectionPhase::Io)
+                        .target(path.display().to_string())
+                        .caused_by(error)
+                })?;
+                let name = if Package::has_signature(&bytes) {
+                    "earlier-content.ketchup-view"
+                } else {
+                    "earlier-content.ketchup-comments"
+                };
+                self.saving_kept = Some(path);
+                Some((bytes, None, name.to_owned()))
             }
         };
         let started = match save {
@@ -176,6 +204,15 @@ impl Files {
         if let Some((bytes, written)) = self.pending.remove(&code) {
             self.write(uri, &bytes)?;
             app.comments_written(written);
+            if code == request_code(FileRequest::SaveKept)
+                && let Some(kept) = self.saving_kept.take()
+            {
+                // Saved elsewhere: the next one, if any, is offered.
+                if let Err(error) = std::fs::remove_file(&kept) {
+                    log::error!("Removing {} failed: {error}", kept.display());
+                }
+                self.offer_kept(app);
+            }
             return Ok(());
         }
         let name = self.display_name(uri);
@@ -365,7 +402,7 @@ impl Files {
                         "A save cut off when Android ended the app could not be finished at several starts; it is no longer tried, and the file's earlier content is kept in {}.",
                         kept.display()
                     ))
-                    .fix_hint("Check the file, and save again if it should hold your comments."),
+                    .fix_hint("Check the file, and save again if it should hold your comments; Save earlier content as… puts the earlier content where you choose."),
                 Interrupted::Kept {
                     target,
                     backup,
@@ -383,11 +420,22 @@ impl Files {
                         "A save was cut off when Android ended the app, and the file now holds something that save did not write, or the save's record could not be read; the file was left as it is and its earlier content is kept in {}.",
                         kept.display()
                     ))
-                    .fix_hint("Check the file, and save again if it should hold your comments."),
+                    .fix_hint("Check the file, and save again if it should hold your comments; Save earlier content as… puts the earlier content where you choose."),
             });
         }
         // Also gives back the grants earlier versions kept for every file.
         self.release_grants_except(&pending_targets(&private));
+        self.offer_kept(app);
+    }
+
+    /// Offers saving the earlier contents set aside in private storage,
+    /// which the customer cannot reach there (review 2026-10-17 VW-13).
+    fn offer_kept(&self, app: &mut ViewerApp) {
+        let kept = self
+            .android_app
+            .internal_data_path()
+            .is_some_and(|private| !kept_files(&private).is_empty());
+        app.offer_kept(kept);
     }
 
     /// Keeps the grant to write `uri` across starts while a save to it runs.

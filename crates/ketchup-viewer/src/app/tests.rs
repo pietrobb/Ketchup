@@ -1348,6 +1348,33 @@ fn a_failed_comments_write_does_not_write_the_package_again() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Review 2026-10-17 VW-13: a host that keeps the earlier content of a file
+/// whose cut-off save it gave up offers saving it where the customer can
+/// reach it; the offer goes once the host keeps nothing more.
+#[test]
+fn earlier_content_the_host_keeps_is_offered_for_saving_elsewhere() {
+    let app = ViewerApp::new(None)
+        .with_host_files()
+        .with_language(Language::ENGLISH);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
+    harness.run();
+    let label = "Save earlier content as…";
+    assert!(harness.query_by_label(label).is_none());
+    harness.state_mut().offer_kept(true);
+    harness.run();
+    harness.get_by_label(label).click();
+    harness.run();
+    assert_eq!(
+        harness.state_mut().take_file_requests(),
+        [FileRequest::SaveKept]
+    );
+    harness.state_mut().offer_kept(false);
+    harness.run();
+    assert!(harness.query_by_label(label).is_none());
+}
+
 /// VW-7: two customers comment on one export; the author keeps both,
 /// because the author matches comments by export and ID.
 #[test]

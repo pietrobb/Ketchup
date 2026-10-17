@@ -38,6 +38,10 @@ pub enum FileRequest {
     /// Hand the comments file to the system share sheet (mail, chat), offered
     /// only by hosts set up [`ViewerApp::with_host_sharing`].
     ShareComments,
+    /// Save the earlier content of a file whose cut-off save could not be
+    /// finished, which the host keeps where the customer cannot reach it;
+    /// offered only while the host says so ([`ViewerApp::offer_kept`]).
+    SaveKept,
 }
 
 /// The read-only Viewer window: one opened package, its active scene and the
@@ -67,6 +71,8 @@ pub struct ViewerApp {
     host_sharing: bool,
     /// The host is still downloading the shared model.
     loading: bool,
+    /// The host keeps earlier content the customer can save elsewhere.
+    kept: bool,
 }
 
 impl ViewerApp {
@@ -91,7 +97,14 @@ impl ViewerApp {
             host_files: None,
             host_sharing: false,
             loading: false,
+            kept: false,
         }
+    }
+
+    /// Whether to offer saving earlier content the host keeps
+    /// ([`FileRequest::SaveKept`]).
+    pub fn offer_kept(&mut self, offered: bool) {
+        self.kept = offered;
     }
 
     /// While the host downloads a shared model the empty view says so.
@@ -368,6 +381,12 @@ impl ViewerApp {
                 ui.colored_label(egui::Color32::LIGHT_RED, self.t(headline));
                 ui.small(error.to_string());
                 ui.small(error.fix_hint_text());
+            }
+            if self.kept
+                && self.host_files.is_some()
+                && ui.button(self.t("viewer-save-kept")).clicked()
+            {
+                self.request_file(FileRequest::SaveKept);
             }
         });
         if narrow {

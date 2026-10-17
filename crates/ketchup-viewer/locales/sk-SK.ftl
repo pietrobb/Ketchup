@@ -18,6 +18,7 @@ viewer-show-scene = Obnoviť scénu
 viewer-viewport = Pohľad na model
 viewer-error = Model sa nedá zobraziť.
 viewer-error-file = Súbor sa nepodarilo otvoriť alebo uložiť.
+viewer-save-kept = Uložiť skorší obsah ako…
 viewer-view-iso = Izo
 viewer-view-front = Spredu
 viewer-view-back = Zozadu
