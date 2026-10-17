@@ -1284,9 +1284,10 @@ fn multi_version_history_golden_migrates_losslessly_and_drops_corrupt_history() 
     );
 }
 
-/// PS-1: a small history whose 4 095 revisions all name the whole `document.bin`
-/// (≈ 2.4 GiB assembled) is refused before anything is assembled; the document
-/// opens without Undo at once.
+/// PS-1: a small history whose revisions within the Undo window each name the whole
+/// `document.bin` many times over (≈ 6 GiB assembled) is refused before anything is
+/// assembled; the document opens without Undo at once. Revisions outside the window
+/// count against no budget (PS-12), so the gigabytes are named inside it.
 #[test]
 fn a_history_naming_gigabytes_through_shared_chunks_is_refused_before_it_is_assembled() {
     let commands = (1..=600_u64)
@@ -1306,8 +1307,11 @@ fn a_history_naming_gigabytes_through_shared_chunks_is_refused_before_it_is_asse
     .unwrap();
     let (_, offset, len) = container_entry_offsets(&saved, "document.bin");
     let document = &saved[offset..offset + len];
-    let revisions = 4_096_u32;
-    assert!(u64::from(revisions - 1) * len as u64 > 2 * 1024 * 1024 * 1024);
+    let revisions = u32::try_from(ketchup_model::tolerance::limits::UNDO_REVISIONS + 1).unwrap();
+    // Each revision names the one chunk as often as a snapshot may be long.
+    let repeats = u32::try_from(32 * 1024 * 1024 / len).unwrap();
+    let length = u64::from(repeats) * len as u64;
+    assert!(u64::from(revisions - 1) * length > 2 * 1024 * 1024 * 1024);
 
     let mut history = b"KETCHUPHST".to_vec();
     history.extend_from_slice(&4_u16.to_le_bytes());
@@ -1333,10 +1337,10 @@ fn a_history_naming_gigabytes_through_shared_chunks_is_refused_before_it_is_asse
             history.push(0); // document.bin
         } else {
             history.push(1);
-            history.extend_from_slice(&(len as u64).to_le_bytes());
+            history.extend_from_slice(&length.to_le_bytes());
             history.extend_from_slice(&checksum);
-            history.extend_from_slice(&1_u32.to_le_bytes());
-            history.extend_from_slice(&0_u32.to_le_bytes());
+            history.extend_from_slice(&repeats.to_le_bytes());
+            history.extend((0..repeats).flat_map(|_| 0_u32.to_le_bytes()));
         }
     }
     assert!(history.len() < 512 * 1024);
@@ -1345,7 +1349,7 @@ fn a_history_naming_gigabytes_through_shared_chunks_is_refused_before_it_is_asse
     let started = std::time::Instant::now();
     let reason = discarded_history(&bytes);
     assert!(
-        reason.starts_with("the revisions of history.bin would be at least 2048.")
+        reason.starts_with("the revisions of history.bin would be at least 20")
             && reason.ends_with("the limit is 2048.0 MB"),
         "{reason}"
     );

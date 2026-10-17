@@ -1866,19 +1866,8 @@ fn decode_revision_history(
         cursor,
         next_revision_id,
         chunks,
-        mut records,
+        records,
     } = read_history_records(bytes, document_bytes, budget)?;
-    // A file written before the shared Undo limit can hold up to 4 096 revisions; the
-    // store keeps those within the limit around the cursor, so only they are loaded
-    // (PS-12). Older formats load whole: their migrated digests chain across revisions.
-    let cursor = if schema >= 4 {
-        let first = cursor.saturating_sub(crate::tolerance::limits::UNDO_REVISIONS);
-        records.drain(..first);
-        records.truncate(cursor - first + crate::tolerance::limits::UNDO_REVISIONS + 1);
-        cursor - first
-    } else {
-        cursor
-    };
     // Only the kept revisions' programs are assembled and checked (N-5); one the
     // history names again is decoded once and shared.
     let mut decoded = BTreeMap::new();
@@ -1992,6 +1981,16 @@ fn read_history_records<'a>(
     if count == 0 || cursor >= count {
         return Err(PersistenceError::InvalidRevisionHistory);
     }
+    // A file written before the shared Undo limit can hold up to 4 096 revisions; the
+    // store keeps those within the limit around the cursor, so only they are kept here
+    // and count against the budget (PS-12). The others are read only to reach the next
+    // one. Older formats load whole: their migrated digests chain across revisions.
+    let kept = if schema >= 4 {
+        cursor.saturating_sub(crate::tolerance::limits::UNDO_REVISIONS)
+            ..=(cursor + crate::tolerance::limits::UNDO_REVISIONS).min(count - 1)
+    } else {
+        0..=count - 1
+    };
     let mut chunks = Vec::new();
     if schema >= 4 {
         let chunk_count = reader.count_with_limit(MAX_COLLECTION_ITEMS)?;
@@ -2015,13 +2014,15 @@ fn read_history_records<'a>(
         }
     }
 
-    let mut records = Vec::with_capacity(count);
+    let mut records = Vec::with_capacity(kept.end() - kept.start() + 1);
     let mut assembled = 0u64;
     let mut programs = BTreeSet::new();
     let mut program_bytes = 0u64;
     let mut previous_revision_id = None;
+    let mut previous_program = None;
     let mut checkpoint_names = BTreeSet::new();
     for index in 0..count {
+        let keep = kept.contains(&index);
         let revision_id = reader.u64()?;
         if previous_revision_id.is_some_and(|previous| revision_id <= previous) {
             return Err(PersistenceError::InvalidRevisionHistory);
@@ -2066,32 +2067,37 @@ fn read_history_records<'a>(
                 HISTORY_RULE_PROGRAM_IN_CHUNKS if schema >= 5 => {
                     let (length, checksum, numbers) =
                         read_chunk_list(&mut reader, crate::document::MAX_RULE_PROGRAM_BYTES)?;
-                    // A program the history named before is the same one, counted once.
-                    if programs.insert((length, checksum, numbers)) {
-                        program_bytes = check_assembled(
-                            HISTORY_PROGRAMS_ENTRY,
-                            program_bytes,
-                            length,
-                            budget.programs,
-                        )?;
-                    }
                     Some(HistoryProgram::Chunks {
                         length,
                         checksum,
                         numbers,
                     })
                 }
-                HISTORY_RULE_PROGRAM_AS_PREVIOUS if schema >= 4 => Some(
-                    records
-                        .last()
-                        .and_then(|previous: &HistoryRecord<'_>| previous.rule_program)
-                        .ok_or(PersistenceError::InvalidRevisionHistory)?,
-                ),
+                HISTORY_RULE_PROGRAM_AS_PREVIOUS if schema >= 4 => {
+                    Some(previous_program.ok_or(PersistenceError::InvalidRevisionHistory)?)
+                }
                 _ => return Err(PersistenceError::InvalidRevisionHistory),
             }
         } else {
             None
         };
+        previous_program = rule_program;
+        // A program the history named before is the same one, counted once.
+        if keep
+            && let Some(HistoryProgram::Chunks {
+                length,
+                checksum,
+                numbers,
+            }) = rule_program
+            && programs.insert((length, checksum, numbers))
+        {
+            program_bytes = check_assembled(
+                HISTORY_PROGRAMS_ENTRY,
+                program_bytes,
+                length,
+                budget.programs,
+            )?;
+        }
         if (index > 0 && matches!(origin, RevisionOrigin::Initial))
             || matches!(origin, RevisionOrigin::Rollback { target_revision, .. } if target_revision >= revision_id)
             || matches!(
@@ -2118,6 +2124,10 @@ fn read_history_records<'a>(
             (index == cursor).then_some(document_bytes),
             budget.snapshot_bytes,
         )?;
+        previous_revision_id = Some(revision_id);
+        if !keep {
+            continue;
+        }
         // Checked before anything is assembled.
         assembled = check_assembled(
             HISTORY_REVISIONS_ENTRY,
@@ -2125,7 +2135,6 @@ fn read_history_records<'a>(
             encoded_snapshot.assembled_len(),
             budget.snapshots,
         )?;
-        previous_revision_id = Some(revision_id);
         records.push(HistoryRecord {
             revision_id,
             batch_digest,
@@ -2142,7 +2151,7 @@ fn read_history_records<'a>(
     }
     Ok(ParsedHistory {
         schema,
-        cursor,
+        cursor: cursor - kept.start(),
         next_revision_id,
         chunks,
         records,
@@ -3315,6 +3324,36 @@ mod tests {
             opened.current().revision_id(),
             store.current().revision_id()
         );
+        // Review 2026-10-16 PS-12: the revisions outside the window count against no
+        // budget either, so the budget of the kept ones alone opens the long history.
+        let window_history = encode_history(
+            &kept,
+            kept.len() - 1,
+            store.next_revision_id(),
+            &document_bin,
+            HISTORY_BUDGET,
+        )
+        .unwrap();
+        let window_bytes =
+            read_history_records(&window_history, &document_bin.bytes, HISTORY_BUDGET)
+                .unwrap()
+                .records
+                .iter()
+                .map(|record| record.encoded_snapshot.assembled_len() as u64)
+                .sum();
+        assert!(window_bytes > 0);
+        let opened = decode_revision_history(
+            &history,
+            &document_bin.bytes,
+            &outcome,
+            &ContainerData::default(),
+            HistoryBudget {
+                snapshots: window_bytes,
+                ..HISTORY_BUDGET
+            },
+        )
+        .unwrap();
+        assert_eq!(opened.revision_count(), UNDO_REVISIONS + 1);
     }
 
     /// Review 2026-10-15 status N-5: the program of a revision outside the kept
