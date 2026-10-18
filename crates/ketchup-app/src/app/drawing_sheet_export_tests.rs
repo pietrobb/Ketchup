@@ -91,3 +91,63 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_dwg_and_the_project_s
         "exporting changes nothing in the document"
     );
 }
+
+#[test]
+fn a_sheet_titled_by_a_long_slovak_part_name_exports_as_dxf_and_dwg() {
+    let note = "Smrekový hranol, brúsený, dvakrát olejovaný; dĺžka ±1 mm, šírka ±0,5 mm, \
+                hrúbka ±0,5 mm, zaoblené hrany, tesné škáry, žiadne súky či trhliny";
+    let mut app = KetchupApp::new();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let root = app.document.current().occurrences().next().unwrap().id();
+    app.clear_selection();
+    app.selection.occurrences.insert(InstancePath::root(root));
+    app.begin_occurrence_rename();
+    app.modal.get_mut::<PendingOccurrenceRename>().unwrap().name = note.to_owned();
+    assert!(app.confirm_occurrence_rename(), "{}", app.action_digest());
+    assert!(app.preview_selection_drawing(), "{}", app.action_digest());
+    assert!(app.confirm_assembly_preview());
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let snapshot = app.document.current();
+    let sheet = snapshot.drawing_sheets().next().unwrap();
+    let title = sheet.title_block().title().to_owned();
+    assert!(title.contains(note), "{title}");
+    // Every non-ASCII letter is a 7-character \U+XXXX escape in R12, so the
+    // title the model accepted needs more than one 255-character string.
+    let escaped: String = title
+        .chars()
+        .map(|character| {
+            if character.is_ascii() {
+                character.to_string()
+            } else {
+                format!("\\U+{:04X}", u32::from(character))
+            }
+        })
+        .collect();
+    assert!(escaped.len() > 255);
+
+    let (_, dxf) = app
+        .drawing_sheet_file(sheet.id(), SheetFileFormat::Dxf)
+        .unwrap();
+    let dxf = String::from_utf8(dxf).unwrap();
+    assert!(dxf.lines().all(|line| line.chars().count() <= 255));
+    let lines: Vec<&str> = dxf.lines().collect();
+    let mut entity = "";
+    let mut value = "";
+    let mut title_pieces = Vec::new();
+    for pair in lines.chunks(2) {
+        let [code, data] = pair else { break };
+        match code.trim() {
+            "0" => entity = data,
+            "1" if entity == "TEXT" => value = data,
+            "1000" if entity == "TEXT" && *data == "title-block/title" => title_pieces.push(value),
+            _ => {}
+        }
+    }
+    assert!(title_pieces.len() > 1, "{title_pieces:?}");
+    assert_eq!(title_pieces.concat(), escaped);
+
+    let (_, dwg) = app
+        .drawing_sheet_file(sheet.id(), SheetFileFormat::Dwg)
+        .unwrap();
+    assert!(dwg.starts_with(ketchup_dwg::WRITTEN_VERSION.as_bytes()));
+}
