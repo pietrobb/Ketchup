@@ -445,6 +445,9 @@ mod tests {
     #[test]
     fn native_viewport_emits_filled_hover_overlay_after_gpu_callback() {
         let mut app = KetchupApp::new();
+        // Box faces throughout: an exact body arriving mid-test would rename
+        // the hovered face, which this test of hover and Alt fills does not cover.
+        app.exact.worker_attempted = true;
         app.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
         let context = egui::Context::default();
         let input = || egui::RawInput {
@@ -691,6 +694,9 @@ mod tests {
     #[test]
     fn cycled_back_face_emits_a_filled_hover_overlay() {
         let mut app = KetchupApp::new();
+        // Box faces throughout: an exact body arriving mid-test would rename
+        // the cycled face, which this test of the back-face fill does not cover.
+        app.exact.worker_attempted = true;
         app.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
         let context = egui::Context::default();
         let input = || egui::RawInput {
