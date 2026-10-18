@@ -323,12 +323,12 @@ fn a_second_client_takes_over_a_window_its_launcher_still_holds() {
     let ready: serde_json::Value = serde_json::from_slice(&output.bytes()).unwrap();
     let mut launcher = TcpStream::connect(ready["live_bridge_address"].as_str().unwrap()).unwrap();
     assert!(call(&mut shell, &mut launcher, TOKEN, Request::Status {}).ok);
+    let bootstrap = bootstrap(&shell, Some(root.path()));
     assert_eq!(
-        request_broker(broker, "list", &"a".repeat(64))["status"],
+        request_list(broker, &bootstrap, &"a".repeat(64))["status"],
         "busy"
     );
 
-    let bootstrap = bootstrap(&shell, Some(root.path()));
     let second = std::thread::spawn(move || request_consent(broker, &"b".repeat(64), &bootstrap));
     let allowed = finish_attach(&mut shell, second);
     assert_eq!(allowed["status"], "allowed");
@@ -422,8 +422,18 @@ fn readiness_authentication_and_detach_use_the_actual_app() {
     assert_eq!(shell.app().live_bridge_stamp(), before);
 }
 
-fn request_broker(address: std::net::SocketAddr, action: &str, nonce: &str) -> serde_json::Value {
-    request_broker_authenticated(address, action, nonce, "")
+fn request_list(
+    address: std::net::SocketAddr,
+    bootstrap: &Bootstrap,
+    nonce: &str,
+) -> serde_json::Value {
+    request_broker_authenticated(address, "list", nonce, &bootstrap.list_proof(nonce))
+}
+
+fn list_line(bootstrap: &Bootstrap, nonce: &str) -> serde_json::Value {
+    serde_json::json!({
+        "version": 1, "action": "list", "nonce": nonce, "proof": bootstrap.list_proof(nonce)
+    })
 }
 
 fn request_broker_authenticated(
@@ -476,6 +486,10 @@ struct Bootstrap {
 impl Bootstrap {
     fn proof(&self, nonce: &str) -> String {
         ketchup_mcp::local_auth::client_attach_proof(&self.secret, &self.instance_id, nonce)
+    }
+
+    fn list_proof(&self, nonce: &str) -> String {
+        ketchup_mcp::local_auth::client_list_proof(&self.secret, &self.instance_id, nonce)
     }
 }
 
@@ -563,8 +577,9 @@ fn bootstrap_window_reconnects_in_place_after_client_loss() {
             .is_file()
     );
     assert!(shell.app().live_consent_attached());
+    let bootstrap = bootstrap(&shell, Some(directory.path()));
     assert_eq!(
-        request_broker(broker, "list", &"a".repeat(64))["status"],
+        request_list(broker, &bootstrap, &"a".repeat(64))["status"],
         "busy"
     );
 
@@ -592,13 +607,14 @@ fn bootstrap_window_reconnects_in_place_after_client_loss() {
     assert!(shell.app().live_bridge_credentials().is_none());
     assert!(!shell.app().live_consent_attached());
     assert_eq!(
-        request_broker(broker, "list", &"b".repeat(64))["status"],
+        request_list(broker, &bootstrap, &"b".repeat(64))["status"],
         "available"
     );
 
-    let bootstrap = bootstrap(&shell, Some(directory.path()));
-    let reconnect =
-        std::thread::spawn(move || request_consent(broker, &"c".repeat(64), &bootstrap));
+    let reconnect = std::thread::spawn({
+        let bootstrap = bootstrap.clone();
+        move || request_consent(broker, &"c".repeat(64), &bootstrap)
+    });
     let allowed = finish_attach(&mut shell, reconnect);
     assert_eq!(allowed["status"], "allowed");
     let new_token = allowed["token"].as_str().unwrap();
@@ -611,7 +627,7 @@ fn bootstrap_window_reconnects_in_place_after_client_loss() {
     );
     assert!(shell.app().live_consent_attached());
     assert_eq!(
-        request_broker(broker, "list", &"d".repeat(64))["status"],
+        request_list(broker, &bootstrap, &"d".repeat(64))["status"],
         "busy"
     );
     let mut stale = TcpStream::connect(allowed["live_bridge_address"].as_str().unwrap()).unwrap();
@@ -636,7 +652,7 @@ fn bootstrap_window_reconnects_in_place_after_client_loss() {
         "dropped client must free the same window"
     );
     assert_eq!(
-        request_broker(broker, "list", &"e".repeat(64))["status"],
+        request_list(broker, &bootstrap, &"e".repeat(64))["status"],
         "available"
     );
     assert_eq!(
@@ -676,8 +692,21 @@ fn per_user_registry_lists_only_nonce_verified_live_window_metadata() {
         assert_eq!(entry["consent_address"], address.to_string());
         assert!(!String::from_utf8(bytes).unwrap().contains("token"));
 
+        // Review 2026-10-17 P3: any local program could read the document name.
+        // Without a proof of the bootstrap, list answers only "rejected".
+        let refused = request_broker_authenticated(address, "list", &"2".repeat(64), "");
+        assert_eq!(refused["status"], "rejected");
+        assert!(refused.get("document").is_none(), "{refused}");
+        let bootstrap = bootstrap(&shell, Some(directory.path()));
+        let attach_proof = bootstrap.proof(&"2".repeat(64));
+        let crossed = request_broker_authenticated(address, "list", &"2".repeat(64), &attach_proof);
+        assert_eq!(
+            crossed["status"], "rejected",
+            "an attach proof is not a list proof"
+        );
+
         let nonce = "3".repeat(64);
-        let listed = request_broker(address, "list", &nonce);
+        let listed = request_list(address, &bootstrap, &nonce);
         assert_eq!(listed.as_object().unwrap().len(), 5);
         assert_eq!(listed["version"], 1);
         assert_eq!(listed["nonce"], nonce);
@@ -742,9 +771,7 @@ fn consent_broker_request_deadline_is_cumulative_across_slow_bytes() {
     writeln!(
         prompt,
         "{}",
-        serde_json::json!({
-            "version": 1, "action": "list", "nonce": "6".repeat(64)
-        })
+        list_line(&bootstrap(&shell, Some(directory.path())), &"6".repeat(64))
     )
     .unwrap();
     let mut response = String::new();
@@ -777,9 +804,7 @@ fn consent_broker_accepts_a_request_arriving_after_the_connection() {
         .unwrap();
     // Let the nonblocking listener accept before any request bytes arrive.
     std::thread::sleep(Duration::from_millis(100));
-    let request = serde_json::json!({
-        "version": 1, "action": "list", "nonce": "7".repeat(64)
-    });
+    let request = list_line(&bootstrap(&shell, Some(directory.path())), &"7".repeat(64));
     writeln!(stream, "{request}").unwrap();
     let mut response = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut response).unwrap();
@@ -1068,6 +1093,7 @@ fn file_new_preserves_window_live_services_and_invalidates_document_authority() 
     let nonce = "4".repeat(64);
     let attach = std::thread::spawn({
         let nonce = nonce.clone();
+        let bootstrap = bootstrap.clone();
         move || request_consent(consent_address, &nonce, &bootstrap)
     });
     let allowed = finish_attach(&mut shell, attach);
@@ -1116,7 +1142,7 @@ fn file_new_preserves_window_live_services_and_invalidates_document_authority() 
     );
     assert!(shell.app().live_consent_attached());
     assert!(registry_path.is_file());
-    let listed = request_broker(consent_address, "list", &"5".repeat(64));
+    let listed = request_list(consent_address, &bootstrap, &"5".repeat(64));
     assert_eq!(listed["status"], "busy");
     assert_eq!(listed["instance_id"], instance_id);
 

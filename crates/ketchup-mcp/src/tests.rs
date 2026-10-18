@@ -472,6 +472,11 @@ fn stand_in_window(root: &Path) -> mpsc::Receiver<Value> {
             let mut reply = json!({"version": 1, "nonce": request["nonce"],
                                    "instance_id": INSTANCE});
             if request["action"] == "list" {
+                let nonce = request["nonce"].as_str().unwrap();
+                assert_eq!(
+                    request["proof"],
+                    crate::local_auth::client_list_proof(TOKEN, INSTANCE, nonce)
+                );
                 reply["status"] = "available".into();
                 reply["document"] = "stolik.ketchup".into();
             } else {

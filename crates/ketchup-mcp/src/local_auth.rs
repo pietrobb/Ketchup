@@ -16,6 +16,12 @@ pub fn client_attach_proof(bootstrap: &str, instance_id: &str, nonce: &str) -> S
     attach_proof(bootstrap, "client", &[instance_id, nonce])
 }
 
+/// The list request's proof. Its own role keeps it from passing as an attach.
+#[must_use]
+pub fn client_list_proof(bootstrap: &str, instance_id: &str, nonce: &str) -> String {
+    attach_proof(bootstrap, "client-list", &[instance_id, nonce])
+}
+
 /// The window's proof with its attach answer, over the instance id, nonce,
 /// status, bridge address and token it answers (empty when absent).
 #[must_use]

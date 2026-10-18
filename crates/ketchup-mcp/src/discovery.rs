@@ -3,8 +3,12 @@
 //! Every window publishes `<instance_id>.json` with its loopback attach address
 //! in the per-user discovery directory. One line of JSON asks the window to
 //! `list` itself (document name, whether a client is attached) or to `attach`,
-//! which returns the live bridge address and a fresh credential.
-use crate::local_auth::{client_attach_proof, proofs_match, window_attach_proof};
+//! which returns the live bridge address and a fresh credential. Both carry a
+//! proof of the window's private bootstrap, so no other program learns the
+//! document name.
+use crate::local_auth::{
+    client_attach_proof, client_list_proof, proofs_match, window_attach_proof,
+};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -55,7 +59,7 @@ pub fn list_windows(root: &Path) -> Vec<Window> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
     };
-    let registered: Vec<(String, SocketAddr)> = entries
+    let registered: Vec<(String, SocketAddr, String)> = entries
         .flatten()
         .take(MAX_REGISTRY_ENTRIES)
         .filter_map(|entry| registry_entry(&entry.path()))
@@ -66,7 +70,9 @@ pub fn list_windows(root: &Path) -> Vec<Window> {
     let mut windows: Vec<Window> = std::thread::scope(|scope| {
         let probes: Vec<_> = registered
             .iter()
-            .map(|(instance_id, address)| scope.spawn(move || probe(root, instance_id, *address)))
+            .map(|(instance_id, address, bootstrap)| {
+                scope.spawn(move || probe(root, instance_id, *address, bootstrap))
+            })
             .collect();
         probes
             .into_iter()
@@ -146,7 +152,7 @@ pub fn attach(window: &Window) -> io::Result<Grant> {
         "attach",
         &window.instance_id,
         ATTACH_TIMEOUT,
-        Some(bootstrap),
+        bootstrap,
     )?;
     if reply["status"] == "busy" {
         return Err(io::Error::new(
@@ -172,25 +178,35 @@ pub fn attach(window: &Window) -> io::Result<Grant> {
     Ok(Grant { address, token })
 }
 
-fn registry_entry(path: &Path) -> Option<(String, SocketAddr)> {
+fn registry_entry(path: &Path) -> Option<(String, SocketAddr, String)> {
     let instance_id = path.file_name()?.to_str()?.strip_suffix(".json")?;
     if !is_lower_hex(instance_id, 32) {
         return None;
     }
-    let metadata = fs::symlink_metadata(path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_LINE_BYTES {
-        return None;
-    }
-    let entry: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let entry: Value = serde_json::from_slice(&crate::local_auth::read_private(path).ok()?).ok()?;
     if entry["version"] != 1 || entry["instance_id"] != instance_id {
         return None;
     }
     let address = loopback_address(entry["consent_address"].as_str()?)?;
-    Some((instance_id.to_owned(), address))
+    let bootstrap = entry["bootstrap"]
+        .as_str()
+        .filter(|value| is_lower_hex(value, 64))?;
+    Some((instance_id.to_owned(), address, bootstrap.to_owned()))
 }
 
-fn probe(root: &Path, instance_id: &str, attach_address: SocketAddr) -> io::Result<Window> {
-    let reply = exchange(attach_address, "list", instance_id, PROBE_TIMEOUT, None)?;
+fn probe(
+    root: &Path,
+    instance_id: &str,
+    attach_address: SocketAddr,
+    bootstrap: &str,
+) -> io::Result<Window> {
+    let reply = exchange(
+        attach_address,
+        "list",
+        instance_id,
+        PROBE_TIMEOUT,
+        bootstrap,
+    )?;
     let document = reply["document"]
         .as_str()
         .ok_or_else(|| invalid("list reply without a document name"))?
@@ -209,16 +225,19 @@ fn exchange(
     action: &str,
     instance_id: &str,
     timeout: Duration,
-    bootstrap: Option<&str>,
+    bootstrap: &str,
 ) -> io::Result<Value> {
     let nonce = nonce()?;
     let mut stream = TcpStream::connect_timeout(&address, PROBE_TIMEOUT)?;
     stream.set_write_timeout(Some(PROBE_TIMEOUT))?;
     stream.set_read_timeout(Some(timeout))?;
-    let mut request = json!({"version": 1, "action": action, "nonce": nonce});
-    if let Some(bootstrap) = bootstrap {
-        request["proof"] = client_attach_proof(bootstrap, instance_id, &nonce).into();
-    }
+    let attaching = action == "attach";
+    let proof = if attaching {
+        client_attach_proof(bootstrap, instance_id, &nonce)
+    } else {
+        client_list_proof(bootstrap, instance_id, &nonce)
+    };
+    let request = json!({"version": 1, "action": action, "nonce": nonce, "proof": proof});
     let mut line = request.to_string();
     line.push('\n');
     stream.write_all(line.as_bytes())?;
@@ -233,7 +252,7 @@ fn exchange(
             "attach endpoint answered for another request or window",
         ));
     }
-    if let Some(bootstrap) = bootstrap
+    if attaching
         && !reply["proof"]
             .as_str()
             .is_some_and(|proof| proofs_match(proof, &window_proof(bootstrap, &reply)))

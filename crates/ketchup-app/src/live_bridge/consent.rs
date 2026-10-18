@@ -531,6 +531,19 @@ fn serve(
         let request = read_request(&mut stream, read_deadline, stop)?;
         let nonce = request.nonce;
         if request.action == "list" {
+            // The document name is the user's; only a holder of the bootstrap sees it.
+            let expected =
+                ketchup_mcp::local_auth::client_list_proof(bootstrap, instance_id, &nonce);
+            if !ketchup_mcp::local_auth::proofs_match(&request.proof, &expected) {
+                return write_response(
+                    &mut stream,
+                    &nonce,
+                    instance_id,
+                    bootstrap,
+                    ConsentDecision::Reject,
+                    stop,
+                );
+            }
             let state = discovery
                 .lock()
                 .map_err(|_: std::sync::PoisonError<_>| {
@@ -863,9 +876,16 @@ mod tests {
         let mut list = TcpStream::connect(broker.address).unwrap();
         list.set_read_timeout(Some(Duration::from_millis(500)))
             .unwrap();
-        list.write_all(
-            br#"{"version":1,"action":"list","nonce":"1111111111111111111111111111111111111111111111111111111111111111"}
-"#,
+        let nonce = "1".repeat(64);
+        let proof = ketchup_mcp::local_auth::client_list_proof(
+            registry["bootstrap"].as_str().unwrap(),
+            registry["instance_id"].as_str().unwrap(),
+            &nonce,
+        );
+        writeln!(
+            list,
+            "{}",
+            serde_json::json!({"version": 1, "action": "list", "nonce": nonce, "proof": proof})
         )
         .unwrap();
         let mut response = String::new();
