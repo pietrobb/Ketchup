@@ -2500,6 +2500,11 @@ fn decode_rule_program(
     /// Every field a program has ever stored; its other maps are keyed by
     /// parameter and variant names.
     const FIELDS: [&str; 4] = ["file_name", "source", "overrides", "variants"];
+    // Save refuses a larger program, so opening one would leave a window that
+    // can never write a checkpoint.
+    if json.len() > crate::document::MAX_RULE_PROGRAM_BYTES {
+        return Err(PersistenceError::ResourceLimit);
+    }
     let invalid =
         |error: serde_json::Error| PersistenceError::payload(PayloadSection::RuleProgram, error);
     let stored: serde_json::Map<String, serde_json::Value> =

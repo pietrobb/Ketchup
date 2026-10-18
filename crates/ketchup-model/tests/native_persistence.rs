@@ -319,6 +319,36 @@ fn an_invalid_variant_is_refused_by_name_in_program_json_and_costs_the_history_i
     assert_eq!(document.current_rule_program(), Some(&program));
 }
 
+/// Review 2026-10-17 M-9: a `program.json` larger than Save writes would open,
+/// and then every checkpoint of the window fails on the same program.
+#[test]
+fn a_program_json_over_the_save_limit_is_refused_on_open() {
+    use ketchup_model::document::MAX_RULE_PROGRAM_BYTES;
+    let mut document = graph_document();
+    let program = program_with_variants();
+    document.bind_rule_program(program.clone()).unwrap();
+    let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
+        .unwrap();
+    let (_, offset, len) = container_entry_offsets(&bytes, "history.bin");
+    let history = bytes[offset..offset + len].to_vec();
+    let mut padded = program.clone();
+    padded.source.push_str("\n# ");
+    padded.source.push_str(&"x".repeat(MAX_RULE_PROGRAM_BYTES));
+    let oversized = ketchup_model::testing::save_with_program_entry(
+        &document,
+        history.clone(),
+        serde_json::to_vec(&padded).unwrap(),
+    );
+    assert_eq!(load_error(&oversized), PersistenceError::ResourceLimit);
+    // The same container with the program at its saved size opens.
+    let fitting = ketchup_model::testing::save_with_program_entry(
+        &document,
+        history,
+        serde_json::to_vec(&program).unwrap(),
+    );
+    assert!(persistence::load(&fitting).is_ok());
+}
+
 fn load_error(bytes: &[u8]) -> PersistenceError {
     match persistence::load(bytes) {
         Ok(_) => panic!("invalid document loaded"),
