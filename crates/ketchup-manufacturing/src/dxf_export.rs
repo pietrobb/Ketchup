@@ -2,7 +2,7 @@
 
 use ketchup_geometry::linalg::{cross2, dot2};
 use ketchup_model::tolerance::{MAX_COORDINATE_MM, ROUNDING};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 
 use ketchup_geometry::sketch::{
@@ -96,6 +96,7 @@ pub fn export_visible_profiles_dxf(
     let mut profiles = Vec::new();
     let mut segment_count = 0_usize;
     let mut renamed_layers = BTreeSet::new();
+    let mut r12_layers = R12Layers::default();
     for occurrence in snapshot
         .scene_query()
         .into_iter()
@@ -132,7 +133,7 @@ pub fn export_visible_profiles_dxf(
                 }
                 _ => continue,
             };
-            let layer = layer_name(source_layer);
+            let layer = r12_layers.layer(source_layer);
             if layer != source_layer {
                 renamed_layers.insert(source_layer.to_owned());
             }
@@ -454,12 +455,43 @@ fn angle_degrees(point: [f64; 2], center: [f64; 2]) -> f64 {
     }
 }
 
-/// A layer name every DXF reader accepts: R12 names are ASCII without the
-/// characters AutoCAD reserves, so accents are dropped (`Pôdorys` → `Podorys`)
-/// and anything else becomes `_`.
+/// The longest layer name R12 reads.
+const R12_LAYER_NAME_MAX: usize = 31;
+
+/// One R12 layer for each source name. R12 does not tell upper from lower
+/// case, so a name that folds onto a layer another source already took gets
+/// a `_2`, `_3`, … suffix rather than sharing it.
+#[derive(Default)]
+struct R12Layers {
+    by_source: BTreeMap<String, String>,
+    taken: BTreeSet<String>,
+}
+
+impl R12Layers {
+    fn layer(&mut self, source: &str) -> String {
+        if let Some(layer) = self.by_source.get(source) {
+            return layer.clone();
+        }
+        let base = layer_name(source);
+        let mut layer = base.clone();
+        let mut ordinal = 1_usize;
+        while !self.taken.insert(layer.to_ascii_uppercase()) {
+            ordinal += 1;
+            let suffix = format!("_{ordinal}");
+            let kept = R12_LAYER_NAME_MAX.saturating_sub(suffix.len());
+            layer = format!("{}{suffix}", &base[..base.len().min(kept)]);
+        }
+        self.by_source.insert(source.to_owned(), layer.clone());
+        layer
+    }
+}
+
+/// A layer name every R12 reader accepts: at most 31 of `A-Z 0-9 $ _ -` in
+/// either case, so accents are dropped (`Pôdorys` → `Podorys`) and anything
+/// else, a space included, becomes `_`.
 fn layer_name(source: &str) -> String {
     let mut name = String::new();
-    for character in source.chars() {
+    for character in source.trim().chars() {
         let lower = character.to_lowercase().next().unwrap_or(character);
         let folded = match lower {
             'á' | 'ä' | 'à' | 'â' | 'ã' | 'å' | 'ā' | 'ă' | 'ą' => "a",
@@ -477,8 +509,7 @@ fn layer_name(source: &str) -> String {
             'ý' | 'ÿ' => "y",
             'ž' | 'ź' | 'ż' => "z",
             'ß' => "ss",
-            '<' | '>' | '/' | '\\' | '"' | ':' | ';' | '?' | '*' | '|' | ',' | '=' | '`' => "_",
-            other if other.is_ascii_graphic() || other == ' ' => {
+            other if other.is_ascii_alphanumeric() || matches!(other, '$' | '_' | '-') => {
                 name.push(character);
                 continue;
             }
@@ -490,11 +521,10 @@ fn layer_name(source: &str) -> String {
             name.push_str(folded);
         }
     }
-    let name = name.trim();
     if name.is_empty() {
         "0".to_owned()
     } else {
-        name.chars().take(255).collect()
+        name[..name.len().min(R12_LAYER_NAME_MAX)].to_owned()
     }
 }
 

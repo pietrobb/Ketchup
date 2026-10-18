@@ -124,10 +124,77 @@ fn profiles_export_as_r12_polylines_and_a_slovak_name_becomes_an_ascii_layer() {
     assert!(exported.loss_report.contains("renamed_layer_count=1"));
 
     let inspected = inspect_dxf(&exported.dxf, DxfImportOptions::new(None)).unwrap();
-    assert_eq!(inspected.layers(), &["Podorys_ Stit"]);
+    assert_eq!(inspected.layers(), &["Podorys__Stit"]);
     assert_eq!(inspected.profiles().len(), 1);
     assert!(inspected.profiles()[0].closed());
     assert_eq!(inspected.profiles()[0].segments().len(), 4);
+}
+
+/// Review 2026-10-17 P3: an R12 layer name is at most 31 characters of
+/// `A-Z 0-9 $ _ -`, and R12 does not tell `Cut` from `CUT`. Every source
+/// name keeps a layer of its own that obeys both rules.
+#[test]
+fn profile_layers_obey_the_r12_name_rules_and_stay_distinct() {
+    let names = [
+        "Front panel.left",
+        "Cut",
+        "CUT",
+        "A very long definition name that goes on and on",
+        "A very long definition name that goes on and on, too",
+    ];
+    let mut commands = Vec::new();
+    for (index, name) in (1_u64..).zip(names) {
+        commands.extend([
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(index),
+                name: name.to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(index),
+                definition_id: DefinitionId(index),
+                name: "outline".to_owned(),
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]]),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(index),
+                definition_id: DefinitionId(index),
+                name: name.to_owned(),
+                transform: Transform::from_translation(0.0, 50.0 * index as f64, 0.0).unwrap(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
+        ]);
+    }
+    let mut document = DocumentStore::new();
+    commit(&mut document, CommandBatch::new(commands));
+    let exported = export_visible_profiles_dxf(&document.current()).unwrap();
+    let text = String::from_utf8(exported.dxf.clone()).unwrap();
+    let lines = text.lines().collect::<Vec<_>>();
+    let table = lines
+        .windows(4)
+        .filter(|window| window[0] == "0" && window[1] == "LAYER" && window[2] == "2")
+        .map(|window| window[3])
+        .collect::<Vec<_>>();
+    assert_eq!(table.len(), names.len(), "{table:?}");
+    for layer in &table {
+        assert!(
+            (1..=31).contains(&layer.len())
+                && layer
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"$_-".contains(&byte)),
+            "{layer:?} is not an R12 layer name"
+        );
+    }
+    let distinct = table
+        .iter()
+        .map(|layer| layer.to_ascii_uppercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(distinct.len(), names.len(), "{table:?}");
+    assert!(exported.loss_report.contains("renamed_layer_count=4"));
+    let inspected = inspect_dxf(&exported.dxf, DxfImportOptions::new(None)).unwrap();
+    assert_eq!(inspected.layers().len(), names.len());
+    assert_eq!(inspected.profiles().len(), names.len());
 }
 
 #[test]
