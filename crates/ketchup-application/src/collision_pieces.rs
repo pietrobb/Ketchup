@@ -1,5 +1,5 @@
 //! Analytic pair answers for straight extrusions of line profiles, such as
-//! notched studs, sloped gable boards and rafters. The profile is split into
+//! notched, housed or sloped parts. The profile is split into
 //! convex trapezoids, so the solid is a union of convex prisms that only share
 //! faces. Cuts after the extrusion only remove material, so the prisms still
 //! enclose the solid and prove separation; without cuts they are the solid and
