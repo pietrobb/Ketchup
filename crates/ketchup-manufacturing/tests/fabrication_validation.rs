@@ -2311,6 +2311,14 @@ fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_mac
                 name: "Through bore".into(),
                 kind: FeatureKind::through_cut(GRAPH_BASE_BODY, GRAPH_TOOL_PROFILE),
             },
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_LEFT),
+                code: Some("000000000046".to_owned()),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_RIGHT),
+                code: Some("000000000047".to_owned()),
+            },
         ]))
         .unwrap();
     let saved = persistence::save(&document.current());
@@ -2346,19 +2354,37 @@ fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_mac
         assert!(neutral.contains("through(true)"));
         let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
         assert!(drawing.contains("through-all (Boolean cutter interval, not machine depth)"));
+        assert_eq!(projection.production_job(&snapshot, &[]).err(), None);
+        // Review 2026-10-17 P3: the capability table names the through hole
+        // the machine files refuse, rather than a generic block.
+        let part = "Timber with circular drilling";
+        let refused = |format| Some(cannot_carry(format, part, ShopElement::ThroughHole));
         assert_eq!(
-            projection.btlx_2_3_1_export(&snapshot),
-            blocked_at("Timber with circular drilling")
+            projection.btlx_2_3_1_export(&snapshot).err(),
+            refused(ShopFormat::Btlx)
+        );
+        let woodwop = ShopFormat::Woodwop {
+            vertical_pocket_tool: false,
+        };
+        assert_eq!(
+            projection.woodwop_mpr_4_0_drill_export(&snapshot).err(),
+            refused(woodwop)
         );
         assert_eq!(
-            projection.woodwop_mpr_4_0_drill_export(&snapshot),
-            Err(GeneralFabricationError::ExportBlocked)
+            projection
+                .woodwop_mpr_4_0_production_package(&snapshot, Default::default())
+                .err(),
+            refused(woodwop)
         );
-        assert!(matches!(
-            projection.woodwop_mpr_4_0_production_package(&snapshot, Default::default()),
-            Err(GeneralFabricationError::PartExportBlocked { part })
-                if part == "Timber with circular drilling"
-        ));
+        for format in [ShopFormat::Btlx, woodwop] {
+            assert_eq!(
+                carriage(
+                    format,
+                    &ShopElement::Operation(GeneralManufacturingKind::CircularDrill)
+                ),
+                Carriage::Carries
+            );
+        }
         let mut tampered = projection;
         let GeneralMachiningGeometry::CircularDrill { through, .. } =
             &mut tampered.manufacturing.operations[1].machining
