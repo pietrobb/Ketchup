@@ -21,6 +21,16 @@ pub(crate) struct FileState {
     pub(crate) saved_digest: String,
 }
 
+/// A file opened from a recovery copy in place of the one the user asked for.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RecoveryOpenState {
+    pub(crate) requested_path: PathBuf,
+    pub(crate) source_path: PathBuf,
+    /// The file a work-recovery checkpoint opened in its place was made from;
+    /// the window's own checkpoints are made from it too. None for a backup.
+    pub(crate) work_recovery_base: Option<ketchup_model::persistence::FileIdentity>,
+}
+
 /// The live AI bridge and the consent that attaches it.
 pub(crate) struct LiveState {
     pub(crate) bridge: Option<live_bridge::LiveBridge>,

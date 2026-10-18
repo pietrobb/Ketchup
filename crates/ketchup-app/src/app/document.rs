@@ -275,11 +275,12 @@ impl KetchupApp {
                 }
                 let file_identity = (effective_path == path)
                     .then(|| ketchup_model::persistence::FileIdentity::from_bytes(&source));
-                let recovery_open = (effective_path != path).then(|| RecoveryOpenState {
-                    requested_path: path.to_owned(),
-                    source_path: effective_path,
-                    work_recovery_base,
-                });
+                let recovery_open =
+                    (effective_path != path).then(|| app_state::RecoveryOpenState {
+                        requested_path: path.to_owned(),
+                        source_path: effective_path,
+                        work_recovery_base,
+                    });
                 let notices = outcome.audit().notices.clone();
                 // A checkpoint this file cannot use would refuse every later one,
                 // so the first edit would fail; it is kept, under another name.
@@ -508,7 +509,7 @@ impl KetchupApp {
             (
                 _,
                 _,
-                Some(RecoveryOpenState {
+                Some(app_state::RecoveryOpenState {
                     requested_path,
                     work_recovery_base: Some(base),
                     ..
