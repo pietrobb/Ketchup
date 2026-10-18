@@ -407,7 +407,7 @@ impl KetchupApp {
     fn apply_typed_move(&mut self) -> bool {
         let value = self.value_box.input.trim();
         if value.starts_with(['x', 'X', '*', '×', '/']) {
-            let Some((mode, count)) = parse_move_copy_array(value) else {
+            let Some((mode, count)) = parse_move_copy_array(value, self.value_box.decimal) else {
                 self.digest = self.catalog.text("digest-copy-array-invalid");
                 return false;
             };
@@ -586,7 +586,10 @@ impl KetchupApp {
     }
 }
 
-fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
+fn parse_move_copy_array(
+    input: &str,
+    decimal: DecimalSeparator,
+) -> Option<(MoveCopyArrayMode, usize)> {
     let trimmed = input.trim();
     let (mode, count) = if let Some(count) = trimmed
         .strip_prefix('x')
@@ -598,7 +601,7 @@ fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
     } else {
         (MoveCopyArrayMode::Divide, trimmed.strip_prefix('/')?)
     };
-    let count = count.trim().parse::<usize>().ok()?;
+    let count = crate::length_input::read_whole::<usize>(count, decimal).ok()?;
     (1..=MAX_CAD_GENERATED_OCCURRENCES)
         .contains(&count)
         .then_some((mode, count))

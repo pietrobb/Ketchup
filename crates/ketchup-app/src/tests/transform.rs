@@ -1007,7 +1007,8 @@ fn move_copy_array_repeats_the_entire_multi_selection_atomically() {
     app.dispatch_command(AppCommand::Move);
     assert!(app.copy_selected(delta));
     assert_eq!(app.selected_occurrence_count(), 2);
-    app.value_box.input = "×3".to_owned();
+    // Review 2026-10-17 P3-G: the count is read like every value (`1+2`).
+    app.value_box.input = "×1+2".to_owned();
     assert!(app.apply_value_input());
     assert_eq!(app.document.current().occurrences().count(), 8);
     assert_eq!(app.selected_occurrence_count(), 2);
