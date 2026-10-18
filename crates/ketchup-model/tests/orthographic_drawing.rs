@@ -2395,6 +2395,51 @@ fn pdf_export_rejects_text_outside_its_declared_font_repertoire() {
 }
 
 #[test]
+fn dxf_export_refuses_text_longer_than_r12_carries_after_escaping() {
+    let mut document = seeded_document();
+    // 255 characters fit a group-1 string of R12; each Č is the 7-character
+    // escape \U+010C, so 37 of them (74 bytes) need 259.
+    let fitting = format!("{}{}", "Č".repeat(36), "x".repeat(3));
+    let escaped_too_long = "Č".repeat(37);
+    let ascii_too_long = "x".repeat(256);
+    for (index, (title, fits)) in [
+        (fitting.as_str(), true),
+        (escaped_too_long.as_str(), false),
+        (ascii_too_long.as_str(), false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let exact = registry(
+            &document.current(),
+            "long-dxf-text",
+            [[0.0, 0.0, 0.0], [20.0, 10.0, 30.0]],
+        );
+        let sheet = DrawingSheet::with_contract_and_views(
+            DrawingSheetId(SHEET.0 + 100 + index as u64),
+            "Long DXF text",
+            DrawingSource::Definition(DEFINITION),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new(title, "", "", "").unwrap(),
+            vec![OrthographicViewKind::Front],
+        )
+        .unwrap();
+        let (create, drawing) = prepare_create_drawing_sheet(&document, &exact, sheet).unwrap();
+        document.commit_proposal(&create).unwrap();
+        let before = stamp(&document);
+        let exported = export_drawing(&document.current(), &drawing);
+        if fits {
+            let dxf = String::from_utf8(exported.unwrap().dxf().to_vec()).unwrap();
+            assert!(dxf.lines().all(|line| line.chars().count() <= 255));
+            assert!(dxf.contains(&format!("{}xxx", "\\U+010C".repeat(36))));
+        } else {
+            assert_eq!(exported, Err(DrawingExportError::DxfTextTooLong), "{title}");
+        }
+        assert_eq!(stamp(&document), before);
+    }
+}
+
+#[test]
 fn stale_malformed_and_excessive_exports_fail_without_mutation() {
     let mut document = seeded_document();
     let exact = registry(

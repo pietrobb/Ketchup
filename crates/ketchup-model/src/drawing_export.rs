@@ -18,6 +18,7 @@ pub const DRAWING_EXPORT_SCHEMA_V1: &str = "ketchup.drawing-export.v1";
 const MAX_EXPORT_LINES: usize = 100_000;
 const MAX_EXPORT_TEXTS: usize = 1_024;
 const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DXF_STRING_CHARACTERS: usize = 255;
 const COORDINATE_EPSILON_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
 const POINTS_PER_MM: f64 = 72.0 / 25.4;
 const PDF_UNICODE_GLYPHS: &[(char, u8, &str)] = &[
@@ -121,6 +122,8 @@ pub enum DrawingExportError {
     StaleDrawing,
     InvalidDrawing,
     UnsupportedPdfText,
+    UnsupportedDxfText,
+    DxfTextTooLong,
     ResourceLimit,
 }
 
@@ -130,6 +133,12 @@ impl fmt::Display for DrawingExportError {
             Self::StaleDrawing => "drawing export source is stale",
             Self::InvalidDrawing => "drawing export contract is inconsistent",
             Self::UnsupportedPdfText => "drawing contains text unsupported by the PDF font",
+            Self::UnsupportedDxfText => {
+                "drawing contains a character outside the Basic Multilingual Plane, which DXF \\U+ escapes cannot carry"
+            }
+            Self::DxfTextTooLong => {
+                "drawing contains text longer than the 255 characters a DXF R12 string carries once non-ASCII characters are escaped"
+            }
             Self::ResourceLimit => "drawing export exceeded its resource limit",
         })
     }
@@ -195,8 +204,8 @@ pub fn export_drawing(
     let (lines, texts) = collect_page_content(drawing)?;
     let (page_arcs, replaced_lines) = collect_page_arcs(drawing)?;
     let svg = export_svg(drawing, &lines, &texts);
-    let dxf = export_dxf(drawing, &lines, &texts, &page_arcs, &replaced_lines);
     let pdf = export_pdf(drawing, &lines, &texts)?;
+    let dxf = export_dxf(drawing, &lines, &texts, &page_arcs, &replaced_lines)?;
     if [svg.len(), dxf.len(), pdf.len()]
         .into_iter()
         .any(|length| length > MAX_EXPORT_BYTES)
@@ -912,7 +921,7 @@ fn export_dxf(
     texts: &[PageText],
     arcs: &[PageArc],
     replaced_lines: &BTreeSet<String>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, DrawingExportError> {
     let mut dxf = format!(
         "999\n{DRAWING_EXPORT_SCHEMA_V1}\n999\nresult={} layout={}\n0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n2\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0\n0\nLTYPE\n2\nHIDDEN\n70\n0\n3\nHidden line\n72\n65\n73\n2\n40\n3\n49\n2\n49\n-1\n0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n5\n0\nLAYER\n2\nBORDER\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nVISIBLE\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nHIDDEN\n70\n0\n62\n8\n6\nHIDDEN\n0\nLAYER\n2\nDIMENSION\n70\n0\n62\n3\n6\nCONTINUOUS\n0\nLAYER\n2\nANNOTATION\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nENDTAB\n0\nTABLE\n2\nAPPID\n70\n1\n0\nAPPID\n2\nKETCHUP\n70\n0\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n",
         drawing.result_digest, drawing.layout.digest
@@ -929,7 +938,7 @@ fn export_dxf(
             number(line.start[1]),
             number(line.end[0]),
             number(line.end[1]),
-            dxf_text(&line.id),
+            dxf_text(&line.id)?,
         ));
     }
     for arc in arcs {
@@ -950,7 +959,7 @@ fn export_dxf(
             number(arc.center[0]),
             number(arc.center[1]),
             number(arc.radius),
-            dxf_text(&arc.id),
+            dxf_text(&arc.id)?,
         ));
     }
     for text in texts {
@@ -959,12 +968,12 @@ fn export_dxf(
             number(text.position[0]),
             number(text.position[1]),
             number(text.height_mm),
-            dxf_text(&text.value),
-            dxf_text(&text.id),
+            dxf_text(&text.value)?,
+            dxf_text(&text.id)?,
         ));
     }
     dxf.push_str("0\nENDSEC\n0\nEOF\n");
-    dxf.into_bytes()
+    Ok(dxf.into_bytes())
 }
 
 fn export_pdf(
@@ -1122,23 +1131,27 @@ fn xml_escape(value: &str) -> String {
 }
 
 /// A string of the R12 file: a line break becomes a space and a character
-/// outside ASCII its `\U+XXXX` escape (UTF-16 units), so the file needs no
-/// code page and AutoCAD, ezdxf and acadrust read the same text.
-fn dxf_text(value: &str) -> String {
+/// outside ASCII its `\U+XXXX` escape, so the file needs no code page and
+/// AutoCAD, ezdxf and acadrust read the same text. The escape holds one
+/// Basic Multilingual Plane character, so a character beyond it (an emoji)
+/// is refused rather than written as a surrogate pair no reader decodes, and
+/// so is a string longer than the 255 characters R12 carries once escaped.
+fn dxf_text(value: &str) -> Result<String, DrawingExportError> {
     let mut output = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
             '\r' | '\n' => output.push(' '),
             ascii if ascii.is_ascii() => output.push(ascii),
-            other => {
-                let mut units = [0; 2];
-                for unit in other.encode_utf16(&mut units) {
-                    output.push_str(&format!("\\U+{unit:04X}"));
-                }
+            other if other.len_utf16() > 1 => {
+                return Err(DrawingExportError::UnsupportedDxfText);
             }
+            other => output.push_str(&format!("\\U+{:04X}", u32::from(other))),
         }
     }
-    output
+    if output.len() > MAX_DXF_STRING_CHARACTERS {
+        return Err(DrawingExportError::DxfTextTooLong);
+    }
+    Ok(output)
 }
 
 fn pdf_text_hex(value: &str) -> Result<String, DrawingExportError> {
@@ -1187,4 +1200,21 @@ fn pdf_comment(value: &str) -> String {
             character => format!("U+{:04X}", character as u32),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod dxf_text_tests {
+    use super::{DrawingExportError, dxf_text};
+
+    #[test]
+    fn a_character_beyond_the_basic_plane_is_refused_not_written_as_surrogates() {
+        assert_eq!(
+            dxf_text("Drawing \u{1F6AB}"),
+            Err(DrawingExportError::UnsupportedDxfText)
+        );
+        assert_eq!(
+            dxf_text("Kečup\u{FFFD}").as_deref(),
+            Ok("Ke\\U+010Dup\\U+FFFD")
+        );
+    }
 }
