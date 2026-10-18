@@ -400,6 +400,29 @@ mod tests {
     }
 
     #[test]
+    fn startup_path_opens_the_existing_document_it_was_given() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("double-clicked.ketchup");
+        let mut source = KetchupApp::new();
+        assert!(source.create_box());
+        assert!(source.save_document_to(&path));
+        let expected = source.document.current().occurrences().count();
+        let mut app = KetchupApp::new();
+        app.queue_open_document_path(&path);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1600.0, 1000.0))
+            .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
+        wait_for_open(&mut harness);
+        assert_eq!(harness.state().file.path.as_deref(), Some(path.as_path()));
+        assert_eq!(
+            harness.state().document.current().occurrences().count(),
+            expected
+        );
+        assert!(expected > 0);
+        assert!(!harness.state().is_dirty());
+    }
+
+    #[test]
     fn stalled_read_remains_visible_and_escape_or_close_preserves_unsaved_work() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("replacement.ketchup");
