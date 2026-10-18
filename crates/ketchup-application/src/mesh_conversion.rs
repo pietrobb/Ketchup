@@ -48,6 +48,7 @@ pub enum MeshConversionError {
     VerificationResourceLimit,
     Cancelled,
     TimedOut,
+    Failed,
     Stale,
 }
 
@@ -83,6 +84,7 @@ impl fmt::Display for MeshConversionError {
             }
             Self::Cancelled => formatter.write_str("mesh conversion was cancelled"),
             Self::TimedOut => formatter.write_str("mesh conversion timed out"),
+            Self::Failed => formatter.write_str("mesh conversion failed unexpectedly"),
             Self::Stale => formatter.write_str("mesh conversion plan is stale"),
         }
     }
@@ -248,6 +250,7 @@ impl From<TaskStop> for MeshConversionError {
         match stop {
             TaskStop::Cancelled => Self::Cancelled,
             TaskStop::TimedOut => Self::TimedOut,
+            TaskStop::Failed => Self::Failed,
         }
     }
 }

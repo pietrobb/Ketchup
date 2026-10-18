@@ -67,6 +67,18 @@ fn cancel_sets_the_flag_the_job_sees_and_ends_cancelled() {
 }
 
 #[test]
+fn a_job_that_panics_ends_failed_not_cancelled() {
+    let task = BackgroundTask::spawn(
+        "panic",
+        PATIENCE,
+        |_: &TaskContext<(), u32>| panic!("job broke"),
+        || {},
+    )
+    .unwrap();
+    assert_eq!(task.wait(PATIENCE), Err(TaskStop::Failed));
+}
+
+#[test]
 fn passing_the_deadline_cancels_the_job_and_ends_timed_out() {
     let (seen, saw_cancel) = mpsc::channel();
     let task =

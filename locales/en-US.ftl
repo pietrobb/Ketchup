@@ -494,6 +494,7 @@ feature-history-action-delete-constraint = delete sketch constraint
 feature-history-preview-ready = Feature-history proposal ready: { $action }
 feature-history-exact-running = Computing the exact bodies of the change...
 feature-history-exact-timed-out = The exact bodies of the change took too long; nothing was changed.
+feature-history-exact-failed = Computing the exact bodies of the change failed; nothing was changed.
 feature-history-committed = Feature-history proposal committed as one Undo step: { $action }
 feature-history-cancelled = Feature-history proposal cancelled; canonical model unchanged
 feature-history-selected-body = Selected history body { $id }; canonical model unchanged

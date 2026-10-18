@@ -494,6 +494,7 @@ feature-history-action-delete-constraint = odstránenie väzby náčrtu
 feature-history-preview-ready = Návrh histórie prvkov je pripravený: { $action }
 feature-history-exact-running = Počítam presné telesá zmeny...
 feature-history-exact-timed-out = Presné telesá zmeny trvali príliš dlho; nič sa nezmenilo.
+feature-history-exact-failed = Výpočet presných telies zmeny zlyhal; nič sa nezmenilo.
 feature-history-committed = Návrh histórie prvkov bol potvrdený ako jeden krok Späť: { $action }
 feature-history-cancelled = Návrh histórie prvkov bol zrušený; kanonický model sa nezmenil
 feature-history-selected-body = Vybrané teleso histórie { $id }; kanonický model sa nezmenil

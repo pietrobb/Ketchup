@@ -153,7 +153,7 @@ impl KetchupApp {
                 context.request_repaint_after(Duration::from_millis(25));
                 return;
             }
-            Err(TryRecvError::Disconnected) => Err(TaskStop::Cancelled),
+            Err(TryRecvError::Disconnected) => Err(TaskStop::Failed),
         };
         let pending = self
             .feature_history
@@ -169,6 +169,7 @@ impl KetchupApp {
                     Ok(Err(error)) => error.to_string(),
                     Err(TaskStop::Cancelled) => self.catalog.text("digest-cancelled"),
                     Err(TaskStop::TimedOut) => self.catalog.text("feature-history-exact-timed-out"),
+                    Err(TaskStop::Failed) => self.catalog.text("feature-history-exact-failed"),
                 };
                 self.feature_history.preview = None;
                 self.feature_history_error(reason);

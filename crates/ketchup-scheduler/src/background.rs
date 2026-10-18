@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 pub enum TaskStop {
     Cancelled,
     TimedOut,
+    /// The job panicked, so no result will come.
+    Failed,
 }
 
 pub enum TaskEvent<P, R> {
@@ -156,7 +158,7 @@ impl<P, R> BackgroundTask<P, R> {
                     self.cancel();
                     return Err(TaskStop::TimedOut);
                 }
-                Err(RecvTimeoutError::Disconnected) => return Err(TaskStop::Cancelled),
+                Err(RecvTimeoutError::Disconnected) => return Err(TaskStop::Failed),
             }
         }
     }
