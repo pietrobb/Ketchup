@@ -146,7 +146,9 @@ impl ExtensionEntry {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ContainerData {
-    blobs: BTreeMap<String, Vec<u8>>,
+    /// Shared, not copied, by every copy: opening a history makes one per
+    /// revision (review 2026-10-17 M-5).
+    blobs: Arc<BTreeMap<String, Vec<u8>>>,
     imported_source_blobs: Arc<BTreeSet<String>>,
     extensions: BTreeMap<(String, String), ExtensionEntry>,
 }
@@ -157,7 +159,9 @@ impl ContainerData {
             return Err(PersistenceError::ResourceLimit);
         }
         let hash = crate::graph::sha256_hex(&bytes);
-        self.blobs.entry(hash.clone()).or_insert(bytes);
+        Arc::make_mut(&mut self.blobs)
+            .entry(hash.clone())
+            .or_insert(bytes);
         Ok(hash)
     }
 
@@ -1005,7 +1009,7 @@ fn save_container_entries(
     {
         return Err(PersistenceError::InvalidBlobHash);
     }
-    for (hash, bytes) in &container_data.blobs {
+    for (hash, bytes) in container_data.blobs.iter() {
         if crate::graph::sha256_hex(bytes) != *hash {
             return Err(PersistenceError::InvalidBlobHash);
         }
@@ -1730,8 +1734,7 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             if required || hash.len() != 64 || crate::graph::sha256_hex(&content) != hash {
                 return Err(PersistenceError::InvalidBlobHash);
             }
-            if container_data
-                .blobs
+            if Arc::make_mut(&mut container_data.blobs)
                 .insert(hash.to_owned(), content)
                 .is_some()
             {
@@ -1752,7 +1755,7 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         }
     }
     let history_container_data = ContainerData {
-        blobs: container_data.blobs.clone(),
+        blobs: Arc::clone(&container_data.blobs),
         imported_source_blobs: Arc::new(BTreeSet::new()),
         extensions: BTreeMap::new(),
     };

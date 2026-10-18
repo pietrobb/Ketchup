@@ -1178,6 +1178,44 @@ fn revision_history_round_trips_with_cursor_and_monotonic_branching() {
     assert_eq!(reopened.visible_redo_steps(), 0);
 }
 
+/// Review 2026-10-17 M-5: opening a history copies the container data once per
+/// revision, and each copy copied every blob: ~12 GB for a 30 MB STEP source and
+/// 400 revisions. A copy now shares the blobs it was made from.
+#[test]
+fn opening_a_history_shares_its_blobs_instead_of_copying_them_per_revision() {
+    const BLOB: usize = 1024 * 1024;
+    const REVISIONS: u32 = 24;
+    let mut store = graph_document();
+    for value in 1..=REVISIONS {
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value.to_string(), f64::from(value)).unwrap(),
+                },
+            ]))
+            .unwrap();
+    }
+    let mut container_data = persistence::ContainerData::default();
+    let hash = container_data.insert_blob(vec![7; BLOB]).unwrap();
+    let bytes = persistence::save_document_store(&store, &container_data).unwrap();
+
+    let loaded = persistence::load(&bytes).unwrap();
+    let opened = loaded.container_data().clone();
+    assert_eq!(opened.blobs()[&hash].len(), BLOB);
+    let copy = opened.clone();
+    assert!(
+        std::ptr::eq(opened.blobs()[&hash].as_ptr(), copy.blobs()[&hash].as_ptr()),
+        "a copy of the container data copied its {BLOB}-byte blob"
+    );
+    let reopened = loaded.into_editable().ok().unwrap();
+    assert!(reopened.revision_history().count() > REVISIONS as usize);
+    assert_eq!(
+        persistence::save_document_store(&reopened, &copy).unwrap(),
+        bytes
+    );
+}
+
 #[test]
 fn multi_version_history_golden_migrates_losslessly_and_drops_corrupt_history() {
     let mut store = graph_document();
