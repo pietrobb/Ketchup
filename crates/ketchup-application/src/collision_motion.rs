@@ -58,18 +58,32 @@ impl ExactMotionPair {
         })
     }
 
-    fn contact_envelope(&self, interval: Interval) -> Option<hull::HullRelation> {
+    /// Whether the moving solid's pieces, swept over the whole interval, at most
+    /// touch the obstacle's; None unless the interval is a straight translation.
+    fn contact_envelope(&self, interval: Interval) -> Option<bool> {
         if !self.allow_contact || !matches!(self.motion, AssemblyJointKind::Prismatic { .. }) {
             return None;
         }
-        let start = self.candidate(interval.from)?;
-        let end = self.candidate(interval.to)?;
-        let local = hull::local_hull(&self.moving)?;
-        let swept = local
-            .world(start.left_transform)?
-            .translation_envelope(local.world(end.left_transform)?)?;
-        let obstacle = hull::local_hull(&self.obstacle)?.world(start.right_transform)?;
-        Some(hull::relate(&swept, &obstacle, self.tolerance_mm))
+        let (start, end) = (
+            self.candidate(interval.from)?.left_transform,
+            self.candidate(interval.to)?.left_transform,
+        );
+        if [0, 1, 2, 4, 5, 6, 8, 9, 10]
+            .iter()
+            .any(|&i| start[i] != end[i])
+        {
+            return None;
+        }
+        let sweep = [3, 7, 11].map(|i| end[i] - start[i]);
+        let moving = pieces::local_pieces(&self.moving)?.world(&start)?;
+        let obstacle =
+            pieces::local_pieces(&self.obstacle)?.world(self.obstacle_transform.matrix())?;
+        Some(pieces::sweep_clear(
+            &moving,
+            sweep,
+            &obstacle,
+            self.tolerance_mm,
+        ))
     }
 
     fn travel(&self, bounds: Aabb, interval: Interval) -> Option<f64> {
@@ -284,10 +298,7 @@ fn classify_interval(
         );
         return;
     }
-    if matches!(
-        pair.contact_envelope(interval),
-        Some(hull::HullRelation::Separated | hull::HullRelation::Touching { .. })
-    ) {
+    if pair.contact_envelope(interval) == Some(true) {
         verified.push(
             json!({"interval": interval.json(), "sample_position": interval.midpoint(),
             "method": "translation_swept_hull_with_native_contact_tolerance",

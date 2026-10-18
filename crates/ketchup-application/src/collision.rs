@@ -1,8 +1,6 @@
 //! Snapshot-bound solid collision evidence, independent of render tessellation.
 #[path = "collision_bounds.rs"]
 mod bounds;
-#[path = "collision_hull.rs"]
-mod hull;
 #[path = "collision_measurements.rs"]
 mod measurements;
 #[path = "collision_motion.rs"]

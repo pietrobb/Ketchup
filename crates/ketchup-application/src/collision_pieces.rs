@@ -4,17 +4,115 @@
 //! faces. Cuts after the extrusion only remove material, so the prisms still
 //! enclose the solid and prove separation; without cuts they are the solid and
 //! also measure its touching faces.
-use super::hull::{self, COINCIDENT_SLAB_TOLERANCES, Extrusion, HullRelation, PARALLEL};
 use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_geometry::linalg::{cross, dot};
 use ketchup_model::exact_brep_graph::{
-    ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment,
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
-use ketchup_model::tolerance::ROUNDING;
+use ketchup_model::tolerance::{COINCIDENT_SLAB_TOLERANCES, ROUNDING};
 
+const PARALLEL: f64 = 1.0 - ROUNDING;
 /// Most prisms one solid is split into; a more detailed profile stays exact-only.
 const MAX_PIECES: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Relation {
+    /// Farther apart than the contact tolerance.
+    Separated,
+    /// No common volume; `area_mm2` is the shared face area, on A's face with
+    /// outward unit `normal` (zero without area).
+    Touching { area_mm2: f64, normal: [f64; 3] },
+    /// Common volume; only exact geometry can decide (e.g. pin in its hole).
+    Overlapping,
+}
+
+/// An axis-aligned straight extrusion in definition-local coordinates.
+struct Extrusion {
+    origin: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+    direction: [f64; 3],
+    interval: [f64; 2],
+}
+
+impl Extrusion {
+    /// The profile point `[a, b]` swept `t` along the extrusion.
+    fn point(&self, [a, b]: [f64; 2], t: f64) -> [f64; 3] {
+        [0, 1, 2].map(|axis| {
+            self.origin[axis] + self.u[axis] * a + self.v[axis] * b + self.direction[axis] * t
+        })
+    }
+}
+
+fn axis_aligned(v: [f64; 3]) -> bool {
+    let mut ones = 0;
+    for c in v {
+        if c.abs() == 1.0 {
+            ones += 1;
+        } else if c != 0.0 {
+            return false;
+        }
+    }
+    ones == 1
+}
+
+/// The extrusion the producer starts from, if it is followed only by
+/// subtractive cuts on that same solid, so anything enclosing it encloses the producer.
+fn base_extrusion(graph: &ExactBRepGraph) -> Option<(Extrusion, &ExactBRepPlanarGeometry)> {
+    let mut node = graph.nodes.len().checked_sub(1)?;
+    loop {
+        match &graph.nodes[node].operation {
+            ExactBRepOperation::ProfileCut { target, .. }
+            | ExactBRepOperation::Boolean {
+                operation: ExactBRepBooleanOperation::Cut,
+                target,
+                ..
+            } if (target.0 as usize) < node => node = target.0 as usize,
+            ExactBRepOperation::Extrude {
+                profile, interval, ..
+            } => {
+                let profile = graph.profiles.get(profile.0 as usize)?;
+                let [origin, u, v, normal] = profile.frame().to_vectors();
+                let direction = interval.direction();
+                if !axis_aligned(u)
+                    || !axis_aligned(v)
+                    || !axis_aligned(normal)
+                    || dot(direction, normal).abs() != 1.0
+                    || dot(u, v) != 0.0
+                {
+                    return None;
+                }
+                let extrusion = Extrusion {
+                    origin,
+                    u,
+                    v,
+                    direction,
+                    interval: [interval.start_mm(), interval.end_mm()],
+                };
+                return Some((extrusion, &profile.geometry));
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// The rotation's columns of a rigid (rotation + translation) placement.
+fn rigid_axes(matrix: &[f64; 16]) -> Option<[[f64; 3]; 3]> {
+    if !matrix.iter().all(|x| x.is_finite()) || matrix[12..] != [0.0, 0.0, 0.0, 1.0] {
+        return None;
+    }
+    let axes = [0, 1, 2].map(|column| [matrix[column], matrix[4 + column], matrix[8 + column]]);
+    for i in 0..3 {
+        for j in 0..3 {
+            let expected = if i == j { 1.0 } else { 0.0 };
+            if (dot(axes[i], axes[j]) - expected).abs() > ROUNDING {
+                return None;
+            }
+        }
+    }
+    Some(axes)
+}
 
 /// A solid's convex profile pieces, in definition-local coordinates.
 pub(super) struct LocalPieces {
@@ -39,7 +137,7 @@ struct Face {
 }
 
 pub(super) fn local_pieces(graph: &ExactBRepGraph) -> Option<LocalPieces> {
-    let (extrusion, geometry) = hull::base_extrusion(graph)?;
+    let (extrusion, geometry) = base_extrusion(graph)?;
     Some(LocalPieces {
         extrusion,
         polygons: convex_pieces(geometry)?,
@@ -49,7 +147,7 @@ pub(super) fn local_pieces(graph: &ExactBRepGraph) -> Option<LocalPieces> {
 impl LocalPieces {
     /// Rigid placements only; anything else stays exact-only.
     pub(super) fn world(&self, matrix: &[f64; 16]) -> Option<Vec<Piece>> {
-        let axes = hull::rigid_axes(matrix)?;
+        let axes = rigid_axes(matrix)?;
         let place = |p: [f64; 3]| {
             [0, 1, 2].map(|row| {
                 matrix[4 * row] * p[0]
@@ -58,7 +156,7 @@ impl LocalPieces {
                     + matrix[4 * row + 3]
             })
         };
-        let local_direction = self.extrusion.direction();
+        let local_direction = self.extrusion.direction;
         let direction = [0, 1, 2].map(|row| {
             (0..3)
                 .map(|k| axes[k][row] * local_direction[k])
@@ -176,9 +274,9 @@ fn relate_solids(a: &[Piece], b: &[Piece], tolerance_mm: f64) -> Option<Option<V
     for left in a {
         for right in b {
             match relate(left, right, tolerance_mm) {
-                HullRelation::Overlapping => return None,
-                HullRelation::Separated => {}
-                HullRelation::Touching { area_mm2, normal } => {
+                Relation::Overlapping => return None,
+                Relation::Separated => {}
+                Relation::Touching { area_mm2, normal } => {
                     touching = true;
                     if area_mm2 > 0.0 {
                         match patches
@@ -196,18 +294,49 @@ fn relate_solids(a: &[Piece], b: &[Piece], tolerance_mm: f64) -> Option<Option<V
     Some(touching.then_some(patches))
 }
 
-/// Separating-axis classification of two convex prisms: their face normals and
-/// the crosses of their edge directions decide separation and penetration depth.
-fn relate(a: &Piece, b: &Piece, tolerance_mm: f64) -> HullRelation {
+/// True when every position of `a` along the straight translation `sweep`
+/// stays apart from or only touches `b`, within the contact tolerance.
+pub(super) fn sweep_clear(a: &[Piece], sweep: [f64; 3], b: &[Piece], tolerance_mm: f64) -> bool {
+    let scale = a
+        .iter()
+        .flat_map(|piece| &piece.vertices)
+        .flat_map(|p| [0, 1, 2].map(|k| p[k].abs().max((p[k] + sweep[k]).abs())))
+        .fold(1.0, f64::max);
+    // Rounding of the swept extents, so a clear answer never rests on it.
+    let margin = 64.0 * ROUNDING * scale;
+    a.iter().all(|left| {
+        b.iter().all(|right| {
+            least_overlap(left, sweep, margin, right, tolerance_mm)
+                .is_none_or(|overlap| overlap <= COINCIDENT_SLAB_TOLERANCES * tolerance_mm)
+        })
+    })
+}
+
+/// Separating-axis test of `a`, swept along `sweep` and grown by `margin`, against
+/// `b`: the least overlap over all axes, or None when farther apart than tolerance.
+/// A swept convex prism is convex, with faces along A's normals and across A's
+/// edges and the sweep, and edges along A's edges and the sweep.
+fn least_overlap(
+    a: &Piece,
+    sweep: [f64; 3],
+    margin: f64,
+    b: &Piece,
+    tolerance_mm: f64,
+) -> Option<f64> {
+    let moving = sweep != [0.0; 3];
     let mut axes = a
         .faces
         .iter()
         .chain(&b.faces)
         .map(|face| face.normal)
         .collect::<Vec<_>>();
-    for left in &a.edges {
+    let a_edges = || a.edges.iter().copied().chain(moving.then_some(sweep));
+    if moving {
+        axes.extend(a.edges.iter().filter_map(|edge| unit(cross(*edge, sweep))));
+    }
+    for left in a_edges() {
         for right in &b.edges {
-            if let Some(axis) = unit(cross(*left, *right)) {
+            if let Some(axis) = unit(cross(left, *right)) {
                 axes.push(axis);
             }
         }
@@ -215,15 +344,29 @@ fn relate(a: &Piece, b: &Piece, tolerance_mm: f64) -> HullRelation {
     let mut min_overlap = f64::INFINITY;
     for axis in axes {
         let ((a_low, a_high), (b_low, b_high)) = (a.extent(axis), b.extent(axis));
+        let shift = dot(sweep, axis);
+        let (a_low, a_high) = (
+            a_low + shift.min(0.0) - margin,
+            a_high + shift.max(0.0) + margin,
+        );
         let overlap = a_high.min(b_high) - a_low.max(b_low);
         if overlap < -tolerance_mm {
-            return HullRelation::Separated;
+            return None;
         }
         min_overlap = min_overlap.min(overlap);
     }
+    Some(min_overlap)
+}
+
+/// Separating-axis classification of two convex prisms: their face normals and
+/// the crosses of their edge directions decide separation and penetration depth.
+fn relate(a: &Piece, b: &Piece, tolerance_mm: f64) -> Relation {
+    let Some(min_overlap) = least_overlap(a, [0.0; 3], 0.0, b, tolerance_mm) else {
+        return Relation::Separated;
+    };
     let coincident_slab_mm = COINCIDENT_SLAB_TOLERANCES * tolerance_mm;
     if min_overlap > coincident_slab_mm {
-        return HullRelation::Overlapping;
+        return Relation::Overlapping;
     }
     // Positive area needs a face of A in one plane with an opposite face of B.
     let mut area_mm2: f64 = 0.0;
@@ -244,7 +387,7 @@ fn relate(a: &Piece, b: &Piece, tolerance_mm: f64) -> HullRelation {
             }
         }
     }
-    HullRelation::Touching {
+    Relation::Touching {
         area_mm2,
         normal: outward,
     }
@@ -546,6 +689,36 @@ mod tests {
             [0.0, 140.0],
         );
         assert!(matches!(relate_solids(&stud, &apart, 1e-7), Some(None)));
+    }
+
+    /// The native contact tolerance the motion check runs with.
+    const CONTACT_MM: f64 = 0.001;
+
+    #[test]
+    fn a_block_sliding_on_a_base_may_touch_it_but_not_pass_through_a_stop() {
+        let base = prism(
+            &[[0.0, 0.0], [2000.0, 0.0], [2000.0, 18.0], [0.0, 18.0]],
+            [0.0, 500.0],
+        );
+        let stop = prism(
+            &[[800.0, 18.0], [900.0, 18.0], [900.0, 118.0], [800.0, 118.0]],
+            [0.0, 500.0],
+        );
+        let block = prism(
+            &[[0.0, 18.0], [100.0, 18.0], [100.0, 118.0], [0.0, 118.0]],
+            [0.0, 100.0],
+        );
+        assert!(sweep_clear(&block, [500.0, 0.0, 0.0], &base, CONTACT_MM));
+        assert!(sweep_clear(&block, [700.0, 0.0, 0.0], &stop, CONTACT_MM));
+        assert!(!sweep_clear(&block, [750.0, 0.0, 0.0], &stop, CONTACT_MM));
+        // Both ends are clear of the stop, but the way between them is not.
+        assert!(!sweep_clear(&block, [1000.0, 0.0, 0.0], &stop, CONTACT_MM));
+        // Lifted 1 mm, a diagonal pass over the stop's corner is clear.
+        let over = prism(
+            &[[0.0, 119.0], [100.0, 119.0], [100.0, 219.0], [0.0, 219.0]],
+            [0.0, 100.0],
+        );
+        assert!(sweep_clear(&over, [1000.0, 300.0, 0.0], &stop, CONTACT_MM));
     }
 
     #[test]

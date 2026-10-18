@@ -26,6 +26,10 @@ pub const DEFAULT_LINEAR_TOLERANCE_MM: f64 = 1.0e-7;
 /// Default angular tolerance in radians; the same value as OCCT `Precision::Angular()`.
 pub const DEFAULT_ANGULAR_TOLERANCE_RAD: f64 = 1.0e-12;
 
+/// An apparent overlap up to this many linear tolerances is faces shared within the
+/// contact tolerance, never common volume; the native pair query uses the same slab.
+pub const COINCIDENT_SLAB_TOLERANCES: f64 = 3.0;
+
 /// Numeric guard, not a model tolerance: the relative rounding allowed for a value
 /// computed in `f64`. Compare with `ROUNDING * magnitude`, the magnitude being the size of
 /// the operands (at least 1). It keeps divisions away from zero and absorbs rounding of
