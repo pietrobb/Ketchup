@@ -9,6 +9,8 @@ mod measurements;
 mod motion;
 #[path = "collision_order.rs"]
 mod order;
+#[path = "collision_pieces.rs"]
+mod pieces;
 use crate::group_connectivity::validation_context as validation_context_with_groups;
 use crate::validation::AssistantValidationSelection;
 use crate::worker_pool::ExactWorkerUnavailable;
@@ -884,16 +886,15 @@ fn contact_candidates(
     .collect()
 }
 
-fn collision_hulls(graphs: &[ExactBRepGraph], bodies: &[Body]) -> Vec<Option<hull::WorldHull>> {
-    let local = graphs.iter().map(hull::local_hull).collect::<Vec<_>>();
+fn collision_hulls(graphs: &[ExactBRepGraph], bodies: &[Body]) -> Vec<Option<Vec<pieces::Piece>>> {
+    let local = graphs.iter().map(pieces::local_pieces).collect::<Vec<_>>();
     bodies
         .iter()
         .map(|body| {
             local
-                .get(body.graph?)
-                .copied()
-                .flatten()?
-                .world(*body.occurrence.transform.matrix())
+                .get(body.graph?)?
+                .as_ref()?
+                .world(body.occurrence.transform.matrix())
         })
         .collect()
 }
@@ -1567,7 +1568,7 @@ fn collision_report(
         candidates
             .sort_by_key(|(left, right)| (left / graph_block, right / graph_block, *left, *right));
         // Separated hulls prove no contact; touching hulls prove contact only for
-        // uncut boxes. Cuts may remove the entire bearing face, so ask OCCT.
+        // uncut extrusions. Cuts may remove the entire bearing face, so ask OCCT.
         let world_hulls = collision_hulls(&graphs, &bodies);
         let mut hull_decided = 0usize;
         for (left, right) in candidates {
@@ -1577,8 +1578,8 @@ fn collision_report(
             if !contact_pairs.contains(&(left, right))
                 && let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right])
             {
-                let decided = hull::measure(a, b, [&graphs[l], &graphs[r]], tolerance.linear_mm());
-
+                let decided =
+                    pieces::measure(a, b, [&graphs[l], &graphs[r]], tolerance.linear_mm());
                 if let Some((patches, distance_mm)) = decided {
                     checked += 1;
                     hull_decided += 1;

@@ -1,7 +1,6 @@
 //! Analytic panel hulls: a rectangle extrusion, optionally reduced by cuts, is
 //! always contained in its rectangular box. Two such boxes that do not
 //! penetrate prove the solids do not penetrate either, at any rotation.
-use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_geometry::linalg::{cross, dot};
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
@@ -11,8 +10,8 @@ use ketchup_model::tolerance::ROUNDING;
 
 /// Same slab as the native pair query: an apparent overlap up to this many linear
 /// tolerances is shared faces within the contact tolerance, never common volume.
-const COINCIDENT_SLAB_TOLERANCES: f64 = 3.0;
-const PARALLEL: f64 = 1.0 - ROUNDING;
+pub(super) const COINCIDENT_SLAB_TOLERANCES: f64 = 3.0;
+pub(super) const PARALLEL: f64 = 1.0 - ROUNDING;
 
 /// Box in definition-local coordinates enclosing the whole solid.
 #[derive(Clone, Copy, Debug)]
@@ -40,33 +39,6 @@ pub(super) enum HullRelation {
     Overlapping,
 }
 
-pub(super) fn measure(
-    a: &WorldHull,
-    b: &WorldHull,
-    graphs: [&ExactBRepGraph; 2],
-    tolerance_mm: f64,
-) -> Option<(Vec<ContactPatch>, Option<f64>)> {
-    match relate(a, b, tolerance_mm) {
-        HullRelation::Overlapping => None,
-        HullRelation::Separated => Some((Vec::new(), None)),
-        HullRelation::Touching { area_mm2, normal } => {
-            let patches = if area_mm2 > 0.0 {
-                vec![ContactPatch { normal, area_mm2 }]
-            } else {
-                Vec::new()
-            };
-            graphs
-                .iter()
-                .all(|graph| {
-                    matches!(
-                        graph.nodes.last().map(|node| &node.operation),
-                        Some(ExactBRepOperation::Extrude { .. })
-                    )
-                })
-                .then_some((patches, Some(0.0)))
-        }
-    }
-}
 fn axis_aligned(v: [f64; 3]) -> bool {
     let mut ones = 0;
     for c in v {
@@ -135,6 +107,52 @@ fn rectangle(geometry: &ExactBRepPlanarGeometry) -> Option<([f64; 2], [f64; 2])>
 /// The producer must be a rectangle extrusion, optionally followed only by
 /// subtractive cuts on that same solid, so the extrusion box encloses it.
 pub(super) fn local_hull(graph: &ExactBRepGraph) -> Option<LocalHull> {
+    let (extrusion, geometry) = base_extrusion(graph)?;
+    let (low, high) = rectangle(geometry)?;
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for a in [low[0], high[0]] {
+        for b in [low[1], high[1]] {
+            for t in extrusion.interval {
+                let value = extrusion.point([a, b], t);
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(value[axis]);
+                    max[axis] = max[axis].max(value[axis]);
+                }
+            }
+        }
+    }
+    ((0..3).all(|axis| min[axis].is_finite() && max[axis].is_finite() && min[axis] < max[axis]))
+        .then_some(LocalHull { min, max })
+}
+
+/// An axis-aligned straight extrusion in definition-local coordinates.
+pub(super) struct Extrusion {
+    origin: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+    direction: [f64; 3],
+    pub(super) interval: [f64; 2],
+}
+
+impl Extrusion {
+    /// The profile point `[a, b]` swept `t` along the extrusion.
+    pub(super) fn point(&self, [a, b]: [f64; 2], t: f64) -> [f64; 3] {
+        [0, 1, 2].map(|axis| {
+            self.origin[axis] + self.u[axis] * a + self.v[axis] * b + self.direction[axis] * t
+        })
+    }
+
+    pub(super) fn direction(&self) -> [f64; 3] {
+        self.direction
+    }
+}
+
+/// The extrusion the producer starts from, if it is followed only by
+/// subtractive cuts on that same solid, so anything enclosing it encloses the producer.
+pub(super) fn base_extrusion(
+    graph: &ExactBRepGraph,
+) -> Option<(Extrusion, &ExactBRepPlanarGeometry)> {
     let mut node = graph.nodes.len().checked_sub(1)?;
     loop {
         match &graph.nodes[node].operation {
@@ -158,47 +176,41 @@ pub(super) fn local_hull(graph: &ExactBRepGraph) -> Option<LocalHull> {
                 {
                     return None;
                 }
-                let (low, high) = rectangle(&profile.geometry)?;
-                let (start, end) = (interval.start_mm(), interval.end_mm());
-                let mut min = [f64::INFINITY; 3];
-                let mut max = [f64::NEG_INFINITY; 3];
-                for a in [low[0], high[0]] {
-                    for b in [low[1], high[1]] {
-                        for t in [start, end] {
-                            for axis in 0..3 {
-                                let value =
-                                    origin[axis] + u[axis] * a + v[axis] * b + direction[axis] * t;
-                                min[axis] = min[axis].min(value);
-                                max[axis] = max[axis].max(value);
-                            }
-                        }
-                    }
-                }
-                return ((0..3).all(|axis| {
-                    min[axis].is_finite() && max[axis].is_finite() && min[axis] < max[axis]
-                }))
-                .then_some(LocalHull { min, max });
+                let extrusion = Extrusion {
+                    origin,
+                    u,
+                    v,
+                    direction,
+                    interval: [interval.start_mm(), interval.end_mm()],
+                };
+                return Some((extrusion, &profile.geometry));
             }
             _ => return None,
         }
     }
 }
 
+/// The rotation's columns of a rigid (rotation + translation) placement.
+pub(super) fn rigid_axes(matrix: &[f64; 16]) -> Option<[[f64; 3]; 3]> {
+    if !matrix.iter().all(|x| x.is_finite()) || matrix[12..] != [0.0, 0.0, 0.0, 1.0] {
+        return None;
+    }
+    let axes = [0, 1, 2].map(|column| [matrix[column], matrix[4 + column], matrix[8 + column]]);
+    for i in 0..3 {
+        for j in 0..3 {
+            let expected = if i == j { 1.0 } else { 0.0 };
+            if (dot(axes[i], axes[j]) - expected).abs() > ROUNDING {
+                return None;
+            }
+        }
+    }
+    Some(axes)
+}
+
 impl LocalHull {
     /// Rigid (rotation + translation) placements only; anything else stays exact-only.
     pub(super) fn world(self, matrix: [f64; 16]) -> Option<WorldHull> {
-        if !matrix.iter().all(|x| x.is_finite()) || matrix[12..] != [0.0, 0.0, 0.0, 1.0] {
-            return None;
-        }
-        let axes = [0, 1, 2].map(|column| [matrix[column], matrix[4 + column], matrix[8 + column]]);
-        for i in 0..3 {
-            for j in 0..3 {
-                let expected = if i == j { 1.0 } else { 0.0 };
-                if (dot(axes[i], axes[j]) - expected).abs() > ROUNDING {
-                    return None;
-                }
-            }
-        }
+        let axes = rigid_axes(&matrix)?;
         let local_center = [0, 1, 2].map(|axis| 0.5 * (self.min[axis] + self.max[axis]));
         let center = [0, 1, 2].map(|row| {
             matrix[4 * row] * local_center[0]
