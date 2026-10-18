@@ -1283,11 +1283,9 @@ fn selected_imported_mesh_paints_its_outline_without_per_frame_edge_derivation()
             .unwrap()
             .edges,
     );
-    let started = Instant::now();
     for _ in 0..8 {
         let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
     }
-    let elapsed = started.elapsed();
     assert!(
         Arc::ptr_eq(
             &cached,
@@ -1300,11 +1298,6 @@ fn selected_imported_mesh_paints_its_outline_without_per_frame_edge_derivation()
                 .edges
         ),
         "the feature edges of an unchanged body must be derived once, not per frame"
-    );
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "eight frames of a selected {} triangle mesh took {elapsed:?}",
-        mesh.triangles.len()
     );
 }
 

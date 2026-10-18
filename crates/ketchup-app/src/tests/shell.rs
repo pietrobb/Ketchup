@@ -2,19 +2,19 @@
 
 use super::*;
 
-/// Steps the shell until `done` holds, polling between frames, and fails after
-/// `budget` naming `what` and the status line. Unit tests wait on background
-/// work (exact evaluation, a commit) here instead of sleeping themselves.
+/// Steps the shell until `done` holds, polling between frames, and fails once
+/// `within` has passed, naming `what` and the status line. Unit tests wait on
+/// background work (exact evaluation, a commit) here instead of sleeping themselves.
 pub(crate) fn step_until(
     harness: &mut Harness<'_, KetchupApp>,
-    budget: Duration,
+    within: Duration,
     what: &str,
     mut done: impl FnMut(&KetchupApp) -> bool,
 ) {
-    let started = Instant::now();
+    let deadline = Instant::now() + within;
     while !done(harness.state()) {
         assert!(
-            started.elapsed() < budget,
+            Instant::now() < deadline,
             "{what}: {}",
             harness.state().digest
         );

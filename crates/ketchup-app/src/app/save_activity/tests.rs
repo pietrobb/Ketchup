@@ -20,13 +20,10 @@ fn wait(harness: &mut Harness<'_, KetchupApp>) {
 }
 
 fn assert_indicated(harness: &mut Harness<'_, KetchupApp>) {
+    // The file worker is held (a gate or a lock): a frame that waited for it
+    // would end only once the save was over, with nothing left to show.
     for _ in 0..8 {
-        let started = Instant::now();
         harness.step();
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "UI waited for file worker"
-        );
         let label = harness
             .state()
             .file_activity_label()

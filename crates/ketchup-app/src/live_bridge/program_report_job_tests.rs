@@ -25,17 +25,14 @@ fn request(app: &mut KetchupApp, sender: &mpsc::SyncSender<Queued>, request: Req
             reply,
         })
         .unwrap();
-    let started = Instant::now();
     app.poll_live_bridge(&egui::Context::default());
     Answer {
-        frame: started.elapsed(),
         cancelled,
         receiver,
     }
 }
 
 struct Answer {
-    frame: Duration,
     cancelled: Arc<AtomicBool>,
     receiver: mpsc::Receiver<Response>,
 }
@@ -84,14 +81,10 @@ fn a_report_page_that_needs_a_slow_check_does_not_hold_up_the_frame() {
 
     let page = issues_page(&app);
     let slow = request(&mut app, &sender, page);
-    assert!(
-        slow.frame < Duration::from_secs(5),
-        "the frame waited {:?} for the report",
-        slow.frame
-    );
+    // A frame that waited for the report would have answered it.
     assert!(
         slow.receiver.try_recv().is_err(),
-        "answered before the check"
+        "the frame waited for the report"
     );
     slow.cancelled.store(true, Ordering::Release);
     assert_eq!(

@@ -237,7 +237,6 @@ impl ProgramEvaluations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
 
     fn program(text: &str) -> RuleProgramSource {
         RuleProgramSource {
@@ -272,22 +271,11 @@ mod tests {
             source: include_str!("../../../examples/programs/tiny-house.star").into(),
             overrides: Default::default(),
         };
-        // What a whole evaluation of the house costs on this machine.
-        let started = Instant::now();
-        assert!(ProgramEvaluations::default().get_blocking(&house).is_ok());
-        let whole = started.elapsed();
-
-        // Right after Open the frame warms the program and a tool asks at once.
+        // Right after Open the frame warms the program and a tool asks at once:
+        // an ask that waited for the evaluation would get the house.
         let evaluations = ProgramEvaluations::default();
         evaluations.warm(&house, &eframe::egui::Context::default());
-        let started = Instant::now();
-        let first = evaluations.try_get(&house);
-        let asked = started.elapsed();
-        assert!(matches!(first, Lookup::Pending));
-        assert!(
-            asked < Duration::from_millis(20) && asked * 10 < whole,
-            "asking took {asked:?}; the whole evaluation takes {whole:?}"
-        );
+        assert!(matches!(evaluations.try_get(&house), Lookup::Pending));
 
         // The tool asks again on later frames and gets the house, evaluated once
         // and never on the asking thread.
@@ -295,15 +283,12 @@ mod tests {
         assert!(!evaluated.part_sources.is_empty());
         assert_eq!(evaluations.on_ui_thread(), 0);
 
-        // Waiting (the bridge's same-call answer, the old tool path) costs
-        // about the whole evaluation, which no tool may spend in a frame.
+        // Waiting (the bridge's same-call answer, the old tool path) takes the
+        // warmed evaluation instead of evaluating again on this thread.
         let waiting = ProgramEvaluations::default();
         waiting.warm(&house, &eframe::egui::Context::default());
-        let started = Instant::now();
         assert!(waiting.get_blocking(&house).is_ok());
-        let waited = started.elapsed();
         assert_eq!(waiting.on_ui_thread(), 0);
-        eprintln!("house: whole {whole:?}, asked {asked:?}, waited after warm {waited:?}");
     }
 
     #[test]

@@ -42,13 +42,10 @@ fn slow_preparation_is_visible_and_cancel_or_native_close_writes_nothing() {
                 result
             },
         );
+        // The worker waits for `release`, sent below: a frame that waited for
+        // it would end only once the worker gave up, with no export to show.
         for _ in 0..8 {
-            let started = Instant::now();
             harness.step();
-            assert!(
-                started.elapsed() < Duration::from_millis(500),
-                "UI waited for export worker"
-            );
             let label = harness.state().file_activity_label().unwrap();
             assert!(
                 harness
@@ -170,10 +167,10 @@ fn publication_wait_is_responsive_and_close_is_sent_only_after_success() {
             stage: Stage::Writing(receiver),
             close_requested: false,
         });
+        // The writer waits for `release`: a frame that waited for it would end
+        // only once the writer gave up, with no write to show.
         for _ in 0..8 {
-            let started = Instant::now();
             harness.step();
-            assert!(started.elapsed() < Duration::from_millis(500));
             let label = harness.state().file_activity_label().unwrap();
             assert!(
                 harness

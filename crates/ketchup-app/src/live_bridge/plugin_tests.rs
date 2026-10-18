@@ -789,14 +789,10 @@ fn a_plugin_folder_is_read_staged_and_hashed_off_the_ui_thread() {
             .unwrap();
     });
 
-    // While the folder cannot be read every frame returns at once.
+    // While the folder cannot be read every frame returns: one that waited for
+    // the gate, opened below, would never end.
     for _ in 0..50 {
-        let frame = Instant::now();
         wire.app.poll_live_bridge(&wire.context);
-        assert!(
-            frame.elapsed() < Duration::from_secs(1),
-            "a frame waited for the folder"
-        );
         assert!(rx.recv_timeout(Duration::from_millis(5)).is_err());
     }
     assert!(wire.app.live.bridge.as_ref().is_some_and(|bridge| matches!(

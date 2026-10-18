@@ -211,24 +211,24 @@ impl Write for BlockedWrite {
 }
 #[test]
 fn input_and_output_pipe_stalls_have_deadlines() {
+    // Each pipe is held until its `tx` is dropped after the call: without a
+    // deadline the call would never return.
     let (tx, rx) = mpsc::channel();
-    let started = Instant::now();
-    assert!(opted_in().read_from(BlockedRead(rx)).is_err());
-    assert!(started.elapsed() < BOOTSTRAP_DEADLINE + Duration::from_secs(2));
+    assert!(matches!(
+        opted_in().read_from(BlockedRead(rx)),
+        Err(BootstrapError::DeadlineExceeded)
+    ));
     drop(tx);
     let mut shell = Shell::new();
     let (tx, rx) = mpsc::channel();
-    let started = Instant::now();
-    assert!(
-        pending()
-            .enable(
-                shell.app_mut(),
-                &eframe::egui::Context::default(),
-                BlockedWrite(rx)
-            )
-            .is_err()
-    );
-    assert!(started.elapsed() < BOOTSTRAP_DEADLINE + Duration::from_secs(2));
+    assert!(matches!(
+        pending().enable(
+            shell.app_mut(),
+            &eframe::egui::Context::default(),
+            BlockedWrite(rx)
+        ),
+        Err(BootstrapError::DeadlineExceeded)
+    ));
     assert!(shell.app().live_bridge_credentials().is_none());
     drop(tx);
 }
@@ -734,7 +734,7 @@ fn consent_broker_request_deadline_is_cumulative_across_slow_bytes() {
         }
     });
 
-    let started = Instant::now();
+    // The slow peer drips for 4 s: an answer held behind it misses this timeout.
     let mut prompt = TcpStream::connect(address).unwrap();
     prompt
         .set_read_timeout(Some(Duration::from_secs(3)))
@@ -749,14 +749,12 @@ fn consent_broker_request_deadline_is_cumulative_across_slow_bytes() {
     .unwrap();
     let mut response = String::new();
     let read = std::io::BufRead::read_line(&mut std::io::BufReader::new(prompt), &mut response);
-    let answered_after = started.elapsed();
     dripper.join().unwrap();
 
     assert!(
         read.is_ok(),
         "valid request was blocked by a slow peer: {read:?}"
     );
-    assert!(answered_after < Duration::from_secs(3));
     let response: serde_json::Value = serde_json::from_str(&response).unwrap();
     assert_eq!(response["status"], "available");
     assert_eq!(response["nonce"], "6".repeat(64));

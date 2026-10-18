@@ -1150,12 +1150,13 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("attach was not received");
 
-        let started = Instant::now();
-        drop(broker);
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "broker shutdown must not wait for the consent deadline"
-        );
+        let (dropped, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(broker);
+            dropped.send(()).unwrap();
+        });
+        done.recv_timeout(DECISION_DEADLINE / 2)
+            .expect("broker shutdown must not wait for the consent deadline");
         attach
             .set_read_timeout(Some(Duration::from_millis(500)))
             .unwrap();
