@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -38,6 +40,31 @@ def test_skip_plugin_changes_success_to_failure():
 
     assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
     assert plugin.skipped == ["tests/test_module.py", "tests/test_native.py::test_real"]
+
+
+def _child_writing(payload: bytes, monkeypatch):
+    """Every command the runner starts becomes a child writing `payload`, with
+    the runner's own decoding arguments."""
+    real_run = runner.subprocess.run
+    script = f"import sys; sys.stdout.buffer.write({payload!r})"
+
+    def run(command, **kwargs):
+        return real_run([sys.executable, "-c", script], **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+
+
+def test_cargo_metadata_is_read_as_utf_8(monkeypatch):
+    # The Windows CI runner decoded `cargo metadata` with its ANSI code page
+    # and failed on the bytes of a non-ASCII character.
+    target = "C:\\Kečup\\target"
+    _child_writing(json.dumps({"target_directory": target}, ensure_ascii=False).encode(), monkeypatch)
+    assert runner.cargo_target_directory("cargo") == Path(target).resolve()
+
+
+def test_command_output_is_read_as_utf_8(monkeypatch):
+    _child_writing("Kečup ✓".encode(), monkeypatch)
+    assert runner.run(["tool"], capture_output=True).stdout == "Kečup ✓"
 
 
 def test_the_native_set_is_every_file_that_skips_without_the_built_cli():

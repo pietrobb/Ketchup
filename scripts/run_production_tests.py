@@ -68,6 +68,8 @@ def run(
         cwd=ROOT,
         input=input_text,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=input_text is not None or capture_output,
         check=False,
     )
@@ -108,6 +110,8 @@ def cargo_target_directory(cargo: str) -> Path:
         [cargo, "metadata", "--locked", "--no-deps", "--format-version", "1"],
         cwd=ROOT,
         text=True,
+        # Cargo writes UTF-8, not the code page of the Windows runner.
+        encoding="utf-8",
         capture_output=True,
         check=False,
     )
