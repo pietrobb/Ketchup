@@ -6,7 +6,9 @@ use ketchup_model::document::{
     SlotResolution, SlotSegment, Transform,
 };
 use ketchup_model::persistence::LegacyFeatureKind;
-use ketchup_model::persistence::{self, LoadDisposition, LoadOutcome, PersistenceError};
+use ketchup_model::persistence::{
+    self, LoadDisposition, LoadOutcome, MigrationBlocker, PersistenceError,
+};
 use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
 use ketchup_model::testing::with_document_id;
 use ketchup_model::tolerance::TolerancePolicy;
@@ -1031,8 +1033,22 @@ fn required_unknown_extension_cannot_be_confirmed_as_a_semantic_migration() {
             .unwrap()
             .confirm_semantic_migration(),
         Err(PersistenceError::MigrationNotConfirmable(
-            "candidate requires an unknown extension"
+            MigrationBlocker::UnknownExtension
         ))
+    ));
+}
+
+/// Review 2026-10-17 M-8: a folder where the work-recovery checkpoint belongs came back
+/// as an `io::Error` holding only a sentence; the error is typed and names the path.
+#[test]
+fn a_work_recovery_folder_is_a_typed_error_naming_its_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let document = directory.path().join("part.ketchup");
+    let recovery = persistence::work_recovery_path(&document);
+    std::fs::create_dir(&recovery).unwrap();
+    assert!(matches!(
+        persistence::check_work_recovery_identity(&document, None),
+        Err(persistence::FilePersistenceError::NotARegularFile(path)) if path == recovery
     ));
 }
 

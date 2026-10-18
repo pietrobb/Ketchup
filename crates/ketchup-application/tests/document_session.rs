@@ -686,8 +686,8 @@ fn checkpoint_failures_roll_back_apply_undo_and_redo_without_changing_history() 
     assert!(matches!(
         session.apply_proposal(&proposal),
         Err(SessionError::Persistence(
-            persistence::FilePersistenceError::Io(_)
-        ))
+            persistence::FilePersistenceError::NotARegularFile(path)
+        )) if path == recovery
     ));
     assert_eq!(
         (

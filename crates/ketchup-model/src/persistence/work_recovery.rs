@@ -38,10 +38,7 @@ pub fn check_work_recovery_identity(
         }
         Err(error) => Err(FilePersistenceError::Io(error)),
         Ok(metadata) if !metadata.file_type().is_file() => {
-            Err(FilePersistenceError::Io(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "work-recovery path is not a regular file",
-            )))
+            Err(FilePersistenceError::NotARegularFile(path))
         }
         Ok(_) => {
             let mut file = fs::File::open(path)?;
@@ -95,10 +92,7 @@ pub fn set_aside_work_recovery(
         )?;
         return Ok(target);
     }
-    Err(FilePersistenceError::Io(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "a thousand set-aside work-recovery checkpoints already exist",
-    )))
+    Err(FilePersistenceError::SetAsideNamesTaken(source))
 }
 
 #[cfg(feature = "testing")]

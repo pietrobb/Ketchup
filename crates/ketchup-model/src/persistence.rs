@@ -306,12 +306,12 @@ impl ReviewCandidate {
     pub fn confirm_semantic_migration(&self) -> Result<ConfirmedMigration, PersistenceError> {
         if self.container_data.requires_unknown_extension() {
             return Err(PersistenceError::MigrationNotConfirmable(
-                "candidate requires an unknown extension",
+                MigrationBlocker::UnknownExtension,
             ));
         }
         if self.audit.migration_losses.is_empty() {
             return Err(PersistenceError::MigrationNotConfirmable(
-                "candidate has no reported semantic loss",
+                MigrationBlocker::NoSemanticLoss,
             ));
         }
         if self
@@ -321,7 +321,7 @@ impl ReviewCandidate {
             .any(|entry| entry.audited != SlotResolution::Resolved || entry.audited != entry.stored)
         {
             return Err(PersistenceError::MigrationNotConfirmable(
-                "candidate has unresolved override identity",
+                MigrationBlocker::UnresolvedOverride,
             ));
         }
 
@@ -330,7 +330,7 @@ impl ReviewCandidate {
         for loss in &self.audit.migration_losses {
             if loss.field != "dimension.source_token" || !migrated_nodes.insert(loss.node_id) {
                 return Err(PersistenceError::MigrationNotConfirmable(
-                    "candidate contains an unsupported migration loss",
+                    MigrationBlocker::UnsupportedLoss,
                 ));
             }
             let dimension = self
@@ -339,7 +339,7 @@ impl ReviewCandidate {
                 .and_then(EvaluatorNode::dimension)
                 .cloned()
                 .ok_or(PersistenceError::MigrationNotConfirmable(
-                    "migration target is not a parameter dimension",
+                    MigrationBlocker::NotAParameterDimension,
                 ))?;
             commands.push(CanonicalCommand::SetEvaluatorDimension {
                 id: loss.node_id,
@@ -1125,10 +1125,10 @@ fn remove_regular_file_if_unchanged_after_check(
         }
         Err(error) => Err(io::Error::new(
             error.kind(),
-            format!(
-                "cleanup target changed concurrently; preserved claimed entry at {}: {error}",
-                claimed_path.display()
-            ),
+            CleanupRaced {
+                claimed_path,
+                error,
+            },
         )),
     }
 }
@@ -1361,10 +1361,7 @@ fn clear_work_recovery_after_compare(
         Err(error) => return Err(FilePersistenceError::Io(error)),
     };
     if !metadata.file_type().is_file() {
-        return Err(FilePersistenceError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "work-recovery path is not a regular file",
-        )));
+        return Err(FilePersistenceError::NotARegularFile(recovery_path));
     }
     let Some(expected) = expected else {
         return Ok(false);
@@ -2731,6 +2728,11 @@ pub enum FilePersistenceError {
     Io(io::Error),
     Format(PersistenceError),
     ExternalConflict,
+    /// The work-recovery checkpoint's path holds something other than a file, which a
+    /// session neither reads nor replaces.
+    NotARegularFile(PathBuf),
+    /// Every set-aside name next to this work-recovery checkpoint is taken.
+    SetAsideNamesTaken(PathBuf),
     /// The file did not open (`primary`), and neither did its `.recovery` backup.
     BackupUnusable {
         primary: Box<FilePersistenceError>,
@@ -2771,6 +2773,14 @@ impl fmt::Display for FilePersistenceError {
             Self::ExternalConflict => {
                 formatter.write_str("the document changed outside this session")
             }
+            Self::NotARegularFile(path) => {
+                write!(formatter, "{} is not a regular file", path.display())
+            }
+            Self::SetAsideNamesTaken(path) => write!(
+                formatter,
+                "a thousand set-aside copies of {} already exist",
+                path.display()
+            ),
             Self::BackupUnusable {
                 primary,
                 backup_path,
@@ -2790,7 +2800,7 @@ impl std::error::Error for FilePersistenceError {
             Self::Io(error) | Self::Published { error, .. } => Some(error),
             Self::Format(error) => Some(error),
             Self::BackupUnusable { primary, .. } => Some(primary.as_ref()),
-            Self::ExternalConflict => None,
+            Self::ExternalConflict | Self::NotARegularFile(_) | Self::SetAsideNamesTaken(_) => None,
         }
     }
 }
@@ -2800,11 +2810,59 @@ impl From<io::Error> for FilePersistenceError {
     }
 }
 
+/// Why a semantic migration cannot be confirmed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MigrationBlocker {
+    UnknownExtension,
+    NoSemanticLoss,
+    UnresolvedOverride,
+    UnsupportedLoss,
+    NotAParameterDimension,
+}
+
+impl fmt::Display for MigrationBlocker {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::UnknownExtension => "candidate requires an unknown extension",
+            Self::NoSemanticLoss => "candidate has no reported semantic loss",
+            Self::UnresolvedOverride => "candidate has unresolved override identity",
+            Self::UnsupportedLoss => "candidate contains an unsupported migration loss",
+            Self::NotAParameterDimension => "migration target is not a parameter dimension",
+        })
+    }
+}
+
+/// A file to remove changed after it was claimed: it is put back, and the claimed
+/// entry stays at `claimed_path`, so nothing is lost. The `io::Error` a cleanup returns
+/// carries this.
+#[derive(Debug)]
+pub struct CleanupRaced {
+    pub claimed_path: PathBuf,
+    pub error: io::Error,
+}
+
+impl fmt::Display for CleanupRaced {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "cleanup target changed concurrently; preserved claimed entry at {}: {}",
+            self.claimed_path.display(),
+            self.error
+        )
+    }
+}
+
+impl std::error::Error for CleanupRaced {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum PersistenceError {
     /// A pre-serde document failed the frozen legacy reader.
     Legacy(LegacyError),
-    MigrationNotConfirmable(&'static str),
+    MigrationNotConfirmable(MigrationBlocker),
     Truncated,
     InvalidMagic,
     InvalidContainerMagic,
