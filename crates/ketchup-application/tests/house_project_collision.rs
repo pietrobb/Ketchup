@@ -144,6 +144,16 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
         .count();
     assert!(members > 1800, "{members}");
     assert_eq!(timber, members);
+    // The concrete footings and the chimney are manufactured BOM items, not left out.
+    let parts = occurrences.len();
+    let manufactured = projection
+        .bom
+        .rows
+        .iter()
+        .filter(|row| row.item_kind == GeneralBomItemKind::Manufactured)
+        .map(|row| row.quantity)
+        .sum::<usize>();
+    assert_eq!(manufactured, parts - members, "{parts} parts");
     // the house is larger than the unscoped collision scene (512 occurrences)
     assert_eq!(
         validation.report.state,
