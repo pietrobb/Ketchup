@@ -196,18 +196,21 @@ impl KetchupApp {
                 let vertex = vertices.get(usize::try_from(index).ok()?)?;
                 Some(occurrence.transform.transform_point(vertex.position_mm))
             };
-            let triangles = package
+            let (triangles, faces) = package
                 .triangles()
                 .iter()
-                .filter_map(|triangle| {
+                .enumerate()
+                .filter_map(|(index, triangle)| {
                     let [a, b, c] = triangle.vertex_indices;
-                    Some([world(a)?, world(b)?, world(c)?])
+                    let face = package.triangle_face_ordinal(index)?;
+                    Some(([world(a)?, world(b)?, world(c)?], face))
                 })
-                .collect();
+                .unzip();
             solids.push(DrawingSolid {
                 name: occurrence.occurrence_name,
                 color: occurrence.color.unwrap_or(DEFAULT_SOLID_COLOR),
                 triangles,
+                faces,
                 threads,
             });
         }

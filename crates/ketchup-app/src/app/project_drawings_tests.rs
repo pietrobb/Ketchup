@@ -398,6 +398,9 @@ fn modelled_threads_draw_the_same_sheet_as_cosmetic_ones_without_helix_edges() {
                     })
                 })
                 .collect();
+            solid.faces = (0..package.triangles().len())
+                .map(|index| package.triangle_face_ordinal(index).unwrap())
+                .collect();
             solid
         })
         .collect::<Vec<_>>();

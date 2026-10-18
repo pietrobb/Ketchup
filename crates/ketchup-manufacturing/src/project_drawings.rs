@@ -29,13 +29,15 @@ type Point = [f64; 3];
 /// A closed outline in view millimetres.
 type Polyline = Vec<[f64; 2]>;
 
-/// One solid to draw: its triangles in world millimetres, its colour and the
-/// threads on its cylinders.
+/// One solid to draw: its triangles in world millimetres, the exact face each
+/// triangle was meshed from, its colour and the threads on its cylinders.
 #[derive(Clone, Debug)]
 pub struct DrawingSolid {
     pub name: String,
     pub color: [u8; 3],
     pub triangles: Vec<[Point; 3]>,
+    /// In step with `triangles`.
+    pub faces: Vec<u32>,
     pub threads: Vec<DrawingThread>,
 }
 
@@ -152,14 +154,16 @@ fn grid_key(point: Point) -> [i64; 3] {
     point.map(|value| (value * 100.0).round() as i64)
 }
 
-/// Edges where the surface folds (or ends): the lines a drawing shows.
+/// The lines a drawing shows: where two exact faces meet, however shallow the
+/// fold, and where the surface ends. Mesh lines inside one face are never
+/// drawn, so a curved face does not show its facets whatever the mesh step.
 fn feature_edges(solid: &DrawingSolid) -> Vec<[Point; 2]> {
-    // Per shared edge (keyed by its grid ends): its ends and the normals of its faces.
-    let mut edges: BTreeMap<[[i64; 3]; 2], (Point, Point, Vec<Point>)> = BTreeMap::new();
-    for triangle in &solid.triangles {
-        let Some(normal) = unit_normal(triangle) else {
+    // Per mesh edge (keyed by its grid ends): its ends and the faces it bounds.
+    let mut edges: BTreeMap<[[i64; 3]; 2], (Point, Point, Vec<u32>)> = BTreeMap::new();
+    for (triangle, face) in solid.triangles.iter().zip(&solid.faces) {
+        if unit_normal(triangle).is_none() {
             continue;
-        };
+        }
         for index in 0..3 {
             let (a, b) = (triangle[index], triangle[(index + 1) % 3]);
             let (ka, kb) = (grid_key(a), grid_key(b));
@@ -168,17 +172,12 @@ fn feature_edges(solid: &DrawingSolid) -> Vec<[Point; 2]> {
                 .entry(key)
                 .or_insert_with(|| (a, b, Vec::new()))
                 .2
-                .push(normal);
+                .push(*face);
         }
     }
-    // Faces meeting at more than about 20° show their edge.
-    let fold = 20_f64.to_radians().cos();
     edges
         .into_values()
-        .filter(|(_, _, normals)| match normals.as_slice() {
-            [first, second] => dot(*first, *second) < fold,
-            _ => true,
-        })
+        .filter(|(_, _, faces)| !matches!(faces.as_slice(), [first, second] if first == second))
         .map(|(a, b, _)| [a, b])
         .collect()
 }
@@ -930,8 +929,83 @@ mod tests {
             name: name.to_owned(),
             color: [200, 160, 110],
             triangles,
+            faces: (0..6).flat_map(|face| [face, face]).collect(),
             threads: Vec::new(),
         }
+    }
+
+    /// A closed cylinder about z, its side meshed in `segments` facets: the
+    /// side is face 0, the bottom face 1, the top face 2.
+    fn cylinder(radius: f64, height: f64, segments: u32) -> DrawingSolid {
+        let rim = |index: u32, z: f64| -> Point {
+            let angle = f64::from(index % segments) * std::f64::consts::TAU / f64::from(segments);
+            [radius * angle.cos(), radius * angle.sin(), z]
+        };
+        let (mut triangles, mut faces) = (Vec::new(), Vec::new());
+        for index in 0..segments {
+            let (a, b) = (rim(index, 0.0), rim(index + 1, 0.0));
+            let (c, d) = (rim(index + 1, height), rim(index, height));
+            triangles.extend([[a, b, c], [a, c, d]]);
+            faces.extend([0, 0]);
+            triangles.push([[0.0, 0.0, 0.0], b, a]);
+            faces.push(1);
+            triangles.push([[0.0, 0.0, height], d, c]);
+            faces.push(2);
+        }
+        DrawingSolid {
+            name: "pin".to_owned(),
+            color: [200, 160, 110],
+            triangles,
+            faces,
+            threads: Vec::new(),
+        }
+    }
+
+    /// P3-V: a cylinder meshed coarser than the old 20° fold limit (the
+    /// display mesh steps up to 0.35 rad, just over 20°) drew a line at every
+    /// facet of its side; only its two rims are edges.
+    #[test]
+    fn a_coarsely_meshed_cylinder_shows_only_its_rims() {
+        let edges = feature_edges(&cylinder(50.0, 100.0, 17));
+        assert_eq!(edges.len(), 2 * 17, "{edges:?}");
+        assert!(
+            edges
+                .iter()
+                .all(|[a, b]| a[2] == b[2] && (a[2] == 0.0 || a[2] == 100.0)),
+            "{edges:?}"
+        );
+    }
+
+    /// P3-V: two faces of a shallow roof meeting at 10° still show their ridge,
+    /// because it is an edge of the model, however small the fold.
+    #[test]
+    fn a_shallow_fold_between_two_faces_is_drawn() {
+        let pitch = 5_f64.to_radians().tan() * 1000.0;
+        let (south_west, south_east) = ([0.0, 0.0, 0.0], [3000.0, 0.0, 0.0]);
+        let (north_west, north_east) = ([0.0, 2000.0, 0.0], [3000.0, 2000.0, 0.0]);
+        let (ridge_west, ridge_east) = ([0.0, 1000.0, pitch], [3000.0, 1000.0, pitch]);
+        let roof = DrawingSolid {
+            name: "roof".to_owned(),
+            color: [200, 160, 110],
+            triangles: vec![
+                [south_west, south_east, ridge_east],
+                [south_west, ridge_east, ridge_west],
+                [ridge_west, ridge_east, north_east],
+                [ridge_west, north_east, north_west],
+            ],
+            faces: vec![0, 0, 1, 1],
+            threads: Vec::new(),
+        };
+        let edges = feature_edges(&roof);
+        assert!(
+            edges.contains(&[ridge_west, ridge_east]) || edges.contains(&[ridge_east, ridge_west]),
+            "{edges:?}"
+        );
+        assert_eq!(
+            edges.len(),
+            7,
+            "the ridge and the six outline edges: {edges:?}"
+        );
     }
 
     /// A 6 × 3 m room: a floor slab and four 150 mm walls 2.5 m high.
