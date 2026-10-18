@@ -4,7 +4,8 @@ use super::*;
 use crate::pair_query::{EXACT_PAIR_IDENTITY, MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
 use crate::protocol::{PairMeasure, PairQuery};
 
-type TransformKey = (usize, [u64; 16]);
+use std::rc::Rc;
+
 /// Graph digests, both placements and tolerance fully determine a pair result.
 type PairResultKey = (String, String, [u64; 16], [u64; 16], u64);
 const MAX_CACHED_PAIR_RESULTS: usize = 100_000;
@@ -15,12 +16,27 @@ thread_local! {
         std::cell::RefCell::default();
 }
 
-#[derive(Default)]
 pub(super) struct PairQuerySession {
     active: bool,
-    bodies: Vec<(String, std::rc::Rc<ketchup_exact::ExactOpOutput>)>,
-    transformed: BTreeMap<TransformKey, ketchup_exact::ExactBody>,
+    bodies: Vec<(String, Rc<ketchup_exact::ExactOpOutput>)>,
+    /// Placed copies of the batch's bodies, under a byte budget like the graph
+    /// outputs; a copy that left is placed again when a query needs it.
+    transformed: output_cache::OutputCache<ketchup_exact::ExactOpOutput>,
     queries: usize,
+}
+
+impl Default for PairQuerySession {
+    fn default() -> Self {
+        Self {
+            active: false,
+            bodies: Vec::new(),
+            transformed: output_cache::OutputCache::new(
+                MAX_EXACT_PAIR_CANDIDATES * 2,
+                output_cache::MAX_CACHED_GRAPH_OUTPUT_BYTES,
+            ),
+            queries: 0,
+        }
+    }
 }
 
 impl PairQuerySession {
@@ -75,12 +91,13 @@ impl PairQuerySession {
         Ok(WorkerReply::PairLoaded { slot })
     }
 
-    fn prepare_transform(
+    /// The body in `slot` placed by `matrix`.
+    fn placed(
         &mut self,
         backend: &ExactBackend,
         slot: usize,
         matrix: [f64; 16],
-    ) -> Result<Option<TransformKey>, WorkerFailure> {
+    ) -> Result<Rc<ketchup_exact::ExactOpOutput>, WorkerFailure> {
         let Some((_, body)) = self.bodies.get(slot) else {
             return Err(WorkerFailure::invalid_request());
         };
@@ -88,23 +105,20 @@ impl PairQuerySession {
             return Err(WorkerFailure::invalid_request());
         }
         if matrix == EXACT_PAIR_IDENTITY {
-            return Ok(None);
+            return Ok(Rc::clone(body));
         }
-        let key = (slot, matrix.map(f64::to_bits));
-        if !self.transformed.contains_key(&key) {
-            if self.transformed.len() >= MAX_EXACT_PAIR_CANDIDATES * 2 {
-                return Err(WorkerFailure::invalid_request());
-            }
-            let output = backend
+        let key = format!("{slot}:{:?}", matrix.map(f64::to_bits));
+        if let Some(placed) = self.transformed.get(&key) {
+            return Ok(placed);
+        }
+        let placed = Rc::new(
+            backend
                 .transform_body(&body.body, &matrix)
-                .map_err(|error| geometry_failure(&error))?;
-            self.transformed.insert(key, output.body);
-        }
-        Ok(Some(key))
-    }
-
-    fn body(&self, slot: usize, key: Option<TransformKey>) -> &ketchup_exact::ExactBody {
-        key.map_or_else(|| &self.bodies[slot].1.body, |key| &self.transformed[&key])
+                .map_err(|error| geometry_failure(&error))?,
+        );
+        let bytes = placed.retained_bytes();
+        self.transformed.insert(key, Rc::clone(&placed), bytes);
+        Ok(placed)
     }
 
     fn try_query(&mut self, backend: &ExactBackend, query: &PairQuery) -> WorkerResult {
@@ -151,15 +165,10 @@ impl PairQuerySession {
         let measure = match cached {
             Some(measure) => measure,
             None => {
-                let left_key = self.prepare_transform(backend, query.left, query.left_transform)?;
-                let right_key =
-                    self.prepare_transform(backend, query.right, query.right_transform)?;
+                let left = self.placed(backend, query.left, query.left_transform)?;
+                let right = self.placed(backend, query.right, query.right_transform)?;
                 let result = backend
-                    .query_body_pair(
-                        self.body(query.left, left_key),
-                        self.body(query.right, right_key),
-                        query.tolerance_mm,
-                    )
+                    .query_body_pair(&left.body, &right.body, query.tolerance_mm)
                     .map_err(|error| geometry_failure(&error))?;
                 let measure = PairMeasure {
                     common_volume_mm3: result.common_volume_mm3,
@@ -241,7 +250,7 @@ mod tests {
         );
         assert!(!session.active);
         assert!(session.bodies.is_empty());
-        assert!(session.transformed.is_empty());
+        assert!(session.transformed.keys().is_empty());
         assert_eq!(session.end(), Err(WorkerFailure::invalid_request()));
     }
 
@@ -259,34 +268,63 @@ mod tests {
                 height_mm: 2.0,
             })
             .unwrap();
-        session
-            .bodies
-            .push(("fixture".to_owned(), std::rc::Rc::new(shape)));
+        session.bodies.push(("fixture".to_owned(), Rc::new(shape)));
         let mut matrix = EXACT_PAIR_IDENTITY;
         matrix[3] = 3.0;
-        let key = session.prepare_transform(&backend, 0, matrix).unwrap();
-        let address = session.body(0, key) as *const ketchup_exact::ExactBody;
+        let first = session.placed(&backend, 0, matrix).unwrap();
         for _ in 0..10 {
-            assert_eq!(session.prepare_transform(&backend, 0, matrix).unwrap(), key);
-            assert_eq!(
-                session.body(0, key) as *const ketchup_exact::ExactBody,
-                address
-            );
+            assert!(Rc::ptr_eq(
+                &session.placed(&backend, 0, matrix).unwrap(),
+                &first
+            ));
         }
-        assert_eq!(session.transformed.len(), 1);
+        assert_eq!(session.transformed.keys().len(), 1);
         matrix[3] = 4.0;
-        assert_ne!(session.prepare_transform(&backend, 0, matrix).unwrap(), key);
-        assert_eq!(session.transformed.len(), 2);
-        assert_eq!(
-            session
-                .prepare_transform(&backend, 0, EXACT_PAIR_IDENTITY)
-                .unwrap(),
-            None
-        );
+        assert!(!Rc::ptr_eq(
+            &session.placed(&backend, 0, matrix).unwrap(),
+            &first
+        ));
+        assert_eq!(session.transformed.keys().len(), 2);
+        let unplaced = session.placed(&backend, 0, EXACT_PAIR_IDENTITY).unwrap();
+        assert!(Rc::ptr_eq(&unplaced, &session.bodies[0].1));
         matrix[0] = 0.0;
-        assert!(session.prepare_transform(&backend, 0, matrix).is_err());
+        assert!(session.placed(&backend, 0, matrix).is_err());
         assert_eq!(session.end(), Ok(WorkerReply::Done));
-        assert!(session.transformed.is_empty());
+        assert!(session.transformed.keys().is_empty());
         assert!(session.bodies.is_empty());
+    }
+
+    #[test]
+    fn placed_copies_stay_within_their_byte_budget() {
+        let backend = ExactBackend::new();
+        let shape = backend
+            .extrude_circle(ketchup_exact::CircleExtrudeSpec {
+                center_mm: [0.0, 0.0],
+                radius_mm: 1.0,
+                height_mm: 2.0,
+            })
+            .unwrap();
+        // Room for one placed copy of this body, not two.
+        let budget = shape.retained_bytes() * 3 / 2;
+        let mut session = PairQuerySession {
+            active: true,
+            transformed: output_cache::OutputCache::new(MAX_EXACT_PAIR_CANDIDATES * 2, budget),
+            ..PairQuerySession::default()
+        };
+        session.bodies.push(("fixture".to_owned(), Rc::new(shape)));
+        let mut matrix = EXACT_PAIR_IDENTITY;
+        for step in 1..=5 {
+            matrix[3] = f64::from(step);
+            session.placed(&backend, 0, matrix).unwrap();
+            assert_eq!(session.transformed.keys().len(), 1);
+        }
+        // The copy that left is placed again, not refused.
+        matrix[3] = 1.0;
+        let again = session.placed(&backend, 0, matrix).unwrap();
+        assert!(!again.body.topology.faces.is_empty());
+        assert_eq!(
+            session.transformed.keys(),
+            [format!("0:{:?}", matrix.map(f64::to_bits))]
+        );
     }
 }

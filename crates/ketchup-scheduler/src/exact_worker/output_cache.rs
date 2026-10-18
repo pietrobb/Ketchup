@@ -59,7 +59,7 @@ impl<T> OutputCache<T> {
     }
 
     #[cfg(test)]
-    fn keys(&self) -> Vec<&str> {
+    pub(super) fn keys(&self) -> Vec<&str> {
         self.order.iter().map(String::as_str).collect()
     }
 }
