@@ -616,8 +616,8 @@ struct Shape {
     radius: f64,
     /// Why the section above is not the member's along its whole length.
     unmodelled: Option<&'static str>,
-    /// Why a vertical load would twist the member as a beam, which the check
-    /// does not model.
+    /// Why the member twists, which the check does not model: as a beam under
+    /// a vertical load, or as a column in flexural-torsional buckling.
     twists: Option<&'static str>,
     /// True length per unit of the load frame's position.
     arc: f64,
@@ -714,10 +714,18 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             return Err("the member's section has no area");
         }
         let upright = 1.0 - world[depth][2].abs() <= ROUNDING;
-        let twists = section.twists(upright).then_some(
-            "a vertical load passes beside the section's shear centre (an angle, or a channel \
-             open to the side) and twists the member; torsion is not checked",
-        );
+        // A column's local axes are horizontal, so `upright` is false and only
+        // a section symmetric about its centroid has its shear centre there.
+        let twists = section
+            .twists(upright)
+            .then_some(if horizontal(frame_axis) < COLUMN_COS {
+                "the section's shear centre is off its centroid (an angle or a channel), so \
+                 it buckles in a flexural-torsional mode; flexural-torsional buckling is not \
+                 checked"
+            } else {
+                "a vertical load passes beside the section's shear centre (an angle, or a \
+                 channel open to the side) and twists the member; torsion is not checked"
+            });
         return Ok(Shape {
             grain: frame_axis,
             b: size[1 - depth],
@@ -1524,7 +1532,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         if load.reactions.is_empty() {
             missing.push("the member has no supports to check against".to_owned());
         } else if role == "column" {
-            match shape.unmodelled {
+            match shape.unmodelled.or(shape.twists) {
                 Some(reason) => missing.push(reason.to_owned()),
                 None => check.checks.push(column_check(load, shape, &design, &uls)),
             }

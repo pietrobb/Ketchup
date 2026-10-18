@@ -595,26 +595,60 @@ fn buckling(area: f64, least: f64) -> f64 {
 }
 
 #[test]
-fn an_angle_column_buckles_about_its_weak_principal_axis_on_its_real_area() {
-    // L 200 x 200 with 50 mm legs: 17 500 mm², not the 40 000 of its bounding
-    // square, and weakest about the 45° axis, not about a side.
+fn a_z_column_buckles_about_its_weak_principal_axis_on_its_real_area() {
+    // Z 200 x 200 with 50 mm flanges and web: 15 000 mm², not the 40 000 of
+    // its bounding square, and weakest about a tilted principal axis, not
+    // about a side. Symmetric about its centroid, its shear centre is there.
     let report = report(
         &column(
-            "[(0, 0), (200, 0), (200, 50), (50, 50), (50, 200), (0, 200)]",
+            "[(100, 0), (200, 0), (200, 50), (125, 50), (125, 150), (100, 150), (100, 200), \
+             (0, 200), (0, 150), (75, 150), (75, 50), (100, 50)]",
             "",
         ),
         &[],
     );
     let column = member(&report, "column");
     assert_eq!(column.role, "column");
-    let (area, least) = least_inertia(&[[0.0, 0.0, 200.0, 50.0], [0.0, 50.0, 50.0, 150.0]], &[]);
-    assert!((area - 17_500.0).abs() < 1e-6, "{area}");
+    assert_eq!(column.missing, Vec::<String>::new());
+    let (area, least) = least_inertia(
+        &[
+            [100.0, 0.0, 100.0, 50.0],
+            [75.0, 50.0, 50.0, 100.0],
+            [0.0, 150.0, 100.0, 50.0],
+        ],
+        &[],
+    );
+    assert!((area - 15_000.0).abs() < 1e-6, "{area}");
     let expected = buckling(area, least);
-    // Buckling of the bounding square gives 0.75 and the real area without
-    // kc 1.33: both far under the real utilization.
-    assert!(expected > 2.5, "{expected}");
+    // About the weaker side axis it gives 2.41 and the real area without kc
+    // 1.55: both far under the real utilization.
+    assert!(expected > 7.0, "{expected}");
     close(utilization(column, "compression"), expected);
     assert_eq!(column.status, "fail");
+}
+
+#[test]
+fn a_column_whose_shear_centre_is_off_its_centroid_is_not_verified() {
+    // Review 2026-10-17 PG-6: an L, or a channel, buckles in a flexural-
+    // torsional mode about its shear centre beside the centroid; that is not
+    // checked, so neither is the column.
+    for profile in [
+        "[(0, 0), (200, 0), (200, 50), (50, 50), (50, 200), (0, 200)]",
+        "[(0, 0), (200, 0), (200, 50), (50, 50), (50, 150), (200, 150), (200, 200), (0, 200)]",
+    ] {
+        let report = report(&column(profile, ""), &[]);
+        let column = member(&report, "column");
+        assert_eq!(column.role, "column");
+        assert!(
+            column.missing.len() == 1
+                && column.missing[0].contains("shear centre")
+                && column.missing[0].contains("flexural-torsional"),
+            "{profile}: {:?}",
+            column.missing
+        );
+        assert_eq!(column.status, "not_verified", "{profile}");
+        assert!(column.checks.is_empty(), "{profile}");
+    }
 }
 
 #[test]
