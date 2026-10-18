@@ -881,7 +881,28 @@ fn general_fabrication_requires_explicit_unambiguous_timber_marking() {
             },
         ]))
         .unwrap();
-    let projection = exact_document_fabrication_projection(&selectively_marked).unwrap();
+    // MF-8: a shown part left unmarked is named, not silently left out.
+    assert_eq!(
+        exact_document_fabrication_projection(&selectively_marked).map(|_| ()),
+        Err(GeneralFabricationError::PartWithoutFabricationRole {
+            part: "Occurrence 14".to_owned(),
+        })
+    );
+    // A production scope of the marked part alone makes it.
+    let snapshot = selectively_marked.current();
+    let registry =
+        ExactResultRegistry::accept(&snapshot, [Arc::new(exact_package(&snapshot))]).unwrap();
+    let tolerance = TolerancePolicy::default();
+    let report = general_report(&snapshot, &[], tolerance);
+    let projection = project_general_fabrication(
+        &snapshot,
+        &registry,
+        &[],
+        &report,
+        tolerance,
+        &[InstancePath::root(EXACT_LEFT)].into(),
+    )
+    .unwrap();
     assert_eq!(projection.bom.rows.len(), 1);
     assert_eq!(projection.bom.rows[0].quantity, 1);
     assert_eq!(projection.bom.rows[0].material_key, TIMBER_MATERIAL_V1);
@@ -1736,6 +1757,83 @@ fn a_hidden_part_is_left_out_of_the_shown_parts_and_made_in_a_production_scope()
     let btlx = String::from_utf8(made.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
     assert!(btlx.contains("Count=\"2\""), "{btlx}");
 }
+
+/// Review 2026-10-18 MF-8: a made part with a body but no fabrication role,
+/// or with a role name no fabrication knows, is named instead of being left
+/// out of the BOM and every machine file without a word.
+#[test]
+fn a_made_part_without_a_known_fabrication_role_is_named_not_left_out() {
+    let project = |document: &DocumentStore| {
+        let snapshot = document.current();
+        let registry = ExactResultRegistry::accept(
+            &snapshot,
+            [Arc::new(ExactBodyPackage::from(graph_package_for(
+                &snapshot,
+                "m17-circular-drill-result",
+                GRAPH_BOOLEAN,
+            )))],
+        )
+        .unwrap();
+        let tolerance = TolerancePolicy::default();
+        let report = general_report(&snapshot, &[], tolerance);
+        project_shown(&snapshot, &registry, &[], &report, tolerance).map(|_| ())
+    };
+
+    let mut unclassified = circular_drill_document();
+    unclassified
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: GRAPH_RIGHT,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: None,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        project(&unclassified),
+        Err(GeneralFabricationError::PartWithoutFabricationRole {
+            part: "Occurrence 47".to_owned(),
+        })
+    );
+    // Hiding the part, as for another floor, leaves it out again.
+    unclassified
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: GRAPH_RIGHT,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(project(&unclassified), Ok(()));
+
+    let misspelt_category = ClassificationCategoryId(924);
+    let mut misspelt = circular_drill_document();
+    misspelt
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: FABRICATION_ROLE_DIMENSION,
+                name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (TIMBER_MEMBER_CATEGORY, TIMBER_MEMBER_ROLE_V1.to_owned()),
+                    (misspelt_category, "fabrication.timber-membr.v1".to_owned()),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: GRAPH_RIGHT,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: Some(misspelt_category),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        project(&misspelt),
+        Err(GeneralFabricationError::UnknownFabricationRole {
+            part: "Occurrence 47".to_owned(),
+            role: "fabrication.timber-membr.v1".to_owned(),
+        })
+    );
+}
+
 #[test]
 fn production_preserves_proper_rotations_and_translations() {
     for linear in [

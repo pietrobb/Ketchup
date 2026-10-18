@@ -31,7 +31,9 @@ use std::num::TryFromIntError;
 
 mod capabilities;
 pub mod production;
+mod projection_bytes;
 mod taps;
+use projection_bytes::*;
 
 pub use capabilities::{Carriage, ShopElement, ShopFormat, ShopLoss, carriage};
 
@@ -223,6 +225,16 @@ pub enum GeneralFabricationError {
     TimberMemberRoleMissing,
     TimberMemberRoleAmbiguous,
     InvalidBomMetadata,
+    /// A made part with a body has no fabrication role, so no BOM row or
+    /// machine file would make it.
+    PartWithoutFabricationRole {
+        part: String,
+    },
+    /// A made part's fabrication role is a name no fabrication knows.
+    UnknownFabricationRole {
+        part: String,
+        role: String,
+    },
     UnsupportedOrUnavailableGeometry,
     BodyValidation(GeneralBodyValidationError),
     InvalidGeometry,
@@ -294,6 +306,14 @@ impl fmt::Display for GeneralFabricationError {
             Self::InvalidBomMetadata => {
                 formatter.write_str("a BOM role or material token is invalid")
             }
+            Self::PartWithoutFabricationRole { part } => write!(
+                formatter,
+                "part \"{part}\" has no fabrication role, so it would be in no BOM row or machine file; make it a member, a manufactured or a purchased item, hide it, or leave it out of the production scope",
+            ),
+            Self::UnknownFabricationRole { part, role } => write!(
+                formatter,
+                "part \"{part}\" has the fabrication role \"{role}\", which no fabrication knows; make it a member, a manufactured or a purchased item",
+            ),
             Self::UnsupportedOrUnavailableGeometry => formatter.write_str(
                 "a visible geometry-bearing occurrence has unsupported or unavailable evidence",
             ),
@@ -2557,9 +2577,16 @@ struct BomOccurrenceMetadata {
     material_key: String,
 }
 
+/// The fabrication role of an occurrence that has one: the BOM item it is, or
+/// the role name no fabrication knows.
+enum BomRole {
+    Item(BomOccurrenceMetadata),
+    Unknown(String),
+}
+
 fn bom_occurrence_metadata(
     snapshot: &Snapshot,
-) -> Result<BTreeMap<OccurrenceId, BomOccurrenceMetadata>, GeneralFabricationError> {
+) -> Result<BTreeMap<OccurrenceId, BomRole>, GeneralFabricationError> {
     let role_dimension =
         snapshot.required_classification_dimension(FABRICATION_ROLE_DIMENSION_V1)?;
     let material_dimension = snapshot.classification_dimension_named(MATERIAL_DIMENSION_V1)?;
@@ -2578,7 +2605,10 @@ fn bom_occurrence_metadata(
             TIMBER_MEMBER_ROLE_V1 => GeneralBomItemKind::Timber,
             MANUFACTURED_ITEM_ROLE_V1 => GeneralBomItemKind::Manufactured,
             PURCHASED_ITEM_ROLE_V1 => GeneralBomItemKind::Purchased,
-            _ => continue,
+            unknown => {
+                metadata.insert(occurrence.id(), BomRole::Unknown(unknown.to_owned()));
+                continue;
+            }
         };
         let classified = material_dimension
             .and_then(|material_dimension| {
@@ -2604,10 +2634,10 @@ fn bom_occurrence_metadata(
         }
         metadata.insert(
             occurrence.id(),
-            BomOccurrenceMetadata {
+            BomRole::Item(BomOccurrenceMetadata {
                 item_kind,
                 material_key,
-            },
+            }),
         );
     }
     Ok(metadata)
@@ -2915,14 +2945,35 @@ pub fn project_general_fabrication(
     {
         return Err(GeneralFabricationError::ValidationBindingMismatch);
     }
-    let made_items = snapshot
-        .scene_query()
-        .into_iter()
-        .filter(|occurrence| {
-            made.contains(&occurrence.instance_path)
-                && bom_metadata.contains_key(&occurrence.occurrence_id)
-        })
-        .collect::<Vec<_>>();
+    let mut made_items = Vec::new();
+    for occurrence in snapshot.scene_query() {
+        if !made.contains(&occurrence.instance_path) {
+            continue;
+        }
+        let part = || {
+            if occurrence.occurrence_name.is_empty() {
+                occurrence.definition_name.clone()
+            } else {
+                occurrence.occurrence_name.clone()
+            }
+        };
+        match bom_metadata.get(&occurrence.occurrence_id) {
+            Some(BomRole::Item(metadata)) => made_items.push((occurrence, metadata)),
+            Some(BomRole::Unknown(role)) => {
+                return Err(GeneralFabricationError::UnknownFabricationRole {
+                    part: part(),
+                    role: role.clone(),
+                });
+            }
+            None if snapshot
+                .definition(occurrence.definition_id)
+                .is_some_and(|definition| !definition.feature_ids().is_empty()) =>
+            {
+                return Err(GeneralFabricationError::PartWithoutFabricationRole { part: part() });
+            }
+            None => {}
+        }
+    }
     let covered = validation_cases
         .iter()
         .flat_map(|case| [&case.left, &case.right])
@@ -2935,7 +2986,7 @@ pub fn project_general_fabrication(
         .collect::<BTreeSet<_>>();
     let single_made_bom_item = validation_cases.is_empty() && made_items.len() == 1;
     let mut accepted = Vec::new();
-    for occurrence in made_items {
+    for (occurrence, metadata) in made_items {
         let definition = snapshot
             .definition(occurrence.definition_id)
             .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
@@ -2959,11 +3010,7 @@ pub fn project_general_fabrication(
             return Err(GeneralFabricationError::ValidationBindingMismatch);
         }
         let dimensions = local_dimensions(snapshot, registry, participant.source())?;
-        let metadata = bom_metadata
-            .get(&occurrence.occurrence_id)
-            .expect("the filtered BOM occurrence has metadata")
-            .clone();
-        accepted.push((participant, dimensions, metadata));
+        accepted.push((participant, dimensions, metadata.clone()));
     }
     if accepted.is_empty() {
         return Err(GeneralFabricationError::NoSupportedGeometry);
@@ -4768,204 +4815,6 @@ fn weldment_drawing_bytes(
     push_projection_bytes(&mut bytes, cut_list_digest.as_bytes());
     push_projection_bytes(&mut bytes, &weldment_cut_list_bytes(rows, validation_state));
     bytes
-}
-
-fn general_bom_bytes(rows: &[GeneralBomRow], evidence_counts: EvidenceCounts) -> Vec<u8> {
-    let mut bytes = GENERAL_BOM_EXPORT_V2.as_bytes().to_vec();
-    bytes.extend_from_slice(&(rows.len() as u64).to_le_bytes());
-    bytes.extend_from_slice(&(evidence_counts.exact as u64).to_le_bytes());
-    bytes.extend_from_slice(&(evidence_counts.tolerant as u64).to_le_bytes());
-    for row in rows {
-        push_projection_bytes(&mut bytes, row.stable_row_id.as_bytes());
-        bytes.extend_from_slice(&(row.position as u64).to_le_bytes());
-        bytes.extend_from_slice(&row.definition_id.0.to_le_bytes());
-        push_general_source(&mut bytes, &row.source);
-        push_projection_bytes(&mut bytes, row.item_kind.token().as_bytes());
-        push_projection_bytes(&mut bytes, row.material_key.as_bytes());
-        bytes.extend_from_slice(&(row.quantity as u64).to_le_bytes());
-        push_dimensions(&mut bytes, row.dimensions);
-        bytes.extend_from_slice(&(row.instances.len() as u64).to_le_bytes());
-        for instance in &row.instances {
-            push_projection_path(&mut bytes, instance);
-        }
-        push_projection_evidence(&mut bytes, &row.evidence_class);
-        push_validation_state(&mut bytes, row.validation_state);
-    }
-    bytes
-}
-
-fn general_drawing_bytes(
-    drawings: &[GeneralPieceDrawing],
-    validation_state: ValidationState,
-) -> Vec<u8> {
-    let mut bytes = GENERAL_DRAWING_SVG_V3.as_bytes().to_vec();
-    push_validation_state(&mut bytes, validation_state);
-    bytes.extend_from_slice(&(drawings.len() as u64).to_le_bytes());
-    for drawing in drawings {
-        push_projection_bytes(&mut bytes, drawing.stable_drawing_id.as_bytes());
-        push_projection_bytes(&mut bytes, drawing.bom_row_id.as_bytes());
-        bytes.extend_from_slice(&(drawing.position as u64).to_le_bytes());
-        bytes.extend_from_slice(&drawing.definition_id.0.to_le_bytes());
-        push_general_source(&mut bytes, &drawing.source);
-        push_projection_bytes(&mut bytes, drawing.item_kind.token().as_bytes());
-        push_projection_bytes(&mut bytes, drawing.material_key.as_bytes());
-        bytes.extend_from_slice(&(drawing.quantity as u64).to_le_bytes());
-        bytes.extend_from_slice(&(drawing.instances.len() as u64).to_le_bytes());
-        for instance in &drawing.instances {
-            push_projection_path(&mut bytes, instance);
-        }
-        push_projection_bytes(&mut bytes, drawing.projection_method.as_bytes());
-        bytes.extend_from_slice(&(drawing.views.len() as u64).to_le_bytes());
-        for view in &drawing.views {
-            push_projection_bytes(&mut bytes, view.stable_view_id.as_bytes());
-            push_projection_bytes(&mut bytes, view.name.as_bytes());
-            push_projection_bytes(&mut bytes, view.horizontal_axis.as_bytes());
-            push_projection_bytes(&mut bytes, view.vertical_axis.as_bytes());
-            bytes.extend_from_slice(&view.width_mm.to_bits().to_le_bytes());
-            bytes.extend_from_slice(&view.height_mm.to_bits().to_le_bytes());
-        }
-        bytes.extend_from_slice(&(drawing.dimensions.len() as u64).to_le_bytes());
-        for dimension in &drawing.dimensions {
-            push_projection_bytes(&mut bytes, dimension.stable_dimension_id.as_bytes());
-            push_projection_bytes(&mut bytes, dimension.axis.as_bytes());
-            bytes.extend_from_slice(&dimension.value_mm.to_bits().to_le_bytes());
-        }
-        push_projection_bytes(
-            &mut bytes,
-            &general_manufacturing_bytes(&drawing.machining_operations, &[], validation_state),
-        );
-        push_projection_evidence(&mut bytes, &drawing.evidence_class);
-    }
-    bytes
-}
-
-fn general_manufacturing_bytes(
-    operations: &[GeneralManufacturingOperation],
-    unresolved_sources: &[GeneralBodySource],
-    validation_state: ValidationState,
-) -> Vec<u8> {
-    let mut bytes = GENERAL_MANUFACTURING_EXPORT_V2.as_bytes().to_vec();
-    push_validation_state(&mut bytes, validation_state);
-    bytes.extend_from_slice(&(operations.len() as u64).to_le_bytes());
-    for operation in operations {
-        push_projection_bytes(&mut bytes, operation.stable_operation_id.as_bytes());
-        bytes.extend_from_slice(&operation.definition_id.0.to_le_bytes());
-        bytes.extend_from_slice(&operation.producer_feature_id.0.to_le_bytes());
-        bytes.push(match operation.kind {
-            GeneralManufacturingKind::Stock => 0,
-            GeneralManufacturingKind::ThroughCut => 1,
-            GeneralManufacturingKind::ProfileCut => 2,
-            GeneralManufacturingKind::CircularDrill => 3,
-            GeneralManufacturingKind::BooleanCut => 4,
-        });
-        bytes.extend_from_slice(&(operation.semantic_inputs.len() as u64).to_le_bytes());
-        for input in &operation.semantic_inputs {
-            bytes.extend_from_slice(&input.0.to_le_bytes());
-        }
-        push_projection_bytes(&mut bytes, operation.frame.as_bytes());
-        push_dimensions(&mut bytes, operation.bounds);
-        push_machining_geometry(&mut bytes, &operation.machining);
-        push_general_source(
-            &mut bytes,
-            &GeneralBodySource::Exact(operation.source.clone()),
-        );
-        match &operation.thread {
-            None => bytes.push(0),
-            Some(thread) => {
-                bytes.push(1);
-                push_projection_bytes(&mut bytes, thread.size.as_bytes());
-                bytes.extend_from_slice(&thread.pitch_mm.to_bits().to_le_bytes());
-                bytes.extend_from_slice(&thread.depth_mm.to_bits().to_le_bytes());
-            }
-        }
-    }
-    bytes.extend_from_slice(&(unresolved_sources.len() as u64).to_le_bytes());
-    for source in unresolved_sources {
-        push_general_source(&mut bytes, source);
-    }
-    bytes
-}
-
-fn push_general_source(bytes: &mut Vec<u8>, source: &GeneralBodySource) {
-    match source {
-        GeneralBodySource::Exact(key) => {
-            bytes.push(0);
-            bytes.extend_from_slice(&key.document_id.0.to_le_bytes());
-            bytes.extend_from_slice(&key.source_revision.to_le_bytes());
-            push_projection_bytes(bytes, key.source_digest.as_bytes());
-            bytes.extend_from_slice(&key.definition_id.0.to_le_bytes());
-            bytes.extend_from_slice(&key.producer_feature_id.0.to_le_bytes());
-            push_projection_bytes(bytes, key.canonical_input_digest.as_bytes());
-            push_projection_bytes(bytes, key.exact_input_digest.as_bytes());
-            push_projection_bytes(bytes, key.evaluator.as_bytes());
-            push_projection_bytes(bytes, key.backend.as_bytes());
-            push_projection_bytes(bytes, key.tolerance.as_bytes());
-            push_projection_bytes(bytes, key.schema.as_bytes());
-            push_projection_bytes(bytes, key.result_fingerprint.as_bytes());
-        }
-        GeneralBodySource::CanonicalMesh {
-            definition_id,
-            feature_id,
-            geometry_digest,
-        } => {
-            bytes.push(1);
-            bytes.extend_from_slice(&definition_id.0.to_le_bytes());
-            bytes.extend_from_slice(&feature_id.0.to_le_bytes());
-            push_projection_bytes(bytes, geometry_digest.as_bytes());
-        }
-        GeneralBodySource::CanonicalExtrusion {
-            definition_id,
-            profile_id,
-            extrusion_id,
-            geometry_digest,
-        } => {
-            bytes.push(2);
-            bytes.extend_from_slice(&definition_id.0.to_le_bytes());
-            bytes.extend_from_slice(&profile_id.0.to_le_bytes());
-            bytes.extend_from_slice(&extrusion_id.0.to_le_bytes());
-            push_projection_bytes(bytes, geometry_digest.as_bytes());
-        }
-        GeneralBodySource::CanonicalExactGraph {
-            definition_id,
-            producer_feature_id,
-            graph_digest,
-        } => {
-            bytes.push(3);
-            bytes.extend_from_slice(&definition_id.0.to_le_bytes());
-            bytes.extend_from_slice(&producer_feature_id.0.to_le_bytes());
-            push_projection_bytes(bytes, graph_digest.as_bytes());
-        }
-    }
-}
-
-fn push_dimensions(bytes: &mut Vec<u8>, dimensions: PieceDimensions) {
-    bytes.extend_from_slice(&dimensions.length_mm.to_bits().to_le_bytes());
-    bytes.extend_from_slice(&dimensions.width_mm.to_bits().to_le_bytes());
-    bytes.extend_from_slice(&dimensions.height_mm.to_bits().to_le_bytes());
-}
-
-fn push_validation_state(bytes: &mut Vec<u8>, state: ValidationState) {
-    bytes.push(match state {
-        ValidationState::Passed => 0,
-        ValidationState::Failed => 1,
-        ValidationState::NotEvaluated => 2,
-        ValidationState::Unavailable => 3,
-    });
-}
-
-fn evidence_token(evidence: &EvidenceClass) -> &'static str {
-    match evidence {
-        EvidenceClass::Exact => "Exact",
-        EvidenceClass::Tolerant(_) => "Tolerant",
-    }
-}
-
-fn format_number(value: f64) -> String {
-    let formatted = format!("{value:.9}");
-    formatted
-        .trim_end_matches('0')
-        .trim_end_matches('.')
-        .to_owned()
 }
 
 #[cfg(test)]
