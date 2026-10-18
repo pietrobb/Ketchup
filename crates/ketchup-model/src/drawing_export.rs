@@ -19,8 +19,14 @@ const MAX_EXPORT_LINES: usize = 100_000;
 const MAX_EXPORT_TEXTS: usize = 1_024;
 const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DXF_STRING_CHARACTERS: usize = 255;
-/// Baseline-to-baseline distance of a text broken over R12 lines, in text heights.
-const DXF_LINE_SPACING: f64 = 1.5;
+/// Baseline-to-baseline distance of a text broken over lines, in text heights.
+const LINE_SPACING: f64 = 1.5;
+/// A generous glyph advance of the sheet's sans-serif font, in text heights,
+/// so a title-block line broken by it fits the frame in any reader.
+const TITLE_BLOCK_GLYPH_WIDTH: f64 = 0.7;
+/// The title-block texts shrink in these steps until they fit its frame; at
+/// the last one a title is 2.4 mm and the other fields 1.8 mm high.
+const TITLE_BLOCK_SCALES: [f64; 5] = [1.0, 0.9, 0.8, 0.7, 0.6];
 const COORDINATE_EPSILON_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
 const POINTS_PER_MM: f64 = 72.0 / 25.4;
 const PDF_UNICODE_GLYPHS: &[(char, u8, &str)] = &[
@@ -126,6 +132,7 @@ pub enum DrawingExportError {
     UnsupportedPdfText,
     UnsupportedDxfText,
     DxfTextTooLong,
+    TitleBlockTooLong,
     ResourceLimit,
 }
 
@@ -140,6 +147,9 @@ impl fmt::Display for DrawingExportError {
             }
             Self::DxfTextTooLong => {
                 "drawing contains text longer than the 255 characters a DXF R12 string carries once non-ASCII characters are escaped"
+            }
+            Self::TitleBlockTooLong => {
+                "the title block's title, drawing number, revision and author do not fit its frame even at the smallest legible text size"
             }
             Self::ResourceLimit => "drawing export exceeded its resource limit",
         })
@@ -191,10 +201,12 @@ struct PageArc {
     style: LineStyle,
 }
 
+/// A text of the sheet: its first line's baseline starts at `position` and
+/// each further line sits [`LINE_SPACING`] text heights below the previous one.
 struct PageText {
     id: String,
     position: [f64; 2],
-    value: String,
+    lines: Vec<String>,
     height_mm: f64,
 }
 
@@ -598,7 +610,7 @@ fn collect_page_content(
         texts.push(PageText {
             id: format!("bom-row-{}", row.position),
             position: row.text_position_mm,
-            value: row.label.clone(),
+            lines: vec![row.label.clone()],
             height_mm: 3.0,
         });
     }
@@ -606,11 +618,11 @@ fn collect_page_content(
         texts.push(PageText {
             id: note.stable_note_id.clone(),
             position: note.position_mm,
-            value: note.text.clone(),
+            lines: vec![note.text.clone()],
             height_mm: 3.5,
         });
     }
-    push_title_block_text(&mut texts, &drawing.layout);
+    push_title_block_text(&mut texts, &drawing.layout)?;
     if lines.iter().any(|line| {
         !valid_point(line.start)
             || !valid_point(line.end)
@@ -701,7 +713,7 @@ fn push_dimension(
     texts.push(PageText {
         id: dimension.stable_dimension_id.clone(),
         position: dimension.text_position_mm,
-        value: dimension.label.clone(),
+        lines: vec![dimension.label.clone()],
         height_mm: 3.5,
     });
 }
@@ -730,7 +742,7 @@ fn push_angular_dimension(
     texts.push(PageText {
         id: dimension.stable_dimension_id.clone(),
         position: dimension.text_position_mm,
-        value: dimension.label.clone(),
+        lines: vec![dimension.label.clone()],
         height_mm: 3.5,
     });
 }
@@ -749,7 +761,7 @@ fn push_circular_dimension(
     texts.push(PageText {
         id: dimension.stable_dimension_id.clone(),
         position: dimension.text_position_mm,
-        value: dimension.label.clone(),
+        lines: vec![dimension.label.clone()],
         height_mm: 3.5,
     });
 }
@@ -782,7 +794,7 @@ fn push_datum_symbol(
     texts.push(PageText {
         id: datum.stable_datum_id.clone(),
         position: datum.text_position_mm,
-        value: datum.label.clone(),
+        lines: vec![datum.label.clone()],
         height_mm: 3.5,
     });
 }
@@ -815,7 +827,7 @@ fn push_feature_control_frame(
     texts.push(PageText {
         id: frame.stable_frame_id.clone(),
         position: frame.text_position_mm,
-        value: frame.label.clone(),
+        lines: vec![frame.label.clone()],
         height_mm: 3.0,
     });
 }
@@ -851,31 +863,55 @@ fn push_bom_balloon(
     texts.push(PageText {
         id: balloon.stable_balloon_id.clone(),
         position: balloon.text_position_mm,
-        value: balloon.label.clone(),
+        lines: vec![balloon.label.clone()],
         height_mm: 3.5,
     });
 }
 
-fn push_title_block_text(texts: &mut Vec<PageText>, layout: &DrawingSheetLayout) {
-    let bounds = layout.title_block_bounds_mm;
-    let x = bounds[0][0] + 2.0;
-    let mut y = bounds[1][1] - 5.0;
-    for (id, value) in [
-        ("title", layout.title_block.title()),
-        ("drawing-number", layout.title_block.drawing_number()),
-        ("revision", layout.title_block.revision()),
-        ("author", layout.title_block.author()),
-    ] {
-        if !value.is_empty() {
-            texts.push(PageText {
+/// The title, drawing number, revision and author one under the other in the
+/// title-block frame, each broken into lines that fit its width (and an R12
+/// string), every field starting below the last line of the one above. When
+/// they do not fit the frame's height the texts shrink; when they do not fit
+/// even at the smallest legible size the export is refused.
+fn push_title_block_text(
+    texts: &mut Vec<PageText>,
+    layout: &DrawingSheetLayout,
+) -> Result<(), DrawingExportError> {
+    let [[left, bottom], [right, top]] = layout.title_block_bounds_mm;
+    let fields = [
+        ("title", layout.title_block.title(), 4.0),
+        ("drawing-number", layout.title_block.drawing_number(), 3.0),
+        ("revision", layout.title_block.revision(), 3.0),
+        ("author", layout.title_block.author(), 3.0),
+    ];
+    for scale in TITLE_BLOCK_SCALES {
+        let mut placed = Vec::new();
+        let mut y = top - 5.0 * scale;
+        for (id, value, height) in fields {
+            if value.is_empty() {
+                continue;
+            }
+            let height_mm = height * scale;
+            let characters = (right - left - 4.0) / (TITLE_BLOCK_GLYPH_WIDTH * height_mm);
+            let lines = text_lines(value, characters.max(1.0));
+            let first = y;
+            for _ in 1..lines.len() {
+                y -= LINE_SPACING * height_mm;
+            }
+            placed.push(PageText {
                 id: format!("title-block/{id}"),
-                position: [x, y],
-                value: value.to_owned(),
-                height_mm: if id == "title" { 4.0 } else { 3.0 },
+                position: [left + 2.0, first],
+                lines,
+                height_mm,
             });
-            y -= 7.0;
+            y -= 7.0 * scale;
+        }
+        if y + 7.0 * scale - 1.0 >= bottom {
+            texts.extend(placed);
+            return Ok(());
         }
     }
+    Err(DrawingExportError::TitleBlockTooLong)
 }
 
 fn export_svg(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageText]) -> Vec<u8> {
@@ -901,13 +937,31 @@ fn export_svg(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
         ));
     }
     for text in texts {
+        let value = match text.lines.as_slice() {
+            [line] => xml_escape(line),
+            lines => lines
+                .iter()
+                .enumerate()
+                .map(|(index, line)| {
+                    format!(
+                        "<tspan x=\"{}\" dy=\"{}\">{}</tspan>",
+                        number(text.position[0]),
+                        number(if index == 0 {
+                            0.0
+                        } else {
+                            LINE_SPACING * text.height_mm
+                        }),
+                        xml_escape(line)
+                    )
+                })
+                .collect(),
+        };
         svg.push_str(&format!(
-            "<text id=\"{}\" x=\"{}\" y=\"{}\" font-size=\"{}\">{}</text>\n",
+            "<text id=\"{}\" x=\"{}\" y=\"{}\" font-size=\"{}\">{value}</text>\n",
             xml_escape(&text.id),
             number(text.position[0]),
             number(height - text.position[1]),
             number(text.height_mm),
-            xml_escape(&text.value),
         ));
     }
     svg.push_str("</svg>\n");
@@ -967,14 +1021,19 @@ fn export_dxf(
     for text in texts {
         let id = dxf_text(&text.id)?;
         let mut baseline = text.position[1];
-        for value in dxf_text_lines(&text.value)? {
+        for piece in text
+            .lines
+            .iter()
+            .flat_map(|line| text_lines(line, f64::INFINITY))
+        {
+            let value = dxf_text(&piece)?;
             dxf.push_str(&format!(
                 "0\nTEXT\n8\nANNOTATION\n10\n{}\n20\n{}\n30\n0\n40\n{}\n1\n{value}\n1001\nKETCHUP\n1000\n{id}\n",
                 number(text.position[0]),
                 number(baseline),
                 number(text.height_mm),
             ));
-            baseline -= DXF_LINE_SPACING * text.height_mm;
+            baseline -= LINE_SPACING * text.height_mm;
         }
     }
     dxf.push_str("0\nENDSEC\n0\nEOF\n");
@@ -1012,14 +1071,18 @@ fn export_pdf(
         ));
     }
     for text in texts {
-        stream.push_str(&format!(
-            "% text {}\nBT /F1 {} Tf {} {} Td <{}> Tj ET\n",
-            pdf_comment(&text.id),
-            number(text.height_mm),
-            number(text.position[0]),
-            number(text.position[1]),
-            pdf_text_hex(&text.value)?,
-        ));
+        let mut baseline = text.position[1];
+        for line in &text.lines {
+            stream.push_str(&format!(
+                "% text {}\nBT /F1 {} Tf {} {} Td <{}> Tj ET\n",
+                pdf_comment(&text.id),
+                number(text.height_mm),
+                number(text.position[0]),
+                number(baseline),
+                pdf_text_hex(line)?,
+            ));
+            baseline -= LINE_SPACING * text.height_mm;
+        }
     }
     stream.push_str("Q\n");
     let [width, height] = drawing.layout.page_size_mm;
@@ -1162,37 +1225,40 @@ fn dxf_text(value: &str) -> Result<String, DrawingExportError> {
     Ok(output)
 }
 
-/// The text of a sheet as R12 strings of at most 255 characters once escaped:
-/// any text the drawing accepts is written, a long one (Slovak diacritics take
-/// seven characters each) broken after the last space that fits, or between
-/// characters when no space does, into lines placed one under the other.
-fn dxf_text_lines(value: &str) -> Result<Vec<String>, DrawingExportError> {
-    let pieces = value
-        .chars()
-        .map(dxf_character)
-        .collect::<Result<Vec<_>, _>>()?;
+/// `value` broken into lines of at most `max_characters` characters that are
+/// also R12 strings of at most 255 characters once escaped (Slovak diacritics
+/// take seven characters each): after the last space that fits, or between
+/// characters when no space does. The lines join back into `value`.
+fn text_lines(value: &str, max_characters: f64) -> Vec<String> {
+    let characters: Vec<char> = value.chars().collect();
+    let escaped = |character: char| dxf_character(character).map_or(1, |piece| piece.len());
     let mut lines = Vec::new();
     let mut start = 0;
-    while start < pieces.len() {
+    while start < characters.len() {
         let mut end = start;
         let mut width = 0;
-        while end < pieces.len() && width + pieces[end].len() <= MAX_DXF_STRING_CHARACTERS {
-            width += pieces[end].len();
+        let mut count = 0.0;
+        while end < characters.len()
+            && count + 1.0 <= max_characters
+            && width + escaped(characters[end]) <= MAX_DXF_STRING_CHARACTERS
+        {
+            width += escaped(characters[end]);
+            count += 1.0;
             end += 1;
         }
-        if end < pieces.len()
-            && let Some(space) = pieces[start..end].iter().rposition(|piece| piece == " ")
+        if end < characters.len()
+            && let Some(space) = characters[start..end].iter().rposition(|c| *c == ' ')
             && space > 0
         {
             end = start + space + 1;
         }
-        lines.push(pieces[start..end].concat());
+        lines.push(characters[start..end].iter().collect());
         start = end;
     }
     if lines.is_empty() {
         lines.push(String::new());
     }
-    Ok(lines)
+    lines
 }
 
 fn pdf_text_hex(value: &str) -> Result<String, DrawingExportError> {
@@ -1245,21 +1311,25 @@ fn pdf_comment(value: &str) -> String {
 
 #[cfg(test)]
 mod dxf_text_tests {
-    use super::{DrawingExportError, dxf_text, dxf_text_lines};
+    use super::{DrawingExportError, dxf_text, text_lines};
 
     #[test]
     fn a_long_text_breaks_after_the_last_space_that_fits_or_between_characters() {
         let words = format!("{} {}", "a".repeat(250), "b".repeat(10));
         assert_eq!(
-            dxf_text_lines(&words),
-            Ok(vec![format!("{} ", "a".repeat(250)), "b".repeat(10)])
+            text_lines(&words, f64::INFINITY),
+            [format!("{} ", "a".repeat(250)), "b".repeat(10)]
         );
         let word = "č".repeat(40);
         assert_eq!(
-            dxf_text_lines(&word),
-            Ok(vec!["\\U+010D".repeat(36), "\\U+010D".repeat(4)])
+            text_lines(&word, f64::INFINITY),
+            ["č".repeat(36), "č".repeat(4)]
         );
-        assert_eq!(dxf_text_lines(""), Ok(vec![String::new()]));
+        assert_eq!(
+            text_lines("ab cd efgh ij", 6.0),
+            ["ab cd ".to_owned(), "efgh ".to_owned(), "ij".to_owned()]
+        );
+        assert_eq!(text_lines("", 6.0), [String::new()]);
     }
 
     #[test]

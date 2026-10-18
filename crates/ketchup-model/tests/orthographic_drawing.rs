@@ -2410,21 +2410,40 @@ fn dxf_text_values(dxf: &str, id: &str) -> Vec<String> {
             _ => {}
         }
     }
-    values
-        .into_iter()
-        .map(|escaped| {
-            let mut decoded = String::new();
-            let mut rest = escaped.as_str();
-            while let Some(at) = rest.find("\\U+") {
-                decoded.push_str(&rest[..at]);
-                let code = u32::from_str_radix(&rest[at + 3..at + 7], 16).unwrap();
-                decoded.push(char::from_u32(code).unwrap());
-                rest = &rest[at + 7..];
+    values.iter().map(|escaped| dxf_decoded(escaped)).collect()
+}
+
+/// Every R12 TEXT entity of the title block as (KETCHUP id, baseline y, height).
+fn dxf_title_block_rows(dxf: &str) -> Vec<(String, f64, f64)> {
+    let lines: Vec<&str> = dxf.lines().collect();
+    let mut rows = Vec::new();
+    let (mut entity, mut y, mut height) = ("", 0.0, 0.0);
+    for pair in lines.chunks(2) {
+        let [code, data] = pair else { break };
+        match code.trim() {
+            "0" => entity = data,
+            "20" if entity == "TEXT" => y = data.parse().unwrap(),
+            "40" if entity == "TEXT" => height = data.parse().unwrap(),
+            "1000" if entity == "TEXT" && data.starts_with("title-block/") => {
+                rows.push(((*data).to_owned(), y, height));
             }
-            decoded.push_str(rest);
-            decoded
-        })
-        .collect()
+            _ => {}
+        }
+    }
+    rows
+}
+
+fn dxf_decoded(escaped: &str) -> String {
+    let mut decoded = String::new();
+    let mut rest = escaped;
+    while let Some(at) = rest.find("\\U+") {
+        decoded.push_str(&rest[..at]);
+        let code = u32::from_str_radix(&rest[at + 3..at + 7], 16).unwrap();
+        decoded.push(char::from_u32(code).unwrap());
+        rest = &rest[at + 7..];
+    }
+    decoded.push_str(rest);
+    decoded
 }
 
 #[test]
@@ -2445,11 +2464,13 @@ fn dxf_export_carries_any_title_the_model_accepts_in_r12_strings() {
         slovak_note.chars().count() + 6 * slovak_note.chars().filter(|c| !c.is_ascii()).count()
             > 255
     );
+    let longest = "Č".repeat(128);
     for (index, (title, fits)) in [
         (fitting.as_str(), true),
         (escaped_too_long.as_str(), false),
         (ascii_too_long.as_str(), false),
         (slovak_note, false),
+        (longest.as_str(), false),
     ]
     .into_iter()
     .enumerate()
@@ -2464,27 +2485,141 @@ fn dxf_export_carries_any_title_the_model_accepts_in_r12_strings() {
             "Long DXF text",
             DrawingSource::Definition(DEFINITION),
             DrawingPageTemplate::default(),
-            DrawingTitleBlock::new(title, "", "", "").unwrap(),
+            DrawingTitleBlock::new(title, "DWG-001", "B", "Ing. Novák").unwrap(),
             vec![OrthographicViewKind::Front],
         )
         .unwrap();
         let (create, drawing) = prepare_create_drawing_sheet(&document, &exact, sheet).unwrap();
         document.commit_proposal(&create).unwrap();
         let before = stamp(&document);
-        let exported = export_drawing(&document.current(), &drawing);
-        let dxf = String::from_utf8(exported.unwrap().dxf().to_vec()).unwrap();
+        let exported = export_drawing(&document.current(), &drawing).unwrap();
+        let dxf = String::from_utf8(exported.dxf().to_vec()).unwrap();
         assert!(
             dxf.lines().all(|line| line.chars().count() <= 255),
             "{title}"
         );
         let pieces = dxf_text_values(&dxf, "title-block/title");
-        assert_eq!(pieces.len(), if fits { 1 } else { 2 }, "{title}");
+        assert_eq!(pieces.len() == 1, fits, "{title}");
         assert_eq!(pieces.concat(), title);
         if fits {
             assert!(dxf.contains(&format!("{}xxx", "\\U+010C".repeat(36))));
         }
+        assert_title_block_is_readable(&drawing, &exported, &dxf, title);
         assert_eq!(stamp(&document), before);
     }
+}
+
+/// Four fields of the longest text the model accepts need 16 lines, more than
+/// the title block holds even at the smallest legible size: the export says so
+/// instead of printing them over each other or outside the frame.
+#[test]
+fn a_title_block_that_cannot_fit_its_frame_refuses_the_export() {
+    let mut document = seeded_document();
+    let exact = registry(
+        &document.current(),
+        "overfull-title-block",
+        [[0.0, 0.0, 0.0], [20.0, 10.0, 30.0]],
+    );
+    let longest = "Č".repeat(128);
+    let sheet = DrawingSheet::with_contract_and_views(
+        SHEET,
+        "Overfull title block",
+        DrawingSource::Definition(DEFINITION),
+        DrawingPageTemplate::default(),
+        DrawingTitleBlock::new(&longest, &longest, &longest, &longest).unwrap(),
+        vec![OrthographicViewKind::Front],
+    )
+    .unwrap();
+    let (create, drawing) = prepare_create_drawing_sheet(&document, &exact, sheet).unwrap();
+    document.commit_proposal(&create).unwrap();
+    assert_eq!(
+        export_drawing(&document.current(), &drawing),
+        Err(DrawingExportError::TitleBlockTooLong)
+    );
+}
+
+/// Every line of the title block, in the DXF and in the rendered SVG, lies
+/// inside the title-block frame and clear of the lines above and below it.
+fn assert_title_block_is_readable(
+    drawing: &ketchup_model::drawing::OrthographicDrawing,
+    exported: &ketchup_model::drawing_export::DrawingExportBundle,
+    dxf: &str,
+    title: &str,
+) {
+    let [[left, bottom], [right, top]] = drawing.layout.title_block_bounds_mm;
+    let mut rows = dxf_title_block_rows(dxf);
+    assert_eq!(
+        rows.iter()
+            .map(|(id, ..)| id.as_str())
+            .filter(|id| *id != "title-block/title")
+            .collect::<Vec<_>>(),
+        [
+            "title-block/drawing-number",
+            "title-block/revision",
+            "title-block/author"
+        ]
+    );
+    rows.sort_by(|first, second| second.1.total_cmp(&first.1));
+    for (id, y, height) in &rows {
+        assert!(
+            *y - 0.25 * height >= bottom && *y + height <= top,
+            "{id} at {y} leaves the frame {bottom}..{top}: {title}"
+        );
+    }
+    for pair in rows.windows(2) {
+        let [
+            (upper, upper_y, upper_height),
+            (lower, lower_y, lower_height),
+        ] = pair
+        else {
+            unreachable!()
+        };
+        assert!(
+            lower_y + lower_height <= upper_y - 0.25 * upper_height,
+            "{lower} at {lower_y} overlaps {upper} at {upper_y}: {title}"
+        );
+    }
+
+    let mut options = resvg::usvg::Options::default();
+    options.fontdb_mut().load_system_fonts();
+    let font_family = options
+        .fontdb
+        .faces()
+        .find(|face| face.families.iter().any(|(family, _)| family == "Arial"))
+        .or_else(|| options.fontdb.faces().next())
+        .and_then(|face| face.families.first())
+        .map(|(family, _)| family.clone())
+        .unwrap();
+    options.fontdb_mut().set_sans_serif_family(font_family);
+    let tree = resvg::usvg::Tree::from_data(exported.svg(), &options).unwrap();
+    let pixels_per_mm = tree.size().height() / drawing.layout.page_size_mm[1] as f32;
+    let page_height = drawing.layout.page_size_mm[1] as f32;
+    let frame = [
+        left as f32 * pixels_per_mm,
+        (page_height - top as f32) * pixels_per_mm,
+        right as f32 * pixels_per_mm,
+        (page_height - bottom as f32) * pixels_per_mm,
+    ];
+    let svg_rows = [
+        "title-block/title",
+        "title-block/drawing-number",
+        "title-block/revision",
+        "title-block/author",
+    ]
+    .map(|id| rendered_svg_node_bounds(&tree, id));
+    for bounds in &svg_rows {
+        assert!(
+            bounds[0] >= frame[0]
+                && bounds[1] >= frame[1]
+                && bounds[2] <= frame[2]
+                && bounds[3] <= frame[3],
+            "{bounds:?} outside the frame {frame:?}: {title}"
+        );
+    }
+    assert!(
+        svg_rows.windows(2).all(|rows| rows[0][3] < rows[1][1]),
+        "{svg_rows:?}: {title}"
+    );
 }
 
 #[test]
