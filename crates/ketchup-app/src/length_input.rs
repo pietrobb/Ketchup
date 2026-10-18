@@ -1,6 +1,7 @@
 //! One reading for every value typed into a field of the window: units (mm,
 //! cm, m, feet and inches), arithmetic such as `600+2*18`, and several values
-//! separated by `;`, `x` or `:`. The decimal separator is the system's, and a
+//! separated by `;`, `x` (or `×`, the same letter as typeset) or `:`; `*`
+//! multiplies. The decimal separator is the system's, and a
 //! point always; a comma never separates values. A bare number is
 //! millimetres. A product of two lengths is an area, not a length, and is
 //! refused rather than silently read as millimetres.
@@ -11,7 +12,7 @@ const MAX_INPUT_CHARS: usize = 256;
 const MAX_NESTING: usize = 32;
 const MM_PER_INCH: f64 = 25.4;
 const MM_PER_FOOT: f64 = 304.8;
-pub const VALUE_SEPARATORS: [char; 4] = [';', 'x', 'X', ':'];
+pub const VALUE_SEPARATORS: [char; 5] = [';', 'x', 'X', '×', ':'];
 
 /// The decimal separator of the system's number format. A point is read as a
 /// decimal separator with either one.
@@ -297,10 +298,10 @@ impl Parser {
 
     fn term(&mut self) -> Option<Quantity> {
         let mut value = self.unary()?;
-        while let Some(operator @ ('*' | '/' | '×' | '÷')) = self.peek() {
+        while let Some(operator @ ('*' | '/' | '÷')) = self.peek() {
             self.at += 1;
             let right = self.unary()?;
-            value = if matches!(operator, '*' | '×') {
+            value = if operator == '*' {
                 let power = value.power + right.power;
                 (power <= 1).then_some(Quantity {
                     mm: value.mm * right.mm,
@@ -479,7 +480,6 @@ mod tests {
         assert_eq!(mm("-25"), Some(-25.0));
         assert_eq!(mm("-(10+5)"), Some(-15.0));
         assert_eq!(mm("12,5+0,5"), Some(13.0));
-        assert_eq!(mm("3×200"), Some(600.0));
     }
 
     #[test]
@@ -543,6 +543,7 @@ mod tests {
                 "80;60",
                 "80x60",
                 "80X60",
+                "80×60",
                 "80:60",
                 " 80 ; 60 ",
                 "8 cm x 6 cm",
@@ -552,11 +553,11 @@ mod tests {
             assert_eq!(list("2*20;30"), Some(vec![40.0, 30.0]));
             assert_eq!(list("10+5:20:1m"), Some(vec![15.0, 20.0, 1000.0]));
             assert_eq!(list("12.5;0"), Some(vec![12.5, 0.0]));
-            for input in [
-                "80", "80*60", "80×60", "1;2;3;4", "1m*1m;2", "a;b", "80;", "",
-            ] {
+            for input in ["80", "80*60", "1;2;3;4", "1m*1m;2", "a;b", "80;", ""] {
                 assert_eq!(list(input), None, "{input:?} {decimal:?}");
             }
+            // Review 2026-10-17 P3-G: `×` is `x`, so `80×60` is never 4 800 mm.
+            assert_eq!(parse_length_mm("80×60", decimal), None);
         }
         let list = |input: &str| parse_length_list(input, Comma, 2..=2);
         assert_eq!(list("12,5x3"), Some(vec![12.5, 3.0]));

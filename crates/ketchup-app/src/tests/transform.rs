@@ -627,6 +627,8 @@ fn a_typed_move_vector_reads_each_value_as_a_length() {
             ("30;2*10", Vec3::new(30.0, 20.0, 0.0)),
             ("10:20:0 mm", Vec3::new(10.0, 20.0, 0.0)),
             ("-5x7", Vec3::new(-5.0, 7.0, 0.0)),
+            // Review 2026-10-17 P3-G: `×` is `x`; `80×60` once moved 4 800 mm.
+            ("80×60", Vec3::new(80.0, 60.0, 0.0)),
             ("2*20;30", Vec3::new(40.0, 30.0, 0.0)),
         ] {
             let (_, moved, travel) = typed_move(decimal, None, input);
