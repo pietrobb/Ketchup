@@ -2394,18 +2394,62 @@ fn pdf_export_rejects_text_outside_its_declared_font_repertoire() {
     assert_eq!(stamp(&document), before);
 }
 
+/// The values of the R12 TEXT entities whose KETCHUP id is `id`, in file
+/// order, with the `\U+XXXX` escapes decoded.
+fn dxf_text_values(dxf: &str, id: &str) -> Vec<String> {
+    let lines: Vec<&str> = dxf.lines().collect();
+    let mut values = Vec::new();
+    let mut entity = "";
+    let mut value = String::new();
+    for pair in lines.chunks(2) {
+        let [code, data] = pair else { break };
+        match code.trim() {
+            "0" => entity = data,
+            "1" if entity == "TEXT" => value = (*data).to_owned(),
+            "1000" if entity == "TEXT" && *data == id => values.push(value.clone()),
+            _ => {}
+        }
+    }
+    values
+        .into_iter()
+        .map(|escaped| {
+            let mut decoded = String::new();
+            let mut rest = escaped.as_str();
+            while let Some(at) = rest.find("\\U+") {
+                decoded.push_str(&rest[..at]);
+                let code = u32::from_str_radix(&rest[at + 3..at + 7], 16).unwrap();
+                decoded.push(char::from_u32(code).unwrap());
+                rest = &rest[at + 7..];
+            }
+            decoded.push_str(rest);
+            decoded
+        })
+        .collect()
+}
+
 #[test]
-fn dxf_export_refuses_text_longer_than_r12_carries_after_escaping() {
+fn dxf_export_carries_any_title_the_model_accepts_in_r12_strings() {
     let mut document = seeded_document();
-    // 255 characters fit a group-1 string of R12; each Č is the 7-character
-    // escape \U+010C, so 37 of them (74 bytes) need 259.
+    // 255 characters fit a group-1 string of R12; each non-ASCII letter is a
+    // 7-character escape such as \U+010C. Every title here is accepted by the
+    // model (at most 256 bytes) yet needs more than 255 characters escaped, so
+    // the export splits it over several TEXT lines instead of refusing the sheet.
     let fitting = format!("{}{}", "Č".repeat(36), "x".repeat(3));
     let escaped_too_long = "Č".repeat(37);
     let ascii_too_long = "x".repeat(256);
+    let slovak_note = "Lepené lamelové hranoly zo smreka, povrch brúsený zrnitosťou 120, \
+        dvakrát olejovaný, tolerancia dĺžky 1 mm, šírky a hrúbky 0,5 mm, hrany zaoblené R2, \
+        škáry tesné, bez trhlín a súkov väčších ako 20 mm";
+    assert!(slovak_note.len() <= 256);
+    assert!(
+        slovak_note.chars().count() + 6 * slovak_note.chars().filter(|c| !c.is_ascii()).count()
+            > 255
+    );
     for (index, (title, fits)) in [
         (fitting.as_str(), true),
         (escaped_too_long.as_str(), false),
         (ascii_too_long.as_str(), false),
+        (slovak_note, false),
     ]
     .into_iter()
     .enumerate()
@@ -2428,12 +2472,16 @@ fn dxf_export_refuses_text_longer_than_r12_carries_after_escaping() {
         document.commit_proposal(&create).unwrap();
         let before = stamp(&document);
         let exported = export_drawing(&document.current(), &drawing);
+        let dxf = String::from_utf8(exported.unwrap().dxf().to_vec()).unwrap();
+        assert!(
+            dxf.lines().all(|line| line.chars().count() <= 255),
+            "{title}"
+        );
+        let pieces = dxf_text_values(&dxf, "title-block/title");
+        assert_eq!(pieces.len(), if fits { 1 } else { 2 }, "{title}");
+        assert_eq!(pieces.concat(), title);
         if fits {
-            let dxf = String::from_utf8(exported.unwrap().dxf().to_vec()).unwrap();
-            assert!(dxf.lines().all(|line| line.chars().count() <= 255));
             assert!(dxf.contains(&format!("{}xxx", "\\U+010C".repeat(36))));
-        } else {
-            assert_eq!(exported, Err(DrawingExportError::DxfTextTooLong), "{title}");
         }
         assert_eq!(stamp(&document), before);
     }

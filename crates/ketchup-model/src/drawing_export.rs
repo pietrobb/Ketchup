@@ -19,6 +19,8 @@ const MAX_EXPORT_LINES: usize = 100_000;
 const MAX_EXPORT_TEXTS: usize = 1_024;
 const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DXF_STRING_CHARACTERS: usize = 255;
+/// Baseline-to-baseline distance of a text broken over R12 lines, in text heights.
+const DXF_LINE_SPACING: f64 = 1.5;
 const COORDINATE_EPSILON_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
 const POINTS_PER_MM: f64 = 72.0 / 25.4;
 const PDF_UNICODE_GLYPHS: &[(char, u8, &str)] = &[
@@ -963,14 +965,17 @@ fn export_dxf(
         ));
     }
     for text in texts {
-        dxf.push_str(&format!(
-            "0\nTEXT\n8\nANNOTATION\n10\n{}\n20\n{}\n30\n0\n40\n{}\n1\n{}\n1001\nKETCHUP\n1000\n{}\n",
-            number(text.position[0]),
-            number(text.position[1]),
-            number(text.height_mm),
-            dxf_text(&text.value)?,
-            dxf_text(&text.id)?,
-        ));
+        let id = dxf_text(&text.id)?;
+        let mut baseline = text.position[1];
+        for value in dxf_text_lines(&text.value)? {
+            dxf.push_str(&format!(
+                "0\nTEXT\n8\nANNOTATION\n10\n{}\n20\n{}\n30\n0\n40\n{}\n1\n{value}\n1001\nKETCHUP\n1000\n{id}\n",
+                number(text.position[0]),
+                number(baseline),
+                number(text.height_mm),
+            ));
+            baseline -= DXF_LINE_SPACING * text.height_mm;
+        }
     }
     dxf.push_str("0\nENDSEC\n0\nEOF\n");
     Ok(dxf.into_bytes())
@@ -1130,28 +1135,64 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// A string of the R12 file: a line break becomes a space and a character
-/// outside ASCII its `\U+XXXX` escape, so the file needs no code page and
-/// AutoCAD, ezdxf and acadrust read the same text. The escape holds one
-/// Basic Multilingual Plane character, so a character beyond it (an emoji)
-/// is refused rather than written as a surrogate pair no reader decodes, and
-/// so is a string longer than the 255 characters R12 carries once escaped.
-fn dxf_text(value: &str) -> Result<String, DrawingExportError> {
-    let mut output = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '\r' | '\n' => output.push(' '),
-            ascii if ascii.is_ascii() => output.push(ascii),
-            other if other.len_utf16() > 1 => {
-                return Err(DrawingExportError::UnsupportedDxfText);
-            }
-            other => output.push_str(&format!("\\U+{:04X}", u32::from(other))),
-        }
+/// One character of an R12 string: a line break becomes a space and a
+/// character outside ASCII its `\U+XXXX` escape, so the file needs no code
+/// page and AutoCAD, ezdxf and acadrust read the same text. The escape holds
+/// one Basic Multilingual Plane character, so a character beyond it (an
+/// emoji) is refused rather than written as a surrogate pair no reader decodes.
+fn dxf_character(character: char) -> Result<String, DrawingExportError> {
+    match character {
+        '\r' | '\n' => Ok(" ".to_owned()),
+        ascii if ascii.is_ascii() => Ok(ascii.to_string()),
+        other if other.len_utf16() > 1 => Err(DrawingExportError::UnsupportedDxfText),
+        other => Ok(format!("\\U+{:04X}", u32::from(other))),
     }
+}
+
+/// An identifier of the R12 file, refused when longer than the 255
+/// characters an R12 string carries once escaped.
+fn dxf_text(value: &str) -> Result<String, DrawingExportError> {
+    let output = value
+        .chars()
+        .map(dxf_character)
+        .collect::<Result<String, _>>()?;
     if output.len() > MAX_DXF_STRING_CHARACTERS {
         return Err(DrawingExportError::DxfTextTooLong);
     }
     Ok(output)
+}
+
+/// The text of a sheet as R12 strings of at most 255 characters once escaped:
+/// any text the drawing accepts is written, a long one (Slovak diacritics take
+/// seven characters each) broken after the last space that fits, or between
+/// characters when no space does, into lines placed one under the other.
+fn dxf_text_lines(value: &str) -> Result<Vec<String>, DrawingExportError> {
+    let pieces = value
+        .chars()
+        .map(dxf_character)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while start < pieces.len() {
+        let mut end = start;
+        let mut width = 0;
+        while end < pieces.len() && width + pieces[end].len() <= MAX_DXF_STRING_CHARACTERS {
+            width += pieces[end].len();
+            end += 1;
+        }
+        if end < pieces.len()
+            && let Some(space) = pieces[start..end].iter().rposition(|piece| piece == " ")
+            && space > 0
+        {
+            end = start + space + 1;
+        }
+        lines.push(pieces[start..end].concat());
+        start = end;
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    Ok(lines)
 }
 
 fn pdf_text_hex(value: &str) -> Result<String, DrawingExportError> {
@@ -1204,7 +1245,22 @@ fn pdf_comment(value: &str) -> String {
 
 #[cfg(test)]
 mod dxf_text_tests {
-    use super::{DrawingExportError, dxf_text};
+    use super::{DrawingExportError, dxf_text, dxf_text_lines};
+
+    #[test]
+    fn a_long_text_breaks_after_the_last_space_that_fits_or_between_characters() {
+        let words = format!("{} {}", "a".repeat(250), "b".repeat(10));
+        assert_eq!(
+            dxf_text_lines(&words),
+            Ok(vec![format!("{} ", "a".repeat(250)), "b".repeat(10)])
+        );
+        let word = "č".repeat(40);
+        assert_eq!(
+            dxf_text_lines(&word),
+            Ok(vec!["\\U+010D".repeat(36), "\\U+010D".repeat(4)])
+        );
+        assert_eq!(dxf_text_lines(""), Ok(vec![String::new()]));
+    }
 
     #[test]
     fn a_character_beyond_the_basic_plane_is_refused_not_written_as_surrogates() {
