@@ -3620,6 +3620,60 @@ fn layout_drawing_sheet(
     })
 }
 
+/// Hidden-line removal splits one projected edge into `/segment-NNNNNN`
+/// pieces; together they span the edge.
+pub(crate) fn projected_edge_id(line_id: &str) -> &str {
+    match line_id.rsplit_once("/segment-") {
+        Some((edge, ordinal))
+            if ordinal.len() == 6 && ordinal.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            edge
+        }
+        _ => line_id,
+    }
+}
+
+/// The whole edge a dimension names, from end to end: a partly hidden edge is
+/// drawn as visible and hidden pieces, and a length dimension on any piece,
+/// or on the edge, measures the edge rather than the piece.
+fn whole_projected_edge(
+    view: &OrthographicView,
+    line_id: &str,
+) -> Result<ProjectedVisibleLine, DrawingError> {
+    let edge = projected_edge_id(line_id);
+    let lines = || view.visible_lines.iter().chain(&view.hidden_lines);
+    let named = lines()
+        .filter(|line| line.stable_line_id == line_id)
+        .count();
+    let pieces = lines()
+        .filter(|line| projected_edge_id(&line.stable_line_id) == edge)
+        .collect::<Vec<_>>();
+    let Some(first) = pieces.first() else {
+        return Err(DrawingError::DimensionSourceLost);
+    };
+    if named > 1 || (named == 0 && line_id != edge) {
+        return Err(DrawingError::DimensionSourceLost);
+    }
+    let direction = subtract_2d(first.end_mm, first.start_mm);
+    let along = |point: [f64; 2]| dot2(subtract_2d(point, first.start_mm), direction);
+    let mut start_mm = first.start_mm;
+    let mut end_mm = first.end_mm;
+    for point in pieces.iter().flat_map(|line| [line.start_mm, line.end_mm]) {
+        if along(point) < along(start_mm) {
+            start_mm = point;
+        }
+        if along(point) > along(end_mm) {
+            end_mm = point;
+        }
+    }
+    Ok(ProjectedVisibleLine {
+        stable_line_id: edge.to_owned(),
+        start_mm,
+        end_mm,
+        foreshortened: pieces.iter().any(|line| line.foreshortened),
+    })
+}
+
 fn layout_linear_dimensions(
     sheet: &DrawingSheet,
     views: &[OrthographicView],
@@ -3635,17 +3689,7 @@ fn layout_linear_dimensions(
             .ok_or(DrawingError::DimensionSourceLost)?;
         let view = &views[view_index];
         let placement = &placements[view_index];
-        let mut matching_lines = view
-            .visible_lines
-            .iter()
-            .chain(&view.hidden_lines)
-            .filter(|line| line.stable_line_id == dimension.source_line_id());
-        let source_line = matching_lines
-            .next()
-            .ok_or(DrawingError::DimensionSourceLost)?;
-        if matching_lines.next().is_some() {
-            return Err(DrawingError::DimensionSourceLost);
-        }
+        let source_line = &whole_projected_edge(view, dimension.source_line_id())?;
         // Review 2026-10-17 MF-7: on an isometric or oblique view the drawn
         // line is shorter than the edge; its 2D length is not the edge's.
         if source_line.foreshortened {

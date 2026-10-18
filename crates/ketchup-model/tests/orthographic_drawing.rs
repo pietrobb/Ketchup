@@ -253,11 +253,10 @@ fn rendered_svg_node_bounds(tree: &resvg::usvg::Tree, id: &str) -> [f32; 4] {
     [bounds.x(), bounds.y(), bounds.right(), bounds.bottom()]
 }
 
-fn overlapping_pair_with_views(
+fn overlapping_pair_document(
     rear_transform: Transform,
     front_transform: Transform,
-    views: Vec<OrthographicViewKind>,
-) -> ketchup_model::drawing::OrthographicDrawing {
+) -> (DocumentStore, ExactResultRegistry) {
     let mut document = seeded_document();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -294,6 +293,15 @@ fn overlapping_pair_with_views(
         "overlap",
         [[0.0, 0.0, 0.0], [20.0, 10.0, 30.0]],
     );
+    (document, exact)
+}
+
+fn overlapping_pair_with_views(
+    rear_transform: Transform,
+    front_transform: Transform,
+    views: Vec<OrthographicViewKind>,
+) -> ketchup_model::drawing::OrthographicDrawing {
+    let (document, exact) = overlapping_pair_document(rear_transform, front_transform);
     let assembly_sheet = DrawingSheet::with_contract_and_views(
         SHEET,
         "Overlap",
@@ -929,6 +937,92 @@ fn overlapping_bodies_split_and_classify_hidden_linework_deterministically() {
                 horizontal ^ vertical
             })
     );
+}
+
+/// Review 2026-10-17 P3: the front body hides the upper part of the rear
+/// body's 30 mm edge at x = 20, so the edge is drawn as a visible 10 mm piece
+/// and a hidden 20 mm piece. A dimension on either piece, or on the edge
+/// itself, measures the whole 30 mm edge from end to end.
+#[test]
+fn dimension_on_a_partially_hidden_edge_measures_the_whole_edge() {
+    let rear = Transform::from_translation(0.0, 20.0, 0.0).unwrap();
+    let front = Transform::from_translation(5.0, 0.0, 10.0).unwrap();
+    let (document, exact) = overlapping_pair_document(rear, front);
+    let sheet_with = |line_id: &str| {
+        DrawingSheet::with_contract_views_and_annotations(
+            SHEET,
+            "Overlap",
+            DrawingSource::RigidAssembly {
+                occurrence_ids: vec![OccurrenceId(20), OccurrenceId(21)],
+            },
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Overlap", "", "", "").unwrap(),
+            vec![OrthographicViewKind::Front],
+            DrawingAnnotations::new(
+                vec![
+                    DrawingLinearDimension::new(
+                        DrawingDimensionId(1),
+                        OrthographicViewKind::Front,
+                        line_id,
+                        8.0,
+                    )
+                    .unwrap(),
+                ],
+                vec![],
+            ),
+        )
+        .unwrap()
+    };
+    let plain = overlapping_pair_with_views(rear, front, vec![OrthographicViewKind::Front]);
+    let view = &plain.views[0];
+    let visible_piece = view
+        .visible_lines
+        .iter()
+        .find(|line| matches_segment(line, [20.0, 0.0], [20.0, 10.0]))
+        .unwrap();
+    let hidden_piece = view
+        .hidden_lines
+        .iter()
+        .find(|line| matches_segment(line, [20.0, 10.0], [20.0, 30.0]))
+        .unwrap();
+    let (edge, _) = visible_piece
+        .stable_line_id
+        .rsplit_once("/segment-")
+        .unwrap();
+    assert_eq!(
+        hidden_piece
+            .stable_line_id
+            .rsplit_once("/segment-")
+            .unwrap()
+            .0,
+        edge
+    );
+
+    for line_id in [
+        visible_piece.stable_line_id.as_str(),
+        hidden_piece.stable_line_id.as_str(),
+        edge,
+    ] {
+        let drawing =
+            project_orthographic_drawing(&document.current(), &exact, &sheet_with(line_id))
+                .unwrap_or_else(|error| panic!("{line_id}: {error:?}"));
+        let dimension = &drawing.layout.linear_dimensions[0];
+        assert_eq!(dimension.value_mm, 30.0, "{line_id}");
+        assert_eq!(dimension.label, "30 mm", "{line_id}");
+        let scale = DrawingPageTemplate::default().scale();
+        let scale = f64::from(scale.numerator()) / f64::from(scale.denominator());
+        let origin = drawing.layout.view_placements[0].origin_mm;
+        let mut feet = dimension.extension_lines_mm.map(|line| line[0]);
+        feet.sort_by(|left, right| left[1].total_cmp(&right[1]));
+        for (foot, edge_end) in feet.into_iter().zip([[20.0, 0.0], [20.0, 30.0]]) {
+            for axis in 0..2 {
+                assert!(
+                    (foot[axis] - (origin[axis] + edge_end[axis] * scale)).abs() <= 1.0e-9,
+                    "{line_id}: {foot:?} is not the edge end {edge_end:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

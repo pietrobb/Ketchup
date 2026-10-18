@@ -5,7 +5,9 @@
 //! chords of an exact circle stay lines.
 
 use super::LineStyle;
-use crate::drawing::{OrthographicView, ProjectedCircle, ProjectedVisibleLine};
+use crate::drawing::{
+    OrthographicView, ProjectedCircle, ProjectedVisibleLine, projected_edge_id as edge_id,
+};
 use crate::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM};
 use ketchup_geometry::linalg::dot2;
 use std::collections::{BTreeMap, BTreeSet};
@@ -139,19 +141,6 @@ fn covered(extents: &[(f64, f64)], (start, span): (f64, f64), gap: f64) -> bool 
 fn tolerance(circle: &ProjectedCircle) -> f64 {
     let magnitude = circle.center_mm[0].abs().max(circle.center_mm[1].abs()) + circle.radius_mm;
     DEFAULT_LINEAR_TOLERANCE_MM + ACCUMULATED_ROUNDING * magnitude.max(1.0)
-}
-
-/// Hidden-line removal splits one tessellated edge into `/segment-NNNNNN`
-/// pieces; together they span the edge.
-fn edge_id(line_id: &str) -> &str {
-    match line_id.rsplit_once("/segment-") {
-        Some((edge, ordinal))
-            if ordinal.len() == 6 && ordinal.bytes().all(|byte| byte.is_ascii_digit()) =>
-        {
-            edge
-        }
-        _ => line_id,
-    }
 }
 
 /// The circle whose chord the pieces of one edge form: both ends of the edge
