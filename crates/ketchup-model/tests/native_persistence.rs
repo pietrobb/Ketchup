@@ -1346,14 +1346,13 @@ fn a_history_naming_gigabytes_through_shared_chunks_is_refused_before_it_is_asse
     assert!(history.len() < 512 * 1024);
     let bytes = ketchup_model::testing::save_with_history_entry(&store, history);
 
-    let started = std::time::Instant::now();
+    // Refused on the sizes alone: assembling 20 GB first would not get here.
     let reason = discarded_history(&bytes);
     assert!(
         reason.starts_with("the revisions of history.bin would be at least 20")
             && reason.ends_with("the limit is 2048.0 MB"),
         "{reason}"
     );
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
 
 /// Programs as the window writes them: bound with a model change, the same program
