@@ -57,6 +57,9 @@ type WorkerResult = Result<WorkerReply, WorkerFailure>;
 mod output_cache;
 #[path = "bin/pair_query/mod.rs"]
 mod pair_query;
+mod source_document;
+
+use source_document::{SourceDocument, XdeFormat};
 
 pub fn run_stdio() {
     crate::child_process::exit_with_parent();
@@ -69,9 +72,10 @@ pub fn run_stdio() {
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
     let mut pairs = pair_query::PairQuerySession::default();
+    let mut source = SourceDocument::default();
     loop {
         let reply = match read_frame::<WorkerRequest>(&mut stdin, MAX_REQUEST_FRAME_BYTES) {
-            Frame::Message(request) => handle_request(&backend, &mut pairs, request),
+            Frame::Message(request) => handle_request(&backend, &mut pairs, &mut source, request),
             // A complete frame that does not decode leaves the stream in sync.
             Frame::Malformed(_) => Err(WorkerFailure::invalid_request()),
             Frame::Closed | Frame::TooLarge | Frame::Transport(_) => break,
@@ -92,6 +96,7 @@ pub fn run_stdio() {
 fn handle_request(
     backend: &ExactBackend,
     pairs: &mut pair_query::PairQuerySession,
+    read: &mut SourceDocument,
     request: WorkerRequest,
 ) -> WorkerResult {
     match request {
@@ -124,15 +129,17 @@ fn handle_request(
         WorkerRequest::SimulateCam { graph, request } => {
             cam_simulation_response(backend, &graph, &request)
         }
-        WorkerRequest::InspectStepXde(source) => m21_step_xde_inspection_response(backend, &source),
+        WorkerRequest::InspectStepXde(source) => {
+            m21_step_xde_inspection_response(backend, read, &source)
+        }
         WorkerRequest::InspectStepPart { source, part_index } => {
-            m21_step_part_inspection_response(backend, &source, part_index)
+            m21_step_part_inspection_response(backend, read, &source, part_index)
         }
         WorkerRequest::TessellateStepPart {
             source,
             part_index,
             output,
-        } => m21_step_part_mesh_response(backend, &source, part_index, &output),
+        } => m21_step_part_mesh_response(backend, read, &source, part_index, &output),
         WorkerRequest::ExportStepXdePart {
             source,
             part_index,
@@ -140,23 +147,26 @@ fn handle_request(
             output,
         } => m21_step_xde_part_export_response(
             backend,
+            read,
             &source,
             part_index,
             &result_fingerprint,
             &output,
         ),
         WorkerRequest::ConvertStepXdeToIges { source, output } => {
-            m21_step_xde_to_iges_response(backend, &source, &output)
+            m21_step_xde_to_iges_response(backend, read, &source, &output)
         }
-        WorkerRequest::InspectIgesXde(source) => m21_iges_xde_inspection_response(backend, &source),
+        WorkerRequest::InspectIgesXde(source) => {
+            m21_iges_xde_inspection_response(backend, read, &source)
+        }
         WorkerRequest::InspectIgesPart { source, part_index } => {
-            m21_iges_part_inspection_response(backend, &source, part_index)
+            m21_iges_part_inspection_response(backend, read, &source, part_index)
         }
         WorkerRequest::TessellateIgesPart {
             source,
             part_index,
             output,
-        } => m21_iges_part_mesh_response(backend, &source, part_index, &output),
+        } => m21_iges_part_mesh_response(backend, read, &source, part_index, &output),
         WorkerRequest::AssembleStep {
             manifest,
             sources,
@@ -3160,14 +3170,13 @@ fn step_source_unit(
     })
 }
 
-fn m21_iges_xde_inspection_response(backend: &ExactBackend, source: &SourceFile) -> WorkerResult {
-    let copy = verified_iges_copy(source, "inspect_iges_xde")?;
-    let source_byte_len = copy
-        .as_file()
-        .metadata()
-        .map_err(|error| backend_failure("inspect_iges_xde", &error.to_string()))?
-        .len();
-    let document = open_iges_xde(backend, &copy, "inspect_iges_xde")?;
+fn m21_iges_xde_inspection_response(
+    backend: &ExactBackend,
+    read: &mut SourceDocument,
+    source: &SourceFile,
+) -> WorkerResult {
+    let (document, source_byte_len) =
+        read.get(backend, source, XdeFormat::Iges, "inspect_iges_xde")?;
     let source_unit = iges_source_unit(document.length_unit_name(), "inspect_iges_xde")?;
     let manifest = document
         .manifest()
@@ -3177,30 +3186,20 @@ fn m21_iges_xde_inspection_response(backend: &ExactBackend, source: &SourceFile)
     })
 }
 
-/// The IGES counterpart of [`open_step_xde`]: one parse for the whole request.
-fn open_iges_xde(
-    backend: &ExactBackend,
-    copy: &tempfile::NamedTempFile,
-    operation: &'static str,
-) -> Result<ketchup_exact::StepXdeDocument, WorkerFailure> {
-    backend
-        .open_iges_xde(&temp_path(copy))
-        .map_err(|error| backend_failure(operation, &error.to_string()))
-}
-
 fn m21_iges_part_inspection_response(
     backend: &ExactBackend,
+    read: &mut SourceDocument,
     source: &SourceFile,
     part_index: Option<u32>,
 ) -> WorkerResult {
     const OPERATION: &str = "inspect_iges_part";
-    let copy = verified_iges_copy(source, OPERATION)?;
     let (raw_unit, output) = match part_index {
         Some(index) => {
-            let document = open_iges_xde(backend, &copy, OPERATION)?;
+            let (document, _) = read.get(backend, source, XdeFormat::Iges, OPERATION)?;
             (document.length_unit_name(), document.part(index))
         }
         None => {
+            let copy = verified_iges_copy(source, OPERATION)?;
             let source_path = temp_path(&copy);
             (
                 backend.iges_length_unit_name(&source_path),
@@ -3252,19 +3251,44 @@ fn imported_mesh_response(
     )
 }
 
+/// The body an import request names: XDE part `part_index` of the source read
+/// once for the worker, or without an index the whole file read on its own.
+fn imported_body(
+    backend: &ExactBackend,
+    read: &mut SourceDocument,
+    source: &SourceFile,
+    format: XdeFormat,
+    part_index: Option<u32>,
+    operation: &'static str,
+) -> Result<ExactOpOutput, WorkerFailure> {
+    match part_index {
+        Some(index) => read.get(backend, source, format, operation)?.0.part(index),
+        None => {
+            let copy = verified_copy(source, format.label(), operation)?;
+            match format {
+                XdeFormat::Step => backend.import_step(&temp_path(&copy)),
+                XdeFormat::Iges => backend.import_iges(&temp_path(&copy)),
+            }
+        }
+    }
+    .map_err(|error| geometry_failure(&error))
+}
+
 fn m21_iges_part_mesh_response(
     backend: &ExactBackend,
+    read: &mut SourceDocument,
     source: &SourceFile,
     part_index: Option<u32>,
     output_path: &Path,
 ) -> WorkerResult {
-    let copy = verified_iges_copy(source, "tessellate_iges_part")?;
-    let source_path = temp_path(&copy);
-    let output = match part_index {
-        Some(index) => backend.import_iges_xde_part(&source_path, index),
-        None => backend.import_iges(&source_path),
-    }
-    .map_err(|error| geometry_failure(&error))?;
+    let output = imported_body(
+        backend,
+        read,
+        source,
+        XdeFormat::Iges,
+        part_index,
+        "tessellate_iges_part",
+    )?;
     imported_mesh_response(
         backend,
         source,
@@ -3277,13 +3301,13 @@ fn m21_iges_part_mesh_response(
 
 fn m21_step_xde_to_iges_response(
     backend: &ExactBackend,
+    read: &mut SourceDocument,
     source: &SourceFile,
     output_path: &Path,
 ) -> WorkerResult {
     const OPERATION: &str = "convert_step_xde_to_iges";
     let output_path = utf8_path(output_path)?;
-    let copy = verified_step_copy(source, OPERATION)?;
-    let document = open_step_xde(backend, &copy, OPERATION)?;
+    let (document, _) = read.get(backend, source, XdeFormat::Step, OPERATION)?;
     let manifest = document
         .manifest()
         .map_err(|error| backend_failure(OPERATION, &error.to_string()))?;
@@ -3386,33 +3410,20 @@ fn m21_step_xde_to_iges_response(
     }))
 }
 
-fn m21_step_xde_inspection_response(backend: &ExactBackend, source: &SourceFile) -> WorkerResult {
-    let copy = verified_step_copy(source, "inspect_step_xde")?;
-    let source_byte_len = copy
-        .as_file()
-        .metadata()
-        .map_err(|error| backend_failure("inspect_step_xde", &error.to_string()))?
-        .len();
-    let document = open_step_xde(backend, &copy, "inspect_step_xde")?;
-    let source_unit = step_document_unit(&document, "inspect_step_xde")?;
+fn m21_step_xde_inspection_response(
+    backend: &ExactBackend,
+    read: &mut SourceDocument,
+    source: &SourceFile,
+) -> WorkerResult {
+    let (document, source_byte_len) =
+        read.get(backend, source, XdeFormat::Step, "inspect_step_xde")?;
+    let source_unit = step_document_unit(document, "inspect_step_xde")?;
     let manifest = document
         .manifest()
         .map_err(|error| backend_failure("inspect_step_xde", &error.to_string()))?;
     xde_evidence_reply(source, source_byte_len, &source_unit, manifest, |index| {
         document.part(index)
     })
-}
-
-/// The verified copy read once; every manifest, unit and part answer of the
-/// request comes from this one parse (review 2026-10-17 EX-2).
-fn open_step_xde(
-    backend: &ExactBackend,
-    copy: &tempfile::NamedTempFile,
-    operation: &'static str,
-) -> Result<ketchup_exact::StepXdeDocument, WorkerFailure> {
-    backend
-        .open_step_xde(&temp_path(copy))
-        .map_err(|error| backend_failure(operation, &error.to_string()))
 }
 
 fn step_document_unit(
@@ -3429,17 +3440,29 @@ fn step_document_unit(
 
 fn m21_step_part_inspection_response(
     backend: &ExactBackend,
+    read: &mut SourceDocument,
     source: &SourceFile,
     part_index: Option<u32>,
 ) -> WorkerResult {
-    let copy = verified_step_copy(source, "inspect_step_part")?;
-    let source_path = temp_path(&copy);
-    let source_unit = step_source_unit(backend, &source_path, "inspect_step_part")?;
-    let output = match part_index {
-        Some(index) => backend.import_step_xde_part(&source_path, index),
-        None => backend.import_step(&source_path),
-    }
-    .map_err(|error| geometry_failure(&error))?;
+    const OPERATION: &str = "inspect_step_part";
+    let (source_unit, output) = match part_index {
+        Some(index) => {
+            let (document, _) = read.get(backend, source, XdeFormat::Step, OPERATION)?;
+            (
+                step_document_unit(document, OPERATION)?,
+                document.part(index),
+            )
+        }
+        None => {
+            let copy = verified_step_copy(source, OPERATION)?;
+            let source_path = temp_path(&copy);
+            (
+                step_source_unit(backend, &source_path, OPERATION)?,
+                backend.import_step(&source_path),
+            )
+        }
+    };
+    let output = output.map_err(|error| geometry_failure(&error))?;
     Ok(import_part_reply(&source.sha256, &output, &source_unit))
 }
 
@@ -3471,16 +3494,21 @@ fn read_step_output(path: &str, operation: &str) -> Result<Vec<u8>, WorkerFailur
 
 fn m21_step_xde_part_export_response(
     backend: &ExactBackend,
+    read: &mut SourceDocument,
     source: &SourceFile,
     part_index: u32,
     result_fingerprint: &str,
     output_path: &Path,
 ) -> WorkerResult {
     let output_path = utf8_path(output_path)?;
-    let copy = verified_step_copy(source, "export_step_xde_part")?;
-    let output = backend
-        .import_step_xde_part(&temp_path(&copy), part_index)
-        .map_err(|error| geometry_failure(&error))?;
+    let output = imported_body(
+        backend,
+        read,
+        source,
+        XdeFormat::Step,
+        Some(part_index),
+        "export_step_xde_part",
+    )?;
     if step_import_result_fingerprint(&source.sha256, &output) != result_fingerprint {
         return Err(WorkerFailure::code("invalid_shape"));
     }
@@ -3496,17 +3524,19 @@ fn m21_step_xde_part_export_response(
 
 fn m21_step_part_mesh_response(
     backend: &ExactBackend,
+    read: &mut SourceDocument,
     source: &SourceFile,
     part_index: Option<u32>,
     output_path: &Path,
 ) -> WorkerResult {
-    let copy = verified_step_copy(source, "tessellate_step_part")?;
-    let source_path = temp_path(&copy);
-    let output = match part_index {
-        Some(index) => backend.import_step_xde_part(&source_path, index),
-        None => backend.import_step(&source_path),
-    }
-    .map_err(|error| geometry_failure(&error))?;
+    let output = imported_body(
+        backend,
+        read,
+        source,
+        XdeFormat::Step,
+        part_index,
+        "tessellate_step_part",
+    )?;
     imported_mesh_response(
         backend,
         source,
@@ -3740,7 +3770,11 @@ mod tests {
         };
 
         let inspection = parses_during(&|| {
-            let reply = m21_step_xde_inspection_response(&backend, &source)?;
+            let reply = m21_step_xde_inspection_response(
+                &backend,
+                &mut SourceDocument::default(),
+                &source,
+            )?;
             let WorkerReply::Xde(evidence) = &reply else {
                 panic!("inspection answered {reply:?}");
             };
@@ -3750,9 +3784,106 @@ mod tests {
 
         let output = tempfile::tempdir().unwrap();
         let conversion = parses_during(&|| {
-            m21_step_xde_to_iges_response(&backend, &source, &output.path().join("flat.igs"))
+            m21_step_xde_to_iges_response(
+                &backend,
+                &mut SourceDocument::default(),
+                &source,
+                &output.path().join("flat.igs"),
+            )
         });
         assert_eq!((inspection, conversion), (1, 1));
+    }
+
+    // Review 2026-10-18 EX-8: evaluating an imported part asked the worker to
+    // inspect it, then to tessellate it, and each request parsed the whole
+    // source again (inspection twice: unit, then part). A 100-part STEP took 300
+    // full parses on every reopen. One worker now reads a source once for every
+    // request about it, and a different source replaces it.
+    #[test]
+    fn a_worker_parses_an_imported_source_once_for_every_request_about_its_parts() {
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/independent-xde-assembly.step");
+        let step = SourceFile {
+            sha256: sha256_hex(&std::fs::read(&corpus).unwrap()),
+            path: corpus,
+        };
+        let output = tempfile::tempdir().unwrap();
+        let iges_path = output.path().join("flat.igs");
+        m21_step_xde_to_iges_response(
+            &ExactBackend::new(),
+            &mut SourceDocument::default(),
+            &step,
+            &iges_path,
+        )
+        .unwrap();
+        let iges = SourceFile {
+            sha256: sha256_hex(&std::fs::read(&iges_path).unwrap()),
+            path: iges_path,
+        };
+        let backend = ExactBackend::new();
+        let mut pairs = pair_query::PairQuerySession::default();
+        let mut read = SourceDocument::default();
+        let mut send = |request| handle_request(&backend, &mut pairs, &mut read, request).unwrap();
+        let parses = || {
+            ExactBackend::step_source_parses_on_this_thread()
+                + ExactBackend::iges_source_parses_on_this_thread()
+        };
+        let mesh = |index: u32| output.path().join(format!("part-{index}.bin"));
+
+        let before = parses();
+        let WorkerReply::Xde(evidence) = send(WorkerRequest::InspectStepXde(step.clone())) else {
+            panic!("the STEP source inspects as XDE");
+        };
+        for part in &evidence.parts {
+            let index = Some(part.index);
+            let source = step.clone();
+            let WorkerReply::ImportPart(inspected) = send(WorkerRequest::InspectStepPart {
+                source,
+                part_index: index,
+            }) else {
+                panic!("part {} inspects", part.index);
+            };
+            assert_eq!(inspected.result_fingerprint, part.result_fingerprint);
+            send(WorkerRequest::TessellateStepPart {
+                source: step.clone(),
+                part_index: index,
+                output: mesh(part.index),
+            });
+            send(WorkerRequest::ExportStepXdePart {
+                source: step.clone(),
+                part_index: part.index,
+                result_fingerprint: part.result_fingerprint.clone(),
+                output: output.path().join(format!("part-{}.step", part.index)),
+            });
+        }
+        let step_parses = parses() - before;
+
+        let before = parses();
+        for index in 0..3 {
+            let (source, part_index) = (iges.clone(), Some(index));
+            send(WorkerRequest::InspectIgesPart { source, part_index });
+            let (source, mesh) = (iges.clone(), mesh(index));
+            send(WorkerRequest::TessellateIgesPart {
+                source,
+                part_index,
+                output: mesh,
+            });
+        }
+        let iges_parses = parses() - before;
+
+        let before = parses();
+        let (source, part_index) = (step.clone(), Some(0));
+        send(WorkerRequest::InspectStepPart { source, part_index });
+        assert_eq!(
+            (
+                evidence.parts.len(),
+                step_parses,
+                iges_parses,
+                parses() - before
+            ),
+            (2, 1, 1, 1),
+            "parts, then parses of the STEP, of the IGES and of the STEP after it"
+        );
     }
 
     // Review 2026-10-17 EX-2 (IGES half): inspecting an N-part IGES parsed it
@@ -3766,6 +3897,7 @@ mod tests {
         let path = output.path().join("flat.igs");
         m21_step_xde_to_iges_response(
             &backend,
+            &mut SourceDocument::default(),
             &SourceFile {
                 sha256: sha256_hex(&std::fs::read(&step).unwrap()),
                 path: step,
@@ -3784,15 +3916,25 @@ mod tests {
         };
 
         let inspection = parses_during(&|| {
-            let reply = m21_iges_xde_inspection_response(&backend, &source)?;
+            let reply = m21_iges_xde_inspection_response(
+                &backend,
+                &mut SourceDocument::default(),
+                &source,
+            )?;
             let WorkerReply::Xde(evidence) = &reply else {
                 panic!("inspection answered {reply:?}");
             };
             assert_eq!(evidence.parts.len(), 3);
             Ok(reply)
         });
-        let one_part =
-            parses_during(&|| m21_iges_part_inspection_response(&backend, &source, Some(1)));
+        let one_part = parses_during(&|| {
+            m21_iges_part_inspection_response(
+                &backend,
+                &mut SourceDocument::default(),
+                &source,
+                Some(1),
+            )
+        });
         assert_eq!((inspection, one_part), (1, 1));
     }
 
@@ -3809,7 +3951,13 @@ mod tests {
         };
         let output = tempfile::tempdir().unwrap();
         let iges = output.path().join("flat.igs");
-        m21_step_xde_to_iges_response(&ExactBackend::new(), &step, &iges).unwrap();
+        m21_step_xde_to_iges_response(
+            &ExactBackend::new(),
+            &mut SourceDocument::default(),
+            &step,
+            &iges,
+        )
+        .unwrap();
         let iges = SourceFile {
             sha256: sha256_hex(&std::fs::read(&iges).unwrap()),
             path: iges,
@@ -3819,13 +3967,24 @@ mod tests {
                 let backend = ExactBackend::new();
                 for round in 0..8 {
                     let path = output.path().join(format!("written-{round}.igs"));
-                    m21_step_xde_to_iges_response(&backend, &step, &path).unwrap();
+                    m21_step_xde_to_iges_response(
+                        &backend,
+                        &mut SourceDocument::default(),
+                        &step,
+                        &path,
+                    )
+                    .unwrap();
                 }
             });
             scope.spawn(|| {
                 let backend = ExactBackend::new();
                 for _ in 0..8 {
-                    m21_iges_xde_inspection_response(&backend, &iges).unwrap();
+                    m21_iges_xde_inspection_response(
+                        &backend,
+                        &mut SourceDocument::default(),
+                        &iges,
+                    )
+                    .unwrap();
                 }
             });
         });
@@ -3882,7 +4041,12 @@ mod tests {
         let backend = ExactBackend::new();
         let mut pairs = pair_query::PairQuerySession::default();
         assert_eq!(
-            handle_request(&backend, &mut pairs, WorkerRequest::Hello),
+            handle_request(
+                &backend,
+                &mut pairs,
+                &mut SourceDocument::default(),
+                WorkerRequest::Hello,
+            ),
             Ok(WorkerReply::Hello {
                 protocol: protocol_identity().to_owned()
             })
@@ -3899,6 +4063,7 @@ mod tests {
             handle_request(
                 &backend,
                 &mut pairs,
+                &mut SourceDocument::default(),
                 WorkerRequest::EvaluateGraph(GraphInput {
                     graph,
                     sources: Vec::new(),
