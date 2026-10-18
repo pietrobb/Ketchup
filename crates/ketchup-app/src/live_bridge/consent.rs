@@ -3,6 +3,7 @@
 //! Attach requires a random bootstrap from the OS-protected per-user registry.
 //! Only authenticated requests reach the UI and can replace a previous client.
 //! No manual token entry or additional confirmation is needed.
+use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::{KetchupApp, egui, transport};
 use crate::dialogs::HighRiskConfirmationRequest;
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         mpsc,
     },
     thread::JoinHandle,
@@ -38,6 +39,8 @@ pub(crate) struct ConsentBroker {
     worker: Option<JoinHandle<()>>,
     requests: mpsc::Receiver<PendingConsent>,
     deliveries: mpsc::Receiver<bool>,
+    #[cfg(test)]
+    active_connections: Arc<AtomicUsize>,
 }
 
 impl Drop for ConsentBroker {
@@ -441,10 +444,13 @@ fn start(
     let (delivery_sender, deliveries) = mpsc::channel();
     let stopped = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&stopped);
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    let connection_count = Arc::clone(&active_connections);
     let worker = match std::thread::Builder::new()
         .name("ketchup-live-consent".into())
         .spawn(move || {
             let mut handlers = Vec::new();
+            let mut pending = Pending::default();
             loop {
                 let accepted = listener.accept();
                 if stop.load(Ordering::Acquire) {
@@ -455,9 +461,13 @@ fn start(
                 }
                 match accepted {
                     Ok((stream, peer)) if peer.ip().is_loopback() => {
-                        if handlers.len() >= MAX_CONNECTIONS {
+                        // Review 2026-10-17 P3: eight idle connections used to
+                        // turn every later one away, the bootstrap's holder too.
+                        let Some((permit, state)) =
+                            pending.admit(&connection_count, MAX_CONNECTIONS)
+                        else {
                             continue;
-                        }
+                        };
                         let connection_sender = sender.clone();
                         let connection_delivery_sender = delivery_sender.clone();
                         let connection_context = context.clone();
@@ -469,6 +479,7 @@ fn start(
                         if let Ok(handler) = std::thread::Builder::new()
                             .name("ketchup-live-consent-connection".into())
                             .spawn(move || {
+                                let _permit = permit;
                                 serve(
                                     stream,
                                     &connection_sender,
@@ -479,6 +490,7 @@ fn start(
                                     &connection_discovery,
                                     &connection_nonces,
                                     &connection_stop,
+                                    &state,
                                 );
                             })
                         {
@@ -510,6 +522,8 @@ fn start(
         worker: Some(worker),
         requests,
         deliveries,
+        #[cfg(test)]
+        active_connections,
     })
 }
 
@@ -524,12 +538,19 @@ fn serve(
     discovery: &Mutex<DiscoveryState>,
     used_nonces: &Mutex<std::collections::HashSet<String>>,
     stop: &AtomicBool,
+    state: &AtomicU8,
 ) {
     let _ = (|| -> io::Result<()> {
         stream.set_nonblocking(false)?;
         let read_deadline = Instant::now() + IO_DEADLINE;
-        let request = read_request(&mut stream, read_deadline, stop)?;
+        let request = read_request(&mut stream, read_deadline, stop, state)?;
         let nonce = request.nonce;
+        // A connection evicted for a newer one meanwhile stays closed.
+        let admit = || {
+            state
+                .compare_exchange(PENDING, AUTHENTICATED, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        };
         if request.action == "list" {
             // The document name is the user's; only a holder of the bootstrap sees it.
             let expected =
@@ -543,6 +564,9 @@ fn serve(
                     ConsentDecision::Reject,
                     stop,
                 );
+            }
+            if !admit() {
+                return Ok(());
             }
             let state = discovery
                 .lock()
@@ -562,6 +586,9 @@ fn serve(
                 ConsentDecision::Reject,
                 stop,
             );
+        }
+        if !admit() {
+            return Ok(());
         }
         let (decision, receiver) = mpsc::sync_channel(1);
         let abandoned = Arc::new(Mutex::new(false));
@@ -665,10 +692,11 @@ fn read_request(
     stream: &mut TcpStream,
     deadline: Instant,
     stop: &AtomicBool,
+    state: &AtomicU8,
 ) -> io::Result<AttachRequest> {
     let mut bytes = Vec::with_capacity(MAX_CONSENT_BYTES);
     while bytes.len() < MAX_CONSENT_BYTES {
-        if stop.load(Ordering::Acquire) {
+        if stop.load(Ordering::Acquire) || state.load(Ordering::Acquire) == EVICTED {
             return Err(io::ErrorKind::ConnectionAborted.into());
         }
         let remaining = deadline
@@ -825,6 +853,58 @@ mod tests {
             nonce,
         );
         serde_json::json!({"version": 1, "action": "attach", "nonce": nonce, "proof": proof})
+    }
+
+    /// Review 2026-10-17 P3: eight connections that never send a request
+    /// turned every later one away until they timed out, and a stranger could
+    /// reopen them forever. A newer connection evicts the oldest idle one.
+    #[test]
+    fn idle_connections_do_not_keep_the_bootstrap_holder_out() {
+        let directory = tempfile::tempdir().unwrap();
+        let broker = start(
+            egui::Context::default(),
+            directory.path(),
+            "Untitled".to_owned(),
+            true,
+        )
+        .unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(
+            &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
+        )
+        .unwrap();
+        let idle: Vec<_> = (0..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(broker.address).unwrap())
+            .collect();
+        let deadline = Instant::now() + IO_DEADLINE / 2;
+        while broker.active_connections.load(Ordering::Acquire) < MAX_CONNECTIONS {
+            assert!(
+                Instant::now() < deadline,
+                "the idle connections were not taken"
+            );
+            std::thread::yield_now();
+        }
+
+        let nonce = "9".repeat(64);
+        let proof = ketchup_mcp::local_auth::client_list_proof(
+            registry["bootstrap"].as_str().unwrap(),
+            registry["instance_id"].as_str().unwrap(),
+            &nonce,
+        );
+        let mut list = TcpStream::connect(broker.address).unwrap();
+        // Answered well before the idle connections would time out by themselves.
+        list.set_read_timeout(Some(IO_DEADLINE / 2)).unwrap();
+        writeln!(
+            list,
+            "{}",
+            serde_json::json!({"version": 1, "action": "list", "nonce": nonce, "proof": proof})
+        )
+        .unwrap();
+        let mut response = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(list), &mut response)
+            .expect("the window must answer its bootstrap's holder");
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["status"], "available");
+        drop(idle);
     }
 
     #[test]

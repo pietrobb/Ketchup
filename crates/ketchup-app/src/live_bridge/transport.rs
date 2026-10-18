@@ -1,4 +1,5 @@
 //! Transport owns sockets and bounded messages only, never the GUI/store.
+use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::*;
 use std::{
     collections::VecDeque,
@@ -11,71 +12,6 @@ use std::{
 const IO_DEADLINE: Duration = Duration::from_secs(2);
 const STOP_POLL: Duration = Duration::from_millis(25);
 const MAX_CONNECTIONS: usize = 4;
-/// Connections alive at once while evicted ones are still closing.
-const MAX_CONNECTIONS_EVICTING: usize = 2 * MAX_CONNECTIONS;
-
-/// Where a connection is in its handshake; acceptor and connection race for
-/// it once, so a connection that showed the token is never evicted.
-const PENDING: u8 = 0;
-const AUTHENTICATED: u8 = 1;
-const EVICTED: u8 = 2;
-
-struct ConnectionPermit(Arc<AtomicUsize>);
-
-impl ConnectionPermit {
-    fn claim(active: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
-        active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < limit).then_some(count + 1)
-            })
-            .ok()
-            .map(|_| Self(Arc::clone(active)))
-    }
-}
-
-/// Connections that have not yet shown the token, oldest first. When every
-/// slot is taken, a new connection evicts the oldest of them instead of being
-/// turned away, so idle strangers cannot keep the token's holder out. An
-/// evicted connection sees it within one `STOP_POLL` of reading and closes.
-#[derive(Default)]
-struct Pending(VecDeque<Arc<AtomicU8>>);
-
-impl Pending {
-    /// Evicts the oldest connection still waiting for its token.
-    fn evict_oldest(&mut self) -> bool {
-        while let Some(state) = self.0.pop_front() {
-            // Held by this list alone, its connection already ended.
-            if Arc::strong_count(&state) > 1
-                && state
-                    .compare_exchange(PENDING, EVICTED, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn admit(&mut self, active: &Arc<AtomicUsize>) -> Option<(ConnectionPermit, Arc<AtomicU8>)> {
-        self.0.retain(|state| {
-            Arc::strong_count(state) > 1 && state.load(Ordering::Acquire) == PENDING
-        });
-        let permit = ConnectionPermit::claim(active, MAX_CONNECTIONS).or_else(|| {
-            self.evict_oldest()
-                .then(|| ConnectionPermit::claim(active, MAX_CONNECTIONS_EVICTING))
-                .flatten()
-        })?;
-        let state = Arc::new(AtomicU8::new(PENDING));
-        self.0.push_back(Arc::clone(&state));
-        Some((permit, state))
-    }
-}
-
-impl Drop for ConnectionPermit {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
 
 pub(super) fn start(context: egui::Context) -> io::Result<LiveBridge> {
     let mut random = [0_u8; 32];
@@ -103,7 +39,9 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
             while !stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, peer)) if peer.ip().is_loopback() => {
-                        let Some((permit, authenticated)) = pending.admit(&connection_count) else {
+                        let Some((permit, authenticated)) =
+                            pending.admit(&connection_count, MAX_CONNECTIONS)
+                        else {
                             continue;
                         };
                         let Some(next) = session.checked_add(1) else {
