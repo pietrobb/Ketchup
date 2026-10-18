@@ -853,6 +853,25 @@ fn a_column_drilled_or_rounded_across_beyond_a_small_size_is_not_verified() {
 }
 
 #[test]
+fn two_small_holes_in_one_section_count_together() {
+    // Two 10 mm bolts side by side at 1500 mm take 20 mm of the 200 mm side,
+    // 10 %: over the 5 % one of them alone stays within.
+    let side_by_side = "hole(part, \"segment2\", world = (200, 60, 1500), diameter = 10, depth = 200, through = True)
+hole(part, \"segment2\", world = (200, 140, 1500), diameter = 10, depth = 200, through = True)";
+    let (status, missing) = square_column(side_by_side);
+    assert_eq!(status, "not_verified");
+    assert!(
+        missing.len() == 1 && missing[0].contains("together"),
+        "{missing:?}"
+    );
+    // A metre apart they never meet in one section.
+    let apart = "hole(part, \"segment2\", world = (200, 100, 1000), diameter = 10, depth = 200, through = True)
+hole(part, \"segment2\", world = (200, 100, 2000), diameter = 10, depth = 200, through = True)";
+    let (status, missing) = square_column(apart);
+    assert_ne!(status, "not_verified", "{missing:?}");
+}
+
+#[test]
 fn a_beam_across_both_legs_of_one_sill_is_checked_over_the_span_between_them() {
     // One U-shaped sill part, legs 100 mm wide at both ends of a 45 x 145 beam:
     // two bearings 3900 mm apart, not one 4000 mm bed.

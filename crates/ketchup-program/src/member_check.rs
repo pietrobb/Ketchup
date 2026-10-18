@@ -641,6 +641,8 @@ fn changes<'a>(
     // the narrower side takes at most 5 % of the section at one place
     // (a 10 mm bolt hole or an eased arris in a 200 mm column).
     let small = 0.05 * narrower;
+    // (start, end, diameter) along the grain of each such hole.
+    let mut across = Vec::new();
     for operation in &part.operations {
         match operation {
             ProgramOperation::Cut(cut)
@@ -664,7 +666,12 @@ fn changes<'a>(
             }
             ProgramOperation::Hole(hole)
                 if dot(hole.inward, grain).abs() <= ROUNDING * length(hole.inward)
-                    && hole.diameter_mm <= small => {}
+                    && hole.diameter_mm <= small =>
+            {
+                let at = dot(hole.entry_mm, grain);
+                let radius = hole.diameter_mm / 2.0;
+                across.push((at - radius, at + radius, hole.diameter_mm));
+            }
             ProgramOperation::Finish(finish) if finish.radius_mm <= small => {}
             ProgramOperation::Hole(_) => {
                 unmodelled = Some(
@@ -681,6 +688,22 @@ fn changes<'a>(
             // A mirror leaves the section the same.
             ProgramOperation::Mirror(_) => {}
         }
+    }
+    // Holes whose spans along the grain overlap meet in one section, so the
+    // 5 % holds for their diameters together.
+    let crowded = across.iter().any(|(start, ..)| {
+        let together: f64 = across
+            .iter()
+            .filter(|(from, to, _)| *from <= *start && *start < *to)
+            .map(|(.., diameter)| diameter)
+            .sum();
+        together > small
+    });
+    if crowded {
+        unmodelled = Some(
+            "the member's section changes along its length (holes across it that together \
+             take more than 5 % of its narrower side in one section)",
+        );
     }
     (bores, unmodelled)
 }
