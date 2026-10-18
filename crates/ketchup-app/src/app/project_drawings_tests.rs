@@ -99,6 +99,37 @@ fn every_visible_body_is_drawn_and_a_part_without_its_exact_solid_stops_the_shee
     assert_eq!(drawn(&app, "wall B"), 1);
 }
 
+/// P3-V: a visible part whose bodies cannot be told apart (two independent
+/// extrusions both ending in its one body) stops the sheet, naming the part;
+/// it was left off the sheet without a word.
+#[test]
+fn a_part_whose_bodies_do_not_resolve_stops_the_sheet() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 903, "wall C", 0.0);
+    let post = crate::app::drawing::create_box_batch(
+        DefinitionId(903),
+        [FeatureId(9301), FeatureId(9302)],
+        OccurrenceId(903),
+        ["wall C", "post profile", "post extrusion", "wall C"],
+        Vec3::new(2000.0, 0.0, 0.0),
+        Vec3::new(300.0, 200.0, 3000.0),
+    );
+    app.document
+        .apply_batch(&CommandBatch::new(post.commands()[1..3].to_vec()))
+        .unwrap();
+    let snapshot = app.document.current();
+    assert!(
+        ketchup_model::exact_product::exact_body_terminal_features(&snapshot, DefinitionId(903))
+            .is_err(),
+        "the fixture must make the part's bodies unresolvable"
+    );
+    let error = app.visible_drawing_solids(&snapshot).unwrap_err();
+    let ProjectDrawingsError::NotEvaluated(parts) = &error else {
+        panic!("the sheet must not leave wall C out: {error:?}");
+    };
+    assert!(parts.contains(&"wall C".to_owned()), "{parts:?}");
+}
+
 /// The plan cut height and the scale of the automatic format are document
 /// settings, not constants: changing them moves the cut and the scale.
 #[test]

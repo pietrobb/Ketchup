@@ -131,12 +131,14 @@ impl KetchupApp {
             else {
                 continue;
             };
-            let terminal_bodies = ketchup_model::exact_product::exact_body_terminal_features(
+            let Ok(terminal_bodies) = ketchup_model::exact_product::exact_body_terminal_features(
                 snapshot,
                 occurrence.definition_id,
-            )
-            .map(|terminals| terminals.into_keys().collect::<Vec<_>>())
-            .unwrap_or_default();
+            ) else {
+                missing.push(occurrence.occurrence_name.clone());
+                continue;
+            };
+            let terminal_bodies = terminal_bodies.into_keys().collect::<Vec<_>>();
             let mut packages = Vec::new();
             for body_id in terminal_bodies {
                 if !definition.body(body_id).is_some_and(|body| body.visible()) {
