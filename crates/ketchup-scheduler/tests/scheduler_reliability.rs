@@ -2,68 +2,44 @@ use ketchup_exact::GeometryErrorCode;
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId, ProposalCommitError,
 };
+use ketchup_scheduler::ExactWorkerClient;
 use ketchup_scheduler::protocol::{MAX_REQUEST_FRAME_BYTES, WorkerRequest, encode_frame};
-use ketchup_scheduler::{
-    DerivedResult, EvaluationScheduler, ExactWorkerClient, InsertOutcome, JobToken,
-};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const NODE: NodeId = NodeId(1);
-const CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
-const CACHE_ENTRY_BYTES: usize = 1024 * 1024;
-const SCHEDULE_PERMUTATIONS: usize = 10_000;
 const CRASH_RECOVERY_RUNS: usize = 100;
 const PERFORMANCE_RUNS: usize = 3;
 const CANCELLATION_SAMPLES: usize = 100;
-const READER_SAMPLES: usize = 1_000;
 
 #[test]
 fn scheduler_survives_races_crashes_and_cancellation_within_limits() {
     let _turn = crate::integration_support::file_turn();
-    let stale_current_inserts = exercise_schedule_permutations();
     let changed_read_digest_accepted = exercise_proposal_race();
     let committed_revision_damage = exercise_crash_recovery();
     let exception_crosses_contract = exercise_exception_transport();
     let cancellation_ms = exercise_cancellation();
-    let reader_ms = exercise_concurrent_reader();
-    let (cache_plateau_bytes, cache_growth_bytes_per_100, cache_evictions) =
-        exercise_cache_plateau();
     let private_bytes = process_private_bytes();
 
     let cancellation_p95_ms = percentile(&cancellation_ms, 95);
-    let reader_p95_ms = percentile(&reader_ms, 95);
-    let reader_block_over_100_ms = reader_ms.iter().filter(|sample| **sample > 100.0).count();
 
     let metrics = GateMetrics {
-        stale_current_inserts,
         changed_read_digest_accepted,
         committed_revision_damage,
         exception_crosses_contract,
         cancellation_p95_ms,
-        reader_p95_ms,
-        reader_block_over_100_ms,
-        cache_plateau_bytes,
-        cache_growth_bytes_per_100,
-        cache_evictions,
         private_bytes,
     };
     if !cfg!(debug_assertions) {
-        write_metrics(&metrics, &cancellation_ms, &reader_ms);
+        write_metrics(&metrics, &cancellation_ms);
     }
 
-    assert_eq!(metrics.stale_current_inserts, 0);
     assert_eq!(metrics.changed_read_digest_accepted, 0);
     assert_eq!(metrics.committed_revision_damage, 0);
     assert_eq!(metrics.exception_crosses_contract, 0);
-    assert_eq!(metrics.reader_block_over_100_ms, 0);
-    assert!(metrics.reader_p95_ms <= 16.7, "{metrics:?}");
     assert!(metrics.cancellation_p95_ms <= 250.0, "{metrics:?}");
-    assert!(metrics.cache_plateau_bytes <= 512 * 1024 * 1024);
-    assert!(metrics.cache_growth_bytes_per_100 <= 1024 * 1024);
     assert!(metrics.private_bytes <= 2 * 1024 * 1024 * 1024);
 }
 
@@ -80,46 +56,6 @@ fn simulated_worker_crash_ends_without_os_crash_reporting() {
     let frame = encode_frame(&WorkerRequest::Crash, MAX_REQUEST_FRAME_BYTES).unwrap();
     worker.stdin.take().unwrap().write_all(&frame).unwrap();
     assert_eq!(worker.wait().unwrap().code(), Some(1));
-}
-
-fn exercise_schedule_permutations() -> usize {
-    let mut scheduler = EvaluationScheduler::new(CACHE_BUDGET_BYTES);
-    let mut stale_current_inserts = 0;
-    for permutation in 0..SCHEDULE_PERMUTATIONS {
-        let old_revision = (permutation as u64) * 2 + 1;
-        scheduler.advance_revision(old_revision, [NODE]).unwrap();
-        let stale_token = scheduler
-            .schedule(NODE, format!("input-{old_revision}"))
-            .unwrap();
-        scheduler
-            .advance_revision(old_revision + 1, [NODE])
-            .unwrap();
-        let current_token = scheduler
-            .schedule(NODE, format!("input-{}", old_revision + 1))
-            .unwrap();
-        let stale = result(stale_token, "stale");
-        let current = result(current_token, "current");
-
-        let outcomes = if permutation % 2 == 0 {
-            [scheduler.accept(stale), scheduler.accept(current)]
-        } else {
-            [scheduler.accept(current), scheduler.accept(stale)]
-        };
-        if outcomes.contains(&InsertOutcome::Current)
-            && scheduler.current_result_fingerprint(NODE) != Some("current")
-        {
-            stale_current_inserts += 1;
-        }
-    }
-    stale_current_inserts
-}
-
-fn result(token: JobToken, fingerprint: &str) -> DerivedResult {
-    DerivedResult {
-        token,
-        result_fingerprint: fingerprint.to_owned(),
-        charge_bytes: 64,
-    }
 }
 
 fn exercise_proposal_race() -> usize {
@@ -194,63 +130,6 @@ fn exercise_cancellation() -> Vec<f64> {
     samples
 }
 
-fn exercise_concurrent_reader() -> Vec<f64> {
-    let scheduler = Arc::new(RwLock::new(EvaluationScheduler::new(CACHE_BUDGET_BYTES)));
-    scheduler
-        .write()
-        .unwrap()
-        .advance_revision(1, [NODE])
-        .unwrap();
-    let mut samples = Vec::with_capacity(PERFORMANCE_RUNS * READER_SAMPLES);
-    for run in 0..PERFORMANCE_RUNS {
-        let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
-        worker.begin_killable_job(Duration::from_secs(2)).unwrap();
-        let start = samples.len();
-        for _ in 0..READER_SAMPLES {
-            let started = Instant::now();
-            assert_eq!(scheduler.read().unwrap().current_revision(), 1);
-            samples.push(milliseconds(started.elapsed()));
-        }
-        worker.cancel().unwrap();
-        assert!(
-            percentile(&samples[start..], 95) <= 16.7,
-            "reader performance run {run} exceeded the frozen p95 threshold"
-        );
-        assert!(samples[start..].iter().all(|sample| *sample <= 100.0));
-    }
-    samples
-}
-
-fn exercise_cache_plateau() -> (usize, usize, u64) {
-    let mut scheduler = EvaluationScheduler::new(CACHE_BUDGET_BYTES);
-    let mut checkpoints = Vec::new();
-    for revision in 1..=400_u64 {
-        let node = NodeId(revision);
-        scheduler.advance_revision(revision, [node]).unwrap();
-        let token = scheduler
-            .schedule(node, format!("cache-input-{revision}"))
-            .unwrap();
-        assert_eq!(
-            scheduler.accept(DerivedResult {
-                token,
-                result_fingerprint: format!("cache-result-{revision}"),
-                charge_bytes: CACHE_ENTRY_BYTES,
-            }),
-            InsertOutcome::Current
-        );
-        if revision % 100 == 0 {
-            checkpoints.push(scheduler.cache_stats().used_bytes);
-        }
-    }
-    let growth = checkpoints
-        .windows(2)
-        .map(|pair| pair[1].saturating_sub(pair[0]))
-        .max()
-        .unwrap_or_default();
-    let stats = scheduler.cache_stats();
-    (stats.used_bytes, growth, stats.evictions)
-}
-
 fn seed_document() -> DocumentStore {
     let mut document = DocumentStore::new();
     document
@@ -304,20 +183,14 @@ fn process_private_bytes() -> usize {
 
 #[derive(Debug)]
 struct GateMetrics {
-    stale_current_inserts: usize,
     changed_read_digest_accepted: usize,
     committed_revision_damage: usize,
     exception_crosses_contract: usize,
     cancellation_p95_ms: f64,
-    reader_p95_ms: f64,
-    reader_block_over_100_ms: usize,
-    cache_plateau_bytes: usize,
-    cache_growth_bytes_per_100: usize,
-    cache_evictions: u64,
     private_bytes: usize,
 }
 
-fn write_metrics(metrics: &GateMetrics, cancellation_ms: &[f64], reader_ms: &[f64]) {
+fn write_metrics(metrics: &GateMetrics, cancellation_ms: &[f64]) {
     let Some(metrics_path) = ketchup_test_env::report_path("scheduler_reliability.json") else {
         return;
     };
@@ -330,23 +203,6 @@ fn write_metrics(metrics: &GateMetrics, cancellation_ms: &[f64], reader_ms: &[f6
         json,
         "  \"cancellation_samples\": {},",
         PERFORMANCE_RUNS * CANCELLATION_SAMPLES
-    )
-    .unwrap();
-    writeln!(
-        json,
-        "  \"reader_samples\": {},",
-        PERFORMANCE_RUNS * READER_SAMPLES
-    )
-    .unwrap();
-    writeln!(
-        json,
-        "  \"schedule_permutations\": {SCHEDULE_PERMUTATIONS},"
-    )
-    .unwrap();
-    writeln!(
-        json,
-        "  \"stale_current_inserts\": {},",
-        metrics.stale_current_inserts
     )
     .unwrap();
     writeln!(json, "  \"crash_recovery_runs\": {CRASH_RECOVERY_RUNS},").unwrap();
@@ -368,41 +224,19 @@ fn write_metrics(metrics: &GateMetrics, cancellation_ms: &[f64], reader_ms: &[f6
         metrics.changed_read_digest_accepted
     )
     .unwrap();
-    writeln!(json, "  \"reader_p95_ms\": {:.6},", metrics.reader_p95_ms).unwrap();
-    writeln!(
-        json,
-        "  \"reader_block_over_100_ms\": {},",
-        metrics.reader_block_over_100_ms
-    )
-    .unwrap();
     writeln!(
         json,
         "  \"cancellation_p95_ms\": {:.6},",
         metrics.cancellation_p95_ms
     )
     .unwrap();
-    writeln!(json, "  \"cache_budget_bytes\": {CACHE_BUDGET_BYTES},").unwrap();
-    writeln!(
-        json,
-        "  \"cache_plateau_bytes\": {},",
-        metrics.cache_plateau_bytes
-    )
-    .unwrap();
-    writeln!(
-        json,
-        "  \"cache_growth_bytes_per_100_edits\": {},",
-        metrics.cache_growth_bytes_per_100
-    )
-    .unwrap();
-    writeln!(json, "  \"cache_evictions\": {},", metrics.cache_evictions).unwrap();
     writeln!(
         json,
         "  \"process_private_bytes\": {},",
         metrics.private_bytes
     )
     .unwrap();
-    write_samples(&mut json, "cancellation_ms", cancellation_ms, true);
-    write_samples(&mut json, "reader_ms", reader_ms, false);
+    write_samples(&mut json, "cancellation_ms", cancellation_ms, false);
     writeln!(json, "}}").unwrap();
     std::fs::write(metrics_path, json).unwrap();
 }

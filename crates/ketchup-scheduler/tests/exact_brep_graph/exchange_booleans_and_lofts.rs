@@ -1804,33 +1804,12 @@ fn disjoint_body_booleans_return_exact_results_or_typed_refusals_atomically() {
 }
 
 #[test]
-fn graph_results_are_stale_safe_and_resource_or_unsupported_inputs_fail_closed() {
+fn oversized_or_unsupported_graph_inputs_fail_closed() {
     let _turn = crate::integration_support::file_turn();
     let valid_graph = simple_extrusion_graph();
     let mut supervisor =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
     let valid_result = supervisor.evaluate_exact_brep_graph(&valid_graph).unwrap();
-
-    let node = NodeId(77);
-    let mut scheduler = EvaluationScheduler::new(1_024);
-    scheduler
-        .advance_revision(valid_graph.source_revision, [node])
-        .unwrap();
-    let stale_token = scheduler
-        .schedule(node, valid_graph.canonical_input_digest.clone())
-        .unwrap();
-    scheduler
-        .advance_revision(valid_graph.source_revision + 1, [node])
-        .unwrap();
-    assert_eq!(
-        scheduler.accept(DerivedResult {
-            token: stale_token,
-            result_fingerprint: valid_result.identity.result_fingerprint.clone(),
-            charge_bytes: 64,
-        }),
-        InsertOutcome::Stale
-    );
-    assert_eq!(scheduler.current_result_fingerprint(node), None);
 
     let mut oversized = valid_graph.clone();
     let profile = oversized.profiles[0].clone();

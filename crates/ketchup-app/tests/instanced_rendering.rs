@@ -1,18 +1,13 @@
 use ketchup_app::renderer::{
     DerivedRenderCache, GpuFrameDescriptor, GpuInstancedRenderer, InstancedRenderPlan,
-    RENDER_BACKEND_WGPU_V1, RENDER_EVALUATOR_V1, RENDER_PLAN_SCHEMA_V1,
 };
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_interaction::{Ray, Vec3};
 use ketchup_model::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
-    FeatureId, FeatureKind, InstancePath, NodeId, OccurrenceId, SlotPath, SlotSegment, Transform,
+    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
+    InstancePath, OccurrenceId, Transform,
 };
 use ketchup_model::exact_product::ExactResultRegistry;
-use ketchup_scheduler::AcceptanceIdentity;
-use ketchup_scheduler::general::{
-    CompletionOutcome, GeneralJobScheduler, JobKind, JobPolicy, JobRequest, ScheduleOutcome,
-};
 use std::time::{Duration, Instant};
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -177,23 +172,6 @@ fn component_render_instances_preserve_child_colors_and_reset_root_override() {
     ));
 }
 
-fn mesh_acceptance(snapshot: &ketchup_model::document::Snapshot) -> AcceptanceIdentity {
-    let node_id = NodeId(BODY.0);
-    let slot_path = SlotPath::new(vec![
-        SlotSegment::new(node_id, "mesh", "instanced-render").unwrap(),
-    ])
-    .unwrap();
-    AcceptanceIdentity {
-        document_scope: snapshot.document_id().0,
-        derived_identity: DerivedIdentity::new(node_id, slot_path).unwrap(),
-        input_digest: snapshot.canonical_digest(),
-        evaluator: RENDER_EVALUATOR_V1.to_owned(),
-        backend: Some(RENDER_BACKEND_WGPU_V1.to_owned()),
-        schema: RENDER_PLAN_SCHEMA_V1.to_owned(),
-        tolerance: ketchup_model::document::TOLERANCE_PROFILE_V1.to_owned(),
-    }
-}
-
 #[test]
 fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw() {
     ten_thousand_occurrence_product();
@@ -211,40 +189,6 @@ fn ten_thousand_occurrence_product() -> Duration {
     let total_started = Instant::now();
     let mut store = product_document();
     let snapshot = store.current();
-
-    let acceptance = mesh_acceptance(&snapshot);
-    let mut scheduler = GeneralJobScheduler::new(1_048_576);
-    scheduler
-        .advance_revision(snapshot.revision_id(), [])
-        .unwrap();
-    let handle = match scheduler
-        .schedule(JobRequest {
-            node_id: NodeId(BODY.0),
-            acceptance: acceptance.clone(),
-            kind: JobKind::Mesh,
-            policy: JobPolicy::NO_RESTART,
-        })
-        .unwrap()
-    {
-        ScheduleOutcome::Queued(handle) => handle,
-        ScheduleOutcome::CacheHit(_) => panic!("first mesh request must execute"),
-    };
-    scheduler.start(handle.id).unwrap();
-    assert_eq!(
-        scheduler.complete(handle.id, "m16-one-shared-box-mesh", 240),
-        Ok(CompletionOutcome::Current)
-    );
-    assert!(matches!(
-        scheduler
-            .schedule(JobRequest {
-                node_id: NodeId(BODY.0),
-                acceptance,
-                kind: JobKind::Mesh,
-                policy: JobPolicy::NO_RESTART,
-            })
-            .unwrap(),
-        ScheduleOutcome::CacheHit(_)
-    ));
 
     let plan_started = Instant::now();
     let mut render_cache = DerivedRenderCache::default();

@@ -15,8 +15,8 @@ use ketchup_model::document::{
     BodyKind, BooleanOperation, CanonicalCommand, CanonicalError, ChamferEdgeSide, ChamferMode,
     CommandBatch, DefinitionId, Dimension, DocumentStore, DraftSpec, EdgeFinishKind, EdgeRef,
     FaceRef, FeatureId, FeatureKind, FeatureParameterTarget, FilletRadiusStation, InstancePath,
-    LoftContinuity, LoftSection, NodeId, OccurrenceId, ParameterValueType, ProfileSegment,
-    ShellDirection, Snapshot, SolidToolPlan, SpatialPathSegment, SurfaceBodySpec, Transform,
+    LoftContinuity, LoftSection, OccurrenceId, ParameterValueType, ProfileSegment, ShellDirection,
+    Snapshot, SolidToolPlan, SpatialPathSegment, SurfaceBodySpec, Transform,
 };
 use ketchup_model::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V8, EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10,
@@ -38,8 +38,8 @@ use ketchup_model::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
 };
 use ketchup_scheduler::{
-    DerivedResult, EvaluationScheduler, ExactFeaFaceTraction, ExactFeaSetup, ExactFeaSetupError,
-    ExactVolumeMeshWireOptions, ExactWorkerSupervisor, InsertOutcome, WorkerError,
+    ExactFeaFaceTraction, ExactFeaSetup, ExactFeaSetupError, ExactVolumeMeshWireOptions,
+    ExactWorkerSupervisor, WorkerError,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
