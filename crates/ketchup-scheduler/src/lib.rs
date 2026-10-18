@@ -995,6 +995,8 @@ struct GuardedExactWorker {
     sha256: String,
     stamp: ExecutableStamp,
     _file: fs::File,
+    /// The OCCT libraries in the identity, held against replacement too.
+    _libraries: Vec<fs::File>,
 }
 
 /// Length and modification time of the worker executable when it was hashed:
@@ -1020,19 +1022,47 @@ fn guarded_exact_worker_identity(executable: &Path) -> Result<GuardedExactWorker
     let executable = executable
         .canonicalize()
         .map_err(|error| WorkerError::Spawn(error.to_string()))?;
-    let file = open_guarded_exact_worker(&executable)
-        .map_err(|error| WorkerError::Spawn(error.to_string()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| WorkerError::Spawn(error.to_string()))?;
+    let (file, metadata) = open_bounded(&executable)?;
+    let mut identity = bounded_sha256(&file)?;
+    // The OCCT libraries are code the worker runs as much as its executable.
+    let mut libraries = Vec::new();
+    for library in occt_libraries(&executable)? {
+        let (file, metadata) = open_bounded(&library)?;
+        let name = library.file_name().unwrap_or_default().to_string_lossy();
+        identity = format!(
+            "{identity}\n{name}:{}",
+            library_sha256(&library, &file, &metadata)?
+        );
+        libraries.push(file);
+    }
+    if !libraries.is_empty() {
+        identity = sha256_hex(identity.as_bytes());
+    }
+    Ok(GuardedExactWorker {
+        executable,
+        sha256: identity,
+        stamp: executable_stamp(&metadata),
+        _file: file,
+        _libraries: libraries,
+    })
+}
+
+/// The file at `path` opened against replacement, when it is a bounded file.
+fn open_bounded(path: &Path) -> Result<(fs::File, fs::Metadata), WorkerError> {
+    let spawn = |error: io::Error| WorkerError::Spawn(error.to_string());
+    let file = open_guarded_exact_worker(path).map_err(spawn)?;
+    let metadata = file.metadata().map_err(spawn)?;
     if !metadata.is_file() || metadata.len() > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
         return Err(WorkerError::Spawn(
             "exact worker executable is not a bounded file".to_owned(),
         ));
     }
+    Ok((file, metadata))
+}
+
+fn bounded_sha256(file: &fs::File) -> Result<String, WorkerError> {
     let mut bytes = Vec::new();
-    (&file)
-        .take(MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1)
+    file.take(MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| WorkerError::Spawn(error.to_string()))?;
     if bytes.len() as u64 > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
@@ -1040,12 +1070,56 @@ fn guarded_exact_worker_identity(executable: &Path) -> Result<GuardedExactWorker
             "exact worker executable is not a bounded file".to_owned(),
         ));
     }
-    Ok(GuardedExactWorker {
-        executable,
-        sha256: sha256_hex(&bytes),
-        stamp: executable_stamp(&metadata),
-        _file: file,
-    })
+    Ok(sha256_hex(&bytes))
+}
+
+/// The OCCT runtime libraries beside the worker, by name: the release
+/// package puts the pinned `TK*.dll` there, and Unix builds may put `libTK*`.
+fn occt_libraries(executable: &Path) -> Result<Vec<PathBuf>, WorkerError> {
+    let Some(directory) = executable.parent() else {
+        return Ok(Vec::new());
+    };
+    let entries = fs::read_dir(directory).map_err(|error| WorkerError::Spawn(error.to_string()))?;
+    let mut libraries: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            (name.starts_with("tk") && name.ends_with(".dll"))
+                || (name.starts_with("libtk") && (name.contains(".so") || name.ends_with(".dylib")))
+        })
+        .collect();
+    libraries.sort();
+    Ok(libraries)
+}
+
+/// A library's hash, kept per process while its stamp holds: every spawn
+/// checks the libraries, but each is read once.
+fn library_sha256(
+    path: &Path,
+    file: &fs::File,
+    metadata: &fs::Metadata,
+) -> Result<String, WorkerError> {
+    static HASHES: std::sync::Mutex<BTreeMap<PathBuf, (ExecutableStamp, String)>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    let stamp = executable_stamp(metadata);
+    let known = HASHES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(path)
+        .filter(|(known, _)| *known == stamp)
+        .map(|(_, sha256)| sha256.clone());
+    if let Some(sha256) = known {
+        return Ok(sha256);
+    }
+    let sha256 = bounded_sha256(file)?;
+    HASHES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(path.to_owned(), (stamp, sha256.clone()));
+    Ok(sha256)
 }
 
 fn exact_worker_identity(executable: &Path) -> Result<(PathBuf, String), WorkerError> {
@@ -3205,6 +3279,25 @@ mod tests {
         assert!(!executable_unchanged(&executable, stamp));
         std::fs::remove_file(&executable).unwrap();
         assert!(!executable_unchanged(&executable, stamp));
+    }
+
+    #[test]
+    fn the_worker_identity_covers_the_occt_libraries_beside_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("worker.bin");
+        std::fs::write(&executable, b"trusted worker").unwrap();
+        std::fs::write(directory.path().join("unrelated.dll"), b"not occt").unwrap();
+        let (_, alone) = exact_worker_identity(&executable).unwrap();
+        let kernel = directory.path().join("TKernel.dll");
+        std::fs::write(&kernel, b"kernel one").unwrap();
+        let (_, with_kernel) = exact_worker_identity(&executable).unwrap();
+        assert_ne!(with_kernel, alone);
+        assert_eq!(exact_worker_identity(&executable).unwrap().1, with_kernel);
+        std::fs::write(&kernel, b"kernel two!").unwrap();
+        assert!(matches!(
+            verify_exact_worker_identity(&executable, &with_kernel),
+            Err(WorkerError::Spawn(message)) if message == "exact worker executable identity changed"
+        ));
     }
 
     #[cfg(windows)]
