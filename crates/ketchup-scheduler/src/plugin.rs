@@ -146,6 +146,7 @@ pub fn run_plugin_command(
                 break;
             }
             if line == "QUERY\tINPUTS" {
+                gateway.count_request()?;
                 send_line(&writer, format!("INPUTS\t{inputs}"), deadline, cancelled)?;
                 continue;
             }

@@ -266,16 +266,23 @@ impl PluginGateway {
         &self.manifest
     }
 
+    /// Spends one request of the budget; every plugin request, including one
+    /// the host answers itself, goes through here.
+    pub fn count_request(&mut self) -> Result<(), PluginGatewayError> {
+        self.request_count = self.request_count.saturating_add(1);
+        if self.request_count > self.manifest.limits.min(self.grant.limits).max_requests {
+            return Err(PluginGatewayError::RequestBudgetExceeded);
+        }
+        Ok(())
+    }
+
     pub fn handle(
         &mut self,
         snapshot: &Snapshot,
         request: PluginRequest,
     ) -> Result<PluginResponse, PluginGatewayError> {
+        self.count_request()?;
         let limits = self.manifest.limits.min(self.grant.limits);
-        self.request_count = self.request_count.saturating_add(1);
-        if self.request_count > limits.max_requests {
-            return Err(PluginGatewayError::RequestBudgetExceeded);
-        }
 
         let required = request.required_capability();
         if !self.manifest.capabilities.contains(&required)

@@ -350,6 +350,32 @@ fn host_denies_ungranted_edit_and_request_or_query_budget_exhaustion() {
 }
 
 #[test]
+fn asking_for_inputs_spends_the_request_budget() {
+    let _turn = crate::integration_support::file_turn();
+    let store = seed();
+    let script = "import sys\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.inputs\\t1.0.0\\t7001\\t\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nfor _ in range(2):\n    print('QUERY\\tINPUTS', flush=True)\n    sys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()";
+
+    let result = run_plugin_process(
+        python(),
+        &[OsString::from("-c"), OsString::from(script)],
+        &store.current(),
+        pilot_grant(PluginLimits::M7B_PILOT),
+        Duration::from_secs(5),
+        &AtomicBool::new(false),
+    );
+
+    assert!(
+        matches!(
+            result,
+            Err(PluginHostError::Gateway(
+                PluginGatewayError::RequestBudgetExceeded
+            ))
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn plugin_process_does_not_inherit_parent_environment() {
     let _turn = crate::integration_support::file_turn();
     let store = seed();
