@@ -2903,13 +2903,10 @@ impl KetchupApp {
 
     /// Reads the corner count typed before the polygon centre is placed.
     pub(crate) fn set_polygon_sides_from_value_box(&mut self) -> bool {
-        let Some(sides) = self
-            .value_box
-            .input
-            .trim()
-            .parse::<usize>()
-            .ok()
-            .filter(|sides| (3..=limits::PATH_SEGMENTS).contains(sides))
+        let Some(sides) =
+            crate::length_input::read_whole::<usize>(&self.value_box.input, self.value_box.decimal)
+                .ok()
+                .filter(|sides| (3..=limits::PATH_SEGMENTS).contains(sides))
         else {
             self.digest = self.catalog.format(
                 "digest-polygon-invalid-sides",

@@ -238,7 +238,9 @@ impl KetchupApp {
             PersistentDimensionTarget::FeatureParameter(target) => Some(target),
             _ => None,
         };
-        let decimal_places = fields.decimal_places.trim().parse::<u8>().ok();
+        let decimal_places =
+            crate::length_input::read_whole::<u8>(&fields.decimal_places, self.value_box.decimal)
+                .ok();
         let apply = ui.add_enabled(
             target.is_some() && decimal_places.is_some(),
             egui::Button::new(self.catalog.text("measured-dimension-apply")),

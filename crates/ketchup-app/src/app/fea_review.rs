@@ -179,10 +179,8 @@ impl FeaReviewDialog {
                 .map_err(|refusal| catalog.field_refusal(label, refusal))
         };
         let ordinal = |value: &str, label: &'static str| {
-            value
-                .trim()
-                .parse::<u32>()
-                .map_err(|error| catalog.refusal_because(label, error))
+            crate::length_input::read_whole::<u32>(value, decimal)
+                .map_err(|refusal| catalog.field_refusal(label, refusal))
         };
         Ok(FeaFields {
             youngs_modulus_mpa: number(&self.youngs_modulus_mpa, "fea-review-young")?,

@@ -1336,16 +1336,18 @@ impl KetchupApp {
         let first = &self.assembly_editor.coupling_first_parameter;
         let second = &self.assembly_editor.coupling_second_parameter;
         let option = self.assembly_editor.coupling_option;
+        let teeth = |value: &str| {
+            crate::length_input::read_whole::<u32>(value, self.value_box.decimal).map_err(
+                |refusal| {
+                    self.catalog
+                        .field_refusal("assembly-error-coupling-parameter", refusal)
+                },
+            )
+        };
         let transmission = match self.assembly_editor.coupling_kind {
             AssemblyCouplingKindChoice::GearPair => AssemblyTransmissionKind::GearPair {
-                input_teeth: first.trim().parse::<u32>().map_err(|error| {
-                    self.catalog
-                        .refusal_because("assembly-error-coupling-parameter", error)
-                })?,
-                output_teeth: second.trim().parse::<u32>().map_err(|error| {
-                    self.catalog
-                        .refusal_because("assembly-error-coupling-parameter", error)
-                })?,
+                input_teeth: teeth(first)?,
+                output_teeth: teeth(second)?,
                 mesh: if option {
                     GearMeshKind::Internal
                 } else {
@@ -1372,14 +1374,8 @@ impl KetchupApp {
                 crossed: option,
             },
             AssemblyCouplingKindChoice::Chain => AssemblyTransmissionKind::Chain {
-                input_sprocket_teeth: first.trim().parse::<u32>().map_err(|error| {
-                    self.catalog
-                        .refusal_because("assembly-error-coupling-parameter", error)
-                })?,
-                output_sprocket_teeth: second.trim().parse::<u32>().map_err(|error| {
-                    self.catalog
-                        .refusal_because("assembly-error-coupling-parameter", error)
-                })?,
+                input_sprocket_teeth: teeth(first)?,
+                output_sprocket_teeth: teeth(second)?,
             },
             AssemblyCouplingKindChoice::RackAndPinion => AssemblyTransmissionKind::RackAndPinion {
                 pinion_pitch_diameter_mm: crate::length_input::read_length(

@@ -159,6 +159,20 @@ pub fn read_number(input: &str, decimal: DecimalSeparator) -> Result<f64, Refusa
     }
 }
 
+/// A whole number without a unit — a count, a number of sides, a face
+/// ordinal — read like every value, so `2*4` is 8 and `1e3` is 1000; a
+/// fraction, or a value `T` cannot hold, is refused.
+pub fn read_whole<T: TryFrom<i64>>(input: &str, decimal: DecimalSeparator) -> Result<T, Refusal> {
+    // Every whole number up to 2^53 is exact in an f64.
+    const EXACT: f64 = 9_007_199_254_740_992.0;
+    let value = read_number(input, decimal)?;
+    if value.fract() != 0.0 || value.abs() > EXACT {
+        return Err(Refusal::Unreadable);
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    T::try_from(value as i64).map_err(|_| Refusal::Unreadable)
+}
+
 /// Millimetres for a typed length expression, or `None` when it is not one.
 #[must_use]
 pub fn parse_length_mm(input: &str, decimal: DecimalSeparator) -> Option<f64> {
@@ -521,6 +535,26 @@ mod tests {
             parse_length_list("1e3;2e2", Point, 2..=2),
             Some(vec![1000.0, 200.0])
         );
+    }
+
+    /// Review 2026-10-17 P3-G: counts, sides and plugin integers are read
+    /// like every value, not by `str::parse`.
+    #[test]
+    fn a_whole_number_is_read_like_every_value() {
+        assert_eq!(read_whole::<usize>("6", Point), Ok(6));
+        assert_eq!(read_whole::<usize>(" 2*4 ", Point), Ok(8));
+        assert_eq!(read_whole::<usize>("12,0", Comma), Ok(12));
+        assert_eq!(read_whole::<i64>("-3", Comma), Ok(-3));
+        assert_eq!(read_whole::<u32>("1e3", Point), Ok(1000));
+        assert_eq!(read_whole::<usize>("1,5", Point), Err(Refusal::Comma));
+        for input in ["2.5", "-1", "6 mm", "", "1e30", "abc"] {
+            assert_eq!(
+                read_whole::<usize>(input, Comma),
+                Err(Refusal::Unreadable),
+                "{input:?}"
+            );
+        }
+        assert_eq!(read_whole::<u8>("256", Point), Err(Refusal::Unreadable));
     }
 
     /// Where the decimal separator is a point a comma is refused as such, so

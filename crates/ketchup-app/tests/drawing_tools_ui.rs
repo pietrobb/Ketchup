@@ -39,6 +39,27 @@ fn assert_regular(corners: &[Vec3], center: Vec3, radius_mm: f64, sides: usize, 
     }
 }
 
+/// Review 2026-10-17 P3-G: the side count is read like every value of the
+/// window, not by `str::parse`, and a fraction is refused.
+#[test]
+fn polygon_sides_are_read_like_every_value() {
+    let mut shell = Shell::new();
+    let sides = |shell: &Shell, sides: &str| {
+        shell.catalog().format(
+            "digest-polygon-sides",
+            &BTreeMap::from([("sides", sides.to_owned())]),
+        )
+    };
+    shell.press_key(Key::N);
+    shell.type_text("2*4");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().action_digest(), sides(&shell, "8"));
+    shell.type_text("7.5");
+    shell.press_key(Key::Enter);
+    assert_ne!(shell.app().action_digest(), sides(&shell, "7"));
+    assert_ne!(shell.app().action_digest(), sides(&shell, "8"));
+}
+
 #[test]
 fn polygon_takes_sides_and_radius_by_click_drag_or_typing_in_one_undo_step() {
     let mut shell = Shell::new();

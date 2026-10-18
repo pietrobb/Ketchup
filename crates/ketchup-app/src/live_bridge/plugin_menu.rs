@@ -97,7 +97,7 @@ impl FormField {
             InputType::String => Some(Value::String(self.text.clone())),
             _ if text.is_empty() => None,
             InputType::Integer => Some(
-                text.parse::<i64>()
+                crate::length_input::read_whole::<i64>(text, decimal)
                     .map_or_else(|_| json!(text), Value::from),
             ),
             InputType::Number => Some(
