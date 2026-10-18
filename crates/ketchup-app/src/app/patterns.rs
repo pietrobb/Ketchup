@@ -1154,6 +1154,7 @@ impl KetchupApp {
                 spacing_input.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &spacing_label)
                 });
+                show_value_refusal(ui, &self.catalog, &spacing, decimal);
                 let count_label = self.catalog.text("dialog-linear-pattern-count");
                 ui.label(&count_label);
                 let count_input = ui.add(egui::TextEdit::singleline(&mut count));
@@ -1312,6 +1313,7 @@ impl KetchupApp {
                     input.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &label)
                     });
+                    show_value_refusal(ui, &self.catalog, value, decimal);
                 }
                 let places = typed_places(&primary_count)
                     .zip(typed_places(&secondary_count))
@@ -1446,6 +1448,7 @@ impl KetchupApp {
                     input.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &label)
                     });
+                    show_value_refusal(ui, &self.catalog, value, decimal);
                 }
                 let angle_label = self.catalog.text("dialog-circular-pattern-angle");
                 ui.label(&angle_label);
@@ -1453,6 +1456,7 @@ impl KetchupApp {
                 angle_input.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &angle_label)
                 });
+                show_value_refusal(ui, &self.catalog, &angle, decimal);
                 let count_label = self.catalog.text("dialog-circular-pattern-count");
                 ui.label(&count_label);
                 let count_input = ui.add(egui::TextEdit::singleline(&mut count));

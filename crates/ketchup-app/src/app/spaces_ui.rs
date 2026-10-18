@@ -182,6 +182,11 @@ impl KetchupApp {
             let size = self.catalog.format("spaces-field-size", &arguments);
             field(ui, size, &mut fields.size[index]);
         }
+        let _ = fields
+            .position
+            .iter()
+            .chain(&fields.size)
+            .any(|value| show_value_refusal(ui, &self.catalog, value, self.value_box.decimal));
         if let SpaceRow::Clearance(_) = row {
             let required = self.catalog.text("spaces-field-required");
             ui.checkbox(&mut fields.required, required);

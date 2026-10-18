@@ -394,6 +394,7 @@ impl KetchupApp {
             (None, None, None) => return,
         };
         let catalog = &self.catalog;
+        let decimal = self.value_box.decimal;
         let (mut run, mut close) = (false, false);
         egui::Window::new(title)
             .id(egui::Id::new("plugin-window"))
@@ -423,6 +424,15 @@ impl KetchupApp {
                             ui.end_row();
                         }
                     });
+                    let _ = form
+                        .fields
+                        .iter()
+                        .filter(|field| {
+                            matches!(field.kind, InputType::Integer | InputType::Number)
+                        })
+                        .any(|field| {
+                            crate::refusal::show_value_refusal(ui, catalog, &field.text, decimal)
+                        });
                     ui.horizontal(|ui| {
                         run = ui.button(catalog.text("plugins-run")).clicked();
                         close = ui.button(catalog.text("plugins-cancel")).clicked();

@@ -1578,6 +1578,7 @@ value-label-distance = DISTANCE (MM)
 value-placeholder = type exact value
 value-length-preview = = { $value } mm
 value-comma-not-decimal = A comma is no decimal separator here: write 12.5, and separate values with ; x or : (80;60)
+value-unreadable = not a number, length or expression
 outliner-group = ▸ { $name }    { $count } members
 outliner-object = { $visibility }  { $name }    { $dimensions } mm
 outliner-object-grouped = { $visibility }  { $name }    { $dimensions } mm    · Group { $group }

@@ -2107,6 +2107,42 @@ fn linear_pattern_is_localized_previewed_shared_and_one_undo_step() {
     }
 }
 
+/// Review 2026-10-17 P3-G: where the decimal separator is a point, a dialog
+/// field with a comma says why under it, in the window's language, and stops
+/// saying so once the value is written with a point.
+#[test]
+fn a_dialog_field_with_a_comma_says_why_in_the_windows_language() {
+    let mut shell = Shell::with_catalog(LocaleCatalog::slovak());
+    shell.click_at(shell.top_face_centre(1));
+    let why = shell.catalog().text("value-comma-not-decimal");
+    for (command, field, cancel) in [
+        (
+            AppCommand::LinearPattern,
+            "dialog-linear-pattern-spacing",
+            "dialog-linear-pattern-cancel",
+        ),
+        (
+            AppCommand::RectangularPattern,
+            "dialog-rectangular-pattern-secondary-spacing",
+            "dialog-rectangular-pattern-cancel",
+        ),
+        (
+            AppCommand::CircularPattern,
+            "dialog-circular-pattern-angle",
+            "dialog-circular-pattern-cancel",
+        ),
+    ] {
+        shell.click_menu_command("menu-model", command);
+        assert!(!shell.has_visible_label(&why), "{command:?}");
+        set_dialog_field(&mut shell, field, "12,5");
+        assert!(shell.has_visible_label(&why), "{command:?} says why");
+        set_dialog_field(&mut shell, field, "12.5");
+        assert!(!shell.has_visible_label(&why), "{command:?}");
+        let cancel = shell.catalog().text(cancel);
+        shell.click_role_and_label(Role::Button, &cancel);
+    }
+}
+
 #[test]
 fn every_pattern_dialog_refuses_513_new_copies_and_makes_512() {
     let mut shell = Shell::with_catalog(LocaleCatalog::english());

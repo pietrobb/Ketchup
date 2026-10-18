@@ -44,6 +44,7 @@ impl KetchupApp {
                         ui.label(self.catalog.text(label));
                         ui.text_edit_singleline(value);
                     });
+                    show_value_refusal(ui, &self.catalog, value, self.value_box.decimal);
                 }
                 ui.label(self.catalog.text("fea-review-limits"));
                 if let Some(review) = &pending.review {
@@ -82,39 +83,16 @@ impl KetchupApp {
             });
         if run {
             let result = (|| {
-                let decimal = self.value_box.decimal;
-                let parse_f64 = |value: &str, name: &str| {
-                    crate::length_input::read_number(value, decimal)
-                        .map_err(|error| invalid_field(name, "a finite number", error))
-                };
-                let youngs_modulus_mpa = parse_f64(&pending.youngs_modulus_mpa, "Young's modulus")?;
-                let poisson_ratio = parse_f64(&pending.poisson_ratio, "Poisson ratio")?;
-                let yield_strength_mpa = parse_f64(&pending.yield_strength_mpa, "Yield strength")?;
-                let constrained_face_ordinals = pending
-                    .constrained_face_ordinals
-                    .split(crate::length_input::VALUE_SEPARATORS)
-                    .map(str::trim)
-                    .map(|value| {
-                        value.parse::<u32>().map_err(|error| {
-                            invalid_field(
-                                "Fixed face ordinals",
-                                "u32 values separated by ; x or :",
-                                error,
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let loaded_face_ordinal = pending
-                    .loaded_face_ordinal
-                    .parse::<u32>()
-                    .map_err(|error| invalid_field("Loaded face ordinal", "u32", error))?;
-                let traction = [
-                    parse_f64(&pending.traction_x_n_per_mm2, "Traction X")?,
-                    parse_f64(&pending.traction_y_n_per_mm2, "Traction Y")?,
-                    parse_f64(&pending.traction_z_n_per_mm2, "Traction Z")?,
-                ];
-                let coarse = parse_f64(&pending.coarse_deflection_mm, "Coarse deflection")?;
-                let fine = parse_f64(&pending.fine_deflection_mm, "Fine deflection")?;
+                let FeaFields {
+                    youngs_modulus_mpa,
+                    poisson_ratio,
+                    yield_strength_mpa,
+                    constrained_face_ordinals,
+                    loaded_face_ordinal,
+                    traction,
+                    coarse,
+                    fine,
+                } = pending.read_fields(&self.catalog, self.value_box.decimal)?;
                 let worker_path = self.exact_worker_executable()?;
                 self.reviews.fea_reviews.set_worker_path(worker_path);
                 self.reviews
@@ -173,5 +151,112 @@ impl KetchupApp {
         if open && !cancel {
             self.reviews.fea_review_dialog = Some(pending);
         }
+    }
+}
+
+/// The study's numbers as typed in the dialog.
+struct FeaFields {
+    youngs_modulus_mpa: f64,
+    poisson_ratio: f64,
+    yield_strength_mpa: f64,
+    constrained_face_ordinals: Vec<u32>,
+    loaded_face_ordinal: u32,
+    traction: [f64; 3],
+    coarse: f64,
+    fine: f64,
+}
+
+impl FeaReviewDialog {
+    /// Each field read as the window reads values; a refusal names the
+    /// field by its label, both in the user's language.
+    fn read_fields(
+        &self,
+        catalog: &LocaleCatalog,
+        decimal: crate::length_input::DecimalSeparator,
+    ) -> Result<FeaFields, Rejection> {
+        let number = |value: &str, label: &'static str| {
+            crate::length_input::read_number(value, decimal)
+                .map_err(|refusal| catalog.field_refusal(label, refusal))
+        };
+        let ordinal = |value: &str, label: &'static str| {
+            value
+                .trim()
+                .parse::<u32>()
+                .map_err(|error| catalog.refusal_because(label, error))
+        };
+        Ok(FeaFields {
+            youngs_modulus_mpa: number(&self.youngs_modulus_mpa, "fea-review-young")?,
+            poisson_ratio: number(&self.poisson_ratio, "fea-review-poisson")?,
+            yield_strength_mpa: number(&self.yield_strength_mpa, "fea-review-yield")?,
+            constrained_face_ordinals: self
+                .constrained_face_ordinals
+                .split(crate::length_input::VALUE_SEPARATORS)
+                .map(|value| ordinal(value, "fea-review-fixed-face"))
+                .collect::<Result<_, _>>()?,
+            loaded_face_ordinal: ordinal(&self.loaded_face_ordinal, "fea-review-loaded-face")?,
+            traction: [
+                number(&self.traction_x_n_per_mm2, "fea-review-traction-x")?,
+                number(&self.traction_y_n_per_mm2, "fea-review-traction-y")?,
+                number(&self.traction_z_n_per_mm2, "fea-review-traction-z")?,
+            ],
+            coarse: number(&self.coarse_deflection_mm, "fea-review-coarse")?,
+            fine: number(&self.fine_deflection_mm, "fea-review-fine")?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::length_input::DecimalSeparator::{Comma, Point};
+
+    fn dialog(youngs_modulus_mpa: &str) -> FeaReviewDialog {
+        FeaReviewDialog {
+            definition_id: DefinitionId(1),
+            feature_id: FeatureId(1),
+            occurrence_id: OccurrenceId(1),
+            case_id: "case".to_owned(),
+            youngs_modulus_mpa: youngs_modulus_mpa.to_owned(),
+            poisson_ratio: "0.3".to_owned(),
+            yield_strength_mpa: "250".to_owned(),
+            constrained_face_ordinals: "0; 2".to_owned(),
+            loaded_face_ordinal: "1".to_owned(),
+            traction_x_n_per_mm2: "0".to_owned(),
+            traction_y_n_per_mm2: "0".to_owned(),
+            traction_z_n_per_mm2: "-1".to_owned(),
+            coarse_deflection_mm: "0.3".to_owned(),
+            fine_deflection_mm: "0.12".to_owned(),
+            review: None,
+        }
+    }
+
+    /// Review 2026-10-17 P3-G: a refused FEA field says which one and why in
+    /// the user's language, not in English inside the Slovak window.
+    #[test]
+    fn a_refused_fea_field_is_named_and_explained_in_the_users_language() {
+        let slovak = LocaleCatalog::slovak();
+        let refusal = dialog("2,1e5")
+            .read_fields(&slovak, Point)
+            .err()
+            .expect("a comma where the decimal separator is a point");
+        let reason = refusal.reason_text();
+        assert!(
+            reason.starts_with(&slovak.text("fea-review-young")),
+            "{reason}"
+        );
+        assert!(
+            reason.contains(&slovak.text("value-comma-not-decimal")),
+            "{reason}"
+        );
+        let refusal = dialog("tvrdé").read_fields(&slovak, Comma).err().unwrap();
+        assert!(
+            refusal
+                .reason_text()
+                .ends_with(&slovak.text("value-unreadable"))
+        );
+
+        let fields = dialog("2,1e5").read_fields(&slovak, Comma).unwrap();
+        assert_eq!(fields.youngs_modulus_mpa, 210_000.0);
+        assert_eq!(fields.constrained_face_ordinals, [0, 2]);
     }
 }

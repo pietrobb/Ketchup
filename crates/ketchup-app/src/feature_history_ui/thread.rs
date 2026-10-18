@@ -27,6 +27,12 @@ impl KetchupApp {
         );
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &label));
+        show_value_refusal(
+            ui,
+            &self.catalog,
+            &self.feature_history.thread_input,
+            self.value_box.decimal,
+        );
         let mut action = None;
         if ui
             .button(self.catalog.text("feature-history-change-thread"))

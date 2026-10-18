@@ -1,4 +1,4 @@
-use super::{ActiveTool, KetchupApp, parse_distance_mm};
+use super::{ActiveTool, KetchupApp, parse_distance_mm, show_value_refusal};
 use crate::length_input::DecimalSeparator;
 use eframe::egui;
 use ketchup_assistant::request_invalid::AssistantRequestInvalid;
@@ -555,6 +555,21 @@ impl KetchupApp {
             changed |= left.changed();
         });
         changed |= self.show_helix_profile(ui);
+        let state = &self.helix_tool;
+        let typed = state.origin.iter().chain(&state.axis).chain([
+            &state.radius,
+            &state.pitch,
+            &state.turns,
+            &state.start_angle,
+            &state.tooth_depth,
+            &state.tooth_width,
+            &state.tooth_crest,
+            &state.circle_radius,
+        ]);
+        // One hint for the panel, however many of its fields hold a comma.
+        let _ = typed
+            .into_iter()
+            .any(|text| show_value_refusal(ui, &self.catalog, text, state.decimal));
         if changed {
             self.helix_tool.refresh();
             self.digest = self.catalog.text(if self.helix_tool.valid {

@@ -3433,6 +3433,12 @@ impl KetchupApp {
             ui.text_edit_singleline(&mut self.solid_tools.pocket_depth_input);
             ui.label(self.catalog.text("unit-mm"));
         });
+        show_value_refusal(
+            ui,
+            &self.catalog,
+            &self.solid_tools.pocket_depth_input,
+            self.value_box.decimal,
+        );
         let apply = ui
             .button(self.catalog.text("pocket-properties-apply"))
             .clicked();

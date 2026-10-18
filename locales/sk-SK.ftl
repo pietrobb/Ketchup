@@ -1578,6 +1578,7 @@ value-label-distance = VZDIALENOSŤ (MM)
 value-placeholder = zadajte presnú hodnotu
 value-length-preview = = { $value } mm
 value-comma-not-decimal = Čiarka tu nie je desatinná: píš 12.5 a hodnoty oddeľ ; x alebo : (80;60)
+value-unreadable = nie je to číslo, dĺžka ani výraz
 outliner-group = ▸ { $name }    členov: { $count }
 outliner-object = { $visibility }  { $name }    { $dimensions } mm
 outliner-object-grouped = { $visibility }  { $name }    { $dimensions } mm    · Skupina { $group }

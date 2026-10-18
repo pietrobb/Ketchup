@@ -88,6 +88,17 @@ pub enum Refusal {
     Comma,
 }
 
+impl Refusal {
+    /// The catalog message that tells the user why, in their language.
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Unreadable => "value-unreadable",
+            Self::Comma => "value-comma-not-decimal",
+        }
+    }
+}
+
 impl std::fmt::Display for Refusal {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {

@@ -3,6 +3,8 @@
 //! its reason is that message in the user's language; a failure from a lower
 //! layer stays attached as the cause.
 
+use crate::length_input::{DecimalSeparator, Refusal, read_values};
+use eframe::egui;
 use ketchup_interaction::LocaleCatalog;
 use ketchup_rejection::{Rejection, RejectionPhase};
 use std::collections::BTreeMap;
@@ -21,6 +23,10 @@ pub(crate) trait Refuse {
         key: &'static str,
         cause: impl Error + Send + Sync + 'static,
     ) -> Rejection;
+
+    /// The field whose rule the message `key` states refuses its text for
+    /// the reason `refusal` gives, both in the user's language.
+    fn field_refusal(&self, key: &'static str, refusal: Refusal) -> Rejection;
 }
 
 impl Refuse for LocaleCatalog {
@@ -41,24 +47,36 @@ impl Refuse for LocaleCatalog {
             .reason(self.text_because(key, &cause))
             .caused_by(cause)
     }
+
+    fn field_refusal(&self, key: &'static str, refusal: Refusal) -> Rejection {
+        Rejection::new(key, RejectionPhase::Validation)
+            .reason(self.text_because(key, self.text(refusal.message_key())))
+            .caused_by(refusal)
+    }
+}
+
+/// Under a dialog's value field, why its text is refused when that is not
+/// plain to see: a comma where the decimal separator is a point. True when
+/// it showed one.
+pub(crate) fn show_value_refusal(
+    ui: &mut egui::Ui,
+    catalog: &LocaleCatalog,
+    text: &str,
+    decimal: DecimalSeparator,
+) -> bool {
+    let refused = read_values(text, decimal) == Err(Refusal::Comma);
+    if refused {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            catalog.text(Refusal::Comma.message_key()),
+        );
+    }
+    refused
 }
 
 /// A lower-layer failure shown as it is; `code` names the step that failed.
 pub(crate) fn failed(code: &'static str, cause: impl Error + Send + Sync + 'static) -> Rejection {
     Rejection::new(code, RejectionPhase::Planning)
         .reason(cause.to_string())
-        .caused_by(cause)
-}
-
-/// A typed-in field that does not parse as what it must be; the parse error stays
-/// attached as the cause.
-pub(crate) fn invalid_field(
-    field: &str,
-    requirement: &str,
-    cause: impl Error + Send + Sync + 'static,
-) -> Rejection {
-    Rejection::new("field.invalid", RejectionPhase::Validation)
-        .target(field.to_owned())
-        .reason(format!("{field} must be {requirement}: {cause}"))
         .caused_by(cause)
 }

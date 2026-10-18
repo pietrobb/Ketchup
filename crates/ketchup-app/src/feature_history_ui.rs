@@ -2741,6 +2741,12 @@ impl KetchupApp {
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &move_label)
                 });
+                show_value_refusal(
+                    ui,
+                    &self.catalog,
+                    &self.feature_history.move_input,
+                    self.value_box.decimal,
+                );
                 if ui
                     .button(self.catalog.text("feature-history-preview-move-profile"))
                     .clicked()
@@ -2796,6 +2802,12 @@ impl KetchupApp {
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &value_label)
                 });
+                show_value_refusal(
+                    ui,
+                    &self.catalog,
+                    &self.feature_history.value_input,
+                    self.value_box.decimal,
+                );
                 if ui
                     .add_enabled(
                         !choices.is_empty(),

@@ -163,7 +163,7 @@ mod refusal;
 mod selection_mass_ui;
 mod selection_measures_ui;
 use ketchup_rejection::{Rejection, RejectionPhase};
-use refusal::{Refuse, failed, invalid_field};
+use refusal::{Refuse, failed, show_value_refusal};
 mod slot;
 mod tool_preview;
 mod transform_operation;
