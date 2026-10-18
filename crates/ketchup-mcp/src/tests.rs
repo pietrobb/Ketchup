@@ -100,6 +100,47 @@ fn run_plugin_is_listed_and_reaches_the_window_unchanged() {
     }
 }
 
+/// Review 2026-10-17 P3: docs/plugins.md described only plugin folders, and the
+/// instructions' import summary left out DWG, which `file import` reads.
+#[test]
+fn plugins_doc_and_instructions_name_what_the_tools_take() {
+    let schemas = crate::schema::tools();
+    let tool = |name: &str| {
+        schemas
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    let doc = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/plugins.md"),
+    )
+    .unwrap();
+    let run_plugin = tool("run_plugin");
+    for field in run_plugin["inputSchema"]["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+    {
+        assert!(
+            doc.contains(&format!("`{field}`")),
+            "docs/plugins.md does not describe run_plugin {field}"
+        );
+    }
+    let file = tool("file");
+    let imports = file["description"].as_str().unwrap();
+    let (_, after) = crate::schema::INSTRUCTIONS
+        .split_once("file action=import")
+        .unwrap();
+    let summary = after.split(';').next().unwrap();
+    for format in ["STEP", "IGES", "STL", "DXF", "DWG", "GLB", "SketchUp"] {
+        assert!(imports.contains(format), "{format} not in {imports}");
+        assert!(summary.contains(format), "{format} not in {summary}");
+    }
+}
+
 #[test]
 fn compact_program_schema_docs_and_routes_agree() {
     let root = tempfile::tempdir().unwrap();

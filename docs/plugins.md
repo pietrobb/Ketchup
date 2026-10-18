@@ -33,14 +33,40 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
   that runs code given as text, from standard input or found by name (`-c`,
   `-e`, `-m`, `-r`, `-`, `--eval`, `--require`, `--import`, …) is refused, and
   an argument that names no file must be plain words (letters, digits and
-  `-_.,+/\`).
-- MCP `run_plugin` takes `plugin` (the folder) and `inputs`; it cannot change
-  or extend the command line or the permissions.
+  `-_.,+/\`). An argument starting with `@` (arguments read from a file) or
+  naming a URL is refused too. The options refused as running code are `-`,
+  the short options `-c`, `-e`, `-E`, `-m`, `-M`, `-p`, `-r` and `-i` (alone,
+  with a joined value or ending a cluster such as `-Bm`) and the long options
+  `--eval`, `--print`, `--require`, `--import`, `--loader`,
+  `--experimental-loader`, `--module`, `--command`, `--encodedcommand`,
+  `--interactive` and `--include`.
 - Inputs are `number`, `integer`, `boolean` or `string`. The plugin reads them
   with `Client.inputs()` (`QUERY\tINPUTS`), never from its arguments. An
-  undeclared, missing or mistyped input is refused before anything runs.
+  undeclared, missing or mistyped input is refused before the user is asked,
+  and so are inputs that together take more than one protocol line carries
+  (about 128 KiB as compact JSON); the refusal names the largest input.
 
 - A link (symlink or junction) in the folder, or as the folder, is refused.
+
+## MCP `run_plugin`
+
+`run_plugin` runs either a plugin folder or a command line, never both:
+
+- `plugin` is the absolute path of a plugin folder (or of its `plugin.json`)
+  and `inputs` the values of its declared inputs. `plugin.json` alone decides
+  the command line, principal and permissions: `arguments`, `principal_id`,
+  `capabilities` or `allowed_operations` beside `plugin` are refused.
+- `executable` without `plugin` is a command line: the local absolute path of
+  the executable (on Windows the `.exe` file that starts), `arguments`,
+  `principal_id` (the principal the plugin declares), `capabilities` and
+  `allowed_operations`. The arguments follow the rules of `plugin.json` above:
+  at least one names a script file, every file they name is hashed for the
+  consent, and a word naming no file must be plain words. Give the script as
+  an absolute path; a relative one is resolved against the window's working
+  folder. The process runs in an empty private folder with an empty
+  environment. `inputs` need a plugin folder and are refused here.
+- `timeout_ms` (default 30000, at most 120000) bounds the plugin process;
+  `validators`, `strict` and `expected` work as for `model apply_and_verify`.
 
 ## Plugins menu
 

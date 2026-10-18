@@ -297,34 +297,39 @@ fn refused_shape(argument: &str) -> Option<&'static str> {
 /// at the end of a cluster of flags (`-Bm`). A short option's value with other
 /// than letters (`-Dkey=value`) is no cluster.
 fn runs_unhashed_code(argument: &str) -> bool {
-    const LONG: [&str; 11] = [
-        "eval",
-        "print",
-        "require",
-        "import",
-        "loader",
-        "experimental-loader",
-        "module",
-        "command",
-        "encodedcommand",
-        "interactive",
-        "include",
-    ];
-    const SHORT: &str = "ceEmMpri";
     if argument == "-" {
         return true;
     }
     if let Some(long) = argument.strip_prefix("--") {
         let name = long.split_once('=').map_or(long, |(name, _)| name);
-        return LONG.iter().any(|code| name.eq_ignore_ascii_case(code));
+        return CODE_LONG_OPTIONS
+            .iter()
+            .any(|code| name.eq_ignore_ascii_case(code));
     }
     let Some(short) = argument.strip_prefix('-') else {
         return false;
     };
-    short.starts_with(|c| SHORT.contains(c))
+    short.starts_with(|c| CODE_SHORT_OPTIONS.contains(c))
         || (short.chars().all(|c| c.is_ascii_alphabetic())
-            && short.chars().any(|c| SHORT.contains(c)))
+            && short.chars().any(|c| CODE_SHORT_OPTIONS.contains(c)))
 }
+
+/// The interpreter options [`runs_unhashed_code`] refuses; docs/plugins.md
+/// lists them all.
+pub(super) const CODE_LONG_OPTIONS: [&str; 11] = [
+    "eval",
+    "print",
+    "require",
+    "import",
+    "loader",
+    "experimental-loader",
+    "module",
+    "command",
+    "encodedcommand",
+    "interactive",
+    "include",
+];
+pub(super) const CODE_SHORT_OPTIONS: &str = "ceEmMpri";
 
 /// Whether the text starts with a URL scheme (`file:`, `data:`, `https:`): two
 /// or more letters, digits or `+.-` from a letter up to a colon. A drive

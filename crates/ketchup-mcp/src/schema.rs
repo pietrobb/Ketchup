@@ -17,7 +17,7 @@ action=apply_and_verify with typed operations (catalog: inspect action=operation
 of a document that a program owns detaches the program (parameters stop driving the model); \
 when program read returns a source, change the model through program apply instead.
 Undo and redo: edit action=undo / action=redo, one Undo step per call.
-Files: file action=import brings STEP/STP, IGES, STL, DXF, GLB and SketchUp scene files into the document; \
+Files: file action=import brings STEP/STP, IGES, STL, DXF, DWG, GLB and SketchUp scene files into the document; \
 file action=export writes STEP, IGES, STL, 3MF, GLB, DXF, Viewer, cut-list CSV, HOMAG MPR or BTLx; \
 export_drawings writes the project drawings as PDF, or a drawing sheet of the document (sheet_id) as DXF or DWG; save/save_as/open handle .ketchup documents.
 To look at the model use view action=image only when asked or when the result is unclear; \
@@ -179,7 +179,7 @@ pub fn tools() -> Value {
                 "action": {"type": "string", "enum": ["save", "save_as", "open", "import", "export", "export_drawings"]},
                 "path": {"type": "string", "description": "Local absolute path. For save_as, open and import (an existing file; its extension picks the format); for export ending in an extension of export_format; for export_drawings a new path ending in .pdf, or .dxf or .dwg with sheet_id (an existing file is never replaced)."},
                 "sheet_id": {"type": "integer", "minimum": 1, "description": "For export_drawings: a drawing sheet of the document (inspect action=summary lists drawing_sheets), written as DXF or DWG by the path's extension; format and title_block do not apply."},
-                "unit": {"type": "string", "enum": ["mm", "cm", "m", "in", "ft"], "description": "For import: length unit of an STL file (default mm) or of a DXF file that declares none (required then); a unit the DXF declares wins. STEP and IGES carry their own units."},
+                "unit": {"type": "string", "enum": ["mm", "cm", "m", "in", "ft"], "description": "For import: length unit of an STL file (default mm) or of a DXF or DWG file that declares none (required then); a unit the DXF declares wins. STEP and IGES carry their own units."},
                 "export_format": {"type": "string", "enum": ["step", "iges", "stl", "3mf", "glb", "dxf", "sheet_metal_dxf", "viewer", "fabrication_csv", "member_cut_list_csv", "homag_mpr", "btlx"], "description": "For export. Extensions: step .step/.stp, iges .iges/.igs, stl, 3mf, glb, dxf and sheet_metal_dxf .dxf (the one sheet-metal part's flat pattern), viewer .ketchup-view, fabrication_csv and member_cut_list_csv .csv, homag_mpr .mpr (file name of exactly 12 letters, digits, - or _), btlx."},
                 "format": {"type": "string", "enum": ["auto", "A3", "A2", "A1", "A0"], "description": "For export_drawings: sheet format; auto picks the smallest sheet that holds the views at 1:50 or finer. Omit to keep the document's format."},
                 "title_block": {"type": "object", "description": "For export_drawings: title block values to keep in the document.", "additionalProperties": false, "properties": {
@@ -233,8 +233,8 @@ pub fn tools() -> Value {
             "name": "run_plugin",
             "description": "Run a local plugin process (ketchup.plugin.v1) against the window's document. \
     Prefer plugin: the absolute path of a plugin folder whose plugin.json alone decides the command line, principal, permissions and declared inputs; \
-    send input values in inputs (they reach the plugin by protocol, never as arguments; undeclared or mistyped inputs: plugin_manifest_invalid). \
-    Otherwise executable with arguments, principal_id and capabilities; plugin excludes those fields. \
+    send input values in inputs (they reach the plugin by protocol, never as arguments; undeclared, missing, mistyped or together larger than about 128 KiB of JSON: plugin_manifest_invalid, before the user is asked). \
+    Otherwise executable with arguments, principal_id, capabilities and allowed_operations (no inputs); plugin excludes those fields. \
     The window first asks the user to allow it, showing absolute paths and SHA-256 (of every file in a plugin folder, and of an interpreter outside it), the command line and the permissions; \
     without that consent the answer is plugin_consent_required and nothing ran. A changed file, another command line or more permissions ask again; other input values do not. \
     The plugin reads the document and sends one typed CAD program, published like model apply_and_verify (stamps, change, validation issues, one Undo step) \
@@ -244,7 +244,7 @@ pub fn tools() -> Value {
                 "plugin": {"type": "string", "description": "Absolute path of a plugin folder or of its plugin.json."},
                 "inputs": {"type": "object", "description": "With plugin: values of the inputs its plugin.json declares, e.g. {\"height_mm\": 35}."},
                 "executable": {"type": "string", "description": "Without plugin: absolute path of the plugin executable, e.g. a Python interpreter."},
-                "arguments": {"type": "array", "items": {"type": "string"}, "description": "Arguments: at least the absolute path of the plugin script, then plain words. Options that run code given as text, from stdin or by name (-c, -e, -m, -r, -, --eval, --require, --import) are refused."},
+                "arguments": {"type": "array", "items": {"type": "string"}, "description": "Arguments: at least the absolute path of the plugin script, then plain words (letters, digits and -_.,+/\\). Options that run code given as text, from stdin or by name (e.g. -c, -e, -m, -r, -, --eval, --require, --import), @file arguments and URLs are refused."},
                 "principal_id": {"type": "integer", "minimum": 0, "description": "Must equal the principal the plugin declares."},
                 "capabilities": {"type": "array", "items": {"type": "string", "enum": ["query.agent-state.v1", "edit.cad-program.v1"]}, "description": "Capabilities granted to the plugin."},
                 "allowed_operations": {"type": "array", "items": {"type": "string"}, "description": "Typed operations its program may use, by name (inspect action=operations)."},

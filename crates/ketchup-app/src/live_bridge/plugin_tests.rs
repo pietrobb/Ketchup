@@ -621,6 +621,27 @@ fn inputs_too_large_for_the_protocol_line_are_refused_by_name_before_the_prompt(
     assert_eq!(probe.high_risk_prompts().len(), 1);
 }
 
+/// Review 2026-10-17 P3: docs/plugins.md names every option a plugin's
+/// command line may not carry, as the window refuses them.
+#[test]
+fn plugins_doc_lists_every_refused_code_option() {
+    use crate::live_bridge::plugin_manifest::{CODE_LONG_OPTIONS, CODE_SHORT_OPTIONS};
+    let doc = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/plugins.md"),
+    )
+    .unwrap();
+    let options = CODE_SHORT_OPTIONS
+        .chars()
+        .map(|letter| format!("`-{letter}`"))
+        .chain(CODE_LONG_OPTIONS.iter().map(|name| format!("`--{name}`")));
+    for option in options.chain(["`-`".to_owned()]) {
+        assert!(
+            doc.contains(&option),
+            "docs/plugins.md does not list {option}"
+        );
+    }
+}
+
 /// A directory link: a junction on Windows (no privilege needed), a symlink elsewhere.
 fn link_directory(link: &Path, target: &Path) {
     #[cfg(windows)]
