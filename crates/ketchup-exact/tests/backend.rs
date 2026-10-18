@@ -146,6 +146,37 @@ fn primitive_box_publishes_complete_unique_face_lineage() {
 }
 
 #[test]
+fn box_faces_and_edges_name_each_other_sorted_and_symmetrically() {
+    let output = ExactBackend::new()
+        .make_box(BoxSpec {
+            origin_mm: Point3::ORIGIN,
+            size_mm: Size3 {
+                x: 37.0,
+                y: 23.0,
+                z: 19.0,
+            },
+        })
+        .unwrap();
+    let topology = &output.body.topology;
+    assert_eq!((topology.faces.len(), topology.edges.len()), (6, 12));
+    for face in &topology.faces {
+        assert_eq!(face.edge_ordinals.len(), 4);
+        assert!(face.edge_ordinals.is_sorted());
+    }
+    for edge in &topology.edges {
+        assert_eq!(edge.adjacent_face_ordinals.len(), 2);
+        assert!(edge.adjacent_face_ordinals.is_sorted());
+        for face in topology
+            .faces
+            .iter()
+            .filter(|face| edge.adjacent_face_ordinals.contains(&face.ordinal))
+        {
+            assert!(face.edge_ordinals.contains(&edge.ordinal));
+        }
+    }
+}
+
+#[test]
 fn planar_box_face_offsets_expand_and_contract_exact_volume() {
     let backend = ExactBackend::new();
     let base = backend

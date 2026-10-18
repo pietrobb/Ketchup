@@ -1,5 +1,19 @@
 use super::*;
 use ketchup_geometry::mass::MassProperties;
+use std::collections::HashMap;
+
+/// The values of `pairs` grouped by key, each group sorted: one pass over the
+/// adjacency evidence instead of one per face or edge.
+fn grouped(pairs: impl IntoIterator<Item = (u32, u32)>) -> HashMap<u32, Vec<u32>> {
+    let mut groups: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (key, value) in pairs {
+        groups.entry(key).or_default().push(value);
+    }
+    for values in groups.values_mut() {
+        values.sort_unstable();
+    }
+    groups
+}
 
 pub(super) fn collect_output(
     native: cxx::UniquePtr<ffi::NativeOperationResult>,
@@ -28,8 +42,18 @@ pub(super) fn collect_output(
     }
 
     let summary = native_ref.topology_summary();
-    let face_edges = native_ref.face_edge_evidence();
-    let edge_faces = native_ref.edge_face_evidence();
+    let edges_of_face = grouped(
+        native_ref
+            .face_edge_evidence()
+            .into_iter()
+            .map(|entry| (entry.face_ordinal, entry.edge_ordinal)),
+    );
+    let faces_of_edge = grouped(
+        native_ref
+            .edge_face_evidence()
+            .into_iter()
+            .map(|entry| (entry.edge_ordinal, entry.face_ordinal)),
+    );
     let faces = native_ref
         .face_evidence()
         .into_iter()
@@ -107,15 +131,10 @@ pub(super) fn collect_output(
                     },
                 },
                 edge_count: face.edge_count,
-                edge_ordinals: {
-                    let mut ordinals = face_edges
-                        .iter()
-                        .filter(|entry| entry.face_ordinal == face.ordinal)
-                        .map(|entry| entry.edge_ordinal)
-                        .collect::<Vec<_>>();
-                    ordinals.sort_unstable();
-                    ordinals
-                },
+                edge_ordinals: edges_of_face
+                    .get(&face.ordinal)
+                    .cloned()
+                    .unwrap_or_default(),
                 geometric_fingerprint: stable_digest(&signature),
                 cone: face.has_cone.then_some(ConeEvidence {
                     axis_direction: Point3 {
@@ -168,12 +187,10 @@ pub(super) fn collect_output(
             .edge_evidence()
             .into_iter()
             .map(|edge| {
-                let mut adjacent_face_ordinals = edge_faces
-                    .iter()
-                    .filter(|entry| entry.edge_ordinal == edge.ordinal)
-                    .map(|entry| entry.face_ordinal)
-                    .collect::<Vec<_>>();
-                adjacent_face_ordinals.sort_unstable();
+                let adjacent_face_ordinals = faces_of_edge
+                    .get(&edge.ordinal)
+                    .cloned()
+                    .unwrap_or_default();
                 let axis_origin_mm = edge.has_axis.then_some(Point3 {
                     x: edge.axis_origin_x,
                     y: edge.axis_origin_y,
