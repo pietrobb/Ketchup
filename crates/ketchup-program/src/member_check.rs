@@ -775,16 +775,29 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         .fold(0.0, f64::max)
         * along;
     // The chord is linear between the profile's corners, so its least value lies
-    // between two of them. A notch or lap anywhere, ends included, takes the
+    // at an end of a stretch between two of them: it is measured just inside
+    // both ends of every stretch. A notch or lap anywhere, ends included, takes the
     // whole force on its net section; buckling, which the pinned ends hardly
     // affect, takes the thinnest section more than twice the width from them.
     let mut corners: Vec<f64> = segments.iter().map(|s| s.start_mm[long]).collect();
     corners.sort_by(f64::total_cmp);
     corners.dedup_by(|a, b| (*a - *b).abs() < ROUNDING);
     let reach = 2.0 * thickest / along;
+    // An end cut on a slope has no face across the grain: the force enters
+    // along the slope, so its tip is a bearing, not a net section.
+    let faced = |end: f64| {
+        segments.iter().any(|s| {
+            (s.start_mm[long] - end).abs() < ROUNDING && (s.end_mm[long] - end).abs() < ROUNDING
+        })
+    };
+    let pointed: Vec<f64> = [corners[0], corners[corners.len() - 1]]
+        .into_iter()
+        .filter(|end| !faced(*end))
+        .collect();
     let stations: Vec<(f64, f64)> = corners
         .windows(2)
-        .map(|pair| (pair[0] + pair[1]) / 2.0)
+        .flat_map(|pair| [pair[0] + ROUNDING, pair[1] - ROUNDING])
+        .filter(|u| pointed.iter().all(|end| (u - end).abs() > 2.0 * ROUNDING))
         .map(|u| (u, chord(segments, long, u) * along))
         .collect();
     let thinnest = stations.iter().map(|s| s.1).fold(thickest, f64::min);

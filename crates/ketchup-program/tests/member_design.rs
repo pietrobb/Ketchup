@@ -530,6 +530,62 @@ fn a_tall_post_notched_at_mid_height_buckles_on_its_thinnest_section() {
     assert_eq!(at, "length 3000 mm, thinnest section 5600 mm²");
 }
 
+#[test]
+fn a_tall_post_with_a_v_notch_buckles_on_the_bottom_of_the_notch() {
+    // Capability review 137: the width runs 60 -> 20 -> 60 mm over 1400..1600 mm,
+    // so it is thinnest at the corner at 1500 mm, not between corners.
+    let (utilization, at) = post_compression(&[
+        (
+            "(60, 500), (0, 500)",
+            "(60, 1400), (20, 1500), (60, 1600), (60, 3000), (0, 3000)",
+        ),
+        ("at = (0, 0, 550)", "at = (0, 0, 3050)"),
+    ]);
+    assert_eq!(at, "length 3000 mm, thinnest section 2800 mm²");
+    let lambda = 3000.0 * 12f64.sqrt() / 20.0 / std::f64::consts::PI * (21.0f64 / 7400.0).sqrt();
+    let k = 0.5 * (1.0 + 0.2 * (lambda - 0.3) + lambda * lambda);
+    let kc = 1.0 / (k + (k * k - lambda * lambda).sqrt());
+    let force = 1.5 * 2000.0e-3 * 60.0 * 140.0;
+    close(
+        utilization,
+        force / (20.0 * 140.0) / (kc * 0.8 * 21.0 / 1.3),
+    );
+}
+
+#[test]
+fn a_sloped_lap_at_the_top_of_a_post_is_checked_on_its_thinnest_end() {
+    // The 60 x 140 post tapers to 30 mm over its top 100 mm.
+    let (utilization, at) = post_compression(&[("(60, 500)", "(60, 400), (30, 500)")]);
+    assert_eq!(at, "net section 4200 mm² at a notch");
+    let force = 1.5 * 2000.0e-3 * 60.0 * 140.0;
+    close(utilization, force / (30.0 * 140.0) / (0.8 * 21.0 / 1.3));
+}
+
+#[test]
+fn a_post_cut_on_a_slope_under_a_sloped_deck_is_no_notch() {
+    // A gable stud: the top runs from 450 mm at one side to 500 mm at the
+    // other, and a deck 78.1 mm (sqrt(60² + 50²)) wide lies on that slope,
+    // loaded per plan area (60 x 140 mm). The tip is where the load bears,
+    // not a section of no area: the post buckles on 60 x 140 mm.
+    let (utilization, at) = post_compression(&[
+        ("(60, 500)", "(60, 450)"),
+        (
+            "box(\"deck\", (60, 140, 20), at = (0, 0, 550), material = \"OSB\", tags = [\"deck\"])",
+            "deck = box(\"deck\", (78.1025, 140, 20), at = (0, 0, 0), material = \"OSB\", tags = [\"deck\"])
+place(deck, origin = (60, 140, 500), z = (50, 0, 60), x = (-60, 0, 50))",
+        ),
+    ]);
+    assert_eq!(at, "length 500 mm");
+    let lambda = 500.0 * 12f64.sqrt() / 60.0 / std::f64::consts::PI * (21.0f64 / 7400.0).sqrt();
+    let k = 0.5 * (1.0 + 0.2 * (lambda - 0.3) + lambda * lambda);
+    let kc = 1.0 / (k + (k * k - lambda * lambda).sqrt());
+    let force = 1.5 * 2000.0e-3 * 60.0 * 140.0;
+    close(
+        utilization,
+        force / (60.0 * 140.0) / (kc * 0.8 * 21.0 / 1.3),
+    );
+}
+
 /// A C24 column 3000 mm high of `profile` (local XY, extruded up) within a
 /// 200 x 200 mm square, on a grounded slab under a 200 x 200 mm deck loaded
 /// with 5000 kN/m² (1.5 Q = 300 kN), `then` run on the column part.
