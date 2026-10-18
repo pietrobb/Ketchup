@@ -372,6 +372,79 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
     assert!(app.is_dirty());
 }
 
+/// Review 2026-10-17 P3: a release to manufacturing asked for over the bridge
+/// waits for the user in the window. A client that disconnected meanwhile
+/// still got its file written once the user confirmed.
+#[test]
+fn disconnect_during_a_release_confirmation_writes_no_file() {
+    use ketchup_model::document::{
+        ClassificationCategoryId, ClassificationDimensionId, OccurrenceId,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("released.btlx");
+    let stream_slot = Arc::new(Mutex::new(None));
+    let prompted = Arc::new(AtomicBool::new(false));
+    let dialogs = DisconnectOnHighRisk {
+        stream: Arc::clone(&stream_slot),
+        prompted: Arc::clone(&prompted),
+    };
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(100),
+                name: ketchup_manufacturing::fabrication::FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![(
+                    ClassificationCategoryId(101),
+                    ketchup_manufacturing::fabrication::TIMBER_MEMBER_ROLE_V1.to_owned(),
+                )],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(100),
+                category_id: Some(ClassificationCategoryId(101)),
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    let context = egui::Context::default();
+    let address = app.enable_live_bridge(&context).unwrap();
+    let credentials = app.live_bridge_credentials().unwrap();
+    let mut stream = TcpStream::connect(address).unwrap();
+    *stream_slot.lock().unwrap() = Some(stream.try_clone().unwrap());
+    let bytes = serde_json::to_vec(&Envelope {
+        version: 1,
+        id: 1,
+        token: credentials.token,
+        request: Request::Export {
+            expected: None,
+            path: path.to_string_lossy().into_owned(),
+            export_format: "btlx".to_owned(),
+        },
+    })
+    .unwrap();
+    stream
+        .write_all(&(bytes.len() as u32).to_be_bytes())
+        .unwrap();
+    stream.write_all(&bytes).unwrap();
+
+    // The prompt answers within the poll that shows it, so the export is over.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !prompted.load(Ordering::Acquire) {
+        assert!(Instant::now() < deadline, "{}", app.action_digest());
+        app.poll_live_bridge(&context);
+        std::thread::yield_now();
+    }
+
+    assert!(!path.exists(), "the departed client's release was written");
+    assert!(!path.with_extension("btlx.support.txt").exists());
+    assert!(
+        app.action_digest().contains("disconnected"),
+        "{}",
+        app.action_digest()
+    );
+}
+
 #[test]
 fn save_is_revision_bound_and_writes_the_own_file_without_asking() {
     let directory = tempfile::tempdir().unwrap();

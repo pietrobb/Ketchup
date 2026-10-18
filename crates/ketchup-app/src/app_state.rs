@@ -41,7 +41,8 @@ pub(crate) struct LiveState {
     pub(crate) launch_attached: bool,
     /// An export a client asked for is running: its loss report goes back to the
     /// client instead of a lossy-conversion prompt, and it never replaces a file.
-    pub(crate) client_export: bool,
+    /// Holds the request's cancel flag, set once the client's connection ends.
+    pub(crate) client_export: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Plugins the user allowed in this window, each bound to its files' hashes
     /// and the permissions shown; nothing is kept after the window closes.
     pub(crate) plugin_consents: Vec<live_bridge::plugin_consent::PluginConsent>,

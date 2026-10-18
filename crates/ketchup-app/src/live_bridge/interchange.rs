@@ -2,7 +2,8 @@
 //! File menu for a client. Imports run the window's review plan and commit it as
 //! one Undo step; exports run the window's exporters. A lossy conversion writes
 //! only new files and returns its loss report instead of asking; a release to
-//! manufacturing waits for the user's confirmation in the window as after the menu.
+//! manufacturing waits for the user's confirmation in the window as after the menu,
+//! and writes nothing if the client disconnected before the user confirmed.
 
 use super::{LiveBridge, Request, drawings::local_absolute_path, failure, record_rejection};
 use crate::app::import_file::{import_format, parse_unit};
@@ -11,7 +12,7 @@ use crate::{ImportError, ImportFormat, ImportLengthUnit, KetchupApp};
 use ketchup_application::rejections::rejected;
 use serde_json::{Value, json};
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, atomic::AtomicBool};
 
 type Exporter = fn(&mut KetchupApp, &Path) -> Result<Written, ExportError>;
 
@@ -145,7 +146,7 @@ impl LiveBridge {
         app: &mut KetchupApp,
         request: Request,
         ui_busy: bool,
-        cancelled: &AtomicBool,
+        cancelled: &Arc<AtomicBool>,
     ) -> Result<Value, &'static str> {
         let Request::Export {
             expected,
@@ -186,9 +187,9 @@ impl LiveBridge {
             ));
         }
         Self::require_request_authority(cancelled)?;
-        app.live.client_export = true;
+        app.live.client_export = Some(Arc::clone(cancelled));
         let exported = exporter(app, target);
-        app.live.client_export = false;
+        app.live.client_export = None;
         let written = exported.map_err(|error| {
             record_rejection(
                 &rejected("export_failed").caused_by(error),

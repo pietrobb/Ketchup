@@ -65,7 +65,7 @@ impl KetchupApp {
                 consent_broker: None,
                 consent_attached: false,
                 launch_attached: false,
-                client_export: false,
+                client_export: None,
                 plugin_consents: Vec::new(),
                 plugin_menu: live_bridge::plugin_menu::PluginMenu::new(),
                 variants: Default::default(),

@@ -247,7 +247,7 @@ impl KetchupApp {
         precondition: &ExportBundlePrecondition,
         evidence: &[u8],
     ) -> Result<(), ExportError> {
-        if self.live.client_export && consent.class == HighRiskClass::LossyConversion {
+        if self.live.client_export.is_some() && consent.class == HighRiskClass::LossyConversion {
             // Nobody in the window asked for this file, so nobody confirms
             // replacing one; the client reads the loss report itself. A release
             // to manufacturing still waits for the user's confirmation.

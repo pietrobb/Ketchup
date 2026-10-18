@@ -429,6 +429,19 @@ impl KetchupApp {
                     .reason(format!("authenticated human declined {risk}")),
             );
         };
+        // The user may take minutes to answer; a client that asked for this
+        // export and left meanwhile gets nothing written on its behalf.
+        if self
+            .live
+            .client_export
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(
+                Rejection::new("side_effect.client_gone", RejectionPhase::Validation)
+                    .reason("the client that asked for this disconnected before it was confirmed"),
+            );
+        }
         let now_ms = current_unix_time_ms()?;
         let approval = self
             .confirmation_surface
