@@ -13,7 +13,7 @@ use std::{
 
 #[test]
 #[ignore = "native worker, GPU, real kitchen fixture and explicit artifact destination required"]
-fn house_and_kitchen_open_export_and_render_in_the_viewer() {
+fn perf_house_and_kitchen_open_export_and_render_in_the_viewer() {
     let _turn = crate::integration_support::file_turn();
     let kitchen = ketchup_test_env::release_fixture().expect("kitchen fixture path");
     let output = ketchup_test_env::report_path("viewer-release").expect("report directory");
@@ -26,12 +26,12 @@ fn house_and_kitchen_open_export_and_render_in_the_viewer() {
         ),
         ("kitchen", kitchen),
     ] {
-        let package = export_copy(&source, &output, name);
+        let package = perf_export_copy(&source, &output, name);
         render_viewer(&package, &output, name);
     }
 }
 
-fn export_copy(source: &Path, output: &Path, name: &str) -> std::path::PathBuf {
+fn perf_export_copy(source: &Path, output: &Path, name: &str) -> std::path::PathBuf {
     let temporary = tempfile::tempdir().expect("isolated source copy");
     let source_copy = temporary.path().join("source.ketchup");
     std::fs::copy(source, &source_copy).expect("copy source, never write its recovery");
@@ -177,11 +177,11 @@ fn export_copy(source: &Path, output: &Path, name: &str) -> std::path::PathBuf {
         reopened.manifest.occurrences.len(),
         reopened.manifest.scenes.len()
     );
-    save_and_reopen(&mut ui, &source_copy, name);
+    perf_save_and_reopen(&mut ui, &source_copy, name);
     path
 }
 
-fn save_and_reopen(ui: &mut Harness<'_, KetchupApp>, path: &Path, name: &str) {
+fn perf_save_and_reopen(ui: &mut Harness<'_, KetchupApp>, path: &Path, name: &str) {
     assert!(ui.state().is_dirty());
     let expected_views = ui.state().saved_views();
     let expected_parts = ui.state().document_snapshot().occurrences().count();

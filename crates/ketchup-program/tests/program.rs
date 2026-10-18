@@ -833,10 +833,8 @@ fn a_board_with_thousands_of_holes_checks_in_linear_time() {
          depth = 8, id = \"h%d\" % i)\n\
          hole(p, \"z+\", at = (3998, 50), diameter = 10, depth = 8, id = \"edge\")\n"
     );
-    let started = std::time::Instant::now();
     let (evaluated, report) =
         run("holes.star", &source, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
-    let elapsed = started.elapsed();
     let part = evaluated.model.part("p").expect("p");
     assert_eq!(part.holes().count(), holes + 1);
     assert_eq!(part.features.len(), 3 + 3 * (holes + 1));
@@ -850,12 +848,17 @@ fn a_board_with_thousands_of_holes_checks_in_linear_time() {
         "{:?}",
         report.issues
     );
-    // Generous for an unoptimized build under load; before the fix the same
-    // check ran for over 25 minutes in a release build.
-    assert!(
-        elapsed < std::time::Duration::from_secs(30),
-        "{holes} holes took {elapsed:?}"
-    );
+}
+
+/// The board above in release, nightly: before the fix its check ran for over
+/// 25 minutes there.
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_a_board_with_thousands_of_holes_checks_in_seconds() {
+    let started = std::time::Instant::now();
+    a_board_with_thousands_of_holes_checks_in_linear_time();
+    let elapsed = started.elapsed();
+    assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
 }
 
 #[test]

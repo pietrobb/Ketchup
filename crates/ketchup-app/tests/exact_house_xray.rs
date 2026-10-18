@@ -89,7 +89,7 @@ fn report(mode: &str, edges: bool, motion: &str, samples: &[Sample]) -> Duration
 
 #[test]
 #[ignore = "native exact worker plus external 140-body example; explicit CPU benchmark opt-in"]
-fn exact_house_shaded_and_xray_idle_orbit_cpu_regression() {
+fn perf_exact_house_shaded_and_xray_idle_orbit_cpu_regression() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/garden-studio-exact.ketchup");
     let original_bytes = std::fs::read(&fixture).expect("140-body exact house fixture is required");

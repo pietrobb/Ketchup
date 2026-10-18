@@ -86,7 +86,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 90 || 45 }}
     env:
       CRATES: >-
         -p ketchup-analysis -p ketchup-assistant -p ketchup-dwg -p ketchup-geometry
@@ -107,6 +107,14 @@ jobs:
         run: cargo clippy --locked $CRATES --all-targets -- -D warnings
       - name: tests
         run: cargo test --locked $CRATES --no-fail-fast
+      # Time budgets live only in ignored perf_* tests, checked in release
+      # (review 2026-10-17 TST-3).
+      - name: release timing budgets
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        timeout-minutes: 90
+        env:
+          RUST_TEST_THREADS: 1
+        run: cargo test --locked --release $CRATES --no-fail-fast -- --ignored perf_
       # The plugin host's Unix process group lives in the vendored process-wrap
       # (PATCH.md); ketchup-scheduler, which uses it, needs OCCT and is tested
       # on Windows only, so the group's own unit tests run here (review
@@ -215,6 +223,21 @@ jobs:
         run: >-
           cargo test --locked --release -p ketchup-application --no-fail-fast --
           --ignored house_panel_validation:: house_project_collision::
+      # One at a time, so no test times the others. The five skipped need
+      # external documents or a hardware GPU and run on a developer machine.
+      - name: release timing budgets
+        if: env.NIGHTLY == 'true'
+        timeout-minutes: 90
+        env:
+          RUST_TEST_THREADS: 1
+        run: >-
+          cargo test --locked --release $env:CRATES.Split(' ') --no-fail-fast --
+          --ignored perf_
+          --skip perf_house_and_kitchen_open_export_and_render_in_the_viewer
+          --skip perf_house_viewer_export_finishes_within_seconds
+          --skip perf_exact_house_shaded_and_xray_idle_orbit_cpu_regression
+          --skip perf_ten_thousand_occurrence_cached_orbit_checks_within_budget
+          --skip perf_garden_studio_hardware_gpu_camera_frames_within_budget
 
   viewer-targets:
     name: clippy of the phone and browser Viewers

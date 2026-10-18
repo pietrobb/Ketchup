@@ -315,6 +315,37 @@ fn process_tree_memory_high_water_observes_child_allocation() {
 
 #[test]
 fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_parity_claims() {
+    corpus_metrics();
+}
+
+/// The time budgets of the corpus hold in release, nightly; the test above
+/// checks what each step produced (review 2026-10-17 TST-3).
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_realistic_corpus_opens_rebuilds_and_draws_within_budget() {
+    for fixture in corpus_metrics().fixtures {
+        let name = fixture.name;
+        let open = fixture.cold_open_ms;
+        assert!(
+            open < milliseconds(OPEN_BUDGET),
+            "{name} cold open took {open} ms"
+        );
+        let rebuild = fixture.exact_rebuild_ms;
+        assert!(
+            rebuild < milliseconds(EXACT_REBUILD_BUDGET),
+            "{name} exact rebuild took {rebuild} ms"
+        );
+        let frames = fixture.offscreen_ui_20_frames_ms;
+        assert!(
+            frames < milliseconds(UI_FRAME_BUDGET),
+            "{name} twenty offscreen UI frames took {frames} ms"
+        );
+    }
+}
+
+/// Opens, rebuilds and draws each document of the corpus, checks what each
+/// step produced and reports the times and memory.
+fn corpus_metrics() -> CorpusMetrics {
     let _turn = crate::integration_support::file_turn();
     let worker = exact_worker_path();
     assert!(
@@ -343,11 +374,6 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
         )
         .unwrap_or_else(|error| panic!("{} cold open failed: {error}", entry.name));
         let cold_open = open_started.elapsed();
-        assert!(
-            cold_open < OPEN_BUDGET,
-            "{} cold open took {cold_open:?}",
-            entry.name
-        );
         let snapshot = session.snapshot();
         let definitions = snapshot.definitions().count();
         let features = snapshot.features().count();
@@ -368,11 +394,6 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
             .evaluate()
             .unwrap_or_else(|error| panic!("{} exact rebuild failed: {error}", entry.name));
         let exact_rebuild = rebuild_started.elapsed();
-        assert!(
-            exact_rebuild < EXACT_REBUILD_BUDGET,
-            "{} exact rebuild took {exact_rebuild:?}",
-            entry.name
-        );
         assert!(
             !report.producers.is_empty(),
             "{} has no exact producers",
@@ -419,11 +440,6 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
             frame_samples.push(started.elapsed());
         }
         let ui_frames_total: Duration = frame_samples.iter().copied().sum();
-        assert!(
-            ui_frames_total < UI_FRAME_BUDGET,
-            "{} twenty offscreen UI frames took {ui_frames_total:?}",
-            entry.name
-        );
         assert_eq!(shell.app().document_revision(), identity.1);
         assert_eq!(shell.app().canonical_digest(), identity.2);
         assert!(!shell.app().is_dirty());
@@ -506,12 +522,30 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
     if let Some(path) = ketchup_test_env::report_path("production_performance.json") {
         std::fs::write(path, format!("{json}\n")).expect("write requested performance evidence");
     }
+    metrics
+}
+
+#[test]
+fn one_move_among_the_largest_indexed_model_commits() {
+    fastest_move_among_the_largest_indexed_model();
 }
 
 /// One move in a model as large as the instance index serves commits within
-/// [`ONE_EDIT_BUDGET`]: the edit validates what it changed, not the whole model.
+/// [`ONE_EDIT_BUDGET`] in release: the edit validates what it changed, not the
+/// whole model.
 #[test]
-fn one_move_among_the_largest_indexed_model_commits_within_budget() {
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_one_move_among_the_largest_indexed_model_commits_within_budget() {
+    let fastest = fastest_move_among_the_largest_indexed_model();
+    assert!(
+        fastest < ONE_EDIT_BUDGET,
+        "one move among the largest indexed model took {fastest:?}"
+    );
+}
+
+/// The fastest of five moves of one occurrence among
+/// `MAX_INSTANCE_INDEX_ITEMS`, each checked to have moved it.
+fn fastest_move_among_the_largest_indexed_model() -> Duration {
     use ketchup_application::model_query::MAX_INSTANCE_INDEX_ITEMS;
     use ketchup_geometry::sketch::{
         FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
@@ -596,20 +630,23 @@ fn one_move_among_the_largest_indexed_model_commits_within_budget() {
     );
 
     // The fastest of several moves: a busy test machine only ever slows one down.
-    let fastest = (0..5_u32)
+    (0..5_u32)
         .map(|step| {
+            let id = OccurrenceId(occurrences / 2 + u64::from(step));
+            let transform = Transform::from_translation(f64::from(step), 2.0, 3.0).unwrap();
             let move_one = CommandBatch::new(vec![CanonicalCommand::SetOccurrenceTransform {
-                id: OccurrenceId(occurrences / 2 + u64::from(step)),
-                transform: Transform::from_translation(f64::from(step), 2.0, 3.0).unwrap(),
+                id,
+                transform,
             }]);
             let started = Instant::now();
             document.apply_batch(&move_one).unwrap();
-            started.elapsed()
+            let took = started.elapsed();
+            assert_eq!(
+                document.current().occurrence(id).map(|o| o.transform()),
+                Some(transform)
+            );
+            took
         })
         .min()
-        .unwrap();
-    assert!(
-        fastest < ONE_EDIT_BUDGET,
-        "one move among {MAX_INSTANCE_INDEX_ITEMS} occurrences took {fastest:?}"
-    );
+        .unwrap()
 }

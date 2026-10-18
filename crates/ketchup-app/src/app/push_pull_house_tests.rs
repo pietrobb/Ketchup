@@ -3,8 +3,8 @@
 //! the release turns the shape into a part of the house program. Once the house
 //! no longer owns the document, pulling the top of the pulled shape again
 //! lengthens its extrusion, also without a slow frame.
-//! Frame times are measured on the 750-part house (`large_house_*`, full suite
-//! only); what a pull does is checked on a small house of the same layers.
+//! Frame times are measured on the 750-part house (`perf_house_*`, in release,
+//! nightly); what a pull does is checked on a small house of the same layers.
 use crate::tests::shell::step_until;
 use crate::*;
 use egui_kittest::Harness;
@@ -169,9 +169,10 @@ pub(super) fn draw(harness: &mut Harness<'_, KetchupApp>, ellipse: bool) {
     settle(harness);
 }
 
-/// Drags the face under `at` up by `PULL_STEPS * PULL_STEP_MM` and checks that
-/// no frame of the drag, the held button or the release is slow.
-pub(super) fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) {
+/// Drags the face under `at` up by `PULL_STEPS * PULL_STEP_MM`, holds and
+/// releases it until it commits; the slowest drag frame, the slowest held
+/// frame and the release frame.
+pub(super) fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) -> [Duration; 3] {
     harness.state_mut().dispatch_command(AppCommand::PushPull);
     harness.step();
     move_to(harness, at + Vec3::new(5.0, 5.0, 0.0));
@@ -189,35 +190,41 @@ pub(super) fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) {
         last = screen;
     }
     let slowest = frames.iter().max().copied().unwrap_or_default();
-    assert!(
-        slowest < FRAME_BUDGET,
-        "slowest Push/Pull frame {slowest:?}: {frames:?}"
-    );
     // The button is still held. A loaded machine may finish the exact
     // evaluation now, and that frame publishes it like the release does.
-    for _ in 0..4 {
-        let started = Instant::now();
-        harness.step();
-        let took = started.elapsed();
-        assert!(took < RELEASE_BUDGET, "a held frame took {took:?}");
-    }
+    let held = (0..4)
+        .map(|_| {
+            let started = Instant::now();
+            harness.step();
+            started.elapsed()
+        })
+        .max()
+        .unwrap_or_default();
 
     let release = button(harness, last, false);
-    assert!(
-        release < RELEASE_BUDGET,
-        "the release froze the window for {release:?}"
-    );
     step_until(harness, COMMIT_BUDGET, "never committed", |app| {
         app.document_revision() != revision
     });
     settle(harness);
+    [slowest, held, release]
 }
 
-fn pull_shape_beside_house(ellipse: bool) {
+/// [`pull`], and no frame of the drag, the held button or the release is slow.
+pub(super) fn perf_pull_within_budget(harness: &mut Harness<'_, KetchupApp>, at: Vec3) {
+    let [drag, held, release] = pull(harness, at);
+    assert!(drag < FRAME_BUDGET, "slowest Push/Pull frame {drag:?}");
+    assert!(held < RELEASE_BUDGET, "a held frame took {held:?}");
+    assert!(
+        release < RELEASE_BUDGET,
+        "the release froze the window for {release:?}"
+    );
+}
+
+fn perf_pull_shape_beside_house(ellipse: bool) {
     let _turn = one_at_a_time();
     let mut harness = harness(house());
     draw(&mut harness, ellipse);
-    pull(
+    perf_pull_within_budget(
         &mut harness,
         if ellipse { START } else { (START + END) * 0.5 },
     );
@@ -234,15 +241,15 @@ fn pull_shape_beside_house(ellipse: bool) {
 }
 
 #[test]
-#[ignore = "large-house: runs in full suite"]
-fn large_house_pulling_a_rectangle_beside_the_house_stays_interactive() {
-    pull_shape_beside_house(false);
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_house_pulling_a_rectangle_beside_the_house_stays_interactive() {
+    perf_pull_shape_beside_house(false);
 }
 
 #[test]
-#[ignore = "large-house: runs in full suite"]
-fn large_house_pulling_an_ellipse_beside_the_house_stays_interactive() {
-    pull_shape_beside_house(true);
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_house_pulling_an_ellipse_beside_the_house_stays_interactive() {
+    perf_pull_shape_beside_house(true);
 }
 
 /// Right after Open or Undo the house program is still being evaluated. A drag
@@ -273,12 +280,11 @@ fn pulling_a_shape_while_the_house_is_being_evaluated_plans_without_waiting() {
     let mut last = screen;
     let mut planning_frames = 0;
     for step in 1..=PULL_STEPS {
-        let (screen, took) = move_to(
+        let (screen, _) = move_to(
             &mut harness,
             at + Vec3::new(0.0, 0.0, PULL_STEP_MM * step as f64),
         );
         last = screen;
-        assert!(took < FRAME_BUDGET, "drag frame {step} took {took:?}");
         assert!(!harness.state().has_drawn_shape_preview());
         if harness.state().status_key == "status-program-planning" {
             planning_frames += 1;

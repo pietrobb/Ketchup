@@ -13,7 +13,7 @@ use ketchup_scheduler::AcceptanceIdentity;
 use ketchup_scheduler::general::{
     CompletionOutcome, GeneralJobScheduler, JobKind, JobPolicy, JobRequest, ScheduleOutcome,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const DEFINITION: DefinitionId = DefinitionId(1);
 const PROFILE: FeatureId = FeatureId(1);
@@ -196,6 +196,18 @@ fn mesh_acceptance(snapshot: &ketchup_model::document::Snapshot) -> AcceptanceId
 
 #[test]
 fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw() {
+    ten_thousand_occurrence_product();
+}
+
+/// The cached orbit above, timed; hardware DX12 like the test itself.
+#[test]
+#[ignore = "perf: release timing budget, hardware GPU"]
+fn perf_ten_thousand_occurrence_cached_orbit_checks_within_budget() {
+    let cached_orbit = ten_thousand_occurrence_product();
+    assert!(cached_orbit.as_millis() < 50, "{cached_orbit:?}");
+}
+
+fn ten_thousand_occurrence_product() -> Duration {
     let total_started = Instant::now();
     let mut store = product_document();
     let snapshot = store.current();
@@ -310,10 +322,6 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
         assert_eq!(cached_plan.instance_count(), OCCURRENCES);
     }
     let cached_orbit_elapsed = orbit_started.elapsed();
-    assert!(
-        cached_orbit_elapsed.as_millis() < 50,
-        "{cached_orbit_elapsed:?}"
-    );
 
     let target = OCCURRENCES - 1;
     let target_placement = grid_transform(target);
@@ -452,6 +460,7 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
         gpu_stats.geometry_uploads,
         gpu_stats.instances_drawn,
     );
+    cached_orbit_elapsed
 }
 
 /// Real offscreen DX12 work, not egui_kittest or a GPU timestamp benchmark.
@@ -459,8 +468,22 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
 /// document evaluation, pipeline warmup and readback are deliberately separate.
 #[test]
 fn garden_studio_hardware_gpu_camera_frames() {
+    garden_studio_gpu_camera_frames();
+}
+
+/// The warmed frames above, timed.
+#[test]
+#[ignore = "perf: release timing budget, hardware GPU"]
+fn perf_garden_studio_hardware_gpu_camera_frames_within_budget() {
+    let measured = garden_studio_gpu_camera_frames();
+    assert!(
+        measured < Duration::from_secs(2),
+        "20 warmed hardware frames exceeded the generous 2s regression budget: {measured:?}"
+    );
+}
+
+fn garden_studio_gpu_camera_frames() -> Duration {
     use ketchup_application::{DocumentSession, SessionSettings};
-    use std::time::Duration;
 
     const BODIES: usize = 93;
     const FRAMES: usize = 20;
@@ -790,8 +813,5 @@ fn garden_studio_hardware_gpu_camera_frames() {
         stats.instances_drawn - warm.instances_drawn,
         stats.draw_calls - warm.draw_calls
     );
-    assert!(
-        measured < Duration::from_secs(2),
-        "20 warmed hardware frames exceeded the generous 2s regression budget: {measured:?}"
-    );
+    measured
 }

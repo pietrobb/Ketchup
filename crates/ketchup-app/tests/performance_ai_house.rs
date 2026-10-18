@@ -35,6 +35,24 @@ fn ai_house_schema_36_fixture_opens_from_file_menu() {
 
 #[test]
 fn ai_house_fixture_orbits_interactively_with_exact_geometry() {
+    orbit_ai_house();
+}
+
+/// The time budgets of this file hold in release, nightly; the tests above
+/// them check what happened (review 2026-10-17 TST-3).
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_ai_house_fixture_orbits_twenty_frames_in_a_second() {
+    let orbit = orbit_ai_house();
+    assert!(
+        orbit < Duration::from_secs(1),
+        "twenty orbit frames of the exact AI house fixture took {orbit:?}"
+    );
+}
+
+/// Opens the 64-body AI house with exact geometry and orbits it 20 frames;
+/// the time of the orbit.
+fn orbit_ai_house() -> Duration {
     let directory = tempfile::tempdir().unwrap();
     let fixture = directory.path().join("ai_house_orbit.ketchup");
     std::fs::write(&fixture, include_bytes!("fixtures/ai_house_orbit.ketchup")).unwrap();
@@ -65,13 +83,18 @@ fn ai_house_fixture_orbits_interactively_with_exact_geometry() {
     shell.app_mut().enable_headless_instanced_scene();
     shell.settle();
     let pointer = shell.viewport_rect().center();
+    let probe = ketchup_interaction::Vec3::new(1000.0, 2000.0, 3000.0);
+    let before = shell.app().viewport_position(probe).unwrap();
     let orbit_started = Instant::now();
     shell.orbit_drag(pointer, eframe::egui::Vec2::new(3.0, -2.0), 20);
-    let orbit_elapsed = orbit_started.elapsed();
+    let orbit = orbit_started.elapsed();
+    let after = shell.app().viewport_position(probe).unwrap();
     assert!(
-        orbit_elapsed < Duration::from_secs(1),
-        "twenty orbit frames of the exact AI house fixture took {orbit_elapsed:?}"
+        before.distance(after) > 1.0,
+        "orbit must actually move the camera"
     );
+    assert_eq!(shell.app().exact_render_body_count(), definitions);
+    orbit
 }
 
 /// CPU-side equivalent of the GPU-enabled desktop path, not a GPU benchmark:
@@ -82,6 +105,12 @@ fn garden_studio_exact_load_idle_and_orbit_performance() {
     exact_load_idle_and_orbit_performance("garden-studio.ketchup", 93);
 }
 
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_garden_studio_idles_hovers_and_orbits_within_budget() {
+    perf_frames_within_budget("garden-studio.ketchup", 93);
+}
+
 /// Program-built wardrobe with drawers, dowel holes, a table and a chair
 /// (82 bodies, ~800 features): the many drilled holes make dense exact meshes.
 #[test]
@@ -89,7 +118,28 @@ fn wardrobe_exact_load_idle_and_orbit_performance() {
     exact_load_idle_and_orbit_performance("wardrobe-chair-table.ketchup", 82);
 }
 
-fn exact_load_idle_and_orbit_performance(example: &str, bodies: usize) {
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_wardrobe_idles_hovers_and_orbits_within_budget() {
+    perf_frames_within_budget("wardrobe-chair-table.ketchup", 82);
+}
+
+/// The same generous 20-frame responsiveness guard as the AI house. Hover gets
+/// 2 s: rebuilding the exact registry and matching every mesh edge against
+/// every B-rep edge took >1 s in release before; the wardrobe now takes ~0.16 s.
+fn perf_frames_within_budget(example: &str, bodies: usize) {
+    let [idle, hover, orbit] = exact_load_idle_and_orbit_performance(example, bodies);
+    assert!(
+        idle < Duration::from_secs(1)
+            && hover < Duration::from_secs(2)
+            && orbit < Duration::from_secs(1),
+        "{example} 20-frame budget exceeded: idle={idle:?}, hover={hover:?}, orbit={orbit:?} (budget=1s, hover 2s)"
+    );
+}
+
+/// Opens `example`, publishes its exact bodies and takes 20 idle, hover and
+/// orbit frames each; their totals.
+fn exact_load_idle_and_orbit_performance(example: &str, bodies: usize) -> [Duration; 3] {
     use eframe::egui::{Event, Modifiers, PointerButton, Vec2};
     use ketchup_app::KetchupApp;
 
@@ -165,9 +215,10 @@ fn exact_load_idle_and_orbit_performance(example: &str, bodies: usize) {
     );
     eprintln!("{example} stage=exact-publication begin");
     let mut poll = 0;
+    let deadline = exact_started + Duration::from_secs(120);
     while ui.state().exact_render_body_count() != bodies {
         assert!(
-            exact_started.elapsed() < Duration::from_secs(120),
+            Instant::now() < deadline,
             "{example} exact publication timed out: {}/{bodies} bodies after {:?}",
             ui.state().exact_render_body_count(),
             exact_started.elapsed()
@@ -282,17 +333,7 @@ fn exact_load_idle_and_orbit_performance(example: &str, bodies: usize) {
     assert_eq!(ui.state().canonical_digest(), digest);
     assert_eq!(ui.state().document_revision(), revision);
     assert!(!ui.state().is_dirty());
-    // Same generous 20-frame responsiveness guard as the legacy regression.
-    // Report every series before asserting so a slow baseline remains diagnostic.
-    // Hover gets 2 s: the drilled wardrobe takes ~1.4 s in a debug build and
-    // ~0.16 s in release; rebuilding the exact registry and matching every
-    // mesh edge against every B-rep edge took >1 s in release before.
-    assert!(
-        idle_total < Duration::from_secs(1)
-            && hover_total < Duration::from_secs(2)
-            && orbit_total < Duration::from_secs(1),
-        "{example} 20-frame budget exceeded: idle={idle_total:?}, hover={hover_total:?}, orbit={orbit_total:?} (budget=1s, hover 2s)"
-    );
+    [idle_total, hover_total, orbit_total]
 }
 
 fn report_frames(example: &str, stage: &str, samples: &[Duration]) -> Duration {

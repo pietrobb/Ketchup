@@ -1,6 +1,6 @@
 //! Hovering, selecting, moving, rotating, scaling and filleting beside the
 //! 750-part timber-frame house stays interactive: no pointer frame and no
-//! release re-scans the whole house.
+//! release re-scans the whole house. The frames are timed in release, nightly.
 use super::push_pull_house_tests::*;
 use crate::tests::shell::step_until;
 use crate::*;
@@ -27,7 +27,7 @@ fn tool(harness: &mut Harness<'_, KetchupApp>, command: AppCommand) {
     harness.step();
 }
 
-fn assert_frames(what: &str, frames: &[Duration]) {
+fn perf_frames_within_budget(what: &str, frames: &[Duration]) {
     let slowest = frames.iter().max().copied().unwrap_or_default();
     assert!(
         slowest < FRAME_BUDGET,
@@ -35,7 +35,7 @@ fn assert_frames(what: &str, frames: &[Duration]) {
     );
 }
 
-fn assert_release(what: &str, release: Duration) {
+fn perf_release_within_budget(what: &str, release: Duration) {
     assert!(
         release < RELEASE_BUDGET,
         "the {what} release froze the window for {release:?}"
@@ -75,8 +75,8 @@ fn drag(harness: &mut Harness<'_, KetchupApp>, from: Vec3, to: Vec3, what: &str)
     let press = button(harness, screen, true);
     let (last, mut frames) = sweep(harness, from, to);
     frames.push(press);
-    assert_frames(what, &frames);
-    assert_release(what, button(harness, last, false));
+    perf_frames_within_budget(what, &frames);
+    perf_release_within_budget(what, button(harness, last, false));
     wait_for_commit(harness, revision, what);
 }
 
@@ -84,13 +84,13 @@ fn drag(harness: &mut Harness<'_, KetchupApp>, from: Vec3, to: Vec3, what: &str)
 fn timed_click(harness: &mut Harness<'_, KetchupApp>, at: Vec3, what: &str) {
     let (screen, hover) = move_to(harness, at);
     let press = button(harness, screen, true);
-    assert_frames(what, &[hover, press]);
-    assert_release(what, button(harness, screen, false));
+    perf_frames_within_budget(what, &[hover, press]);
+    perf_release_within_budget(what, button(harness, screen, false));
 }
 
 #[test]
-#[ignore = "large-house: runs in full suite"]
-fn large_house_hovering_and_selecting_across_the_house_stays_interactive() {
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_house_hovering_and_selecting_across_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = harness(house());
     tool(&mut harness, AppCommand::Select);
@@ -101,12 +101,12 @@ fn large_house_hovering_and_selecting_across_the_house_stays_interactive() {
         let position = rect.lerp_inside(Vec2::new(0.25 + 0.5 * t, 0.3 + 0.4 * t));
         frames.push(event(&mut harness, egui::Event::PointerMoved(position)));
     }
-    assert_frames("hover", &frames);
+    perf_frames_within_budget("hover", &frames);
     let centre = rect.center();
     event(&mut harness, egui::Event::PointerMoved(centre));
     let press = button(&mut harness, centre, true);
-    assert_frames("select", &[press]);
-    assert_release("select", button(&mut harness, centre, false));
+    perf_frames_within_budget("select", &[press]);
+    perf_release_within_budget("select", button(&mut harness, centre, false));
     assert!(
         !harness.state().selection.occurrences.is_empty(),
         "the click selected no part of the house"
@@ -114,8 +114,8 @@ fn large_house_hovering_and_selecting_across_the_house_stays_interactive() {
 }
 
 #[test]
-#[ignore = "large-house: runs in full suite"]
-fn large_house_moving_a_box_beside_the_house_stays_interactive() {
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_house_moving_a_box_beside_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = house_with_box();
     tool(&mut harness, AppCommand::Move);
@@ -124,8 +124,8 @@ fn large_house_moving_a_box_beside_the_house_stays_interactive() {
 }
 
 #[test]
-#[ignore = "large-house: runs in full suite"]
-fn large_house_scaling_a_box_beside_the_house_stays_interactive() {
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_house_scaling_a_box_beside_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = house_with_box();
     let corner = Vec3::new(END.x, END.y, TOP);
@@ -136,14 +136,14 @@ fn large_house_scaling_a_box_beside_the_house_stays_interactive() {
     let press = button(&mut harness, screen, true);
     let (last, mut frames) = sweep(&mut harness, corner, corner + (corner - centre()) * 0.5);
     frames.extend([hover, press]);
-    assert_frames("Scale", &frames);
-    assert_release("Scale", button(&mut harness, last, false));
+    perf_frames_within_budget("Scale", &frames);
+    perf_release_within_budget("Scale", button(&mut harness, last, false));
     wait_for_commit(&mut harness, revision, "Scale");
 }
 
 #[test]
-#[ignore = "large-house: runs in full suite"]
-fn large_house_rotating_a_box_beside_the_house_stays_interactive() {
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_house_rotating_a_box_beside_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = house_with_box();
     tool(&mut harness, AppCommand::Rotate);
@@ -153,16 +153,16 @@ fn large_house_rotating_a_box_beside_the_house_stays_interactive() {
     let reference = pivot + Vec3::new(300.0, 0.0, 0.0);
     timed_click(&mut harness, reference, "Rotate reference");
     let (last, frames) = sweep(&mut harness, reference, pivot + Vec3::new(0.0, 300.0, 0.0));
-    assert_frames("Rotate", &frames);
+    perf_frames_within_budget("Rotate", &frames);
     let press = button(&mut harness, last, true);
-    assert_frames("Rotate", &[press]);
-    assert_release("Rotate", button(&mut harness, last, false));
+    perf_frames_within_budget("Rotate", &[press]);
+    perf_release_within_budget("Rotate", button(&mut harness, last, false));
     wait_for_commit(&mut harness, revision, "Rotate");
 }
 
 #[test]
-#[ignore = "large-house: runs in full suite"]
-fn large_house_filleting_a_box_edge_beside_the_house_stays_interactive() {
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_house_filleting_a_box_edge_beside_the_house_stays_interactive() {
     let _turn = one_at_a_time();
     let mut harness = house_with_box();
     tool(&mut harness, AppCommand::Select);
@@ -171,7 +171,7 @@ fn large_house_filleting_a_box_edge_beside_the_house_stays_interactive() {
     timed_click(&mut harness, edge, "edge select");
     let started = Instant::now();
     tool(&mut harness, AppCommand::Fillet);
-    assert_release("Fillet start", started.elapsed());
+    perf_release_within_budget("Fillet start", started.elapsed());
     assert!(
         harness
             .state()
@@ -190,6 +190,6 @@ fn large_house_filleting_a_box_edge_beside_the_house_stays_interactive() {
         harness.state().digest
     );
     harness.step();
-    assert_release("Fillet confirm", started.elapsed());
+    perf_release_within_budget("Fillet confirm", started.elapsed());
     wait_for_commit(&mut harness, revision, "Fillet");
 }

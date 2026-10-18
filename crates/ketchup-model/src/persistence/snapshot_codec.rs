@@ -814,7 +814,6 @@ mod tests {
                 ciborium::Value::Integer(90.into()),
             ));
         }
-        let started = std::time::Instant::now();
         let mut unknown = Vec::new();
         unknown_fields(
             &ciborium::Value::Map(stored),
@@ -822,12 +821,7 @@ mod tests {
             &mut String::new(),
             &mut unknown,
         );
-        let elapsed = started.elapsed();
         assert_eq!(unknown, [format!("{}.grain", ENTRIES - 2), "finish".into()]);
-        assert!(
-            elapsed < std::time::Duration::from_secs(30),
-            "{ENTRIES} keys took {elapsed:?}"
-        );
     }
 
     /// Review 2026-10-15 status PS-4: maps keyed by a structure (an instance path, a
@@ -855,7 +849,6 @@ mod tests {
                 ciborium::Value::Integer(90.into()),
             ));
         }
-        let started = std::time::Instant::now();
         let mut unknown = Vec::new();
         unknown_fields(
             &ciborium::Value::Map(stored),
@@ -863,13 +856,8 @@ mod tests {
             &mut String::new(),
             &mut unknown,
         );
-        let elapsed = started.elapsed();
         assert_eq!(unknown.len(), 1, "{unknown:?}");
         assert!(unknown[0].ends_with(".grain"), "{unknown:?}");
-        assert!(
-            elapsed < std::time::Duration::from_secs(30),
-            "{ENTRIES} keys took {elapsed:?}"
-        );
     }
 
     /// Review 2026-10-16 PS-4: a key the hash missed was compared with every known
@@ -895,15 +883,26 @@ mod tests {
                 .flat_map(|key| [(text(key), value()), (path(key), value())])
                 .collect(),
         );
-        let started = std::time::Instant::now();
         let mut unknown = Vec::new();
         unknown_fields(&stored, &known, &mut String::new(), &mut unknown);
-        let elapsed = started.elapsed();
         assert_eq!(unknown.len() as u64, 2 * ENTRIES);
-        assert!(
-            elapsed < std::time::Duration::from_secs(30),
-            "{ENTRIES} unknown keys took {elapsed:?}"
-        );
+    }
+
+    /// The three large maps above in release, nightly: scanned per key, each
+    /// took minutes.
+    #[test]
+    #[ignore = "perf: release timing budget, runs nightly"]
+    fn perf_unknown_fields_of_large_maps_are_found_in_seconds() {
+        for check in [
+            unknown_fields_of_a_large_map_are_found_in_linear_time as fn(),
+            unknown_fields_of_a_large_map_with_structured_keys_are_found_in_linear_time,
+            many_unknown_keys_of_a_large_map_are_found_in_linear_time,
+        ] {
+            let started = std::time::Instant::now();
+            check();
+            let elapsed = started.elapsed();
+            assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
+        }
     }
 
     /// A key equal as a value but written with other bytes still finds its counterpart.

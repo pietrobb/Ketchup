@@ -14,7 +14,7 @@ const EXPORT_BUDGET: Duration = Duration::from_secs(2);
 
 #[test]
 #[ignore = "native exact worker plus the external house example; explicit timing opt-in"]
-fn house_viewer_export_finishes_within_seconds() {
+fn perf_house_viewer_export_finishes_within_seconds() {
     let _turn = crate::integration_support::file_turn();
     // A copy: the app writes work recovery next to the open document.
     let directory = tempfile::tempdir().expect("temp directory");
@@ -138,10 +138,10 @@ fn house_viewer_export_finishes_within_seconds() {
     assert_eq!(reopened.manifest.scenes.len(), 1);
     assert_eq!(reopened.manifest.scenes[0].name, "Viewer timing");
     assert_house_contents(ui.state(), &reopened);
-    assert_menu_export_and_save(&mut ui, &export_path, &fixture);
+    perf_menu_export_and_save_within_budget(&mut ui, &export_path, &fixture);
 }
 
-fn assert_menu_export_and_save(
+fn perf_menu_export_and_save_within_budget(
     ui: &mut egui_kittest::Harness<'_, KetchupApp>,
     export_path: &std::path::Path,
     fixture: &std::path::Path,

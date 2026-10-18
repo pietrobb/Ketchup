@@ -2978,7 +2978,6 @@ fn many_inserts_of_a_full_block_are_refused_before_comparing_their_profiles() {
     let inserts: String = (0..3_000)
         .map(|index| format!("0\nINSERT\n2\nfull\n10\n0\n20\n{}\n", index * 10))
         .collect();
-    let started = std::time::Instant::now();
     assert_eq!(
         inspect_dxf(
             &dxf_with_blocks(4, &block, &inserts),
@@ -2987,7 +2986,6 @@ fn many_inserts_of_a_full_block_are_refused_before_comparing_their_profiles() {
         .map(|parsed| parsed.profiles().len()),
         Err(DxfImportError::TooManyProfiles)
     );
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
 }
 
 /// The entity limit admits ten thousand separate lines, each its own profile.
@@ -2996,12 +2994,35 @@ fn many_inserts_of_a_full_block_are_refused_before_comparing_their_profiles() {
 /// it was refused for its profile count (a fuzzed 171 KB DXF ran past 5 s on CI).
 #[test]
 fn ten_thousand_separate_lines_are_refused_without_quadratic_joining() {
-    let started = std::time::Instant::now();
     assert_eq!(
         inspect_dxf(&disconnected_lines(10_000), DxfImportOptions::new(None)),
         Err(DxfImportError::TooManyProfiles)
     );
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// The two refusals above in release, nightly: each used to take tens of
+/// seconds or hang.
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_large_drawings_are_refused_in_seconds() {
+    for (check, budget) in [
+        (
+            many_inserts_of_a_full_block_are_refused_before_comparing_their_profiles as fn(),
+            10,
+        ),
+        (
+            ten_thousand_separate_lines_are_refused_without_quadratic_joining,
+            5,
+        ),
+    ] {
+        let started = std::time::Instant::now();
+        check();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(budget),
+            "{elapsed:?}"
+        );
+    }
 }
 
 #[test]
