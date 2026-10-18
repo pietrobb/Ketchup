@@ -993,7 +993,22 @@ fn open_guarded_exact_worker(path: &Path) -> io::Result<fs::File> {
 struct GuardedExactWorker {
     executable: PathBuf,
     sha256: String,
+    stamp: ExecutableStamp,
     _file: fs::File,
+}
+
+/// Length and modification time of the worker executable when it was hashed:
+/// a reused worker only has to see that these did not change, not rehash it.
+type ExecutableStamp = (u64, Option<std::time::SystemTime>);
+
+fn executable_stamp(metadata: &fs::Metadata) -> ExecutableStamp {
+    (metadata.len(), metadata.modified().ok())
+}
+
+/// Whether the executable at `path` still has the stamp it was hashed with.
+fn executable_unchanged(path: &Path, stamp: ExecutableStamp) -> bool {
+    fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && executable_stamp(&metadata) == stamp)
 }
 
 fn guarded_exact_worker_identity(executable: &Path) -> Result<GuardedExactWorker, WorkerError> {
@@ -1028,6 +1043,7 @@ fn guarded_exact_worker_identity(executable: &Path) -> Result<GuardedExactWorker
     Ok(GuardedExactWorker {
         executable,
         sha256: sha256_hex(&bytes),
+        stamp: executable_stamp(&metadata),
         _file: file,
     })
 }
@@ -1089,6 +1105,7 @@ pub struct ExactWorkerClient {
 pub struct ExactWorkerSupervisor {
     executable: PathBuf,
     executable_sha256: String,
+    executable_stamp: ExecutableStamp,
     client: ExactWorkerClient,
 }
 
@@ -1104,11 +1121,17 @@ impl ExactWorkerSupervisor {
         if cancelled.load(Ordering::Acquire) {
             return Err(WorkerError::Cancelled);
         }
-        let (executable, executable_sha256) = exact_worker_identity(executable.as_ref())?;
-        let client = Self::spawn_verified_client(&executable, &executable_sha256, cancelled)?;
+        let guarded = guarded_exact_worker_identity(executable.as_ref())?;
+        let (executable, executable_sha256, executable_stamp) = (
+            guarded.executable.clone(),
+            guarded.sha256.clone(),
+            guarded.stamp,
+        );
+        let client = Self::spawn_client(guarded, cancelled)?;
         Ok(Self {
             executable,
             executable_sha256,
+            executable_stamp,
             client,
         })
     }
@@ -1119,10 +1142,12 @@ impl ExactWorkerSupervisor {
     }
 
     /// Whether the worker process is alive and its executable is unchanged.
+    /// The executable was hashed when the worker started, so this only
+    /// compares its length and modification time.
     pub fn is_reusable(&mut self) -> bool {
         !self.client.terminated
             && matches!(self.client.child.try_wait(), Ok(None))
-            && verify_exact_worker_identity(&self.executable, &self.executable_sha256).is_ok()
+            && executable_unchanged(&self.executable, self.executable_stamp)
     }
 
     fn spawn_verified_client(
@@ -1133,7 +1158,16 @@ impl ExactWorkerSupervisor {
         if cancelled.load(Ordering::Acquire) {
             return Err(WorkerError::Cancelled);
         }
-        let executable = verify_exact_worker_identity(executable, executable_sha256)?;
+        Self::spawn_client(
+            verify_exact_worker_identity(executable, executable_sha256)?,
+            cancelled,
+        )
+    }
+
+    fn spawn_client(
+        executable: GuardedExactWorker,
+        cancelled: &AtomicBool,
+    ) -> Result<ExactWorkerClient, WorkerError> {
         if cancelled.load(Ordering::Acquire) {
             return Err(WorkerError::Cancelled);
         }
@@ -3158,6 +3192,39 @@ mod tests {
             Err(WorkerError::Spawn(message))
                 if message == "exact worker executable is not a bounded file"
         ));
+    }
+
+    #[test]
+    fn a_reused_worker_sees_a_replaced_executable_without_rehashing_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("worker.bin");
+        std::fs::write(&executable, b"trusted worker").unwrap();
+        let stamp = guarded_exact_worker_identity(&executable).unwrap().stamp;
+        assert!(executable_unchanged(&executable, stamp));
+        std::fs::write(&executable, b"replaced worker").unwrap();
+        assert!(!executable_unchanged(&executable, stamp));
+        std::fs::remove_file(&executable).unwrap();
+        assert!(!executable_unchanged(&executable, stamp));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_reuse_check_does_not_read_the_executable() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("worker.exe");
+        std::fs::write(&executable, b"trusted worker").unwrap();
+        let guarded = guarded_exact_worker_identity(&executable).unwrap();
+        let (sha256, stamp) = (guarded.sha256.clone(), guarded.stamp);
+        drop(guarded);
+        // While nobody may read it, rehashing fails; the stamp still answers.
+        let _exclusive = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&executable)
+            .unwrap();
+        assert!(verify_exact_worker_identity(&executable, &sha256).is_err());
+        assert!(executable_unchanged(&executable, stamp));
     }
 
     #[test]
