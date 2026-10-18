@@ -569,26 +569,22 @@ fn step_xde_manifest_reads_a_real_independent_step_part_and_refuses_bad_indices(
         .unwrap();
     let path = repository.join("corpora/r0/step/self-authored-box.step");
     let backend = ExactBackend::new();
-    let manifest = backend.step_xde_manifest(path.to_str().unwrap()).unwrap();
+    let document = backend.open_step_xde(path.to_str().unwrap()).unwrap();
+    let manifest = document.manifest().unwrap();
 
     assert_eq!(manifest.parts.len(), 1);
     assert_eq!(manifest.nodes.len(), 1);
     assert_eq!(manifest.nodes[0].part_index, Some(0));
     assert_eq!(manifest.nodes[0].parent_id, None);
     assert!(transform_is_rigid(&manifest.nodes[0].transform));
-    let part = backend
-        .import_step_xde_part(path.to_str().unwrap(), 0)
-        .unwrap();
+    let part = document.part(0).unwrap();
     let whole = backend.import_step(path.to_str().unwrap()).unwrap();
     assert_close(
         part.body.topology.volume_mm3,
         whole.body.topology.volume_mm3,
     );
     assert_eq!(
-        backend
-            .import_step_xde_part(path.to_str().unwrap(), 1)
-            .unwrap_err()
-            .code,
+        document.part(1).unwrap_err().code,
         GeometryErrorCode::InvalidParameter
     );
 }
@@ -601,8 +597,10 @@ fn step_xde_manifest_preserves_real_nested_repeated_assembly_metadata_and_parts(
         .parent()
         .unwrap();
     let path = repository.join("corpora/r0/step/independent-xde-assembly.step");
-    let backend = ExactBackend::new();
-    let manifest = backend.step_xde_manifest(path.to_str().unwrap()).unwrap();
+    let document = ExactBackend::new()
+        .open_step_xde(path.to_str().unwrap())
+        .unwrap();
+    let manifest = document.manifest().unwrap();
 
     assert_eq!(manifest.parts.len(), 2);
     assert_eq!(manifest.nodes.len(), 5);
@@ -657,12 +655,8 @@ fn step_xde_manifest_preserves_real_nested_repeated_assembly_metadata_and_parts(
             .all(|node| transform_is_rigid(&node.transform))
     );
 
-    let bracket = backend
-        .import_step_xde_part(path.to_str().unwrap(), left.part_index.unwrap())
-        .unwrap();
-    let pin_body = backend
-        .import_step_xde_part(path.to_str().unwrap(), pin.part_index.unwrap())
-        .unwrap();
+    let bracket = document.part(left.part_index.unwrap()).unwrap();
+    let pin_body = document.part(pin.part_index.unwrap()).unwrap();
     assert_close(bracket.body.topology.volume_mm3, 6_000.0);
     assert_close(
         pin_body.body.topology.volume_mm3,
@@ -734,7 +728,8 @@ fn iges_xde_roundtrip_reports_actual_assembly_names_colors_and_transforms() {
     backend
         .export_iges_xde_assembly(&parts, &nodes, output.to_str().unwrap())
         .unwrap();
-    let manifest = backend.iges_xde_manifest(output.to_str().unwrap()).unwrap();
+    let document = backend.open_iges_xde(output.to_str().unwrap()).unwrap();
+    let manifest = document.manifest().unwrap();
     assert_eq!(manifest.parts.len(), 3, "{manifest:#?}");
     assert_eq!(manifest.nodes.len(), 3, "{manifest:#?}");
     assert!(manifest.nodes.iter().all(|node| node.parent_id.is_none()));
@@ -761,12 +756,7 @@ fn iges_xde_roundtrip_reports_actual_assembly_names_colors_and_transforms() {
         ["Box left", "Box right", "Box third"]
     );
     let bodies = (0..manifest.parts.len())
-        .map(|index| {
-            backend
-                .import_iges_xde_part(output.to_str().unwrap(), index as u32)
-                .unwrap()
-                .body
-        })
+        .map(|index| document.part(index as u32).unwrap().body)
         .collect::<Vec<_>>();
     assert!(bodies.iter().all(|body| body.topology.volume_mm3 > 0.0));
     assert_close(
@@ -1285,7 +1275,8 @@ fn one_step_xde_document_answers_like_a_parse_per_call() {
     let backend = ExactBackend::new();
     let document = backend.open_step_xde(path).unwrap();
     let manifest = document.manifest().unwrap();
-    assert_eq!(manifest, backend.step_xde_manifest(path).unwrap());
+    let fresh = || backend.open_step_xde(path).unwrap();
+    assert_eq!(manifest, fresh().manifest().unwrap());
     assert_eq!(
         document.length_unit_name(),
         backend.step_length_unit_name(path)
@@ -1293,7 +1284,7 @@ fn one_step_xde_document_answers_like_a_parse_per_call() {
     assert!(document.length_unit_name().is_some());
     for part in &manifest.parts {
         let once = document.part(part.index).unwrap();
-        let again = backend.import_step_xde_part(path, part.index).unwrap();
+        let again = fresh().part(part.index).unwrap();
         assert_eq!(once.body.result_fingerprint, again.body.result_fingerprint);
         assert_eq!(once.input_digest, again.input_digest);
     }

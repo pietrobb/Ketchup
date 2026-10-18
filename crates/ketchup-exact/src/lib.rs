@@ -456,19 +456,9 @@ mod ffi {
             path: &str,
             solid_ordinal: u32,
         ) -> UniquePtr<NativeOperationResult>;
-        fn import_step_xde_part_native(
-            path: &str,
-            part_index: u32,
-        ) -> UniquePtr<NativeOperationResult>;
-        fn step_xde_manifest_native(path: &str) -> String;
         fn export_step_xde_assembly_native(manifest: &str, path: &str) -> String;
         fn step_length_unit_native(path: &str) -> String;
         fn import_iges_native(path: &str) -> UniquePtr<NativeOperationResult>;
-        fn import_iges_xde_part_native(
-            path: &str,
-            part_index: u32,
-        ) -> UniquePtr<NativeOperationResult>;
-        fn iges_xde_manifest_native(path: &str) -> String;
         fn export_iges_xde_assembly_native(manifest: &str, path: &str) -> String;
         fn iges_length_unit_native(path: &str) -> String;
         fn transform_body_native(

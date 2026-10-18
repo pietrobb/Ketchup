@@ -670,35 +670,6 @@ std::unique_ptr<NativeOperationResult> xde_document_part_native(
   });
 }
 
-rust::String xde_manifest_native(rust::Str path, bool iges) noexcept {
-  try {
-    StepXdeData data;
-    std::string error;
-    const std::string native_path(path.data(), path.size());
-    const bool loaded = iges
-        ? load_iges_xde(native_path, data, error)
-        : load_step_xde(native_path, data, error);
-    if (native_path.empty() || !loaded) {
-      return rust::String("ERR\t" + hex_encode(error.empty() ? "invalid STEP XDE path" : error));
-    }
-    return rust::String(encode_xde_manifest(data));
-  } catch (const Standard_Failure& failure) {
-    return rust::String("ERR\t" + hex_encode(failure.GetMessageString()));
-  } catch (const std::exception& failure) {
-    return rust::String("ERR\t" + hex_encode(failure.what()));
-  } catch (...) {
-    return rust::String("ERR\t" + hex_encode("unknown STEP XDE exception"));
-  }
-}
-
-rust::String step_xde_manifest_native(rust::Str path) noexcept {
-  return xde_manifest_native(path, false);
-}
-
-rust::String iges_xde_manifest_native(rust::Str path) noexcept {
-  return xde_manifest_native(path, true);
-}
-
 template <typename Writer>
 rust::String export_xde_assembly_native(
     rust::Str manifest, rust::Str path) noexcept {
@@ -864,34 +835,6 @@ rust::String export_step_xde_assembly_native(
 rust::String export_iges_xde_assembly_native(
     rust::Str manifest, rust::Str path) noexcept {
   return export_xde_assembly_native<IGESCAFControl_Writer>(manifest, path);
-}
-
-std::unique_ptr<NativeOperationResult> import_xde_part_native(
-    rust::Str path, std::uint32_t part_index, bool iges) noexcept {
-  return guarded([&] {
-    const std::string native_path(path.data(), path.size());
-    // IGES parts are the manifest's parts, as for STEP, so a part request and
-    // a whole-document inspection answer with the same body for one index.
-    StepXdeData data;
-    std::string error;
-    const bool loaded = iges
-        ? load_iges_xde(native_path, data, error)
-        : load_step_xde(native_path, data, error);
-    if (!loaded) {
-      return error_result(STATUS_INVALID_PARAMETER, error);
-    }
-    return xde_part_result(data, part_index);
-  });
-}
-
-std::unique_ptr<NativeOperationResult> import_step_xde_part_native(
-    rust::Str path, std::uint32_t part_index) noexcept {
-  return import_xde_part_native(path, part_index, false);
-}
-
-std::unique_ptr<NativeOperationResult> import_iges_xde_part_native(
-    rust::Str path, std::uint32_t part_index) noexcept {
-  return import_xde_part_native(path, part_index, true);
 }
 
 std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexcept {

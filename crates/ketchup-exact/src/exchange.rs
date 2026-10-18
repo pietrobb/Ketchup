@@ -88,8 +88,7 @@ impl StepXdeDocument {
         (!unit.is_empty()).then_some(unit)
     }
 
-    /// The same body [`ExactBackend::import_step_xde_part`] (or
-    /// [`ExactBackend::import_iges_xde_part`]) reads for `part_index`.
+    /// The body of manifest part `part_index`.
     pub fn part(&self, part_index: u32) -> Result<ExactOpOutput, GeometryError> {
         let input = format!("{}:{}:{part_index}", self.operation, self.path);
         if !usize::try_from(part_index).is_ok_and(|index| index < MAX_STEP_XDE_NODES) {
@@ -345,35 +344,6 @@ impl ExactBackend {
         )
     }
 
-    pub fn import_step_xde_part(
-        &self,
-        path: &str,
-        part_index: u32,
-    ) -> Result<ExactOpOutput, GeometryError> {
-        let input = format!("import_step_xde_part:{path}:{part_index}");
-        if path.trim().is_empty() || part_index as usize >= MAX_STEP_XDE_NODES {
-            return Err(parameter_error(
-                GeometryErrorCode::InvalidParameter,
-                "import_step_xde_part",
-                &input,
-                "STEP XDE path or part index is invalid".to_owned(),
-            ));
-        }
-        collect_output(
-            ffi::import_step_xde_part_native(path, part_index),
-            "import_step_xde_part",
-            &input,
-            HistoryConfidence::None,
-        )
-    }
-
-    pub fn step_xde_manifest(&self, path: &str) -> Result<StepXdeManifest, StepXdeManifestError> {
-        if path.trim().is_empty() {
-            return Err(StepXdeManifestError::InvalidPath);
-        }
-        parse_step_xde_manifest(&ffi::step_xde_manifest_native(path))
-    }
-
     /// Reads `path` once; ask the document for its manifest, unit and parts.
     pub fn open_step_xde(&self, path: &str) -> Result<StepXdeDocument, StepXdeManifestError> {
         open_xde(
@@ -559,35 +529,6 @@ impl ExactBackend {
             &input,
             HistoryConfidence::None,
         )
-    }
-
-    pub fn import_iges_xde_part(
-        &self,
-        path: &str,
-        part_index: u32,
-    ) -> Result<ExactOpOutput, GeometryError> {
-        let input = format!("import_iges_xde_part:{path}:{part_index}");
-        if path.trim().is_empty() || part_index as usize >= MAX_STEP_XDE_NODES {
-            return Err(parameter_error(
-                GeometryErrorCode::InvalidParameter,
-                "import_iges_xde_part",
-                &input,
-                "IGES XDE path or part index is invalid".to_owned(),
-            ));
-        }
-        collect_output(
-            ffi::import_iges_xde_part_native(path, part_index),
-            "import_iges_xde_part",
-            &input,
-            HistoryConfidence::None,
-        )
-    }
-
-    pub fn iges_xde_manifest(&self, path: &str) -> Result<StepXdeManifest, StepXdeManifestError> {
-        if path.trim().is_empty() {
-            return Err(StepXdeManifestError::InvalidPath);
-        }
-        parse_step_xde_manifest(&ffi::iges_xde_manifest_native(path))
     }
 
     #[must_use]

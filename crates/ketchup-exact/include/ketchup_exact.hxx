@@ -187,16 +187,10 @@ std::unique_ptr<NativeOperationResult> exception_probe_native() noexcept;
 std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexcept;
 std::unique_ptr<NativeOperationResult> import_step_solid_native(
     rust::Str path, std::uint32_t solid_ordinal) noexcept;
-std::unique_ptr<NativeOperationResult> import_step_xde_part_native(
-    rust::Str path, std::uint32_t part_index) noexcept;
-rust::String step_xde_manifest_native(rust::Str path) noexcept;
 rust::String export_step_xde_assembly_native(
     rust::Str manifest, rust::Str path) noexcept;
 rust::String step_length_unit_native(rust::Str path) noexcept;
 std::unique_ptr<NativeOperationResult> import_iges_native(rust::Str path) noexcept;
-std::unique_ptr<NativeOperationResult> import_iges_xde_part_native(
-    rust::Str path, std::uint32_t part_index) noexcept;
-rust::String iges_xde_manifest_native(rust::Str path) noexcept;
 rust::String export_iges_xde_assembly_native(
     rust::Str manifest, rust::Str path) noexcept;
 rust::String iges_length_unit_native(rust::Str path) noexcept;

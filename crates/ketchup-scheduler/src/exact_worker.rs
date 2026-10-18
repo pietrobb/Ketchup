@@ -3386,8 +3386,11 @@ fn m21_step_xde_to_iges_response(
     backend
         .export_iges_xde_assembly(&parts, &nodes, output_path)
         .map_err(|error| geometry_failure(&error))?;
-    let reread = backend
-        .iges_xde_manifest(output_path)
+    let written = backend
+        .open_iges_xde(output_path)
+        .map_err(|error| backend_failure("reread_iges_xde_output", &error.to_string()))?;
+    let reread = written
+        .manifest()
         .map_err(|error| backend_failure("reread_iges_xde_output", &error.to_string()))?;
     if reread.parts.len() != parts.len()
         || reread.nodes.len() != nodes.len()
@@ -3401,9 +3404,7 @@ fn m21_step_xde_to_iges_response(
             "IGES output lost a flat root, name, or color",
         ));
     }
-    let first = backend
-        .import_iges_xde_part(output_path, 0)
-        .map_err(|error| geometry_failure(&error))?;
+    let first = written.part(0).map_err(|error| geometry_failure(&error))?;
     Ok(WorkerReply::Exported(ExportReceipt {
         result_fingerprint: step_import_result_fingerprint(&source.sha256, &first),
         sha256: None,
@@ -3655,7 +3656,8 @@ fn m21_step_assembly_response(
         .export_step_xde_assembly(&export_parts, &export_nodes, output_path)
         .map_err(|error| geometry_failure(&error))?;
     let reread_xde = backend
-        .step_xde_manifest(output_path)
+        .open_step_xde(output_path)
+        .and_then(|document| document.manifest())
         .map_err(|error| backend_failure("reread_step_xde_output", &error.to_string()))?;
     if reread_xde.parts.len() != manifest.parts.len()
         || reread_xde
