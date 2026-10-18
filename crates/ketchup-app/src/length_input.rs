@@ -175,16 +175,27 @@ pub fn read_number(input: &str, decimal: DecimalSeparator) -> Result<f64, Refusa
 
 /// A whole number without a unit — a count, a number of sides, a face
 /// ordinal — read like every value, so `2*4` is 8 and `1e3` is 1000; a
-/// fraction, or a value `T` cannot hold, is refused.
-pub fn read_whole<T: TryFrom<i64>>(input: &str, decimal: DecimalSeparator) -> Result<T, Refusal> {
+/// fraction, or a number past 2^53, is refused.
+pub fn read_integer(input: &str, decimal: DecimalSeparator) -> Result<i64, Refusal> {
     // Every whole number up to 2^53 is exact in an f64.
     const EXACT: f64 = 9_007_199_254_740_992.0;
     let value = read_number(input, decimal)?;
     if value.fract() != 0.0 || value.abs() > EXACT {
         return Err(Refusal::Unreadable);
     }
-    #[allow(clippy::cast_possible_truncation)]
-    T::try_from(value as i64).map_err(|_| Refusal::Unreadable)
+    // A whole f64 printed without decimals is exactly its digits.
+    format!("{value:.0}")
+        .parse()
+        .map_err(|_: std::num::ParseIntError| Refusal::Unreadable)
+}
+
+/// [`read_integer`] as a `T`; a number `T` cannot hold is refused.
+pub fn read_whole<T>(input: &str, decimal: DecimalSeparator) -> Result<T, Refusal>
+where
+    T: TryFrom<i64, Error = std::num::TryFromIntError>,
+{
+    T::try_from(read_integer(input, decimal)?)
+        .map_err(|_: std::num::TryFromIntError| Refusal::Unreadable)
 }
 
 /// Millimetres for a typed length expression, or `None` when it is not one.
@@ -558,7 +569,16 @@ mod tests {
         assert_eq!(read_whole::<usize>("6", Point), Ok(6));
         assert_eq!(read_whole::<usize>(" 2*4 ", Point), Ok(8));
         assert_eq!(read_whole::<usize>("12,0", Comma), Ok(12));
-        assert_eq!(read_whole::<i64>("-3", Comma), Ok(-3));
+        assert_eq!(read_integer("-3", Comma), Ok(-3));
+        assert_eq!(read_integer("-0", Comma), Ok(0));
+        assert_eq!(
+            read_integer("9007199254740992", Comma),
+            Ok(9_007_199_254_740_992)
+        );
+        assert_eq!(
+            read_integer("9007199254740994", Comma),
+            Err(Refusal::Unreadable)
+        );
         assert_eq!(read_whole::<u32>("1e3", Point), Ok(1000));
         assert_eq!(read_whole::<usize>("1,5", Point), Err(Refusal::Comma));
         for input in ["2.5", "-1", "6 mm", "", "1e30", "abc"] {
