@@ -1685,4 +1685,62 @@ fn a_cut_up_to_a_face_keeps_its_face_evidence_through_later_edits() {
         "an unrelated edit keeps the evidence an UpToFace extent is anchored to"
     );
     producer_exact_graph(&renamed, DEFINITION, CUT).expect("cut graph after a rename");
+
+    // Review 2026-10-18 M-10: editing the body the cut reaches marks the face stale;
+    // registering the face of the edited body, singly or as a batch, rebinds the
+    // extent so the cut builds again; so does registering the edited body's result.
+    for (depth, registration) in [("24", "single"), ("30", "batch"), ("36", "result")] {
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetFeatureDimension {
+                    id: BASE_PAD,
+                    dimension: Dimension::from_decimal(depth).unwrap(),
+                },
+            ]))
+            .unwrap();
+        let package = box_package(
+            &document.current(),
+            DEFINITION,
+            BASE_PAD,
+            "through-cut-base",
+            &[ExactFaceRole::Top, ExactFaceRole::Bottom],
+        )
+        .unwrap();
+        let edited_top = package.reference(ExactFaceRole::Top).unwrap().clone();
+        assert_eq!(edited_top.lineage_digest, top.lineage_digest);
+        assert_ne!(
+            edited_top, top,
+            "the edited body's top face is new evidence"
+        );
+        match registration {
+            "single" => {
+                for reference in package.references() {
+                    document
+                        .register_exact_reference_evidence(reference.clone())
+                        .unwrap();
+                }
+            }
+            "batch" => document
+                .register_exact_references(package.references())
+                .unwrap(),
+            _ => {
+                let results =
+                    ExactResultRegistry::accept(&document.current(), [Arc::new(package)]).unwrap();
+                document
+                    .register_exact_reference_evidence(&results)
+                    .unwrap();
+            }
+        }
+        let edited = document.current();
+        let FeatureKind::Pad(spec) = edited.feature(CUT).unwrap().kind() else {
+            unreachable!()
+        };
+        assert_eq!(
+            spec.extent,
+            FeatureExtent::UpToFace(Box::new(edited_top.clone())),
+            "the extent follows the face of the edited body ({depth} mm)"
+        );
+        producer_exact_graph(&edited, DEFINITION, CUT)
+            .unwrap_or_else(|error| panic!("cut graph after a {depth} mm edit: {error:?}"));
+    }
 }

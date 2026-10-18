@@ -99,6 +99,55 @@ pub(super) fn set_planar_face_reference_health(
     }
 }
 
+/// The face references a feature is anchored to: the face a workplane lies on,
+/// and the faces a pad's extent reaches and its cut starts from. Anchoring,
+/// staleness, conflict checks and rebinding all go through this one visitor.
+pub(super) fn anchored_references(kind: &FeatureKind) -> Vec<&BodySubshapeRef> {
+    match kind {
+        FeatureKind::Workplane(WorkplaneSpec {
+            support: WorkplaneSupport::PlanarFace { reference, .. },
+            ..
+        }) => vec![reference.as_ref()],
+        FeatureKind::Pad(spec) => spec.references(),
+        _ => Vec::new(),
+    }
+}
+
+/// [`anchored_references`], for rewriting in place.
+fn anchored_references_mut(kind: &mut FeatureKind) -> Vec<&mut BodySubshapeRef> {
+    match kind {
+        FeatureKind::Workplane(WorkplaneSpec {
+            support: WorkplaneSupport::PlanarFace { reference, .. },
+            ..
+        }) => vec![reference.as_mut()],
+        FeatureKind::Pad(spec) => spec.references_mut(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether a feature is anchored to the lineage of `reference` but names another
+/// face, or holds current evidence for it that differs from `reference`.
+pub(super) fn conflicts_with_anchor<'k>(
+    kinds: impl IntoIterator<Item = &'k FeatureKind>,
+    reference: &BodySubshapeRef,
+    is_current: impl Fn(&BodySubshapeRef) -> bool,
+) -> bool {
+    kinds
+        .into_iter()
+        .flat_map(anchored_references)
+        .any(|anchored| {
+            anchored.lineage_digest == reference.lineage_digest
+                && (anchored.definition_id != reference.definition_id
+                    || anchored.profile_feature_id != reference.profile_feature_id
+                    || anchored.producer_feature_id != reference.producer_feature_id
+                    || anchored.semantic_role != reference.semantic_role
+                    || anchored.source_element_id != reference.source_element_id
+                    || anchored.expected_type != reference.expected_type
+                    || (is_current(anchored) && anchored != reference))
+        })
+}
+
+/// Points every reference anchored to the lineage of `reference` at it.
 pub(super) fn rebind_planar_face_reference(
     product: &mut ProductModel,
     reference: &BodySubshapeRef,
@@ -106,36 +155,26 @@ pub(super) fn rebind_planar_face_reference(
     let updated = product
         .features
         .values()
-        .filter_map(|feature| match &feature.kind {
-            FeatureKind::Workplane(
-                spec @ WorkplaneSpec {
-                    support:
-                        WorkplaneSupport::PlanarFace {
-                            reference: support, ..
-                        },
-                    ..
-                },
-            ) if support.lineage_digest == reference.lineage_digest => {
-                let mut spec = spec.clone();
-                spec.support = WorkplaneSupport::PlanarFace {
-                    reference: Box::new(reference.clone()),
-                    health: WorkplaneSupportHealth::Resolved,
-                };
-                Some(with_kind(feature, FeatureKind::Workplane(spec)))
-            }
-            FeatureKind::Pad(spec)
-                if spec
-                    .operation
-                    .support()
-                    .is_some_and(|support| support.lineage_digest == reference.lineage_digest) =>
-            {
-                let mut spec = spec.clone();
-                if let PadOperation::Cut { start, .. } = &mut spec.operation {
-                    *start = CutStart::Support(Box::new(reference.clone()));
+        .filter(|feature| {
+            anchored_references(&feature.kind)
+                .iter()
+                .any(|anchored| anchored.lineage_digest == reference.lineage_digest)
+        })
+        .map(|feature| {
+            let mut kind = feature.kind.clone();
+            for anchored in anchored_references_mut(&mut kind) {
+                if anchored.lineage_digest == reference.lineage_digest {
+                    *anchored = reference.clone();
                 }
-                Some(with_kind(feature, FeatureKind::Pad(spec)))
             }
-            _ => None,
+            if let FeatureKind::Workplane(WorkplaneSpec {
+                support: WorkplaneSupport::PlanarFace { health, .. },
+                ..
+            }) = &mut kind
+            {
+                *health = WorkplaneSupportHealth::Resolved;
+            }
+            with_kind(feature, kind)
         })
         .collect::<Vec<_>>();
     for feature in updated {

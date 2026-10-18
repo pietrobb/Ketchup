@@ -32,19 +32,6 @@ fn create_evaluator_input(
     Ok(())
 }
 
-/// The face references a feature is anchored to: the face a workplane lies on,
-/// and the faces a pad's extent reaches and its cut starts from.
-fn anchored_references(kind: &FeatureKind) -> Vec<&BodySubshapeRef> {
-    match kind {
-        FeatureKind::Workplane(WorkplaneSpec {
-            support: WorkplaneSupport::PlanarFace { reference, .. },
-            ..
-        }) => vec![reference.as_ref()],
-        FeatureKind::Pad(spec) => spec.references(),
-        _ => Vec::new(),
-    }
-}
-
 /// The lineages of every face reference some feature of `product` is anchored to.
 fn anchored_lineages(product: &ProductModel) -> BTreeSet<&str> {
     product
@@ -527,18 +514,17 @@ impl DocumentStore {
             }
             ExactReferenceEvidence::Registry(results) => {
                 let current = &self.revisions[self.cursor];
-                let rebinds = current
+                let anchored = current
                     .snapshot
                     .features()
-                    .filter_map(|feature| match feature.kind() {
-                        FeatureKind::Workplane(WorkplaneSpec {
-                            support: WorkplaneSupport::PlanarFace { reference, .. },
-                            ..
-                        }) => Some(ExactReferenceRebind {
-                            lineage_digest: reference.lineage_digest.clone(),
-                            resolution: results.resolve_reference(&current.snapshot, reference),
-                        }),
-                        _ => None,
+                    .flat_map(|feature| anchored_references(feature.kind()))
+                    .map(|reference| (reference.lineage_digest.as_str(), reference))
+                    .collect::<BTreeMap<_, _>>();
+                let rebinds = anchored
+                    .into_values()
+                    .map(|reference| ExactReferenceRebind {
+                        lineage_digest: reference.lineage_digest.clone(),
+                        resolution: results.resolve_reference(&current.snapshot, reference),
                     })
                     .collect();
                 let event = DerivedResultEvent {
@@ -609,26 +595,8 @@ impl DocumentStore {
                 continue;
             }
             let product = product.get_or_insert_with(|| snapshot.product.as_ref().clone());
-            let conflicts_with_anchor = product.features.values().any(|feature| {
-                matches!(
-                    &feature.kind,
-                    FeatureKind::Workplane(WorkplaneSpec {
-                        support: WorkplaneSupport::PlanarFace {
-                            reference: support,
-                            ..
-                        },
-                        ..
-                    }) if support.lineage_digest == reference.lineage_digest
-                        && (support.definition_id != reference.definition_id
-                            || support.profile_feature_id != reference.profile_feature_id
-                            || support.producer_feature_id != reference.producer_feature_id
-                            || support.semantic_role != reference.semantic_role
-                            || support.source_element_id != reference.source_element_id
-                            || support.expected_type != reference.expected_type
-                            || (is_current(support) && support.as_ref() != reference))
-                )
-            });
-            if conflicts_with_anchor {
+            let kinds = product.features.values().map(|feature| &feature.kind);
+            if conflicts_with_anchor(kinds, reference, is_current) {
                 return Err((reference, ReferenceEvidenceError::WrongDocument));
             }
             product.exact_reference_evidence.insert(
@@ -710,26 +678,8 @@ impl DocumentStore {
                 self.evaluation_registry.insert(key.clone(), event);
             }
             DerivedResultPayload::ExactReference(reference) => {
-                let conflicts_with_anchor = current.snapshot.features().any(|feature| {
-                    matches!(
-                        feature.kind(),
-                        FeatureKind::Workplane(WorkplaneSpec {
-                            support: WorkplaneSupport::PlanarFace {
-                                reference: support,
-                                ..
-                            },
-                            ..
-                        }) if support.lineage_digest == reference.lineage_digest
-                            && (support.definition_id != reference.definition_id
-                                || support.profile_feature_id != reference.profile_feature_id
-                                || support.producer_feature_id != reference.producer_feature_id
-                                || support.semantic_role != reference.semantic_role
-                                || support.source_element_id != reference.source_element_id
-                                || support.expected_type != reference.expected_type
-                                || (reference_is_current(support) && support.as_ref() != reference))
-                    )
-                });
-                if conflicts_with_anchor {
+                let kinds = current.snapshot.features().map(Feature::kind);
+                if conflicts_with_anchor(kinds, reference, reference_is_current) {
                     return false;
                 }
                 let mut product = current.snapshot.product.as_ref().clone();

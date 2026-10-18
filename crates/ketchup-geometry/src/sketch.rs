@@ -761,6 +761,13 @@ impl FeatureExtentEnd {
             Self::Blind(_) | Self::ThroughAll => None,
         }
     }
+
+    fn references_mut(&mut self) -> Option<&mut BodySubshapeRef> {
+        match self {
+            Self::UpToFace(reference) => Some(reference),
+            Self::Blind(_) | Self::ThroughAll => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -806,6 +813,20 @@ impl FeatureExtent {
                 .into_iter()
                 .flatten()
                 .collect(),
+            Self::Blind(_) | Self::ThroughAll | Self::Symmetric(_) => Vec::new(),
+        }
+    }
+
+    /// [`Self::references`], for rewriting in place.
+    pub fn references_mut(&mut self) -> Vec<&mut BodySubshapeRef> {
+        match self {
+            Self::UpToFace(reference) => vec![reference],
+            Self::Bidirectional { along, opposite } => {
+                [along.references_mut(), opposite.references_mut()]
+                    .into_iter()
+                    .flatten()
+                    .collect()
+            }
             Self::Blind(_) | Self::ThroughAll | Self::Symmetric(_) => Vec::new(),
         }
     }
@@ -909,6 +930,19 @@ impl PadSpec {
     pub fn references(&self) -> Vec<&BodySubshapeRef> {
         let mut references = self.extent.references();
         references.extend(self.operation.support());
+        references
+    }
+
+    /// [`Self::references`], for rewriting in place.
+    pub fn references_mut(&mut self) -> Vec<&mut BodySubshapeRef> {
+        let mut references = self.extent.references_mut();
+        if let PadOperation::Cut {
+            start: CutStart::Support(support),
+            ..
+        } = &mut self.operation
+        {
+            references.push(support);
+        }
         references
     }
 
