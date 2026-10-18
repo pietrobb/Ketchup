@@ -107,8 +107,21 @@ fn process_memory_high_water_bytes() -> u64 {
         .expect("memory high-water must be numeric")
 }
 
-#[cfg(windows)]
+/// Total of [`process_tree_memory_high_waters`]; descendants of concurrent
+/// tests are included, so the total can fall when one of them exits.
 fn process_tree_memory_high_water_bytes() -> u64 {
+    process_tree_memory_high_waters()
+        .into_iter()
+        .fold(0_u64, |total, (_, bytes)| {
+            total
+                .checked_add(bytes)
+                .expect("process-tree memory high-water overflow")
+        })
+}
+
+/// Memory high-water of this process and of every live descendant, by PID.
+#[cfg(windows)]
+fn process_tree_memory_high_waters() -> Vec<(u32, u64)> {
     let command = format!(
         r#"$ErrorActionPreference = 'Stop'
 $root = [uint32]{}
@@ -128,15 +141,16 @@ while ($pending.Count -gt 0) {{
         }}
     }}
 }}
-[uint64]$sum = 0
 foreach ($id in $ids) {{
     # A descendant that exited after the listing no longer holds memory.
     $process = Get-Process -Id $id -ErrorAction SilentlyContinue
     if ($null -ne $process) {{
-        $sum = $sum + [uint64]$process.PeakPagedMemorySize64
+        [Console]::WriteLine("$id $([uint64]$process.PeakPagedMemorySize64)")
     }}
 }}
-[Console]::Write($sum)"#,
+# The exit code would otherwise be that of the last Get-Process, which fails
+# quietly for a descendant that just exited.
+exit 0"#,
         std::process::id()
     );
     let output = Command::new("powershell.exe")
@@ -150,9 +164,15 @@ foreach ($id in $ids) {{
     );
     String::from_utf8(output.stdout)
         .expect("process-tree memory high-water must be UTF-8 digits")
-        .trim()
-        .parse()
-        .expect("process-tree memory high-water must be numeric")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.trim()
+                .split_once(' ')
+                .and_then(|(pid, bytes)| Some((pid.parse().ok()?, bytes.parse().ok()?)))
+                .unwrap_or_else(|| panic!("process-tree memory high-water line {line:?}"))
+        })
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -174,7 +194,7 @@ fn process_memory_high_water_bytes() -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-fn process_tree_memory_high_water_bytes() -> u64 {
+fn process_tree_memory_high_waters() -> Vec<(u32, u64)> {
     let root = std::process::id();
     let mut relationships = Vec::new();
     for entry in std::fs::read_dir("/proc").expect("enumerate /proc for process-tree memory") {
@@ -209,11 +229,10 @@ fn process_tree_memory_high_water_bytes() -> u64 {
             break;
         }
     }
-    descendants.into_iter().fold(0_u64, |total, pid| {
-        total
-            .checked_add(linux_process_memory_high_water_bytes(pid))
-            .expect("process-tree memory high-water overflow")
-    })
+    descendants
+        .into_iter()
+        .map(|pid| (pid, linux_process_memory_high_water_bytes(pid)))
+        .collect()
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -222,7 +241,7 @@ fn process_memory_high_water_bytes() -> u64 {
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn process_tree_memory_high_water_bytes() -> u64 {
+fn process_tree_memory_high_waters() -> Vec<(u32, u64)> {
     panic!("process-tree memory high-water measurement is unsupported on this platform")
 }
 
@@ -258,7 +277,12 @@ fn memory_high_water_probe_child() {
         high_water_while_live >= high_water_before.saturating_add(MEMORY_PROBE_MIN_OBSERVED_BYTES),
         "child memory high-water missed a live {MEMORY_PROBE_ALLOCATION_BYTES}-byte allocation"
     );
-    std::fs::write(&ready_path, b"ready").expect("publish memory probe readiness");
+    // The parent compares the child's tree entry with this baseline; the
+    // rename publishes it whole.
+    let staged_path = ready_path.with_extension("staged");
+    std::fs::write(&staged_path, high_water_before.to_string())
+        .expect("stage memory probe baseline");
+    std::fs::rename(&staged_path, &ready_path).expect("publish memory probe readiness");
     let deadline = Instant::now() + Duration::from_secs(30);
     while !release_path.is_file() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
@@ -267,11 +291,14 @@ fn memory_high_water_probe_child() {
     std::hint::black_box(&allocation);
 }
 
+/// The process-tree walk must find a spawned child and read its allocation.
+/// It compares the child's own entry with the baseline the child measured
+/// before allocating: the tree total also holds descendants of concurrent
+/// tests, and one of them exiting can lower it by more than the allocation.
 fn verify_memory_high_water_observes_child_allocation() {
     let directory = tempfile::tempdir().expect("memory probe directory");
     let ready_path = directory.path().join("ready");
     let release_path = directory.path().join("release");
-    let high_water_before = process_tree_memory_high_water_bytes();
     let child = Command::new(std::env::current_exe().expect("test executable path"))
         .args([
             "--exact",
@@ -290,7 +317,10 @@ fn verify_memory_high_water_observes_child_allocation() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let ready = ready_path.is_file();
-    let high_water_with_child = process_tree_memory_high_water_bytes();
+    let child_id = child.id();
+    let child_in_tree = process_tree_memory_high_waters()
+        .into_iter()
+        .find_map(|(pid, bytes)| (pid == child_id).then_some(bytes));
     std::fs::write(&release_path, b"release").expect("release child memory probe");
     let output = child
         .wait_with_output()
@@ -301,9 +331,16 @@ fn verify_memory_high_water_observes_child_allocation() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let child_before: u64 = std::fs::read_to_string(&ready_path)
+        .expect("read memory probe baseline")
+        .parse()
+        .expect("memory probe baseline must be numeric");
+    let child_in_tree = child_in_tree.unwrap_or_else(|| {
+        panic!("process-tree memory high-water did not find child process {child_id}")
+    });
     assert!(
-        high_water_with_child >= high_water_before.saturating_add(MEMORY_PROBE_MIN_OBSERVED_BYTES),
-        "process-tree memory high-water missed the child allocation: before={high_water_before}, with_child={high_water_with_child}"
+        child_in_tree >= child_before.saturating_add(MEMORY_PROBE_MIN_OBSERVED_BYTES),
+        "process-tree memory high-water missed the child allocation: child_before={child_before}, child_in_tree={child_in_tree}"
     );
 }
 
