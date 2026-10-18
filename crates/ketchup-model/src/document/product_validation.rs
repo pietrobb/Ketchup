@@ -1635,29 +1635,45 @@ mod incremental_equivalence_tests {
             })
             .collect();
         store.apply_batch(&CommandBatch::new(sheets)).unwrap();
-        let mut copies = |command| {
+        let mut copies = |commands| {
             PRODUCT_COPIES.with(|count| count.set(0));
-            store
-                .apply_batch(&CommandBatch::new(vec![command]))
-                .unwrap();
+            store.apply_batch(&CommandBatch::new(commands)).unwrap();
             PRODUCT_COPIES.with(std::cell::Cell::get)
         };
+        let move_to = |transform| CanonicalCommand::SetOccurrenceTransform {
+            id: OccurrenceId(1),
+            transform,
+        };
+        let show = |visible| CanonicalCommand::SetOccurrenceVisibility {
+            id: OccurrenceId(1),
+            visible,
+        };
         let moved = Transform::from_translation(10.0, 0.0, 0.0).unwrap();
-        let command = CanonicalCommand::SetOccurrenceTransform {
-            id: OccurrenceId(1),
-            transform: moved,
-        };
-        assert_eq!(copies(command), 1, "three sheets share one copy");
-        let command = CanonicalCommand::SetOccurrenceVisibility {
-            id: OccurrenceId(1),
-            visible: false,
-        };
-        assert_eq!(copies(command), 0);
+        assert_eq!(
+            copies(vec![move_to(moved)]),
+            1,
+            "three sheets share one copy"
+        );
+        assert_eq!(copies(vec![show(false)]), 0);
         let command = CanonicalCommand::SetTagVisibility {
             id: TagId(1),
             visible: false,
         };
-        assert_eq!(copies(command), 0);
+        assert_eq!(copies(vec![command]), 0);
+        let moved = Transform::from_translation(20.0, 0.0, 0.0).unwrap();
+        let mixed = vec![show(true), move_to(moved)];
+        assert_eq!(
+            copies(mixed),
+            1,
+            "a move beside a visibility change is checked in full"
+        );
+
+        let mut singular = Transform::identity();
+        singular.matrix = [0.0; 16];
+        let before = store.current().revision_id();
+        let mixed = CommandBatch::new(vec![show(false), move_to(singular)]);
+        assert!(store.apply_batch(&mixed).is_err());
+        assert_eq!(store.current().revision_id(), before);
     }
 
     /// A damaged file whose tapped feature lists a missing feature or sits in a missing
