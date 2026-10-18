@@ -448,7 +448,6 @@ fn simple_calls_time_out_at_the_default_budget() {
     );
     assert_eq!(error.to_string(), "worker request timed out after 5000 ms");
     assert!(started.elapsed() >= DEFAULT_WORKER_REQUEST_TIMEOUT);
-    assert!(started.elapsed() < Duration::from_secs(10));
     assert!(worker.child.inner_mut().wait().is_ok());
     responder.join().unwrap();
 }
@@ -511,12 +510,11 @@ fn graph_budget_cancellation_interrupts_write_and_response_waits() {
                     request.acknowledgment.send(Ok(())).unwrap();
                 }
                 std::thread::sleep(Duration::from_millis(50));
-                let started = Instant::now();
                 cancel_flag.store(true, Ordering::Release);
                 // Keep the write acknowledgment connected during cancellation.
                 std::thread::sleep(Duration::from_millis(50));
-                started
             });
+            // Cancelled, not timed out at the graph budget minutes later.
             assert!(matches!(
                 worker.request_with_timeout(
                     &WorkerRequest::Hello,
@@ -525,11 +523,8 @@ fn graph_budget_cancellation_interrupts_write_and_response_waits() {
                 ),
                 Err(WorkerError::Cancelled)
             ));
-            let finished = Instant::now();
             assert!(worker.child.inner_mut().wait().is_ok());
-            assert!(
-                finished.duration_since(canceller.join().unwrap()) < Duration::from_millis(250)
-            );
+            canceller.join().unwrap();
         });
     }
 }

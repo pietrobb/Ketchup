@@ -291,10 +291,10 @@ fn host_max_response_honors_cancellation_when_plugin_stops_reading() {
     });
     // Cancel only once the plugin has stopped reading, so the host is blocked
     // on its bounded response write rather than on process startup.
-    let wait_started = Instant::now();
+    let deadline = Instant::now() + Duration::from_secs(20);
     while !stopped_reading.exists() {
         assert!(
-            wait_started.elapsed() < Duration::from_secs(20),
+            Instant::now() < deadline,
             "plugin never reached the blocked response"
         );
         std::thread::sleep(Duration::from_millis(10));

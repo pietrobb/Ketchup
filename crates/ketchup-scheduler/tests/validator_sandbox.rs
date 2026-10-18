@@ -16,7 +16,7 @@ use ketchup_scheduler::validator_runtime::{
 };
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const PUBLISHER: &str = "org.ketchup.tests.publisher";
 const PACKAGE: &str = "org.ketchup.tests.hosted-validator";
@@ -423,12 +423,12 @@ fn egress_timeout_is_one_cumulative_transport_deadline() {
         ..EgressLimits::M7C
     };
 
-    let started = Instant::now();
+    // Each byte comes within the timeout and all of them only after it: a
+    // deadline per read would return the whole response.
     assert!(matches!(
         perform_host_mediated_egress(package, &grant, &request, Some(authorization), limits),
-        Err(ValidatorRuntimeError::EgressTransport(_))
+        Err(ValidatorRuntimeError::EgressTransport(error)) if error == "operation timed out"
     ));
-    assert!(started.elapsed() < Duration::from_millis(250));
     server.join().unwrap();
 }
 

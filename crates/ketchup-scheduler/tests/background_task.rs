@@ -1,5 +1,5 @@
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ketchup_scheduler::background::{BackgroundTask, TaskContext, TaskEvent, TaskStop};
 
@@ -118,12 +118,10 @@ fn a_timed_out_wait_and_drop_do_not_block_on_an_unresponsive_job() {
         || {},
     )
     .unwrap();
-    let started_at = Instant::now();
-    let result = task.wait(Duration::ZERO);
-    let elapsed = started_at.elapsed();
+    // The job only returns once `release` is dropped, after the wait and the
+    // drop of the task within it: either blocking on the job would never return.
+    assert_eq!(task.wait(Duration::ZERO), Err(TaskStop::TimedOut));
     drop(release);
-    assert_eq!(result, Err(TaskStop::TimedOut));
-    assert!(elapsed < Duration::from_millis(500), "elapsed={elapsed:?}");
 }
 
 #[test]

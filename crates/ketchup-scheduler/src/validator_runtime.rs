@@ -213,6 +213,17 @@ pub struct EgressReceipt {
     pub response_sha256: String,
 }
 
+/// A socket that ran out of its part of the deadline reports `TimedOut` on
+/// Windows and `WouldBlock` on Unix; both are the egress deadline.
+fn egress_io(error: std::io::Error) -> ValidatorRuntimeError {
+    match error.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
+            ValidatorRuntimeError::EgressTransport("operation timed out".to_owned())
+        }
+        _ => ValidatorRuntimeError::EgressTransport(error.to_string()),
+    }
+}
+
 fn remaining_egress_time(deadline: Instant) -> Result<Duration, ValidatorRuntimeError> {
     deadline
         .checked_duration_since(Instant::now())
@@ -262,15 +273,15 @@ pub fn perform_host_mediated_egress(
         return Err(ValidatorRuntimeError::EgressAuthorizationInvalid);
     }
     let mut stream = TcpStream::connect_timeout(&address, remaining_egress_time(deadline)?)
-        .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+        .map_err(egress_io)?;
     let mut written = 0;
     while written < request.payload.len() {
         stream
             .set_write_timeout(Some(remaining_egress_time(deadline)?))
-            .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+            .map_err(egress_io)?;
         let count = stream
             .write(&request.payload[written..])
-            .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+            .map_err(egress_io)?;
         if count == 0 {
             return Err(ValidatorRuntimeError::EgressTransport(
                 "connection closed while writing request".to_owned(),
@@ -279,9 +290,7 @@ pub fn perform_host_mediated_egress(
         written += count;
     }
     remaining_egress_time(deadline)?;
-    stream
-        .shutdown(Shutdown::Write)
-        .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+    stream.shutdown(Shutdown::Write).map_err(egress_io)?;
 
     let response_limit = limits.maximum_response_bytes.saturating_add(1);
     let mut response = Vec::new();
@@ -289,12 +298,10 @@ pub fn perform_host_mediated_egress(
     while response.len() < response_limit {
         stream
             .set_read_timeout(Some(remaining_egress_time(deadline)?))
-            .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+            .map_err(egress_io)?;
         let available = response_limit - response.len();
         let read_bytes = available.min(buffer.len());
-        let count = stream
-            .read(&mut buffer[..read_bytes])
-            .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+        let count = stream.read(&mut buffer[..read_bytes]).map_err(egress_io)?;
         if count == 0 {
             break;
         }
