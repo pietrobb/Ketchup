@@ -82,14 +82,10 @@ use crate::values::layout::static_string::constant_string;
 use crate::values::layout::typed::string::StringValueLike;
 use crate::values::layout::value::FrozenValue;
 use crate::values::layout::value::Value;
-use crate::values::layout::value::ValueLike;
 use crate::values::list::value::VALUE_EMPTY_FROZEN_LIST;
 use crate::values::string::intern::interner::FrozenStringValueInterner;
 use crate::values::string::intern::interner::StringValueInterner;
 use crate::values::string::str_type::StarlarkStr;
-use crate::values::types::bigint::StarlarkBigInt;
-use crate::values::types::dict::value::MutableDict;
-use crate::values::types::set::value::MutableSet;
 use crate::values::AllocFrozenValue;
 use crate::values::AllocValue;
 use crate::values::ComplexValue;
@@ -140,8 +136,9 @@ impl fmt::Display for MemoryLimit {
 
 impl std::error::Error for MemoryLimit {}
 
-/// Ketchup patch: the bytes the values on an arena hold outside it: the digits of
-/// big integers and the entries of mutable dicts and sets.
+/// Ketchup patch: the bytes the values on an arena hold outside it (dict, set and
+/// struct entries, a partial's names, big integer digits), as each value's
+/// `Allocative` reports them. `Value` fields count nothing: the arena owns them.
 struct OutsideBytes(usize);
 
 impl<'v> ArenaVisitor<'v> for OutsideBytes {
@@ -151,15 +148,7 @@ impl<'v> ArenaVisitor<'v> for OutsideBytes {
         if let AValueOrForwardUnpack::Header(header) = value.unpack() {
             // SAFETY: the arena just built by the collection holds live values only.
             let value = unsafe { header.unpack_value(HeapKind::Unfrozen) };
-            let bytes = if let Some(int) = value.downcast_ref::<StarlarkBigInt>() {
-                int.digit_bytes()
-            } else if let Some(dict) = value.downcast_ref::<MutableDict<'v>>() {
-                dict.0.try_borrow().map_or(0, |dict| dict.outside_bytes())
-            } else if let Some(set) = value.downcast_ref::<MutableSet<'v>>() {
-                set.0.try_borrow().map_or(0, |set| set.outside_bytes())
-            } else {
-                0
-            };
+            let bytes = allocative::size_of_unique_allocated_data(value.get_ref().as_allocative());
             self.0 = self.0.saturating_add(bytes);
         }
     }
@@ -983,6 +972,7 @@ impl Heap {
     ///
     /// Must be [`Send`] and [`Sync`] because it will be reused in frozen values.
     pub fn alloc_simple<'v, T: StarlarkValue<'static> + Send + Sync>(&'v self, x: T) -> Value<'v> {
+        self.note_outside_bytes(&x);
         self.alloc_raw(simple(x))
     }
 
@@ -992,6 +982,7 @@ impl Heap {
         T: ComplexValue<'v>,
         T::Frozen: StarlarkValue<'static>,
     {
+        self.note_outside_bytes(&x);
         self.alloc_raw(complex(x))
     }
 
@@ -1000,9 +991,19 @@ impl Heap {
     where
         T: StarlarkValue<'v> + Trace<'v>,
     {
+        self.note_outside_bytes(&x);
         // When specializations are stable, we can have single `alloc_complex` function,
         // which enables or not enables freezing depending on whether `T` implements `Freeze`.
         self.alloc_raw(complex_no_freeze(x))
+    }
+
+    /// Ketchup patch: on a limited heap, a value being allocated adds what it holds
+    /// outside the arena to the count, whatever its type. Only a type with drop glue
+    /// can own memory outside the arena, so the others cost nothing here.
+    fn note_outside_bytes<T: Allocative>(&self, x: &T) {
+        if mem::needs_drop::<T>() && self.allocation_limit.get().is_some() {
+            self.note_external_bytes(allocative::size_of_unique_allocated_data(x));
+        }
     }
 
     /// Allocate a new value on a [`Heap`].

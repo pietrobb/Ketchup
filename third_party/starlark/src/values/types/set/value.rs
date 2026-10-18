@@ -15,8 +15,6 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: counts set entries against the heap bound. See PATCH.md.
-
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::fmt;
@@ -50,7 +48,6 @@ use crate::values::FreezeResult;
 use crate::values::Freezer;
 use crate::values::FrozenValue;
 use crate::values::Heap;
-use crate::values::layout::heap::heap_type::map_bytes;
 use crate::values::ProvidesStaticType;
 use crate::values::StarlarkValue;
 use crate::values::Trace;
@@ -103,11 +100,6 @@ impl<'v> SetData<'v> {
     pub fn remove_hashed(&mut self, value: Hashed<&Value<'v>>) -> bool {
         self.content.shift_remove_hashed(value)
     }
-
-    /// Ketchup patch: the bytes the entries hold outside the arena.
-    pub(crate) fn outside_bytes(&self) -> usize {
-        map_bytes::<Value>(self.content.capacity())
-    }
 }
 
 #[derive(Clone, Default, Debug, ProvidesStaticType, Allocative)]
@@ -123,8 +115,6 @@ pub(crate) type FrozenSet = SetGen<FrozenSetData>;
 
 impl<'v> AllocValue<'v> for SetData<'v> {
     fn alloc_value(self, heap: &'v Heap) -> Value<'v> {
-        // Ketchup patch: the entries live outside the arena; the bound counts them.
-        heap.note_external_bytes(self.outside_bytes());
         heap.alloc_complex(SetGen(RefCell::new(self)))
     }
 }

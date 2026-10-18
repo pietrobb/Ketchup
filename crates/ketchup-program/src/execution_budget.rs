@@ -152,9 +152,13 @@ mod tests {
         install_with(&mut eval, MAX_STATEMENTS, &CancelToken::default());
         eval.heap().set_allocation_limit(Some(heap_bytes));
         // Programs get no `set` (eval.rs); the bound still covers it.
-        let globals =
-            GlobalsBuilder::extended_by(&[LibraryExtension::Json, LibraryExtension::SetType])
-                .build();
+        let globals = GlobalsBuilder::extended_by(&[
+            LibraryExtension::Json,
+            LibraryExtension::SetType,
+            LibraryExtension::StructType,
+            LibraryExtension::Partial,
+        ])
+        .build();
         eval.eval_module(ast, &globals).map(|_| ())
     }
 
@@ -299,6 +303,48 @@ mod tests {
             error.to_string().contains("memory limit exceeded"),
             "{error}"
         );
+    }
+
+    /// Review 2026-10-18 PG-10: a struct's fields and a partial's names and values
+    /// live outside the arena like dict entries, but only dicts, sets and big
+    /// integers were counted, so `[struct(**D) for _ in range(300)]` over 200 000
+    /// keys reached 1.9 GB under the 1 GiB bound. Here each case holds 6 MB to
+    /// 20 MB outside the arena of a 1 MiB heap, built at once or kept across
+    /// collections.
+    #[test]
+    fn every_value_counts_what_it_holds_outside_the_arena_against_the_heap_bound() {
+        let keys = "D = {'k%d' % i: i for i in range(3000)}\n";
+        let kwargs = "def f(**kw):\n    return kw\n";
+        let huge = [
+            format!("{keys}S = [struct(**D) for _ in range(200)]"),
+            format!("{keys}{kwargs}P = [partial(f, **D) for _ in range(200)]"),
+            format!("{keys}L = []\n{}", "L.append(struct(**D))\n".repeat(60)),
+            format!(
+                "{keys}{kwargs}L = []\n{}",
+                "L.append(partial(f, **D))\n".repeat(60)
+            ),
+        ];
+        for source in &huge {
+            let error = run_with_heap(source, 1 << 20).unwrap_err();
+            assert!(
+                error.to_string().contains("memory limit exceeded"),
+                "{source}: {error}"
+            );
+        }
+        // Several MB in all, a few dozen KB per statement: what a collection finds
+        // dead stops counting.
+        let dropped = format!(
+            "D = {{'k%d' % i: i for i in range(500)}}\n{kwargs}{}",
+            "S = struct(**D)\nP = partial(f, **D)\n".repeat(60)
+        );
+        run_with_heap(&dropped, 1 << 20).unwrap();
+        run_with_heap(
+            "def f(a, b = 0):\n    return a + b\n\
+             S = [struct(a = i, b = 2 * i) for i in range(1000)]\n\
+             P = [partial(f, b = i)(1) for i in range(1000)]",
+            1 << 20,
+        )
+        .unwrap();
     }
 
     /// One multiplication of huge integers is uninterruptible work; products past

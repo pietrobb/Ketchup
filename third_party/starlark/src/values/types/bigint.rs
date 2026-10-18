@@ -23,6 +23,7 @@ mod convert;
 
 use std::cmp::Ordering;
 use std::hash::Hash;
+use std::mem;
 
 use allocative::Allocative;
 use num_bigint::BigInt;
@@ -65,7 +66,6 @@ use crate::values::ValueError;
     Eq,
     PartialEq,
     Hash,
-    Allocative
 )]
 #[display("{}", value)]
 pub struct StarlarkBigInt {
@@ -73,8 +73,22 @@ pub struct StarlarkBigInt {
     /// Many operation implementations depend on this fact.
     /// For example, `non_zero_int << positive_big_int` is considered to be overflow
     /// without checking the actual value of `positive_big_int`.
-    #[allocative(skip)] // TODO(nga): do not skip.
     value: BigInt,
+}
+
+/// Ketchup patch: reports the digits, held outside the heap arena, so the heap
+/// bound counts them like any value's out-of-arena memory.
+impl Allocative for StarlarkBigInt {
+    fn visit<'a, 'b: 'a>(&self, visitor: &'a mut allocative::Visitor<'b>) {
+        let mut visitor = visitor.enter_self_sized::<Self>();
+        {
+            let mut digits =
+                visitor.enter_unique(allocative::Key::new("digits"), mem::size_of::<usize>());
+            digits.visit_simple(allocative::Key::new("data"), self.digit_bytes());
+            digits.exit();
+        }
+        visitor.exit();
+    }
 }
 
 impl StarlarkBigInt {
@@ -150,8 +164,6 @@ impl Serialize for StarlarkBigInt {
 
 impl<'v> AllocValue<'v> for StarlarkBigInt {
     fn alloc_value(self, heap: &'v Heap) -> Value<'v> {
-        // Ketchup patch: the digits live outside the arena; the bound counts them.
-        heap.note_external_bytes(self.digit_bytes());
         heap.alloc_simple(self)
     }
 }

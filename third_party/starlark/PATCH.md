@@ -25,12 +25,17 @@ integers no longer count until the program reaches the bound (review 2026-10-15 
 
 Dicts and sets keep their entries in a `SmallMap` outside the arena, so
 `[dict(zip(L, L)) for _ in range(20)]` over 10 M items built more than 10 GB unseen
-(review 2026-10-17 PG-7). Their entries now count in `Heap::bounded_bytes` like big integer
-digits: a dict or set notes its capacity when it is allocated, a garbage collection counts
-the ones that survive, and `dict(...)` and `set(...)` check the entries they would build
-before building them. Growth after allocation (`DictMut`, `SetMut`, `d[k] = v`, a dict
-comprehension) has no heap at hand; it adds to a thread-local count that the heap last
-limited on the thread includes until its next collection, like the `repr` bound.
+(review 2026-10-17 PG-7), and counting them by type left structs and partials out:
+`[struct(**D) for _ in range(300)]` over 200 000 keys reached 1.9 GB (review 2026-10-18
+PG-10). What any value holds outside the arena now counts in `Heap::bounded_bytes`, as its
+`Allocative` reports it (`Value` fields report nothing, the arena owns them): a limited
+heap counts it when `alloc_simple`, `alloc_complex` or `alloc_complex_no_freeze` allocates
+a value of a type with drop glue, and a garbage collection counts it again for every value
+that survives. Big integers report their digits, which upstream's `Allocative` skips.
+`dict(...)` and `set(...)` check the entries they would build before building them. Growth
+after allocation (`DictMut`, `SetMut`, `d[k] = v`, a dict comprehension) has no heap at
+hand; it adds to a thread-local count that the heap last limited on the thread includes
+until its next collection, like the `repr` bound.
 
 `Heap::memory_limit_reached` tells whether the bound refused an operation or the heap holds
 more than it. The refusal's error loses its type when a method returns it as
@@ -46,7 +51,7 @@ Changed files, each marked with a "Modified for Kecup" line under its license he
 `src/values/types/{list,tuple}/{globals,value}.rs`,
 `src/values/types/string/{methods,str_type,dot_format,globals,interpolation}.rs`,
 `src/values/types/bigint.rs`, `src/values/types/int/pointer_i32.rs`,
-`src/values/types/dict/{globals,refs,value}.rs`, `src/values/types/set/{refs,set,value}.rs`,
+`src/values/types/dict/{globals,refs,value}.rs`, `src/values/types/set/{refs,set}.rs`,
 `src/eval/bc/instr_impl.rs` and `src/stdlib/json.rs`. `LICENSE` is the Apache License 2.0 the
 upstream project (https://github.com/facebook/starlark-rust) is published under; the
 crates.io package does not carry it.
