@@ -2,6 +2,9 @@ use super::*;
 use ketchup_tolerance::limits;
 
 mod commands;
+pub(super) mod feature_annotations;
+
+use feature_annotations::forget_feature_annotations;
 
 fn create_evaluator_input(
     product: &mut ProductModel,
@@ -135,19 +138,6 @@ fn keep_exact_caches(
     if view_only {
         product.exact_graphs.inherit_graphs(&previous.exact_graphs);
     }
-}
-
-/// Drops what the product keeps about the deleted feature `id` besides the
-/// feature: its parameter bindings and provenance and its hole thread.
-fn forget_feature_annotations(product: &mut ProductModel, id: FeatureId) {
-    product
-        .feature_parameter_bindings
-        .retain(|target, _| target.feature_id != id);
-    product
-        .feature_parameter_provenance
-        .retain(|target, _| target.feature_id != id);
-    product.hole_threads.remove(&id);
-    product.shaft_threads.remove(&id);
 }
 
 pub struct DocumentStore {

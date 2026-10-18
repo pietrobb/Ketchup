@@ -153,6 +153,111 @@ fn make_unique_clones_features_and_repoints_only_one_occurrence() {
     assert_eq!(snapshot.scene_query()[1].shared_occurrence_count, 1);
 }
 
+/// Review 2026-10-18 M-11: the unique copy keeps what the product records on
+/// each feature besides the feature itself (its hole and shaft threads, its
+/// parameter binding and the provenance of the value applied through it), so
+/// Make Unique changes no thread table, drilling or parameter freshness.
+#[test]
+fn make_unique_keeps_the_threads_and_parameter_provenance_of_every_feature() {
+    use ketchup_model::document::{HoleThread, ShaftThread};
+    const SOURCE: NodeId = NodeId(201);
+    const RULE: NodeId = NodeId(202);
+    const UNIQUE_PROFILE: FeatureId = FeatureId(12);
+    const UNIQUE_EXTRUSION: FeatureId = FeatureId(13);
+    let segment = SlotSegment::new(RULE, "dimensions", "extrusion_height").unwrap();
+    let target =
+        FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
+            .unwrap();
+    let hole = HoleThread {
+        size: "M8".into(),
+        pitch_mm: 1.25,
+        depth_mm: 12.0,
+        modeled: None,
+    };
+    let shaft = ShaftThread {
+        size: "M8".into(),
+        pitch_mm: 1.25,
+        surface_diameter_mm: 8.0,
+        start_mm: [0.0, 0.0, 0.0],
+        direction: [0.0, 0.0, 1.0],
+        length_mm: 20.0,
+        phase_origin_mm: [0.0, 0.0, 0.0],
+        phase_reference: [1.0, 0.0, 0.0],
+    };
+    let identity = EvaluationIdentity::default();
+    let mut document = seed_product_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: SOURCE,
+                name: "Rule source".to_owned(),
+                dimension: height("21"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: RULE,
+                name: "Extrusion height rule".to_owned(),
+                expression: "$201 * 2".to_owned(),
+                input_ports: vec![PortSpec::number("source").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(segment.clone(), vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+                target: target.clone(),
+                derived_from: DerivedIdentity::new(RULE, SlotPath::new(vec![segment]).unwrap())
+                    .unwrap(),
+            }),
+            CanonicalCommand::RecomputeFeatureParameters {
+                identity: identity.clone(),
+                scope: FeatureParameterRecomputeScope::All,
+            },
+            CanonicalCommand::SetHoleThread {
+                id: EXTRUSION,
+                thread: Some(hole.clone()),
+            },
+            CanonicalCommand::SetShaftThread {
+                id: PROFILE,
+                thread: Some(shaft.clone()),
+            },
+        ]))
+        .unwrap();
+    let provenance = document
+        .current()
+        .feature_parameter_provenance(&target)
+        .unwrap()
+        .clone();
+
+    document.make_unique(SECOND, "Base Cabinet unique").unwrap();
+    let snapshot = document.current();
+    assert_eq!(
+        snapshot.hole_threads().collect::<Vec<_>>(),
+        vec![(EXTRUSION, &hole), (UNIQUE_EXTRUSION, &hole)]
+    );
+    assert_eq!(
+        snapshot.shaft_threads().collect::<Vec<_>>(),
+        vec![(PROFILE, &shaft), (UNIQUE_PROFILE, &shaft)]
+    );
+    let unique_target = FeatureParameterTarget::new(
+        UNIQUE_EXTRUSION,
+        "extent.distance",
+        ParameterValueType::Length,
+    )
+    .unwrap();
+    assert!(snapshot.feature_parameter_binding(&unique_target).is_some());
+    assert_eq!(
+        snapshot.feature_parameter_provenance(&unique_target),
+        Some(&provenance)
+    );
+    assert!(
+        snapshot
+            .audit_feature_parameter_freshness(&identity)
+            .unwrap()
+            .iter()
+            .all(|audit| audit.freshness == FeatureParameterFreshness::Current)
+    );
+}
+
 #[test]
 fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let mut document = seed_product_document();

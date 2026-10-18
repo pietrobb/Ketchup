@@ -586,29 +586,7 @@ pub(super) fn clone_definition_and_repoint(
             .body_feature_suppression
             .insert((new_definition_id, body_id), mapped);
     }
-    let cloned_bindings = product
-        .feature_parameter_bindings
-        .values()
-        .filter_map(|binding| {
-            mapping
-                .get(&binding.target.feature_id)
-                .map(|new_feature_id| {
-                    let target = FeatureParameterTarget {
-                        feature_id: *new_feature_id,
-                        path: binding.target.path.clone(),
-                        value_type: binding.target.value_type,
-                    };
-                    (
-                        target.clone(),
-                        Arc::new(FeatureParameterBinding {
-                            target,
-                            derived_from: binding.derived_from.clone(),
-                        }),
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
-    product.feature_parameter_bindings.extend(cloned_bindings);
+    store::feature_annotations::copy_feature_annotations(product, &mapping);
     product.occurrences.insert(
         occurrence_id,
         Arc::new(Occurrence {
