@@ -1,7 +1,7 @@
 //! Hole tool: a click on a planar face of an exact part drills one round hole
 //! there, the same `drill_holes` edit an MCP client sends.
 
-use crate::length_input::DecimalSeparator;
+use crate::length_input::{DecimalSeparator, VALUE_SEPARATORS, parse_length_list};
 use crate::live_bridge::window_edit::Repick;
 use crate::*;
 use ketchup_assistant::sidecar::AssistantHoleThread;
@@ -16,22 +16,22 @@ pub(crate) struct HoleSpec {
     pub thread: Option<AssistantHoleThread>,
 }
 
+/// Each length is read like every value of the window, so `M8 1 cm` and
+/// `6 mm; 12` work: a thread size ends at the first space or separator and the
+/// rest is its depth; a diameter and depth are separated by `;`, `x` or `:`, or
+/// by the one space where both sides are lengths.
 pub(crate) fn hole_spec(input: &str, decimal: DecimalSeparator) -> Option<HoleSpec> {
-    let mut words = input
-        .split(|c: char| c.is_whitespace() || matches!(c, ';' | ':' | 'x' | 'X' | '×'))
-        .filter(|word| !word.is_empty());
-    let size = words.next()?;
-    let depth_mm = match words.next() {
-        Some(word) => Some(parse_distance_mm(word, decimal).filter(|depth| *depth > 0.0)?),
-        None => None,
-    };
-    if words.next().is_some() {
-        return None;
-    }
-    if size.starts_with(['M', 'm']) {
-        let size = size.to_uppercase();
+    let input = input.trim();
+    let positive = |text: &str| parse_distance_mm(text, decimal).filter(|mm| *mm > 0.0);
+    if input.starts_with(['M', 'm']) {
+        let end = input
+            .find(|c: char| c.is_whitespace() || VALUE_SEPARATORS.contains(&c))
+            .unwrap_or(input.len());
+        let size = input[..end].to_uppercase();
+        let depth = input[end..].trim_start();
+        let depth = depth.strip_prefix(VALUE_SEPARATORS).unwrap_or(depth);
         let metric = *ketchup_program::library_metric_threads().ok()?.get(&size)?;
-        let depth_mm = depth_mm?;
+        let depth_mm = positive(depth)?;
         return Some(HoleSpec {
             diameter_mm: metric.tap_drill_mm,
             depth_mm: Some(metric.blind_hole_depth_mm(depth_mm)),
@@ -42,11 +42,43 @@ pub(crate) fn hole_spec(input: &str, decimal: DecimalSeparator) -> Option<HoleSp
             }),
         });
     }
+    let (diameter, depth) = match parse_length_list(input, decimal, 1..=2).as_deref() {
+        Some(&[diameter]) => (diameter, None),
+        Some(&[diameter, depth]) => (diameter, Some(depth)),
+        _ => {
+            let (diameter, depth) = split_at_one_space(input, decimal)?;
+            (diameter, Some(depth))
+        }
+    };
     Some(HoleSpec {
-        diameter_mm: parse_distance_mm(size, decimal).filter(|diameter| *diameter > 0.0)?,
-        depth_mm,
+        diameter_mm: Some(diameter).filter(|mm| *mm > 0.0)?,
+        depth_mm: match depth {
+            Some(depth) => Some(Some(depth).filter(|mm| *mm > 0.0)?),
+            None => None,
+        },
         thread: None,
     })
+}
+
+/// The two lengths of `6 10` or `6 mm 1 cm`: the space where the text on
+/// either side is a length, refused when two spaces read differently.
+fn split_at_one_space(input: &str, decimal: DecimalSeparator) -> Option<(f64, f64)> {
+    let mut found = None;
+    for (at, _) in input.char_indices().filter(|(_, c)| c.is_whitespace()) {
+        let (Some(left), Some(right)) = (
+            parse_distance_mm(&input[..at], decimal),
+            parse_distance_mm(&input[at..], decimal),
+        ) else {
+            continue;
+        };
+        if found
+            .replace((left, right))
+            .is_some_and(|other| other != (left, right))
+        {
+            return None;
+        }
+    }
+    found
 }
 
 impl KetchupApp {
@@ -128,5 +160,48 @@ impl KetchupApp {
             face.reference,
             to_local.transform_point([point.x, point.y, point.z]),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::length_input::DecimalSeparator::{Comma, Point};
+
+    fn plain(diameter_mm: f64, depth_mm: Option<f64>) -> Option<HoleSpec> {
+        Some(HoleSpec {
+            diameter_mm,
+            depth_mm,
+            thread: None,
+        })
+    }
+
+    /// Review 2026-10-17 P3-G: a depth with its unit after a thread size
+    /// was split at its space and refused.
+    #[test]
+    fn a_thread_depth_is_one_length_with_its_unit() {
+        let m8 = hole_spec("M8 10", Point);
+        assert_eq!(m8.as_ref().unwrap().thread.as_ref().unwrap().depth_mm, 10.0);
+        for input in ["M8 1 cm", "m8 1cm", "M8;10", "M8 x 10 mm", "M8 2*5"] {
+            assert_eq!(hole_spec(input, Point), m8, "{input}");
+        }
+        let half = hole_spec("M8 0,5 cm", Comma).unwrap().thread.unwrap();
+        assert_eq!(half.depth_mm, 5.0);
+        for input in ["M8", "M8 0", "M8 1 cm 2", "M7 12", "M8 1,5"] {
+            assert_eq!(hole_spec(input, Point), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn a_diameter_and_depth_are_two_lengths() {
+        assert_eq!(hole_spec("6", Point), plain(6.0, None));
+        assert_eq!(hole_spec("6 mm", Point), plain(6.0, None));
+        for input in ["6 10", "6;10", "6x10", "6 mm 1 cm", "6  10", "3*2 1cm"] {
+            assert_eq!(hole_spec(input, Point), plain(6.0, Some(10.0)), "{input}");
+        }
+        assert_eq!(hole_spec("6,5 10", Comma), plain(6.5, Some(10.0)));
+        for input in ["0", "6 0", "-6 10", "6 10 2", "6,10", ""] {
+            assert_eq!(hole_spec(input, Point), None, "{input}");
+        }
     }
 }
