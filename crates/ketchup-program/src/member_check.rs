@@ -9,10 +9,10 @@
 use crate::continuous_span;
 use crate::loads::{LOAD_KINDS, LoadReport, Loads, MemberLoad, axes, extents};
 use crate::model::{Part, ProgramModel, ProgramOperation, ProgramPartBody, ProgramProfileSegment};
-use ketchup_geometry::linalg::{cross2, dot, length};
+use ketchup_geometry::linalg::{cross, cross2, dot, length, normalize, scale, sub};
 use ketchup_tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct TimberClass {
@@ -166,7 +166,7 @@ pub const BASIS: [&str; 9] = [
     "bending with kh (3.2, 3.3), kcrit = 1: members assumed braced against lateral torsional buckling by the decking",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
-    "moments, shear and deflection: spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
+    "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
     "a computed check, not an authorized structural design",
 ];
 
@@ -593,6 +593,153 @@ fn encloses(outer: &[ProgramProfileSegment], inner: &[ProgramProfileSegment]) ->
         && !inner.iter().any(|e| outer.iter().any(|f| crosses(e, f)))
 }
 
+/// The world directions a member's section is taken in, across its `grain`:
+/// horizontal, and the vertical's component across the grain, along which a
+/// vertical load bends it (review 2026-10-18 PG-9). Any two across a vertical
+/// grain, where no vertical load bends it.
+fn across_grain(grain: [f64; 3]) -> [[f64; 3]; 2] {
+    let towards = |axis: [f64; 3]| normalize(sub(axis, scale(grain, dot(axis, grain))));
+    let vertical = towards([0.0, 0.0, 1.0])
+        .filter(|_| horizontal(grain) > ROUNDING)
+        .or_else(|| towards([1.0, 0.0, 0.0]))
+        .unwrap_or([0.0, 1.0, 0.0]);
+    [cross(grain, vertical), vertical]
+}
+
+/// A closed polygon of `corners` as profile lines.
+fn polygon(corners: &[[f64; 2]]) -> Vec<ProgramProfileSegment> {
+    (0..corners.len())
+        .map(|i| {
+            ProgramProfileSegment::line(String::new(), corners[i], corners[(i + 1) % corners.len()])
+        })
+        .collect()
+}
+
+/// What bending reads from a member's section at one place along it, taken
+/// in the world's vertical plane across the grain (`across_grain`) so that a
+/// vertical load bends it freely.
+#[derive(Clone, Copy)]
+struct Bending {
+    inertia: f64,
+    modulus: f64,
+    shear_area: f64,
+    /// Depth along the vertical across the grain, for kh.
+    depth: f64,
+}
+
+impl Bending {
+    fn of(section: &Section) -> Self {
+        let levels = section.segments.iter().map(|s| s.start_mm[section.depth]);
+        let depth = levels.clone().fold(f64::MIN, f64::max) - levels.fold(f64::MAX, f64::min);
+        Self {
+            inertia: section.inertia(),
+            modulus: section.modulus(),
+            shear_area: section.shear_area(),
+            depth,
+        }
+    }
+}
+
+/// A member's section along it (review 2026-10-18 PG-8: one drawn as its side
+/// profile is as deep as the profile at each place, not its deepest).
+enum Along {
+    /// The same section all along: its profile is the cross-section.
+    Prismatic(Bending),
+    /// Cut across from a side or plan `profile` at local[`long`] = `start` +
+    /// the load-frame position: each stretch of the cut, `distance` thick
+    /// along the extrusion. `other` and `extrusion` are the section-plane
+    /// coordinates (`across_grain`) of a unit along the profile's other local
+    /// axis and along its extrusion; `corners` the load-frame positions where
+    /// the section changes.
+    Profile {
+        profile: Vec<ProgramProfileSegment>,
+        long: usize,
+        start: f64,
+        other: [f64; 2],
+        extrusion: [f64; 2],
+        distance: f64,
+        corners: Vec<f64>,
+    },
+}
+
+impl Along {
+    /// The stretches of a profile's cut at load-frame position `x`, along its
+    /// other local axis; none for a prismatic section.
+    fn cut(&self, x: f64) -> Vec<[f64; 2]> {
+        let Self::Profile {
+            profile,
+            long,
+            start,
+            corners,
+            ..
+        } = self
+        else {
+            return Vec::new();
+        };
+        // An end face of the member is cut just inside it.
+        let (first, last) = (corners[0], corners[corners.len() - 1]);
+        let x = x.clamp(first + ROUNDING, last - ROUNDING);
+        crossings(profile, *long, start + x)
+            .chunks(2)
+            .filter(|pair| pair.len() == 2 && pair[1] - pair[0] > ROUNDING)
+            .map(|pair| [pair[0], pair[1]])
+            .collect()
+    }
+
+    /// The outline of a profile's `cut` in the section plane; None where the
+    /// member has no material (a pointed end).
+    fn outline(&self, cut: &[[f64; 2]]) -> Option<Vec<ProgramProfileSegment>> {
+        let Self::Profile {
+            other,
+            extrusion,
+            distance,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let at = |c: f64, e: f64| {
+            [
+                c * other[0] + e * extrusion[0],
+                c * other[1] + e * extrusion[1],
+            ]
+        };
+        let outline: Vec<ProgramProfileSegment> = cut
+            .iter()
+            .flat_map(|[from, to]| {
+                polygon(&[
+                    at(*from, 0.0),
+                    at(*to, 0.0),
+                    at(*to, *distance),
+                    at(*from, *distance),
+                ])
+            })
+            .collect();
+        (!outline.is_empty()).then_some(outline)
+    }
+
+    /// The section's bending properties at load-frame position `x`, computed
+    /// once per distinct cut (`known`).
+    fn at(&self, x: f64, known: &mut HashMap<Vec<u64>, Option<Bending>>) -> Option<Bending> {
+        if let Self::Prismatic(bending) = self {
+            return Some(*bending);
+        }
+        let cut = self.cut(x);
+        let key = cut.iter().flatten().map(|c| c.to_bits()).collect();
+        *known.entry(key).or_insert_with(|| {
+            self.outline(&cut)
+                .map(|outline| Bending::of(&Section::new(&outline, &[], 1)))
+        })
+    }
+
+    fn corners(&self) -> &[f64] {
+        match self {
+            Self::Prismatic(_) => &[],
+            Self::Profile { corners, .. } => corners,
+        }
+    }
+}
+
 /// A member's section and directions.
 struct Shape {
     /// Unit world direction of the member's grain.
@@ -600,17 +747,15 @@ struct Shape {
     /// Width and depth for bending; the two sides of a column.
     b: f64,
     h: f64,
-    /// Section area, second moment and modulus about the bending axis.
+    /// Area of the deepest section.
     area: f64,
     /// Area of the thinnest section anywhere along the member, ends included
     /// (notches and laps cut into a side).
     net_area: f64,
     /// Area of the thinnest section away from the ends, for buckling.
     buckling_area: f64,
-    inertia: f64,
-    modulus: f64,
-    /// Area the shear force is divided by for the largest shear stress.
-    shear_area: f64,
+    /// The section bending reads along the member.
+    bending: Along,
     /// Least radius of gyration of the `buckling_area` section, about its
     /// weak principal axis.
     radius: f64,
@@ -708,6 +853,17 @@ fn changes<'a>(
     (bores, unmodelled)
 }
 
+/// Why a member whose section `twists` is not checked.
+fn twisting(column: bool) -> &'static str {
+    if column {
+        "the section's shear centre is off its centroid (an angle or a channel), so it \
+         buckles in a flexural-torsional mode; flexural-torsional buckling is not checked"
+    } else {
+        "a vertical load passes beside the section's shear centre (an angle, or a channel \
+         open to the side) and twists the member; torsion is not checked"
+    }
+}
+
 fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     let ProgramPartBody::Extrusion {
         segments,
@@ -726,29 +882,38 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         .max_by(|a, b| size[*a].total_cmp(&size[*b]))
         .unwrap_or(0);
     if long == 2 {
-        // The profile is the cross-section; depth along its more vertical local axis.
+        // The profile is the cross-section; b and h along its more vertical local axis.
         let depth = usize::from(world[1][2].abs() >= world[0][2].abs());
         let (bores, unmodelled) =
             changes(part, Some(segments), [0.0, 0.0, 1.0], size[0].min(size[1]));
-        let section = Section::new(segments, &bores, depth);
+        // Bending takes it turned as placed: in the vertical plane across the grain.
+        let [across, vertical] = across_grain(world[2]);
+        let turned = |profile: &[ProgramProfileSegment]| -> Vec<ProgramProfileSegment> {
+            let at = |p: [f64; 2]| {
+                let point: [f64; 3] =
+                    std::array::from_fn(|i| p[0] * world[0][i] + p[1] * world[1][i]);
+                [dot(point, across), dot(point, vertical)]
+            };
+            profile
+                .iter()
+                .map(|s| ProgramProfileSegment::line(String::new(), at(s.start_mm), at(s.end_mm)))
+                .collect()
+        };
+        let outline = turned(segments);
+        let bored: Vec<Vec<ProgramProfileSegment>> =
+            bores.iter().map(|bore| turned(bore)).collect();
+        let bores: Vec<&[ProgramProfileSegment]> = bored.iter().map(Vec::as_slice).collect();
+        let section = Section::new(&outline, &bores, 1);
         let area = section.area;
         let radius = (section.least() / area).sqrt();
         if !(area > 0.0 && radius > 0.0 && radius.is_finite()) {
             return Err("the member's section has no area");
         }
-        let upright = 1.0 - world[depth][2].abs() <= ROUNDING;
-        // A column's local axes are horizontal, so `upright` is false and only
-        // a section symmetric about its centroid has its shear centre there.
-        let twists = section
-            .twists(upright)
-            .then_some(if horizontal(frame_axis) < COLUMN_COS {
-                "the section's shear centre is off its centroid (an angle or a channel), so \
-                 it buckles in a flexural-torsional mode; flexural-torsional buckling is not \
-                 checked"
-            } else {
-                "a vertical load passes beside the section's shear centre (an angle, or a \
-                 channel open to the side) and twists the member; torsion is not checked"
-            });
+        let column = horizontal(frame_axis) < COLUMN_COS;
+        // A beam's section axis is vertical, so a section symmetric about it
+        // only bends; a column's is not, and only a section symmetric about
+        // its centroid has its shear centre there.
+        let twists = section.twists(!column).then_some(twisting(column));
         return Ok(Shape {
             grain: frame_axis,
             b: size[1 - depth],
@@ -756,9 +921,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             area,
             net_area: area,
             buckling_area: area,
-            inertia: section.inertia(),
-            modulus: section.modulus(),
-            shear_area: section.shear_area(),
+            bending: Along::Prismatic(Bending::of(&section)),
             radius,
             unmodelled,
             twists,
@@ -838,6 +1001,27 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     // The grain runs in the profile plane, so no cut along the extrusion bores along it.
     let (_, unmodelled) = changes(part, None, [d[0], d[1], 0.0], b.min(h));
     let profile = segments.clone();
+    // Bending takes the section cut across the profile at each place, turned
+    // as placed: in the vertical plane across the grain.
+    let section_axes = across_grain(grain);
+    let in_section = |axis: [f64; 3]| section_axes.map(|s| dot(axis, s));
+    let bending = Along::Profile {
+        profile: segments.clone(),
+        long,
+        start,
+        other: in_section(world[1 - long]),
+        extrusion: in_section(world[2]),
+        distance: *distance_mm,
+        corners: corners.iter().map(|u| u - start).collect(),
+    };
+    // One stretch of the cut is a rectangle, whose shear centre is its
+    // centroid; stretches side by side may not be symmetric.
+    let column = horizontal(grain) < COLUMN_COS;
+    let twists = corners
+        .windows(2)
+        .filter_map(|pair| bending.outline(&bending.cut((pair[0] + pair[1]) / 2.0 - start)))
+        .any(|outline| Section::new(&outline, &[], 1).twists(!column))
+        .then_some(twisting(column));
     Ok(Shape {
         grain,
         b,
@@ -845,13 +1029,10 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         area: b * h,
         net_area: distance_mm * thinnest,
         buckling_area: distance_mm * thinnest_inside,
-        inertia: b * h.powi(3) / 12.0,
-        modulus: b * h * h / 6.0,
-        shear_area: b * h / 1.5,
+        bending,
         radius: distance_mm.min(thinnest_inside) / 12f64.sqrt(),
         unmodelled,
-        // A rectangle's shear centre is its centroid.
-        twists: None,
+        twists,
         arc: 1.0 / along,
         depth_at: depth_in_plane.then(|| {
             Box::new(move |x: f64| chord(&profile, long, start + x) * along)
@@ -914,35 +1095,41 @@ enum Kind {
     RightCantilever,
 }
 
-/// Bending moments (N mm), end shears and deflections (mm, for EI = 1) per load component.
+/// Bending moments (N mm), shear forces (N) and deflections (mm, for E = 1)
+/// per load component at the stations `xs`.
 struct Segment {
     p: f64,
     q: f64,
     kind: Kind,
+    xs: Vec<f64>,
     moments: Vec<Vec<f64>>,
-    shears: Vec<[f64; 2]>,
+    shears: Vec<Vec<f64>>,
     deflections: Vec<Vec<f64>>,
 }
 
 /// `end_moments`: per load component, the moments over the supports at p and q of
 /// a span continuous over them (hogging negative; along the member, without
-/// `lever`); cantilevers ignore them.
+/// `lever`); cantilevers ignore them. `xs` are the stations from p to q and
+/// `inertia` the second moment at each, None where there is no material.
 fn segment(
-    p: f64,
-    q: f64,
     kind: Kind,
     components: &[Vec<Piece>],
     end_moments: &[[f64; 2]],
     lever: f64,
     arc: f64,
+    xs: Vec<f64>,
+    inertia: &[Option<f64>],
 ) -> Segment {
     let ends = match kind {
         Kind::Span => (false, false),
         Kind::LeftCantilever => (true, false),
         Kind::RightCantilever => (false, true),
     };
-    let xs: Vec<f64> = (0..=STEPS)
-        .map(|j| p + (q - p) * j as f64 / STEPS as f64)
+    let last = xs.len() - 1;
+    let (p, q) = (xs[0], xs[last]);
+    let widths: Vec<f64> = xs
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]) * arc)
         .collect();
     let mut moments = Vec::new();
     let mut shears = Vec::new();
@@ -950,7 +1137,8 @@ fn segment(
     for (patches, [m_p, m_q]) in components.iter().zip(end_moments) {
         let pieces = clipped(patches, p, q, ends);
         let total: f64 = pieces.iter().map(|piece| piece.2).sum();
-        let (m, v): (Vec<f64>, [f64; 2]) = match kind {
+        // The shear at the ends takes a point load on a support into it.
+        let (m, mut v, end_shears): (Vec<f64>, Vec<f64>, [f64; 2]) = match kind {
             Kind::Span => {
                 let l = q - p;
                 let r_left: f64 = pieces
@@ -962,42 +1150,51 @@ fn segment(
                     .iter()
                     .map(|&x| (m_p + r_left * (x - p) - left_of(&pieces, x).1) * lever)
                     .collect();
-                (m, [r_left, total - r_left])
+                let v = xs.iter().map(|&x| r_left - left_of(&pieces, x).0).collect();
+                (m, v, [r_left, total - r_left])
             }
             Kind::LeftCantilever => (
                 xs.iter().map(|&x| -left_of(&pieces, x).1 * lever).collect(),
+                xs.iter().map(|&x| left_of(&pieces, x).0).collect(),
                 [0.0, total],
             ),
             Kind::RightCantilever => (
                 xs.iter()
                     .map(|&x| -right_of(&pieces, x).1 * lever)
                     .collect(),
+                xs.iter().map(|&x| right_of(&pieces, x).0).collect(),
                 [total, 0.0],
             ),
         };
-        // w'' = -M / EI along the true length.
-        let h = (q - p) / STEPS as f64 * arc;
-        let curvature: Vec<f64> = m.iter().map(|value| -value).collect();
-        let integrate = |values: &[f64]| {
+        (v[0], v[last]) = (end_shears[0], end_shears[1]);
+        // w'' = -M / EI along the true length; no material, no curvature
+        // (only at a pointed free end, where M is 0).
+        let curvature: Vec<f64> = m
+            .iter()
+            .zip(inertia)
+            .map(|(value, inertia)| inertia.map_or(0.0, |inertia| -value / inertia))
+            .collect();
+        let integrate = |values: &[f64], widths: &[f64]| {
             let mut out = vec![0.0; values.len()];
             for j in 1..values.len() {
-                out[j] = out[j - 1] + (values[j - 1] + values[j]) / 2.0 * h;
+                out[j] = out[j - 1] + (values[j - 1] + values[j]) / 2.0 * widths[j - 1];
             }
             out
         };
         let w = match kind {
             Kind::Span => {
-                let raw = integrate(&integrate(&curvature));
-                let end = raw[STEPS];
+                let raw = integrate(&integrate(&curvature, &widths), &widths);
+                let end = raw[last];
                 raw.iter()
-                    .enumerate()
-                    .map(|(j, value)| value - end * j as f64 / STEPS as f64)
+                    .zip(&xs)
+                    .map(|(value, x)| value - end * (x - p) / (q - p))
                     .collect()
             }
-            Kind::RightCantilever => integrate(&integrate(&curvature)),
+            Kind::RightCantilever => integrate(&integrate(&curvature, &widths), &widths),
             Kind::LeftCantilever => {
                 let reversed: Vec<f64> = curvature.iter().rev().copied().collect();
-                let mut w = integrate(&integrate(&reversed));
+                let back: Vec<f64> = widths.iter().rev().copied().collect();
+                let mut w = integrate(&integrate(&reversed, &back), &back);
                 w.reverse();
                 w
             }
@@ -1010,6 +1207,7 @@ fn segment(
         p,
         q,
         kind,
+        xs,
         moments,
         shears,
         deflections,
@@ -1174,18 +1372,43 @@ fn beam_checks(
             .collect()
     };
     let no_moments = vec![[0.0; 2]; components.len()];
+    // Each segment is checked evenly along it and either side of every place
+    // its section changes, on the section there.
+    let mut known = HashMap::new();
+    let mut build = |p: f64, q: f64, kind: Kind, end_moments: &[[f64; 2]]| {
+        let mut xs: Vec<f64> = (0..=STEPS)
+            .map(|j| p + (q - p) * j as f64 / STEPS as f64)
+            .chain(
+                shape
+                    .bending
+                    .corners()
+                    .iter()
+                    .flat_map(|x| [x - ROUNDING, x + ROUNDING])
+                    .filter(|x| p < *x && *x < q),
+            )
+            .collect();
+        xs.sort_by(f64::total_cmp);
+        xs.dedup();
+        let sections: Vec<Option<Bending>> = xs
+            .iter()
+            .map(|x| shape.bending.at(*x, &mut known))
+            .collect();
+        let inertia: Vec<Option<f64>> = sections.iter().map(|s| s.map(|s| s.inertia)).collect();
+        let seg = segment(
+            kind,
+            &components,
+            end_moments,
+            lever,
+            shape.arc,
+            xs,
+            &inertia,
+        );
+        (seg, sections)
+    };
     let mut segments = Vec::new();
     if let (Some(first), Some(last)) = (supports.first(), supports.last()) {
         if *first > 1.0 {
-            segments.push(segment(
-                0.0,
-                *first,
-                Kind::LeftCantilever,
-                &components,
-                &no_moments,
-                lever,
-                shape.arc,
-            ));
+            segments.push(build(0.0, *first, Kind::LeftCantilever, &no_moments));
         }
         for (j, pair) in supports.windows(2).enumerate() {
             if !bedded[j] && pair[1] - pair[0] > 1.0 {
@@ -1193,43 +1416,33 @@ fn beam_checks(
                     .iter()
                     .map(|moments| [moments[j], moments[j + 1]])
                     .collect();
-                segments.push(segment(
-                    pair[0],
-                    pair[1],
-                    Kind::Span,
-                    &components,
-                    &ends,
-                    lever,
-                    shape.arc,
-                ));
+                segments.push(build(pair[0], pair[1], Kind::Span, &ends));
             }
         }
         if load.length_mm - last > 1.0 {
-            segments.push(segment(
+            segments.push(build(
                 *last,
                 load.length_mm,
                 Kind::RightCantilever,
-                &components,
                 &no_moments,
-                lever,
-                shape.arc,
             ));
         }
     }
-    let spans_checked = bearings.len() < 2 || segments.iter().any(|seg| seg.kind == Kind::Span);
+    let spans_checked =
+        bearings.len() < 2 || segments.iter().any(|(seg, _)| seg.kind == Kind::Span);
     let (b, h) = (shape.b, shape.h);
-    let w_section = shape.modulus;
-    let ei = class.e0_mean * shape.inertia;
-    let kh = if class.glulam {
-        (600.0 / h).powf(0.1).clamp(1.0, 1.1)
-    } else {
-        (150.0 / h).powf(0.2).clamp(1.0, 1.3)
+    let kh = |depth: f64| {
+        if class.glulam {
+            (600.0 / depth).powf(0.1).clamp(1.0, 1.1)
+        } else {
+            (150.0 / depth).powf(0.2).clamp(1.0, 1.3)
+        }
     };
     let mut bending = Best(None);
     let mut shear = Best(None);
     let mut inst = Best(None);
     let mut fin = Best(None);
-    for seg in &segments {
+    for (seg, sections) in &segments {
         let at = format!(
             "{} {}-{} mm",
             if seg.kind == Kind::Span {
@@ -1241,38 +1454,46 @@ fn beam_checks(
             seg.q.round()
         );
         for combination in uls {
-            let moment = (0..=STEPS)
-                .map(|j| {
-                    let values: Vec<f64> = seg.moments.iter().map(|m| m[j]).collect();
-                    envelope(
-                        &combination.factors,
-                        &kinds,
-                        &values,
-                        Some(GAMMA_G_FAVOURABLE),
-                    )
-                })
-                .fold(0.0, f64::max);
-            let fm = design.strength(class.fm_k, combination.duration) * kh;
-            bending.offer("bending", moment / w_section / fm, &combination.label, &at);
-            let ends: Vec<f64> = (0..2)
-                .map(|side| {
-                    let values: Vec<f64> = seg.shears.iter().map(|v| v[side]).collect();
-                    envelope(
-                        &combination.factors,
-                        &kinds,
-                        &values,
-                        Some(GAMMA_G_FAVOURABLE),
-                    )
-                })
-                .collect();
-            let force = ends[0].max(ends[1]) * cos_t;
-            let tau = force / (KCR * shape.shear_area);
-            shear.offer(
-                "shear",
-                tau / design.strength(class.fv_k, combination.duration),
-                &combination.label,
-                &at,
-            );
+            // The largest utilization along the segment by an effect (one
+            // value per load component at each station) over the section's
+            // `resistance` there. Rounding left of a zero effect is none (the
+            // moment over an end support, at a free end); a station with no
+            // material carries nothing, and an effect there is not a number.
+            let largest = |effects: &[Vec<f64>], resistance: &dyn Fn(&Bending) -> f64| {
+                let values: Vec<f64> = (0..seg.xs.len())
+                    .map(|j| {
+                        let components: Vec<f64> = effects.iter().map(|e| e[j]).collect();
+                        envelope(
+                            &combination.factors,
+                            &kinds,
+                            &components,
+                            Some(GAMMA_G_FAVOURABLE),
+                        )
+                    })
+                    .collect();
+                let scale = values.iter().fold(1.0, |most: f64, v| most.max(*v));
+                values
+                    .iter()
+                    .zip(sections)
+                    .map(|(value, section)| match section {
+                        _ if *value <= ROUNDING * scale => 0.0,
+                        Some(section) => value / resistance(section),
+                        None => f64::NAN,
+                    })
+                    .fold(0.0, |most: f64, u| {
+                        if most.is_nan() || u.is_nan() {
+                            f64::NAN
+                        } else {
+                            most.max(u)
+                        }
+                    })
+            };
+            let fm = design.strength(class.fm_k, combination.duration);
+            let fv = design.strength(class.fv_k, combination.duration);
+            let in_bending = largest(&seg.moments, &|s| s.modulus * fm * kh(s.depth));
+            bending.offer("bending", in_bending, &combination.label, &at);
+            let in_shear = largest(&seg.shears, &|s| KCR * s.shear_area * fv / cos_t);
+            shear.offer("shear", in_shear, &combination.label, &at);
         }
         let true_len = (seg.q - seg.p) * shape.arc;
         let (inst_limit, fin_limit) = if seg.kind == Kind::Span {
@@ -1285,10 +1506,10 @@ fn beam_checks(
         }
         for (characteristic, final_factors) in sls {
             let largest = |factors: &Loads| {
-                (0..=STEPS)
+                (0..seg.xs.len())
                     .map(|j| {
                         let values: Vec<f64> = seg.deflections.iter().map(|w| w[j]).collect();
-                        envelope(factors, &kinds, &values, None) / ei
+                        envelope(factors, &kinds, &values, None) / class.e0_mean
                     })
                     .fold(0.0, f64::max)
             };

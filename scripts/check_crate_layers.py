@@ -371,7 +371,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-model casts": 300,
     "ketchup-pdm casts": 5,
     "ketchup-program allows": 9,
-    "ketchup-program casts": 53,
+    "ketchup-program casts": 50,
     "ketchup-scheduler allows": 3,
     "ketchup-scheduler casts": 81,
 }

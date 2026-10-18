@@ -281,6 +281,98 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
     );
 }
 
+#[test]
+fn a_beam_drawn_from_the_side_bends_on_its_notched_section_at_mid_span() {
+    // Review 2026-10-18 PG-8: the beam of `beam` 100 x 200 drawn as its side
+    // profile, its underside notched 100 mm deep over 1950..2050 mm, where the
+    // moment is largest. It bends there on 100 x 100 mm, not on the 200 mm
+    // depth it has elsewhere (on the full depth: 0.35, pass).
+    let report = report(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+timber_design({\"C24\": \"C24\"})
+box(\"post a\", (100, 100, 2000), material = \"C24\", grounded = True)
+box(\"post b\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+part = extrude(\"beam\", profile = [(0, 0), (1950, 0), (1950, 100), (2050, 100), (2050, 0), (4000, 0), (4000, 200), (0, 200)],
+               distance = 100, material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 100, 2000), z = (0, -1, 0), x = (1, 0, 0))
+box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+",
+        &[],
+    );
+    let beam = member(&report, "beam");
+    assert_eq!(beam.role, "beam");
+    assert_eq!(beam.missing, Vec::<String>::new());
+    // kh of the 100 mm deep section: (150 / 100)^0.2 (3.2).
+    let kh = 1.5f64.powf(0.2);
+    let moment = 1.5 * 1.2 * 3900f64.powi(2) / 8.0;
+    close(
+        utilization(beam, "bending"),
+        moment / (100.0 * 100.0 * 100.0 / 6.0) / (0.8 * 24.0 / 1.3 * kh),
+    );
+    assert_eq!(beam.status, "fail");
+}
+
+/// A 100 x 200 C24 purlin 4000 mm long along world X turned 30° about its
+/// grain, its 100 mm underside on two posts cut to that slope (centres 50 and
+/// 3950 mm) and a deck on its top face, 10 kN/m²; `beam` builds it.
+fn turned_purlin(beam: &str) -> String {
+    format!(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 10.0, on = [\"deck\"], source = \"test\")
+timber_design({{\"C24\": \"C24\"}})
+s, c = 0.5, 0.8660254037844386
+for x in (0, 3900):
+    post = extrude(\"post %d\" % x, profile = [(0, 0), (100 * c, 0), (100 * c, 2000 + 100 * s), (0, 2000)],
+                   distance = 100, material = \"C24\", grounded = True)
+    place(post, origin = (x, 0, 0), x = (0, 1, 0), z = (1, 0, 0))
+{beam}
+deck = box(\"deck\", (4000, 100, 20), material = \"OSB\", tags = [\"deck\"])
+place(deck, origin = (0, -200 * s, 2000 + 200 * c), x = (1, 0, 0), z = (0, -s, c))
+"
+    )
+}
+
+#[test]
+fn a_beam_turned_about_its_grain_by_place_is_checked_as_the_same_beam_drawn_turned() {
+    // Review 2026-10-18 PG-9: the vertical load on a section turned 30° about
+    // the grain bends it about both its axes. Drawn turned in its profile the
+    // check sees that; turned by place(), as a profile or as a box, it took the
+    // load along the section's own depth (bending 0.555 against 0.975).
+    let drawn = "part = extrude(\"beam\", profile = [(0, 0), (100 * c, 100 * s), (100 * c - 200 * s, 100 * s + 200 * c), (-200 * s, 200 * c)],
+               distance = 4000, material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 0, 2000), z = (1, 0, 0), x = (0, 1, 0))";
+    let placed = "part = extrude(\"beam\", profile = [(0, 0), (100, 0), (100, 200), (0, 200)],
+               distance = 4000, material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 0, 2000), z = (1, 0, 0), x = (0, c, s))";
+    let boxed = "part = box(\"beam\", (4000, 100, 200), material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 0, 2000), x = (1, 0, 0), z = (0, -s, c))";
+    let checks = |beam: &str| {
+        let report = report(&turned_purlin(beam), &[]);
+        let member = member(&report, "beam").clone();
+        assert_eq!(member.role, "beam", "{beam}");
+        assert_eq!(member.missing, Vec::<String>::new(), "{beam}");
+        member
+    };
+    let reference = checks(drawn);
+    // Free bending of the turned rectangle: M (cos 30 / W_strong + sin 30 / W_weak),
+    // 1.87 times M / W_strong; q = 10 kN/m² over the deck's plan width 100 cos 30.
+    let (s, c) = (0.5, 0.75f64.sqrt());
+    let moment = 1.5 * 0.01 * 100.0 * c * 3900f64.powi(2) / 8.0;
+    let per_moment = c / (100.0 * 200.0 * 200.0 / 6.0) + s / (200.0 * 100.0 * 100.0 / 6.0);
+    close(
+        utilization(&reference, "bending"),
+        moment * per_moment / (0.8 * 24.0 / 1.3),
+    );
+    for beam in [placed, boxed] {
+        let turned = checks(beam);
+        for check in ["bending", "shear", "deflection_inst", "deflection_fin"] {
+            close(utilization(&turned, check), utilization(&reference, check));
+        }
+        assert_eq!(turned.status, reference.status, "{beam}");
+    }
+}
+
 /// The span of `beam` with a beam of cross-section `profile` (local XY within
 /// 200 x 200, local Y up) extruded 4000 mm along world X, `then` run on it.
 fn profiled_beam(profile: &str, then: &str) -> String {
