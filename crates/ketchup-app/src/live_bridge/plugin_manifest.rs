@@ -545,6 +545,19 @@ fn inputs(
         }
         resolved.insert(name.clone(), value.clone());
     }
+    // Review 2026-10-17 P3: inputs too large for the protocol line failed only
+    // after the user had allowed the run and the process had started. They go
+    // out as one compact JSON line, encoded here exactly as the host sends it.
+    let bytes = Value::Object(resolved.clone()).to_string().len();
+    let limit = ketchup_scheduler::plugin::MAX_PLUGIN_INPUTS_BYTES;
+    let largest = resolved
+        .iter()
+        .max_by_key(|(name, value)| name.len() + value.to_string().len());
+    if let Some((name, _)) = largest.filter(|_| bytes > limit) {
+        return Err(invalid(format!(
+            "input {name:?} makes the inputs {bytes} bytes as JSON; a plugin receives at most {limit}"
+        )));
+    }
     Ok(resolved)
 }
 

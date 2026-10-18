@@ -573,6 +573,54 @@ fn a_plugin_name_or_argument_cannot_forge_lines_of_the_consent_prompt() {
     }
 }
 
+/// Review 2026-10-17 P3: inputs larger than the `INPUTS` line can carry are
+/// refused, naming the input, before the user is asked; they used to fail
+/// only after consent, once the plugin had started and asked for them.
+#[test]
+fn inputs_too_large_for_the_protocol_line_are_refused_by_name_before_the_prompt() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    manifest["inputs"]["label"] = json!({"type": "string"});
+    std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+    let dialogs = ScriptedFileDialogs::new();
+    let probe = dialogs.clone();
+    let mut wire = plugin_wire_answering(dialogs);
+    // A connection's first frame, before its token is checked, must be small.
+    wire.call(Request::Status {});
+    // What the host sends: the given inputs plus the defaults.
+    let empty = json!({"feature_id": EXTRUSION, "height_mm": 35, "label": ""});
+    let fitting = ketchup_scheduler::plugin::MAX_PLUGIN_INPUTS_BYTES - empty.to_string().len();
+    let request = |length: usize| {
+        folder_request(
+            &folder,
+            json!({"height_mm": 35, "label": "x".repeat(length)}),
+        )
+    };
+
+    assert_refused_without_prompt(
+        &mut wire,
+        request(fitting + 1),
+        "plugin_manifest_invalid",
+        &probe,
+    );
+    let response = wire.answer_within(
+        Request::RunPlugin(request(fitting + 1)),
+        Duration::from_secs(30),
+    );
+    let reason = response.result.unwrap()["reason"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(reason.starts_with("input \"label\""), "{reason}");
+    assert!(probe.high_risk_prompts().is_empty());
+
+    // Inputs exactly at the limit still reach the prompt.
+    assert_consent_required(&mut wire, request(fitting));
+    assert_eq!(probe.high_risk_prompts().len(), 1);
+}
+
 /// A directory link: a junction on Windows (no privilege needed), a symlink elsewhere.
 fn link_directory(link: &Path, target: &Path) {
     #[cfg(windows)]

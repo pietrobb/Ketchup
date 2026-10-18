@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 pub const MAX_PLUGIN_REQUEST_LINE_BYTES: usize = 4 * 1024;
 // STATE hex-encodes every gateway-authorized query byte plus a bounded header.
 pub const MAX_PLUGIN_RESPONSE_LINE_BYTES: usize = 2 * PluginLimits::HOST_MAX.max_query_bytes + 32;
+const INPUTS_PREFIX: &str = "INPUTS\t";
+/// The most bytes a plugin's inputs may take as compact JSON: they go out as
+/// one protocol line, so a caller can refuse larger ones before anything runs.
+pub const MAX_PLUGIN_INPUTS_BYTES: usize = MAX_PLUGIN_RESPONSE_LINE_BYTES - INPUTS_PREFIX.len();
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 pub(crate) fn spawn_plugin_process(
@@ -147,7 +151,12 @@ pub fn run_plugin_command(
             }
             if line == "QUERY\tINPUTS" {
                 gateway.count_request()?;
-                send_line(&writer, format!("INPUTS\t{inputs}"), deadline, cancelled)?;
+                send_line(
+                    &writer,
+                    format!("{INPUTS_PREFIX}{inputs}"),
+                    deadline,
+                    cancelled,
+                )?;
                 continue;
             }
             let request = parse_request(&line)?;
