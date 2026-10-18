@@ -586,6 +586,43 @@ place(deck, origin = (60, 140, 500), z = (50, 0, 60), x = (-60, 0, 50))",
     );
 }
 
+#[test]
+fn a_post_leaning_26_degrees_carries_the_vertical_load_along_its_grain() {
+    // The 60 x 140 x 500 post of `post` leant 26° in x, on a slab and under a
+    // deck that both lie square to its ends. Pinned at both ends, the vertical
+    // load V on the deck reaches the post as N = V / cos 26° along it, 11 %
+    // more than V. The area load is per plan area: V = 1.5 x 2 N/mm² x
+    // 60 cos 26° x 140, so N is that of the upright post.
+    let report = report(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"heavy\", kind = \"imposed\", kn_m2 = 2000.0, on = [\"deck\"], source = \"test\")
+timber_design({\"C24\": \"C24\"})
+s, c = 0.4383711467890774, 0.898794046299167
+grain, across = (s, 0, c), (c, 0, -s)
+def at(x, y, z):
+    return (x * c + z * s, y, 50 - x * s + z * c)
+slab = box(\"slab\", (300, 300, 50), at = (0, 0, 0), material = \"C24\", grounded = True)
+place(slab, origin = at(-100, -80, -50), z = grain, x = across)
+post = box(\"post\", (60, 140, 500), at = (0, 0, 0), material = \"C24\", tags = [\"frame\"])
+place(post, origin = at(0, 0, 0), z = grain, x = across)
+deck = box(\"deck\", (60, 140, 20), at = (0, 0, 0), material = \"OSB\", tags = [\"deck\"])
+place(deck, origin = at(0, 0, 500), z = grain, x = across)
+",
+        &[],
+    );
+    let post = member(&report, "post");
+    assert_eq!(post.role, "column");
+    let lambda = 500.0 * 12f64.sqrt() / 60.0 / std::f64::consts::PI * (21.0f64 / 7400.0).sqrt();
+    let k = 0.5 * (1.0 + 0.2 * (lambda - 0.3) + lambda * lambda);
+    let kc = 1.0 / (k + (k * k - lambda * lambda).sqrt());
+    let vertical = 1.5 * 2000.0e-3 * 60.0 * 26f64.to_radians().cos() * 140.0;
+    let along = vertical / 26f64.to_radians().cos();
+    close(
+        utilization(post, "compression"),
+        along / (60.0 * 140.0) / (kc * 0.8 * 21.0 / 1.3),
+    );
+}
+
 /// A C24 column 3000 mm high of `profile` (local XY, extruded up) within a
 /// 200 x 200 mm square, on a grounded slab under a 200 x 200 mm deck loaded
 /// with 5000 kN/m² (1.5 Q = 300 kN), `then` run on the column part.

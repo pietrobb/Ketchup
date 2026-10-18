@@ -1482,9 +1482,12 @@ fn column_check(load: &MemberLoad, shape: &Shape, design: &Design, uls: &[Combin
         1.0 / (k + (k * k - lr * lr).sqrt())
     };
     let kc = kc(lambda_rel(shape.radius));
+    // The loads are vertical; a leaning column pinned at its ends carries
+    // them along its grain as V / cos of its slope.
+    let along = 1.0 / shape.grain[2].abs();
     let mut best = Best(None);
     for combination in uls {
-        let force = factor(&combination.factors, &load.loads_n);
+        let force = factor(&combination.factors, &load.loads_n) * along;
         let strength = design.strength(class.fc0_k, combination.duration);
         let buckling = force / shape.buckling_area / (kc * strength);
         let net = force / shape.net_area / strength;
