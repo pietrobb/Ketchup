@@ -554,7 +554,18 @@ fn validation_context_reports_hardware_and_manufacturing_from_roles_and_source_g
             45.0,
         );
     }
-    shell.settle();
+    // Which topology the validator reads depends on whether the exact worker has
+    // answered: wait for all six solids so the run does not race it.
+    let exact = shell.wait_until(|shell| {
+        shell.settle();
+        shell.app().exact_render_body_count() == occurrence_ids.len()
+    });
+    assert!(
+        exact,
+        "expected {} exact bodies, found {}",
+        occurrence_ids.len(),
+        shell.app().exact_render_body_count()
+    );
     let revision = shell.app().document_revision();
     let digest = shell.app().canonical_digest();
     let undo_steps = shell.app().undo_step_count();
@@ -646,7 +657,7 @@ fn validation_context_reports_hardware_and_manufacturing_from_roles_and_source_g
         .unwrap();
     assert_eq!(hole["role"], "manufacturing.cup-bore.z:door-a");
     assert_eq!(hole["host_role"], "manufacturing.panel.xy:door-a");
-    assert_eq!(hole["topology_source"], "canonical_exact_feature_graph");
+    assert_eq!(hole["topology_source"], "accepted_exact_brep");
     let pair = evaluations
         .iter()
         .find(|evaluation| evaluation["rule"] == "linear_hardware_pair_alignment")
@@ -655,10 +666,7 @@ fn validation_context_reports_hardware_and_manufacturing_from_roles_and_source_g
     assert_eq!(pair["length_mismatch_mm"], 20.0);
     assert_eq!(
         pair["topology_sources"],
-        serde_json::json!([
-            "canonical_exact_feature_graph",
-            "canonical_exact_feature_graph"
-        ])
+        serde_json::json!(["accepted_exact_brep", "accepted_exact_brep"])
     );
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().canonical_digest(), digest);
