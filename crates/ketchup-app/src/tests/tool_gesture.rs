@@ -248,6 +248,122 @@ fn ctrl_z_ends_a_standing_gesture_and_undoes_past_one_the_selection_left() {
     assert!(no_gesture(&app));
 }
 
+/// The tools review 2026-10-17 P3-G found outside [`GESTURES`], each with its
+/// gesture standing on a fresh document.
+fn standing_register_gestures() -> Vec<(&'static str, KetchupApp)> {
+    let mut revolve = KetchupApp::new();
+    assert!(revolve.create_closed_polyline(vec![
+        [120.0, 0.0],
+        [140.0, 0.0],
+        [140.0, 30.0],
+        [120.0, 30.0],
+    ]));
+    assert!(revolve.begin_revolve_tool());
+    assert!(!revolve.add_revolve_axis_point(Vec3::new(110.0, 0.0, 0.0)));
+    assert!(revolve.add_revolve_axis_point(Vec3::new(110.0, 30.0, 0.0)));
+    assert!(revolve.has_revolve_preview());
+
+    let mut offset = KetchupApp::new();
+    assert!(offset.create_closed_polyline(vec![
+        [120.0, 0.0],
+        [220.0, 0.0],
+        [220.0, 60.0],
+        [120.0, 60.0],
+    ]));
+    offset.dispatch_command(AppCommand::PlanarOffset);
+    offset.value_box.input = "5".to_owned();
+    assert!(offset.refresh_planar_offset_preview());
+
+    let mut finish = KetchupApp::new();
+    install_initial_graph_result(&mut finish);
+    select_initial_topological(&mut finish, TopologicalElementKind::Face, 3);
+    finish.dispatch_command(AppCommand::Shell);
+    assert!(finish.general_finish_preview_is_current());
+
+    let mut sweep = KetchupApp::new();
+    assert!(sweep.create_sweep_inputs(
+        vec![[-5.0, -10.0], [5.0, -10.0], [5.0, 10.0], [-5.0, 10.0]],
+        [0.0, 0.0],
+        [0.0, 125.0],
+    ));
+    sweep.dispatch_command(AppCommand::Sweep);
+    assert!(sweep.sweep_preview_is_current());
+
+    let mut loft = KetchupApp::new();
+    assert!(loft.create_loft_inputs(vec![
+        (
+            vec![[-20.0, -10.0], [20.0, -10.0], [20.0, 10.0], [-20.0, 10.0]],
+            0.0,
+        ),
+        (
+            vec![[-10.0, -5.0], [10.0, -5.0], [10.0, 5.0], [-10.0, 5.0]],
+            80.0,
+        ),
+    ]));
+    loft.dispatch_command(AppCommand::Loft);
+    assert!(loft.loft_preview_is_current());
+
+    let mut helix = KetchupApp::new();
+    helix.dispatch_command(AppCommand::Helix);
+
+    vec![
+        ("Revolve", revolve),
+        ("Offset", offset),
+        ("Shell", finish),
+        ("Sweep", sweep),
+        ("Loft", loft),
+        ("Helix", helix),
+    ]
+}
+
+/// Review 2026-10-17 P3-G: Revolve, Offset, Shell/Fillet/Chamfer, Sweep, Loft
+/// and Helix were listed by hand in Esc and Ctrl+Z and never checked for a
+/// source that moved on. Through [`GESTURES`] each now answers like Move:
+/// Ctrl+Z and Esc end a standing gesture without touching the document, and
+/// one whose selection left holds no Ctrl+Z and refuses a typed value.
+#[test]
+fn every_registered_gesture_ends_on_ctrl_z_and_esc_and_drops_when_stale() {
+    for (tool, mut app) in standing_register_gestures() {
+        assert!(app.gesture_open(), "{tool} opens a gesture");
+        assert!(app.gesture_holds_undo(), "{tool} holds Ctrl+Z");
+        let digest = app.canonical_digest();
+        let undo_steps = app.undo_step_count();
+        assert!(!app.undo(), "{tool}: Ctrl+Z ends the gesture, not a step");
+        assert!(!app.gesture_open(), "{tool} ended by Ctrl+Z");
+        assert_eq!(app.canonical_digest(), digest, "{tool}");
+        assert_eq!(app.undo_step_count(), undo_steps, "{tool}");
+    }
+
+    for (tool, mut app) in standing_register_gestures() {
+        let digest = app.canonical_digest();
+        app.cancel_or_deselect(false);
+        assert!(!app.gesture_open(), "{tool} ended by Esc");
+        assert_eq!(app.digest, app.catalog.text("digest-cancelled"), "{tool}");
+        assert_eq!(app.canonical_digest(), digest, "{tool}");
+    }
+
+    for (tool, mut app) in standing_register_gestures() {
+        app.selection.clear();
+        if tool == "Helix" {
+            // The Helix stands on no selection, so nothing can leave it.
+            assert!(app.gesture_holds_undo(), "{tool}");
+            continue;
+        }
+        assert!(app.gesture_open(), "{tool} is still drawn until a value");
+        assert!(!app.gesture_holds_undo(), "{tool} stale holds no Ctrl+Z");
+        let digest = app.canonical_digest();
+        app.value_box.input = "5".to_owned();
+        assert!(!app.apply_value_input(), "{tool}: {}", app.digest);
+        assert_eq!(
+            app.digest,
+            app.catalog.text("error-preview-stale"),
+            "{tool}"
+        );
+        assert!(!app.gesture_open(), "{tool} stale ended");
+        assert_eq!(app.canonical_digest(), digest, "{tool}");
+    }
+}
+
 /// A typed value finishes each gesture along whichever world axis it runs:
 /// not only along +x, where the review found the tests stopped (UI-1).
 #[test]

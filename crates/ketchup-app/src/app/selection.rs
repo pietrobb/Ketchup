@@ -1182,12 +1182,6 @@ impl KetchupApp {
             self.status_key = "status-measure-first-point";
         } else if self.has_preview()
             || self.has_occurrence_operation_preview()
-            || self.solid_tools.revolve.is_some()
-            || self.tool_preview.get::<RevolvePreview>().is_some()
-            || self.tool_preview.get::<PlanarOffsetPreview>().is_some()
-            || self.tool_preview.get::<SweepPreview>().is_some()
-            || self.tool_preview.get::<LoftPreview>().is_some()
-            || self.tool_preview.get::<GeneralFinishPreview>().is_some()
             || self.solid_tools.target.is_some()
             || self.gesture_open()
             || self.gesture.sketch.armed

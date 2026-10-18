@@ -518,13 +518,6 @@ impl KetchupApp {
             || self.has_drawn_shape_preview()
             || self.has_occurrence_operation_preview()
             || self.solid_tools.target.is_some()
-            || self.solid_tools.revolve.is_some()
-            || self.tool_preview.get::<RevolvePreview>().is_some()
-            || self.tool_preview.get::<PlanarOffsetPreview>().is_some()
-            || self.active_tool == ActiveTool::Helix
-            || self.tool_preview.get::<SweepPreview>().is_some()
-            || self.tool_preview.get::<LoftPreview>().is_some()
-            || self.tool_preview.get::<GeneralFinishPreview>().is_some()
     }
 
     /// Whether the About window is on screen.

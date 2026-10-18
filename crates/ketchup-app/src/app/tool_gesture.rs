@@ -1,5 +1,6 @@
 //! One model for a tool gesture in progress: a Move, Rotate or Scale, a shape
-//! being drawn, a Push/Pull, or the face Mirror reflects across. Each tool
+//! being drawn, a Push/Pull, the face Mirror reflects across, a Revolve,
+//! Offset, Shell/Fillet/Chamfer, Sweep or Loft preview, or the Helix. Each tool
 //! answers the same questions through [`ToolGesture`], and [`GESTURES`] is
 //! the one registry Esc, Ctrl+Z and a
 //! typed value go through. Whether a gesture still stands, what ends it and
@@ -29,13 +30,19 @@ pub(crate) trait ToolGesture: Sync {
 }
 
 /// Every tool with a gesture, in the order a typed value is offered to them.
-pub(crate) static GESTURES: [&dyn ToolGesture; 6] = [
+pub(crate) static GESTURES: [&dyn ToolGesture; 12] = [
     &DrawTool,
     &ScaleTool,
     &RotateTool,
     &PushPullTool,
     &MoveTool,
     &MirrorTool,
+    &RevolveTool,
+    &PlanarOffsetTool,
+    &FinishTool,
+    &SweepTool,
+    &LoftTool,
+    &HelixTool,
 ];
 
 struct DrawTool;
@@ -44,6 +51,13 @@ struct RotateTool;
 struct PushPullTool;
 struct MoveTool;
 struct MirrorTool;
+struct RevolveTool;
+struct PlanarOffsetTool;
+/// Shell, Fillet and Chamfer.
+struct FinishTool;
+struct SweepTool;
+struct LoftTool;
+struct HelixTool;
 
 impl ToolGesture for DrawTool {
     fn is_open(&self, app: &KetchupApp) -> bool {
@@ -218,6 +232,171 @@ impl ToolGesture for MirrorTool {
 
     fn apply_typed(&self, app: &mut KetchupApp) -> bool {
         app.commit_mirror()
+    }
+}
+
+/// The profile picked, its axis being placed, and the exact preview of the
+/// typed angle.
+impl ToolGesture for RevolveTool {
+    fn is_open(&self, app: &KetchupApp) -> bool {
+        app.solid_tools.revolve.is_some() || app.tool_preview.get::<RevolvePreview>().is_some()
+    }
+
+    fn is_current(&self, app: &KetchupApp) -> bool {
+        app.solid_tools.revolve.as_ref().is_some_and(|tool| {
+            app.selected_revolve_profile()
+                .is_some_and(|current| current.source == tool.source)
+        })
+    }
+
+    fn cancel(&self, app: &mut KetchupApp) {
+        app.solid_tools.revolve = None;
+        app.tool_preview.close::<RevolvePreview>();
+    }
+
+    fn takes_typed(&self, app: &KetchupApp) -> bool {
+        app.active_tool == ActiveTool::Revolve
+    }
+
+    fn apply_typed(&self, app: &mut KetchupApp) -> bool {
+        app.refresh_revolve_preview() && app.confirm_revolve_preview()
+    }
+}
+
+/// The exact preview of the face offset by the typed distance.
+impl ToolGesture for PlanarOffsetTool {
+    fn is_open(&self, app: &KetchupApp) -> bool {
+        app.tool_preview.get::<PlanarOffsetPreview>().is_some()
+    }
+
+    fn is_current(&self, app: &KetchupApp) -> bool {
+        app.tool_preview
+            .get::<PlanarOffsetPreview>()
+            .is_some_and(|preview| {
+                app.planar_offset_source_plan().as_ref() == Some(&preview.plan.source)
+            })
+    }
+
+    fn cancel(&self, app: &mut KetchupApp) {
+        app.tool_preview.close::<PlanarOffsetPreview>();
+    }
+
+    fn takes_typed(&self, app: &KetchupApp) -> bool {
+        app.active_tool == ActiveTool::PlanarOffset
+    }
+
+    fn apply_typed(&self, app: &mut KetchupApp) -> bool {
+        app.refresh_planar_offset_preview() && app.confirm_planar_offset_preview()
+    }
+}
+
+/// The exact preview of a Shell, Fillet or Chamfer by the typed amount.
+impl ToolGesture for FinishTool {
+    fn is_open(&self, app: &KetchupApp) -> bool {
+        app.tool_preview.get::<GeneralFinishPreview>().is_some()
+    }
+
+    fn is_current(&self, app: &KetchupApp) -> bool {
+        app.tool_preview
+            .get::<GeneralFinishPreview>()
+            .is_some_and(|preview| {
+                let source = &preview.plan.source;
+                app.general_finish_source_plan(source.kind).as_ref() == Some(source)
+            })
+    }
+
+    fn cancel(&self, app: &mut KetchupApp) {
+        app.tool_preview.close::<GeneralFinishPreview>();
+    }
+
+    fn takes_typed(&self, app: &KetchupApp) -> bool {
+        matches!(
+            app.active_tool,
+            ActiveTool::Shell | ActiveTool::Fillet | ActiveTool::Chamfer
+        )
+    }
+
+    fn apply_typed(&self, app: &mut KetchupApp) -> bool {
+        let applied = app.refresh_general_finish_preview() && app.confirm_general_finish_preview();
+        app.await_program_if_planning();
+        applied
+    }
+}
+
+/// The exact preview of the profile swept along the picked path; it takes
+/// no typed value.
+impl ToolGesture for SweepTool {
+    fn is_open(&self, app: &KetchupApp) -> bool {
+        app.tool_preview.get::<SweepPreview>().is_some()
+    }
+
+    fn is_current(&self, app: &KetchupApp) -> bool {
+        app.tool_preview
+            .get::<SweepPreview>()
+            .is_some_and(|preview| app.sweep_source_plan().as_ref() == Some(&preview.plan.source))
+    }
+
+    fn cancel(&self, app: &mut KetchupApp) {
+        app.tool_preview.close::<SweepPreview>();
+    }
+
+    fn takes_typed(&self, _app: &KetchupApp) -> bool {
+        false
+    }
+
+    fn apply_typed(&self, _app: &mut KetchupApp) -> bool {
+        false
+    }
+}
+
+/// The exact preview of the loft through the picked sections; it takes no
+/// typed value.
+impl ToolGesture for LoftTool {
+    fn is_open(&self, app: &KetchupApp) -> bool {
+        app.tool_preview.get::<LoftPreview>().is_some()
+    }
+
+    fn is_current(&self, app: &KetchupApp) -> bool {
+        app.tool_preview
+            .get::<LoftPreview>()
+            .is_some_and(|preview| app.loft_source_plan().as_ref() == Some(&preview.plan.source))
+    }
+
+    fn cancel(&self, app: &mut KetchupApp) {
+        app.tool_preview.close::<LoftPreview>();
+    }
+
+    fn takes_typed(&self, _app: &KetchupApp) -> bool {
+        false
+    }
+
+    fn apply_typed(&self, _app: &mut KetchupApp) -> bool {
+        false
+    }
+}
+
+/// The Helix window and its preview: its values are typed in the window's
+/// own fields, and it stands on no selection, so it is never stale.
+impl ToolGesture for HelixTool {
+    fn is_open(&self, app: &KetchupApp) -> bool {
+        app.active_tool == ActiveTool::Helix
+    }
+
+    fn is_current(&self, _app: &KetchupApp) -> bool {
+        true
+    }
+
+    fn cancel(&self, app: &mut KetchupApp) {
+        app.clear_helix_preview();
+        app.active_tool = ActiveTool::Select;
+    }
+
+    fn takes_typed(&self, _app: &KetchupApp) -> bool {
+        false
+    }
+
+    fn apply_typed(&self, _app: &mut KetchupApp) -> bool {
+        false
     }
 }
 
@@ -554,8 +733,7 @@ impl KetchupApp {
         true
     }
 
-    /// A typed value for a tool without a gesture: Hole, Draft, Offset,
-    /// Revolve, Shell, Fillet and Chamfer.
+    /// A typed value for a tool without a gesture: Hole and Draft.
     fn apply_typed_without_gesture(&mut self) -> bool {
         match self.active_tool {
             ActiveTool::Hole => {
@@ -567,16 +745,6 @@ impl KetchupApp {
                 // The angle is typed first; the draft is sent when the neutral face is clicked.
                 self.digest = self.catalog.text("status-draft-neutral");
                 false
-            }
-            ActiveTool::PlanarOffset => {
-                self.refresh_planar_offset_preview() && self.confirm_planar_offset_preview()
-            }
-            ActiveTool::Revolve => self.refresh_revolve_preview() && self.confirm_revolve_preview(),
-            ActiveTool::Shell | ActiveTool::Fillet | ActiveTool::Chamfer => {
-                let applied =
-                    self.refresh_general_finish_preview() && self.confirm_general_finish_preview();
-                self.await_program_if_planning();
-                applied
             }
             _ => {
                 self.digest = self.catalog.text("digest-nothing-to-apply");
