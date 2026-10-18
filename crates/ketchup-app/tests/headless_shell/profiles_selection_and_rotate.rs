@@ -1024,6 +1024,14 @@ fn general_revolve_selects_an_axis_previews_exact_angle_and_commits_once() {
     assert_eq!(shell.app().document_revision(), before_revision);
     assert_eq!(shell.app().canonical_digest(), before_digest);
 
+    // Review 2026-10-17 P3-G: the value is an angle, so `9 cm` revolves
+    // nothing (it once made 90°), and `225°` below is 225 degrees.
+    shell.type_text("9");
+    shell.type_text(" cm");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().revolve_preview_parameters(), None);
+    assert_eq!(shell.app().document_revision(), before_revision);
+
     shell.type_text("225");
     assert_eq!(
         shell.app().revolve_preview_parameters(),

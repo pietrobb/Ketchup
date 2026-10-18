@@ -173,8 +173,9 @@ impl KetchupApp {
         let Some(axis_end_mm) = tool.axis_end_mm else {
             return false;
         };
-        let Some(angle_degrees) = parse_distance_mm(&self.value_box.input, self.value_box.decimal)
-            .filter(|angle| *angle > 0.0 && *angle <= 360.0)
+        let Some(angle_degrees) =
+            super::commands::parse_angle_degrees(&self.value_box.input, self.value_box.decimal)
+                .filter(|angle| *angle > 0.0 && *angle <= 360.0)
         else {
             self.digest = self.catalog.text("digest-revolve-invalid-angle");
             return false;
@@ -209,7 +210,8 @@ impl KetchupApp {
         tool.source == preview.plan.source
             && tool.axis_start_mm == Some(preview.plan.axis_start_mm)
             && tool.axis_end_mm == Some(preview.plan.axis_end_mm)
-            && parse_distance_mm(&self.value_box.input, self.value_box.decimal).map(f64::to_bits)
+            && super::commands::parse_angle_degrees(&self.value_box.input, self.value_box.decimal)
+                .map(f64::to_bits)
                 == Some(preview.plan.angle_degrees_bits)
             && self
                 .derive_revolve_preview_plan(
