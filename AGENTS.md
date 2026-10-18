@@ -106,6 +106,11 @@ reproduced failure that they catch, or explicit approval by the owner.
   (plain `--include-ignored` would also start the opt-in tests that need Blender, a GPU or
   external fixtures). A test that only needs "some model" uses the small house
   `crates/ketchup-app/tests/fixtures/small-house.star`, not the large one.
+- Tests check outcomes (finished, cancelled, timed out), not how long something took. A time
+  budget lives only in a function named `perf_*`, marked
+  `#[ignore = "perf: release timing budget, runs nightly"]`; CI runs them nightly in release
+  (`-- --ignored perf_`). A deadline that only stops waiting on a hung condition is fine.
+  `scripts/check_test_timing.py` enforces this.
 - Report the net line delta in every PR description.
 
 ## 7. Communication

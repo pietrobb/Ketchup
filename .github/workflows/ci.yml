@@ -44,6 +44,8 @@ jobs:
         run: python scripts/check_tool_rail_docs.py
       - name: Tests gain no sleep calls
         run: python scripts/check_test_sleeps.py
+      - name: Time budgets only in perf tests
+        run: python scripts/check_test_timing.py
       - name: GPU tests share one wgpu instance
         run: python scripts/check_gpu_test_instances.py
       - name: Test hooks stay out of production code
