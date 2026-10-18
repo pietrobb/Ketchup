@@ -2733,18 +2733,11 @@ impl KetchupApp {
                 if self.feature_history.move_input.is_empty() {
                     self.feature_history.move_input = "0; 0".to_owned();
                 }
-                let move_label = self.catalog.text("feature-history-move-profile-value");
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.feature_history.move_input)
-                        .hint_text(&move_label),
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &move_label)
-                });
-                show_value_refusal(
+                value_field(
                     ui,
                     &self.catalog,
-                    &self.feature_history.move_input,
+                    "feature-history-move-profile-value",
+                    &mut self.feature_history.move_input,
                     self.value_box.decimal,
                 );
                 if ui
@@ -2794,18 +2787,11 @@ impl KetchupApp {
                     self.feature_history.value_input = format_height(choice.value_mm);
                     self.feature_history.parameter_source = Some((snapshot.revision_id(), target));
                 }
-                let value_label = self.catalog.text("feature-history-exact-value");
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.feature_history.value_input)
-                        .hint_text(&value_label),
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &value_label)
-                });
-                show_value_refusal(
+                value_field(
                     ui,
                     &self.catalog,
-                    &self.feature_history.value_input,
+                    "feature-history-exact-value",
+                    &mut self.feature_history.value_input,
                     self.value_box.decimal,
                 );
                 if ui

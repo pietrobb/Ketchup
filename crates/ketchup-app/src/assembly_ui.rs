@@ -2443,33 +2443,19 @@ impl KetchupApp {
         joint_kind_response.response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &joint_kind_label)
         });
-        let joint_position_label = self.catalog.text("assembly-joint-position");
-        let joint_position = ui.add(
-            egui::TextEdit::singleline(&mut self.assembly_editor.joint_position_input)
-                .hint_text(&joint_position_label),
-        );
-        joint_position.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &joint_position_label)
-        });
-        show_value_refusal(
+        value_field(
             ui,
             &self.catalog,
-            &self.assembly_editor.joint_position_input,
+            "assembly-joint-position",
+            &mut self.assembly_editor.joint_position_input,
             self.value_box.decimal,
         );
         if self.assembly_editor.joint_kind == AssemblyJointKindChoice::Helical {
-            let joint_lead_label = self.catalog.text("assembly-joint-lead");
-            let joint_lead = ui.add(
-                egui::TextEdit::singleline(&mut self.assembly_editor.joint_lead_input)
-                    .hint_text(&joint_lead_label),
-            );
-            joint_lead.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &joint_lead_label)
-            });
-            show_value_refusal(
+            value_field(
                 ui,
                 &self.catalog,
-                &self.assembly_editor.joint_lead_input,
+                "assembly-joint-lead",
+                &mut self.assembly_editor.joint_lead_input,
                 self.value_box.decimal,
             );
         }
@@ -2519,18 +2505,11 @@ impl KetchupApp {
                 .unwrap_or(0.0)
                 .to_string();
         }
-        let drag_position_label = self.catalog.text("assembly-drag-position");
-        let drag_position = ui.add(
-            egui::TextEdit::singleline(&mut self.assembly_editor.drag_position_input)
-                .hint_text(&drag_position_label),
-        );
-        drag_position.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &drag_position_label)
-        });
-        show_value_refusal(
+        value_field(
             ui,
             &self.catalog,
-            &self.assembly_editor.drag_position_input,
+            "assembly-drag-position",
+            &mut self.assembly_editor.drag_position_input,
             self.value_box.decimal,
         );
         ui.checkbox(
@@ -2643,42 +2622,23 @@ impl KetchupApp {
                 &mut self.assembly_editor.coupling_output_reference,
             ),
         ] {
-            let label = self.catalog.text(label_key);
-            let response = ui.add(egui::TextEdit::singleline(value).hint_text(&label));
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &label)
-            });
-            show_value_refusal(ui, &self.catalog, value, self.value_box.decimal);
+            value_field(ui, &self.catalog, label_key, value, self.value_box.decimal);
         }
         let (first_label_key, second_label_key) =
             self.assembly_editor.coupling_kind.parameter_label_keys();
-        let first_label = self.catalog.text(first_label_key);
-        let first = ui.add(
-            egui::TextEdit::singleline(&mut self.assembly_editor.coupling_first_parameter)
-                .hint_text(&first_label),
-        );
-        first.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &first_label)
-        });
-        show_value_refusal(
+        value_field(
             ui,
             &self.catalog,
-            &self.assembly_editor.coupling_first_parameter,
+            first_label_key,
+            &mut self.assembly_editor.coupling_first_parameter,
             self.value_box.decimal,
         );
         if let Some(second_label_key) = second_label_key {
-            let second_label = self.catalog.text(second_label_key);
-            let second = ui.add(
-                egui::TextEdit::singleline(&mut self.assembly_editor.coupling_second_parameter)
-                    .hint_text(&second_label),
-            );
-            second.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &second_label)
-            });
-            show_value_refusal(
+            value_field(
                 ui,
                 &self.catalog,
-                &self.assembly_editor.coupling_second_parameter,
+                second_label_key,
+                &mut self.assembly_editor.coupling_second_parameter,
                 self.value_box.decimal,
             );
         }
@@ -2727,18 +2687,11 @@ impl KetchupApp {
         motion_name.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &motion_name_label)
         });
-        let motion_position_label = self.catalog.text("assembly-motion-position");
-        let motion_position = ui.add(
-            egui::TextEdit::singleline(&mut self.assembly_editor.motion_position_input)
-                .hint_text(&motion_position_label),
-        );
-        motion_position.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &motion_position_label)
-        });
-        show_value_refusal(
+        value_field(
             ui,
             &self.catalog,
-            &self.assembly_editor.motion_position_input,
+            "assembly-motion-position",
+            &mut self.assembly_editor.motion_position_input,
             self.value_box.decimal,
         );
         if ui
@@ -2774,21 +2727,15 @@ impl KetchupApp {
             self.assembly_editor.reference_b = None;
         }
         if self.assembly_editor.kind.needs_value() {
-            let value_label = self.catalog.text(match self.assembly_editor.kind {
+            let value_label_key = match self.assembly_editor.kind {
                 MateKindChoice::Angle => "assembly-angle-value",
                 _ => "assembly-distance-value",
-            });
-            let value = ui.add(
-                egui::TextEdit::singleline(&mut self.assembly_editor.value_input)
-                    .hint_text(&value_label),
-            );
-            value.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &value_label)
-            });
-            show_value_refusal(
+            };
+            value_field(
                 ui,
                 &self.catalog,
-                &self.assembly_editor.value_input,
+                value_label_key,
+                &mut self.assembly_editor.value_input,
                 self.value_box.decimal,
             );
         }

@@ -65,8 +65,8 @@ MAX_FUNCTION_LINES = 400
 # Production functions that were already longer, with their length. They may
 # shrink but not grow; an entry is removed once its function fits the limit.
 LONG_FUNCTIONS = {
-    "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 756,
-    "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 630,
+    "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 746,
+    "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 628,
     "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 660,
     "crates/ketchup-application/src/collision.rs::collision_report": 702,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,

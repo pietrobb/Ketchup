@@ -74,6 +74,21 @@ pub(crate) fn show_value_refusal(
     refused
 }
 
+/// A one-line value field named by `label_key`, for screen readers too, with
+/// [`show_value_refusal`]'s hint under it.
+pub(crate) fn value_field(
+    ui: &mut egui::Ui,
+    catalog: &LocaleCatalog,
+    label_key: &str,
+    text: &mut String,
+    decimal: DecimalSeparator,
+) {
+    let label = catalog.text(label_key);
+    let response = ui.add(egui::TextEdit::singleline(text).hint_text(&label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &label));
+    show_value_refusal(ui, catalog, text, decimal);
+}
+
 /// A lower-layer failure shown as it is; `code` names the step that failed.
 pub(crate) fn failed(code: &'static str, cause: impl Error + Send + Sync + 'static) -> Rejection {
     Rejection::new(code, RejectionPhase::Planning)
