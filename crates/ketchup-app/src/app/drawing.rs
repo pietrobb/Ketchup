@@ -3140,13 +3140,25 @@ impl KetchupApp {
                     if text != crate::app_state::SYSTEM_CLIPBOARD_TEXT)
             })
         });
-        // In the Hole tool a typed "M" starts a thread size ("M8 12"), not Move.
-        let starts_thread = self.active_tool == ActiveTool::Hole
-            && !typing
+        // A value begun this frame takes every key typed with it: on a slow
+        // frame "1m" arrives at once, and its "m" must not pick Move. No plain
+        // key binds a digit, a decimal separator or a minus. In the Hole tool
+        // a typed "M" starts a thread size ("M8 12") the same way.
+        let hole = self.active_tool == ActiveTool::Hole;
+        let starts_value = !typing
             && context.input(|input| {
-                input.events.iter().any(|event| {
-                    matches!(event, egui::Event::Text(text) if text.starts_with(['M', 'm']))
-                })
+                input
+                    .events
+                    .iter()
+                    .find_map(|event| match event {
+                        egui::Event::Text(text) => text.chars().next(),
+                        _ => None,
+                    })
+                    .is_some_and(|first| {
+                        first.is_ascii_digit()
+                            || matches!(first, '.' | ',' | '-')
+                            || (hole && matches!(first, 'M' | 'm'))
+                    })
             });
         // Esc or Ctrl+Z in a value being typed drop the value together with
         // the operation it was typed for, as both do on the canvas; the field's
@@ -3171,7 +3183,7 @@ impl KetchupApp {
         let command = if undo_typed_value {
             Some(AppCommand::Deselect)
         } else {
-            context.input_mut(|input| keymap::pressed(input, typing || starts_thread))
+            context.input_mut(|input| keymap::pressed(input, typing || starts_value))
         };
         let cycle_overlap = cycle_with_alt
             || (!typing
@@ -3184,7 +3196,7 @@ impl KetchupApp {
                     .iter()
                     .filter_map(|event| match event {
                         egui::Event::Text(text)
-                            if starts_thread
+                            if starts_value
                                 || text.chars().all(|character| {
                                     "0123456789.,-;xX*×/ ".contains(character)
                                 }) =>

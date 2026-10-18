@@ -330,6 +330,33 @@ fn an_m_typed_in_the_hole_tool_starts_a_thread_size_not_move() {
     assert_eq!(harness.state().active_tool, ActiveTool::Move);
 }
 
+/// Review 2026-10-17 P3-G: on a slow frame "1m" arrives at once, and its "m"
+/// picked Move and fell out of the value. A value begun in a frame takes every
+/// key typed with it; a letter alone is still its tool.
+#[test]
+fn a_unit_letter_typed_with_its_number_in_one_frame_stays_in_the_value() {
+    let mut app = KetchupApp::new();
+    app.dispatch_command(AppCommand::Rectangle);
+    let mut harness = shell(app);
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("1".into()));
+    harness.key_press(egui::Key::M);
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("m".into()));
+    harness.step();
+    harness.step();
+    assert_eq!(harness.state().active_tool, ActiveTool::Rectangle);
+    assert_eq!(harness.state().value_input(), "1m");
+
+    press(&mut harness, egui::Key::Escape);
+    press(&mut harness, egui::Key::M);
+    assert_eq!(harness.state().active_tool, ActiveTool::Move);
+}
+
 #[test]
 fn drawing_plane_axis_keys_do_not_steal_foreign_text_focus() {
     let mut app = KetchupApp::new();
