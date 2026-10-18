@@ -116,6 +116,39 @@ impl ToolOutput {
     }
 }
 
+/// The window's image reply as tool content. A reply without PNG data is an
+/// error: it used to be a successful image with `data: null` (review
+/// 2026-10-17 P3).
+pub(crate) fn image_output(stamp: Value, mut result: Value) -> ToolOutput {
+    let data = result
+        .as_object_mut()
+        .and_then(|result| result.remove("data"))
+        .filter(|data| data.as_str().is_some_and(|data| !data.is_empty()));
+    let Some(data) = data else {
+        return ToolError::new(
+            "image_missing",
+            "The window answered without image data, so there is no picture of the view; \
+             call view image again.",
+        )
+        .output();
+    };
+    let summary = json!({
+        "stamp": stamp,
+        "width": result["width"],
+        "height": result["height"],
+        "framing": result["framing"],
+        "view": result["view"],
+        "selection": result["selection"],
+    });
+    ToolOutput {
+        content: vec![
+            json!({"type": "image", "data": data, "mimeType": "image/png"}),
+            json!({"type": "text", "text": summary.to_string()}),
+        ],
+        is_error: false,
+    }
+}
+
 struct Attached {
     connection: Connection,
     window: Window,
@@ -436,27 +469,7 @@ impl Tools {
         args.entry("max_side_px").or_insert(512.into());
         args.insert("framing".into(), framing.into());
         match self.request("image", args, DEFAULT_WAIT)? {
-            Reply::Done { stamp, mut result } => {
-                let data = result
-                    .as_object_mut()
-                    .and_then(|result| result.remove("data"))
-                    .unwrap_or_default();
-                let summary = json!({
-                    "stamp": stamp,
-                    "width": result["width"],
-                    "height": result["height"],
-                    "framing": result["framing"],
-                    "view": result["view"],
-                    "selection": result["selection"],
-                });
-                Ok(ToolOutput {
-                    content: vec![
-                        json!({"type": "image", "data": data, "mimeType": "image/png"}),
-                        json!({"type": "text", "text": summary.to_string()}),
-                    ],
-                    is_error: false,
-                })
-            }
+            Reply::Done { stamp, result } => Ok(image_output(stamp, result)),
             rejected => Ok(self.output(rejected)),
         }
     }

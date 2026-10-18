@@ -525,6 +525,13 @@ fn stand_in_window(root: &Path) -> mpsc::Receiver<Value> {
                     "fix_hint": "Make a change first.", "causes": []}),
                     json!("undo_unavailable"),
                 ),
+                // `max_side_px: 1` stands for a reply that lost its picture.
+                "image" if request["max_side_px"] == 1 => (
+                    true,
+                    json!({"width": 1, "height": 1, "framing": {"mode": "viewport"},
+                    "view": {}, "selection": []}),
+                    Value::Null,
+                ),
                 "image" => (
                     true,
                     json!({"data": "iVBORw0KGgo=", "width": 512, "height": 384,
@@ -935,4 +942,23 @@ fn tool_calls_reach_the_open_window_as_bridge_requests() {
         "{image_request}"
     );
     assert!(image_request.get("view").is_none(), "{image_request}");
+
+    // Review 2026-10-17 P3: a reply without the picture is an error, not an
+    // image whose data is null.
+    let missing = call(
+        &mut tools,
+        "view",
+        json!({"action": "image", "max_side_px": 1}),
+    );
+    assert_eq!(missing["isError"], true, "{missing}");
+    assert_eq!(text(&missing)["error"], "image_missing", "{missing}");
+    assert!(
+        missing["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|content| content["type"] != "image"),
+        "{missing}"
+    );
+    received.recv().unwrap();
 }
