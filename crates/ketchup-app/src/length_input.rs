@@ -380,6 +380,16 @@ impl Parser {
         if self.at == start {
             return None;
         }
+        // An exponent, as in the modulus 2.1e5; no unit starts with an e.
+        if matches!(self.chars.get(self.at), Some('e' | 'E')) {
+            let sign = usize::from(matches!(self.chars.get(self.at + 1), Some('+' | '-')));
+            if digit(&self.chars, self.at + 1 + sign) {
+                self.at += 1 + sign;
+                while digit(&self.chars, self.at) {
+                    self.at += 1;
+                }
+            }
+        }
         let text: String = self.chars[start..self.at]
             .iter()
             .map(|&c| if c == ',' { '.' } else { c })
@@ -465,7 +475,7 @@ mod tests {
     fn non_lengths_and_garbage_are_refused() {
         for input in [
             "", " ", "abc", "1m*1m", "2/0", "2/1m", "1,2,3", "12,", "(1+2", "1+", "1 min", "5 5",
-            "1e3", "80;60",
+            "1e", "1e+", "80;60",
         ] {
             assert_eq!(mm(input), None, "{input:?}");
         }
@@ -485,6 +495,21 @@ mod tests {
         assert_eq!(parse_number("0,5", Comma), Some(0.5));
         assert_eq!(parse_number("90/2", Point), Some(45.0));
         assert_eq!(parse_number("5 mm", Point), None);
+    }
+
+    /// A modulus is typed with an exponent, as `str::parse` took it before
+    /// the dialog fields moved to this reader.
+    #[test]
+    fn a_number_may_carry_an_exponent() {
+        assert_eq!(read_number("2.1e5", Point), Ok(210_000.0));
+        assert_eq!(read_number("2,1e5", Comma), Ok(210_000.0));
+        assert_eq!(read_number("2.1E+5", Comma), Ok(210_000.0));
+        assert_eq!(read_number("5e-1*4", Point), Ok(2.0));
+        assert_eq!(parse_length_mm("1e3 mm", Point), Some(1000.0));
+        assert_eq!(
+            parse_length_list("1e3;2e2", Point, 2..=2),
+            Some(vec![1000.0, 200.0])
+        );
     }
 
     /// Where the decimal separator is a point a comma is refused as such, so
