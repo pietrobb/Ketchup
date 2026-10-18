@@ -39,6 +39,9 @@ pub struct SaveOptions {
 pub struct RecoveryState {
     requested_path: PathBuf,
     source_path: PathBuf,
+    /// The file a work-recovery checkpoint opened in its place was made from;
+    /// the session's own checkpoints are made from it too. None for a backup.
+    work_recovery_base: Option<persistence::FileIdentity>,
 }
 impl RecoveryState {
     #[must_use]
@@ -148,6 +151,7 @@ impl DocumentSession {
             .map_err(SessionError::Persistence)?;
         let loaded = persistence::load_file_with_source(requested_path)
             .map_err(SessionError::Persistence)?;
+        let work_recovery_base = loaded.work_recovery_base();
         let (outcome, source_path, source_bytes, work_recovery_identity) = loaded.into_parts();
         let load_notices = outcome.audit().notices.clone();
         let (document, container_data) = outcome
@@ -156,6 +160,7 @@ impl DocumentSession {
         let recovery = (source_path != requested_path).then(|| RecoveryState {
             requested_path: requested_path.to_owned(),
             source_path,
+            work_recovery_base,
         });
         // A checkpoint this file cannot use would refuse every later one. One
         // that cannot be moved aside does not stop the file from opening, as in
@@ -310,9 +315,26 @@ impl DocumentSession {
         self.pending_work_recovery_cleanup = None;
         Ok(())
     }
+    /// Where this session checkpoints its work and the file the checkpoints
+    /// are made from: its own file, or the one a checkpoint was opened for.
+    fn checkpoint_target(&self) -> Option<(&Path, persistence::FileIdentity)> {
+        match (&self.path, self.file_identity, &self.recovery) {
+            (Some(path), Some(identity), _) => Some((path, identity)),
+            (
+                _,
+                _,
+                Some(RecoveryState {
+                    requested_path,
+                    work_recovery_base: Some(base),
+                    ..
+                }),
+            ) => Some((requested_path, *base)),
+            _ => None,
+        }
+    }
     fn acquire_work_recovery_lock(&mut self) -> Result<(), SessionError> {
         if self.work_recovery_lock.is_none()
-            && let Some(path) = &self.path
+            && let Some((path, _)) = self.checkpoint_target()
         {
             self.work_recovery_lock = Some(
                 persistence::WorkRecoveryLock::acquire(path).map_err(SessionError::Persistence)?,
@@ -328,12 +350,11 @@ impl DocumentSession {
     fn write_work_recovery_checkpoint_for(
         document: &DocumentStore,
         container_data: &ContainerData,
-        path: Option<&Path>,
-        file_identity: Option<persistence::FileIdentity>,
+        target: Option<(&Path, persistence::FileIdentity)>,
         saved_digest: Option<&str>,
         work_recovery_identity: Option<persistence::FileIdentity>,
     ) -> Result<Option<persistence::FileIdentity>, SessionError> {
-        let (Some(path), Some(identity)) = (path, file_identity) else {
+        let Some((path, identity)) = target else {
             return Ok(work_recovery_identity);
         };
         let current_digest = document.history_digest();
@@ -403,9 +424,17 @@ impl DocumentSession {
         self.acquire_work_recovery_lock()?;
         let before = self.snapshot();
         let container_data = &self.container_data;
-        let path = self.path.as_deref();
-        let file_identity = self.file_identity;
-        let saved_digest = self.saved_digest.as_deref();
+        let target = self
+            .checkpoint_target()
+            .map(|(path, identity)| (path.to_owned(), identity));
+        let path = target.as_ref().map(|(path, _)| path.as_path());
+        // Opened in place of its file, the work matches no saved state: the
+        // file beside the checkpoint holds less, so the checkpoint is kept.
+        let saved_digest = self
+            .recovery
+            .is_none()
+            .then_some(self.saved_digest.as_deref())
+            .flatten();
         let work_recovery_identity = self.work_recovery_identity;
         let mut next_work_recovery_identity = work_recovery_identity;
         let mut publication_error = None;
@@ -413,8 +442,9 @@ impl DocumentSession {
             let checkpoint = Self::write_work_recovery_checkpoint_for(
                 document,
                 container_data,
-                path,
-                file_identity,
+                target
+                    .as_ref()
+                    .map(|(path, identity)| (path.as_path(), *identity)),
                 saved_digest,
                 work_recovery_identity,
             );

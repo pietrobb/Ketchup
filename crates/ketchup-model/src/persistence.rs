@@ -1509,6 +1509,7 @@ fn try_load_work_recovery(
         source_path,
         source_bytes: payload.to_vec(),
         work_recovery_identity: Some(FileIdentity::from_bytes(&bytes)),
+        work_recovery_base: Some(base_identity),
     })))
 }
 
@@ -1517,6 +1518,7 @@ pub struct LoadedFile {
     source_path: PathBuf,
     source_bytes: Vec<u8>,
     work_recovery_identity: Option<FileIdentity>,
+    work_recovery_base: Option<FileIdentity>,
 }
 
 impl LoadedFile {
@@ -1538,6 +1540,14 @@ impl LoadedFile {
     #[must_use]
     pub fn work_recovery_identity(&self) -> Option<FileIdentity> {
         self.work_recovery_identity
+    }
+
+    /// When the open came from a work-recovery checkpoint, the identity of
+    /// the file it was made from: later checkpoints of the work are made from
+    /// it too.
+    #[must_use]
+    pub fn work_recovery_base(&self) -> Option<FileIdentity> {
+        self.work_recovery_base
     }
 
     #[must_use]
@@ -1577,6 +1587,7 @@ pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FileP
                     source_path: path.to_owned(),
                     source_bytes: bytes,
                     work_recovery_identity: None,
+                    work_recovery_base: None,
                 })
             }
             // A file that needs migration or that a newer Kečup wrote is not
@@ -1616,6 +1627,7 @@ fn open_backup(
                     source_path: backup_path,
                     source_bytes: bytes,
                     work_recovery_identity: None,
+                    work_recovery_base: None,
                 });
             }
             Err(error) => FilePersistenceError::Format(error),

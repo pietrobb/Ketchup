@@ -1281,6 +1281,42 @@ fn dirty_gui_document_recovers_after_crash_and_requires_save_as() {
     assert!(!ketchup_model::persistence::work_recovery_path(&primary).exists());
 }
 
+/// Review 2026-10-17 M-7: a window opened from a work-recovery checkpoint
+/// wrote no more checkpoints, so a second crash lost every edit since the open.
+#[test]
+fn a_window_opened_from_a_work_recovery_checkpoint_keeps_checkpointing() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("crashed.ketchup");
+    let mut author = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
+    author.click_menu_command("menu-file", AppCommand::Save);
+    let mut crashed = Shell::with_dialogs(ScriptedFileDialogs::new().queue_open(&primary));
+    crashed.click_menu_command("menu-file", AppCommand::Open);
+    assert!(crashed.app_mut().create_box());
+    crashed.settle();
+    drop(crashed);
+
+    let mut recovered = Shell::with_dialogs(ScriptedFileDialogs::new().queue_open(&primary));
+    recovered.click_menu_command("menu-file", AppCommand::Open);
+    assert!(recovered.app().recovery_source_path().is_some());
+    assert!(recovered.app_mut().create_box());
+    recovered.settle();
+    let second_crash = recovered.app().canonical_digest();
+    let second_undo = recovered.app().undo_step_count();
+    // Back at the state it was opened in, the checkpoint still holds that work:
+    // the file beside it does not.
+    assert!(recovered.app_mut().undo());
+    recovered.settle();
+    assert!(ketchup_model::persistence::work_recovery_path(&primary).is_file());
+    assert!(recovered.app_mut().redo());
+    recovered.settle();
+    drop(recovered);
+
+    let mut reopened = Shell::with_dialogs(ScriptedFileDialogs::new().queue_open(&primary));
+    reopened.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(reopened.app().canonical_digest(), second_crash);
+    assert_eq!(reopened.app().undo_step_count(), second_undo);
+}
+
 /// A damaged work-recovery checkpoint beside the file is moved aside and named
 /// on open, and the first edit is checkpointed instead of being refused.
 #[test]

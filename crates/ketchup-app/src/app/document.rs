@@ -235,6 +235,7 @@ impl KetchupApp {
     ) -> bool {
         match result {
             Ok(loaded_file) => {
+                let work_recovery_base = loaded_file.work_recovery_base();
                 let (outcome, effective_path, source, work_recovery_identity) =
                     loaded_file.into_parts();
                 if !outcome.is_editable() {
@@ -277,6 +278,7 @@ impl KetchupApp {
                 let recovery_open = (effective_path != path).then(|| RecoveryOpenState {
                     requested_path: path.to_owned(),
                     source_path: effective_path,
+                    work_recovery_base,
                 });
                 let notices = outcome.audit().notices.clone();
                 // A checkpoint this file cannot use would refuse every later one,
@@ -494,14 +496,37 @@ impl KetchupApp {
         );
     }
 
+    /// Where the window checkpoints its work and the file the checkpoints are
+    /// made from: its own file, or the one a checkpoint was opened for.
+    fn checkpoint_target(&self) -> Option<(PathBuf, ketchup_model::persistence::FileIdentity)> {
+        match (
+            &self.file.path,
+            self.file.identity,
+            &self.file.recovery_open,
+        ) {
+            (Some(path), Some(identity), _) => Some((path.clone(), identity)),
+            (
+                _,
+                _,
+                Some(RecoveryOpenState {
+                    requested_path,
+                    work_recovery_base: Some(base),
+                    ..
+                }),
+            ) => Some((requested_path.clone(), *base)),
+            _ => None,
+        }
+    }
+
     fn acquire_work_recovery_lock(
         &mut self,
     ) -> Result<(), ketchup_model::persistence::FilePersistenceError> {
         if self.file.work_recovery_lock.is_none()
-            && let Some(path) = &self.file.path
+            && let Some((path, _)) = self.checkpoint_target()
         {
-            self.file.work_recovery_lock =
-                Some(ketchup_model::persistence::WorkRecoveryLock::acquire(path)?);
+            self.file.work_recovery_lock = Some(
+                ketchup_model::persistence::WorkRecoveryLock::acquire(&path)?,
+            );
         }
         Ok(())
     }
@@ -540,7 +565,7 @@ impl KetchupApp {
         if self.file.work_recovery_digest.as_deref() == Some(&checkpoint_digest) {
             return;
         }
-        let (Some(path), Some(identity)) = (self.file.path.clone(), self.file.identity) else {
+        let Some((path, identity)) = self.checkpoint_target() else {
             return;
         };
         let result = self.acquire_work_recovery_lock().and_then(|()| {
@@ -1257,7 +1282,7 @@ impl KetchupApp {
             return Err(WorkRecoveryMutationError::Recovery(error));
         }
         let document_path = self.file.path.clone();
-        let file_identity = self.file.identity;
+        let checkpoint_target = self.checkpoint_target();
         let recovery_open = self.file.recovery_open.is_some();
         let saved_digest = self.file.saved_digest.clone();
         let container_data = &self.file.container_data;
@@ -1280,7 +1305,10 @@ impl KetchupApp {
                     next_work_recovery_identity = None;
                     return Ok(());
                 }
-                let (Some(path), Some(identity)) = (document_path.as_deref(), file_identity) else {
+                let Some((path, identity)) = checkpoint_target
+                    .as_ref()
+                    .map(|(path, identity)| (path.as_path(), *identity))
+                else {
                     return Ok(());
                 };
                 // A mutation that left the history as the checkpoint already holds it
@@ -1322,11 +1350,12 @@ impl KetchupApp {
         match result {
             Ok(value) => {
                 self.file.work_recovery_identity = next_work_recovery_identity;
-                self.file.work_recovery_digest =
-                    (self.is_dirty() && document_path.is_some() && file_identity.is_some())
-                        .then(|| self.document.history_digest());
+                self.file.work_recovery_digest = (self.is_dirty() && checkpoint_target.is_some())
+                    .then(|| self.document.history_digest());
                 if let Some(error) = &publication_error {
-                    let path = document_path.as_deref().unwrap_or_else(|| Path::new(""));
+                    let path = checkpoint_target
+                        .as_ref()
+                        .map_or_else(|| Path::new(""), |(path, _)| path.as_path());
                     self.report_file_persistence_error("error-save-document", path, error);
                 }
                 Ok((value, publication_error))

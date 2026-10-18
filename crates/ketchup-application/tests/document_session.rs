@@ -463,6 +463,55 @@ fn unsaved_session_edit_recovers_with_history_and_requires_save_as() {
     );
 }
 
+/// Review 2026-10-17 M-7: a session opened from a work-recovery checkpoint
+/// wrote no more checkpoints, so a second crash lost every edit since the open.
+#[test]
+fn a_session_opened_from_a_work_recovery_checkpoint_keeps_checkpointing() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("crashed.ketchup");
+    let checkpoint = persistence::work_recovery_path(&primary);
+    let mut author = DocumentSession::default();
+    author
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    author.save(&primary, SaveOptions::default()).unwrap();
+    let mut crashed = DocumentSession::open(&primary, SessionSettings::default()).unwrap();
+    crashed.set_grounded(OccurrenceId(1), true).unwrap();
+    let first_crash = crashed.snapshot().canonical_digest();
+    drop(crashed);
+
+    let mut recovered = DocumentSession::open(&primary, SessionSettings::default()).unwrap();
+    assert!(recovered.recovery_state().is_some());
+    recovered.set_grounded(OccurrenceId(1), false).unwrap();
+    let second_crash = recovered.snapshot().canonical_digest();
+    assert_ne!(second_crash, first_crash);
+    let reopened = |path: &std::path::Path| {
+        DocumentSession::open(path, SessionSettings::default())
+            .unwrap()
+            .snapshot()
+            .canonical_digest()
+    };
+    // The open session holds the lock, so the checkpoint is read as a file:
+    // magic, schema, base length and hash, payload length, then the document.
+    let checkpointed = || {
+        let bytes = std::fs::read(&checkpoint).unwrap();
+        persistence::load(&bytes[60..])
+            .unwrap()
+            .snapshot()
+            .canonical_digest()
+    };
+    assert_eq!(checkpointed(), second_crash);
+
+    // Back at the state it was opened in, the checkpoint still holds that work:
+    // the file beside it does not.
+    recovered.undo().unwrap();
+    assert!(checkpoint.is_file());
+    assert_eq!(checkpointed(), first_crash);
+    recovered.redo().unwrap();
+    drop(recovered);
+    assert_eq!(reopened(&primary), second_crash);
+}
+
 /// A work-recovery checkpoint the file cannot use (made from another version
 /// of it, or damaged) is moved aside and named on open; the session then
 /// checkpoints its own edits instead of refusing every one of them.

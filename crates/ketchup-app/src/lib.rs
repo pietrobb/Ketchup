@@ -2185,6 +2185,9 @@ struct PendingSketchupSceneImport {
 struct RecoveryOpenState {
     requested_path: PathBuf,
     source_path: PathBuf,
+    /// The file a work-recovery checkpoint opened in its place was made from;
+    /// the window's own checkpoints are made from it too. None for a backup.
+    work_recovery_base: Option<ketchup_model::persistence::FileIdentity>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
