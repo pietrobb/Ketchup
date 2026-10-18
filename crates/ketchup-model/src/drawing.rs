@@ -4270,34 +4270,44 @@ fn layout_bom_annotations(
         return Err(DrawingError::InvalidAnnotation);
     }
 
+    // A label longer than an R12 string continues on the lines below it (one
+    // row height apart, as the export spaces them), so it takes as many rows
+    // of the column as it has lines and the next row starts below the last.
     let row_height = 4.5;
     let rows_per_column = ((border_bounds_mm[1][1] - drawing_min_y - 5.0) / row_height)
         .floor()
-        .max(1.0) as usize;
+        .max(1.0);
     let column_width = 70.0;
     let mut rows = Vec::with_capacity(positions.len());
-    for (index, (position, ((definition_id, mirrored), part_name, quantity))) in
-        positions.into_iter().enumerate()
-    {
-        let column = index / rows_per_column;
-        let row = index % rows_per_column;
+    let (mut column, mut row) = (0.0, 0.0);
+    for (position, ((definition_id, mirrored), part_name, quantity)) in positions {
+        let hand = if mirrored { " (mirrored)" } else { "" };
+        let label = format!("{position} | {part_name}{hand} | QTY {quantity}");
+        let line_count = crate::drawing_export::text_lines(&label, f64::INFINITY).len() as f64;
+        if line_count > rows_per_column {
+            return Err(DrawingError::LayoutOverflow);
+        }
+        if row + line_count > rows_per_column {
+            column += 1.0;
+            row = 0.0;
+        }
         let text_position_mm = [
-            border_bounds_mm[0][0] + 3.0 + column as f64 * column_width,
-            border_bounds_mm[1][1] - 5.0 - row as f64 * row_height,
+            border_bounds_mm[0][0] + 3.0 + column * column_width,
+            border_bounds_mm[1][1] - 5.0 - row * row_height,
         ];
         if text_position_mm[0] + column_width > border_bounds_mm[1][0]
             || !drawing_page_contains(text_position_mm, border_bounds_mm, drawing_min_y)
         {
             return Err(DrawingError::LayoutOverflow);
         }
-        let hand = if mirrored { " (mirrored)" } else { "" };
+        row += line_count;
         rows.push(DrawingBomRowLayout {
             position,
             definition_id,
             mirrored,
-            part_name: part_name.clone(),
+            part_name,
             quantity,
-            label: format!("{position} | {part_name}{hand} | QTY {quantity}"),
+            label,
             text_position_mm,
         });
     }

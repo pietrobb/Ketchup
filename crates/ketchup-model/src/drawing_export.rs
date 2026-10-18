@@ -22,8 +22,8 @@ const MAX_DXF_STRING_CHARACTERS: usize = 255;
 /// Baseline-to-baseline distance of a text broken over lines, in text heights.
 const LINE_SPACING: f64 = 1.5;
 /// A generous glyph advance of the sheet's sans-serif font, in text heights,
-/// so a title-block line broken by it fits the frame in any reader.
-const TITLE_BLOCK_GLYPH_WIDTH: f64 = 0.7;
+/// so a line measured with it is no shorter than in any reader.
+const GLYPH_WIDTH: f64 = 0.7;
 /// The title-block texts shrink in these steps until they fit its frame; at
 /// the last one a title is 2.4 mm and the other fields 1.8 mm high.
 const TITLE_BLOCK_SCALES: [f64; 5] = [1.0, 0.9, 0.8, 0.7, 0.6];
@@ -133,6 +133,7 @@ pub enum DrawingExportError {
     UnsupportedDxfText,
     DxfTextTooLong,
     TitleBlockTooLong,
+    WrappedNoteOverlaps,
     ResourceLimit,
 }
 
@@ -150,6 +151,9 @@ impl fmt::Display for DrawingExportError {
             }
             Self::TitleBlockTooLong => {
                 "the title block's title, drawing number, revision and author do not fit its frame even at the smallest legible text size"
+            }
+            Self::WrappedNoteOverlaps => {
+                "a note longer than a DXF R12 string continues on lines below its position that would print over other text or the title block; move the note or shorten it"
             }
             Self::ResourceLimit => "drawing export exceeded its resource limit",
         })
@@ -610,19 +614,21 @@ fn collect_page_content(
         texts.push(PageText {
             id: format!("bom-row-{}", row.position),
             position: row.text_position_mm,
-            lines: vec![row.label.clone()],
+            lines: text_lines(&row.label, f64::INFINITY),
             height_mm: 3.0,
         });
     }
+    let notes = texts.len()..texts.len() + drawing.layout.notes.len();
     for note in &drawing.layout.notes {
         texts.push(PageText {
             id: note.stable_note_id.clone(),
             position: note.position_mm,
-            lines: vec![note.text.clone()],
+            lines: text_lines(&note.text, f64::INFINITY),
             height_mm: 3.5,
         });
     }
     push_title_block_text(&mut texts, &drawing.layout)?;
+    check_wrapped_notes(&texts, notes, drawing.layout.title_block_bounds_mm[1][1])?;
     if lines.iter().any(|line| {
         !valid_point(line.start)
             || !valid_point(line.end)
@@ -892,7 +898,7 @@ fn push_title_block_text(
                 continue;
             }
             let height_mm = height * scale;
-            let characters = (right - left - 4.0) / (TITLE_BLOCK_GLYPH_WIDTH * height_mm);
+            let characters = (right - left - 4.0) / (GLYPH_WIDTH * height_mm);
             let lines = text_lines(value, characters.max(1.0));
             let first = y;
             for _ in 1..lines.len() {
@@ -912,6 +918,52 @@ fn push_title_block_text(
         }
     }
     Err(DrawingExportError::TitleBlockTooLong)
+}
+
+/// A note longer than an R12 string continues on lines below the position
+/// its author gave it. Those lines must stay above the title block and clear
+/// of every other text of the sheet; otherwise the export says so rather than
+/// printing them over what is there.
+fn check_wrapped_notes(
+    texts: &[PageText],
+    notes: std::ops::Range<usize>,
+    title_block_top: f64,
+) -> Result<(), DrawingExportError> {
+    for index in notes {
+        for wrapped in line_boxes(&texts[index]).skip(1) {
+            if wrapped[0][1] < title_block_top
+                || texts.iter().enumerate().any(|(other, text)| {
+                    other != index
+                        && line_boxes(text).any(|line| {
+                            wrapped[0][0] < line[1][0]
+                                && line[0][0] < wrapped[1][0]
+                                && wrapped[0][1] < line[1][1]
+                                && line[0][1] < wrapped[1][1]
+                        })
+                })
+            {
+                return Err(DrawingExportError::WrappedNoteOverlaps);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The page area each line of `text` covers, from its descenders to its cap
+/// and as wide as [`GLYPH_WIDTH`] makes it.
+fn line_boxes(text: &PageText) -> impl Iterator<Item = [[f64; 2]; 2]> + '_ {
+    let advance = GLYPH_WIDTH * text.height_mm;
+    text.lines
+        .iter()
+        .scan(text.position[1], move |baseline, line| {
+            let width = line.chars().fold(0.0, |width, _| width + advance);
+            let bounds = [
+                [text.position[0], *baseline - 0.25 * text.height_mm],
+                [text.position[0] + width, *baseline + text.height_mm],
+            ];
+            *baseline -= LINE_SPACING * text.height_mm;
+            Some(bounds)
+        })
 }
 
 fn export_svg(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageText]) -> Vec<u8> {
@@ -1229,7 +1281,7 @@ fn dxf_text(value: &str) -> Result<String, DrawingExportError> {
 /// also R12 strings of at most 255 characters once escaped (Slovak diacritics
 /// take seven characters each): after the last space that fits, or between
 /// characters when no space does. The lines join back into `value`.
-fn text_lines(value: &str, max_characters: f64) -> Vec<String> {
+pub(crate) fn text_lines(value: &str, max_characters: f64) -> Vec<String> {
     let characters: Vec<char> = value.chars().collect();
     let escaped = |character: char| dxf_character(character).map_or(1, |piece| piece.len());
     let mut lines = Vec::new();
