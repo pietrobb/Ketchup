@@ -22,6 +22,13 @@ pub(super) fn apply(
                 .occurrences
                 .values()
                 .any(|occurrence| occurrence.definition_id == *id)
+                || edit
+                    .product
+                    .local_occurrences
+                    .iter()
+                    .any(|(key, occurrence)| {
+                        occurrence.definition_id == *id && key.definition_id != *id
+                    })
             {
                 return Err(CanonicalError::DefinitionInUse(*id));
             }
@@ -33,6 +40,12 @@ pub(super) fn apply(
             edit.product
                 .body_feature_suppression
                 .retain(|(definition_id, _), _| definition_id != id);
+            edit.product
+                .local_groups
+                .retain(|key, _| key.definition_id != *id);
+            edit.product
+                .local_occurrences
+                .retain(|key, _| key.definition_id != *id);
             for feature_id in &definition.feature_ids {
                 edit.product.features.remove(feature_id);
                 forget_feature_annotations(&mut edit.product, *feature_id);

@@ -936,6 +936,75 @@ fn local_member_creation_reparent_repoint_and_removal_update_every_copy() {
 }
 
 #[test]
+fn deleting_a_component_definition_removes_its_members_and_a_used_part_is_refused() {
+    let mut document = seed_product_document();
+    document.make_unique(FIRST, "Inner geometry").unwrap();
+    let inner = document
+        .current()
+        .occurrence(FIRST)
+        .unwrap()
+        .definition_id();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateGroup {
+            id: GroupId(40),
+            name: "Inner".into(),
+            transform: Transform::identity(),
+            parent: Some(GROUP),
+        }]))
+        .unwrap();
+    let component = document
+        .convert_group_to_component(GROUP, "Assembly")
+        .unwrap();
+    let before = document.current();
+    assert!(before.local_groups().next().is_some());
+    assert!(
+        before
+            .local_occurrences()
+            .any(|o| o.definition_id() == inner)
+    );
+
+    assert_eq!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::DeleteDefinition { id: inner }
+            ]))
+            .err(),
+        Some(CanonicalError::DefinitionInUse(inner))
+    );
+    assert_eq!(document.current().revision_id(), before.revision_id());
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteOccurrence {
+                id: component.component_occurrence_id,
+            },
+            CanonicalCommand::DeleteDefinition {
+                id: component.component_definition_id,
+            },
+        ]))
+        .unwrap();
+    let deleted = document.current();
+    assert!(
+        deleted
+            .definition(component.component_definition_id)
+            .is_none()
+    );
+    assert!(deleted.local_groups().next().is_none());
+    assert!(deleted.local_occurrences().next().is_none());
+    assert!(deleted.definition(inner).is_some());
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteDefinition { id: inner },
+        ]))
+        .unwrap();
+    assert!(document.current().definition(inner).is_none());
+
+    document.undo().unwrap();
+    document.undo().unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+}
+
+#[test]
 fn invalid_local_member_edits_leave_shared_geometry_and_history_intact() {
     let mut document = seed_product_document();
     let component = document
