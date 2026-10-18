@@ -94,7 +94,7 @@ pub(super) fn apply(
             if edit.product.drawing_sheets.contains_key(&sheet.id()) {
                 return Err(CanonicalError::DrawingSheetAlreadyExists(sheet.id()));
             }
-            validate_drawing_sheet(&edit.product, sheet)?;
+            validate_drawing_sheet(&validation_snapshot(&edit.product), sheet)?;
             edit.product
                 .drawing_sheets
                 .insert(sheet.id(), Arc::new(sheet.clone()));
@@ -103,7 +103,7 @@ pub(super) fn apply(
             if !edit.product.drawing_sheets.contains_key(&sheet.id()) {
                 return Err(CanonicalError::DrawingSheetNotFound(sheet.id()));
             }
-            validate_drawing_sheet(&edit.product, sheet)?;
+            validate_drawing_sheet(&validation_snapshot(&edit.product), sheet)?;
             edit.product
                 .drawing_sheets
                 .insert(sheet.id(), Arc::new(sheet.clone()));

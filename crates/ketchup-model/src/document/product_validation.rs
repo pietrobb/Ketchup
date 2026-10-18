@@ -17,6 +17,16 @@ pub(super) fn ensure_name(name: &str) -> Result<(), CanonicalError> {
     }
 }
 
+/// The product under validation as a snapshot, for checks that read one.
+pub(super) fn validation_snapshot(product: &ProductModel) -> Snapshot {
+    #[cfg(test)]
+    incremental_equivalence_tests::PRODUCT_COPIES.with(|count| count.set(count.get() + 1));
+    Snapshot {
+        revision_id: 0,
+        product: Arc::new(product.clone()),
+    }
+}
+
 pub(super) fn validate_transform(transform: Transform) -> Result<(), CanonicalError> {
     Transform::from_matrix(transform.matrix).map(|_| ())
 }
@@ -277,12 +287,14 @@ fn validate_document_entries(
         }
         validate_assembly_motion_study(product, study)?;
     }
+    let snapshot = std::cell::OnceCell::new();
+    let snapshot = || snapshot.get_or_init(|| validation_snapshot(product));
     for (id, sheet) in &product.drawing_sheets {
         if *id != sheet.id() {
             return Err(CanonicalError::Drawing(DrawingError::InvalidSheet));
         }
         if validate_drawing_sources {
-            validate_drawing_sheet(product, sheet)?;
+            validate_drawing_sheet(snapshot(), sheet)?;
         }
     }
     for (id, plan) in &product.cam_plans {
@@ -291,13 +303,6 @@ fn validate_document_entries(
         }
         plan.validate_structure().map_err(CanonicalError::Cam)?;
     }
-    let snapshot = std::cell::OnceCell::new();
-    let snapshot = || {
-        snapshot.get_or_init(|| Snapshot {
-            revision_id: 0,
-            product: Arc::new(product.clone()),
-        })
-    };
     for (id, joint) in &product.pin_joints {
         if *id != joint.id {
             return Err(CanonicalError::PinJoint(PinJointError::InvalidJointId));
@@ -361,15 +366,7 @@ fn validate_document_entries(
         ensure_product_id(tag.id.0)?;
         ensure_name(&tag.name)?;
     }
-    for (id, view) in &product.saved_views {
-        if *id != view.id {
-            return Err(CanonicalError::InvalidSavedView {
-                id: *id,
-                problem: SavedViewProblem::IdMismatch,
-            });
-        }
-        super::saved_view_commands::validate_saved_view(product, view)?;
-    }
+    validate_saved_views(product)?;
     for (id, collection) in &product.collections {
         if *id != collection.id {
             return Err(CanonicalError::CollectionNotFound(*id));
@@ -391,6 +388,19 @@ fn validate_document_entries(
         receipt
             .validate()
             .map_err(CanonicalError::InvalidImportReceipt)?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_saved_views(product: &ProductModel) -> Result<(), CanonicalError> {
+    for (id, view) in &product.saved_views {
+        if *id != view.id {
+            return Err(CanonicalError::InvalidSavedView {
+                id: *id,
+                problem: SavedViewProblem::IdMismatch,
+            });
+        }
+        super::saved_view_commands::validate_saved_view(product, view)?;
     }
     Ok(())
 }
@@ -1416,6 +1426,11 @@ mod incremental_equivalence_tests {
 
     type Mutation = (&'static str, fn(&mut ProductModel));
 
+    thread_local! {
+        /// How often validation copied the product into a snapshot on this thread.
+        pub(super) static PRODUCT_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     fn dimension(value: f64) -> Dimension {
         Dimension::new(value.to_string(), value).unwrap()
     }
@@ -1606,6 +1621,44 @@ mod incremental_equivalence_tests {
             edit(&mut p.tags, TagId(2), |t| t.name = "fronts".into());
         }),
     ];
+
+    /// Review 2026-10-17 M-6: a batch copied the whole product once per drawing sheet to
+    /// check it, and one that only shows or hides parts checked the whole model again.
+    #[test]
+    fn a_batch_copies_the_product_once_and_showing_a_part_rechecks_nothing() {
+        let mut store = DocumentStore::from_product(0, product()).unwrap();
+        let sheets = (1..=3)
+            .map(|id| {
+                let source = crate::drawing::DrawingSource::Definition(DefinitionId(1));
+                let sheet = DrawingSheet::new(DrawingSheetId(id), format!("sheet {id}"), source);
+                CanonicalCommand::CreateDrawingSheet(sheet.unwrap())
+            })
+            .collect();
+        store.apply_batch(&CommandBatch::new(sheets)).unwrap();
+        let mut copies = |command| {
+            PRODUCT_COPIES.with(|count| count.set(0));
+            store
+                .apply_batch(&CommandBatch::new(vec![command]))
+                .unwrap();
+            PRODUCT_COPIES.with(std::cell::Cell::get)
+        };
+        let moved = Transform::from_translation(10.0, 0.0, 0.0).unwrap();
+        let command = CanonicalCommand::SetOccurrenceTransform {
+            id: OccurrenceId(1),
+            transform: moved,
+        };
+        assert_eq!(copies(command), 1, "three sheets share one copy");
+        let command = CanonicalCommand::SetOccurrenceVisibility {
+            id: OccurrenceId(1),
+            visible: false,
+        };
+        assert_eq!(copies(command), 0);
+        let command = CanonicalCommand::SetTagVisibility {
+            id: TagId(1),
+            visible: false,
+        };
+        assert_eq!(copies(command), 0);
+    }
 
     /// A damaged file whose tapped feature lists a missing feature or sits in a missing
     /// definition is refused by name instead of crashing on open (NEW-B).

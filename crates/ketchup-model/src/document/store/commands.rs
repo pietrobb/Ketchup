@@ -168,6 +168,10 @@ impl BatchEdit {
                 assembly_relations::apply(self, command)?
             }
         }
+        // Showing or hiding a part does not change which definitions a coded path names.
+        if command.is_view_only() {
+            return Ok(());
+        }
         for (path, identity) in &self.production_anchors {
             if production_code_identity(&self.product, path).as_ref() != identity.as_ref() {
                 self.rebound_production_paths.insert(path.clone());

@@ -357,8 +357,10 @@ pub(super) fn validate_assembly_motion_study(
     Ok(())
 }
 
+/// Checks `sheet` against `snapshot`, the product being validated: callers checking
+/// several sheets share one snapshot rather than copying the product for each.
 pub(super) fn validate_drawing_sheet(
-    product: &ProductModel,
+    snapshot: &Snapshot,
     sheet: &DrawingSheet,
 ) -> Result<(), CanonicalError> {
     ensure_product_id(sheet.id().0)?;
@@ -366,11 +368,7 @@ pub(super) fn validate_drawing_sheet(
     if sheet.schema() != crate::drawing::ORTHOGRAPHIC_DRAWING_SCHEMA_V2 {
         return Err(CanonicalError::Drawing(DrawingError::InvalidSheet));
     }
-    let snapshot = Snapshot {
-        revision_id: 0,
-        product: Arc::new(product.clone()),
-    };
-    crate::drawing::validate_source(&snapshot, sheet.source()).map_err(CanonicalError::Drawing)
+    crate::drawing::validate_source(snapshot, sheet.source()).map_err(CanonicalError::Drawing)
 }
 
 pub(super) fn validate_assembly_joint_motion_publication(
