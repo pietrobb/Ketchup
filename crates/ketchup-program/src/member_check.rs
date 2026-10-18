@@ -1623,10 +1623,8 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
 
 /// Governing check and status of a member from its checks. A check that is
 /// not a number leaves the member unverified unless another one fails it.
+/// The status is decided on the unrounded values; rounding is for the report.
 fn settle(member: &mut MemberCheck) {
-    for check in &mut member.checks {
-        check.utilization = round3(check.utilization);
-    }
     if member.checks.iter().any(|c| c.utilization.is_nan()) {
         member
             .missing
@@ -1644,6 +1642,10 @@ fn settle(member: &mut MemberCheck) {
         Some(_) if member.missing.is_empty() => "pass",
         _ => "not_verified",
     };
+    for check in &mut member.checks {
+        check.utilization = round3(check.utilization);
+    }
+    member.utilization = member.utilization.map(round3);
 }
 
 #[cfg(test)]
@@ -1683,5 +1685,13 @@ mod tests {
         assert_eq!(unknown.missing, ["a utilization is not a number"]);
         assert_eq!(settled(&[f64::NAN, 1.2]).status, "fail");
         assert_eq!(settled(&[0.4, 0.5]).status, "pass");
+    }
+
+    #[test]
+    fn a_utilization_just_over_one_fails_even_though_it_rounds_to_one() {
+        let over = settled(&[1.0004, 0.5]);
+        assert_eq!(over.status, "fail");
+        assert_eq!(over.governing.as_deref(), Some("bending"));
+        assert_eq!(settled(&[1.0, 0.5]).status, "pass");
     }
 }
