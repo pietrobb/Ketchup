@@ -47,15 +47,6 @@ fn the_demo_house_has_no_collisions_in_the_exact_check() {
 #[test]
 #[ignore = "release-only: exact geometry of the whole house; run with --ignored"]
 fn the_demo_house_exports_every_timber_member_to_btlx() {
-    use ketchup_application::validation::fabrication_collision_validation_with_worker;
-    use ketchup_manufacturing::fabrication::{
-        BtlxExportOptions, BtlxProfileProcessingRequest, GeneralBomItemKind,
-        project_general_fabrication,
-    };
-    use ketchup_model::exact_brep_graph::ExactBRepGraph;
-    use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
-    use ketchup_model::exact_validation::GeneralBodyParticipant;
-
     let mut session = DocumentSession::new(SessionSettings::default());
     let snapshot = session
         .apply_rule_program(
@@ -69,6 +60,44 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
         )
         .unwrap()
         .snapshot;
+    assert_every_member_exports_to_btlx(&snapshot);
+}
+
+/// The sample users open, examples/house-project.ketchup, is the house of the
+/// current program and exports like it. `KETCHUP_UPDATE_GOLDEN=1` applies the
+/// program to the sample (keeping its scenes and tags) and saves it first.
+#[test]
+#[ignore = "release-only: exact geometry of the whole house; run with --ignored"]
+fn the_house_sample_is_the_current_program_and_exports_to_btlx() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/house-project.ketchup");
+    let mut session = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    if ketchup_test_env::update_golden() {
+        let mut program = session.rule_program().unwrap().clone();
+        program.source = HOUSE.to_owned();
+        session.apply_rule_program(program, false).unwrap();
+        session
+            .save_current_snapshot(&path, ketchup_application::SaveOptions { overwrite: true })
+            .unwrap();
+    }
+    assert_eq!(
+        session.rule_program().unwrap().source.replace("\r\n", "\n"),
+        HOUSE.replace("\r\n", "\n"),
+        "regenerate the sample with KETCHUP_UPDATE_GOLDEN=1"
+    );
+    assert_every_member_exports_to_btlx(&session.snapshot());
+}
+
+fn assert_every_member_exports_to_btlx(snapshot: &ketchup_model::document::Snapshot) {
+    use ketchup_application::validation::fabrication_collision_validation_with_worker;
+    use ketchup_manufacturing::fabrication::{
+        BtlxExportOptions, BtlxProfileProcessingRequest, GeneralBomItemKind,
+        project_general_fabrication,
+    };
+    use ketchup_model::exact_brep_graph::ExactBRepGraph;
+    use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
+    use ketchup_model::exact_validation::GeneralBodyParticipant;
+
     let mut worker = crate::operations_support::worker();
     let occurrences = snapshot.scene_query();
     let packages = occurrences
@@ -76,7 +105,7 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
         .map(|occurrence| {
             let definition = snapshot.definition(occurrence.definition_id).unwrap();
             let graph = ExactBRepGraph::from_snapshot(
-                &snapshot,
+                snapshot,
                 occurrence.definition_id,
                 *definition.feature_ids().last().unwrap(),
             )
@@ -86,13 +115,13 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
             ))
         })
         .collect::<Vec<_>>();
-    let registry = ExactResultRegistry::accept(&snapshot, packages).unwrap();
+    let registry = ExactResultRegistry::accept(snapshot, packages).unwrap();
     let tolerance = snapshot.tolerance();
     let participants = occurrences
         .iter()
         .map(|occurrence| {
             GeneralBodyParticipant::accept(
-                &snapshot,
+                snapshot,
                 &registry,
                 occurrence.instance_path.clone(),
                 tolerance,
@@ -101,7 +130,7 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
         })
         .collect::<Vec<_>>();
     let validation = fabrication_collision_validation_with_worker(
-        &snapshot,
+        snapshot,
         &participants,
         &ContainerData::default(),
         None,
@@ -110,12 +139,12 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
     .unwrap();
     assert_eq!(validation.cases.len(), participants.len() - 1);
     let projection = project_general_fabrication(
-        &snapshot,
+        snapshot,
         &registry,
         &validation.cases,
         &validation.report,
         tolerance,
-        &ketchup_manufacturing::fabrication::shown_parts(&snapshot),
+        &ketchup_manufacturing::fabrication::shown_parts(snapshot),
     )
     .unwrap();
     assert!(
@@ -163,7 +192,7 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
     );
     let btlx = projection
         .btlx_2_3_1_export_with_options(
-            &snapshot,
+            snapshot,
             BtlxExportOptions {
                 profile_processing_request: BtlxProfileProcessingRequest::PortableFreeContour,
             },
