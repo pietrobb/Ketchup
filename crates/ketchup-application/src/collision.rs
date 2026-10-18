@@ -1055,10 +1055,10 @@ fn collision_report(
     let started = Instant::now();
     let worker_timeout = worker.as_ref().map(|(_, _, timeout)| *timeout);
     let mut group_facts = ExactPairFacts::new();
-    let mut pair_facts = if selection.requested.contains("group_connectivity") {
-        Some(&mut group_facts)
+    let (exact_gaps, mut pair_facts) = if selection.requested.contains("group_connectivity") {
+        (false, Some(&mut group_facts))
     } else {
-        pair_facts
+        (pair_facts.is_some(), pair_facts)
     };
     let tolerance = snapshot.tolerance();
     let mut report = json!({"document_id": snapshot.document_id().0,
@@ -1578,8 +1578,8 @@ fn collision_report(
             if !contact_pairs.contains(&(left, right))
                 && let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right])
             {
-                let decided =
-                    pieces::measure(a, b, [&graphs[l], &graphs[r]], tolerance.linear_mm());
+                let graphs = [&graphs[l], &graphs[r]];
+                let decided = pieces::measure(a, b, graphs, tolerance.linear_mm(), exact_gaps);
                 if let Some((patches, distance_mm)) = decided {
                     checked += 1;
                     hull_decided += 1;

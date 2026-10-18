@@ -143,15 +143,17 @@ fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
     (norm > ROUNDING && norm.is_finite()).then(|| v.map(|x| x / norm))
 }
 
-/// `a` and `b` are each one solid's pieces.
+/// `a` and `b` are each one solid's pieces. Separation has no gap, so with
+/// `exact_gap` (program checks read it) a separated pair is left to OCCT.
 pub(super) fn measure(
     a: &[Piece],
     b: &[Piece],
     graphs: [&ExactBRepGraph; 2],
     tolerance_mm: f64,
+    exact_gap: bool,
 ) -> Option<(Vec<ContactPatch>, Option<f64>)> {
     match relate_solids(a, b, tolerance_mm)? {
-        None => Some((Vec::new(), None)),
+        None => (!exact_gap).then(|| (Vec::new(), None)),
         Some(patches) => graphs
             .iter()
             .all(|graph| {
