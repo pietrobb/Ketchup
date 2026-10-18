@@ -3267,6 +3267,58 @@ fn arcs_with_different_centres_join_where_their_ends_meet() {
     assert_eq!(segments[1].end_mm(), segments[0].start_mm());
 }
 
+/// P3-V: a DXF older than 2007 is written in the Windows code page its
+/// `$DWGCODEPAGE` names, so Slovak layer names arrive as single bytes such as
+/// 0xF4 for "ô" in ANSI_1250. Such files were refused whole as "not UTF-8".
+#[test]
+fn a_pre_2007_dxf_is_read_in_the_code_page_it_declares() {
+    let header = |version: &str, code_page: Option<&str>| {
+        let code_page = code_page
+            .map(|name| format!("9\n$DWGCODEPAGE\n3\n{name}\n"))
+            .unwrap_or_default();
+        format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\n{version}\n{code_page}9\n$INSUNITS\n70\n4\n0\nENDSEC\n")
+            .into_bytes()
+    };
+    let square = |layer: &[u8], x: usize| {
+        let x2 = x + 10;
+        let mut entity = b"0\nLWPOLYLINE\n8\n".to_vec();
+        entity.extend_from_slice(layer);
+        entity.extend_from_slice(
+            format!("\n90\n4\n70\n1\n10\n{x}\n20\n0\n10\n{x2}\n20\n0\n10\n{x2}\n20\n10\n10\n{x}\n20\n10\n")
+                .as_bytes(),
+        );
+        entity
+    };
+    let file = |version: &str, code_page: Option<&str>| {
+        let mut source = header(version, code_page);
+        source.extend_from_slice(b"0\nSECTION\n2\nENTITIES\n");
+        // "Pôdorys" and "Stĺp" in Windows-1250: ô = 0xF4, ĺ = 0xE5.
+        source.extend(square(b"P\xF4dorys", 0));
+        source.extend(square(b"St\xE5p", 20));
+        source.extend_from_slice(b"0\nENDSEC\n0\nEOF\n");
+        source
+    };
+    let options = DxfImportOptions::new(None);
+
+    let parsed = inspect_dxf(&file("AC1015", Some("ANSI_1250")), options).unwrap();
+    assert_eq!(parsed.layers(), ["Pôdorys", "Stĺp"]);
+    assert_eq!(parsed.profiles().len(), 2);
+    // The code page name is matched as AutoCAD writes it, in either case.
+    let parsed = inspect_dxf(&file("AC1009", Some("ansi_1250")), options).unwrap();
+    assert_eq!(parsed.layers(), ["Pôdorys", "Stĺp"]);
+
+    // Without a code page the bytes cannot be read, and a 2007+ file is UTF-8
+    // whatever it declares: both are still refused rather than guessed.
+    assert_eq!(
+        inspect_dxf(&file("AC1015", None), options).map(|_| ()),
+        Err(DxfImportError::NonAscii)
+    );
+    assert_eq!(
+        inspect_dxf(&file("AC1021", Some("ANSI_1250")), options).map(|_| ()),
+        Err(DxfImportError::NonAscii)
+    );
+}
+
 /// Review 2026-10-09 (DXF-4): ordinary files were refused whole.
 #[test]
 fn utf8_names_comments_mirrored_arcs_and_many_layers_import() {

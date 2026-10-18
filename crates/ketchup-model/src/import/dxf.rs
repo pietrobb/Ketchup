@@ -169,7 +169,7 @@ impl fmt::Display for DxfImportError {
             }
             Self::Empty => "DXF source is empty",
             Self::SourceTooLarge => "DXF source exceeds the bounded 8 MiB envelope",
-            Self::NonAscii => "DXF must be ASCII or UTF-8 text; binary DXF and older code pages are unsupported",
+            Self::NonAscii => "DXF must be UTF-8 text, or older than DXF 2007 and in the Windows code page its $DWGCODEPAGE names; binary DXF is unsupported",
             Self::LineTooLong => "DXF contains a line longer than 512 bytes",
             Self::TooManyPairs => "DXF exceeds the 100,000 group-code pair limit",
             Self::MalformedPairs => "DXF group-code/value pairs are malformed",
@@ -358,7 +358,8 @@ enum UndirectedSegmentKey {
 
 /// Inspect a bounded ASCII DXF without mutating a document.
 pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf, DxfImportError> {
-    let pairs = parse_pairs(source)?;
+    let text = dxf_source_text(source)?;
+    let pairs = parse_pairs(&text)?;
     let (sections, mut diagnostics) = parse_sections(&pairs)?;
     let header = sections.get("HEADER").map(Vec::as_slice).unwrap_or(&[]);
     let (units, insbase_mm) = parse_header(header, options, &mut diagnostics)?;
@@ -530,17 +531,58 @@ fn next_id(ids: impl Iterator<Item = u64>) -> Result<u64, DxfImportPlanError> {
         .ok_or(DxfImportPlanError::IdSpaceExhausted)
 }
 
-fn parse_pairs(source: &[u8]) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
+/// The text of a DXF file. DXF 2007 and later are UTF-8; an older file is
+/// written in the Windows code page its `$DWGCODEPAGE` header names, so a
+/// file that is not UTF-8 is read in that code page when it is older than
+/// 2007 and names one.
+fn dxf_source_text(source: &[u8]) -> Result<std::borrow::Cow<'_, str>, DxfImportError> {
     if source.is_empty() {
         return Err(DxfImportError::Empty);
     }
     if source.len() as u64 > MAX_DXF_SOURCE_BYTES {
         return Err(DxfImportError::SourceTooLarge);
     }
-    // DXF 2007 and later are UTF-8: layer and block names may hold any letter.
-    let Ok(text) = std::str::from_utf8(source) else {
-        return Err(DxfImportError::NonAscii);
+    if let Ok(text) = std::str::from_utf8(source) {
+        return Ok(std::borrow::Cow::Borrowed(text));
+    }
+    let header_value = |variable: &[u8]| {
+        let mut lines = source.split(|byte| *byte == b'\n').map(<[u8]>::trim_ascii);
+        lines.position(|line| line == variable)?;
+        lines.nth(1)
     };
+    let encoding = header_value(b"$ACADVER")
+        .is_none_or(|version| version < b"AC1021".as_slice())
+        .then(|| header_value(b"$DWGCODEPAGE"))
+        .flatten()
+        .and_then(code_page_encoding)
+        .ok_or(DxfImportError::NonAscii)?;
+    encoding
+        .decode_without_bom_handling_and_without_replacement(source)
+        .ok_or(DxfImportError::NonAscii)
+}
+
+/// The encoding of an AutoCAD `$DWGCODEPAGE` name such as `ANSI_1250`.
+fn code_page_encoding(name: &[u8]) -> Option<&'static encoding_rs::Encoding> {
+    let number = name
+        .get(..5)
+        .filter(|prefix| prefix.eq_ignore_ascii_case(b"ANSI_"))
+        .and(name.get(5..))?;
+    match number {
+        b"874" | b"1250" | b"1251" | b"1252" | b"1253" | b"1254" | b"1255" | b"1256" | b"1257"
+        | b"1258" => {
+            let mut label = b"windows-".to_vec();
+            label.extend_from_slice(number);
+            encoding_rs::Encoding::for_label(&label)
+        }
+        b"932" => Some(encoding_rs::SHIFT_JIS),
+        b"936" => Some(encoding_rs::GBK),
+        b"949" => Some(encoding_rs::EUC_KR),
+        b"950" => Some(encoding_rs::BIG5),
+        _ => None,
+    }
+}
+
+fn parse_pairs(text: &str) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
     let lines = text.lines().collect::<Vec<_>>();
     if lines.iter().any(|line| line.len() > MAX_DXF_LINE_BYTES) {
         return Err(DxfImportError::LineTooLong);
