@@ -486,16 +486,18 @@ try {
         throw "Installed application failed its headless startup/persistence check."
     }
 
-    # The system opens both Viewer file types with the installed Viewer.
+    # The system opens documents with the installed Ketchup and both Viewer file types with the installed Viewer.
     $installedViewer = Join-Path $installedDir "KetchupViewer.exe"
+    $expectedAppCommand = """$(Join-Path $installedDir "Ketchup.exe")"" ""%1"""
     $expectedViewerCommand = """$installedViewer"" ""%1"""
     foreach ($association in @(
-            @{ extension = ".ketchup-view"; progId = "Ketchup.ViewerPackage" },
-            @{ extension = ".ketchup-comments"; progId = "Ketchup.ViewerComments" })) {
+            @{ extension = ".ketchup"; progId = "Ketchup.Document"; command = $expectedAppCommand },
+            @{ extension = ".ketchup-view"; progId = "Ketchup.ViewerPackage"; command = $expectedViewerCommand },
+            @{ extension = ".ketchup-comments"; progId = "Ketchup.ViewerComments"; command = $expectedViewerCommand })) {
         $registered = (Get-ItemProperty "HKCU:\Software\Classes\$($association.extension)" -ErrorAction SilentlyContinue).'(default)'
         $command = (Get-ItemProperty "HKCU:\Software\Classes\$($association.progId)\shell\open\command" -ErrorAction SilentlyContinue).'(default)'
-        if ($registered -cne $association.progId -or $command -ne $expectedViewerCommand) {
-            throw "Installed Viewer is not registered for $($association.extension)."
+        if ($registered -cne $association.progId -or $command -ne $association.command) {
+            throw "Installed package is not registered for $($association.extension)."
         }
     }
     if ([string]::IsNullOrWhiteSpace($ViewerSmokePackage)) {
@@ -541,6 +543,6 @@ $checksums = @(
 Write-Utf8 (Join-Path $OutputDir "SHA256SUMS.txt") (($checksums -join "`r`n") + "`r`n")
 
 $signingResult = if ($Sign) { "AEON-signed payload and installer, " } else { "" }
-Write-Host "PASS: ${signingResult}portable archive, third-party notices, exact payload hashes, worker handshake, headless build identity, Viewer file associations, and uninstall smoke test."
+Write-Host "PASS: ${signingResult}portable archive, third-party notices, exact payload hashes, worker handshake, headless build identity, document and Viewer file associations, and uninstall smoke test."
 Write-Host "Installer: $setupPath"
 Write-Host "Portable:  $zipPath"
