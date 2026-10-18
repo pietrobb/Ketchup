@@ -566,7 +566,7 @@ impl KetchupApp {
             &state.tooth_crest,
             &state.circle_radius,
         ]);
-        // One hint for the panel, however many of its fields hold a comma.
+        // One hint for the Helix tool, however many of its fields hold a comma.
         let _ = typed
             .into_iter()
             .any(|text| show_value_refusal(ui, &self.catalog, text, state.decimal));
