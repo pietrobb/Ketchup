@@ -44,6 +44,9 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56.0"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSLocale", "NSString"] }
+
 [dev-dependencies]
 ketchup-view-format = { path = "../ketchup-view-format" }
 ketchup-viewer = { path = "../ketchup-viewer" }

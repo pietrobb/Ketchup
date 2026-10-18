@@ -41,7 +41,21 @@ fn system_decimal_separator() -> DecimalSeparator {
         .open_subkey(r"Control Panel\International")
         .and_then(|key| key.get_value("sDecimal"))
         .ok();
-    if separator.is_some_and(|separator| separator.trim() == ",") {
+    decimal_separator_of_symbol(separator.as_deref().unwrap_or("."))
+}
+
+/// macOS keeps the number format in the Region settings, apart from the
+/// language: English with a Slovak region writes 12,5.
+#[cfg(target_os = "macos")]
+fn system_decimal_separator() -> DecimalSeparator {
+    let separator = objc2_foundation::NSLocale::currentLocale().decimalSeparator();
+    decimal_separator_of_symbol(&separator.to_string())
+}
+
+/// The separator the system names as its decimal symbol.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn decimal_separator_of_symbol(symbol: &str) -> DecimalSeparator {
+    if symbol.trim() == "," {
         DecimalSeparator::Comma
     } else {
         DecimalSeparator::Point
@@ -49,7 +63,7 @@ fn system_decimal_separator() -> DecimalSeparator {
 }
 
 /// Elsewhere the numeric locale names a language, whose usual separator it is.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn system_decimal_separator() -> DecimalSeparator {
     let locale = ["LC_ALL", "LC_NUMERIC", "LANG"]
         .into_iter()
@@ -61,7 +75,7 @@ fn system_decimal_separator() -> DecimalSeparator {
 }
 
 /// The usual decimal separator of a locale such as `sk_SK.UTF-8` or `de-CH`.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 fn decimal_separator_of_locale(locale: &str) -> DecimalSeparator {
     const COMMA_LANGUAGES: [&str; 46] = [
         "af", "az", "be", "bg", "bs", "ca", "cs", "da", "de", "el", "es", "et", "eu", "fi", "fo",
@@ -633,5 +647,15 @@ mod tests {
         ] {
             assert_eq!(decimal_separator_of_locale(locale), decimal, "{locale}");
         }
+    }
+
+    /// Review 2026-10-17 P3-G: Windows and macOS name the decimal symbol of
+    /// the region setting itself, which this reads, not the language.
+    #[test]
+    fn a_systems_decimal_symbol_is_read_as_it_is() {
+        assert_eq!(decimal_separator_of_symbol(","), Comma);
+        assert_eq!(decimal_separator_of_symbol(" , "), Comma);
+        assert_eq!(decimal_separator_of_symbol("."), Point);
+        assert_eq!(decimal_separator_of_symbol("٫"), Point);
     }
 }
