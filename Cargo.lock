@@ -2333,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-analysis"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "ketchup-geometry",
@@ -2345,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui_kittest",
@@ -2382,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-application"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ketchup-analysis",
  "ketchup-assistant",
@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-assistant"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ketchup-geometry",
  "ketchup-model",
@@ -2417,14 +2417,14 @@ dependencies = [
 
 [[package]]
 name = "ketchup-dwg"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "acadrust",
 ]
 
 [[package]]
 name = "ketchup-exact"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -2434,7 +2434,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-geometry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ketchup-tolerance",
  "serde",
@@ -2442,7 +2442,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-headless"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ketchup-analysis",
  "ketchup-application",
@@ -2458,7 +2458,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-interaction"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ketchup-geometry",
  "ketchup-model",
@@ -2467,7 +2467,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-manufacturing"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "epaint_default_fonts",
  "ketchup-geometry",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.3.4",
  "ketchup-program",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-model"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
@@ -2513,7 +2513,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-pdm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ketchup-model",
  "serde",
@@ -2523,7 +2523,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-program"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocative",
  "anyhow",
@@ -2539,7 +2539,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-rejection"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-scheduler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
@@ -2570,11 +2570,11 @@ dependencies = [
 
 [[package]]
 name = "ketchup-test-env"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "ketchup-test-gpu"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui_kittest",
@@ -2584,14 +2584,14 @@ dependencies = [
 
 [[package]]
 name = "ketchup-tolerance"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ketchup-view-format"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ketchup-manufacturing",
  "ketchup-model",
@@ -2604,7 +2604,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-viewer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui_kittest",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-viewer-android"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -2638,7 +2638,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-viewer-macos"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ketchup-viewer",
  "objc2 0.6.4",
@@ -2647,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-viewer-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "js-sys",
