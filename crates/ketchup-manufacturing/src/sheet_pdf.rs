@@ -132,6 +132,16 @@ impl SheetFont {
             .map_or(0, |glyph| glyph.0)
     }
 
+    /// The glyph that draws `character` and the character a reader copies
+    /// from it: for a character the font lacks, the "?" it shows, so that
+    /// glyph never copies as anything but "?".
+    fn shown(&self, character: char) -> (u16, char) {
+        match self.face.glyph_index(character) {
+            Some(glyph) => (glyph.0, character),
+            None => (self.glyph('?'), '?'),
+        }
+    }
+
     /// Advance of a glyph in em.
     fn advance(&self, glyph: u16) -> f64 {
         self.face
@@ -331,8 +341,8 @@ impl ContentWriter<'_> {
         let y = self.height - at[1] - shift * sin;
         let mut hex = String::with_capacity(text.len() * 4);
         for character in text.chars() {
-            let glyph = self.font.glyph(character);
-            self.glyphs.entry(glyph).or_insert(character);
+            let (glyph, shown) = self.font.shown(character);
+            self.glyphs.entry(glyph).or_insert(shown);
             let _ = write!(hex, "{glyph:04X}");
         }
         self.state.fill(&mut self.out, [0, 0, 0]);
@@ -505,6 +515,39 @@ mod tests {
                 None,
                 "{character} is in the font"
             );
+        }
+    }
+
+    /// P3-V: a character the font lacks is drawn with its "?" glyph, and the
+    /// copy map gave each glyph the first character that reached it, so after
+    /// an emoji every real "?" of the sheet pasted as that emoji.
+    #[test]
+    fn a_character_the_font_lacks_copies_as_the_question_mark_it_shows() {
+        let font = SheetFont::standard();
+        assert_eq!(font.face.glyph_index('😀'), None);
+        let question = font.glyph('?');
+        for text in ["😀 Prečo?", "Prečo? 😀"] {
+            let mut page = Page {
+                size_mm: [210.0, 297.0],
+                marks: Vec::new(),
+            };
+            page.text([20.0, 20.0], text, 3.5, Anchor::Start);
+            let mut content = ContentWriter {
+                font,
+                height: page.size_mm[1],
+                out: String::new(),
+                state: State::default(),
+                glyphs: BTreeMap::new(),
+            };
+            for mark in &page.marks {
+                content.mark(mark);
+            }
+            let cmap = to_unicode(&content.glyphs);
+            let entry = cmap
+                .lines()
+                .find(|line| line.starts_with(&format!("<{question:04X}> ")))
+                .unwrap();
+            assert_eq!(entry, format!("<{question:04X}> <003F>"), "{text}");
         }
     }
 
