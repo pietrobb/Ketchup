@@ -4,7 +4,7 @@
 //! is opened, on a thread of its own so a large one does not hold up the
 //! screen (VW-10); a comment edit writes only the small comments file.
 
-use super::ViewerApp;
+use super::{Prepared, ViewerApp};
 use crate::model::Model;
 use crate::review::Review;
 use ketchup_rejection::{Rejection, RejectionPhase};
@@ -44,33 +44,60 @@ impl ViewerApp {
     /// Open the session kept in `dir`, if there is one; comments that were
     /// unsaved stay unsaved, so leaving them still warns.
     pub fn restore_session(&mut self, dir: &Path) -> Result<Option<SessionMark>, Rejection> {
-        let path = dir.join(PACKAGE);
-        if !path.exists() {
-            return Ok(None);
+        match KeptSession::read(dir)? {
+            Some(kept) => self.show_session(kept),
+            None => Ok(None),
         }
-        let file = std::fs::File::open(&path).map_err(|error| session_error(&path, error))?;
-        self.open(std::io::BufReader::new(file))?;
-        // A session kept before the comments had a file of their own carries
-        // them in the package. Comments that do not open on it (kept beside
-        // another package, or cut short) count as none: the package still
-        // opens, and the unsaved marker, which is theirs, stays with them
-        // (review 2026-10-17 VW-12).
-        let comments = dir.join(COMMENTS);
-        let kept = match &self.model {
-            Some(model) if comments.exists() => Some(read_kept(&comments, model)),
-            _ => None,
-        };
-        let opened = kept.as_ref().is_none_or(Option::is_some);
-        if let Some(Some(review)) = kept {
+    }
+
+    pub(super) fn show_session(
+        &mut self,
+        kept: KeptSession,
+    ) -> Result<Option<SessionMark>, Rejection> {
+        self.show_prepared(kept.package)?;
+        if let Some(review) = kept.comments {
             self.review = Some(review);
         }
-        if opened
-            && dir.join(UNSAVED).exists()
+        if kept.unsaved
             && let Some(review) = &mut self.review
         {
             review.still_unsaved();
         }
         Ok(self.session_mark())
+    }
+}
+
+/// The session kept in a directory, read and checked; it needs no window,
+/// so a large package can be read on another thread.
+pub(super) struct KeptSession {
+    package: Prepared,
+    /// The comments kept beside the package, when they open on it.
+    comments: Option<Review>,
+    /// They, or the comments in the package, are not saved to a file.
+    unsaved: bool,
+}
+
+impl KeptSession {
+    pub(super) fn read(dir: &Path) -> Result<Option<Self>, Rejection> {
+        let path = dir.join(PACKAGE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let file = std::fs::File::open(&path).map_err(|error| session_error(&path, error))?;
+        let package = Prepared::read(std::io::BufReader::new(file))?;
+        // A session kept before the comments had a file of their own carries
+        // them in the package. Comments that do not open on it (kept beside
+        // another package, or cut short) count as none: the package still
+        // opens, and the unsaved marker, which is theirs, stays with them
+        // (review 2026-10-17 VW-12).
+        let path = dir.join(COMMENTS);
+        let kept = path.exists().then(|| read_kept(&path, &package.model));
+        let unsaved = kept.as_ref().is_none_or(Option::is_some) && dir.join(UNSAVED).exists();
+        Ok(Some(Self {
+            package,
+            comments: kept.flatten(),
+            unsaved,
+        }))
     }
 }
 

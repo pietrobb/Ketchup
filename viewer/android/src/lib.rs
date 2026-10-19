@@ -53,43 +53,20 @@ fn android_main(android_app: android_activity::AndroidApp) {
             let mut app = ketchup_viewer::app::ViewerApp::new(cc.wgpu_render_state.clone())
                 .with_host_sharing();
             // What the customer had open when Android ended the process,
-            // else the development install's package.
-            let session = match session_dir.as_deref().map(|dir| app.restore_session(dir)) {
-                Some(Ok(mark)) => {
-                    if let (Some(_), Some([components, scenes, comments])) =
-                        (mark, app.opened_counts())
-                    {
-                        log::info!(
-                            "Opened the kept session: {components} components, {scenes} scenes, {comments} comments, unsaved {}",
-                            app.has_unsaved_comments()
-                        );
-                    }
-                    mark
-                }
-                Some(Err(error)) => {
-                    log::error!("{error}; {}", error.fix_hint_text());
-                    None
-                }
-                None => None,
-            };
-            if session.is_none()
-                && let Some(path) = path
-                && path.exists()
-                && let Err(error) = app.open_path(&path)
-            {
-                log::error!("{error}; {}", error.fix_hint_text());
-            }
-            let files = files::Files::new(android_app.clone());
-            files.recover_interrupted_saves(&mut app);
+            // else the development install's package, read apart from the
+            // frame: it may be a package of ~268 MB.
+            let opening =
+                ketchup_viewer::app::StartupOpen::start(&mut app, session_dir.clone(), path);
             Ok(Box::new(AndroidViewer {
                 app,
-                files,
+                files: files::Files::new(android_app.clone()),
                 android_app,
                 measured_for: None,
                 bars: [0; 4],
                 keyboard: 0,
-                session: session_dir
-                    .map(|dir| ketchup_viewer::app::SessionKeeper::new(dir, session)),
+                opening: Some(opening),
+                session_dir,
+                session: None,
             }))
         }),
     );
@@ -114,8 +91,39 @@ struct AndroidViewer {
     bars: [i32; 4],
     /// Height of the on-screen keyboard in pixels, 0 when closed.
     keyboard: i32,
+    /// The model the start opens, being read; files wait until it is shown.
+    opening: Option<ketchup_viewer::app::StartupOpen>,
+    /// Private storage, until the kept session is read.
+    session_dir: Option<std::path::PathBuf>,
     /// Keeps the opened package and its comments for the next start.
     session: Option<ketchup_viewer::app::SessionKeeper>,
+}
+
+#[cfg(target_os = "android")]
+impl AndroidViewer {
+    /// Shows the start's model once it is read; then the cut-off saves are
+    /// undone, so what they report is not cleared by the opening.
+    fn finish_opening(&mut self) {
+        let Some(opening) = self.opening.take_if(|opening| opening.is_finished()) else {
+            return;
+        };
+        let (session, failures) = opening.finish(&mut self.app);
+        for error in failures {
+            log::error!("{error}; {}", error.fix_hint_text());
+        }
+        if let (Some(_), Some([components, scenes, comments])) = (session, self.app.opened_counts())
+        {
+            log::info!(
+                "Opened the kept session: {components} components, {scenes} scenes, {comments} comments, unsaved {}",
+                self.app.has_unsaved_comments()
+            );
+        }
+        self.files.recover_interrupted_saves(&mut self.app);
+        self.session = self
+            .session_dir
+            .take()
+            .map(|dir| ketchup_viewer::app::SessionKeeper::new(dir, session));
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -186,6 +194,12 @@ impl eframe::App for AndroidViewer {
                 .frame(frame_fill)
                 .show_separator_line(false)
                 .show(ctx, |_| {});
+        }
+        self.finish_opening();
+        if self.opening.is_some() {
+            self.app.update(ctx, frame);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
         }
         self.files.receive(&mut self.app);
         self.app.update(ctx, frame);

@@ -1155,6 +1155,64 @@ fn comments_made_while_the_package_is_written_survive_the_end_of_the_process() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Held by [`a_phone_reads_its_start_model_apart_from_the_frame`] to keep the
+/// startup reader from reading.
+static STARTUP_READER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn hold_startup_reader() {
+    drop(
+        STARTUP_READER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+}
+
+/// Review 2026-10-17 §3 P3: a phone's start reads the kept session, else the
+/// installed package, on a thread of its own, not in the first frame on the
+/// UI thread; meanwhile the Viewer is empty and says the model is loading.
+/// Then it shows what restoring the session in the frame showed.
+#[test]
+fn a_phone_reads_its_start_model_apart_from_the_frame() {
+    let dir = std::env::temp_dir().join(format!("ketchup-viewer-startup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let mut app = customer_with_comment(&bytes, "Darker oak");
+    keep_all(&mut SessionKeeper::new(dir.clone(), None), &mut app).unwrap();
+
+    let held = STARTUP_READER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut started = ViewerApp::new(None).with_host_files();
+    let opening = StartupOpen::start(&mut started, Some(dir.clone()), None);
+    assert!(!opening.is_finished(), "the start waits for no reading");
+    assert!(started.loading && started.model.is_none());
+    drop(held);
+    let (mark, failures) = opening.finish(&mut started);
+    assert!(failures.is_empty(), "{failures:?}");
+    assert!(!started.loading);
+    assert!(mark.is_some());
+    assert_eq!(mark, started.session_mark());
+    assert_eq!(started.opened_counts(), app.opened_counts());
+    assert!(started.has_unsaved_comments());
+
+    // A kept session that does not open is reported; the installed package opens.
+    std::fs::write(dir.join("session.ketchup-view"), b"not a package").unwrap();
+    let installed = dir.join("model.ketchup-view");
+    std::fs::write(&installed, &bytes).unwrap();
+    let mut fresh = ViewerApp::new(None);
+    let opening = StartupOpen::start(&mut fresh, Some(dir.clone()), Some(installed));
+    let (mark, failures) = opening.finish(&mut fresh);
+    assert_eq!((mark, failures.len()), (None, 1));
+    let shown = |app: &ViewerApp| {
+        app.opened_counts()
+            .map(|[components, scenes, _]| [components, scenes])
+    };
+    assert!(shown(&fresh).is_some());
+    assert_eq!(shown(&fresh), shown(&app));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Holds the package writer for good in the child process of
 /// [`comments_beside_a_package_whose_writer_was_killed_open_with_it_again`],
 /// so it is killed with its `.part` not renamed.

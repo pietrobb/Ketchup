@@ -22,7 +22,9 @@ use std::{
 
 mod comments_section;
 mod session;
+mod startup;
 pub use session::{SessionKeeper, SessionMark};
+pub use startup::StartupOpen;
 
 /// Screens narrower than this (in points) get the phone layout.
 const NARROW_WIDTH: f32 = 650.0;
@@ -107,7 +109,7 @@ impl ViewerApp {
         self.kept = offered;
     }
 
-    /// While the host downloads a shared model the empty view says so.
+    /// While the host downloads or reads a model the empty view says so.
     pub fn set_loading(&mut self, loading: bool) {
         self.loading = loading;
     }
@@ -189,9 +191,7 @@ impl ViewerApp {
     // Mobile adapters can supply bytes from their sandbox or document picker.
     /// Comments saved into a commented copy are opened with it.
     pub fn open(&mut self, reader: impl Read) -> Result<(), Rejection> {
-        let (package, comments) =
-            ketchup_view_format::IdentifiedPackage::read_with_comments(reader)?;
-        self.open_package(package, comments)
+        self.show_prepared(Prepared::read(reader)?)
     }
 
     fn open_package(
@@ -199,28 +199,22 @@ impl ViewerApp {
         package: ketchup_view_format::IdentifiedPackage,
         comments: Option<ketchup_view_format::Comments>,
     ) -> Result<(), Rejection> {
-        let model = Model::from_identified(package)?;
-        // Validate every scene before replacing the current model or its GPU resources.
-        let cameras = model
-            .manifest()
-            .scenes
-            .iter()
-            .map(|s| Camera::from_scene(&model, &s.camera))
-            .collect::<Result<Vec<_>, _>>()?;
-        let scene = model
-            .manifest()
-            .start_scene
-            .and_then(|id| model.manifest().scenes.iter().position(|s| s.id == id));
-        let camera = scene.map_or_else(|| Camera::fit(&model), |i| cameras[i].clone());
+        self.show_prepared(Prepared::new(package, comments)?)
+    }
+
+    /// Replaces what is open with `prepared`; only its GPU upload is left to fail.
+    fn show_prepared(&mut self, prepared: Prepared) -> Result<(), Rejection> {
+        let Prepared {
+            model,
+            scene,
+            camera,
+            review,
+        } = prepared;
         let renderer = self
             .render_state
             .as_ref()
             .map(|state| MeshRenderer::new(&state.device, &model))
             .transpose()?;
-        let review = match comments {
-            Some(comments) => Review::with(comments),
-            None => Review::new(&model)?,
-        };
         self.visible = visibility(&model, scene);
         self.style = scene.map_or(DisplayStyle::ShadedEdges, |i| {
             model.manifest().scenes[i].style.clone()
@@ -880,6 +874,53 @@ fn file_error(path: &Path, error: std::io::Error) -> Rejection {
         .reason("The local file could not be opened.")
         .fix_hint("Choose an accessible .ketchup-view or .ketchup-comments file.")
         .caused_by(error)
+}
+
+/// A package read and checked, every scene's camera included, before it
+/// replaces what is open; it needs no window, so it can be made on another
+/// thread.
+pub(crate) struct Prepared {
+    model: Model,
+    scene: Option<usize>,
+    camera: Camera,
+    review: Review,
+}
+
+impl Prepared {
+    fn new(
+        package: ketchup_view_format::IdentifiedPackage,
+        comments: Option<ketchup_view_format::Comments>,
+    ) -> Result<Self, Rejection> {
+        let model = Model::from_identified(package)?;
+        let cameras = model
+            .manifest()
+            .scenes
+            .iter()
+            .map(|s| Camera::from_scene(&model, &s.camera))
+            .collect::<Result<Vec<_>, _>>()?;
+        let scene = model
+            .manifest()
+            .start_scene
+            .and_then(|id| model.manifest().scenes.iter().position(|s| s.id == id));
+        let camera = scene.map_or_else(|| Camera::fit(&model), |i| cameras[i].clone());
+        let review = match comments {
+            Some(comments) => Review::with(comments),
+            None => Review::new(&model)?,
+        };
+        Ok(Self {
+            model,
+            scene,
+            camera,
+            review,
+        })
+    }
+
+    /// The package and the comments saved into it, read from `reader`.
+    pub(crate) fn read(reader: impl Read) -> Result<Self, Rejection> {
+        let (package, comments) =
+            ketchup_view_format::IdentifiedPackage::read_with_comments(reader)?;
+        Self::new(package, comments)
+    }
 }
 
 fn open_file(path: &Path) -> Result<std::fs::File, Rejection> {
