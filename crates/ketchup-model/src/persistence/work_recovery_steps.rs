@@ -34,6 +34,16 @@ const STEP_PROGRAM_AS_PREVIOUS: u8 = 2;
 /// and the chunk table's entries for `document.bin`.
 const ASSEMBLY_MARGIN: usize = 1024 * 1024;
 
+/// A count or index the file names as `u32`, as the `usize` it indexes with.
+fn index(value: u32) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+/// A length or count as the `u64` the budgets count in.
+fn wide(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
 /// Appends the step that brings the checkpoint of `path`, observed as
 /// `expected`, to `document`. `None` when the checkpoint must be written whole.
 /// The same four identity checks guard the append as a whole write.
@@ -65,7 +75,7 @@ pub(super) fn append_work_recovery_step(
     );
     framed.extend_from_slice(&step);
     let recovery = work_recovery_path(path);
-    let observed_len = observed.bytes.len() as u64;
+    let observed_len = wide(observed.bytes.len());
     let mut file = fs::OpenOptions::new().write(true).open(&recovery)?;
     let appended = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(observed_len))
         .and_then(|_| file.write_all(&framed))
@@ -79,7 +89,7 @@ pub(super) fn append_work_recovery_step(
     let mut hasher = observed.hasher;
     hasher.update(&framed);
     let identity = FileIdentity {
-        byte_len: (observed.bytes.len() + framed.len()) as u64,
+        byte_len: wide(observed.bytes.len() + framed.len()),
         sha256: hasher.finalize().into(),
     };
     let parent = recovery
@@ -208,18 +218,18 @@ enum StepProgram<'a> {
 
 fn parse_step(bytes: &[u8]) -> Result<Step<'_>, PersistenceError> {
     let mut reader = Reader::new(bytes);
-    let skip = reader.u32()? as usize;
-    let keep = reader.u32()? as usize;
-    let cursor = reader.u32()? as usize;
+    let skip = index(reader.u32()?);
+    let keep = index(reader.u32()?);
+    let cursor = index(reader.u32()?);
     let next_revision_id = reader.u64()?;
     let chunk_count = reader.count_with_limit(MAX_COLLECTION_ITEMS)?;
-    let mut chunks = Vec::with_capacity(chunk_count as usize);
+    let mut chunks = Vec::with_capacity(index(chunk_count));
     for _ in 0..chunk_count {
-        let length = reader.u32()? as usize;
+        let length = index(reader.u32()?);
         chunks.push(reader.take(length)?);
     }
     let count = reader.count_with_limit(FILE_HISTORY_REVISIONS)?;
-    let mut revisions = Vec::with_capacity(count as usize);
+    let mut revisions = Vec::with_capacity(index(count));
     for _ in 0..count {
         let id = reader.u64()?;
         let batch_digest = reader.string()?;
@@ -232,7 +242,7 @@ fn parse_step(bytes: &[u8]) -> Result<Step<'_>, PersistenceError> {
         let program = match reader.u8()? {
             STEP_PROGRAM_NONE => StepProgram::None,
             STEP_PROGRAM_INLINE => {
-                let length = reader.u32()? as usize;
+                let length = index(reader.u32()?);
                 if length > crate::document::MAX_RULE_PROGRAM_BYTES {
                     return Err(PersistenceError::ResourceLimit);
                 }
@@ -462,20 +472,20 @@ fn same_side_entries(
 /// checkpoint of it is read with.
 fn fits(revisions: &[&Revision], encoded: &[Arc<crate::document::EncodedSnapshot>]) -> bool {
     let mut snapshots = 0u64;
-    let mut items = revisions.len() as u64;
+    let mut items = wide(revisions.len());
     for (revision, encoded) in revisions.iter().zip(encoded) {
         if encoded.bytes.len() > HISTORY_BUDGET.snapshot_bytes {
             return false;
         }
-        snapshots += encoded.bytes.len() as u64;
+        snapshots += wide(encoded.bytes.len());
         let chunks = encoded
             .chunks
             .get_or_init(|| history_chunks::chunks(&encoded.bytes))
             .len();
         // A chunk list, the table entries it may add, a program and the strings.
-        items += 2 * (chunks as u64 + 1)
-            + revision.batch_digest().len() as u64
-            + revision.checkpoint().map_or(0, str::len) as u64;
+        items += 2 * (wide(chunks) + 1)
+            + wide(revision.batch_digest().len())
+            + wide(revision.checkpoint().map_or(0, str::len));
     }
     snapshots <= HISTORY_BUDGET.snapshots && items <= u64::from(HISTORY_BUDGET.items)
 }
@@ -603,7 +613,7 @@ pub(super) fn assemble_checkpoint(
                         let number = u32::from_le_bytes(number.try_into().expect("four bytes"));
                         base.history
                             .chunks
-                            .get(number as usize)
+                            .get(index(number))
                             .copied()
                             .ok_or(PersistenceError::InvalidRevisionHistory)
                     })
@@ -697,9 +707,9 @@ fn assemble_revision<'a>(
     for number in revision.numbers.chunks_exact(4) {
         let number = u32::from_le_bytes(number.try_into().expect("four bytes"));
         let chunk = if number & STEP_CHUNK_INLINE == 0 {
-            previous.chunks.get(number as usize)
+            previous.chunks.get(index(number))
         } else {
-            step.chunks.get((number & !STEP_CHUNK_INLINE) as usize)
+            step.chunks.get(index(number & !STEP_CHUNK_INLINE))
         }
         .copied()
         .ok_or(PersistenceError::InvalidRevisionHistory)?;
@@ -743,7 +753,7 @@ fn assemble_file(
         return Err(PersistenceError::HistoryChecksumMismatch);
     }
     // A chunk is one slice of the checkpoint however many revisions name it.
-    let key = |chunk: &[u8]| (chunk.as_ptr() as usize, chunk.len());
+    let key = |chunk: &[u8]| (chunk.as_ptr().addr(), chunk.len());
     let mut numbers = BTreeMap::<(usize, usize), u32>::new();
     let mut table = Vec::new();
     let mut offset = 0usize;

@@ -1754,7 +1754,7 @@ fn container_directory(bytes: &[u8]) -> Result<Vec<ContainerEntry<'_>>, Persiste
         return Err(PersistenceError::UnsupportedContainerSchema(schema));
     }
     let entry_count = reader.count_with_limit(MAX_CONTAINER_ENTRIES)?;
-    let mut entries = Vec::with_capacity(entry_count as usize);
+    let mut entries = Vec::new();
     for _ in 0..entry_count {
         let path = reader.string()?;
         validate_container_path(&path)?;

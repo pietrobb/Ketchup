@@ -70,7 +70,7 @@ pub(super) fn read_observed_work_recovery(
             let mut hasher = Sha256::new();
             hasher.update(&bytes);
             let identity = FileIdentity {
-                byte_len: bytes.len() as u64,
+                byte_len: u64_len(bytes.len()).map_err(FilePersistenceError::Format)?,
                 sha256: hasher.clone().finalize().into(),
             };
             if expected == Some(identity) {
