@@ -22,10 +22,15 @@ pub struct ExactPairCandidate {
     pub right_transform: [f64; 16],
 }
 
+/// One candidate's answer: its exact relation, or the geometry error OCCT gave
+/// for that pair alone. An error is never separated evidence.
+pub type ExactPairAnswer = Result<ExactPairQueryResult, WorkerError>;
+
 impl ExactWorkerSupervisor {
     /// Queries candidates in input order with one evaluation per unique graph digest.
     /// Imported sources are SHA-256-keyed original STEP bytes (an empty map for modeled graphs).
-    /// All candidates must succeed: failure returns Err, never partial/separated evidence.
+    /// A pair OCCT cannot measure gets its own `Err` answer and the batch goes on;
+    /// any other failure returns Err for the whole batch, never partial evidence.
     /// No restart/retry occurs within a batch. Native cache is released on success;
     /// on failure the worker is terminated and respawned before a subsequent batch.
     /// Empty candidates return an empty vector. Sources are staged once per digest,
@@ -36,7 +41,7 @@ impl ExactWorkerSupervisor {
         candidates: &[ExactPairCandidate],
         imported_source_blobs: &BTreeMap<String, Vec<u8>>,
         contact_tolerance_mm: f64,
-    ) -> Result<Vec<ExactPairQueryResult>, WorkerError> {
+    ) -> Result<Vec<ExactPairAnswer>, WorkerError> {
         self.query_exact_brep_pairs_with_cancellation(
             graphs,
             candidates,
@@ -53,7 +58,7 @@ impl ExactWorkerSupervisor {
         imported_source_blobs: &BTreeMap<String, Vec<u8>>,
         contact_tolerance_mm: f64,
         cancelled: &AtomicBool,
-    ) -> Result<Vec<ExactPairQueryResult>, WorkerError> {
+    ) -> Result<Vec<ExactPairAnswer>, WorkerError> {
         self.query_pairs(
             graphs,
             candidates,
@@ -82,9 +87,10 @@ impl ExactWorkerSupervisor {
             Some(faces),
         )?;
         results
-            .first()
+            .into_iter()
+            .next()
+            .ok_or_else(|| WorkerError::Protocol("missing exact face distance".to_owned()))?
             .map(|result| result.distance_mm)
-            .ok_or_else(|| WorkerError::Protocol("missing exact face distance".to_owned()))
     }
 
     fn query_pairs(
@@ -95,7 +101,7 @@ impl ExactWorkerSupervisor {
         contact_tolerance_mm: f64,
         cancelled: &AtomicBool,
         faces: Option<[u32; 2]>,
-    ) -> Result<Vec<ExactPairQueryResult>, WorkerError> {
+    ) -> Result<Vec<ExactPairAnswer>, WorkerError> {
         let invalid = || WorkerError::Protocol("invalid or oversized exact pair batch".to_owned());
         check_pair_cancelled(cancelled)?;
         if candidates.len() > MAX_EXACT_PAIR_CANDIDATES
@@ -202,11 +208,14 @@ impl ExactWorkerSupervisor {
                     &WorkerRequest::PairQuery(query),
                     cancelled,
                     EXACT_BREP_GRAPH_REQUEST_TIMEOUT,
-                )? {
-                    WorkerReply::Pair(measure) => {
-                        results.push(pair_result(measure, contact_tolerance_mm)?);
+                ) {
+                    Ok(WorkerReply::Pair(measure)) => {
+                        results.push(Ok(pair_result(measure, contact_tolerance_mm)?));
                     }
-                    reply => return Err(worker_client::unexpected_reply(&reply)),
+                    // The worker keeps the batch loaded after a geometry refusal.
+                    Err(error @ WorkerError::Geometry(_)) => results.push(Err(error)),
+                    Ok(reply) => return Err(worker_client::unexpected_reply(&reply)),
+                    Err(error) => return Err(error),
                 }
             }
             self.client.call_done(

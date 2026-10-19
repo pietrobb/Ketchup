@@ -630,11 +630,8 @@ impl DocumentSession {
         scope: Option<&BTreeSet<ProducerKey>>,
     ) -> ExactEvaluationTask {
         self.rebind();
-        let path = self.settings.exact_worker_path.clone().or_else(|| {
-            exact_worker_candidates()
-                .into_iter()
-                .find(|path| path.is_file())
-        });
+        let path =
+            crate::evaluation::exact_worker_or_installed(self.settings.exact_worker_path.clone());
         start_exact_evaluation_scoped(
             self.snapshot(),
             &self.container_data,

@@ -38,7 +38,9 @@ use ketchup_model::validation::{
 };
 use ketchup_program::ExactPair;
 use ketchup_scheduler::pair_query::{MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
-use ketchup_scheduler::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation, WorkerError};
+use ketchup_scheduler::{
+    ExactPairAnswer, ExactPairCandidate, ExactPairQueryResult, ExactPairRelation, WorkerError,
+};
 use measurements::required_pairs;
 pub use motion::{ExactMotionPair, exact_motion_pair_with_worker};
 #[path = "collision_motion_program.rs"]
@@ -808,7 +810,7 @@ fn send_pair_range(
 }
 
 /// One answered batch of candidate pairs, or why the check stopped.
-type ExactPairBatch = Result<Vec<(usize, usize, ExactPairQueryResult)>, ExactPairFailure>;
+type ExactPairBatch = Result<Vec<(usize, usize, ExactPairAnswer)>, ExactPairFailure>;
 
 fn path_json(path: &InstancePath) -> Value {
     json!({"root_occurrence_id": path.root_occurrence().0, "steps": path.steps().iter().map(|step| match step {
@@ -905,6 +907,24 @@ pub type ExactPairFacts = BTreeMap<(InstancePath, InstancePath), ExactPair>;
 /// is not a collision here either.
 fn penetrates_past_contact_fit(result: &ExactPairQueryResult) -> bool {
     result.relation == ExactPairRelation::Penetrating && result.common_thickness_mm > CONTACT_FIT_MM
+}
+
+/// The exact answer for bodies `left` and `right`. A pair OCCT could not
+/// measure is listed in `failures` as unchecked, never as a pass.
+fn answered(
+    bodies: &[Body],
+    (left, right, answer): (usize, usize, ExactPairAnswer),
+    failures: &mut Vec<Value>,
+) -> Option<(usize, usize, ExactPairQueryResult)> {
+    answer
+        .map(|result| (left, right, result))
+        .map_err(|cause| {
+            failures.push(
+                json!({"reason": "exact_pair_failed", "cause": cause.to_string(),
+                "left": identity(&bodies[left]), "right": identity(&bodies[right])}),
+            );
+        })
+        .ok()
 }
 
 fn exact_pair(result: &ExactPairQueryResult) -> ExactPair {
@@ -1611,11 +1631,7 @@ fn collision_report(
             ));
         }
         report["hull_decided_pair_count"] = json!(hull_decided);
-        let path = worker_path.or_else(|| {
-            crate::evaluation::exact_worker_candidates()
-                .into_iter()
-                .find(|path| path.is_file())
-        });
+        let path = crate::evaluation::exact_worker_or_installed(worker_path);
         match (sources, path) {
             (Err(error), _) => failures.push(json!({"reason": error.code()})),
             (Ok(_), _) if pairs.is_empty() => {}
@@ -1639,7 +1655,10 @@ fn collision_report(
                         timeout.saturating_sub(started.elapsed()),
                     ) {
                         Ok(Ok(entries)) => {
-                            for (left, right, result) in entries {
+                            for (left, right, result) in entries
+                                .into_iter()
+                                .filter_map(|entry| answered(&bodies, entry, &mut failures))
+                            {
                                 if left == right {
                                     checked_bodies.insert(left);
                                 }

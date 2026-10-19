@@ -397,8 +397,12 @@ fn exact_pair_batch_reuses_graphs_and_handles_contact_containment_transforms_and
     let results = worker
         .query_exact_brep_pairs(&graphs, &candidates, &BTreeMap::new(), 1e-7)
         .unwrap();
+    let measured = results
+        .iter()
+        .map(|r| r.as_ref().unwrap())
+        .collect::<Vec<_>>();
     assert_eq!(
-        results.iter().map(|r| r.relation).collect::<Vec<_>>(),
+        measured.iter().map(|r| r.relation).collect::<Vec<_>>(),
         vec![
             ExactPairRelation::Separated,
             ExactPairRelation::Penetrating,
@@ -408,9 +412,9 @@ fn exact_pair_batch_reuses_graphs_and_handles_contact_containment_transforms_and
             ExactPairRelation::Touching
         ]
     );
-    assert!((results[0].distance_mm - 12.0).abs() < 1e-7);
-    assert!((results[1].common_volume_mm3 - 120.0).abs() < 1e-7);
-    assert!((results[2].common_volume_mm3 - 3.75).abs() < 1e-7);
+    assert!((measured[0].distance_mm - 12.0).abs() < 1e-7);
+    assert!((measured[1].common_volume_mm3 - 120.0).abs() < 1e-7);
+    assert!((measured[2].common_volume_mm3 - 3.75).abs() < 1e-7);
     assert_eq!(
         results,
         worker
@@ -425,7 +429,7 @@ fn exact_pair_batch_reuses_graphs_and_handles_contact_containment_transforms_and
     let result = worker
         .query_exact_brep_pairs(&graphs, &[rotated], &BTreeMap::new(), 1e-7)
         .unwrap();
-    assert!((result[0].common_volume_mm3 - 180.0).abs() < 1e-7);
+    assert!((result[0].as_ref().unwrap().common_volume_mm3 - 180.0).abs() < 1e-7);
     // Parallel rotated boxes have overlapping world AABBs but a 1 mm gap.
     let c = std::f64::consts::FRAC_1_SQRT_2;
     let rotation = [
@@ -439,8 +443,9 @@ fn exact_pair_batch_reuses_graphs_and_handles_contact_containment_transforms_and
     let result = worker
         .query_exact_brep_pairs(&graphs, &[disjoint], &BTreeMap::new(), 1e-7)
         .unwrap();
-    assert_eq!(result[0].relation, ExactPairRelation::Separated);
-    assert!((result[0].distance_mm - 1.0).abs() < 1e-7);
+    let disjoint = result[0].as_ref().unwrap();
+    assert_eq!(disjoint.relation, ExactPairRelation::Separated);
+    assert!((disjoint.distance_mm - 1.0).abs() < 1e-7);
     let cancelled = AtomicBool::new(true);
     assert!(matches!(
         worker.query_exact_brep_pairs_with_cancellation(
@@ -458,16 +463,19 @@ fn exact_pair_batch_reuses_graphs_and_handles_contact_containment_transforms_and
             .query_exact_brep_pairs(&graphs, &candidates, &BTreeMap::new(), 1e-7)
             .unwrap()
     ); // Pre-cancel leaves worker usable.
+    // OCCT cannot place a body scaled to nothing. That pair alone is unchecked,
+    // with OCCT's reason; the pairs after it in the batch keep their real answers.
+    let mut mixed = candidates.clone();
+    mixed.insert(2, candidate(0.0, 0.0, 0.0, 0.0));
+    let mut answers = worker
+        .query_exact_brep_pairs(&graphs, &mixed, &BTreeMap::new(), 1e-7)
+        .unwrap();
+    let failed = answers.remove(2);
     assert!(
-        worker
-            .query_exact_brep_pairs(
-                &graphs,
-                &[candidate(0.0, 0.0, 0.0, 0.0)],
-                &BTreeMap::new(),
-                1e-7
-            )
-            .is_err()
+        matches!(&failed, Err(WorkerError::Geometry(cause)) if cause.contains("transform_body")),
+        "{failed:?}"
     );
+    assert_eq!(answers, results);
     assert_eq!(
         results,
         worker
@@ -836,7 +844,7 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
         )
         .unwrap();
     assert_eq!(
-        pair_result[0].relation,
+        pair_result[0].as_ref().unwrap().relation,
         ketchup_scheduler::ExactPairRelation::Penetrating
     );
     let mut corrupt_sources = pair_sources.clone();

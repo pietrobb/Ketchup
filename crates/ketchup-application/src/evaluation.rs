@@ -745,6 +745,15 @@ pub fn exact_worker_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+/// `explicit`, or else the first installed worker among [`exact_worker_candidates`].
+pub(crate) fn exact_worker_or_installed(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    explicit.or_else(|| {
+        exact_worker_candidates()
+            .into_iter()
+            .find(|path| path.is_file())
+    })
+}
+
 #[path = "evaluation_task.rs"]
 mod task;
 pub use task::*;

@@ -63,8 +63,15 @@ impl PairQuerySession {
         self.reset_on_failure(result)
     }
 
+    /// A pair OCCT cannot measure fails alone: the batch stays loaded for the next pair.
     pub(super) fn query(&mut self, backend: &ExactBackend, query: &PairQuery) -> WorkerResult {
         let result = self.try_query(backend, query);
+        if let Err(failure) = &result
+            && crate::is_geometry_error_code(&failure.code)
+        {
+            self.queries += 1;
+            return result;
+        }
         self.reset_on_failure(result)
     }
 

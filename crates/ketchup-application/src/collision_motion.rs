@@ -134,11 +134,7 @@ pub fn exact_motion_pair_with_worker(
         report["not_evaluated"] = json!([reason]);
         return report;
     }
-    let worker_path = worker_path.or_else(|| {
-        crate::evaluation::exact_worker_candidates()
-            .into_iter()
-            .find(|path| path.is_file())
-    });
+    let worker_path = crate::evaluation::exact_worker_or_installed(worker_path);
     let full = Interval {
         from: pair.from,
         to: pair.to,
@@ -215,6 +211,16 @@ pub fn exact_motion_pair_with_worker(
         };
         checked += answers.len();
         for (interval, (_, _, answer)) in batch.into_iter().zip(answers) {
+            let answer = match answer {
+                Ok(answer) => answer,
+                // OCCT could not measure this pose: it stays unresolved, the rest go on.
+                Err(cause) => {
+                    reasons.push(json!({"reason": "exact_pose_failed",
+                        "position": interval.midpoint(), "cause": cause.to_string()}));
+                    unresolved.push(interval.json());
+                    continue;
+                }
+            };
             classify_interval(
                 pair,
                 bounds,

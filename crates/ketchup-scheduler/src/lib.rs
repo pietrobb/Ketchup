@@ -8,7 +8,9 @@ pub mod plugin;
 pub mod program_worker;
 pub mod protocol;
 mod request_budget;
-pub use pair_query::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation};
+pub use pair_query::{
+    ExactPairAnswer, ExactPairCandidate, ExactPairQueryResult, ExactPairRelation,
+};
 pub mod validator_runtime;
 mod worker_client;
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING};
