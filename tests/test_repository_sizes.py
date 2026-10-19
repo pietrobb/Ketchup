@@ -15,7 +15,7 @@ LIMIT_BYTES = 1024 * 1024
 
 # Path -> largest allowed size. What reads it, so it cannot leave the tree:
 NEEDED_LARGE_FILES = {
-    # viewer_export_house, viewer_release_smoke, large_document_history
+    # viewer_export_house, large_document_history
     "examples/house-project.ketchup": 6_162_575,
     # performance_ai_house
     "examples/wardrobe-chair-table.ketchup": 2_797_689,

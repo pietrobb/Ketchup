@@ -6,7 +6,7 @@ use ketchup_program::{CancelToken, ExactPair, ExactShapes, evaluate, refine, rep
 use ketchup_scheduler::program_worker::{CheckDeadline, ProgramWorker};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const BOX: &str = "box(\"a\", (10, 20, 30))\n";
 
@@ -284,65 +284,6 @@ fn large_house_programs_come_back_bit_for_bit() {
     let programs = example_programs(true);
     assert_eq!(programs.len(), LARGE.len());
     assert_round_trip(programs);
-}
-
-/// What an edit costs before and after isolation: the cabinet example evaluated
-/// in process, in a fresh worker and in the worker kept from the last edit.
-#[test]
-#[ignore = "measurement: run on demand with --nocapture"]
-fn edit_latency_in_process_and_in_the_worker() {
-    let _turn = crate::integration_support::file_turn();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/programs");
-    let source = std::fs::read_to_string(root.join("cabinet.star")).unwrap();
-    let median = |mut runs: Vec<Duration>| {
-        runs.sort();
-        runs[runs.len() / 2]
-    };
-    let edit = |round: usize| BTreeMap::from([("width".to_owned(), 600.0 + round as f64)]);
-    let rounds = 21;
-    let in_process = (0..rounds)
-        .map(|round| {
-            let started = Instant::now();
-            evaluate("cabinet.star", &source, &edit(round)).unwrap();
-            started.elapsed()
-        })
-        .collect();
-    let fresh = (0..rounds)
-        .map(|round| {
-            let mut worker = worker();
-            let started = Instant::now();
-            worker
-                .evaluate(
-                    "cabinet.star",
-                    &source,
-                    &edit(round),
-                    &CancelToken::default(),
-                )
-                .unwrap();
-            started.elapsed()
-        })
-        .collect();
-    let mut kept = worker();
-    run(&mut kept, BOX).unwrap();
-    let warm = (0..rounds)
-        .map(|round| {
-            let started = Instant::now();
-            kept.evaluate(
-                "cabinet.star",
-                &source,
-                &edit(round),
-                &CancelToken::default(),
-            )
-            .unwrap();
-            started.elapsed()
-        })
-        .collect();
-    println!(
-        "cabinet.star median of {rounds}: in process {:?}, fresh worker {:?}, kept worker {:?}",
-        median(in_process),
-        median(fresh),
-        median(warm)
-    );
 }
 
 fn assert_round_trip(programs: Vec<(String, String)>) {

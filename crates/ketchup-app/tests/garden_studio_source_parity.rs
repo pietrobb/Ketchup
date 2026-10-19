@@ -1,9 +1,9 @@
 //! Independent parity against meshes exported by background Blender from the original
 //! generator. No model geometry is constructed here. Requires local artifacts and a
 //! native exact worker provisioned by Cargo for the selected test profile. The Blender
-//! reference is attached to the `sample-files` GitHub release; download
-//! `garden-studio-exact.blender-reference.json` into `examples/` first.
-//! Run: cargo test -p ketchup-app --test garden_studio_source_parity -- --ignored --nocapture
+//! reference is attached to the `sample-files` GitHub release; the nightly CI
+//! downloads `garden-studio-exact.blender-reference.json` into `examples/` first.
+//! Run: cargo test -p ketchup-app --release --test integration garden_studio_source_parity -- --ignored --nocapture
 
 use ketchup_application::{DocumentSession, SessionSettings};
 use ketchup_geometry::linalg::{cross, dot, sub};
@@ -39,7 +39,7 @@ struct ReferenceObject {
 }
 
 #[test]
-#[ignore = "requires local Blender reference, Python-authored garden model, and native exact worker"]
+#[ignore = "needs the Blender reference from the sample-files release; runs nightly"]
 fn garden_studio_source_parity() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let model = root.join("examples/garden-studio-exact.ketchup");

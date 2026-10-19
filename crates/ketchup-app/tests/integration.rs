@@ -40,7 +40,6 @@ mod transform_tool_contract_ui;
 mod validation_context;
 mod validator_panel_ui;
 mod viewer_export_house;
-mod viewer_release_smoke;
 mod viewport_shell;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]

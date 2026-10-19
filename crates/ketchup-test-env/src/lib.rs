@@ -14,8 +14,6 @@ pub const PYTHON: &str = "KETCHUP_PYTHON";
 pub const UPDATE_GOLDEN: &str = "KETCHUP_UPDATE_GOLDEN";
 /// The directory tests write their measurements and inspectable artifacts to.
 pub const REPORT_DIR: &str = "KETCHUP_TEST_REPORT_DIR";
-/// A real user document that opt-in release tests open besides the bundled examples.
-pub const RELEASE_FIXTURE: &str = "KETCHUP_RELEASE_FIXTURE";
 
 /// The configured Python interpreter, for tests that must not run without one.
 pub fn configured_python() -> Option<OsString> {
@@ -36,11 +34,6 @@ pub fn python() -> OsString {
 /// Whether golden files are to be rewritten instead of compared.
 pub fn update_golden() -> bool {
     std::env::var_os(UPDATE_GOLDEN).is_some()
-}
-
-/// The configured release fixture document, if any.
-pub fn release_fixture() -> Option<PathBuf> {
-    std::env::var_os(RELEASE_FIXTURE).map(PathBuf::from)
 }
 
 /// Where a test writes the report `name` when a report directory is set; the

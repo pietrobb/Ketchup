@@ -1,4 +1,4 @@
-//! Opt-in timing and content check of the 1 854-part house export.
+//! Timing and content check of the 1 854-part house export, nightly in release.
 //! cargo test -p ketchup-app --release --test integration viewer_export_house -- --ignored --nocapture
 
 use crate::harness::poll_until;
@@ -13,7 +13,7 @@ const DEADLINE: Duration = Duration::from_secs(600);
 const EXPORT_BUDGET: Duration = Duration::from_secs(2);
 
 #[test]
-#[ignore = "native exact worker plus the external house example; explicit timing opt-in"]
+#[ignore = "perf: release timing budget, runs nightly"]
 fn perf_house_viewer_export_finishes_within_seconds() {
     let _turn = crate::integration_support::file_turn();
     // A copy: the app writes work recovery next to the open document.

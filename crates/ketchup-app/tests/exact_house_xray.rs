@@ -1,6 +1,7 @@
-//! Opt-in native exact-worker CPU regression; no desktop window or GPU execution.
-//! Run with default OAuth features; Cargo provisions the exact worker in the same profile:
-//! cargo test -p ketchup-app --release --test exact_house_xray -- --ignored --nocapture
+//! Native exact-worker CPU regression on the 140-body garden studio in
+//! `examples/`; no desktop window or GPU execution. Runs nightly with the other
+//! release timing budgets; Cargo provisions the exact worker in the same profile:
+//! cargo test -p ketchup-app --release --test integration exact_house_xray -- --ignored --nocapture
 
 use eframe::egui::{Event, Modifiers, PointerButton, Vec2, epaint::Primitive};
 use ketchup_app::{KetchupApp, ViewFlag, dialogs::ScriptedFileDialogs};
@@ -88,7 +89,7 @@ fn report(mode: &str, edges: bool, motion: &str, samples: &[Sample]) -> Duration
 }
 
 #[test]
-#[ignore = "native exact worker plus external 140-body example; explicit CPU benchmark opt-in"]
+#[ignore = "perf: release timing budget, runs nightly"]
 fn perf_exact_house_shaded_and_xray_idle_orbit_cpu_regression() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/garden-studio-exact.ketchup");
