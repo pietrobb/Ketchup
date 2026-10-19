@@ -874,6 +874,8 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                 report.producers = coverage;
                 if !requests.is_empty() {
                     match crate::worker_pool::checkout(executable.as_deref(), &worker_cancelled) {
+                        // A cancelled spawn evaluated nothing: progress keeps the pending body.
+                        Err(_) if worker_cancelled.load(Ordering::Acquire) => {}
                         Err(unavailable) => {
                             let reason = unavailable.to_string();
                             for (key, _) in &requests {
@@ -895,13 +897,15 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                         Ok(mut worker) => {
                             let mut worker_healthy = true;
                             for (key, request) in requests {
-                                if worker_cancelled.load(Ordering::Acquire) {
-                                    break;
-                                }
+                                // Name the pending body first, so a cancel between bodies
+                                // reports the one not done rather than the finished one.
                                 *worker_active_producer
                                     .lock()
                                     .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                                     Some((key, Instant::now()));
+                                if worker_cancelled.load(Ordering::Acquire) {
+                                    break;
+                                }
                                 let definition_id = key.definition_id;
                                 let entry = report
                                     .producers
@@ -1115,6 +1119,8 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
     })();
                                 let (package, topology_package) = match evaluated {
                                     Ok(products) => products,
+                                    // Interrupted, not completed: it stays the active body.
+                                    Err(_) if worker_cancelled.load(Ordering::Acquire) => break,
                                     Err(error) => {
                                         eprintln!(
                                             "exact evaluation rejected definition {}: {error}",
@@ -1161,9 +1167,15 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                 }
             }
         }
-        *worker_active_producer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        // A cancellation (deadline or explicit) freezes progress at the body it interrupted,
+        // so a timeout diagnostic read after the worker exits still names that body.
+        if !worker_cancelled.load(Ordering::Acquire)
+            || worker_completed_producers.load(Ordering::Acquire) == total_producers
+        {
+            *worker_active_producer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
         report.finish();
         let products = ExactEvaluationProducts {
             source: worker_source,

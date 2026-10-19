@@ -1666,6 +1666,49 @@ fn shared_poll_wait_cancel_and_stale_publication() {
     assert!(task.wait(Duration::from_secs(1)).is_err());
 }
 
+/// A deadline that fires before the worker starts the first body must not let the exiting
+/// worker rewrite progress: the timeout diagnostic is read from it after the worker is gone.
+#[test]
+fn cancelled_evaluation_keeps_progress_at_the_interrupted_body() {
+    let settings = worker_settings();
+    let mut document = DocumentStore::new();
+    let batch = ketchup_application::plan_assistant_cad_edit_program(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(),
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let task = start_exact_evaluation_scoped_with_cancellation(
+        document.current(),
+        &ContainerData::default(),
+        &ExactResultRegistry::default(),
+        &ExactResultRegistry::default(),
+        settings.exact_worker_path,
+        None,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        || {},
+    );
+    let pending = task.progress().active_producer;
+    assert!(pending.is_some());
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !task.finished.load(std::sync::atomic::Ordering::Acquire) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancelled worker did not exit"
+        );
+        std::thread::yield_now();
+    }
+    let progress = task.progress();
+    assert_eq!(progress.active_producer, pending);
+    assert!(progress.active_elapsed_ms.is_some());
+    assert_eq!(
+        (progress.total_producers, progress.completed_producers),
+        (1, 0)
+    );
+}
+
 use ketchup_geometry::sketch::*;
 fn rectangle_sketch(workplane: FeatureId, min_mm: [f64; 2], max_mm: [f64; 2]) -> SketchSpec {
     let corners = [
