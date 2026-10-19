@@ -81,6 +81,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
+name = "core_detect"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -174,6 +180,20 @@ dependencies = [
  "sha2",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "encoding_rs"
+version = "0.8.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e985e0451871ad22fb8d2b6b076e2028a502a0d3950998c2c5c0a4f9b5d9679"
+dependencies = [
+ "cfg-if",
+ "core_detect",
+ "multiversion_no_op",
+ "rustversion",
+ "scopeguard",
+ "simdutf8",
 ]
 
 [[package]]
@@ -274,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-geometry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ketchup-tolerance",
  "serde",
@@ -282,10 +302,11 @@ dependencies = [
 
 [[package]]
 name = "ketchup-model"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
+ "encoding_rs",
  "ketchup-geometry",
  "ketchup-tolerance",
  "serde",
@@ -296,21 +317,21 @@ dependencies = [
 
 [[package]]
 name = "ketchup-rejection"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ketchup-tolerance"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ketchup-view-format"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ketchup-rejection",
  "ketchup-tolerance",
@@ -346,6 +367,12 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "multiversion_no_op"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "once_cell"
@@ -417,6 +444,18 @@ dependencies = [
  "linux-raw-sys",
  "windows-sys",
 ]
+
+[[package]]
+name = "rustversion"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "scopeguard"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "semver"
@@ -492,6 +531,12 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "rand_core",
 ]
+
+[[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "spki"

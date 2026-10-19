@@ -1,6 +1,6 @@
 [package]
 name = "ketchup-fuzz"
-description = "cargo-fuzz targets for the readers of untrusted files: a .ketchup document and a Viewer package"
+description = "cargo-fuzz targets for the readers of untrusted files: a .ketchup document, a Viewer package and the DXF, STL, GLB and SketchUp scene imports"
 version = "0.0.0"
 edition = "2024"
 license = "Apache-2.0"
@@ -29,6 +29,34 @@ bench = false
 [[bin]]
 name = "view_package"
 path = "fuzz_targets/view_package.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dxf"
+path = "fuzz_targets/dxf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stl"
+path = "fuzz_targets/stl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "glb"
+path = "fuzz_targets/glb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sketchup_scene"
+path = "fuzz_targets/sketchup_scene.rs"
 test = false
 doc = false
 bench = false

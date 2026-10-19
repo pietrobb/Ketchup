@@ -271,10 +271,12 @@ jobs:
         run: cargo clippy --locked -p ketchup-viewer-macos -p ketchup-viewer --all-targets -- -D warnings
 
   fuzz:
-    name: fuzzing of the document and Viewer package readers
-    # libFuzzer with AddressSanitizer gives load() and
-    # Package::read_with_comments any bytes, from the seed files on, for two
-    # minutes each; one input may take 10 s and the process 2 GiB.
+    name: fuzzing of the document, Viewer package and import readers
+    # libFuzzer with AddressSanitizer gives every target in fuzz/Cargo.toml
+    # (load(), Package::read_with_comments and the DXF, STL, GLB and SketchUp
+    # scene imports) any bytes for two minutes each; one input may take 10 s
+    # and the process 2 GiB. Each run starts from the seeds in fuzz/seeds and
+    # the corpus earlier runs kept in the Actions cache (tests/test_fuzz_job.py).
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -289,18 +291,39 @@ jobs:
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal
           cargo install cargo-fuzz --version "$FUZZ_VERSION" --locked
+      # cargo fuzz has no --locked; a stale fuzz/Cargo.lock fails here instead
+      # of being rewritten by the build.
+      - name: dependencies from the committed lock file
+        run: cargo fetch --locked --manifest-path fuzz/Cargo.toml
       - name: build
         run: cargo "+$NIGHTLY" fuzz build --fuzz-dir fuzz -O
-      - name: a .ketchup document
+      - name: corpus of earlier runs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: seeds kept elsewhere in the repository
         run: |
-          mkdir -p "$RUNNER_TEMP/load" "$RUNNER_TEMP/load-seeds"
-          cp crates/ketchup-assistant/tests/fixtures/intent_entities.ketchup examples/programs/table.ketchup "$RUNNER_TEMP/load-seeds/"
-          cargo "+$NIGHTLY" fuzz run --fuzz-dir fuzz -O load "$RUNNER_TEMP/load" "$RUNNER_TEMP/load-seeds" -- $LIMITS
-      - name: a Viewer package
+          mkdir -p fuzz/seeds/load fuzz/seeds/view_package fuzz/seeds/glb
+          cp crates/ketchup-assistant/tests/fixtures/intent_entities.ketchup examples/programs/table.ketchup fuzz/seeds/load/
+          cp viewer/samples/kitchen.ketchup-view fuzz/seeds/view_package/
+          cp artifacts/blender/garden-studio-colored.glb fuzz/seeds/glb/
+      - name: every target
         run: |
-          mkdir -p "$RUNNER_TEMP/view" "$RUNNER_TEMP/view-seeds"
-          cp viewer/samples/kitchen.ketchup-view "$RUNNER_TEMP/view-seeds/"
-          cargo "+$NIGHTLY" fuzz run --fuzz-dir fuzz -O view_package "$RUNNER_TEMP/view" "$RUNNER_TEMP/view-seeds" -- $LIMITS
+          for target in $(cargo "+$NIGHTLY" fuzz list --fuzz-dir fuzz); do
+            echo "::group::$target"
+            mkdir -p "fuzz/corpus/$target"
+            cargo "+$NIGHTLY" fuzz run --fuzz-dir fuzz -O "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- $LIMITS
+            echo "::endgroup::"
+          done
+      # Saved after a found crash too, so the next run starts from the same corpus.
+      - name: corpus for later runs
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
 
   rust-required:
     name: CI passed

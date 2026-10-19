@@ -21,3 +21,4 @@ artifacts/r0/occt-cmake-config.json -text !eol
 *.cmd text eol=crlf
 scripts/hooks/* text eol=lf
 *.star text eol=lf
+fuzz/seeds/** -text
