@@ -1205,6 +1205,68 @@ mod tests {
         assert!((area - 6000.0 * 150.0).abs() < 1.0, "{area}");
     }
 
+    /// The room on A2 at 1:50, worked out by hand. The frame starts 20 mm from
+    /// the left and 10 mm from the top and every view is padded by 22 mm, so
+    /// the plan's 6000 mm run from x = 42 to 42 + 6000/50 = 162 and its
+    /// 3000 mm from y = 21 to 21 + 60 = 81; the width line lies 8 mm below,
+    /// the height line 8 mm to the left. The cross section starts after the
+    /// plan and the longitudinal section, 20 + 2 × (120 + 44) + 22 = 370, and
+    /// is 3000/50 = 60 wide and 2700/50 = 54 high. The elevations start below
+    /// the cut row, 10 + 60 + 44 = 114.
+    #[test]
+    fn dimension_lines_and_the_title_block_sit_where_the_scale_puts_them() {
+        let sheet = sheet(Some(1200.0));
+        assert_eq!((sheet.format, sheet.scale), (SheetFormat::A2, 50));
+        let ticks = sheet
+            .page
+            .marks
+            .iter()
+            .filter_map(|mark| match mark {
+                Mark::Line { points, stroke, .. } if stroke.width_mm == 0.35 => Some([
+                    f64::midpoint(points[0][0], points[1][0]),
+                    f64::midpoint(points[0][1], points[1][1]),
+                ]),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let text_at = |text: &str, at: [f64; 2]| {
+            sheet.page.marks.iter().any(|mark| {
+                matches!(mark, Mark::Text { text: t, at: a, .. }
+                    if t == text && (a[0] - at[0]).abs() < 1e-9 && (a[1] - at[1]).abs() < 1e-9)
+            })
+        };
+        let plan = [[42.0, 89.0], [162.0, 89.0], [34.0, 81.0], [34.0, 21.0]];
+        let cross = [[370.0, 83.0], [430.0, 83.0], [362.0, 75.0], [362.0, 21.0]];
+        let front = [[42.0, 187.0], [162.0, 187.0], [34.0, 179.0], [34.0, 125.0]];
+        for tick in plan.iter().chain(&cross).chain(&front) {
+            assert!(
+                ticks
+                    .iter()
+                    .any(|t| (t[0] - tick[0]).abs() < 1e-9 && (t[1] - tick[1]).abs() < 1e-9),
+                "no tick at {tick:?} in {ticks:?}"
+            );
+        }
+        // Each value sits over the middle of its line, 1 mm clear of it.
+        assert!(text_at("6000", [102.0, 88.0]));
+        assert!(text_at("3000", [33.0, 51.0]));
+        assert!(text_at("3000", [400.0, 82.0]));
+        assert!(text_at("2700", [361.0, 48.0]));
+        // Frame inside the 20/10 mm margins of the 594 × 420 sheet, the
+        // 180 × 49 title block in its lower right corner, the scale in its cell.
+        let rect = |min: [f64; 2], max: [f64; 2], width_mm: f64| {
+            sheet.page.marks.contains(&Mark::Line {
+                points: vec![min, [max[0], min[1]], max, [min[0], max[1]]],
+                closed: true,
+                stroke: Stroke::solid(width_mm),
+            })
+        };
+        assert!(rect([20.0, 10.0], [584.0, 410.0], 0.7));
+        assert!(rect([404.0, 361.0], [584.0, 410.0], 0.5));
+        assert!(rect([469.0, 401.0], [499.0, 410.0], 0.25), "the scale cell");
+        assert!(sheet.page.marks.iter().any(|mark| matches!(mark,
+            Mark::Text { text, at, .. } if text == "1:50" && (at[0] - 470.5).abs() < 1e-9)));
+    }
+
     #[test]
     fn nothing_visible_is_an_error() {
         assert_eq!(
