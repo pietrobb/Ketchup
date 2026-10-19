@@ -147,9 +147,19 @@ def grain_attributes(grain):
         fail("grain must be \"x\", \"y\" or \"z\", got %r" % grain)
     return {"grain": grain}
 
+# The fabrication role a part is exported with (BOM, BTLx, woodWOP, job):
+# a timber member, a manufactured item or a purchased item. member(), board()
+# and the fasteners set theirs; a part made otherwise sets it in attributes=.
+FABRICATION_ROLE = "classification:ketchup.fabrication-role.v1"
+TIMBER_MEMBER = "fabrication.timber-member.v1"
+MANUFACTURED_ITEM = "fabrication.manufactured-item.v1"
+PURCHASED_ITEM = "fabrication.purchased-item.v1"
+
 def board(name, size, at = (0, 0, 0), material = "board", grain = None, edges = None, color = None):
-    """A flat panel: an axis-aligned cuboid with a material for the cut list."""
+    """A flat panel: an axis-aligned cuboid with a material for the cut list,
+    a manufactured item."""
     attributes = grain_attributes(grain)
+    attributes[FABRICATION_ROLE] = MANUFACTURED_ITEM
     if edges != None:
         if type(edges) != "string":
             fail("edges must be text such as \"L1 L2 W1\", got %r" % edges)
@@ -190,7 +200,8 @@ def divide(span, count, round_to = 1):
 
 def member(name, start, end, section, across = None, material = "timber", grain = "z", color = None):
     """A straight bar of rectangular `section` (width, height) whose centre
-    line runs from world point `start` to `end` (legs, rails, struts).
+    line runs from world point `start` to `end` (legs, rails, struts), a
+    timber member.
 
     The bar's local z runs along its length (z- face at `start`, z+ at `end`);
     local x is `across` made perpendicular to the length (default: world x, or
@@ -203,7 +214,9 @@ def member(name, start, end, section, across = None, material = "timber", grain 
         fail("member(%r): start and end must differ" % name)
     if across == None:
         across = (0, 1, 0) if abs(direction[0]) > 0.9 * length else (1, 0, 0)
-    part = box(name, (section[0], section[1], length), material = material, color = color, attributes = grain_attributes(grain))
+    attributes = grain_attributes(grain)
+    attributes[FABRICATION_ROLE] = TIMBER_MEMBER
+    part = box(name, (section[0], section[1], length), material = material, color = color, attributes = attributes)
     placed = place(part, origin = start, z = direction, x = across)
     offset = vec_add(vec_scale(placed.x, -section[0] / 2.0), vec_scale(placed.y, -section[1] / 2.0))
     return place(part, origin = vec_add(start, offset), z = direction, x = across)
@@ -1497,7 +1510,7 @@ def _circle(radius, name):
 
 def _fastener_part(name, outline, height, at, norm, size, designation, tags, thread = None, modeled_thread = None):
     """A steel prism of `outline`, `height` along local +z from `at`, with the cut-list
-    attributes of a standard part; `thread` = (size, from_z, to_z) names the outside thread
+    attributes of a standard, purchased part; `thread` = (size, from_z, to_z) names the outside thread
     of a bolt or rod and where it runs along the part's local z, `modeled_thread` whether
     it is modelled whatever the document says."""
     attributes = {
@@ -1505,6 +1518,7 @@ def _fastener_part(name, outline, height, at, norm, size, designation, tags, thr
         "standard": norm,
         "mass_basis": _SIMPLIFIED_MASS,
         "source": _fastener_source(norm, size),
+        FABRICATION_ROLE: PURCHASED_ITEM,
     }
     if thread != None:
         attributes["thread"] = thread[0]

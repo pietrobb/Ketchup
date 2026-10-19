@@ -84,6 +84,135 @@ fn projection(
     .unwrap()
 }
 
+/// The fabrication of every part of `snapshot`, on its exact bodies and
+/// collision check.
+fn fabrication(
+    worker: &mut ExactWorkerSupervisor,
+    snapshot: &Snapshot,
+) -> Result<
+    ketchup_manufacturing::fabrication::GeneralFabricationProjection,
+    ketchup_manufacturing::fabrication::GeneralFabricationError,
+> {
+    use ketchup_application::validation::fabrication_collision_validation_with_worker;
+    use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
+    use ketchup_model::exact_validation::GeneralBodyParticipant;
+    use ketchup_model::persistence::ContainerData;
+    let occurrences = snapshot.scene_query();
+    let packages = occurrences
+        .iter()
+        .map(|occurrence| {
+            let definition = snapshot.definition(occurrence.definition_id).unwrap();
+            let graph = ExactBRepGraph::from_snapshot(
+                snapshot,
+                occurrence.definition_id,
+                *definition.feature_ids().last().unwrap(),
+            )
+            .unwrap();
+            std::sync::Arc::new(ExactBodyPackage::from(
+                worker.evaluate_exact_brep_graph(&graph).unwrap(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let registry = ExactResultRegistry::accept(snapshot, packages).unwrap();
+    let tolerance = snapshot.tolerance();
+    let participants = occurrences
+        .iter()
+        .map(|occurrence| {
+            GeneralBodyParticipant::accept(
+                snapshot,
+                &registry,
+                occurrence.instance_path.clone(),
+                tolerance,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let validation = fabrication_collision_validation_with_worker(
+        snapshot,
+        &participants,
+        &ContainerData::default(),
+        None,
+        std::time::Duration::from_secs(300),
+    )
+    .unwrap();
+    ketchup_manufacturing::fabrication::project_general_fabrication(
+        snapshot,
+        &registry,
+        &validation.cases,
+        &validation.report,
+        tolerance,
+        &ketchup_manufacturing::fabrication::shown_parts(snapshot),
+    )
+}
+
+/// Review 2026-10-19 MF-14: the library's parts carry their fabrication role,
+/// so a program need not write one. A drilled member with a bolt, a nut and a
+/// washer beside it exports to BTLx, woodWOP and a production job, the
+/// fasteners as purchased rows of the BOM instead of parts that block the
+/// export; a board is a manufactured row (its woodWOP and job export: idea #128).
+#[test]
+fn library_members_boards_and_fasteners_carry_their_fabrication_role() {
+    use ketchup_manufacturing::fabrication::GeneralBomItemKind;
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let quantities =
+        |projection: &ketchup_manufacturing::fabrication::GeneralFabricationProjection, kind| {
+            projection
+                .bom
+                .rows
+                .iter()
+                .filter(|row| row.item_kind == kind)
+                .map(|row| row.quantity)
+                .sum::<usize>()
+        };
+    let snapshot = apply(
+        "rail = member('rail', (0, 0, 0), (1000, 0, 0), (60, 80))\n\
+         hole(rail, 'y+', at = (30, 500), diameter = 8, depth = 20)\n\
+         bolt('bolt', 'M10', 100, at = (0, -300, 0))\n\
+         nut('nut', 'M10', at = (100, -300, 0))\n\
+         washer('washer', 'M10', at = (200, -300, 0))\n",
+    );
+    // A production job names each made piece by its code; the shop gives the
+    // rail one, the purchased fasteners need none.
+    let rail = snapshot
+        .scene_query()
+        .into_iter()
+        .find(|occurrence| {
+            snapshot
+                .definition(occurrence.definition_id)
+                .is_some_and(|definition| definition.name() == "rail")
+        })
+        .unwrap()
+        .instance_path;
+    let snapshot = {
+        use ketchup_model::document::{CanonicalCommand, CommandBatch};
+        snapshot
+            .preview_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetProductionCode {
+                    instance_path: rail,
+                    code: Some("000000000001".into()),
+                },
+            ]))
+            .unwrap()
+    };
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(quantities(&projection, GeneralBomItemKind::Timber), 1);
+    assert_eq!(quantities(&projection, GeneralBomItemKind::Purchased), 3);
+    let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert_eq!(btlx.matches("<Part ").count(), 1, "{btlx}");
+    let programs = projection
+        .woodwop_mpr_4_0_setup_a_programs(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(programs.len(), 1);
+    projection
+        .production_job(&snapshot, &[])
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    let snapshot = apply("board('shelf', (600, 300, 18))\n");
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(quantities(&projection, GeneralBomItemKind::Manufactured), 1);
+}
+
 /// A stock box with a notch (box tool) and a slanted end cut (extruded profile
 /// tool), each subtracted in turn, is one stock and two cuts in one BTLx part.
 #[test]
