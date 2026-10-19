@@ -43,11 +43,23 @@ fn check_height(source: &RuleProgramSource, expected: f64) -> ketchup_program::P
 
 #[test]
 fn linear_driver_reaches_requested_face_without_an_extra_operation() {
-    let original = source("H*2", "");
+    let shared = source("H*2", "");
+    let mut original = shared.clone();
+    original.source = original.source.replace("(20,20,H)", "(20,20,10)");
     let rewritten = push_pull(&original, 21.0);
     let model = check_height(&rewritten, 41.0);
     assert_eq!(model.part("part").expect("part").face_offsets().count(), 0);
     assert!((rewritten.overrides["H"] - 20.5).abs() < 1.0e-7);
+    // Review 2026-10-19 WB-2: H makes "other" too, so the part alone is
+    // pushed and "other" stays 10 high.
+    let rewritten = push_pull(&shared, 21.0);
+    let model = check_height(&rewritten, 41.0);
+    assert!(rewritten.overrides.is_empty());
+    assert_eq!(model.part("part").expect("part").face_offsets().count(), 1);
+    assert_eq!(
+        model.part("other").expect("other").local_bounds().1[2],
+        10.0
+    );
 }
 
 #[test]

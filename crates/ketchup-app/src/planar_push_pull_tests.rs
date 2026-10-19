@@ -376,14 +376,14 @@ fn table_top_push_pull_rewrites_program_through_undo_redo_and_save_open() {
         harness.state().digest
     );
 
-    let top_thickness = |app: &KetchupApp| {
-        app.document
-            .current_rule_program()
-            .unwrap()
-            .overrides
-            .get("top_thickness")
-            .copied()
+    // top_thickness sets the depth of the legs' dowel holes too, so the top
+    // alone gets a push_pull() line, not the parameter (review 2026-10-19 WB-2).
+    let line = "push_pull(\"table/top\", face=\"z+\", distance=7, name=\"GUI Push/Pull 1\")";
+    let pushed = |program: &ketchup_model::document::RuleProgramSource| {
+        assert!(program.overrides.is_empty(), "{:?}", program.overrides);
+        program.source.contains(line)
     };
+    let top_pushed = |app: &KetchupApp| pushed(app.document.current_rule_program().unwrap());
     let ids = |app: &KetchupApp| {
         app.document
             .current()
@@ -392,17 +392,16 @@ fn table_top_push_pull_rewrites_program_through_undo_redo_and_save_open() {
             .collect::<Vec<_>>()
     };
     assert_eq!(harness.state().undo_step_count(), undo_steps + 1);
-    assert_eq!(
-        top_thickness(harness.state()),
-        Some(32.0),
+    assert!(
+        top_pushed(harness.state()),
         "{:?}",
         harness.state().document.current_rule_program()
     );
     assert_eq!(ids(harness.state()), occurrence_ids);
     assert!(harness.state_mut().undo());
-    assert_eq!(top_thickness(harness.state()), None);
+    assert!(!top_pushed(harness.state()));
     assert!(harness.state_mut().redo());
-    assert_eq!(top_thickness(harness.state()), Some(32.0));
+    assert!(top_pushed(harness.state()));
     assert_eq!(ids(harness.state()), occurrence_ids);
     assert!(harness.state_mut().save_document_to(&path));
 
@@ -411,14 +410,7 @@ fn table_top_push_pull_rewrites_program_through_undo_redo_and_save_open() {
         ketchup_application::SessionSettings::default(),
     )
     .unwrap();
-    assert_eq!(
-        reopened
-            .rule_program()
-            .unwrap()
-            .overrides
-            .get("top_thickness"),
-        Some(&32.0)
-    );
+    assert!(pushed(reopened.rule_program().unwrap()));
     assert_eq!(
         reopened
             .snapshot()

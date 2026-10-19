@@ -10,11 +10,12 @@ use crate::rule_program::evaluate;
 use ketchup_model::document::{RuleProgramSource, Transform};
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM};
 use ketchup_program::frame::{self, Mat3};
-use ketchup_program::model::{ProgramEdgeFinishKind, ProgramPartBody};
+use ketchup_program::model::{Part, ProgramEdgeFinishKind, ProgramPartBody};
 use ketchup_program::source_edit::{
     self, CreatingCall, number_literal, point_literal, quote, written, written_point,
 };
 use ketchup_program::{Evaluated, ProgramFeatureKind, ProgramModel};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 /// One change of a program part the editor asks for.
@@ -668,10 +669,11 @@ impl Edit<'_> {
     }
 
     /// The source with the one `param()` that drives what `reading` looks
-    /// at overridden so the part reads `value`. `None` when not exactly one
-    /// parameter drives it, or the override misses: a probe proposes, it
-    /// does not promise the program is linear.
-    fn driven(&self, reading: &Reading, value: f64) -> Option<RuleProgramSource> {
+    /// at overridden so the part reads `value`, or the other parts that
+    /// override changes too. `None` when not exactly one parameter drives
+    /// it, or the override misses: a probe proposes, it does not promise the
+    /// program is linear.
+    fn driven(&self, reading: &Reading, value: f64) -> Option<Driven> {
         let baseline = reading.of(&self.evaluated.model, self.name)?;
         let mut drivers = Vec::new();
         for parameter in &self.evaluated.model.params {
@@ -707,13 +709,51 @@ impl Edit<'_> {
         let [(parameter, replacement)] = drivers.as_slice() else {
             return None;
         };
-        let mut rewritten = self.source.clone();
-        rewritten.overrides.insert(parameter.clone(), *replacement);
-        evaluate(&rewritten)
-            .ok()
-            .and_then(|after| reading.of(&after.model, self.name))
-            .is_some_and(|after| (after - value).abs() <= ACCUMULATED_ROUNDING)
-            .then_some(rewritten)
+        // Without the noise of the probe: a whole default stays whole, else
+        // nine decimals, as long as the part still reads `value`.
+        let whole = (self.evaluated.model.params.iter())
+            .any(|made| &made.name == parameter && made.default.fract() == 0.0)
+            && (replacement - replacement.round()).abs() <= DEFAULT_LINEAR_TOLERANCE_MM;
+        let candidates = [
+            whole.then(|| replacement.round()),
+            Some((replacement * 1.0e9).round() / 1.0e9),
+            Some(*replacement),
+        ];
+        let (rewritten, after) = candidates.into_iter().flatten().find_map(|replacement| {
+            let mut rewritten = self.source.clone();
+            rewritten.overrides.insert(parameter.clone(), replacement);
+            let after = evaluate(&rewritten).ok()?;
+            reading
+                .of(&after.model, self.name)
+                .is_some_and(|after| (after - value).abs() <= ACCUMULATED_ROUNDING)
+                .then_some((rewritten, after))
+        })?;
+        let parts = self.other_parts_changed(&after.model);
+        Some(if parts.is_empty() {
+            Driven::Alone(rewritten)
+        } else {
+            Driven::Shared {
+                parameter: parameter.clone(),
+                parts,
+            }
+        })
+    }
+
+    /// The parts and tools other than this one that `after` adds, removes
+    /// or makes differently.
+    fn other_parts_changed(&self, after: &ProgramModel) -> Vec<String> {
+        fn bodies(model: &ProgramModel) -> BTreeMap<&str, &Part> {
+            (model.parts.iter().chain(&model.tools))
+                .map(|part| (part.name.as_str(), part))
+                .collect()
+        }
+        let (before, after) = (bodies(&self.evaluated.model), bodies(after));
+        let names = before.keys().chain(after.keys()).collect::<BTreeSet<_>>();
+        names
+            .into_iter()
+            .filter(|name| **name != self.name && before.get(*name) != after.get(*name))
+            .map(|name| (*name).to_owned())
+            .collect()
     }
 
     /// The one `param()` that drives the face is overridden; otherwise the
@@ -730,20 +770,30 @@ impl Edit<'_> {
             ));
         }
         let reading = Reading::Face(face.to_owned());
+        // A param() that changes other parts too is left alone: the line
+        // below pushes this part's face only.
         if let Some(before) = reading.of(&self.evaluated.model, self.name)
-            && let Some(rewritten) = self.driven(&reading, before + distance)
+            && let Some(Driven::Alone(rewritten)) = self.driven(&reading, before + distance)
         {
             return Ok((rewritten, self.reads(reading, before + distance)));
         }
         let part = self.evaluated.model.part(self.name);
         let count = part.map_or(0, |part| part.face_offsets().count());
+        // The editor names an extrusion's caps "start" and "end"; the
+        // program names them as the extrusion does.
+        let written_face = match (part.map(|part| &part.body), face) {
+            (Some(ProgramPartBody::Extrusion { caps, .. }), "start") => caps[0].as_str(),
+            (Some(ProgramPartBody::Extrusion { caps, .. }), "end") => caps[1].as_str(),
+            _ => face,
+        };
         let line = format!(
             "push_pull({}, face={}, distance={}, name={})\n",
             quote(self.name),
-            quote(face),
+            quote(written_face),
             number_literal(distance),
             quote(&format!("GUI Push/Pull {}", count + 1))
         );
+        let reading = Reading::Face(written_face.to_owned());
         Ok((self.appended(&line), self.reads(reading, distance)))
     }
 
@@ -805,15 +855,36 @@ impl Edit<'_> {
         if end.is_some() && (!value.is_finite() || value <= DEFAULT_LINEAR_TOLERANCE_MM) {
             return Err(self.too_short(feature, value));
         }
-        if let Some(rewritten) = self.driven(&reading, value) {
+        let driven = self.driven(&reading, value);
+        if let Some(Driven::Alone(rewritten)) = driven {
             return Ok((rewritten, self.reads(reading, value)));
         }
+        // An extrusion's length is this part's own push_pull() when the
+        // param() that drives it changes other parts too.
         if let Some(end) = end {
             return self.length(feature, &end, current, value);
         }
         let line = self
             .found_call()
             .map_or_else(String::new, |call| format!(" on line {}", call.lines.first));
+        if let Some(Driven::Shared { parameter, parts }) = driven {
+            let more = parts.len().saturating_sub(5);
+            let mut named = (parts.iter().take(5))
+                .map(|part| quote(part))
+                .collect::<Vec<_>>();
+            if more > 0 {
+                named.push(format!("{more} more"));
+            }
+            return Err(refused(
+                "program_parameter_shared",
+                format!(
+                    "param({}) sets {feature} · {path} of part {name} and also changes {}; set the parameter {} to change them all, or change part {name}{line} in the program",
+                    quote(&parameter),
+                    named.join(", "),
+                    quote(&parameter)
+                ),
+            ));
+        }
         Err(refused(
             "program_parameter_not_driven",
             format!(
@@ -902,6 +973,17 @@ impl Edit<'_> {
 
 /// Name of the `push_pull()` that sets an extrusion's length typed for it.
 const LENGTH: &str = "Length";
+
+/// What overriding the one `param()` that drives a part's value does.
+enum Driven {
+    /// The overridden source, which changes this part alone.
+    Alone(RuleProgramSource),
+    /// The `param()` changes these other parts too, or adds or removes them.
+    Shared {
+        parameter: String,
+        parts: Vec<String>,
+    },
+}
 
 #[cfg(test)]
 #[path = "program_part_change_tests.rs"]

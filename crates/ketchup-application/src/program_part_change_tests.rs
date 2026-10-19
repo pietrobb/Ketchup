@@ -246,6 +246,121 @@ fn a_value_one_param_drives_is_overridden_to_the_typed_size() {
     );
 }
 
+fn feature_with(model: &ProgramModel, part: &str, path: &str) -> String {
+    let part = model.part(part).unwrap();
+    let feature = part
+        .features
+        .iter()
+        .find(|feature| (feature.parameters.iter()).any(|parameter| parameter.path == path));
+    feature.unwrap().name.clone()
+}
+
+/// Every part and tool but `part` is made as before.
+fn others_same(before: &ProgramModel, after: &ProgramModel, part: &str) {
+    let others = |model: &ProgramModel| {
+        (model.parts.iter().chain(&model.tools))
+            .filter(|made| made.name != part)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(others(after), others(before));
+}
+
+/// Review 2026-10-19 WB-2: a value one param() drives for several parts
+/// changed them all, and could make a new part, without a word.
+#[test]
+fn a_param_that_drives_other_parts_too_is_not_overridden() {
+    let source = "W = param(\"width\", 100)\n\
+                  box(\"a\", (W, 20, 10))\n\
+                  box(\"b\", (W, 20, 10), at=(0, 50, 0))\n\
+                  if W > 110:\n    box(\"extra\", (5, 5, 5), at=(0, 100, 0))\n";
+    let before = model(&program(source));
+    let message = refusal(
+        source,
+        "a",
+        PartChange::Parameter {
+            feature: feature_with(&before, "a", "bounds.width"),
+            path: "bounds.width".to_owned(),
+            value: 120.0,
+        },
+    );
+    assert!(
+        message.contains("param(\"width\")")
+            && message.contains("\"b\", \"extra\"")
+            && message.contains("line 2"),
+        "{message}"
+    );
+    // A length the shared param() drives is this part's own push_pull().
+    let source =
+        "H = param(\"h\", 18)\nbox(\"a\", (10, 20, H))\nbox(\"b\", (10, 20, H), at=(0, 50, 0))\n";
+    let before = model(&program(source));
+    let lengthened = change(
+        source,
+        "a",
+        PartChange::Parameter {
+            feature: feature_with(&before, "a", "extent.distance"),
+            path: "extent.distance".to_owned(),
+            value: 23.0,
+        },
+    );
+    assert!(lengthened.overrides.is_empty());
+    assert_eq!(
+        lengthened.source,
+        format!("{source}push_pull(\"a\", face=\"z+\", distance=5, name=\"Length\")\n")
+    );
+    let after = model(&lengthened);
+    assert_eq!(Reading::Length.of(&after, "a"), Some(23.0));
+    others_same(&before, &after, "a");
+}
+
+#[test]
+fn a_side_of_the_cabinet_changes_alone() {
+    let source = include_str!("../../../examples/programs/cabinet.star");
+    let before = model(&program(source));
+    let changed = change(
+        source,
+        "carcass/left",
+        PartChange::PushPull {
+            face: "z+".to_owned(),
+            distance: 80.0,
+        },
+    );
+    assert!(changed.overrides.is_empty(), "{:?}", changed.overrides);
+    let after = model(&changed);
+    others_same(&before, &after, "carcass/left");
+    let (low, high) = after.part("carcass/left").unwrap().world_bounds();
+    assert!(
+        (high[2] - low[2] - 800.0).abs() < 1.0e-6,
+        "{low:?} {high:?}"
+    );
+}
+
+#[test]
+fn an_overridden_param_is_written_without_probe_noise() {
+    let source = "W = param(\"width\", 100)\nbox(\"p\", (W * 3, 20, 10))\n";
+    let before = model(&program(source));
+    let resized = change(
+        source,
+        "p",
+        PartChange::Parameter {
+            feature: feature_with(&before, "p", "bounds.width"),
+            path: "bounds.width".to_owned(),
+            value: 250.3,
+        },
+    );
+    assert_eq!(resized.overrides["width"], 83.433333333);
+    let whole = change(
+        source,
+        "p",
+        PartChange::Parameter {
+            feature: feature_with(&before, "p", "bounds.width"),
+            path: "bounds.width".to_owned(),
+            value: 270.0,
+        },
+    );
+    assert_eq!(whole.overrides["width"], 90.0);
+}
+
 #[test]
 fn a_part_of_a_loop_is_moved_after_the_loop_alone() {
     let source = "for i in range(3):\n    box(\"s%d\" % i, (10, 10, 10), at=(0, 0, 20 * i))\n";
