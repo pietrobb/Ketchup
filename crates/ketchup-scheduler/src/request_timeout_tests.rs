@@ -177,6 +177,25 @@ fn hold_busy_child(mut child: Box<dyn ChildWrapper>) {
     let _ = std::io::stdin().read_line(&mut String::new());
 }
 
+/// Exact workers and plugins are console programs: started from the windowed
+/// app without CREATE_NO_WINDOW, each start opens a new console window. The
+/// flag sits beside the kill-on-close job, which must stay.
+#[cfg(windows)]
+#[test]
+fn workers_and_plugins_start_without_a_console_window_inside_their_job() {
+    use process_wrap::std::{CreationFlags, JobObject, KillOnDrop};
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+    let worker = limited_worker_command(Command::new("ketchup-exact-worker"), Some(1 << 30));
+    let plugin = crate::plugin::plugin_command(Path::new("python.exe"), &[], None);
+    for command in [worker, plugin] {
+        assert_eq!(
+            command.get_wrap::<CreationFlags>().map(|flags| flags.0),
+            Some(CREATE_NO_WINDOW)
+        );
+        assert!(command.has_wrap::<JobObject>() && command.has_wrap::<KillOnDrop>());
+    }
+}
+
 #[cfg(windows)]
 fn process_is_running(pid: u32) -> bool {
     let output = Command::new("tasklist")

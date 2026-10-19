@@ -44,7 +44,7 @@ use process_wrap::std::JobMemoryLimit;
 use process_wrap::std::ProcessGroup;
 use process_wrap::std::{ChildWrapper, CommandWrap};
 #[cfg(windows)]
-use process_wrap::std::{JobObject, KillOnDrop};
+use process_wrap::std::{CreationFlags, JobObject, KillOnDrop};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -55,6 +55,8 @@ use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WorkerExactBRepGraphFaceEvidence {
@@ -781,11 +783,18 @@ fn spawn_limited_worker_command(
     command: Command,
     memory_limit: Option<usize>,
 ) -> io::Result<Box<dyn ChildWrapper>> {
+    limited_worker_command(command, memory_limit).spawn()
+}
+
+fn limited_worker_command(command: Command, memory_limit: Option<usize>) -> CommandWrap {
     let mut command = CommandWrap::from(command);
     // KillOnDrop makes the job kill-on-close: the worker dies with this process even when
     // it crashes or is killed mid-request, instead of outliving it as an orphan.
+    // The worker is a console program: started from the windowed app without
+    // this flag, Windows opens a new console window for it.
     #[cfg(windows)]
     {
+        command.wrap(CreationFlags(CREATE_NO_WINDOW));
         command.wrap(KillOnDrop);
         if let Some(bytes) = memory_limit {
             command.wrap(JobMemoryLimit(bytes));
@@ -801,7 +810,7 @@ fn spawn_limited_worker_command(
             command.wrap(JobMemoryLimit(bytes));
         }
     }
-    command.spawn()
+    command
 }
 
 pub struct ExactWorkerClient {

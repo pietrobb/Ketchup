@@ -3,11 +3,11 @@ use ketchup_assistant::extension::{
     PluginLimits, PluginManifest, PluginProgram, PluginRequest, PluginResponse,
 };
 use ketchup_model::document::Snapshot;
-#[cfg(windows)]
-use process_wrap::std::JobObject;
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
 use process_wrap::std::{ChildWrapper, CommandWrap, KillOnDrop};
+#[cfg(windows)]
+use process_wrap::std::{CreationFlags, JobObject};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
@@ -16,6 +16,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 pub const MAX_PLUGIN_REQUEST_LINE_BYTES: usize = 4 * 1024;
 // STATE hex-encodes every gateway-authorized query byte plus a bounded header.
@@ -31,6 +33,16 @@ pub(crate) fn spawn_plugin_process(
     arguments: &[OsString],
     working_directory: Option<&Path>,
 ) -> Result<Box<dyn ChildWrapper>, PluginHostError> {
+    plugin_command(executable, arguments, working_directory)
+        .spawn()
+        .map_err(|error| PluginHostError::Spawn(error.to_string()))
+}
+
+pub(crate) fn plugin_command(
+    executable: &Path,
+    arguments: &[OsString],
+    working_directory: Option<&Path>,
+) -> CommandWrap {
     let mut command = Command::new(executable);
     if let Some(directory) = working_directory {
         command.current_dir(directory);
@@ -46,16 +58,18 @@ pub(crate) fn spawn_plugin_process(
         .stderr(Stdio::null());
     let mut command = CommandWrap::from(command);
     // Kill-on-close job: the plugin dies with the host process, see spawn_exact_worker_command.
+    // No console window either: python.exe is a console program, see spawn_limited_worker_command.
     #[cfg(windows)]
-    command.wrap(KillOnDrop).wrap(JobObject);
+    command
+        .wrap(CreationFlags(CREATE_NO_WINDOW))
+        .wrap(KillOnDrop)
+        .wrap(JobObject);
     // Its own process group: stopping the plugin signals the group, so a
     // process the plugin started does not outlive it (SEC-6). On Linux it is
     // also killed when the host dies (EX-7); the thread that spawns it waits for it.
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader()).wrap(KillOnDrop);
     command
-        .spawn()
-        .map_err(|error| PluginHostError::Spawn(error.to_string()))
 }
 
 #[derive(Debug)]
