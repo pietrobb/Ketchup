@@ -2735,6 +2735,39 @@ mod tests {
         assert_eq!(error.code, "evaluation_error", "{error}");
     }
 
+    fn builtin_names() -> Vec<String> {
+        GlobalsBuilder::new()
+            .with(builtins)
+            .with(machining::builtins)
+            .with(assemblies::builtins)
+            .with(conditions::builtins)
+            .with(continuity::builtins)
+            .with(joints::builtins)
+            .with(support::builtins)
+            .with(path_builtins)
+            .with(boolean_builtins)
+            .build()
+            .names()
+            .map(|name| name.as_str().to_owned())
+            .collect()
+    }
+
+    /// Review 2026-10-17 documentation: the language guide did not describe
+    /// `helix`, `shell`, `union`, `intersect`, `nearest` or the EC5 functions.
+    /// Every builtin the library documents is named in the guide too.
+    #[test]
+    fn the_language_guide_names_every_builtin() {
+        let guide = include_str!("../../../docs/program-language.md");
+        let missing = builtin_names()
+            .into_iter()
+            .filter(|name| !guide.contains(&format!("`{name}(")))
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "builtins missing in the guide: {missing:?}"
+        );
+    }
+
     /// The library's comments are the program documentation an AI reads
     /// (topic by topic), so a builtin missing there is a tool the AI
     /// cannot know about.
@@ -2749,25 +2782,10 @@ mod tests {
             .lines()
             .find(|line| line.trim_start_matches(['#', ' ']).starts_with("math."))
             .expect("library header documents math.*");
-        let mut missing = Vec::new();
-        for name in GlobalsBuilder::new()
-            .with(builtins)
-            .with(machining::builtins)
-            .with(assemblies::builtins)
-            .with(conditions::builtins)
-            .with(continuity::builtins)
-            .with(joints::builtins)
-            .with(support::builtins)
-            .with(path_builtins)
-            .with(boolean_builtins)
-            .build()
-            .names()
-        {
-            let name = name.as_str();
-            if !header.contains(&format!("{name}(")) {
-                missing.push(name.to_owned());
-            }
-        }
+        let mut missing = builtin_names()
+            .into_iter()
+            .filter(|name| !header.contains(&format!("{name}(")))
+            .collect::<Vec<_>>();
         for name in GlobalsBuilder::new().with(math_functions).build().names() {
             let name = name.as_str();
             let listed = math_line
