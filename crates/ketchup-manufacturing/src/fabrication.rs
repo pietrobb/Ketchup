@@ -1363,7 +1363,23 @@ impl GeneralFabricationProjection {
             };
             write_part().map_err(|error| error.at_part(part))?;
         }
-        if matched_operation_count != self.manufacturing.operations.len() {
+        // Every operation is written, except those of the manufactured items
+        // BTLx does not carry (woodWOP and the production job machine them).
+        let other_operations = self
+            .manufacturing
+            .operations
+            .iter()
+            .filter(|operation| {
+                let of = |writes: bool| {
+                    self.bom.rows.iter().any(|row| {
+                        ShopFormat::Btlx.writes(row.item_kind) == writes
+                            && is_row_operation(row, operation)
+                    })
+                };
+                !of(true) && of(false)
+            })
+            .count();
+        if matched_operation_count + other_operations != self.manufacturing.operations.len() {
             return Err(GeneralFabricationError::ExportBlocked);
         }
         output.push_str("    </Parts>\n  </Project>\n</BTLx>\n");
@@ -3123,17 +3139,38 @@ pub fn project_general_fabrication(
     let mut operations = Vec::new();
     let mut unresolved_sources = Vec::new();
     for row in &bom.rows {
-        if !row.item_kind.is_member() {
+        // A member must be described; a manufactured item is machined
+        // (woodWOP, production job) when it can be, and otherwise those exports
+        // refuse it by name, without holding back the members' exports.
+        let required = match row.item_kind {
+            GeneralBomItemKind::Purchased => continue,
+            kind => kind.is_member(),
+        };
+        // Rows of one body (a member and a manufactured copy) share its operations.
+        if operations
+            .iter()
+            .any(|operation| is_row_operation(row, operation))
+        {
             continue;
         }
+        let mut unresolved = |source: &GeneralBodySource| {
+            if required {
+                unresolved_sources.push(source.clone());
+            }
+        };
         match &row.source {
             GeneralBodySource::Exact(source) => {
                 let package = registry
                     .get_result(source)
-                    .filter(|package| package.is_current(snapshot))
-                    .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
+                    .filter(|package| package.is_current(snapshot));
+                let Some(package) = package else {
+                    if required {
+                        return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
+                    }
+                    continue;
+                };
                 if !manufacturing_export_token_is_safe(&source.result_fingerprint) {
-                    unresolved_sources.push(row.source.clone());
+                    unresolved(&row.source);
                     continue;
                 }
                 let row_operations = match package.as_ref() {
@@ -3143,7 +3180,7 @@ pub fn project_general_fabrication(
                     ExactBodyPackage::Imported(_) => None,
                 };
                 let Some(mut row_operations) = row_operations else {
-                    unresolved_sources.push(row.source.clone());
+                    unresolved(&row.source);
                     continue;
                 };
                 // The thread goes with the drilling of its hole. A thread on a
@@ -3158,7 +3195,7 @@ pub fn project_general_fabrication(
                         && operation.kind != GeneralManufacturingKind::CircularDrill;
                 }
                 if lost_thread {
-                    unresolved_sources.push(row.source.clone());
+                    unresolved(&row.source);
                     continue;
                 }
                 if row.mirrored {
@@ -3169,9 +3206,7 @@ pub fn project_general_fabrication(
             }
             GeneralBodySource::CanonicalMesh { .. }
             | GeneralBodySource::CanonicalExtrusion { .. }
-            | GeneralBodySource::CanonicalExactGraph { .. } => {
-                unresolved_sources.push(row.source.clone());
-            }
+            | GeneralBodySource::CanonicalExactGraph { .. } => unresolved(&row.source),
         }
     }
     unresolved_sources.sort();
@@ -3198,7 +3233,24 @@ pub fn project_general_fabrication(
     let drawings = bom
         .rows
         .iter()
-        .map(|row| general_piece_drawing(row, &manufacturing.operations))
+        .enumerate()
+        .map(|(index, row)| {
+            // A body's operations are drawn once, on the first row that makes it.
+            let makes = |row: &GeneralBomRow| row.item_kind != GeneralBomItemKind::Purchased;
+            let owner = makes(row)
+                && !bom.rows[..index].iter().any(|earlier| {
+                    makes(earlier)
+                        && earlier.definition_id == row.definition_id
+                        && earlier.source == row.source
+                        && earlier.mirrored == row.mirrored
+                });
+            let operations: &[GeneralManufacturingOperation] = if owner {
+                &manufacturing.operations
+            } else {
+                &[]
+            };
+            general_piece_drawing(row, operations)
+        })
         .collect::<Vec<_>>();
     let drawing_bytes = general_drawing_bytes(&drawings, validation_state);
     let drawings = GeneralDrawingProjection {
@@ -4749,7 +4801,7 @@ fn general_piece_drawing(
         ],
         machining_operations: operations
             .iter()
-            .filter(|operation| row.item_kind.is_member() && is_row_operation(row, operation))
+            .filter(|operation| is_row_operation(row, operation))
             .cloned()
             .collect(),
         evidence_class: row.evidence_class.clone(),

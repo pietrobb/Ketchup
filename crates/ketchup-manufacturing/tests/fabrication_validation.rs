@@ -1230,14 +1230,25 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
             .iter()
             .all(|path| path.root_occurrence() == assembly_copy && !path.is_root())
     );
-    assert!(projection.manufacturing.operations.is_empty());
-    assert_eq!(projection.drawings.drawings.len(), 2);
-    assert!(
+    // The manufactured item is machined from its stock (woodWOP, job) and its
+    // drawing lists it; the purchased copy of the same body lists nothing.
+    assert_eq!(
+        projection
+            .manufacturing
+            .operations
+            .iter()
+            .map(|operation| operation.kind)
+            .collect::<Vec<_>>(),
+        vec![GeneralManufacturingKind::Stock]
+    );
+    assert_eq!(
         projection
             .drawings
             .drawings
             .iter()
-            .all(|drawing| drawing.machining_operations.is_empty())
+            .map(|drawing| drawing.machining_operations.len())
+            .collect::<Vec<_>>(),
+        vec![1, 0]
     );
     let bom_export = projection.bom_export(&snapshot).unwrap();
     let export = String::from_utf8(bom_export.clone()).unwrap();

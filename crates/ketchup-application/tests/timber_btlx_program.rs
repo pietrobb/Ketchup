@@ -149,7 +149,8 @@ fn fabrication(
 /// so a program need not write one. A drilled member with a bolt, a nut and a
 /// washer beside it exports to BTLx, woodWOP and a production job, the
 /// fasteners as purchased rows of the BOM instead of parts that block the
-/// export; a board is a manufactured row (its woodWOP and job export: idea #128).
+/// export. A drilled board beside them is a manufactured row: woodWOP and the
+/// job machine it, BTLx carries the member alone.
 #[test]
 fn library_members_boards_and_fasteners_carry_their_fabrication_role() {
     use ketchup_manufacturing::fabrication::GeneralBomItemKind;
@@ -170,47 +171,102 @@ fn library_members_boards_and_fasteners_carry_their_fabrication_role() {
          hole(rail, 'y+', at = (30, 500), diameter = 8, depth = 20)\n\
          bolt('bolt', 'M10', 100, at = (0, -300, 0))\n\
          nut('nut', 'M10', at = (100, -300, 0))\n\
-         washer('washer', 'M10', at = (200, -300, 0))\n",
+         washer('washer', 'M10', at = (200, -300, 0))\n\
+         shelf = board('shelf', (600, 300, 18), at = (0, 300, 0))\n\
+         hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 10)\n",
     );
     // A production job names each made piece by its code; the shop gives the
-    // rail one, the purchased fasteners need none.
-    let rail = snapshot
-        .scene_query()
-        .into_iter()
-        .find(|occurrence| {
-            snapshot
-                .definition(occurrence.definition_id)
-                .is_some_and(|definition| definition.name() == "rail")
-        })
-        .unwrap()
-        .instance_path;
+    // rail and the shelf one, the purchased fasteners need none.
+    let path = |name: &str| {
+        snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| {
+                snapshot
+                    .definition(occurrence.definition_id)
+                    .is_some_and(|definition| definition.name() == name)
+            })
+            .unwrap()
+            .instance_path
+    };
     let snapshot = {
         use ketchup_model::document::{CanonicalCommand, CommandBatch};
         snapshot
             .preview_batch(&CommandBatch::new(vec![
                 CanonicalCommand::SetProductionCode {
-                    instance_path: rail,
+                    instance_path: path("rail"),
                     code: Some("000000000001".into()),
+                },
+                CanonicalCommand::SetProductionCode {
+                    instance_path: path("shelf"),
+                    code: Some("000000000002".into()),
                 },
             ]))
             .unwrap()
     };
     let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(quantities(&projection, GeneralBomItemKind::Timber), 1);
+    assert_eq!(quantities(&projection, GeneralBomItemKind::Manufactured), 1);
     assert_eq!(quantities(&projection, GeneralBomItemKind::Purchased), 3);
     let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
     assert_eq!(btlx.matches("<Part ").count(), 1, "{btlx}");
     let programs = projection
         .woodwop_mpr_4_0_setup_a_programs(&snapshot, Default::default())
         .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(programs.len(), 1);
-    projection
+    assert_eq!(programs.len(), 2);
+    let job = projection
         .production_job(&snapshot, &[])
         .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(job["parts"].as_array().map(Vec::len), Some(2), "{job}");
+}
 
-    let snapshot = apply("board('shelf', (600, 300, 18))\n");
+/// Idea #128: a drilled library board on its own is one woodWOP program and
+/// one part of a production job, a manufactured row of the BOM.
+#[test]
+fn a_drilled_board_exports_to_woodwop_and_a_production_job() {
+    use ketchup_manufacturing::fabrication::GeneralBomItemKind;
+    use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let snapshot = apply(
+        "shelf = board('shelf', (600, 300, 18))\n\
+         hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 10)\n",
+    );
+    let shelf = snapshot.scene_query()[0].instance_path.clone();
+    let snapshot = {
+        use ketchup_model::document::{CanonicalCommand, CommandBatch};
+        snapshot
+            .preview_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetProductionCode {
+                    instance_path: shelf,
+                    code: Some("000000000001".into()),
+                },
+            ]))
+            .unwrap()
+    };
     let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(quantities(&projection, GeneralBomItemKind::Manufactured), 1);
+    assert_eq!(projection.bom.rows.len(), 1);
+    assert_eq!(
+        projection.bom.rows[0].item_kind,
+        GeneralBomItemKind::Manufactured
+    );
+    let programs = projection
+        .woodwop_mpr_4_0_setup_a_programs(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(programs.len(), 1);
+    let woodwop = HomagWoodwopAdapter {
+        options: Default::default(),
+    };
+    let adapters: [&dyn ProductionAdapter; 1] = [&woodwop];
+    let job = projection
+        .production_job(&snapshot, &adapters)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(job["parts"].as_array().map(Vec::len), Some(1), "{job}");
+    assert_eq!(
+        job["outputs"]["homag-woodwop4"].as_array().map(Vec::len),
+        Some(1),
+        "{job}"
+    );
 }
 
 /// A stock box with a notch (box tool) and a slanted end cut (extruded profile
