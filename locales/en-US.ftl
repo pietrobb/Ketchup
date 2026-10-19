@@ -1473,6 +1473,7 @@ status-program-owned = Program { $file }
 status-program-detached = Program { $file } detached · Undo restores it
 program-detached-title = The program no longer drives the model
 program-detached-body = This edit detached the program { $file } because { $reason }. The parts stay, but changing the program or its parameters no longer changes them, and the takeoff and program panel are gone. Undo the edit to keep the model parametric.
+program-detached-body-emptied = This edit detached the program { $file } because { $reason }. No part is left, and the program is kept in the Undo history. Undo the edit to get the program and its parts back.
 program-detached-reason-added = it added { $part }, which the program does not make
 program-detached-reason-foreign = { $part } is not a part the program makes (a component or a copy of one)
 program-detached-reason-scaled = it scaled { $part }, and the program can only move or turn a part

@@ -7,9 +7,10 @@ use ketchup_model::document::{Feature, Occurrence, RuleProgramSource};
 /// The detaching edit is undone only while it is still the current revision;
 /// any later change closes the notice.
 pub(crate) struct ProgramDetachNotice {
-    pub(crate) file_name: String,
     pub(crate) revision_id: u64,
     pub(crate) reason: String,
+    /// The notice's text; after deleting every part it says none stay.
+    pub(crate) body: String,
 }
 
 /// The features that shape an occurrence's definition.
@@ -22,6 +23,29 @@ fn shape(snapshot: &Snapshot, occurrence: &Occurrence) -> Option<Vec<Feature>> {
 }
 
 impl KetchupApp {
+    /// The notice for the edit from `before`, which `program` owned, to the
+    /// current document.
+    pub(crate) fn program_detach_notice(
+        &self,
+        before: &Snapshot,
+        program: RuleProgramSource,
+    ) -> ProgramDetachNotice {
+        let emptied = self.document.current().occurrences().next().is_none();
+        let (reason, body_key) = if emptied {
+            let reason = self.catalog.text("program-detached-reason-emptied");
+            (reason, "program-detached-body-emptied")
+        } else {
+            let reason = self.program_detach_reason(before, &program);
+            (reason, "program-detached-body")
+        };
+        let arguments = BTreeMap::from([("file", program.file_name), ("reason", reason.clone())]);
+        ProgramDetachNotice {
+            body: self.catalog.format(body_key, &arguments),
+            revision_id: self.document.current().revision_id(),
+            reason,
+        }
+    }
+
     /// Why the edit from `before`, which `program` owned, to the current
     /// document detached the program, as the end of a sentence.
     pub(crate) fn program_detach_reason(
@@ -42,9 +66,6 @@ impl KetchupApp {
             self.catalog
                 .format(key, &BTreeMap::from([("part", part.to_owned())]))
         };
-        if after.occurrences().next().is_none() {
-            return self.catalog.text("program-detached-reason-emptied");
-        }
         for new in after.occurrences() {
             let Some(old) = before.occurrence(new.id()) else {
                 return reason("program-detached-reason-added", new.name());

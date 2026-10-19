@@ -1224,10 +1224,7 @@ impl KetchupApp {
             self.program_detach_notice = None;
             return;
         }
-        let arguments = BTreeMap::from([
-            ("file", notice.file_name.clone()),
-            ("reason", notice.reason.clone()),
-        ]);
+        let body = notice.body.clone();
         let mut open = true;
         let mut undo = false;
         egui::Window::new(self.catalog.text("program-detached-title"))
@@ -1236,7 +1233,7 @@ impl KetchupApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 96.0))
             .show(context, |ui| {
-                ui.label(self.catalog.format("program-detached-body", &arguments));
+                ui.label(body);
                 ui.horizontal(|ui| {
                     undo = ui
                         .button(self.catalog.text("program-detached-undo"))

@@ -131,6 +131,12 @@ fn a_part_hidden_by_a_layer_or_by_redo_is_never_deleted() {
         notice.reason,
         app.catalog.text("program-detached-reason-emptied")
     );
+    assert_eq!(
+        notice.body,
+        "This edit detached the program house.star because it deleted every part the \
+         program makes, and a program cannot be empty. No part is left, and the program is \
+         kept in the Undo history. Undo the edit to get the program and its parts back."
+    );
     assert!(app.undo());
     assert_eq!(
         app.document
