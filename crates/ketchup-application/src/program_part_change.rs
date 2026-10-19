@@ -12,7 +12,7 @@ use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM
 use ketchup_program::frame::{self, Mat3};
 use ketchup_program::model::{ProgramEdgeFinishKind, ProgramPartBody};
 use ketchup_program::source_edit::{
-    self, CreatingCall, number_literal, point_literal, quote, written_point,
+    self, CreatingCall, number_literal, point_literal, quote, written, written_point,
 };
 use ketchup_program::{Evaluated, ProgramFeatureKind, ProgramModel};
 use std::ops::Range;
@@ -176,6 +176,8 @@ pub(crate) enum Reading {
     },
     /// How many operations the part has.
     Operations,
+    /// The extrusion's length with every Push/Pull of its caps.
+    Length,
 }
 
 impl Reading {
@@ -202,6 +204,22 @@ impl Reading {
                 .find(|parameter| &parameter.path == path)
                 .map(|parameter| parameter.value),
             Self::Operations => u32::try_from(part.operations.len()).ok().map(f64::from),
+            Self::Length => match &part.body {
+                ProgramPartBody::Extrusion {
+                    distance_mm, caps, ..
+                } => Some(
+                    distance_mm
+                        + part
+                            .face_offsets()
+                            .filter(|offset| {
+                                caps.iter()
+                                    .any(|cap| offset.face.split('#').next() == Some(cap))
+                            })
+                            .map(|offset| offset.distance_mm)
+                            .sum::<f64>(),
+                ),
+                _ => None,
+            },
         }
     }
 }
@@ -709,19 +727,24 @@ impl Edit<'_> {
                 format!("part {name} has no value {feature} · {path} in its program"),
             ));
         };
-        if let Some(rewritten) = self.driven(&reading, value) {
-            return Ok((rewritten, self.reads(reading, value)));
-        }
         let end = self.evaluated.model.part(self.name).and_then(|part| {
             let pad = (part.features.iter())
                 .any(|made| made.name == feature && made.kind == ProgramFeatureKind::Pad);
             match &part.body {
-                ProgramPartBody::Extrusion { caps, .. } if pad => Some(caps[1].clone()),
+                ProgramPartBody::Extrusion { caps, .. } if pad && path == "extent.distance" => {
+                    Some(caps[1].clone())
+                }
                 _ => None,
             }
         });
-        if let Some(end) = end.filter(|_| path == "extent.distance") {
-            return self.push_pull(&end, value - current);
+        if end.is_some() && (!value.is_finite() || value <= DEFAULT_LINEAR_TOLERANCE_MM) {
+            return Err(self.too_short(feature, value));
+        }
+        if let Some(rewritten) = self.driven(&reading, value) {
+            return Ok((rewritten, self.reads(reading, value)));
+        }
+        if let Some(end) = end {
+            return self.length(feature, &end, current, value);
         }
         let line = self
             .found_call()
@@ -733,7 +756,87 @@ impl Edit<'_> {
             ),
         ))
     }
+
+    /// The extrusion `feature`, `pad` long as the program writes it, made
+    /// `value` long by one `push_pull()` of its `end` named [`LENGTH`]. A
+    /// value typed again writes that line again, so it replaces the first
+    /// value instead of adding to it; the Push/Pulls of other lines stay.
+    fn length(
+        &self,
+        feature: &str,
+        end: &str,
+        pad: f64,
+        value: f64,
+    ) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
+        let name = quote(self.name);
+        let part = self
+            .evaluated
+            .model
+            .part(self.name)
+            .expect("checked by the caller");
+        let written_before = part
+            .face_offsets()
+            .find(|offset| offset.name == LENGTH)
+            .map(|offset| offset.distance_mm);
+        let length = Reading::Length.of(&self.evaluated.model, self.name);
+        let others = length.map_or(0.0, |length| {
+            length - pad - written_before.unwrap_or_default()
+        });
+        if value + others <= DEFAULT_LINEAR_TOLERANCE_MM {
+            return Err(self.too_short(feature, value + others));
+        }
+        let distance = written(value - pad);
+        let line = (distance.abs() > DEFAULT_LINEAR_TOLERANCE_MM).then(|| {
+            format!(
+                "push_pull({name}, face={}, distance={}, name={})\n",
+                quote(end),
+                number_literal(distance),
+                quote(LENGTH)
+            )
+        });
+        let earlier = source_edit::named_call_statement(
+            &self.source.file_name,
+            self.text(),
+            "push_pull",
+            self.name,
+            &[("face", end), ("name", LENGTH)],
+        );
+        let rewritten = match (earlier, line) {
+            (Some(bytes), line) => self.with(vec![(bytes, line.unwrap_or_default())]),
+            (None, _) if written_before.is_some() => {
+                return Err(refused(
+                    "program_length_not_written",
+                    format!(
+                        "the push_pull() named {} of part {name} is not a line of its own on face {}; change it in the program",
+                        quote(LENGTH),
+                        quote(end)
+                    ),
+                ));
+            }
+            (None, Some(line)) => self.appended(&line),
+            (None, None) => self.source.clone(),
+        };
+        Ok((rewritten, self.reads(Reading::Length, value + others)))
+    }
+
+    fn too_short(&self, feature: &str, length: f64) -> RuleProgramApplyError {
+        let length = if length.is_finite() {
+            number_literal(written(length))
+        } else {
+            length.to_string()
+        };
+        refused(
+            "program_length_not_positive",
+            format!(
+                "{feature} of part {} would be {length} mm long; type a length above 0",
+                quote(self.name)
+            ),
+        )
+    }
 }
+
+/// Name of the `push_pull()` that sets an extrusion's length typed for it.
+const LENGTH: &str = "Length";
 
 #[cfg(test)]
 #[path = "program_part_change_tests.rs"]

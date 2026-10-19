@@ -249,7 +249,7 @@ fn a_panel_value_of_a_program_part_is_written_into_the_program() {
     // 40 high becomes 50: the top goes up by 10, from z 45 to z 55.
     assert_eq!(
         source(&app),
-        format!("{PARTS}push_pull(\"a\", face=\"z+\", distance=10, name=\"GUI Push/Pull 1\")\n")
+        format!("{PARTS}push_pull(\"a\", face=\"z+\", distance=10, name=\"Length\")\n")
     );
     // Measured in the program: without exact shapes the window's bounds grow
     // every side of a pushed face.
@@ -260,6 +260,17 @@ fn a_panel_value_of_a_program_part_is_written_into_the_program() {
     assert_close(min, [100.0, 0.0, 5.0]);
     assert_close(max, [120.0, 30.0, 55.0]);
     assert_eq!(app.undo_step_count(), steps + 1);
+
+    // Typed again, 30 replaces 50 instead of adding to it, and 0 is refused.
+    assert!(set_value(&mut app, "a", "extent.distance", 30.0));
+    assert_eq!(
+        source(&app),
+        format!("{PARTS}push_pull(\"a\", face=\"z+\", distance=-10, name=\"Length\")\n")
+    );
+    let revision = app.document_revision();
+    assert!(!set_value(&mut app, "a", "extent.distance", 0.0));
+    assert!(app.digest.contains("above 0"), "{}", app.digest);
+    assert_eq!(app.document_revision(), revision);
 
     // A width written in the source is refused with its line; nothing changes.
     let revision = app.document_revision();

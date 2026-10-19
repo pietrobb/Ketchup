@@ -146,6 +146,35 @@ pub fn top_level_call_statement(
     })
 }
 
+/// Whole lines of the top-level statement `callee("<part>", ...)` whose
+/// string arguments `named` each read as given, e.g. the `push_pull()` of one
+/// face with one `name=`.
+#[must_use]
+pub fn named_call_statement(
+    file_name: &str,
+    source: &str,
+    callee: &str,
+    part: &str,
+    named: &[(&str, &str)],
+) -> Option<Range<usize>> {
+    let ast = parsed(file_name, source)?;
+    let reads = |value: &AstExpr, text: &str| matches!(&value.node, ExprP::Literal(AstLiteral::String(literal)) if literal.node == text);
+    call_statement(&ast, source, |_, call| {
+        let ExprP::Call(called, arguments) = &call.node else {
+            return false;
+        };
+        matches!(&called.node, ExprP::Identifier(name) if name.ident == callee)
+            && matches!(arguments.args.first().map(|first| &first.node),
+                Some(ArgumentP::Positional(value)) if reads(value, part))
+            && named.iter().all(|(wanted, text)| {
+                arguments.args.iter().any(|argument| {
+                    matches!(&argument.node,
+                        ArgumentP::Named(name, value) if name.node == *wanted && reads(value, text))
+                })
+            })
+    })
+}
+
 /// Every string literal of the source that reads `text`: its bytes, quotes
 /// included, and its line.
 #[must_use]

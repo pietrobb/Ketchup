@@ -229,3 +229,71 @@ fn deleting_every_part_writes_no_empty_program() {
     assert_eq!(rewritten.source, "size = param(\"size\", 5)\n");
     assert!(model(&rewritten).parts.is_empty());
 }
+
+const PADDED: &str =
+    "box(\"a\", (10, 20, 18), at=(0, 0, 0))\nbox(\"b\", (5, 5, 5), at=(50, 0, 0))\n";
+
+/// Part a's length typed in the parameter editor.
+fn set_length(
+    source: &RuleProgramSource,
+    value: f64,
+) -> Result<Option<RuleProgramSource>, RuleProgramApplyError> {
+    let change = PartChange::Parameter {
+        feature: "a feature".to_owned(),
+        path: "extent.distance".to_owned(),
+        value,
+    };
+    rewrite_rule_program_parts(source, &[("a".to_owned(), change)])
+}
+
+fn length(source: &RuleProgramSource) -> f64 {
+    Reading::Length
+        .of(&model(source), "a")
+        .expect("an extrusion")
+}
+
+#[test]
+fn a_length_typed_again_replaces_the_first_value_instead_of_adding_to_it() {
+    let first = set_length(&program(PADDED), 10.0).unwrap().unwrap();
+    assert_eq!(length(&first), 10.0);
+    let second = set_length(&first, 12.0).unwrap().unwrap();
+    // 18 -> 10 -> 12 is 12 long, not 18 - 8 - 6 = 4: the one line is written again.
+    assert_eq!(
+        second.source,
+        format!("{PADDED}push_pull(\"a\", face=\"z+\", distance=-6, name=\"Length\")\n")
+    );
+    assert_eq!(length(&second), 12.0);
+    assert_eq!(model(&second).part("b"), model(&program(PADDED)).part("b"));
+    // Typed back to the length the program writes, the line goes.
+    assert_eq!(set_length(&second, 18.0).unwrap().unwrap().source, PADDED);
+}
+
+#[test]
+fn a_typed_length_keeps_the_push_pulls_of_other_lines() {
+    let pushed = program(&format!(
+        "{PADDED}push_pull(\"a\", face=\"z-\", distance=2, name=\"Lower\")\n"
+    ));
+    let typed = set_length(&set_length(&pushed, 30.0).unwrap().unwrap(), 25.0)
+        .unwrap()
+        .unwrap();
+    // The extrusion is 25 long and the 2 below it stays: 27 in all.
+    assert_eq!(length(&typed), 27.0);
+    assert_eq!(typed.source.matches("name=\"Length\"").count(), 1);
+}
+
+#[test]
+fn a_length_of_zero_or_less_is_refused_and_the_program_stays() {
+    for value in [0.0, -5.0, f64::NAN] {
+        let refusal = set_length(&program(PADDED), value).expect_err("refused");
+        assert!(
+            refusal.to_string().contains("type a length above 0"),
+            "{refusal}"
+        );
+    }
+    // A pull of 15 below leaves a length of 10 at -5.
+    let pulled = program(&format!(
+        "{PADDED}push_pull(\"a\", face=\"z-\", distance=-15, name=\"Lower\")\n"
+    ));
+    let refusal = set_length(&pulled, 10.0).expect_err("refused");
+    assert!(refusal.to_string().contains("-5 mm long"), "{refusal}");
+}
