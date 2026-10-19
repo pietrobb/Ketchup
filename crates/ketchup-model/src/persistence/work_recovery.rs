@@ -37,12 +37,12 @@ pub fn check_work_recovery_identity(
 
 /// The checkpoint [`check_work_recovery_identity`] found as `expected`, with the
 /// SHA-256 state of its bytes so a step appended to it is hashed alone.
-pub(super) struct ObservedWorkRecovery {
-    pub(super) bytes: Vec<u8>,
-    pub(super) hasher: Sha256,
+struct ObservedWorkRecovery {
+    bytes: Vec<u8>,
+    hasher: Sha256,
 }
 
-pub(super) fn read_observed_work_recovery(
+fn read_observed_work_recovery(
     path: &Path,
     expected: Option<FileIdentity>,
 ) -> Result<Option<ObservedWorkRecovery>, FilePersistenceError> {
@@ -80,6 +80,66 @@ pub(super) fn read_observed_work_recovery(
             }
         }
     }
+}
+
+/// Appends the step that brings the checkpoint of `path`, observed as
+/// `expected`, to `document` (idea #49). `None` when the checkpoint must be
+/// written whole. The same four identity checks guard the append as a whole write.
+pub(super) fn append_work_recovery_step(
+    path: &Path,
+    document: &DocumentStore,
+    container: &ContainerData,
+    base_identity: FileIdentity,
+    expected: FileIdentity,
+) -> Result<Option<FileIdentity>, FilePersistenceError> {
+    let _lock = lock_saves(path)?;
+    if read_native_document_identity(path)? != base_identity {
+        return Err(FilePersistenceError::ExternalConflict);
+    }
+    let Some(observed) = read_observed_work_recovery(path, Some(expected))? else {
+        return Err(FilePersistenceError::ExternalConflict);
+    };
+    let Some(step) =
+        work_recovery_steps::plan_step(&observed.bytes, document, container, base_identity)
+    else {
+        return Ok(None);
+    };
+    if read_native_document_identity(path)? != base_identity {
+        return Err(FilePersistenceError::ExternalConflict);
+    }
+    check_work_recovery_identity(path, Some(expected))?;
+    let format = FilePersistenceError::Format;
+    let mut framed = Vec::with_capacity(8 + step.len());
+    push_u64(&mut framed, u64_len(step.len()).map_err(format)?);
+    framed.extend_from_slice(&step);
+    let recovery = work_recovery_path(path);
+    let observed_len = u64_len(observed.bytes.len()).map_err(format)?;
+    let mut file = fs::OpenOptions::new().write(true).open(&recovery)?;
+    let appended = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(observed_len))
+        .and_then(|_| file.write_all(&framed))
+        .and_then(|()| file.sync_all());
+    if let Err(error) = appended {
+        // A step cut short would hide every later one: the checkpoint stays as
+        // this writer observed it, so the edit can be retried.
+        let _ = file.set_len(observed_len).and_then(|()| file.sync_all());
+        return Err(FilePersistenceError::Io(error));
+    }
+    let mut hasher = observed.hasher;
+    hasher.update(&framed);
+    let identity = FileIdentity {
+        byte_len: u64_len(observed.bytes.len() + framed.len()).map_err(format)?,
+        sha256: hasher.finalize().into(),
+    };
+    let parent = recovery
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    sync_parent_directory(parent).map_err(|error| FilePersistenceError::Published {
+        path: recovery.clone(),
+        identity,
+        error,
+    })?;
+    Ok(Some(identity))
 }
 
 /// Moves a work-recovery checkpoint the open could not use (see

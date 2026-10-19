@@ -598,24 +598,46 @@ const HISTORY_RULE_PROGRAM_AS_PREVIOUS: u8 = 2;
 /// program again.
 const HISTORY_RULE_PROGRAM_IN_CHUNKS: u8 = 3;
 
-/// Revision id, batch digest, origin and checkpoint.
-fn write_revision_header(bytes: &mut Vec<u8>, revision: &Revision) -> Result<(), PersistenceError> {
-    write_revision_fields(
-        bytes,
-        revision.id(),
-        revision.batch_digest(),
-        revision.origin(),
-        revision.checkpoint(),
-    )
+/// A revision as [`encode_history`] writes it: one of a store, or one a
+/// work-recovery checkpoint assembles from its steps.
+trait HistoryRevision {
+    /// Revision id, batch digest, origin and checkpoint.
+    fn fields(&self) -> (u64, &str, RevisionOrigin, Option<&str>);
+    /// Whether it has a program and it is that of `previous`.
+    fn same_program(&self, previous: &Self) -> bool;
+    fn program_json(&self) -> Result<Option<std::borrow::Cow<'_, [u8]>>, PersistenceError>;
+    fn encoded(&self) -> Arc<crate::document::EncodedSnapshot>;
 }
 
-fn write_revision_fields(
+impl HistoryRevision for Revision {
+    fn fields(&self) -> (u64, &str, RevisionOrigin, Option<&str>) {
+        (
+            self.id(),
+            self.batch_digest(),
+            self.origin(),
+            self.checkpoint(),
+        )
+    }
+
+    fn same_program(&self, previous: &Self) -> bool {
+        self.rule_program().is_some() && previous.rule_program() == self.rule_program()
+    }
+
+    fn program_json(&self) -> Result<Option<std::borrow::Cow<'_, [u8]>>, PersistenceError> {
+        Ok(encoded_rule_program(self)?.map(std::borrow::Cow::Owned))
+    }
+
+    fn encoded(&self) -> Arc<crate::document::EncodedSnapshot> {
+        encoded_snapshot(self.snapshot())
+    }
+}
+
+/// Revision id, batch digest, origin and checkpoint.
+fn write_revision_header(
     bytes: &mut Vec<u8>,
-    id: u64,
-    batch_digest: &str,
-    origin: RevisionOrigin,
-    checkpoint: Option<&str>,
+    revision: &impl HistoryRevision,
 ) -> Result<(), PersistenceError> {
+    let (id, batch_digest, origin, checkpoint) = revision.fields();
     push_u64(bytes, id);
     push_string(bytes, batch_digest)?;
     write_revision_origin(bytes, origin);
@@ -744,8 +766,8 @@ const HISTORY_CHUNK_IN_DOCUMENT: u8 = 1;
 /// the current snapshot has as ranges of `document.bin`), then every revision with
 /// its program and snapshot as chunk numbers; the current revision names
 /// `document.bin`, a program equal to the one before is named as such.
-fn encode_history(
-    revisions: &[&Revision],
+fn encode_history<R: HistoryRevision>(
+    revisions: &[&R],
     cursor: usize,
     next_revision_id: u64,
     document_bin: &crate::document::EncodedSnapshot,
@@ -774,16 +796,15 @@ fn encode_history(
     let mut items = u64::from(count);
     for (index, revision) in revisions.iter().enumerate() {
         let previous = index.checked_sub(1).map(|previous| revisions[previous]);
-        write_revision_header(&mut records, revision)?;
-        items = count_items(items, revision.batch_digest().len(), budget.items)?;
-        if let Some(checkpoint) = revision.checkpoint() {
+        write_revision_header(&mut records, *revision)?;
+        let (_, batch_digest, _, checkpoint) = revision.fields();
+        items = count_items(items, batch_digest.len(), budget.items)?;
+        if let Some(checkpoint) = checkpoint {
             items = count_items(items, checkpoint.len(), budget.items)?;
         }
-        if revision.rule_program().is_some()
-            && previous.is_some_and(|previous| previous.rule_program() == revision.rule_program())
-        {
+        if previous.is_some_and(|previous| revision.same_program(previous)) {
             push_u8(&mut records, HISTORY_RULE_PROGRAM_AS_PREVIOUS);
-        } else if let Some(encoded) = encoded_rule_program(revision)? {
+        } else if let Some(encoded) = revision.program_json()? {
             let checksum = crate::graph::sha256_bytes(&encoded);
             if programs.insert(checksum) {
                 program_bytes = check_assembled(
@@ -804,7 +825,7 @@ fn encode_history(
             push_u8(&mut records, HISTORY_SNAPSHOT_IS_DOCUMENT);
             continue;
         }
-        let snapshot = encoded_snapshot(revision.snapshot());
+        let snapshot = revision.encoded();
         if snapshot.bytes.len() > budget.snapshot_bytes {
             return Err(PersistenceError::ResourceLimit);
         }
@@ -934,18 +955,23 @@ pub fn save_document_store(
     container_data: &ContainerData,
 ) -> Result<Vec<u8>, PersistenceError> {
     let snapshot = document.current();
-    let mut imported_sources = BTreeSet::new();
-    for revision in document.revision_history() {
-        imported_sources.extend(imported_source_blob_hashes(revision.snapshot()));
-    }
     let document_bin = encoded_snapshot(&snapshot);
     save_container_entries(
         &document_bin,
         container_data,
-        imported_sources,
+        history_imported_sources(document),
         Some(encode_revision_history(document, &document_bin)?),
         encoded_program(document.current_rule_program())?,
     )
+}
+
+/// The imported sources any revision of `document` names.
+fn history_imported_sources(document: &DocumentStore) -> BTreeSet<String> {
+    let mut imported_sources = BTreeSet::new();
+    for revision in document.revision_history() {
+        imported_sources.extend(imported_source_blob_hashes(revision.snapshot()));
+    }
+    imported_sources
 }
 
 pub fn save_document_store_current_snapshot(
@@ -1012,7 +1038,7 @@ fn save_container_entries(
     revision_history: Option<Vec<u8>>,
     program: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, PersistenceError> {
-    let mut entries = BTreeMap::<String, (bool, Vec<u8>)>::new();
+    let mut entries = side_entries(container_data, &imported_sources)?;
     entries.insert(
         "document.bin".to_owned(),
         (true, document_bin.bytes.clone()),
@@ -1025,6 +1051,16 @@ fn save_container_entries(
     if let Some(program) = program {
         entries.insert(PROGRAM_ENTRY.to_owned(), (true, program));
     }
+    encode_container(entries)
+}
+
+/// The entries a file holds beside its document, history and program: the
+/// blobs of `container_data` it keeps and its extensions.
+fn side_entries(
+    container_data: &ContainerData,
+    imported_sources: &BTreeSet<String>,
+) -> Result<BTreeMap<String, (bool, Vec<u8>)>, PersistenceError> {
+    let mut entries = BTreeMap::new();
     if imported_sources
         .iter()
         .any(|hash| !container_data.blobs.contains_key(hash))
@@ -1048,7 +1084,7 @@ fn save_container_entries(
             return Err(PersistenceError::DuplicateContainerEntry);
         }
     }
-    encode_container(entries)
+    Ok(entries)
 }
 
 /// `entries` (path → required, content) as a native container.
@@ -2017,21 +2053,7 @@ fn decode_history_program(
     program: HistoryProgram<'_>,
     chunks: &[&[u8]],
 ) -> Result<crate::document::RuleProgramSource, PersistenceError> {
-    match program {
-        HistoryProgram::Inline(bytes) => decode_rule_program(bytes),
-        HistoryProgram::Chunks {
-            length,
-            checksum,
-            numbers,
-        } => decode_rule_program(
-            &HistorySnapshot::Chunks {
-                length,
-                checksum,
-                numbers,
-            }
-            .assemble(chunks)?,
-        ),
-    }
+    decode_rule_program(&program.assemble(chunks)?)
 }
 
 /// A history as the file names it: every revision's place, nothing assembled.
@@ -2366,6 +2388,25 @@ enum HistoryProgram<'a> {
     },
 }
 
+impl<'a> HistoryProgram<'a> {
+    /// The program JSON, checked against its checksum.
+    fn assemble(self, chunks: &[&[u8]]) -> Result<std::borrow::Cow<'a, [u8]>, PersistenceError> {
+        match self {
+            Self::Inline(bytes) => Ok(std::borrow::Cow::Borrowed(bytes)),
+            Self::Chunks {
+                length,
+                checksum,
+                numbers,
+            } => HistorySnapshot::Chunks {
+                length,
+                checksum,
+                numbers,
+            }
+            .assemble(chunks),
+        }
+    }
+}
+
 /// The encoded snapshot of one history revision as the file names it.
 enum HistorySnapshot<'a> {
     /// The current revision: `document.bin`, loaded and verified on its own.
@@ -2381,6 +2422,14 @@ enum HistorySnapshot<'a> {
 }
 
 impl<'a> HistorySnapshot<'a> {
+    /// The checksum of its bytes; `document` is that of `document.bin`.
+    const fn checksum(&self, document: [u8; 32]) -> [u8; 32] {
+        match self {
+            Self::Document(_) => document,
+            Self::Whole { checksum, .. } | Self::Chunks { checksum, .. } => *checksum,
+        }
+    }
+
     /// Bytes it assembles to beyond what the file holds.
     fn assembled_len(&self) -> usize {
         match self {

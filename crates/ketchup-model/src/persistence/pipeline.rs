@@ -113,7 +113,7 @@ pub fn publish_work_recovery(
     expected_recovery: Option<FileIdentity>,
 ) -> Result<FileIdentity, FilePersistenceError> {
     if let Some(expected) = expected_recovery
-        && let Some(identity) = super::work_recovery_steps::append_work_recovery_step(
+        && let Some(identity) = super::work_recovery::append_work_recovery_step(
             path,
             document,
             container,
