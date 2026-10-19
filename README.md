@@ -38,8 +38,8 @@ Requires Windows 10 or 11 x64. The installer and the programs are signed by AEON
 | Model | Organize and edit | Deliver |
 |---|---|---|
 | Draw line, arc, circle, and rectangle geometry; evaluate represented cubic Bézier sketch curves | Reuse definitions through occurrences and components | Save checksummed `.ketchup` documents with recovery support |
-| Extract bounded regions, including profiles with holes | Move, copy, rotate, align, distribute, group, and Make Unique | Import reviewed STEP, STL, DXF, Blender GLB, and `.kscene` subsets |
-| Push/Pull, pocket, revolve, sweep, loft, shell, fillet, chamfer, and offset | Build linear, rectangular, and circular patterns | Export current exact geometry to STEP and tessellation to STL |
+| Extract bounded regions, including profiles with holes | Move, copy, rotate, align, distribute, group, and Make Unique | Import reviewed STEP, IGES, STL, DXF, DWG, Blender GLB, and `.kscene` subsets |
+| Push/Pull, pocket, revolve, sweep, loft, shell, fillet, chamfer, and offset | Build linear, rectangular, and circular patterns | Export exact geometry to STEP and IGES, tessellation to STL and 3MF, timber parts to BTLx, and a Ketchup Viewer package |
 | Run exact cut, union, intersect, and split operations | Edit ordered feature history, dimensions, visibility, and active bodies | Persist drawing sheets that generate Front/Top/Right assembly views |
 | Constrain sketches with dimensional and geometric relationships | Assemble rigid occurrences with stable-reference mates | Inspect validation, loss, reference-health, and failure diagnostics |
 
@@ -104,12 +104,12 @@ Ketchup supports reusable occurrences, grounding, stable-reference planar/axial 
 
 ### Imports and exports
 
-- **STEP:** exact B-Rep import with preserved source bytes and explicit flattening diagnostics.
+- **STEP and IGES:** exact B-Rep import with preserved source bytes and explicit flattening diagnostics.
 - **STL:** binary/ASCII import with declared units and strict closed-manifold validation; no silent repair.
-- **DXF:** reviewed bounded 2D geometry subset with a loss report.
+- **DXF and DWG:** reviewed bounded 2D geometry subset with a loss report; a DWG is read as the DXF it converts to.
 - **Blender GLB:** reviewed bounded mesh import preserving names, hierarchy, transforms, opaque colors, and shared instances. Imported geometry remains an explicit `MeshBody`; only recognized simple solids can be explicitly converted after exact verification.
 - **SketchUp bridge:** open `.kscene` interchange subset rather than native `.skp` parsing.
-- **Export:** current visible exact model to STEP and current tessellation to STL, both with fail-closed freshness/loss checks.
+- **Export:** current visible exact model to STEP and IGES, current tessellation to STL and 3MF, timber parts to BTLx, drawing sheets to DXF and DWG, and a `.ketchup-view` package for Ketchup Viewer, all with fail-closed freshness/loss checks.
 
 ## Connect your AI harness (MCP)
 
@@ -169,7 +169,7 @@ Filter a run after `--` (for example `-- member_design::`). The last command run
 
 The Rust workspace also builds on Linux against an OCCT 8.0.1 install in the Unix layout (`include/opencascade`, `lib`). Point `KETCHUP_OCCT_ROOT` at it and make the libraries loadable, for example with `RUSTFLAGS="-C link-arg=-Wl,-rpath,$KETCHUP_OCCT_ROOT/lib"`.
 
-No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo history is currently session-local; saved documents preserve the validated snapshot, not the in-memory history stack.
+No stable public API or long-term native file-format compatibility is promised yet. A saved document keeps its Undo/Redo history up to the Undo limit.
 
 ## Architecture
 
