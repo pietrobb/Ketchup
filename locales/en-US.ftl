@@ -1266,6 +1266,7 @@ digest-new-document = New model ready
 digest-opened-document = Opened “{ $path }” — canonical identity restored
 digest-opened-recovery = Warning: opened recovery source “{ $source }” because “{ $requested }” is unavailable or corrupt. The recovered document is unsaved; use Save As to preserve it safely.
 digest-opened-work-recovery = Warning: restored the unsaved work of “{ $path }” from its checkpoint “{ $source }”. The restored document is unsaved; use Save As to keep it.
+digest-opened-work-recovery-step-damaged = Warning: the last edits in the unsaved-work checkpoint of “{ $path }” could not be read ({ $reason }). The work up to the edit before them was restored.
 digest-opened-without-history = Warning: opened “{ $path }” without its Undo history ({ $reason }). The model is complete; the next Save stores a new history from here.
 digest-opened-work-recovery-set-aside = Warning: opened “{ $path }”. Its unsaved-work checkpoint could not be used ({ $reason }), so it was moved to “{ $set_aside }”; edits are checkpointed again from here.
 error-work-recovery-set-aside = Warning: opened “{ $path }”, but its unsaved-work checkpoint could not be used ({ $reason }) nor moved aside ({ $error }). Edits cannot be kept until that file is moved or removed.

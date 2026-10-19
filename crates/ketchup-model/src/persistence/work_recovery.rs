@@ -1,3 +1,5 @@
+use sha2::{Digest, Sha256};
+
 use super::*;
 
 /// Exclusive ownership of a live session's recovery branch. The OS releases the
@@ -30,9 +32,23 @@ pub fn check_work_recovery_identity(
     path: &Path,
     expected: Option<FileIdentity>,
 ) -> Result<(), FilePersistenceError> {
+    read_observed_work_recovery(path, expected).map(drop)
+}
+
+/// The checkpoint [`check_work_recovery_identity`] found as `expected`, with the
+/// SHA-256 state of its bytes so a step appended to it is hashed alone.
+pub(super) struct ObservedWorkRecovery {
+    pub(super) bytes: Vec<u8>,
+    pub(super) hasher: Sha256,
+}
+
+pub(super) fn read_observed_work_recovery(
+    path: &Path,
+    expected: Option<FileIdentity>,
+) -> Result<Option<ObservedWorkRecovery>, FilePersistenceError> {
     let path = work_recovery_path(path);
     match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound && expected.is_none() => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound && expected.is_none() => Ok(None),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             Err(FilePersistenceError::ExternalConflict)
         }
@@ -51,8 +67,14 @@ pub fn check_work_recovery_identity(
                     PersistenceError::ResourceLimit,
                 ));
             }
-            if expected == Some(FileIdentity::from_bytes(&bytes)) {
-                Ok(())
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let identity = FileIdentity {
+                byte_len: bytes.len() as u64,
+                sha256: hasher.clone().finalize().into(),
+            };
+            if expected == Some(identity) {
+                Ok(Some(ObservedWorkRecovery { bytes, hasher }))
             } else {
                 Err(FilePersistenceError::ExternalConflict)
             }

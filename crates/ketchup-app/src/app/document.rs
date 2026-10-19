@@ -341,6 +341,10 @@ impl KetchupApp {
                             LoadNotice::HistoryDiscarded { reason } => {
                                 ("digest-opened-without-history", vec![("reason", reason)])
                             }
+                            LoadNotice::WorkRecoveryStepDamaged { reason } => (
+                                "digest-opened-work-recovery-step-damaged",
+                                vec![("reason", reason)],
+                            ),
                             LoadNotice::WorkRecoveryUnusable { reason } => match &set_aside {
                                 Some(Ok(moved)) => (
                                     "digest-opened-work-recovery-set-aside",

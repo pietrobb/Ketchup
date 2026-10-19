@@ -491,14 +491,11 @@ fn a_session_opened_from_a_work_recovery_checkpoint_keeps_checkpointing() {
             .snapshot()
             .canonical_digest()
     };
-    // The open session holds the lock, so the checkpoint is read as a file:
-    // magic, schema, base length and hash, payload length, then the document.
+    // The open session holds the lock, so the checkpoint is read without a session.
     let checkpointed = || {
-        let bytes = std::fs::read(&checkpoint).unwrap();
-        persistence::load(&bytes[60..])
-            .unwrap()
-            .snapshot()
-            .canonical_digest()
+        let opened = persistence::load_file_with_source(&primary).unwrap();
+        assert_eq!(opened.source_path(), checkpoint);
+        opened.outcome().snapshot().canonical_digest()
     };
     assert_eq!(checkpointed(), second_crash);
 

@@ -306,6 +306,13 @@ fn load_warning(
                  the document opened with its current revision only"
             ),
         }),
+        (LoadNotice::WorkRecoveryStepDamaged { reason }, _) => json!({
+            "kind": "work_recovery_step_damaged",
+            "message": format!(
+                "the last edits of the unsaved-work checkpoint could not be read ({reason}); \
+                 the work up to the edit before them opened"
+            ),
+        }),
         (LoadNotice::WorkRecoveryUnusable { reason }, Some(Ok(moved))) => json!({
             "kind": "work_recovery_set_aside",
             "message": format!(

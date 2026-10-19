@@ -103,7 +103,8 @@ pub fn publish_document(
 /// checkpoint of the file at `path`, bound to that file's `base_identity`; it
 /// replaces only the checkpoint this writer observed (`None` requires there is
 /// none). Live sessions must also hold a `WorkRecoveryLock` to protect a recovery
-/// reopen.
+/// reopen. Over a checkpoint it observed, it appends only the step from that
+/// checkpoint to `document` where a step can name it (idea #49).
 pub fn publish_work_recovery(
     path: &Path,
     document: &DocumentStore,
@@ -111,6 +112,17 @@ pub fn publish_work_recovery(
     base_identity: FileIdentity,
     expected_recovery: Option<FileIdentity>,
 ) -> Result<FileIdentity, FilePersistenceError> {
+    if let Some(expected) = expected_recovery
+        && let Some(identity) = super::work_recovery_steps::append_work_recovery_step(
+            path,
+            document,
+            container,
+            base_identity,
+            expected,
+        )?
+    {
+        return Ok(identity);
+    }
     let prepared = prepare_document(document, container, HistoryPolicy::KeepIfFits)
         .map_err(FilePersistenceError::Format)?;
     write_work_recovery(

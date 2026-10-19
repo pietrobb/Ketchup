@@ -20,6 +20,7 @@ pub(crate) mod history_chunks;
 mod legacy;
 mod pipeline;
 mod work_recovery;
+mod work_recovery_steps;
 
 pub use pipeline::{
     HistoryPolicy, PreparedDocument, Publish, prepare_document, publish_document,
@@ -44,7 +45,8 @@ const PROGRAM_ENTRY: &str = "program.json";
 const HISTORY_MAGIC: &[u8; 10] = b"KETCHUPHST";
 const HISTORY_SCHEMA: u16 = 5;
 const WORK_RECOVERY_MAGIC: &[u8; 10] = b"KETCHUPWRK";
-const WORK_RECOVERY_SCHEMA: u16 = 1;
+/// Format 2: the whole file, then the steps appended per edit (idea #49).
+const WORK_RECOVERY_SCHEMA: u16 = 2;
 /// Most revisions a native file's history may hold. Files written before the shared
 /// [`crate::tolerance::limits::UNDO_REVISIONS`] can hold this many; loading keeps only the
 /// revisions within the Undo limit.
@@ -267,6 +269,10 @@ pub enum LoadNotice {
     /// holds the file's WorkRecoveryLock sets it aside with
     /// [`set_aside_work_recovery`].
     WorkRecoveryUnusable { reason: String },
+    /// A step of the opened work-recovery checkpoint did not read (a crash cut
+    /// it short): the work up to the step before it opened, without the edits
+    /// of that step and of any after it.
+    WorkRecoveryStepDamaged { reason: String },
 }
 
 impl LoadAudit {
@@ -594,10 +600,26 @@ const HISTORY_RULE_PROGRAM_IN_CHUNKS: u8 = 3;
 
 /// Revision id, batch digest, origin and checkpoint.
 fn write_revision_header(bytes: &mut Vec<u8>, revision: &Revision) -> Result<(), PersistenceError> {
-    push_u64(bytes, revision.id());
-    push_string(bytes, revision.batch_digest())?;
-    write_revision_origin(bytes, revision.origin());
-    if let Some(checkpoint) = revision.checkpoint() {
+    write_revision_fields(
+        bytes,
+        revision.id(),
+        revision.batch_digest(),
+        revision.origin(),
+        revision.checkpoint(),
+    )
+}
+
+fn write_revision_fields(
+    bytes: &mut Vec<u8>,
+    id: u64,
+    batch_digest: &str,
+    origin: RevisionOrigin,
+    checkpoint: Option<&str>,
+) -> Result<(), PersistenceError> {
+    push_u64(bytes, id);
+    push_string(bytes, batch_digest)?;
+    write_revision_origin(bytes, origin);
+    if let Some(checkpoint) = checkpoint {
         push_u8(bytes, 1);
         push_string(bytes, checkpoint)?;
     } else {
@@ -1026,6 +1048,13 @@ fn save_container_entries(
             return Err(PersistenceError::DuplicateContainerEntry);
         }
     }
+    encode_container(entries)
+}
+
+/// `entries` (path → required, content) as a native container.
+fn encode_container(
+    entries: BTreeMap<String, (bool, Vec<u8>)>,
+) -> Result<Vec<u8>, PersistenceError> {
     if entries.len() > MAX_CONTAINER_ENTRIES as usize {
         return Err(PersistenceError::ResourceLimit);
     }
@@ -1468,11 +1497,16 @@ fn try_load_work_recovery(
         return Ok(Unusable(UnusableWorkRecovery::TooLarge));
     }
     let mut reader = Reader::new(&bytes);
-    if reader.take(WORK_RECOVERY_MAGIC.len()).ok() != Some(WORK_RECOVERY_MAGIC)
-        || reader.u16().ok() != Some(WORK_RECOVERY_SCHEMA)
-    {
+    if reader.take(WORK_RECOVERY_MAGIC.len()).ok() != Some(WORK_RECOVERY_MAGIC) {
         return Ok(Unusable(UnusableWorkRecovery::UnknownFormat));
     }
+    let Some(schema) = reader
+        .u16()
+        .ok()
+        .filter(|schema| (1..=WORK_RECOVERY_SCHEMA).contains(schema))
+    else {
+        return Ok(Unusable(UnusableWorkRecovery::UnknownFormat));
+    };
     let Some(byte_len) = reader.u64().ok() else {
         return Ok(damaged());
     };
@@ -1495,20 +1529,33 @@ fn try_load_work_recovery(
     let Some(payload) = reader.take(payload_len).ok() else {
         return Ok(damaged());
     };
-    if !reader.is_finished() {
+    let steps = &bytes[reader.cursor..];
+    if schema == 1 && !steps.is_empty() {
         return Ok(damaged());
     }
-    let mut outcome = match load(payload) {
+    let (opened, damaged_step) = if steps.is_empty() {
+        (payload.to_vec(), None)
+    } else {
+        match work_recovery_steps::assemble_checkpoint(payload, steps) {
+            Ok(assembled) => assembled,
+            Err(error) => return Ok(Unusable(UnusableWorkRecovery::Document(error))),
+        }
+    };
+    let mut outcome = match load(&opened) {
         Ok(outcome) => outcome,
         Err(error) => return Ok(Unusable(UnusableWorkRecovery::Document(error))),
     };
+    // Each notice goes before those already there.
+    if let Some(reason) = damaged_step {
+        outcome.notice(LoadNotice::WorkRecoveryStepDamaged { reason });
+    }
     outcome.notice(LoadNotice::OpenedWorkRecovery {
         path: source_path.clone(),
     });
     Ok(WorkRecoveryRead::Loaded(Box::new(LoadedFile {
         outcome,
         source_path,
-        source_bytes: payload.to_vec(),
+        source_bytes: opened,
         work_recovery_identity: Some(FileIdentity::from_bytes(&bytes)),
         work_recovery_base: Some(base_identity),
     })))
@@ -1669,6 +1716,32 @@ fn verify_checksums(bytes: &[u8]) -> Result<(), PersistenceError> {
 
 /// The entries of a native container whose framing and checksums hold.
 fn container_entries(bytes: &[u8]) -> Result<BTreeMap<String, (bool, Vec<u8>)>, PersistenceError> {
+    let mut entries = BTreeMap::<String, (bool, Vec<u8>)>::new();
+    for entry in container_directory(bytes)? {
+        if crate::graph::sha256_bytes(entry.content) != entry.checksum {
+            return Err(PersistenceError::ContainerChecksumMismatch(entry.path));
+        }
+        if entries
+            .insert(entry.path, (entry.required, entry.content.to_vec()))
+            .is_some()
+        {
+            return Err(PersistenceError::DuplicateContainerEntry);
+        }
+    }
+    Ok(entries)
+}
+
+/// One entry of a native container as its framing names it.
+struct ContainerEntry<'a> {
+    path: String,
+    required: bool,
+    checksum: [u8; 32],
+    content: &'a [u8],
+}
+
+/// The entries of a native container whose framing holds, their checksums not
+/// verified: for bytes whose file identity was already checked.
+fn container_directory(bytes: &[u8]) -> Result<Vec<ContainerEntry<'_>>, PersistenceError> {
     if bytes.len() > MAX_CONTAINER_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
@@ -1681,7 +1754,7 @@ fn container_entries(bytes: &[u8]) -> Result<BTreeMap<String, (bool, Vec<u8>)>, 
         return Err(PersistenceError::UnsupportedContainerSchema(schema));
     }
     let entry_count = reader.count_with_limit(MAX_CONTAINER_ENTRIES)?;
-    let mut entries = BTreeMap::<String, (bool, Vec<u8>)>::new();
+    let mut entries = Vec::with_capacity(entry_count as usize);
     for _ in 0..entry_count {
         let path = reader.string()?;
         validate_container_path(&path)?;
@@ -1693,13 +1766,12 @@ fn container_entries(bytes: &[u8]) -> Result<BTreeMap<String, (bool, Vec<u8>)>, 
             .take(32)?
             .try_into()
             .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
-        let content = reader.take(length)?.to_vec();
-        if crate::graph::sha256_bytes(&content) != checksum {
-            return Err(PersistenceError::ContainerChecksumMismatch(path));
-        }
-        if entries.insert(path, (required, content)).is_some() {
-            return Err(PersistenceError::DuplicateContainerEntry);
-        }
+        entries.push(ContainerEntry {
+            path,
+            required,
+            checksum,
+            content: reader.take(length)?,
+        });
     }
     if !reader.is_finished() {
         return Err(PersistenceError::TrailingBytes);

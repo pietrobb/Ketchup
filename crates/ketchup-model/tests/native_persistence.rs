@@ -2455,6 +2455,75 @@ fn dirty_work_recovery_is_bound_to_the_primary_and_corruption_is_ignored() {
     );
 }
 
+/// A crash while an edit appends its step to the work-recovery checkpoint
+/// (idea #49) leaves the step cut short. The open restores the work up to the
+/// step before it and says the step was damaged; the next edit writes the whole
+/// checkpoint again instead of appending after the damaged step.
+#[test]
+fn a_work_recovery_step_cut_short_opens_the_steps_before_it_and_says_so() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cut-short.ketchup");
+    let work_recovery = persistence::work_recovery_path(&path);
+    let container_data = persistence::ContainerData::default();
+    let set_dimension = |store: &mut DocumentStore, value: f64| {
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value.to_string(), value).unwrap(),
+                },
+            ]))
+            .unwrap();
+    };
+    let mut store = graph_document();
+    publish(
+        &path,
+        &store,
+        &container_data,
+        persistence::Publish::Replace,
+    )
+    .unwrap();
+    let base = persistence::read_native_document_identity(&path).unwrap();
+    let mut identity = None;
+    let mut digests = Vec::new();
+    for value in [17.0, 19.0, 23.0] {
+        set_dimension(&mut store, value);
+        identity = Some(checkpoint(&path, &store, &container_data, base, identity).unwrap());
+        digests.push((
+            store.current().canonical_digest(),
+            store.visible_undo_steps(),
+        ));
+    }
+    let whole = std::fs::read(&work_recovery).unwrap();
+    std::fs::write(&work_recovery, &whole[..whole.len() - 5]).unwrap();
+
+    let opened = persistence::load_file_with_source(&path).unwrap();
+    assert_eq!(opened.source_path(), work_recovery);
+    assert_eq!(opened.outcome().snapshot().canonical_digest(), digests[1].0);
+    match opened.outcome().audit().notices.as_slice() {
+        [
+            persistence::LoadNotice::OpenedWorkRecovery { .. },
+            persistence::LoadNotice::WorkRecoveryStepDamaged { reason },
+        ] => assert!(reason.contains("step 2"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+
+    let opened_identity = opened.work_recovery_identity();
+    let mut reopened = opened.into_parts().0.into_editable().ok().unwrap();
+    assert_eq!(reopened.visible_undo_steps(), digests[1].1);
+    set_dimension(&mut reopened, 29.0);
+    checkpoint(&path, &reopened, &container_data, base, opened_identity).unwrap();
+    let again = persistence::load_file_with_source(&path).unwrap();
+    assert_eq!(
+        again.outcome().snapshot().canonical_digest(),
+        reopened.current().canonical_digest()
+    );
+    assert!(matches!(
+        again.outcome().audit().notices.as_slice(),
+        [persistence::LoadNotice::OpenedWorkRecovery { .. }]
+    ));
+}
+
 #[test]
 fn stale_session_cleanup_does_not_delete_a_newer_work_recovery_checkpoint() {
     let directory = tempfile::tempdir().unwrap();
