@@ -2758,8 +2758,18 @@ mod tests {
     #[test]
     fn the_language_guide_names_every_builtin() {
         let guide = include_str!("../../../docs/program-language.md");
+        let ec5 = PRELUDE
+            .split("#@topic ")
+            .find(|topic| topic.starts_with("member_check:"))
+            .expect("library has the EC5 topic")
+            .lines()
+            .filter_map(|line| line.strip_prefix("#   "))
+            .filter_map(|line| line.split_once('(').map(|(name, _)| name))
+            .filter(|name| name.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .map(str::to_owned);
         let missing = builtin_names()
             .into_iter()
+            .chain(ec5)
             .filter(|name| !guide.contains(&format!("`{name}(")))
             .collect::<Vec<_>>();
         assert!(
