@@ -4,6 +4,14 @@ use super::*;
 use crate::program_evaluation::Lookup;
 use ketchup_model::document::{Feature, Occurrence, RuleProgramSource};
 
+/// The detaching edit is undone only while it is still the current revision;
+/// any later change closes the notice.
+pub(crate) struct ProgramDetachNotice {
+    pub(crate) file_name: String,
+    pub(crate) revision_id: u64,
+    pub(crate) reason: String,
+}
+
 /// The features that shape an occurrence's definition.
 fn shape(snapshot: &Snapshot, occurrence: &Occurrence) -> Option<Vec<Feature>> {
     snapshot.definition(occurrence.definition_id()).map(|made| {

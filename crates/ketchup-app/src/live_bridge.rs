@@ -39,8 +39,8 @@ use ketchup_assistant::sidecar::{
 use ketchup_model::tolerance::limits;
 use ketchup_model::{
     document::{
-        CommandBatch, DocumentStore, OccurrenceId, Proposal, RuleProgramSource, Snapshot,
-        VerifiedProposalCommit,
+        CommandBatch, DocumentStore, OccurrenceId, Proposal, ProposalCommitError,
+        RuleProgramSource, Snapshot, VerifiedProposalCommit,
     },
     exact_product::ExactResultRegistry,
     tolerance::ROUNDING,
@@ -2590,6 +2590,52 @@ impl LiveBridge {
         Ok(json!({"changed":changed,"program_owned":program_owned(app)}))
     }
 
+    /// Commits the pending proposal, and the program it was written into.
+    fn commit_pending(
+        &mut self,
+        app: &mut KetchupApp,
+        proposal_id: u64,
+        cancelled: &Arc<AtomicBool>,
+    ) -> Result<Value, &'static str> {
+        let pending = self.pending.as_ref().ok_or("proposal_not_found")?;
+        if pending.id != proposal_id {
+            return Err("proposal_not_found");
+        }
+        if pending.epoch != app.document.mutation_epoch() {
+            return Err("stale_document");
+        }
+        Self::check_selection_guard(app, &pending.selection)?;
+        Self::require_request_authority(cancelled)?;
+        let owned_before = program_owned(app);
+        let committed = app
+            .complete_mutation_with_work_recovery(|document| {
+                let committed = document.commit_verified_proposal(&pending.proposal)?;
+                if let Some(program) = &pending.program {
+                    document
+                        .bind_rule_program(program.clone())
+                        .map_err(ProposalCommitError::Canonical)?;
+                }
+                Ok(committed)
+            })
+            .map_err(
+                |error: WorkRecoveryMutationError<ProposalCommitError>| match error {
+                    WorkRecoveryMutationError::Mutation(_) => "commit_rejected",
+                    WorkRecoveryMutationError::Recovery(_) => "recovery_rejected",
+                },
+            )?;
+        self.pending.take().expect("committed pending proposal");
+        let mut value = json!({"proposal_id":proposal_id,"committed":true,
+            "after":app.live_bridge_stamp(),"command_digest":committed.command_digest(),
+            "result_digest":committed.result_digest(),"write_count":committed.verified_writes().len(),
+            "undo_steps":app.undo_step_count(),"geometry_evaluated":false});
+        add_detach_warning(&mut value, owned_before, app);
+        app.invalidate_pending_import_reviews();
+        app.clear_ephemeral_edit_state();
+        app.reconcile_selection();
+        app.status_key = "status-ready";
+        Ok(value)
+    }
+
     fn execute_authorized(
         &mut self,
         app: &mut KetchupApp,
@@ -2791,43 +2837,7 @@ impl LiveBridge {
             } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
-                let pending = self.pending.as_ref().ok_or("proposal_not_found")?;
-                if pending.id != proposal_id {
-                    return Err("proposal_not_found");
-                }
-                if pending.epoch != app.document.mutation_epoch() {
-                    return Err("stale_document");
-                }
-                Self::check_selection_guard(app, &pending.selection)?;
-                Self::require_request_authority(cancelled)?;
-                let owned_before = program_owned(app);
-                let committed = app
-                    .complete_mutation_with_work_recovery(|document| {
-                        let committed = document
-                            .commit_verified_proposal(&pending.proposal)
-                            .map_err(|_| "commit_rejected")?;
-                        if let Some(program) = &pending.program {
-                            document
-                                .bind_rule_program(program.clone())
-                                .map_err(|_| "commit_rejected")?;
-                        }
-                        Ok(committed)
-                    })
-                    .map_err(|error| match error {
-                        WorkRecoveryMutationError::Mutation(code) => code,
-                        WorkRecoveryMutationError::Recovery(_) => "recovery_rejected",
-                    })?;
-                self.pending.take().expect("committed pending proposal");
-                let mut value = json!({"proposal_id":proposal_id,"committed":true,
-                    "after":app.live_bridge_stamp(),"command_digest":committed.command_digest(),
-                    "result_digest":committed.result_digest(),"write_count":committed.verified_writes().len(),
-                    "undo_steps":app.undo_step_count(),"geometry_evaluated":false});
-                add_detach_warning(&mut value, owned_before, app);
-                app.invalidate_pending_import_reviews();
-                app.clear_ephemeral_edit_state();
-                app.reconcile_selection();
-                app.status_key = "status-ready";
-                Ok(value)
+                self.commit_pending(app, proposal_id, cancelled)
             }
             Request::ApplyAndVerify {
                 expected,

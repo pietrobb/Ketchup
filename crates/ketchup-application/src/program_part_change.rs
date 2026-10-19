@@ -41,7 +41,7 @@ pub enum PartChange {
         edges: Vec<[String; 2]>,
         amount: f64,
     },
-    /// A value of one of the part's features, as the parameter panel sets it.
+    /// A value of one of the part's features, as the parameter editor sets it.
     Parameter {
         feature: String,
         path: String,
@@ -598,7 +598,7 @@ impl Edit<'_> {
             };
             let current =
                 (self.source.overrides.get(&parameter.name).copied()).unwrap_or(parameter.value);
-            // Not a tolerance: a probe step large enough to change the evaluated model.
+            // not a tolerance: a probe step large enough to change the evaluated model.
             let step = current.abs().mul_add(1.0e-4, 1.0e-3);
             let Some(probed) = [current + step, current - step]
                 .into_iter()

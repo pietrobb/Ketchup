@@ -1,4 +1,4 @@
-//! A move, turn, delete, colour, rename, mirror or panel value of parts a
+//! A move, turn, delete, colour, rename, mirror or parameter value of parts a
 //! program owns is written into the program and published like any program
 //! edit, so the program keeps owning the document and Undo takes the edit
 //! back in one step.

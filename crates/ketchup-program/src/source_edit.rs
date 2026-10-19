@@ -113,7 +113,10 @@ fn call_statement(
 }
 
 fn span_bytes(span: starlark::codemap::Span) -> Range<usize> {
-    span.begin().get() as usize..span.end().get() as usize
+    let byte = |pos: starlark::codemap::Pos| {
+        usize::try_from(pos.get()).expect("a u32 source offset fits in usize")
+    };
+    byte(span.begin())..byte(span.end())
 }
 
 /// `bytes` widened to the whole lines they stand on, with the line break;
