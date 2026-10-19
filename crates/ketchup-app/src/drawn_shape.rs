@@ -11,6 +11,9 @@ use crate::program_evaluation::Lookup;
 use ketchup_geometry::linalg::{cross, dot, dot2, sub};
 use ketchup_model::document::{Occurrence, RuleProgramSource};
 use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
+use ketchup_program::source_edit::{
+    append_lines, number_literal, point_literal, quote, written, written_point,
+};
 
 /// Distance within which the drawn shape counts as lying on a face.
 const ON_FACE_MM: f64 = APPROXIMATION;
@@ -198,13 +201,7 @@ fn point(value: [f64; 3]) -> Vec3 {
 
 /// `value` rounded to a micrometre, without trailing zeros.
 fn number(value: f64) -> String {
-    let rounded = (value * 1.0e6).round() / 1.0e6;
-    let text = format!("{:.6}", if rounded == 0.0 { 0.0 } else { rounded });
-    text.trim_end_matches('0').trim_end_matches('.').to_owned()
-}
-
-fn quote(text: &str) -> String {
-    serde_json::to_string(text).expect("strings serialize")
+    number_literal(written(value))
 }
 
 /// The drawn loop of a definition holding a single closed profile, in the
@@ -403,18 +400,16 @@ fn free_shape_program_edit(
             !evaluated.part_sources.contains_key(name) && !program.source.contains(&quote(name))
         })
         .expect("some name is free");
-    let triple = |v: Vec3| format!("({}, {}, {})", number(v.x), number(v.y), number(v.z));
-    if !program.source.ends_with('\n') {
-        program.source.push('\n');
-    }
-    program.source.push_str(&format!(
+    let triple = |v: Vec3| point_literal(written_point([v.x, v.y, v.z]));
+    let line = format!(
         "place(extrude({}, profile = {profile}, distance = {}), origin = {}, z = {}, x = {})\n",
         quote(&name),
         number(amount_mm),
         triple(base),
         triple(z),
         triple(x),
-    ));
+    );
+    append_lines(&mut program.source, &line);
     Ok(DrawnShapeEdit {
         change: DrawnShapeChange::Program {
             source: program,
@@ -655,17 +650,15 @@ impl KetchupApp {
             .find(|name| !taken(name))
             .expect("some name is free");
         let amount_mm = along.abs();
-        let mut rewritten = program;
-        if !rewritten.source.ends_with('\n') {
-            rewritten.source.push('\n');
-        }
-        rewritten.source.push_str(&format!(
+        let line = format!(
             "{call}({}, {}, {profile}, {}, name={})\n",
             quote(&part),
             quote(face),
             number(amount_mm),
             quote(&name)
-        ));
+        );
+        let mut rewritten = program;
+        append_lines(&mut rewritten.source, &line);
         Some(Ok(DrawnShapeEdit {
             change: DrawnShapeChange::Program {
                 source: rewritten,

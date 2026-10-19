@@ -53,7 +53,7 @@ pub fn creating_call(
     source: &str,
     recorded: &[SourceLines],
 ) -> Option<CreatingCall> {
-    let ast = AstModule::parse(file_name, source.to_owned(), &crate::eval::dialect()).ok()?;
+    let ast = parsed(file_name, source)?;
     let mut functions = BTreeSet::new();
     collect_functions(ast.statement(), &mut functions);
     let mut nested = None;
@@ -77,25 +77,39 @@ pub fn creating_call(
     nested.map(|call| with_statement(&ast, source, call))
 }
 
+fn parsed(file_name: &str, source: &str) -> Option<AstModule> {
+    AstModule::parse(file_name, source.to_owned(), &crate::eval::dialect()).ok()
+}
+
 fn with_statement(ast: &AstModule, source: &str, mut call: CreatingCall) -> CreatingCall {
-    call.statement = top_level(ast.statement()).find_map(|statement| {
-        let made = match &statement.node {
+    call.statement = call_statement(ast, source, |_, made| span_bytes(made.span) == call.bytes);
+    call
+}
+
+/// Whole lines of the top-level statement that is only a call, `f(...)` or
+/// `x = f(...)`, the first that `is` picks by its statement and call.
+fn call_statement(
+    ast: &AstModule,
+    source: &str,
+    is: impl Fn(&AstStmt, &AstExpr) -> bool,
+) -> Option<Range<usize>> {
+    let top_level = match &ast.statement().node {
+        StmtP::Statements(statements) => statements.iter().collect::<Vec<_>>(),
+        _ => vec![ast.statement()],
+    };
+    top_level.into_iter().find_map(|statement| {
+        let call = match &statement.node {
             StmtP::Expression(expression) => expression,
             StmtP::Assign(assign) => &assign.rhs,
             _ => return None,
         };
-        (span_bytes(made.span) == call.bytes)
-            .then(|| whole_lines(source, span_bytes(statement.span).start..call.bytes.end))?
-    });
-    call
-}
-
-fn top_level(statement: &AstStmt) -> impl Iterator<Item = &AstStmt> {
-    match &statement.node {
-        StmtP::Statements(statements) => statements.iter().collect::<Vec<_>>(),
-        _ => vec![statement],
-    }
-    .into_iter()
+        (matches!(call.node, ExprP::Call(..)) && is(statement, call)).then(|| {
+            whole_lines(
+                source,
+                span_bytes(statement.span).start..span_bytes(call.span).end,
+            )
+        })?
+    })
 }
 
 fn span_bytes(span: starlark::codemap::Span) -> Range<usize> {
@@ -122,22 +136,10 @@ pub fn top_level_call_statement(
     source: &str,
     lines: SourceLines,
 ) -> Option<Range<usize>> {
-    let ast = AstModule::parse(file_name, source.to_owned(), &crate::eval::dialect()).ok()?;
-    top_level(ast.statement()).find_map(|statement| {
-        let call = match &statement.node {
-            StmtP::Expression(expression) => expression,
-            StmtP::Assign(assign) => &assign.rhs,
-            _ => return None,
-        };
+    let ast = parsed(file_name, source)?;
+    call_statement(&ast, source, |statement, _| {
         let span = ast.codemap().resolve_span(statement.span);
-        (matches!(call.node, ExprP::Call(..))
-            && (span.begin.line + 1, span.end.line + 1) == (lines.first, lines.last))
-            .then(|| {
-                whole_lines(
-                    source,
-                    span_bytes(statement.span).start..span_bytes(call.span).end,
-                )
-            })?
+        (span.begin.line + 1, span.end.line + 1) == (lines.first, lines.last)
     })
 }
 
@@ -145,7 +147,7 @@ pub fn top_level_call_statement(
 /// included, and its line.
 #[must_use]
 pub fn string_literals(file_name: &str, source: &str, text: &str) -> Vec<(Range<usize>, usize)> {
-    let Ok(ast) = AstModule::parse(file_name, source.to_owned(), &crate::eval::dialect()) else {
+    let Some(ast) = parsed(file_name, source) else {
         return Vec::new();
     };
     let mut found = Vec::new();
@@ -165,7 +167,7 @@ pub fn string_literals(file_name: &str, source: &str, text: &str) -> Vec<(Range<
 /// The `was=` string literal of `continue_part("<part>", was=...)`.
 #[must_use]
 pub fn continuation_of(file_name: &str, source: &str, part: &str) -> Option<Range<usize>> {
-    let ast = AstModule::parse(file_name, source.to_owned(), &crate::eval::dialect()).ok()?;
+    let ast = parsed(file_name, source)?;
     let mut found = None;
     walk(Visit::Stmt(ast.statement()), &mut |expression| {
         let ExprP::Call(callee, arguments) = &expression.node else {
@@ -213,6 +215,33 @@ pub fn number_literal(value: f64) -> String {
     } else {
         value.to_string()
     }
+}
+
+/// A written length or angle keeps six decimals (a nanometre, a micro-degree):
+/// what the editor shows, without the noise of the matrix it came from.
+#[must_use]
+pub fn written(value: f64) -> f64 {
+    let value = (value * 1.0e6).round() / 1.0e6;
+    if value == 0.0 { 0.0 } else { value }
+}
+
+#[must_use]
+pub fn written_point(point: [f64; 3]) -> [f64; 3] {
+    point.map(written)
+}
+
+/// A string as a program literal, quoted and escaped.
+#[must_use]
+pub fn quote(text: &str) -> String {
+    serde_json::to_string(text).expect("strings serialize")
+}
+
+/// Adds `lines` at the end of `source`, on a line of their own.
+pub fn append_lines(source: &mut String, lines: &str) {
+    if !source.is_empty() && !source.ends_with('\n') {
+        source.push('\n');
+    }
+    source.push_str(lines);
 }
 
 /// `(x, y, z)` as a program literal.

@@ -5,7 +5,6 @@ use ketchup_model::document::{
     FeatureKind, FeatureParameterTarget, OccurrenceId, ParameterValueType, RuleProgramSource,
     Snapshot, Transform,
 };
-use ketchup_model::tolerance::ACCUMULATED_ROUNDING;
 use ketchup_program::model::ProgramOperation;
 use ketchup_program::{ProgramFeatureKind, ProgramModel, ProgramParameterValueType, Report};
 
@@ -64,135 +63,6 @@ pub struct RuleProgramApplyResult {
     pub model: ProgramModel,
     pub report: Report,
     pub replaced_document: bool,
-}
-
-/// Program lines that created or changed each part, keyed by part (occurrence) name.
-pub fn rule_program_part_sources(
-    source: &RuleProgramSource,
-) -> Result<
-    std::collections::BTreeMap<String, Vec<ketchup_program::SourceLines>>,
-    ketchup_program::ProgramError,
-> {
-    crate::program_isolation::evaluate_program(
-        &source.file_name,
-        &source.source,
-        &source.overrides,
-        &ketchup_program::CancelToken::default(),
-    )
-    .map(|evaluated| evaluated.part_sources)
-}
-
-/// Rewrites a manual Push/Pull into the program source that owns the part.
-/// A uniquely driving parameter is overridden; otherwise a named operation is appended.
-pub fn rewrite_rule_program_push_pull(
-    source: &RuleProgramSource,
-    part_name: &str,
-    face_name: &str,
-    distance_mm: f64,
-) -> Result<RuleProgramSource, RuleProgramApplyError> {
-    if !distance_mm.is_finite() || distance_mm.abs() <= f64::EPSILON {
-        return Err(RuleProgramApplyError::Program {
-            code: "invalid_push_pull".to_owned(),
-            message: "Push/Pull distance must be finite and non-zero".to_owned(),
-            location: None,
-        });
-    }
-    let evaluated = evaluate(source)?;
-    let part = evaluated
-        .model
-        .part(part_name)
-        .ok_or_else(|| RuleProgramApplyError::Program {
-            code: "unknown_part".to_owned(),
-            message: format!("program part {part_name:?} does not exist"),
-            location: None,
-        })?;
-    let controlled_value = |model: &ProgramModel| {
-        let part = model.part(part_name)?;
-        if let Some(offset) = part
-            .face_offsets()
-            .filter(|offset| offset.face == face_name)
-            .last()
-        {
-            return Some(offset.distance_mm);
-        }
-        match &part.body {
-            ketchup_program::model::ProgramPartBody::Extrusion {
-                distance_mm, caps, ..
-            } if face_name == "end" || face_name == caps[1] => Some(*distance_mm),
-            _ => None,
-        }
-    };
-    let baseline = controlled_value(&evaluated.model);
-    let mut drivers = Vec::new();
-    if let Some(baseline) = baseline {
-        for parameter in &evaluated.model.params {
-            let current = source
-                .overrides
-                .get(&parameter.name)
-                .copied()
-                .unwrap_or(parameter.value);
-            // not a tolerance: a probe step large enough to change the evaluated model.
-            let step = current.abs().mul_add(1.0e-4, 1.0e-3);
-            let probed = if parameter
-                .max
-                .is_none_or(|maximum| current + step <= maximum)
-            {
-                current + step
-            } else if parameter
-                .min
-                .is_none_or(|minimum| current - step >= minimum)
-            {
-                current - step
-            } else {
-                continue;
-            };
-            let mut probe_source = source.clone();
-            probe_source
-                .overrides
-                .insert(parameter.name.clone(), probed);
-            let Ok(probe) = evaluate(&probe_source) else {
-                continue; // A speculative parameter step may cross a valid program branch.
-            };
-            let Some(probe_value) = controlled_value(&probe.model) else {
-                continue;
-            };
-            let slope = (probe_value - baseline) / (probed - current);
-            if slope.abs() > ACCUMULATED_ROUNDING {
-                let replacement = current + distance_mm / slope;
-                if parameter.min.is_none_or(|minimum| replacement >= minimum)
-                    && parameter.max.is_none_or(|maximum| replacement <= maximum)
-                {
-                    drivers.push((parameter.name.clone(), replacement));
-                }
-            }
-        }
-    }
-    let mut rewritten = source.clone();
-    if let [(parameter, value)] = drivers.as_slice() {
-        rewritten.overrides.insert(parameter.clone(), *value);
-        // A finite-difference probe is only a proposal, not a linearity contract.
-        // Never publish a successful evaluation that moved the face by another amount.
-        if let Ok(candidate) = evaluate(&rewritten)
-            && let (Some(before), Some(after)) = (baseline, controlled_value(&candidate.model))
-            && (after - before - distance_mm).abs() <= ACCUMULATED_ROUNDING
-        {
-            return Ok(rewritten);
-        }
-        rewritten = source.clone();
-    }
-    {
-        let quote = |value: &str| serde_json::to_string(value).expect("strings serialize");
-        let feature_name = format!("GUI Push/Pull {}", part.face_offsets().count() + 1);
-        rewritten.source.push_str(&format!(
-            "\npush_pull({}, face={}, distance={}, name={})\n",
-            quote(part_name),
-            quote(face_name),
-            distance_mm,
-            quote(&feature_name)
-        ));
-    }
-    evaluate(&rewritten)?;
-    Ok(rewritten)
 }
 
 /// What publishing a rule program changes in a document.
@@ -1253,58 +1123,6 @@ mod tests {
                 .unwrap();
             assert_eq!(exact_signature(&incremental), exact_signature(&fresh));
         }
-    }
-
-    #[test]
-    fn push_pull_rewrites_driver_or_appends_named_operation() {
-        let driven = RuleProgramSource { variants: Default::default(),
-            file_name: "driven.star".to_owned(),
-            source: "H = param(\"height\", 18)\npart = extrude(\"board\", profile=[[\"a\", [0, 0], [100, 0]], [\"b\", [100, 0], [100, 50]], [\"c\", [100, 50], [0, 50]], [\"d\", [0, 50], [0, 0]]], distance=H)".to_owned(),
-            overrides: BTreeMap::new(),
-        };
-        let rewritten = rewrite_rule_program_push_pull(&driven, "board", "end", 7.0).unwrap();
-        assert_eq!(rewritten.source, driven.source);
-        assert_eq!(rewritten.overrides["height"], 25.0);
-        let mut session = DocumentSession::new(SessionSettings::default());
-        let first = session.apply_rule_program(driven.clone(), false).unwrap();
-        let updated = session
-            .apply_rule_program(rewritten.clone(), false)
-            .unwrap();
-        assert_eq!(
-            updated.snapshot.revision_id(),
-            first.snapshot.revision_id() + 1
-        );
-        assert_eq!(session.rule_program(), Some(&rewritten));
-        session.undo().unwrap();
-        assert_eq!(session.rule_program(), Some(&driven));
-
-        let fixed = RuleProgramSource {
-            variants: Default::default(),
-            file_name: "fixed.star".to_owned(),
-            source: driven
-                .source
-                .replace("H = param(\"height\", 18)\n", "")
-                .replace("distance=H", "distance=18"),
-            overrides: BTreeMap::new(),
-        };
-        let appended = rewrite_rule_program_push_pull(&fixed, "board", "end", -3.0).unwrap();
-        assert!(
-            appended.source.contains(
-                "push_pull(\"board\", face=\"end\", distance=-3, name=\"GUI Push/Pull 1\")"
-            )
-        );
-        let evaluated = evaluate(&appended).unwrap();
-        assert_eq!(
-            evaluated
-                .model
-                .part("board")
-                .unwrap()
-                .face_offsets()
-                .next()
-                .unwrap()
-                .distance_mm,
-            -3.0
-        );
     }
 
     #[test]

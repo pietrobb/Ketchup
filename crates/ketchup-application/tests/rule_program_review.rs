@@ -1,6 +1,7 @@
 //! Outcome regressions for CR-09 and CR-12.
 use ketchup_application::{
-    DocumentSession, SessionSettings, rewrite_rule_program_push_pull, verify_rule_program_exact,
+    DocumentSession, PartChange, SessionSettings, rewrite_rule_program_parts,
+    verify_rule_program_exact,
 };
 use ketchup_model::{document::RuleProgramSource, persistence::ContainerData};
 use std::{
@@ -19,6 +20,14 @@ fn source(expression: &str, bounds: &str) -> RuleProgramSource {
     }
 }
 
+fn push_pull(source: &RuleProgramSource, distance: f64) -> RuleProgramSource {
+    let face = "end".to_owned();
+    let change = PartChange::PushPull { face, distance };
+    rewrite_rule_program_parts(source, &[("part".to_owned(), change)])
+        .expect("rewrite")
+        .expect("a program part")
+}
+
 fn check_height(source: &RuleProgramSource, expected: f64) -> ketchup_program::ProgramModel {
     let result = ketchup_program::evaluate(&source.file_name, &source.source, &source.overrides)
         .expect("rewritten program evaluates");
@@ -35,8 +44,7 @@ fn check_height(source: &RuleProgramSource, expected: f64) -> ketchup_program::P
 #[test]
 fn linear_driver_reaches_requested_face_without_an_extra_operation() {
     let original = source("H*2", "");
-    let rewritten =
-        rewrite_rule_program_push_pull(&original, "part", "end", 21.0).expect("rewrite");
+    let rewritten = push_pull(&original, 21.0);
     let model = check_height(&rewritten, 41.0);
     assert_eq!(model.part("part").expect("part").face_offsets().count(), 0);
     assert!((rewritten.overrides["H"] - 20.5).abs() < 1.0e-7);
@@ -45,8 +53,7 @@ fn linear_driver_reaches_requested_face_without_an_extra_operation() {
 #[test]
 fn quadratic_driver_falls_back_locally_to_exactly_121_mm() {
     let original = source("H*H", "");
-    let rewritten =
-        rewrite_rule_program_push_pull(&original, "part", "end", 21.0).expect("rewrite");
+    let rewritten = push_pull(&original, 21.0);
     let model = check_height(&rewritten, 121.0);
     assert_eq!(rewritten.overrides, original.overrides);
     assert_eq!(
@@ -54,8 +61,7 @@ fn quadratic_driver_falls_back_locally_to_exactly_121_mm() {
         10.0
     );
     assert_eq!(model.part("part").expect("part").face_offsets().count(), 1);
-    let again =
-        rewrite_rule_program_push_pull(&rewritten, "part", "end", -5.0).expect("second rewrite");
+    let again = push_pull(&rewritten, -5.0);
     check_height(&again, 116.0);
 }
 
@@ -68,8 +74,7 @@ fn clamp_piecewise_and_parameter_limits_use_a_safe_local_fallback() {
         ("H", ", min=9, max=11", 31.0),
     ] {
         let original = source(expression, bounds);
-        let rewritten =
-            rewrite_rule_program_push_pull(&original, "part", "end", 21.0).expect("rewrite");
+        let rewritten = push_pull(&original, 21.0);
         let model = check_height(&rewritten, expected);
         assert_eq!(rewritten.overrides, original.overrides, "{expression}");
         assert_eq!(

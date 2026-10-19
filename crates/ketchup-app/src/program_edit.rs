@@ -2,8 +2,9 @@
 //! through the same reconciliation path as the headless session.
 use super::*;
 use crate::program_evaluation::Lookup;
-use ketchup_application::{RuleProgramApplyError, RuleProgramChange, SessionError};
+use ketchup_application::{PartChange, RuleProgramApplyError, RuleProgramChange, SessionError};
 use ketchup_model::document::RuleProgramSource;
+use ketchup_program::model::ProgramEdgeFinishKind;
 
 /// How a program edit changed the window's document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,10 +24,6 @@ impl ProgramEdit {
             Self::Created => "created",
         }
     }
-}
-
-fn quote(text: &str) -> String {
-    serde_json::to_string(text).expect("strings serialize")
 }
 
 fn session_error(error: WorkRecoveryMutationError<SessionError>) -> RuleProgramApplyError {
@@ -168,9 +165,9 @@ impl KetchupApp {
         source: &GeneralFinishSourcePlan,
         amount_mm: f64,
     ) -> Option<Result<(), Rejection>> {
-        let (call, amount) = match source.kind {
-            GeneralFinishKind::Fillet => ("fillet", "radius"),
-            GeneralFinishKind::Chamfer => ("chamfer", "distance"),
+        let (kind, call) = match source.kind {
+            GeneralFinishKind::Fillet => (ProgramEdgeFinishKind::Fillet, "fillet"),
+            GeneralFinishKind::Chamfer => (ProgramEdgeFinishKind::Chamfer, "chamfer"),
             GeneralFinishKind::Shell => return None,
         };
         let program = self.document.current_rule_program()?.clone();
@@ -230,19 +227,14 @@ impl KetchupApp {
                     occurrence.name()
                 ))));
             };
-            edges.push(format!("[{}, {}]", quote(&first), quote(&second)));
+            edges.push([first, second]);
         }
-        let mut rewritten = program;
-        rewritten.source.push_str(&format!(
-            "\n{call}({}, edges=[{}], {amount}={amount_mm})\n",
-            quote(occurrence.name()),
-            edges.join(", ")
-        ));
-        Some(
-            self.apply_program_source(rewritten, false)
-                .map(|_| ())
-                .map_err(|error| failed("program.apply", error)),
-        )
+        let change = PartChange::Finish {
+            kind,
+            edges,
+            amount: amount_mm,
+        };
+        self.publish_part_changes(&program, &[(occurrence.name().to_owned(), change)])
     }
 
     /// True while the document's program is being evaluated in the background,

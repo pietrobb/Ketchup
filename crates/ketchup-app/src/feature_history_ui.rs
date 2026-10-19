@@ -1136,6 +1136,16 @@ impl KetchupApp {
             self.feature_history_error(self.catalog.text("feature-history-error-invalid-value"));
             return false;
         };
+        // A value of a program part is written into its program.
+        if let ExactParameterEditTarget::FeatureParameter(target) = &target
+            && let Some(published) =
+                self.commit_program_part_batch(&[CanonicalCommand::SetFeatureParameter {
+                    target: target.clone(),
+                    dimension: dimension.clone(),
+                }])
+        {
+            return published;
+        }
         let request = ketchup_model::feature_history::BodyParameterEditRequest {
             definition_id,
             body_id,

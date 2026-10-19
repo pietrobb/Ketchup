@@ -1,5 +1,5 @@
 use super::*;
-use ketchup_model::document::RuleProgramSource;
+use ketchup_model::document::{FeatureParameterTarget, RuleProgramSource};
 
 const PARTS: &str = "box(\"a\", (20, 30, 40), at = (100, 0, 5))\n\
                      x = 300\n\
@@ -212,6 +212,60 @@ fn mirroring_a_program_part_adds_a_mirrored_line() {
     let (min, size) = placed(&app);
     assert_close(min, [-120.0, 0.0, 5.0]);
     assert_close(size, [20.0, 30.0, 40.0]);
+}
+
+/// Sets the value at `path` of part `name`'s feature, as the parameter panel does.
+fn set_value(app: &mut KetchupApp, name: &str, path: &str, value: f64) -> bool {
+    let snapshot = app.document.current();
+    let id = occurrence(app, name).unwrap();
+    let definition = snapshot.definition(snapshot.occurrence(id).unwrap().definition_id());
+    let feature_id = *definition
+        .unwrap()
+        .feature_ids()
+        .iter()
+        .find(|id| {
+            let kind = snapshot.feature(**id).unwrap().kind();
+            kind.parameter_descriptors()
+                .iter()
+                .any(|made| made.path().as_str() == path)
+        })
+        .unwrap();
+    let target = FeatureParameterTarget::new(feature_id, path, ParameterValueType::Length).unwrap();
+    let dimension = Dimension::new(value.to_string(), value).unwrap();
+    let command = CanonicalCommand::SetFeatureParameter { target, dimension };
+    app.commit_program_part_batch(&[command])
+        .expect("a program part")
+}
+
+#[test]
+fn a_panel_value_of_a_program_part_is_written_into_the_program() {
+    let mut app = app();
+    let steps = app.undo_step_count();
+    assert!(
+        set_value(&mut app, "a", "extent.distance", 50.0),
+        "{}",
+        app.digest
+    );
+    // 40 high becomes 50: the top goes up by 10, from z 45 to z 55.
+    assert_eq!(
+        source(&app),
+        format!("{PARTS}push_pull(\"a\", face=\"z+\", distance=10, name=\"GUI Push/Pull 1\")\n")
+    );
+    // Measured in the program: without exact shapes the window's bounds grow
+    // every side of a pushed face.
+    let model = ketchup_program::evaluate("parts.star", &source(&app), &BTreeMap::new())
+        .unwrap()
+        .model;
+    let (min, max) = model.part("a").unwrap().world_bounds();
+    assert_close(min, [100.0, 0.0, 5.0]);
+    assert_close(max, [120.0, 30.0, 55.0]);
+    assert_eq!(app.undo_step_count(), steps + 1);
+
+    // A width written in the source is refused with its line; nothing changes.
+    let revision = app.document_revision();
+    assert!(!set_value(&mut app, "b", "bounds.width", 250.0));
+    assert!(app.digest.contains("line 3"), "{}", app.digest);
+    assert_eq!(app.document_revision(), revision);
 }
 
 #[test]

@@ -228,13 +228,14 @@ impl KetchupApp {
             role if role == ExactFaceRole::Bottom.semantic_role() => "start",
             name => name,
         };
-        ketchup_application::rewrite_rule_program_push_pull(
+        let change = ketchup_application::PartChange::PushPull {
+            face: face_name.to_owned(),
+            distance: distance_mm / face.local_to_world_scale,
+        };
+        ketchup_application::rewrite_rule_program_parts(
             program,
-            occurrence.name(),
-            face_name,
-            distance_mm / face.local_to_world_scale,
+            &[(occurrence.name().to_owned(), change)],
         )
-        .map(Some)
         .map_err(|error| failed("push_pull.program_rewrite", error))
     }
 

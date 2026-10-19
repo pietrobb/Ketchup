@@ -1,15 +1,20 @@
-//! Deletes, recolours, renames or mirrors program parts, as the editor asks,
-//! by editing the program that makes them: the call that creates a part is
-//! removed or changed in place, a mirrored copy is a `mirrored()` line. A
-//! part made in a loop or by the program's own function is refused with the
-//! line to change instead, as is a part another line still uses.
+//! Writes what the editor does to program parts into the program that makes
+//! them: the call that creates a part is removed or changed in place, a value
+//! one `param()` drives is overridden, and a mirrored copy, move, turn,
+//! Push/Pull, fillet or chamfer is a line of its own. A part made in a loop or by the program's
+//! own function is refused with the line to change instead, as is a part
+//! another line still uses.
 use crate::RuleProgramApplyError;
-use crate::program_part_edit::{quote, refused, written_point};
+use crate::program_part_edit::refused;
 use crate::rule_program::evaluate;
-use ketchup_model::document::RuleProgramSource;
-use ketchup_model::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
-use ketchup_program::source_edit::{self, CreatingCall, point_literal};
-use ketchup_program::{Evaluated, ProgramModel};
+use ketchup_model::document::{RuleProgramSource, Transform};
+use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM};
+use ketchup_program::frame::{self, Mat3};
+use ketchup_program::model::{ProgramEdgeFinishKind, ProgramPartBody};
+use ketchup_program::source_edit::{
+    self, CreatingCall, number_literal, point_literal, quote, written_point,
+};
+use ketchup_program::{Evaluated, ProgramFeatureKind, ProgramModel};
 use std::ops::Range;
 
 /// One change of a program part the editor asks for.
@@ -25,6 +30,45 @@ pub enum PartChange {
         point: [f64; 3],
         normal: [f64; 3],
     },
+    /// The named face pushed out (or pulled in) by `distance` millimetres.
+    PushPull {
+        face: String,
+        distance: f64,
+    },
+    /// Edges, each named by its two faces, rounded or bevelled by `amount`.
+    Finish {
+        kind: ProgramEdgeFinishKind,
+        edges: Vec<[String; 2]>,
+        amount: f64,
+    },
+    /// A value of one of the part's features, as the parameter panel sets it.
+    Parameter {
+        feature: String,
+        path: String,
+        value: f64,
+    },
+    /// The part moved or turned by this world rigid motion.
+    Transform(Transform),
+}
+
+/// `source` with `edits` (bytes and their new text) made.
+fn with_edits(
+    source: &RuleProgramSource,
+    mut edits: Vec<(Range<usize>, String)>,
+) -> RuleProgramSource {
+    edits.sort_by_key(|(bytes, _)| std::cmp::Reverse(bytes.start));
+    let mut rewritten = source.clone();
+    for (bytes, text) in edits {
+        rewritten.source.replace_range(bytes, &text);
+    }
+    rewritten
+}
+
+/// `source` with `lines` added at its end.
+fn appended(source: &RuleProgramSource, lines: &str) -> RuleProgramSource {
+    let mut rewritten = source.clone();
+    source_edit::append_lines(&mut rewritten.source, lines);
+    rewritten
 }
 
 /// Rewrites `source` so that it makes each part changed as asked, in order,
@@ -63,6 +107,18 @@ pub fn rewrite_rule_program_parts(
                 point,
                 normal,
             } => edit.mirror(copy, *point, *normal)?,
+            PartChange::PushPull { face, distance } => edit.push_pull(face, *distance)?,
+            PartChange::Finish {
+                kind,
+                edges,
+                amount,
+            } => edit.finish(*kind, edges, *amount)?,
+            PartChange::Parameter {
+                feature,
+                path,
+                value,
+            } => edit.parameter(feature, path, *value)?,
+            PartChange::Transform(world_edit) => edit.transform(*world_edit)?,
         };
         let after = evaluate(&rewritten)?;
         if !expected.holds(&evaluated.model, &after.model) {
@@ -81,8 +137,14 @@ pub fn rewrite_rule_program_parts(
 }
 
 /// What the program must make after a change, from what it made before.
-enum Expected {
+pub(crate) enum Expected {
     Same(Box<ProgramModel>),
+    /// `before` with `part`'s frame at `at` turned to `rotation`.
+    Placed {
+        part: String,
+        at: [f64; 3],
+        rotation: Mat3,
+    },
     /// `before` with every name `from` read as `to`, and `to` continuing `from`.
     Renamed {
         from: String,
@@ -93,11 +155,80 @@ enum Expected {
         copy: String,
         bounds: ([f64; 3], [f64; 3]),
     },
+    /// `part` reads `value` where `reading` looks.
+    Reads {
+        part: String,
+        reading: Reading,
+        value: f64,
+    },
+}
+
+/// A value of a program part that an edit sets.
+pub(crate) enum Reading {
+    /// The last Push/Pull of the face, else the extrusion's length at its end cap.
+    Face(String),
+    Feature {
+        feature: String,
+        path: String,
+    },
+    /// How many operations the part has.
+    Operations,
+}
+
+impl Reading {
+    fn of(&self, model: &ProgramModel, part: &str) -> Option<f64> {
+        let part = model.part(part)?;
+        match self {
+            Self::Face(face) => part
+                .face_offsets()
+                .filter(|offset| &offset.face == face)
+                .last()
+                .map(|offset| offset.distance_mm)
+                .or(match &part.body {
+                    ProgramPartBody::Extrusion {
+                        distance_mm, caps, ..
+                    } if face == "end" || *face == caps[1] => Some(*distance_mm),
+                    _ => None,
+                }),
+            Self::Feature { feature, path } => part
+                .features
+                .iter()
+                .find(|made| &made.name == feature)?
+                .parameters
+                .iter()
+                .find(|parameter| &parameter.path == path)
+                .map(|parameter| parameter.value),
+            Self::Operations => u32::try_from(part.operations.len()).ok().map(f64::from),
+        }
+    }
+}
+
+fn near(a: [f64; 3], b: [f64; 3]) -> bool {
+    (0..3).all(|i| (a[i] - b[i]).abs() <= DEFAULT_LINEAR_TOLERANCE_MM)
 }
 
 impl Expected {
-    fn holds(&self, before: &ProgramModel, after: &ProgramModel) -> bool {
+    pub(crate) fn holds(&self, before: &ProgramModel, after: &ProgramModel) -> bool {
         match self {
+            Self::Placed { part, at, rotation } => {
+                before.parts.len() == after.parts.len()
+                    && before.parts.iter().zip(&after.parts).all(|(old, new)| {
+                        if old.name != *part {
+                            return old == new;
+                        }
+                        new.name == old.name
+                            && new.size_mm == old.size_mm
+                            && near(new.at_mm, *at)
+                            && frame::same_orientation(&new.rotation, rotation)
+                    })
+            }
+            Self::Reads {
+                part,
+                reading,
+                value,
+            } => reading
+                .of(after, part)
+                .is_some_and(|read| (read - value).abs() <= ACCUMULATED_ROUNDING),
             Self::Same(expected) => **expected == *after,
             Self::Renamed { from, to } => {
                 let mut expected = serde_json::to_value(before).expect("models serialize");
@@ -110,9 +241,6 @@ impl Expected {
                     return false;
                 };
                 let (min, max) = made.world_bounds();
-                let near = |a: [f64; 3], b: [f64; 3]| {
-                    (0..3).all(|i| (a[i] - b[i]).abs() <= DEFAULT_LINEAR_TOLERANCE_MM)
-                };
                 let mut rest = after.clone();
                 rest.parts.retain(|part| &part.name != copy);
                 near(min, bounds.0) && near(max, bounds.1) && rest == *before
@@ -154,10 +282,10 @@ fn renamed(value: &mut serde_json::Value, from: &str, to: &str) {
     }
 }
 
-struct Edit<'a> {
+pub(crate) struct Edit<'a> {
     source: &'a RuleProgramSource,
-    evaluated: &'a Evaluated,
-    name: &'a str,
+    pub(crate) evaluated: &'a Evaluated,
+    pub(crate) name: &'a str,
 }
 
 impl Edit<'_> {
@@ -165,38 +293,29 @@ impl Edit<'_> {
         &self.source.source
     }
 
-    fn with(&self, mut edits: Vec<(Range<usize>, String)>) -> RuleProgramSource {
-        edits.sort_by_key(|(bytes, _)| std::cmp::Reverse(bytes.start));
-        let mut rewritten = self.source.clone();
-        for (bytes, text) in edits {
-            rewritten.source.replace_range(bytes, &text);
-        }
-        rewritten
+    pub(crate) fn with(&self, edits: Vec<(Range<usize>, String)>) -> RuleProgramSource {
+        with_edits(self.source, edits)
     }
 
     fn line_of(&self, byte: usize) -> usize {
         self.text()[..byte].matches('\n').count() + 1
     }
 
+    pub(crate) fn found_call(&self) -> Option<CreatingCall> {
+        let recorded = self.evaluated.part_sources.get(self.name)?;
+        source_edit::creating_call(&self.source.file_name, self.text(), recorded)
+    }
+
     /// The call that makes the part on its own, outside loops and the
     /// program's functions, where `doing` can change it for this part alone.
     fn creating_call(&self, doing: &str) -> Result<CreatingCall, RuleProgramApplyError> {
         let name = quote(self.name);
-        let call = self
-            .evaluated
-            .part_sources
-            .get(self.name)
-            .and_then(|recorded| {
-                source_edit::creating_call(&self.source.file_name, self.text(), recorded)
-            })
-            .ok_or_else(|| {
-                refused(
-                    "program_part_call_not_found",
-                    format!(
-                        "the line that makes part {name} was not found; {doing} in the program"
-                    ),
-                )
-            })?;
+        let call = self.found_call().ok_or_else(|| {
+            refused(
+                "program_part_call_not_found",
+                format!("the line that makes part {name} was not found; {doing} in the program"),
+            )
+        })?;
         if let Some(line) = call.loop_line {
             return Err(refused(
                 "program_part_in_loop",
@@ -380,17 +499,14 @@ impl Edit<'_> {
                 .collect(),
         );
         // The renamed part keeps the document part, and its ID, of the old name.
-        let mut rewritten = renamed.clone();
-        if let Some(was) = source_edit::continuation_of(&renamed.file_name, &renamed.source, new) {
-            rewritten.source.replace_range(was, &name);
-        } else {
-            if !rewritten.source.ends_with('\n') {
-                rewritten.source.push('\n');
-            }
-            rewritten
-                .source
-                .push_str(&format!("continue_part({}, was={name})\n", quote(new)));
-        }
+        let rewritten = match source_edit::continuation_of(&renamed.file_name, &renamed.source, new)
+        {
+            Some(was) => with_edits(&renamed, vec![(was, name)]),
+            None => appended(
+                &renamed,
+                &format!("continue_part({}, was={name})\n", quote(new)),
+            ),
+        };
         Ok((
             rewritten,
             Expected::Renamed {
@@ -442,23 +558,176 @@ impl Edit<'_> {
                 bounds.1[i] = bounds.1[i].max(reflected);
             }
         }
-        let mut rewritten = self.source.clone();
-        if !rewritten.source.ends_with('\n') {
-            rewritten.source.push('\n');
-        }
-        rewritten.source.push_str(&format!(
+        let line = format!(
             "mirrored({}, {}, point={}, normal={})\n",
             quote(self.name),
             quote(copy),
             point_literal(point),
             point_literal(normal)
-        ));
-        Ok((
-            rewritten,
-            Expected::Mirrored {
-                copy: copy.to_owned(),
-                bounds,
-            },
+        );
+        let copy = copy.to_owned();
+        Ok((self.appended(&line), Expected::Mirrored { copy, bounds }))
+    }
+
+    pub(crate) fn appended(&self, lines: &str) -> RuleProgramSource {
+        appended(self.source, lines)
+    }
+
+    fn reads(&self, reading: Reading, value: f64) -> Expected {
+        Expected::Reads {
+            part: self.name.to_owned(),
+            reading,
+            value,
+        }
+    }
+
+    /// The source with the one `param()` that drives what `reading` looks
+    /// at overridden so the part reads `value`. `None` when not exactly one
+    /// parameter drives it, or the override misses: a probe proposes, it
+    /// does not promise the program is linear.
+    fn driven(&self, reading: &Reading, value: f64) -> Option<RuleProgramSource> {
+        let baseline = reading.of(&self.evaluated.model, self.name)?;
+        let mut drivers = Vec::new();
+        for parameter in &self.evaluated.model.params {
+            let within = |value: f64| {
+                parameter.min.is_none_or(|minimum| value >= minimum)
+                    && parameter.max.is_none_or(|maximum| value <= maximum)
+            };
+            let current =
+                (self.source.overrides.get(&parameter.name).copied()).unwrap_or(parameter.value);
+            // Not a tolerance: a probe step large enough to change the evaluated model.
+            let step = current.abs().mul_add(1.0e-4, 1.0e-3);
+            let Some(probed) = [current + step, current - step]
+                .into_iter()
+                .find(|v| within(*v))
+            else {
+                continue;
+            };
+            let mut probe = self.source.clone();
+            probe.overrides.insert(parameter.name.clone(), probed);
+            // A speculative step may cross into another valid branch of the program.
+            let Some(probed_value) = evaluate(&probe)
+                .ok()
+                .and_then(|probe| reading.of(&probe.model, self.name))
+            else {
+                continue;
+            };
+            let slope = (probed_value - baseline) / (probed - current);
+            let replacement = current + (value - baseline) / slope;
+            if slope.abs() > ACCUMULATED_ROUNDING && within(replacement) {
+                drivers.push((parameter.name.clone(), replacement));
+            }
+        }
+        let [(parameter, replacement)] = drivers.as_slice() else {
+            return None;
+        };
+        let mut rewritten = self.source.clone();
+        rewritten.overrides.insert(parameter.clone(), *replacement);
+        evaluate(&rewritten)
+            .ok()
+            .and_then(|after| reading.of(&after.model, self.name))
+            .is_some_and(|after| (after - value).abs() <= ACCUMULATED_ROUNDING)
+            .then_some(rewritten)
+    }
+
+    /// The one `param()` that drives the face is overridden; otherwise the
+    /// program gets a `push_pull()` line.
+    fn push_pull(
+        &self,
+        face: &str,
+        distance: f64,
+    ) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
+        if !distance.is_finite() || distance.abs() <= f64::EPSILON {
+            return Err(refused(
+                "invalid_push_pull",
+                "Push/Pull distance must be finite and non-zero",
+            ));
+        }
+        let reading = Reading::Face(face.to_owned());
+        if let Some(before) = reading.of(&self.evaluated.model, self.name)
+            && let Some(rewritten) = self.driven(&reading, before + distance)
+        {
+            return Ok((rewritten, self.reads(reading, before + distance)));
+        }
+        let part = self.evaluated.model.part(self.name);
+        let count = part.map_or(0, |part| part.face_offsets().count());
+        let line = format!(
+            "push_pull({}, face={}, distance={}, name={})\n",
+            quote(self.name),
+            quote(face),
+            number_literal(distance),
+            quote(&format!("GUI Push/Pull {}", count + 1))
+        );
+        Ok((self.appended(&line), self.reads(reading, distance)))
+    }
+
+    fn finish(
+        &self,
+        kind: ProgramEdgeFinishKind,
+        edges: &[[String; 2]],
+        amount: f64,
+    ) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
+        let (call, amount_name) = match kind {
+            ProgramEdgeFinishKind::Fillet => ("fillet", "radius"),
+            ProgramEdgeFinishKind::Chamfer => ("chamfer", "distance"),
+        };
+        let edges = edges
+            .iter()
+            .map(|[first, second]| format!("[{}, {}]", quote(first), quote(second)))
+            .collect::<Vec<_>>();
+        let line = format!(
+            "{call}({}, edges=[{}], {amount_name}={})\n",
+            quote(self.name),
+            edges.join(", "),
+            number_literal(amount)
+        );
+        let operations = Reading::Operations.of(&self.evaluated.model, self.name);
+        let expected = self.reads(Reading::Operations, operations.unwrap_or_default() + 1.0);
+        Ok((self.appended(&line), expected))
+    }
+
+    /// The one `param()` that drives the value is overridden; an
+    /// extrusion's length no parameter drives is a Push/Pull of its end.
+    /// Any other value is refused with the line that writes it.
+    fn parameter(
+        &self,
+        feature: &str,
+        path: &str,
+        value: f64,
+    ) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
+        let name = quote(self.name);
+        let reading = Reading::Feature {
+            feature: feature.to_owned(),
+            path: path.to_owned(),
+        };
+        let Some(current) = reading.of(&self.evaluated.model, self.name) else {
+            return Err(refused(
+                "program_parameter_unknown",
+                format!("part {name} has no value {feature} · {path} in its program"),
+            ));
+        };
+        if let Some(rewritten) = self.driven(&reading, value) {
+            return Ok((rewritten, self.reads(reading, value)));
+        }
+        let end = self.evaluated.model.part(self.name).and_then(|part| {
+            let pad = (part.features.iter())
+                .any(|made| made.name == feature && made.kind == ProgramFeatureKind::Pad);
+            match &part.body {
+                ProgramPartBody::Extrusion { caps, .. } if pad => Some(caps[1].clone()),
+                _ => None,
+            }
+        });
+        if let Some(end) = end.filter(|_| path == "extent.distance") {
+            return self.push_pull(&end, value - current);
+        }
+        let line = self
+            .found_call()
+            .map_or_else(String::new, |call| format!(" on line {}", call.lines.first));
+        Err(refused(
+            "program_parameter_not_driven",
+            format!(
+                "{feature} · {path} of part {name} is not set by one param(); change it{line} in the program"
+            ),
         ))
     }
 }

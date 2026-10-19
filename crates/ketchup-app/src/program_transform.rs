@@ -1,6 +1,7 @@
-//! A move, turn, delete, colour, rename or mirror of parts a program owns is
-//! written into the program and published like any program edit, so the
-//! program keeps owning the document and Undo takes the edit back in one step.
+//! A move, turn, delete, colour, rename, mirror or panel value of parts a
+//! program owns is written into the program and published like any program
+//! edit, so the program keeps owning the document and Undo takes the edit
+//! back in one step.
 use super::*;
 use crate::transform_operation::TransformTarget;
 use ketchup_application::PartChange;
@@ -12,27 +13,39 @@ impl KetchupApp {
     /// parts: into the program when the parts are a program's, else as it
     /// is. A refusal is shown in the digest.
     pub(crate) fn commit_part_batch(&mut self, batch: CommandBatch) -> bool {
-        let result = match self.program_part_batch(batch.commands()) {
-            Some(Ok(source)) => self
-                .apply_program_source(source, false)
-                .map(|_| ())
-                .map_err(|error| failed("program.apply", error)),
-            Some(Err(rejection)) => Err(rejection),
-            None => return self.apply_batch_with_work_recovery(&batch).is_ok(),
-        };
-        self.refused(result).is_some()
+        self.commit_program_part_batch(batch.commands())
+            .unwrap_or_else(|| self.apply_batch_with_work_recovery(&batch).is_ok())
     }
 
-    /// The document's program with `commands` written into it. `None` when
-    /// no program owns the document, or a command does something else than
-    /// delete, recolour or rename a part the program makes.
-    pub(crate) fn program_part_batch(
-        &self,
+    /// Writes `commands` into the program and publishes it; a refusal is
+    /// shown in the digest. `None` when no program owns the document, or a
+    /// command does something else than delete, recolour or rename a part the
+    /// program makes or set a value of its feature.
+    pub(crate) fn commit_program_part_batch(
+        &mut self,
         commands: &[CanonicalCommand],
-    ) -> Option<Result<RuleProgramSource, Rejection>> {
-        let program = self.document.current_rule_program()?;
+    ) -> Option<bool> {
+        let program = self.document.current_rule_program()?.clone();
         let changes = part_changes(&self.document.current(), commands)?;
-        rewrite_parts(program, &changes).transpose()
+        let result = self.publish_part_changes(&program, &changes)?;
+        Some(self.refused(result).is_some())
+    }
+
+    /// Writes `changes` into `program` and publishes it. `None` when a change
+    /// names something that is not a part the program makes.
+    pub(crate) fn publish_part_changes(
+        &mut self,
+        program: &RuleProgramSource,
+        changes: &[(String, PartChange)],
+    ) -> Option<Result<(), Rejection>> {
+        let rewritten = rewrite_parts(program, changes).transpose()?;
+        Some(rewritten.and_then(|source| self.publish_program_source(source)))
+    }
+
+    fn publish_program_source(&mut self, source: RuleProgramSource) -> Result<(), Rejection> {
+        self.apply_program_source(source, false)
+            .map(|_| ())
+            .map_err(|error| failed("program.apply", error))
     }
 
     /// `None` when no program owns the document or the edit moves something
@@ -62,15 +75,9 @@ impl KetchupApp {
                 Rejection::new("program.transform_correction", RejectionPhase::Planning)
                     .reason("the program did not own the document before the edit to correct")
             })
-            .and_then(|program| {
-                ketchup_application::rewrite_rule_program_transform(program, &parts, world_edit)
-                    .map_err(|error| failed("program.transform", error))
-            });
+            .and_then(|program| rewrite_parts(program, &transformed(&parts, world_edit)));
         let result = match rewritten {
-            Ok(Some(rewritten)) => self
-                .apply_program_source(rewritten, false)
-                .map(|_| ())
-                .map_err(|error| failed("program.apply", error)),
+            Ok(Some(rewritten)) => self.publish_program_source(rewritten),
             // Not parts the program makes: the edit is committed as it is.
             Ok(None) if !replace_last => return None,
             Ok(None) => Err(Rejection::new(
@@ -125,14 +132,12 @@ impl KetchupApp {
                     world_motion(*translation_mm, rotation.as_ref())
                         .map_err(|error| failed("program.transform", error))
                         .and_then(|world_edit| {
-                            ketchup_application::rewrite_rule_program_transform(
-                                &source, &parts, world_edit,
-                            )
-                            .map_err(|error| failed("program.transform", error))
+                            rewrite_parts(&source, &transformed(&parts, world_edit))
                         })
                 }
                 AssistantCadEditOperation::Delete { .. }
-                | AssistantCadEditOperation::SetColor { .. } => {
+                | AssistantCadEditOperation::SetColor { .. }
+                | AssistantCadEditOperation::SetFeatureParameter { .. } => {
                     let batch = match self.plan_one(operation) {
                         Ok(batch) => batch,
                         Err(rejection) => return Some(Err(rejection)),
@@ -213,7 +218,7 @@ impl KetchupApp {
 }
 
 /// The part changes `commands` make, when each deletes, recolours or renames
-/// a part of the document by its program name.
+/// a part of the document, or sets a value of its feature, by its program name.
 fn part_changes(
     snapshot: &Snapshot,
     commands: &[CanonicalCommand],
@@ -222,17 +227,34 @@ fn part_changes(
         .iter()
         .map(|command| {
             let (id, change) = match command {
-                CanonicalCommand::DeleteOccurrence { id } => (id, PartChange::Delete),
+                CanonicalCommand::DeleteOccurrence { id } => (*id, PartChange::Delete),
                 CanonicalCommand::SetOccurrenceColor { id, color } => {
-                    (id, PartChange::Color(*color))
+                    (*id, PartChange::Color(*color))
                 }
                 CanonicalCommand::RenameEntity { id, name } => {
-                    (id, PartChange::Rename(name.clone()))
+                    (*id, PartChange::Rename(name.clone()))
+                }
+                CanonicalCommand::SetFeatureParameter { target, dimension } => {
+                    // The one part whose definition holds the feature.
+                    let mut owners = snapshot.occurrences().filter(|occurrence| {
+                        snapshot
+                            .definition(occurrence.definition_id())
+                            .is_some_and(|made| made.feature_ids().contains(&target.feature_id))
+                    });
+                    let (Some(owner), None) = (owners.next(), owners.next()) else {
+                        return None;
+                    };
+                    let change = PartChange::Parameter {
+                        feature: snapshot.feature(target.feature_id)?.name().to_owned(),
+                        path: target.path.as_str().to_owned(),
+                        value: dimension.millimetres(),
+                    };
+                    (owner.id(), change)
                 }
                 _ => return None,
             };
             let name =
-                ketchup_application::rule_program_part_name(snapshot, &InstancePath::root(*id))?;
+                ketchup_application::rule_program_part_name(snapshot, &InstancePath::root(id))?;
             Some((name, change))
         })
         .collect()
@@ -244,6 +266,14 @@ fn rewrite_parts(
 ) -> Result<Option<RuleProgramSource>, Rejection> {
     ketchup_application::rewrite_rule_program_parts(source, changes)
         .map_err(|error| failed("program.part_change", error))
+}
+
+fn transformed(parts: &[String], world_edit: Transform) -> Vec<(String, PartChange)> {
+    let change = PartChange::Transform(world_edit);
+    parts
+        .iter()
+        .map(|name| (name.clone(), change.clone()))
+        .collect()
 }
 
 /// The world motion of a typed transform: the shift first, then the turn.

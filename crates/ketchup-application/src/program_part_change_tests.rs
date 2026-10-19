@@ -160,6 +160,51 @@ fn mirror_adds_a_mirrored_copy_across_the_plane() {
 }
 
 #[test]
+fn a_value_one_param_drives_is_overridden_to_the_typed_size() {
+    let source = "W = param(\"width\", 100)\nbox(\"p\", (W * 2, 20, 10))\n";
+    let made = model(&program(source));
+    let feature = made.part("p").unwrap().features.iter().find(|feature| {
+        (feature.parameters.iter()).any(|parameter| parameter.path == "bounds.width")
+    });
+    let path = "bounds.width".to_owned();
+    let feature = feature.unwrap().name.clone();
+    let value = 140.0;
+    let resized = change(
+        source,
+        "p",
+        PartChange::Parameter {
+            feature,
+            path,
+            value,
+        },
+    );
+    // W * 2 = 140, so W = 70; the source stays as written.
+    assert_eq!(
+        (resized.source.as_str(), resized.overrides["width"]),
+        (source, 70.0)
+    );
+    assert_eq!(
+        model(&resized).part("p").unwrap().size_mm,
+        [140.0, 20.0, 10.0]
+    );
+}
+
+#[test]
+fn a_part_of_a_loop_is_moved_after_the_loop_alone() {
+    let source = "for i in range(3):\n    box(\"s%d\" % i, (10, 10, 10), at=(0, 0, 20 * i))\n";
+    let by = Transform::from_translation(5.0, 0.0, 0.0).unwrap();
+    let moved = change(source, "s1", PartChange::Transform(by));
+    assert_eq!(
+        moved.source,
+        format!("{source}move(\"s1\", by=(5, 0, 0))\n")
+    );
+    // s1 goes from (0, 0, 20) to (5, 0, 20); s2 stays at (0, 0, 40).
+    let after = model(&moved);
+    assert_eq!(after.part("s1").unwrap().at_mm, [5.0, 0.0, 20.0]);
+    assert_eq!(after.part("s2").unwrap().at_mm, [0.0, 0.0, 40.0]);
+}
+
+#[test]
 fn nothing_is_written_for_what_the_program_does_not_make_as_a_part() {
     let source = program(TWO);
     assert!(
