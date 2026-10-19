@@ -642,6 +642,36 @@ fn plugins_doc_lists_every_refused_code_option() {
     }
 }
 
+/// Review 2026-10-17 documentation: docs/plugins.md did not give the shapes a
+/// plugin argument may take. Each shape it names is the one the window passes,
+/// and each refusal it names is refused.
+#[test]
+fn plugins_doc_gives_the_argument_shapes_the_window_passes() {
+    use crate::live_bridge::plugin_manifest::{plain_value, refused_shape};
+    let doc = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/plugins.md"),
+    )
+    .unwrap();
+    let shapes = [
+        ("`-x`", "-B", true),
+        ("`-xVALUE`", "-D1", true),
+        ("`--name`", "--verbose", true),
+        ("`--name=VALUE`", "--level=2", true),
+        ("`name=VALUE`", "mode=fast", true),
+        ("`-Bm`", "-BmX", false),
+        ("`@`", "@args.txt", false),
+        ("in any letter case", "--EVAL=1", false),
+        ("a root", "--out=/etc", false),
+        ("`..`", "--out=x/..", false),
+    ];
+    for (named, example, passes) in shapes {
+        assert!(doc.contains(named), "docs/plugins.md does not name {named}");
+        assert_eq!(refused_shape(example).is_none(), passes, "{example}");
+    }
+    assert!(doc.contains("`-_.,+/\\`"));
+    assert!(plain_value("a-b_c.d,e+f/g\\h") && !plain_value("exec(x)"));
+}
+
 /// A directory link: a junction on Windows (no privilege needed), a symlink elsewhere.
 fn link_directory(link: &Path, target: &Path) {
     #[cfg(windows)]

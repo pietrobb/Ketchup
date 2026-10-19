@@ -257,7 +257,7 @@ fn plugin_folder(plugin: &str) -> Result<PathBuf, &'static str> {
 /// of letters, digits, `-` and `_` and a value of plain words and relative
 /// paths ([`plain_value`]); or a word with no `=` and no leading `-` or `@`,
 /// a path given as its own argument or plain text, never a URL or a stream.
-fn refused_shape(argument: &str) -> Option<&'static str> {
+pub(super) fn refused_shape(argument: &str) -> Option<&'static str> {
     const JOINED: &str = "joins a path that is not relative, a URL or other text than plain words \
                           to an option; give a path as its own argument";
     if argument.starts_with('@') {
@@ -347,7 +347,7 @@ fn starts_with_scheme(text: &str) -> bool {
 /// Whether an option's value is plain words and relative paths: letters,
 /// digits and `-_.,+/\` only, no part that starts at a root or leads up a
 /// folder (`..`, `x..`), and so again after every `=` (`-Dkey=value`).
-fn plain_value(value: &str) -> bool {
+pub(super) fn plain_value(value: &str) -> bool {
     value.split('=').all(|piece| {
         piece
             .chars()

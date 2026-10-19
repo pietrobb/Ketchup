@@ -29,17 +29,19 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
   the process runs in a copy of the folder (see Consent) with `arguments` and
   an empty environment. A relative argument naming a file outside the folder
   is passed as its absolute path. The command line names a script (or the
-  executable is in the folder), so everything that runs is hashed: an option
-  that runs code given as text, from standard input or found by name (`-c`,
-  `-e`, `-m`, `-r`, `-`, `--eval`, `--require`, `--import`, …) is refused, and
-  an argument that names no file must be plain words (letters, digits and
-  `-_.,+/\`). An argument starting with `@` (arguments read from a file) or
-  naming a URL is refused too. The options refused as running code are `-`,
-  the short options `-c`, `-e`, `-E`, `-m`, `-M`, `-p`, `-r` and `-i` (alone,
-  with a joined value or ending a cluster such as `-Bm`) and the long options
+  executable is in the folder), so everything that runs is hashed. An
+  argument is a file or plain words (letters, digits and `-_.,+/\`, no part
+  that starts at a root or ends in `..`), or an option `-x`, `-xVALUE`,
+  `--name`, `--name=VALUE` or `name=VALUE` with a name of letters, digits,
+  `-` and `_` and a value of plain words, checked again after every `=`.
+  Refused are an argument starting with `@` (arguments read from a file), a
+  URL, network share, device or stream, and the options that run code given
+  as text, from standard input or found by name: `-`, the short options `-c`,
+  `-e`, `-E`, `-m`, `-M`, `-p`, `-r` and `-i` (alone, with a joined value or
+  anywhere in a cluster of letters such as `-Bm`) and the long options
   `--eval`, `--print`, `--require`, `--import`, `--loader`,
   `--experimental-loader`, `--module`, `--command`, `--encodedcommand`,
-  `--interactive` and `--include`.
+  `--interactive` and `--include`, in any letter case.
 - Inputs are `number`, `integer`, `boolean` or `string`. The plugin reads them
   with `Client.inputs()` (`QUERY\tINPUTS`), never from its arguments. An
   undeclared, missing or mistyped input is refused before the user is asked,
