@@ -24,6 +24,7 @@ pub(crate) struct TransformRequest {
 
 pub(crate) struct TransformPlan {
     target: TransformTarget,
+    world_edit: Transform,
     preview_overrides: BTreeMap<InstancePath, Transform>,
     batch: CommandBatch,
 }
@@ -119,6 +120,7 @@ impl TransformPlan {
 
         (!commands.is_empty()).then(|| Self {
             target: request.target,
+            world_edit: request.world_edit,
             preview_overrides,
             batch: CommandBatch::new(commands),
         })
@@ -130,6 +132,11 @@ impl TransformPlan {
 
     pub(crate) fn into_commit(self) -> (TransformTarget, CommandBatch) {
         (self.target, self.batch)
+    }
+
+    /// The rigid world motion the plan applies to its target.
+    pub(crate) const fn world_edit(&self) -> Transform {
+        self.world_edit
     }
 }
 

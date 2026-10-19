@@ -2373,7 +2373,7 @@ fn math_functions(builder: &mut GlobalsBuilder) {
     const pi: f64 = std::f64::consts::PI;
 }
 
-fn dialect() -> Dialect {
+pub(crate) fn dialect() -> Dialect {
     Dialect {
         enable_f_strings: true,
         ..Dialect::Extended

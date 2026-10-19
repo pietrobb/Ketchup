@@ -14,7 +14,8 @@ Use list_validators to discover available checks, required inputs, invocation ex
 The catalog does not run checks or certify the current model.
 Single edits of existing geometry: inspect action=status/summary/query, model \
 action=apply_and_verify with typed operations (catalog: inspect action=operations). A typed edit \
-of a document that a program owns detaches the program (parameters stop driving the model); \
+of a document that a program owns detaches the program (parameters stop driving the model), \
+except a transform of parts the program makes, which is written into the program; \
 when program read returns a source, change the model through program apply instead.
 Undo and redo: edit action=undo / action=redo, one Undo step per call.
 Files: file action=import brings STEP/STP, IGES, STL, DXF, DWG, GLB and SketchUp scene files into the document; \
@@ -141,7 +142,8 @@ pub fn tools() -> Value {
             "description": "edit_context returns the editable features, parameters and faces of 1 to 8 parts. \
     apply_and_verify applies one typed CAD program ({\"operations\": [...]}, catalog in inspect action=operations), evaluates exact geometry, runs collision (plus validators) and publishes one Undo step. \
     Issues are reported in validation.issues and the edit stays; fix them with a follow-up edit, or pass strict=true to reject instead. One user request = one apply_and_verify. \
-    On a document owned by a program the edit detaches the program (result program_detached=true with a warning; strict=true rejects it instead with program_owned_document); prefer program action=apply there.",
+    On a document owned by a program the edit detaches the program (result program_detached=true with a warning; strict=true rejects it instead with program_owned_document); prefer program action=apply there. \
+    A transform of parts the program makes is instead written into the program (a literal at= is edited, otherwise move()/rotate() lines are added) and the program keeps owning the document.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
                 "action": {"type": "string", "enum": ["edit_context", "apply_and_verify"]},
                 "targets": {"type": "array", "items": {"type": "object"}, "description": "For edit_context: instance paths {root_occurrence_id, steps: []}."},

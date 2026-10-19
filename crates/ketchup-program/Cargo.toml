@@ -21,6 +21,8 @@ serde_json = "1.0"
 # tagged enum with numbers in the workspace. 0.13 does not; it needs
 # allocative 0.3.4 because later releases implement it for another hashbrown.
 starlark = "=0.13.0"
+# The syntax tree, to edit a part's creating call in place.
+starlark_syntax = "=0.13.0"
 allocative = "=0.3.4"
 
 [dev-dependencies]

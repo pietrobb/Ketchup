@@ -39,7 +39,8 @@ use ketchup_assistant::sidecar::{
 use ketchup_model::tolerance::limits;
 use ketchup_model::{
     document::{
-        CommandBatch, DocumentStore, OccurrenceId, Proposal, Snapshot, VerifiedProposalCommit,
+        CommandBatch, DocumentStore, OccurrenceId, Proposal, RuleProgramSource, Snapshot,
+        VerifiedProposalCommit,
     },
     exact_product::ExactResultRegistry,
     tolerance::ROUNDING,
@@ -961,6 +962,8 @@ struct Pending {
     epoch: u64,
     selection: SelectionGuard,
     proposal: Proposal,
+    /// The program the edit was written into, bound with the proposal.
+    program: Option<RuleProgramSource>,
 }
 #[derive(Debug)]
 pub(crate) enum PlanRejection {
@@ -998,6 +1001,8 @@ struct ApplyAndVerifyPlan {
     before: Stamp,
     selection: SelectionGuard,
     proposal: Proposal,
+    /// The program the edit was written into, bound with the proposal.
+    program: Option<RuleProgramSource>,
     candidate: Snapshot,
     save_path: Option<PathBuf>,
     timeout_ms: u64,
@@ -2039,20 +2044,35 @@ impl LiveBridge {
             .validate()
             .map_err(|error| failure("invalid_program", error.to_string(), json!({})))?;
         Self::program_scope(app, &program)?;
-        reject_program_detach(app, strict && !view_only(&program))?;
+        // A move or turn of program parts is written into the program instead
+        // of detaching it; one the program cannot express is refused.
+        let rewritten =
+            app.program_transform_source(&program)
+                .transpose()
+                .map_err(|rejection| {
+                    failure("planning_rejected", rejection.reason_text(), json!({}))
+                })?;
+        if rewritten.is_none() {
+            reject_program_detach(app, strict && !view_only(&program))?;
+        }
         #[cfg(test)]
         if fault == Some(ApplyAndVerifyFault::Planning) {
             return Err(PlanRejection::Code("planning_rejected"));
         }
-        let proposal = app
-            .derive_assistant_cad_edit_proposal(&program)
-            .map_err(|diagnostic| {
-                if Self::is_capability_gap(&diagnostic) {
-                    PlanRejection::CapabilityGap(diagnostic)
-                } else {
-                    PlanRejection::Planning(diagnostic)
-                }
-            })?;
+        let proposal = match &rewritten {
+            Some(source) => app.program_source_proposal(source).map_err(|rejection| {
+                failure("planning_rejected", rejection.reason_text(), json!({}))
+            })?,
+            None => app
+                .derive_assistant_cad_edit_proposal(&program)
+                .map_err(|diagnostic| {
+                    if Self::is_capability_gap(&diagnostic) {
+                        PlanRejection::CapabilityGap(diagnostic)
+                    } else {
+                        PlanRejection::Planning(diagnostic)
+                    }
+                })?,
+        };
         #[cfg(test)]
         if fault == Some(ApplyAndVerifyFault::Candidate) {
             return Err(PlanRejection::Code("candidate_rejected"));
@@ -2071,6 +2091,7 @@ impl LiveBridge {
             before: app.live_bridge_stamp(),
             selection,
             proposal,
+            program: rewritten,
             candidate,
             save_path,
             timeout_ms,
@@ -2175,6 +2196,7 @@ impl LiveBridge {
             before,
             selection,
             proposal,
+            program,
             candidate,
             save_path,
             timeout_ms,
@@ -2240,6 +2262,11 @@ impl LiveBridge {
                             .map_err(|error| {
                                 failure("commit_rejected", format!("{error:?}"), json!({}))
                             })?;
+                    if let Some(program) = program {
+                        document
+                            .bind_rule_program(program.clone())
+                            .map_err(|error| failed_because("commit_rejected", error))?;
+                    }
                     document
                         .register_exact_references(
                             candidate_exact
@@ -2726,20 +2753,32 @@ impl LiveBridge {
                     .validate()
                     .map_err(|error| failure("invalid_program", error.to_string(), json!({})))?;
                 Self::program_scope(app, &program)?;
-                let proposal = app
-                    .derive_assistant_cad_edit_proposal(&program)
-                    .map_err(|diagnostic| planning_failure("planning_rejected", &diagnostic))?;
+                let rewritten =
+                    app.program_transform_source(&program)
+                        .transpose()
+                        .map_err(|rejection| {
+                            failure("planning_rejected", rejection.reason_text(), json!({}))
+                        })?;
+                let proposal = match &rewritten {
+                    Some(source) => app.program_source_proposal(source).map_err(|rejection| {
+                        failure("planning_rejected", rejection.reason_text(), json!({}))
+                    })?,
+                    None => app
+                        .derive_assistant_cad_edit_proposal(&program)
+                        .map_err(|diagnostic| planning_failure("planning_rejected", &diagnostic))?,
+                };
                 let id = self.next_proposal;
                 self.next_proposal = id.checked_add(1).ok_or("proposal_ids_exhausted")?;
                 let value = json!({"proposal_id":id,
                     "command_digest":proposal.command_digest(),"result_digest":proposal.intended_result_digest(),
                     "write_count":proposal.authoritative_writes().len(),
-                    "detaches_program":program_owned(app) && !view_only(&program)});
+                    "detaches_program":program_owned(app) && rewritten.is_none() && !view_only(&program)});
                 self.pending = Some(Pending {
                     id,
                     epoch: app.document.mutation_epoch(),
                     selection,
                     proposal,
+                    program: rewritten,
                 });
                 Ok(value)
             }
@@ -2760,9 +2799,19 @@ impl LiveBridge {
                 Self::require_request_authority(cancelled)?;
                 let owned_before = program_owned(app);
                 let committed = app
-                    .commit_verified_proposal_with_work_recovery(&pending.proposal)
+                    .complete_mutation_with_work_recovery(|document| {
+                        let committed = document
+                            .commit_verified_proposal(&pending.proposal)
+                            .map_err(|_| "commit_rejected")?;
+                        if let Some(program) = &pending.program {
+                            document
+                                .bind_rule_program(program.clone())
+                                .map_err(|_| "commit_rejected")?;
+                        }
+                        Ok(committed)
+                    })
                     .map_err(|error| match error {
-                        WorkRecoveryMutationError::Mutation(_) => "commit_rejected",
+                        WorkRecoveryMutationError::Mutation(code) => code,
                         WorkRecoveryMutationError::Recovery(_) => "recovery_rejected",
                     })?;
                 self.pending.take().expect("committed pending proposal");

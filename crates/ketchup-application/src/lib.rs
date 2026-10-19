@@ -22,6 +22,7 @@ mod planner;
 mod plugin;
 mod product_change;
 pub mod program_isolation;
+mod program_part_edit;
 pub mod program_variants;
 pub mod rejections;
 mod rule_appearance;
@@ -57,6 +58,7 @@ pub use planner::{
     AssistantCadProgramPlan, AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program,
     plan_assistant_cad_edit_program_with_outputs, plan_part_batch, plan_rule_part_batch,
 };
+pub use program_part_edit::rewrite_rule_program_transform;
 pub use rule_exact_collisions::{
     apply_exact_pairs, verify_rule_program_all, verify_rule_program_exact,
 };

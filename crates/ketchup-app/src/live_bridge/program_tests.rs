@@ -836,10 +836,11 @@ fn a_section_through_mcp_cuts_only_the_viewport_and_is_kept_by_a_saved_view() {
 }
 
 #[test]
-fn a_typed_edit_says_it_detaches_the_program_and_strict_refuses_it() {
+fn a_typed_move_of_a_program_part_is_proposed_and_committed_into_the_program() {
     let (mut app, mut bridge) = setup();
     bridge.execute(&mut app, apply(TABLE, true), false).unwrap();
     let leg = names(&app)["table/leg-back-left"];
+    let steps = app.undo_step_count();
     let move_leg = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::Transform {
             selector: AssistantCadEntitySelector::Occurrences {
@@ -849,11 +850,59 @@ fn a_typed_edit_says_it_detaches_the_program_and_strict_refuses_it() {
             rotation: None,
         }],
     };
+    let proposed = bridge
+        .execute(
+            &mut app,
+            Request::Propose {
+                expected: None,
+                selection: None,
+                program: move_leg,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(proposed["detaches_program"], false, "{proposed}");
+    let committed = bridge
+        .execute(
+            &mut app,
+            Request::Commit {
+                expected: None,
+                proposal_id: proposed["proposal_id"].as_u64().unwrap(),
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(committed["program_detached"], false, "{committed}");
+    assert_eq!(committed["undo_steps"], steps + 1, "{committed}");
+    // The leg is placed by an expression, so the move follows the program.
+    assert_eq!(
+        app.document.current_rule_program().unwrap().source,
+        format!("{TABLE}move(\"table/leg-back-left\", by=(5, 0, 0))\n")
+    );
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert_eq!(app.document.current_rule_program().unwrap().source, TABLE);
+}
+
+#[test]
+fn a_typed_edit_says_it_detaches_the_program_and_strict_refuses_it() {
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(TABLE, true), false).unwrap();
+    let leg = names(&app)["table/leg-back-left"];
+    let paint_leg = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::SetColor {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: vec![leg],
+            },
+            color: Some([200, 40, 40]),
+        }],
+    };
     let before = app.live_bridge_stamp();
     let strict = Request::ApplyAndVerify {
         expected: None,
         selection: None,
-        program: move_leg.clone(),
+        program: paint_leg.clone(),
         validators: Vec::new(),
         timeout_ms: 60_000,
         save: None,
@@ -877,7 +926,7 @@ fn a_typed_edit_says_it_detaches_the_program_and_strict_refuses_it() {
             Request::Propose {
                 expected: None,
                 selection: None,
-                program: move_leg,
+                program: paint_leg,
             },
             false,
         )

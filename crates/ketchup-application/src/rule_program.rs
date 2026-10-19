@@ -581,7 +581,7 @@ fn replacement_batch(
     Ok(CommandBatch::new(commands))
 }
 
-fn evaluate(
+pub(crate) fn evaluate(
     source: &RuleProgramSource,
 ) -> Result<ketchup_program::Evaluated, RuleProgramApplyError> {
     evaluate_by(source, crate::program_isolation::CheckDeadline::start())

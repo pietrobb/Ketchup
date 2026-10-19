@@ -1,7 +1,8 @@
 use super::*;
+use ketchup_assistant::sidecar::AssistantCadRotation;
 
 #[test]
-fn typed_physical_joint_repair_survives_program_detachment_and_undo() {
+fn typed_physical_joint_repair_is_written_into_the_program_and_undoes() {
     let mut wire = Wire::new();
     let source = "a=box('a',(10,10,10))\nb=box('b',(10,10,10),at=(210,0,0))\njoint(a,b,kind='fixed',name='physical')";
     assert!(
@@ -35,8 +36,8 @@ fn typed_physical_joint_repair_survives_program_detachment_and_undo() {
         assert_eq!(result["validation"]["state"], state, "{result:#}");
         assert_eq!(result["validation"]["complete"], true);
         assert_eq!(result["validation"]["issue_count"], count);
+        assert_eq!(result["program_detached"], false, "{result:#}");
         if count == 1 {
-            assert_eq!(result["program_detached"], true);
             assert_eq!(
                 result["validation"]["issues"][0]["kind"],
                 "joint_without_contact"
@@ -44,6 +45,11 @@ fn typed_physical_joint_repair_survives_program_detachment_and_undo() {
             assert_eq!(result["validation"]["issues"][0]["distance_mm"], 100.);
         }
     }
+    // 210 - 100 - 100: the literal position is edited in place.
+    assert_eq!(
+        wire.app.document.current_rule_program().unwrap().source,
+        source.replace("at=(210,0,0)", "at=(10, 0, 0)")
+    );
     let repaired = wire.app.document.current().scene_query();
     assert!(wire.call(Request::Undo { expected: None }).ok);
     assert_eq!(wire.app.document.current().contact_joints().len(), 1);
@@ -278,7 +284,11 @@ fn floor_override_and_typed_edit_use_the_same_persistent_support_plane() {
         )
         .result
         .unwrap();
-    assert_eq!(result["program_detached"], true, "{result}");
+    assert_eq!(result["program_detached"], false, "{result}");
+    assert_eq!(
+        wire.app.document.current_rule_program().unwrap().source,
+        source.replace("at=(100,0,130)", "at=(110, 0, 130)")
+    );
     assert_eq!(
         wire.app.document.current().floor_z_mm(),
         Some(100.),
@@ -287,6 +297,70 @@ fn floor_override_and_typed_edit_use_the_same_persistent_support_plane() {
     assert_eq!(result["validation"]["complete"], true, "{result}");
     assert_eq!(result["validation"]["issue_count"], 1, "{result}");
     assert_eq!(result["validation"]["issues"][0]["name"], "air", "{result}");
+}
+
+#[test]
+fn typed_turn_of_a_program_part_is_written_into_the_program_as_one_undo_step() {
+    let source = "box('a',(20,30,40),at=(100,0,5))";
+    let mut wire = Wire::new();
+    assert!(
+        wire.call_within(apply(source, true), Duration::from_secs(60))
+            .ok
+    );
+    let a = names(&wire.app)["a"];
+    let steps = wire.app.undo_step_count();
+    let result = wire
+        .call_within(
+            Request::ApplyAndVerify {
+                expected: None,
+                selection: None,
+                program: AssistantCadEditProgram {
+                    operations: vec![AssistantCadEditOperation::Transform {
+                        selector: AssistantCadEntitySelector::Occurrences {
+                            occurrence_ids: vec![a],
+                        },
+                        translation_mm: [0., 0., 0.],
+                        // A quarter turn about the vertical line through the part's centre.
+                        rotation: Some(AssistantCadRotation {
+                            pivot_mm: [110., 15., 25.],
+                            axis: [0., 0., 1.],
+                            angle_degrees: 90.,
+                        }),
+                    }],
+                },
+                validators: vec!["gravity_support".into()],
+                timeout_ms: 60_000,
+                strict: false,
+                save: None,
+            },
+            Duration::from_secs(60),
+        )
+        .result
+        .unwrap();
+    assert_eq!(result["program_detached"], false, "{result}");
+    assert_eq!(result["undo_steps"], steps + 1, "{result}");
+    assert_eq!(
+        wire.app.document.current_rule_program().unwrap().source,
+        format!("{source}\nrotate(\"a\", axis=(0, 0, 1), angle=90, pivot=(110, 15, 5))\n")
+    );
+    // 20 × 30 becomes 30 × 20 about the same centre: x 110 ± 15, y 15 ± 10.
+    wire.app
+        .select_from_outliner(InstancePath::root(OccurrenceId(a)), false);
+    let measures = wire.app.selection_measures().unwrap();
+    for (actual, expected) in [
+        (measures.world_min_mm, [95., 5., 5.]),
+        (measures.world_size_mm, [30., 20., 40.]),
+    ] {
+        assert!(
+            (0..3).all(|axis| (actual[axis] - expected[axis]).abs() < 1.0e-6),
+            "{actual:?} != {expected:?}"
+        );
+    }
+    assert!(wire.call(Request::Undo { expected: None }).ok);
+    assert_eq!(
+        wire.app.document.current_rule_program().unwrap().source,
+        source
+    );
 }
 
 #[test]

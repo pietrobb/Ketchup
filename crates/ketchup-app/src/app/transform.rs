@@ -437,7 +437,7 @@ impl KetchupApp {
         {
             return false;
         }
-        let Ok(target) = self.commit_transform_plan(plan) else {
+        let Some(target) = self.commit_transform_plan(plan) else {
             return false;
         };
         let selection = match target {
@@ -510,7 +510,7 @@ impl KetchupApp {
         axis: Axis,
         angle_degrees: f64,
     ) -> bool {
-        let Ok(target) = self.commit_transform_plan(plan) else {
+        let Some(target) = self.commit_transform_plan(plan) else {
             return false;
         };
         let selection = match target {
@@ -622,16 +622,25 @@ impl KetchupApp {
         if previous.axis != self.gesture.transform.rotate_axis_lock.unwrap_or(Axis::Z) {
             return false;
         }
-        let Ok(parent) = self.document.tip_replacement_parent() else {
-            return false;
-        };
         let Ok(rotation) =
             world_rotation_transform(previous.centre_mm, previous.axis, angle_degrees)
         else {
             return false;
         };
+        if previous.copy_source_occurrence_ids.is_none() {
+            if !self.commit_correction(&selection, rotation) {
+                return false;
+            }
+            return self.finish_rotation_correction(selection, previous, angle_degrees);
+        }
+        let Ok(parent) = self.document.tip_replacement_parent() else {
+            return false;
+        };
         let base = parent.snapshot();
-        let batch = if let Some(source_ids) = &previous.copy_source_occurrence_ids {
+        let batch = {
+            let Some(source_ids) = &previous.copy_source_occurrence_ids else {
+                return false;
+            };
             let CorrectionSelection::Occurrences {
                 occurrence_ids: target_ids,
                 ..
@@ -711,28 +720,19 @@ impl KetchupApp {
                 }
             }
             CommandBatch::new(commands)
-        } else {
-            let Some(plan) = self.correction_transform_plan(&parent, &selection, rotation) else {
-                return false;
-            };
-            let (_, batch) = plan.into_commit();
-            batch
         };
-        let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
-            &parent,
-            batch,
-            ProposalContext::canonical_preview(),
-        ) else {
-            return false;
-        };
-        if self
-            .complete_mutation_with_work_recovery(|document| {
-                document.commit_tip_replacement_proposal(&proposal)
-            })
-            .is_err()
-        {
+        if !self.commit_transform_correction(&parent, batch) {
             return false;
         }
+        self.finish_rotation_correction(selection, previous, angle_degrees)
+    }
+
+    fn finish_rotation_correction(
+        &mut self,
+        selection: CorrectionSelection,
+        previous: RotateCorrection,
+        angle_degrees: f64,
+    ) -> bool {
         self.record_transform_correction(selection, CorrectionOperation::Rotate(previous.clone()));
         self.status_key = "status-object-rotated";
         self.digest = self.catalog.format(
@@ -804,16 +804,10 @@ impl KetchupApp {
         if !delta_mm.x.is_finite() || !delta_mm.y.is_finite() || !delta_mm.z.is_finite() {
             return false;
         }
-        let Ok(parent) = self.document.tip_replacement_parent() else {
-            return false;
-        };
         let Ok(world_edit) = Transform::from_translation(delta_mm.x, delta_mm.y, delta_mm.z) else {
             return false;
         };
-        let Some(plan) = self.correction_transform_plan(&parent, &selection, world_edit) else {
-            return false;
-        };
-        if !self.commit_transform_correction(&parent, plan.into_commit().1) {
+        if !self.commit_correction(&selection, world_edit) {
             return false;
         }
         self.record_transform_correction(
@@ -1479,13 +1473,53 @@ impl KetchupApp {
         self.tool_preview.close::<drawn_shape::DrawnShapePreview>();
     }
 
-    pub(crate) fn commit_transform_plan(
-        &mut self,
-        plan: TransformPlan,
-    ) -> Result<TransformTarget, WorkRecoveryMutationError<CanonicalError>> {
+    /// A document a program owns gets the move or turn written into its program.
+    pub(crate) fn commit_transform_plan(&mut self, plan: TransformPlan) -> Option<TransformTarget> {
+        let world_edit = plan.world_edit();
         let (target, batch) = plan.into_commit();
-        self.apply_batch_with_work_recovery(&batch)?;
-        Ok(target)
+        match self.program_transform(&target, world_edit, false) {
+            Some(result) => self.refused(result)?,
+            None => self.apply_batch_with_work_recovery(&batch).ok()?,
+        }
+        Some(target)
+    }
+
+    /// Commits a typed correction of the last move or turn: in the program
+    /// that owns the document, or in place of the last canonical edit.
+    fn commit_correction(
+        &mut self,
+        selection: &CorrectionSelection,
+        world_edit: Transform,
+    ) -> bool {
+        let target = match selection {
+            CorrectionSelection::Occurrences { occurrence_ids, .. } => {
+                TransformTarget::Occurrences(
+                    occurrence_ids
+                        .iter()
+                        .copied()
+                        .map(InstancePath::root)
+                        .collect(),
+                )
+            }
+            CorrectionSelection::Group(group_id) => TransformTarget::Group(*group_id),
+        };
+        if let Some(result) = self.program_transform(&target, world_edit, true) {
+            return self.refused(result).is_some();
+        }
+        let Ok(parent) = self.document.tip_replacement_parent() else {
+            return false;
+        };
+        let Some(plan) = self.correction_transform_plan(&parent, selection, world_edit) else {
+            return false;
+        };
+        self.commit_transform_correction(&parent, plan.into_commit().1)
+    }
+
+    /// `Some` when `result` succeeded; a refusal is shown in the digest.
+    fn refused(&mut self, result: Result<(), Rejection>) -> Option<()> {
+        result
+            .map_err(|rejection| self.digest = rejection.reason_text().to_owned())
+            .ok()
     }
 
     pub(crate) fn commit_transform_correction(
