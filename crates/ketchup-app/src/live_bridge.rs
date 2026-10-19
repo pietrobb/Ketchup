@@ -2044,14 +2044,14 @@ impl LiveBridge {
             .validate()
             .map_err(|error| failure("invalid_program", error.to_string(), json!({})))?;
         Self::program_scope(app, &program)?;
-        // A move or turn of program parts is written into the program instead
+        // A move, turn, delete, colour or mirror of program parts is written into the program instead
         // of detaching it; one the program cannot express is refused.
-        let rewritten =
-            app.program_transform_source(&program)
-                .transpose()
-                .map_err(|rejection| {
-                    failure("planning_rejected", rejection.reason_text(), json!({}))
-                })?;
+        let rewritten = app
+            .program_edit_source(&program)
+            .transpose()
+            .map_err(|rejection| {
+                failure("planning_rejected", rejection.reason_text(), json!({}))
+            })?;
         if rewritten.is_none() {
             reject_program_detach(app, strict && !view_only(&program))?;
         }
@@ -2754,7 +2754,7 @@ impl LiveBridge {
                     .map_err(|error| failure("invalid_program", error.to_string(), json!({})))?;
                 Self::program_scope(app, &program)?;
                 let rewritten =
-                    app.program_transform_source(&program)
+                    app.program_edit_source(&program)
                         .transpose()
                         .map_err(|rejection| {
                             failure("planning_rejected", rejection.reason_text(), json!({}))

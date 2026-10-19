@@ -15,12 +15,12 @@ use std::collections::BTreeMap;
 
 /// A written length or angle keeps six decimals (a nanometre, a micro-degree):
 /// what the editor shows, without the noise of the matrix it came from.
-fn written(value: f64) -> f64 {
+pub(crate) fn written(value: f64) -> f64 {
     let value = (value * 1.0e6).round() / 1.0e6;
     if value == 0.0 { 0.0 } else { value }
 }
 
-fn written_point(point: [f64; 3]) -> [f64; 3] {
+pub(crate) fn written_point(point: [f64; 3]) -> [f64; 3] {
     point.map(written)
 }
 
@@ -115,7 +115,7 @@ fn axis_angle_of(rotation: &Mat3) -> Option<([f64; 3], f64)> {
     Some((frame::normalized(axis)?, 180.0))
 }
 
-fn refused(code: &str, message: impl Into<String>) -> RuleProgramApplyError {
+pub(crate) fn refused(code: &str, message: impl Into<String>) -> RuleProgramApplyError {
     RuleProgramApplyError::Program {
         code: code.to_owned(),
         message: message.into(),
@@ -123,7 +123,7 @@ fn refused(code: &str, message: impl Into<String>) -> RuleProgramApplyError {
     }
 }
 
-fn quote(text: &str) -> String {
+pub(crate) fn quote(text: &str) -> String {
     serde_json::to_string(text).expect("strings serialize")
 }
 

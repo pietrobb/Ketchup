@@ -291,8 +291,7 @@ impl KetchupApp {
         if commands.is_empty() {
             return false;
         }
-        self.apply_batch_with_work_recovery(&CommandBatch::new(commands))
-            .is_ok()
+        self.commit_part_batch(CommandBatch::new(commands))
     }
 
     pub(super) fn show_occurrence_color_editor(&mut self, ui: &mut egui::Ui) {

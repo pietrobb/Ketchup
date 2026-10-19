@@ -1516,7 +1516,7 @@ impl KetchupApp {
     }
 
     /// `Some` when `result` succeeded; a refusal is shown in the digest.
-    fn refused(&mut self, result: Result<(), Rejection>) -> Option<()> {
+    pub(crate) fn refused(&mut self, result: Result<(), Rejection>) -> Option<()> {
         result
             .map_err(|rejection| self.digest = rejection.reason_text().to_owned())
             .ok()

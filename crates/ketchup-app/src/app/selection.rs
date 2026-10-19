@@ -946,10 +946,7 @@ impl KetchupApp {
             commands,
             ..
         } = plan;
-        if self
-            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
-            .is_err()
-        {
+        if !self.commit_part_batch(CommandBatch::new(commands)) {
             return false;
         }
         self.selection.clear();

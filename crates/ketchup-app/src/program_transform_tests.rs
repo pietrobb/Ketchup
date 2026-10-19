@@ -97,6 +97,123 @@ fn a_part_placed_by_an_expression_gets_a_move_line() {
     assert_close(size, [200.0, 50.0, 10.0]);
 }
 
+fn occurrence(app: &KetchupApp, name: &str) -> Option<OccurrenceId> {
+    app.document
+        .current()
+        .occurrences()
+        .find(|occurrence| occurrence.name() == name)
+        .map(|occurrence| occurrence.id())
+}
+
+#[test]
+fn deleting_a_program_part_removes_its_line_as_one_undo_step() {
+    let mut app = app();
+    let steps = app.undo_step_count();
+    select(&mut app, "a");
+    assert!(app.delete_selected());
+    assert_eq!(
+        source(&app),
+        PARTS.replace("box(\"a\", (20, 30, 40), at = (100, 0, 5))\n", "")
+    );
+    assert_eq!(occurrence(&app, "a"), None);
+    select(&mut app, "b");
+    assert_close(placed(&app).0, [0.0, 300.0, 0.0]);
+    assert_eq!(app.undo_step_count(), steps + 1);
+    assert!(app.undo());
+    assert_eq!(source(&app), PARTS);
+    assert!(occurrence(&app, "a").is_some());
+}
+
+#[test]
+fn deleting_a_part_of_a_loop_is_refused_with_the_line_and_changes_nothing() {
+    let mut app = KetchupApp::new();
+    let looped = "for i in range(2):\n    box(\"s%d\" % i, (10, 10, 10), at = (0, 0, 20 * i))\n";
+    app.apply_program_source(
+        RuleProgramSource {
+            variants: Default::default(),
+            file_name: "loop.star".into(),
+            source: looped.into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    let revision = app.document_revision();
+    select(&mut app, "s1");
+    assert!(!app.delete_selected());
+    assert!(app.digest.contains("loop on line 1"), "{}", app.digest);
+    assert_eq!(source(&app), looped);
+    assert_eq!(app.document_revision(), revision);
+}
+
+#[test]
+fn a_colour_is_written_into_the_creating_call_and_survives_the_next_apply() {
+    let mut app = app();
+    let steps = app.undo_step_count();
+    select(&mut app, "b");
+    assert!(app.set_selected_occurrence_color(Some([200, 10, 0])));
+    let coloured = PARTS.replace("at = (0, x, 0))", "at = (0, x, 0), color=(200, 10, 0))");
+    assert_eq!(source(&app), coloured);
+    assert_eq!(app.undo_step_count(), steps + 1);
+    let b = occurrence(&app, "b").unwrap();
+    // Applying the program again keeps the colour: the program sets it now.
+    let program = app.document.current_rule_program().unwrap().clone();
+    app.apply_program_source(program, false).unwrap();
+    let snapshot = app.document.current();
+    assert_eq!(snapshot.occurrence(b).unwrap().color(), Some([200, 10, 0]));
+}
+
+#[test]
+fn renaming_a_program_part_keeps_its_id() {
+    let mut app = app();
+    let a = occurrence(&app, "a").unwrap();
+    select(&mut app, "a");
+    let source_plan = app.occurrence_rename_source_plan().unwrap();
+    let plan = app
+        .occurrence_rename_plan(&PendingOccurrenceRename {
+            source: source_plan,
+            name: "side".into(),
+        })
+        .unwrap();
+    assert!(app.apply_occurrence_rename_plan(plan));
+    assert_eq!(
+        source(&app),
+        format!(
+            "{}continue_part(\"side\", was=\"a\")\n",
+            PARTS.replace("box(\"a\"", "box(\"side\"")
+        )
+    );
+    assert_eq!(occurrence(&app, "side"), Some(a));
+    assert_eq!(occurrence(&app, "a"), None);
+}
+
+#[test]
+fn mirroring_a_program_part_adds_a_mirrored_line() {
+    let mut app = app();
+    let a = occurrence(&app, "a").unwrap();
+    app.queue_window_edit(
+        AssistantCadEditOperation::Mirror {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: vec![a.0],
+            },
+            plane_origin_mm: [0.0, 0.0, 0.0],
+            plane_normal: [1.0, 0.0, 0.0],
+        },
+        "digest-mirror-created",
+        None,
+    );
+    app.finish_window_edit();
+    assert_eq!(
+        source(&app),
+        format!("{PARTS}mirrored(\"a\", \"a mirrored\", point=(0, 0, 0), normal=(1, 0, 0))\n")
+    );
+    // x 100..120 across x = 0 is x -120..-100; y 0..30 and z 5..45 stay.
+    select(&mut app, "a mirrored");
+    let (min, size) = placed(&app);
+    assert_close(min, [-120.0, 0.0, 5.0]);
+    assert_close(size, [20.0, 30.0, 40.0]);
+}
+
 #[test]
 fn turning_a_program_part_writes_a_rotate_line() {
     let mut app = app();

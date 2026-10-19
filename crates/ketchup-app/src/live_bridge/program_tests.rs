@@ -886,16 +886,75 @@ fn a_typed_move_of_a_program_part_is_proposed_and_committed_into_the_program() {
 }
 
 #[test]
+fn a_typed_colour_is_written_into_the_program_and_a_delete_of_a_joined_part_is_refused() {
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(TABLE, true), false).unwrap();
+    let leg = names(&app)["table/leg-back-left"];
+    let selector = AssistantCadEntitySelector::Occurrences {
+        occurrence_ids: vec![leg],
+    };
+    let edit = |operation| Request::ApplyAndVerify {
+        expected: None,
+        selection: None,
+        program: AssistantCadEditProgram {
+            operations: vec![operation],
+        },
+        validators: Vec::new(),
+        timeout_ms: 60_000,
+        save: None,
+        strict: true,
+    };
+    let painted = bridge
+        .execute(
+            &mut app,
+            edit(AssistantCadEditOperation::SetColor {
+                selector: selector.clone(),
+                color: Some([200, 40, 40]),
+            }),
+            false,
+        )
+        .unwrap();
+    assert_eq!(painted["program_detached"], false, "{painted}");
+    let source = app.document.current_rule_program().unwrap().source.clone();
+    let call = source
+        .lines()
+        .find(|line| line.contains("\"table/leg-back-left\""))
+        .unwrap();
+    assert!(call.ends_with("color=(200, 40, 40)),"), "{call}");
+    let snapshot = app.document.current();
+    assert_eq!(
+        snapshot.occurrence(OccurrenceId(leg)).unwrap().color(),
+        Some([200, 40, 40])
+    );
+
+    let before = app.live_bridge_stamp();
+    let refused = bridge
+        .execute(
+            &mut app,
+            edit(AssistantCadEditOperation::Delete {
+                selector,
+                dependency_policy:
+                    ketchup_assistant::sidecar::AssistantCadDeletePolicy::RemoveReferences,
+            }),
+            false,
+        )
+        .unwrap_err();
+    assert_eq!(refused, "planning_rejected");
+    assert_eq!(app.live_bridge_stamp(), before);
+    assert_eq!(app.document.current_rule_program().unwrap().source, source);
+}
+
+#[test]
 fn a_typed_edit_says_it_detaches_the_program_and_strict_refuses_it() {
     let (mut app, mut bridge) = setup();
     bridge.execute(&mut app, apply(TABLE, true), false).unwrap();
     let leg = names(&app)["table/leg-back-left"];
     let paint_leg = AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::SetColor {
+        operations: vec![AssistantCadEditOperation::SetGrounded {
             selector: AssistantCadEntitySelector::Occurrences {
                 occurrence_ids: vec![leg],
             },
-            color: Some([200, 40, 40]),
+            grounded: true,
         }],
     };
     let before = app.live_bridge_stamp();

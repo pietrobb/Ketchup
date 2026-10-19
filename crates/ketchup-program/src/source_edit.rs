@@ -24,6 +24,15 @@ pub struct CreatingCall {
     pub function: Option<String>,
     /// `at=` of the call, when it is three number literals.
     pub at: Option<LiteralPoint>,
+    /// Bytes of the call, from its name to its closing parenthesis.
+    pub bytes: Range<usize>,
+    /// The first argument, when it is a string literal: the part's name.
+    pub name: Option<Range<usize>>,
+    /// The `color=` argument: bytes of the whole argument and of its value.
+    pub color: Option<(Range<usize>, Range<usize>)>,
+    /// Whole lines of the top-level statement that is only this call,
+    /// `box(...)` or `x = box(...)`.
+    pub statement: Option<Range<usize>>,
 }
 
 /// Three number literals in the source, e.g. `(0, 18, -5.5)`.
@@ -58,14 +67,142 @@ pub fn creating_call(
         };
         search.visit(Visit::Stmt(ast.statement()), &Context::default());
         match search.found {
-            Some((call, false)) => return Some(call),
+            Some((call, false)) => return Some(with_statement(&ast, source, call)),
             Some((call, true)) => {
                 nested.get_or_insert(call);
             }
             None => {}
         }
     }
-    nested
+    nested.map(|call| with_statement(&ast, source, call))
+}
+
+fn with_statement(ast: &AstModule, source: &str, mut call: CreatingCall) -> CreatingCall {
+    call.statement = top_level(ast.statement()).find_map(|statement| {
+        let made = match &statement.node {
+            StmtP::Expression(expression) => expression,
+            StmtP::Assign(assign) => &assign.rhs,
+            _ => return None,
+        };
+        (span_bytes(made.span) == call.bytes)
+            .then(|| whole_lines(source, span_bytes(statement.span).start..call.bytes.end))?
+    });
+    call
+}
+
+fn top_level(statement: &AstStmt) -> impl Iterator<Item = &AstStmt> {
+    match &statement.node {
+        StmtP::Statements(statements) => statements.iter().collect::<Vec<_>>(),
+        _ => vec![statement],
+    }
+    .into_iter()
+}
+
+fn span_bytes(span: starlark::codemap::Span) -> Range<usize> {
+    span.begin().get() as usize..span.end().get() as usize
+}
+
+/// `bytes` widened to the whole lines they stand on, with the line break;
+/// `None` when the lines hold anything else but a trailing comment.
+fn whole_lines(source: &str, bytes: Range<usize>) -> Option<Range<usize>> {
+    let start = source[..bytes.start].rfind('\n').map_or(0, |at| at + 1);
+    let end = source[bytes.end..]
+        .find('\n')
+        .map_or(source.len(), |at| bytes.end + at + 1);
+    let rest = source[bytes.end..end].trim();
+    (source[start..bytes.start].trim().is_empty() && (rest.is_empty() || rest.starts_with('#')))
+        .then_some(start..end)
+}
+
+/// Whole lines of the top-level statement on exactly `lines` that is a call
+/// or an assignment of one, e.g. `move("a", by=(0, 0, 5))`.
+#[must_use]
+pub fn top_level_call_statement(
+    file_name: &str,
+    source: &str,
+    lines: SourceLines,
+) -> Option<Range<usize>> {
+    let ast = AstModule::parse(file_name, source.to_owned(), &crate::eval::dialect()).ok()?;
+    top_level(ast.statement()).find_map(|statement| {
+        let call = match &statement.node {
+            StmtP::Expression(expression) => expression,
+            StmtP::Assign(assign) => &assign.rhs,
+            _ => return None,
+        };
+        let span = ast.codemap().resolve_span(statement.span);
+        (matches!(call.node, ExprP::Call(..))
+            && (span.begin.line + 1, span.end.line + 1) == (lines.first, lines.last))
+            .then(|| {
+                whole_lines(
+                    source,
+                    span_bytes(statement.span).start..span_bytes(call.span).end,
+                )
+            })?
+    })
+}
+
+/// Every string literal of the source that reads `text`: its bytes, quotes
+/// included, and its line.
+#[must_use]
+pub fn string_literals(file_name: &str, source: &str, text: &str) -> Vec<(Range<usize>, usize)> {
+    let Ok(ast) = AstModule::parse(file_name, source.to_owned(), &crate::eval::dialect()) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    walk(Visit::Stmt(ast.statement()), &mut |expression| {
+        if let ExprP::Literal(AstLiteral::String(literal)) = &expression.node
+            && literal.node == text
+        {
+            found.push((
+                span_bytes(expression.span),
+                ast.codemap().resolve_span(expression.span).begin.line + 1,
+            ));
+        }
+    });
+    found
+}
+
+/// The `was=` string literal of `continue_part("<part>", was=...)`.
+#[must_use]
+pub fn continuation_of(file_name: &str, source: &str, part: &str) -> Option<Range<usize>> {
+    let ast = AstModule::parse(file_name, source.to_owned(), &crate::eval::dialect()).ok()?;
+    let mut found = None;
+    walk(Visit::Stmt(ast.statement()), &mut |expression| {
+        let ExprP::Call(callee, arguments) = &expression.node else {
+            return;
+        };
+        if !matches!(&callee.node, ExprP::Identifier(name) if name.ident == "continue_part") {
+            return;
+        }
+        let mut named = None;
+        let mut was = None;
+        for argument in &arguments.args {
+            match &argument.node {
+                ArgumentP::Positional(value) => {
+                    if let ExprP::Literal(AstLiteral::String(literal)) = &value.node {
+                        named.get_or_insert(literal.node == part);
+                    }
+                }
+                ArgumentP::Named(name, value) if name.node == "was" => {
+                    if matches!(&value.node, ExprP::Literal(AstLiteral::String(_))) {
+                        was = Some(span_bytes(value.span));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if named == Some(true) {
+            found = found.take().or(was);
+        }
+    });
+    found
+}
+
+fn walk(node: Visit<'_, AstNoPayload>, visit: &mut impl FnMut(&AstExpr)) {
+    if let Visit::Expr(expression) = node {
+        visit(expression);
+    }
+    node.visit_children(|child| walk(child, visit));
 }
 
 /// A number as a program literal: shortest exact form, no `-0`.
@@ -149,6 +286,31 @@ impl Search<'_> {
                                     }
                                     _ => None,
                                 }),
+                            bytes: span_bytes(expression.span),
+                            name: arguments.args.first().and_then(|argument| {
+                                match &argument.node {
+                                    ArgumentP::Positional(value)
+                                        if matches!(
+                                            &value.node,
+                                            ExprP::Literal(AstLiteral::String(_))
+                                        ) =>
+                                    {
+                                        Some(span_bytes(value.span))
+                                    }
+                                    _ => None,
+                                }
+                            }),
+                            color: arguments.args.iter().find_map(|argument| {
+                                match &argument.node {
+                                    ArgumentP::Named(name, value) if name.node == "color" => {
+                                        let value = widened(self.source, span_bytes(value.span));
+                                        let start = span_bytes(argument.span).start;
+                                        Some((start..value.end, value))
+                                    }
+                                    _ => None,
+                                }
+                            }),
+                            statement: None,
                         };
                         self.found = Some((call, context.function.is_some()));
                         return;
@@ -175,21 +337,24 @@ fn literal_point(source: &str, expression: &AstExpr) -> Option<LiteralPoint> {
     let [x, y, z] = items.as_slice() else {
         return None;
     };
-    let (mut start, mut end) = (
-        expression.span.begin().get() as usize,
-        expression.span.end().get() as usize,
-    );
-    // A tuple's span leaves out its parentheses; the literal includes them.
-    let before = source[..start].trim_end();
-    let after = source[end..].trim_start();
-    if !source[start..].starts_with(['(', '[']) && before.ends_with('(') && after.starts_with(')') {
-        start = before.len() - 1;
-        end = source.len() - after.len() + 1;
-    }
     Some(LiteralPoint {
-        bytes: start..end,
+        bytes: widened(source, span_bytes(expression.span)),
         value: [literal_number(x)?, literal_number(y)?, literal_number(z)?],
     })
+}
+
+/// A tuple's span leaves out its parentheses; the literal includes them.
+fn widened(source: &str, bytes: Range<usize>) -> Range<usize> {
+    let before = source[..bytes.start].trim_end();
+    let after = source[bytes.end..].trim_start();
+    if !source[bytes.start..].starts_with(['(', '['])
+        && before.ends_with('(')
+        && after.starts_with(')')
+    {
+        before.len() - 1..source.len() - after.len() + 1
+    } else {
+        bytes
+    }
 }
 
 fn literal_number(expression: &AstExpr) -> Option<f64> {
@@ -239,6 +404,37 @@ mod tests {
         assert_eq!(top.loop_line, None);
         assert_eq!(top.function.as_deref(), Some("shelf"));
         assert_eq!(top.at, None);
+    }
+
+    #[test]
+    fn call_names_its_name_colour_and_own_statement() {
+        let source = "x = 1\ntop = box(\"a\", (10, 20, 30), color=(1, 2, 3))  # top\n\
+                      pair = (box(\"b\", (1, 1, 1)), 2)\n";
+        let call = call_of(source, "a").expect("found");
+        assert_eq!(
+            &source[call.bytes.clone()],
+            "box(\"a\", (10, 20, 30), color=(1, 2, 3))"
+        );
+        assert_eq!(&source[call.name.expect("literal name")], "\"a\"");
+        let (argument, value) = call.color.expect("colour");
+        assert_eq!(&source[argument], "color=(1, 2, 3)");
+        assert_eq!(&source[value], "(1, 2, 3)");
+        assert_eq!(
+            &source[call.statement.expect("own statement")],
+            "top = box(\"a\", (10, 20, 30), color=(1, 2, 3))  # top\n"
+        );
+        assert_eq!(call_of(source, "b").expect("found").statement, None);
+        let lines = SourceLines { first: 2, last: 2 };
+        assert_eq!(
+            top_level_call_statement("p.star", source, lines).map(|bytes| &source[bytes]),
+            Some("top = box(\"a\", (10, 20, 30), color=(1, 2, 3))  # top\n")
+        );
+        let literals = string_literals("p.star", source, "b");
+        assert_eq!(literals.len(), 1);
+        assert_eq!(
+            (&source[literals[0].0.clone()], literals[0].1),
+            ("\"b\"", 3)
+        );
     }
 
     #[test]

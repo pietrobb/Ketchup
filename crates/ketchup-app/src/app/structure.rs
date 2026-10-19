@@ -772,9 +772,7 @@ impl KetchupApp {
             name: plan.target_name.clone(),
         };
         if self.occurrence_rename_plan(&pending).as_ref() != Some(&plan)
-            || self
-                .apply_batch_with_work_recovery(&CommandBatch::new(vec![plan.command]))
-                .is_err()
+            || !self.commit_part_batch(CommandBatch::new(vec![plan.command]))
         {
             return false;
         }

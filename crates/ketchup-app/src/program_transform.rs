@@ -1,12 +1,40 @@
-//! A move or turn of parts a program owns is written into the program and
-//! published like any program edit, so the program keeps owning the
-//! document and Undo takes the edit back in one step.
+//! A move, turn, delete, colour, rename or mirror of parts a program owns is
+//! written into the program and published like any program edit, so the
+//! program keeps owning the document and Undo takes the edit back in one step.
 use super::*;
 use crate::transform_operation::TransformTarget;
+use ketchup_application::PartChange;
 use ketchup_assistant::sidecar::AssistantCadRotation;
 use ketchup_model::document::RuleProgramSource;
 
 impl KetchupApp {
+    /// Commits a batch of the editor that deletes, recolours or renames
+    /// parts: into the program when the parts are a program's, else as it
+    /// is. A refusal is shown in the digest.
+    pub(crate) fn commit_part_batch(&mut self, batch: CommandBatch) -> bool {
+        let result = match self.program_part_batch(batch.commands()) {
+            Some(Ok(source)) => self
+                .apply_program_source(source, false)
+                .map(|_| ())
+                .map_err(|error| failed("program.apply", error)),
+            Some(Err(rejection)) => Err(rejection),
+            None => return self.apply_batch_with_work_recovery(&batch).is_ok(),
+        };
+        self.refused(result).is_some()
+    }
+
+    /// The document's program with `commands` written into it. `None` when
+    /// no program owns the document, or a command does something else than
+    /// delete, recolour or rename a part the program makes.
+    pub(crate) fn program_part_batch(
+        &self,
+        commands: &[CanonicalCommand],
+    ) -> Option<Result<RuleProgramSource, Rejection>> {
+        let program = self.document.current_rule_program()?;
+        let changes = part_changes(&self.document.current(), commands)?;
+        rewrite_parts(program, &changes).transpose()
+    }
+
     /// `None` when no program owns the document or the edit moves something
     /// that is not a part the program makes: the caller commits the edit as
     /// it is. With `replace_last` the edit takes the place of the last one
@@ -58,54 +86,95 @@ impl KetchupApp {
         Some(result)
     }
 
-    /// The document's program with every typed `transform` of `program`
-    /// written into it, as the window writes a move or turn. `None` when no
-    /// program owns the document, `program` does more than move and turn, or
-    /// it moves something that is not a part the program makes.
-    pub(crate) fn program_transform_source(
+    /// The document's program with every typed operation of `program`
+    /// written into it, as the window writes a move, turn, delete, colour or
+    /// mirror. `None` when no program owns the document, `program` does
+    /// anything else, or it changes something that is not a part the program
+    /// makes.
+    pub(crate) fn program_edit_source(
         &self,
         program: &AssistantCadEditProgram,
     ) -> Option<Result<RuleProgramSource, Rejection>> {
         let mut source = self.document.current_rule_program()?.clone();
-        let motions = program
-            .operations
-            .iter()
-            .map(|operation| match operation {
+        if program.operations.is_empty() {
+            return None;
+        }
+        let snapshot = self.document.current();
+        for operation in &program.operations {
+            let rewritten = match operation {
                 AssistantCadEditOperation::Transform {
                     translation_mm,
                     rotation,
                     ..
-                } => Some((operation, *translation_mm, rotation.as_ref())),
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>()
-            .filter(|motions| !motions.is_empty())?;
-        let snapshot = self.document.current();
-        for (operation, translation_mm, rotation) in motions {
-            // The planner resolves the selector exactly as for a detached edit.
-            let batch = match self.plan_assistant_cad_edit_program(&AssistantCadEditProgram {
-                operations: vec![operation.clone()],
-            }) {
-                Ok(batch) => batch,
-                Err(diagnostic) => return Some(Err(Rejection::from(*diagnostic))),
-            };
-            let moved = batch
-                .commands()
-                .iter()
-                .filter_map(|command| match command {
-                    CanonicalCommand::SetOccurrenceTransform { id, .. } => {
-                        Some(InstancePath::root(*id))
-                    }
-                    _ => None,
-                })
-                .collect();
-            let parts = program_part_names(&snapshot, &TransformTarget::Occurrences(moved));
-            let rewritten = world_motion(translation_mm, rotation)
-                .map_err(|error| failed("program.transform", error))
-                .and_then(|world_edit| {
-                    ketchup_application::rewrite_rule_program_transform(&source, &parts, world_edit)
+                } => {
+                    let batch = match self.plan_one(operation) {
+                        Ok(batch) => batch,
+                        Err(rejection) => return Some(Err(rejection)),
+                    };
+                    let moved = batch
+                        .commands()
+                        .iter()
+                        .filter_map(|command| match command {
+                            CanonicalCommand::SetOccurrenceTransform { id, .. } => {
+                                Some(InstancePath::root(*id))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let parts = program_part_names(&snapshot, &TransformTarget::Occurrences(moved));
+                    world_motion(*translation_mm, rotation.as_ref())
                         .map_err(|error| failed("program.transform", error))
-                });
+                        .and_then(|world_edit| {
+                            ketchup_application::rewrite_rule_program_transform(
+                                &source, &parts, world_edit,
+                            )
+                            .map_err(|error| failed("program.transform", error))
+                        })
+                }
+                AssistantCadEditOperation::Delete { .. }
+                | AssistantCadEditOperation::SetColor { .. } => {
+                    let batch = match self.plan_one(operation) {
+                        Ok(batch) => batch,
+                        Err(rejection) => return Some(Err(rejection)),
+                    };
+                    let changes = part_changes(&snapshot, batch.commands())?;
+                    rewrite_parts(&source, &changes)
+                }
+                AssistantCadEditOperation::Mirror {
+                    selector: AssistantCadEntitySelector::Occurrences { occurrence_ids },
+                    plane_origin_mm,
+                    plane_normal,
+                } => {
+                    let mut taken = snapshot
+                        .occurrences()
+                        .map(|occurrence| occurrence.name().to_owned())
+                        .collect::<BTreeSet<_>>();
+                    let changes = occurrence_ids
+                        .iter()
+                        .map(|id| {
+                            let name = ketchup_application::rule_program_part_name(
+                                &snapshot,
+                                &InstancePath::root(OccurrenceId(*id)),
+                            )?;
+                            let copy = (1..)
+                                .map(|n| match n {
+                                    1 => format!("{name} mirrored"),
+                                    n => format!("{name} mirrored {n}"),
+                                })
+                                .find(|copy| !taken.contains(copy))?;
+                            taken.insert(copy.clone());
+                            let change = PartChange::Mirror {
+                                copy,
+                                point: *plane_origin_mm,
+                                normal: *plane_normal,
+                            };
+                            Some((name, change))
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    rewrite_parts(&source, &changes)
+                }
+                _ => return None,
+            };
             match rewritten {
                 Ok(Some(rewritten)) => source = rewritten,
                 // Not parts the program makes: the edit is planned as it is.
@@ -114,6 +183,15 @@ impl KetchupApp {
             }
         }
         Some(Ok(source))
+    }
+
+    /// The canonical edit of one typed operation: the planner resolves its
+    /// selector exactly as for a detached edit.
+    fn plan_one(&self, operation: &AssistantCadEditOperation) -> Result<CommandBatch, Rejection> {
+        self.plan_assistant_cad_edit_program(&AssistantCadEditProgram {
+            operations: vec![operation.clone()],
+        })
+        .map_err(|diagnostic| Rejection::from(*diagnostic))
     }
 
     /// The canonical edit that brings the document to what `source` makes,
@@ -132,6 +210,40 @@ impl KetchupApp {
             .prepare_proposal_with_context(batch, ProposalContext::rule_program())
             .map_err(|error| failed("program.apply", error))
     }
+}
+
+/// The part changes `commands` make, when each deletes, recolours or renames
+/// a part of the document by its program name.
+fn part_changes(
+    snapshot: &Snapshot,
+    commands: &[CanonicalCommand],
+) -> Option<Vec<(String, PartChange)>> {
+    commands
+        .iter()
+        .map(|command| {
+            let (id, change) = match command {
+                CanonicalCommand::DeleteOccurrence { id } => (id, PartChange::Delete),
+                CanonicalCommand::SetOccurrenceColor { id, color } => {
+                    (id, PartChange::Color(*color))
+                }
+                CanonicalCommand::RenameEntity { id, name } => {
+                    (id, PartChange::Rename(name.clone()))
+                }
+                _ => return None,
+            };
+            let name =
+                ketchup_application::rule_program_part_name(snapshot, &InstancePath::root(*id))?;
+            Some((name, change))
+        })
+        .collect()
+}
+
+fn rewrite_parts(
+    source: &RuleProgramSource,
+    changes: &[(String, PartChange)],
+) -> Result<Option<RuleProgramSource>, Rejection> {
+    ketchup_application::rewrite_rule_program_parts(source, changes)
+        .map_err(|error| failed("program.part_change", error))
 }
 
 /// The world motion of a typed transform: the shift first, then the turn.
