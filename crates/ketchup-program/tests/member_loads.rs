@@ -111,6 +111,42 @@ box(\"weight\", (100, 80, 100), at = (200, 0, 1220), material = \"steel\", tags 
     assert_eq!(far.loads_n.get("permanent").copied().unwrap_or(0.0), 0.0);
 }
 
+/// #2420: on the house the gypsum board over the east window rested on nothing
+/// and touched only the OSB beside it, so its weight reached no member.
+#[test]
+fn a_board_fixed_to_the_side_of_a_carrier_passes_its_weight_through_it() {
+    // A 100 x 100 x 2000 mm post; from z = 500 a 1000 mm high 15 mm board on its
+    // side and a 12.5 mm gypsum board on the board, neither on the floor.
+    let wall = |board_tags: &str| {
+        format!(
+            "load_path(only = [\"frame\"], carriers = [\"deck\"])
+self_weight([\"construction\"])
+box(\"post\", (100, 100, 2000), material = \"C24\", tags = [\"frame\", \"construction\"])
+box(\"board\", (100, 15, 1000), at = (0, 100, 500), material = \"C24\", tags = [{board_tags}])
+box(\"gypsum\", (100, 12.5, 1000), at = (0, 115, 500), material = \"C24\", tags = [\"construction\"])\n"
+        )
+    };
+    let weight = |volume_m3: f64| volume_m3 * 420.0 * 9.81;
+    let carrier = report(&wall("\"deck\", \"construction\""), &[]);
+    assert_eq!(carrier.loads.unassigned, BTreeMap::new());
+    close(
+        member(&carrier, "post").loads_n["permanent"],
+        weight(0.02) + weight(0.0015) + weight(0.00125),
+    );
+
+    // A board that carries nothing is no place to fix to: two parts resting on
+    // nothing still never lean on each other.
+    let plain = report(&wall("\"construction\""), &[]);
+    assert_eq!(
+        plain.loads.unassigned.keys().collect::<Vec<_>>(),
+        ["gypsum"]
+    );
+    close(
+        member(&plain, "post").loads_n["permanent"],
+        weight(0.02) + weight(0.0015),
+    );
+}
+
 #[test]
 fn a_deck_shares_its_area_load_by_the_strip_each_joist_is_nearest_to() {
     // Joists 80 mm wide at y = 0 (edge), 500 and 1520 (edge) under a 3000 x 1600

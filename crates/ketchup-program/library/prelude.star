@@ -866,6 +866,8 @@ def boss(part, face, profile, height, name = "boss"):
 #     over the fasteners of bearing joints). Touching from the side carries nothing;
 #     a beam on one end only is not carried. Besides members only parts on the floor
 #     and parts tagged `carriers` (a floor deck) carry. Error: member_not_carried.
+#     For the loads, a part neither member nor carrier that rests on nothing hangs from
+#     or leans on members, else on the carriers it touches (gypsum on OSB over an opening).
 #   dowels(a, b, dowel="8x35", count=, margin=50, spacing=250, clearance=1.5, rest=6, offset=0)
 #     drills matching holes into two touching parts and records the joint.
 #     offset is signed mm along the selected row (positive towards increasing contact u/v).

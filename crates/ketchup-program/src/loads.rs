@@ -810,6 +810,10 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     // What each part rests on, and what else it touches from below or the side.
     let mut rests: Vec<Vec<Support>> = parts.iter().map(|_| Vec::new()).collect();
     let mut leans: Vec<Vec<Support>> = parts.iter().map(|_| Vec::new()).collect();
+    // Failing both, a part that carries nothing is fixed to the carriers it touches
+    // (a gypsum board over an opening screwed through the OSB to the header). A
+    // carrier never leans on such a part, so the weight still runs one way down.
+    let mut fixed_to: Vec<Vec<Support>> = parts.iter().map(|_| Vec::new()).collect();
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
     let mut order: Vec<usize> = (0..parts.len()).collect();
     order.sort_by(|a, b| bounds[*a].0[0].total_cmp(&bounds[*b].0[0]));
@@ -842,6 +846,8 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                     for (item, other) in [(left, right), (right, left)] {
                         if leans_on[other] {
                             leans[item].push(support(other));
+                        } else if may_carry[other] && !may_carry[item] {
+                            fixed_to[item].push(support(other));
                         }
                     }
                     continue;
@@ -851,6 +857,8 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                 } else if leans_on[upper] {
                     // Hangs from it (a ceiling board under a joist), unless it carries it.
                     leans[lower].push(support(upper));
+                } else if may_carry[upper] {
+                    fixed_to[lower].push(support(upper));
                 }
             }
         }
@@ -882,9 +890,9 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     let frames: Vec<Frame> = parts.iter().map(Frame::of).collect();
     let supports: Vec<Vec<Support>> = rests
         .into_iter()
-        .zip(leans)
+        .zip(leans.into_iter().zip(fixed_to))
         .enumerate()
-        .map(|(item, (rests, leans))| {
+        .map(|(item, (rests, (leans, fixed_to)))| {
             if sink[item] {
                 Vec::new()
             } else if member[item] {
@@ -896,8 +904,10 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                 grouped(runs, Some(frame))
             } else if !rests.is_empty() {
                 grouped(rests, None)
-            } else {
+            } else if !leans.is_empty() {
                 grouped(leans, None)
+            } else {
+                grouped(fixed_to, None)
             }
         })
         .collect();
