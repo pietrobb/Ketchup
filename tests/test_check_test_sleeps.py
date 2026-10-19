@@ -33,6 +33,15 @@ def test_counts_only_test_code(tmp_path):
     }
 
 
+def test_counts_the_viewer_crates_too(tmp_path):
+    write(tmp_path, "viewer/android/src/lib.rs", PRODUCTION)
+    write(tmp_path, "viewer/web/tests/smoke.rs", "fn t() { sleep(A); }\n")
+    assert checker.current_counts(tmp_path) == {
+        "viewer/android/src/lib.rs": 1,
+        "viewer/web/tests/smoke.rs": 1,
+    }
+
+
 def test_growth_fails_and_shrinking_passes(tmp_path):
     write(tmp_path, "crates/a/tests/flow.rs", "fn t() { sleep(A); sleep(B); }\n")
     assert checker.check(tmp_path, update=True) == 0

@@ -29,7 +29,8 @@ def is_test_file(relative: Path) -> bool:
 
 def current_counts(root: Path = ROOT) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for path in sorted(root.glob("crates/*/**/*.rs")):
+    paths = [*root.glob("crates/*/**/*.rs"), *root.glob("viewer/*/**/*.rs")]
+    for path in sorted(paths):
         relative = path.relative_to(root)
         if "target" in relative.parts:
             continue
