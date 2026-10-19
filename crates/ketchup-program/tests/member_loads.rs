@@ -416,6 +416,16 @@ joint(j, h, kind = \"hanger\", bearing = True, max_gap = 3)\n",
     );
 }
 
+/// #2420: the ridge cap lay on the roofing, which carried nothing, so its weight,
+/// snow and maintenance load went nowhere.
+#[test]
+fn every_load_of_the_house_reaches_something_that_carries_it() {
+    for system in [0.0, 1.0] {
+        let report = report(HOUSE, &[("system", system), ("snow_sk", 1.0)]);
+        assert_eq!(report.loads.unassigned, BTreeMap::new(), "system {system}");
+    }
+}
+
 #[test]
 fn every_member_of_the_house_carries_its_loads_once_the_site_snow_is_given() {
     let without = report(HOUSE, &[]);

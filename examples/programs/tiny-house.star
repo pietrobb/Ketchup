@@ -115,7 +115,8 @@ alternatives(["koncept", "konštrukcia"])
 production(tags = ["konštrukcia"])
 # Nosné prvky musia preniesť svoju tiaž až na základ: ležať zhora na nesenom prvku
 # (trám pod oboma koncami) alebo visieť na nosnom spoji (joint(..., bearing = True)).
-load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB"], name = "nosná konštrukcia")
+# Krytina nesie hrebenáč a odovzdá ho cez debnenie krokvám.
+load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB", "krytina"], name = "nosná konštrukcia")
 
 # Zaťaženia: vlastná tiaž konštrukcie (hustoty z knižnice), úžitkové na podlahe podkrovia,
 # údržba strechy a sneh na krytine (na pôdorys). Sneh na zemi sk pre miesto stavby treba
@@ -550,13 +551,14 @@ for side, north in (("južná", False), ("severná", True)):
     lining(side, north)
     cladding(side, north)
 
-# Hrebenáč prekrýva styk krytiny oboch polovíc.
+# Hrebenáč prekrýva styk krytiny oboch polovíc a leží na nej. Sneh a údržbu nad ním
+# už rátajú tabule krytiny pod ním, preto nemá značku krytina.
 CAP = 200
 cap = [(B / 2.0 - CAP, roof_z(B / 2.0 - CAP, ROOF_T)), (B / 2.0, roof_z(B / 2.0, ROOF_T))]
 cap_bottom = cap + [(B - p[0], p[1]) for p in reversed(cap[:-1])]
 along_x("konštrukcia/hrebenáč",
         [[p[0], p[1]] for p in cap_bottom] + [[p[0], p[1] + 3 / cos_a] for p in reversed(cap_bottom)],
-        -GABLE_OVER, L + GABLE_OVER, "plechová krytina", ROOF_C, T + ["krytina"])
+        -GABLE_OVER, L + GABLE_OVER, "plechová krytina", ROOF_C, T + ["hrebenáč"])
 
 # --- zariadenie (spoločné) ---
 box("kuchyňa/linka", (1800, 600, 900), at = (L - WALL - 1800, B - WALL - 600, SLAB), material = "lamino", color = (235, 235, 230))

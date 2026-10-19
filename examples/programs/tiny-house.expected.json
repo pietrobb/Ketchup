@@ -66,7 +66,7 @@
     "joints": {
       "hanger:konštrukcia/strecha južná/výmena dolná+konštrukcia/strecha južná/krokva 5": {
         "loads_n": {
-          "permanent": 242.5,
+          "permanent": 246.1,
           "roof": 146.4
         },
         "missing": [
@@ -75,7 +75,7 @@
       },
       "hanger:konštrukcia/strecha južná/výmena dolná+konštrukcia/strecha južná/krokva 6": {
         "loads_n": {
-          "permanent": 336.3,
+          "permanent": 338.0,
           "roof": 208.6
         },
         "missing": [
@@ -84,7 +84,7 @@
       },
       "hanger:konštrukcia/strecha južná/výmena horná+konštrukcia/strecha južná/krokva 5": {
         "loads_n": {
-          "permanent": 170.2,
+          "permanent": 178.7,
           "roof": 98.2
         },
         "missing": [
@@ -93,7 +93,7 @@
       },
       "hanger:konštrukcia/strecha južná/výmena horná+konštrukcia/strecha južná/krokva 6": {
         "loads_n": {
-          "permanent": 162.9,
+          "permanent": 176.9,
           "roof": 89.3
         },
         "missing": [
@@ -171,7 +171,7 @@
       "hanger:konštrukcia/strop/stropnice/stud 10+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
           "imposed": 607.2,
-          "permanent": 167.6,
+          "permanent": 167.5,
           "roof": 0.0
         },
         "missing": [
@@ -191,7 +191,7 @@
       "hanger:konštrukcia/strop/stropnice/stud 12+konštrukcia/strop/stropnice/sill 2": {
         "loads_n": {
           "imposed": 261.3,
-          "permanent": 64.6,
+          "permanent": 64.5,
           "roof": -0.5
         },
         "missing": [
@@ -225,7 +225,7 @@
       "hanger:konštrukcia/strop/stropnice/stud 15+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
           "imposed": 431.5,
-          "permanent": 137.2,
+          "permanent": 137.1,
           "roof": -0.1
         },
         "missing": [
@@ -325,9 +325,6 @@
     },
     "members": {
       "count": 228
-    },
-    "unassigned": {
-      "konštrukcia/hrebenáč": "konštrukcia/hrebenáč rests on nothing that carries it"
     }
   },
   "log": [
