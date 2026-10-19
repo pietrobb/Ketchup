@@ -15,6 +15,13 @@ from pathlib import Path
 PACKAGE_FLAG = re.compile(r"(?:^|\s)-p\s+([\w-]+)")
 JOB = re.compile(r"^  [\w-]+:\s*$", re.MULTILINE)
 CRATE_LIST = re.compile(r"CRATES:\s*>-\n((?:[ \t]+-p\b.*\n)+)")
+# A `#` at a line start or after a space opens a comment in YAML and in shell.
+COMMENT = re.compile(r"(?:^|(?<=\s))#.*$", re.MULTILINE)
+
+
+def without_comments(workflow):
+    """The workflow with its comments removed, so a crate named only in one does not count."""
+    return COMMENT.sub("", workflow)
 
 
 def workspace_members(root):
@@ -41,12 +48,12 @@ def crates_with_tests(root):
 
 def ci_crates(workflows):
     """Every crate a workflow names with `-p`."""
-    return {name for text in workflows for name in PACKAGE_FLAG.findall(text)}
+    return {name for text in workflows for name in PACKAGE_FLAG.findall(without_comments(text))}
 
 
 def jobs(workflow):
     """The text of every job of a workflow, from its name to the next job's."""
-    text = workflow.split("\njobs:\n", 1)[-1]
+    text = without_comments(workflow).split("\njobs:\n", 1)[-1]
     starts = [match.start() for match in JOB.finditer(text)] + [len(text)]
     return [text[start:end] for start, end in zip(starts, starts[1:])]
 

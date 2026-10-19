@@ -43,6 +43,26 @@ def test_a_crate_with_tests_needs_a_job_that_tests_it():
     ]
 
 
+COMMENTED = """name: CI
+jobs:
+  tested:
+    env:
+      CRATES: >-
+        -p alpha
+    steps:
+      # - run: cargo test -p beta
+      - run: cargo test --locked $CRATES  # later also -p gamma
+      - run: |
+          # cargo clippy -p delta
+          cargo test --locked -p epsilon
+"""
+
+
+def test_a_crate_named_only_in_a_comment_is_not_checked():
+    assert checker.ci_crates([COMMENTED]) == {"alpha", "epsilon"}
+    assert checker.tested_crates([COMMENTED]) == {"alpha", "epsilon"}
+
+
 def test_every_workspace_crate_is_checked_in_ci():
     crates = checker.workspace_crates(ROOT)
     assert "ketchup-headless" in crates
