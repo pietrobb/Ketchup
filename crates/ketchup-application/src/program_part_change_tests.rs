@@ -126,6 +126,63 @@ fn rename_changes_the_name_in_the_source_and_keeps_the_part() {
     );
 }
 
+/// Review 2026-10-19 WB-3: renaming part "oak" also renamed the material
+/// "oak" of another part, the parameter "oak" and a text reading "oak".
+#[test]
+fn rename_changes_only_the_literals_that_name_the_part() {
+    let source = "w = param(\"oak\", 40)\n\
+                  box(\"oak\", (w, 18, 30), material=\"oak\")\n\
+                  box(\"b\", (10, 18, 30), at=(0, 100, 0), material=\"oak\")\n\
+                  move(\"oak\", by=(0, 0, 10))\n\
+                  tag(\"oak\", \"oak\")\n\
+                  for name in [\"oak\"]:\n    move(name, by=(1, 0, 0))\n\
+                  label = \"oak\"\n\
+                  if label == \"oak\":\n    box(\"c\", (10, 10, 10), at=(0, 300, 0))\n";
+    let renamed = change(source, "oak", PartChange::Rename("lid".to_owned()));
+    assert_eq!(
+        renamed.source,
+        "w = param(\"oak\", 40)\n\
+         box(\"lid\", (w, 18, 30), material=\"oak\")\n\
+         box(\"b\", (10, 18, 30), at=(0, 100, 0), material=\"oak\")\n\
+         move(\"lid\", by=(0, 0, 10))\n\
+         tag(\"lid\", \"oak\")\n\
+         for name in [\"lid\"]:\n    move(name, by=(1, 0, 0))\n\
+         label = \"oak\"\n\
+         if label == \"oak\":\n    box(\"c\", (10, 10, 10), at=(0, 300, 0))\n\
+         continue_part(\"lid\", was=\"oak\")\n"
+    );
+    let before = model(&program(source));
+    let after = model(&renamed);
+    let mut expected = before.clone();
+    expected
+        .parts
+        .iter_mut()
+        .filter(|part| part.name == "oak")
+        .for_each(|part| {
+            part.name = "lid".to_owned();
+            for feature in &mut part.features {
+                feature.name = feature.name.replacen("oak ", "lid ", 1);
+            }
+        });
+    expected
+        .continuations
+        .insert("lid".to_owned(), "oak".to_owned());
+    assert_eq!(after, expected);
+    assert_eq!(after.params[0].name, "oak");
+    assert_eq!(after.part("b").unwrap().material.as_deref(), Some("oak"));
+}
+
+#[test]
+fn rename_is_refused_with_the_line_that_still_needs_the_old_name() {
+    let source = "box(\"oak\", (10, 18, 30))\n\
+                  for name in [\"oak\", \"b\"]:\n    if name == \"oak\":\n        move(name, by=(0, 0, 5))\n";
+    let message = refusal(source, "oak", PartChange::Rename("lid".to_owned()));
+    assert!(
+        message.contains("lines 2, 3 of the program read \"oak\""),
+        "{message}"
+    );
+}
+
 #[test]
 fn mirror_adds_a_mirrored_copy_across_the_plane() {
     let source = "box(\"a\", (10, 20, 30), at=(100, 0, 0))\n";

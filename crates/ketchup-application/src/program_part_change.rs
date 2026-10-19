@@ -121,15 +121,17 @@ pub fn rewrite_rule_program_parts(
             } => edit.parameter(feature, path, *value)?,
             PartChange::Transform(world_edit) => edit.transform(*world_edit)?,
         };
-        let after = evaluate(&rewritten)?;
+        let after = evaluate(&rewritten).map_err(|error| expected.kept_lines().unwrap_or(error))?;
         if !expected.holds(&evaluated.model, &after.model) {
-            return Err(refused(
-                "program_part_change_mismatch",
-                format!(
-                    "the program did not make part {} as the edit asked; change it in the program",
-                    quote(name)
-                ),
-            ));
+            return Err(expected.kept_lines().unwrap_or_else(|| {
+                refused(
+                    "program_part_change_mismatch",
+                    format!(
+                        "the program did not make part {} as the edit asked; change it in the program",
+                        quote(name)
+                    ),
+                )
+            }));
         }
         source = rewritten;
         evaluated = after;
@@ -148,10 +150,12 @@ pub(crate) enum Expected {
         at: [f64; 3],
         rotation: Mat3,
     },
-    /// `before` with every name `from` read as `to`, and `to` continuing `from`.
+    /// `before` with every part name `from` read as `to`, and `to` continuing
+    /// `from`; `kept` are the lines whose literal `from` is not the part's.
     Renamed {
         from: String,
         to: String,
+        kept: Vec<usize>,
     },
     /// `before` and a new part `copy` with these world bounds.
     Mirrored {
@@ -229,6 +233,30 @@ fn near(a: [f64; 3], b: [f64; 3]) -> bool {
 }
 
 impl Expected {
+    /// A rename that left a literal of the old name the program still needs:
+    /// refused with the lines to change by hand.
+    fn kept_lines(&self) -> Option<RuleProgramApplyError> {
+        let Self::Renamed { from, to, kept } = self else {
+            return None;
+        };
+        let lines = kept
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let word = if kept.len() == 1 { "line" } else { "lines" };
+        (!kept.is_empty()).then(|| {
+            refused(
+                "program_part_name_elsewhere",
+                format!(
+                    "{word} {lines} of the program read {} not as the part's name, and renaming the part to {} alone changes what the program makes; change {word} {lines} in the program",
+                    quote(from),
+                    quote(to)
+                ),
+            )
+        })
+    }
+
     pub(crate) fn holds(&self, before: &ProgramModel, after: &ProgramModel) -> bool {
         match self {
             Self::Placed { part, at, rotation } => {
@@ -251,7 +279,7 @@ impl Expected {
                 .of(after, part)
                 .is_some_and(|read| (read - value).abs() <= ACCUMULATED_ROUNDING),
             Self::Same(expected) => **expected == *after,
-            Self::Renamed { from, to } => {
+            Self::Renamed { from, to, .. } => {
                 let mut expected = serde_json::to_value(before).expect("models serialize");
                 renamed(&mut expected, from, to);
                 expected["continuations"][to.as_str()] = from.as_str().into();
@@ -270,8 +298,22 @@ impl Expected {
     }
 }
 
-/// `value` with the name `from` read as `to`, also where it starts a name the
-/// program derives from it ("a transform", "a/notch").
+/// Fields of a program model that hold names of something else than parts:
+/// parameters, materials, attributes and tags keep their names in a rename.
+const NOT_PART_NAMES: [&str; 9] = [
+    "params",
+    "material",
+    "attributes",
+    "tags",
+    "material_weights",
+    "weight_scope",
+    "production_scope",
+    "strength_classes",
+    "alternative_tags",
+];
+
+/// `value` with the part name `from` read as `to`, also where it starts a
+/// name the program derives from it ("a transform", "a/notch").
 fn renamed(value: &mut serde_json::Value, from: &str, to: &str) {
     match value {
         serde_json::Value::String(text)
@@ -296,8 +338,9 @@ fn renamed(value: &mut serde_json::Value, from: &str, to: &str) {
                 }
             }
             fields
-                .values_mut()
-                .for_each(|field| renamed(field, from, to));
+                .iter_mut()
+                .filter(|(key, _)| !NOT_PART_NAMES.contains(&key.as_str()))
+                .for_each(|(_, field)| renamed(field, from, to));
         }
         _ => {}
     }
@@ -504,7 +547,7 @@ impl Edit<'_> {
             ));
         }
         let call = self.creating_call(doing)?;
-        if call.name.is_none() {
+        let Some(made) = call.name else {
             return Err(refused(
                 "program_part_computed_name",
                 format!(
@@ -512,13 +555,24 @@ impl Edit<'_> {
                     call.lines.first
                 ),
             ));
-        }
-        let renamed = self.with(
+        };
+        // Only the literals that name the part change: a material, a
+        // parameter or a text that reads the same stays as it is.
+        let mut edits = vec![(made.clone(), quote(new))];
+        let mut kept = Vec::new();
+        for (bytes, line) in
             source_edit::string_literals(&self.source.file_name, self.text(), self.name)
-                .into_iter()
-                .map(|(bytes, _)| (bytes, quote(new)))
-                .collect(),
-        );
+        {
+            if bytes == made {
+                continue;
+            }
+            if self.names_the_part(&bytes, new) {
+                edits.push((bytes, quote(new)));
+            } else {
+                kept.push(line);
+            }
+        }
+        let renamed = self.with(edits);
         // The renamed part keeps the document part, and its ID, of the old name.
         let rewritten = match source_edit::continuation_of(&renamed.file_name, &renamed.source, new)
         {
@@ -533,8 +587,19 @@ impl Edit<'_> {
             Expected::Renamed {
                 from: self.name.to_owned(),
                 to: new.to_owned(),
+                kept,
             },
         ))
+    }
+
+    /// Whether the string literal at `bytes` names this part: read as
+    /// `other`, a name no part has, the program stops at that name.
+    fn names_the_part(&self, bytes: &Range<usize>, other: &str) -> bool {
+        matches!(
+            evaluate(&self.with(vec![(bytes.clone(), quote(other))])),
+            Err(RuleProgramApplyError::Program { message, .. })
+                if message.contains(&format!("{other:?}"))
+        )
     }
 
     fn mirror(

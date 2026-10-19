@@ -163,10 +163,26 @@ fn a_colour_is_written_into_the_creating_call_and_survives_the_next_apply() {
     assert_eq!(snapshot.occurrence(b).unwrap().color(), Some([200, 10, 0]));
 }
 
+/// Review 2026-10-19 WB-3: the parameter and the material that read like the
+/// part's name keep it.
 #[test]
 fn renaming_a_program_part_keeps_its_id() {
-    let mut app = app();
+    let named = "w = param(\"a\", 20)\n\
+                 box(\"a\", (w, 30, 40), at = (100, 0, 5))\n\
+                 box(\"b\", (200, 50, 10), material = \"a\")\n";
+    let mut app = KetchupApp::new();
+    app.apply_program_source(
+        RuleProgramSource {
+            variants: Default::default(),
+            file_name: "named.star".into(),
+            source: named.into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
     let a = occurrence(&app, "a").unwrap();
+    let b = occurrence(&app, "b").unwrap();
     select(&mut app, "a");
     let source_plan = app.occurrence_rename_source_plan().unwrap();
     let plan = app
@@ -180,11 +196,13 @@ fn renaming_a_program_part_keeps_its_id() {
         source(&app),
         format!(
             "{}continue_part(\"side\", was=\"a\")\n",
-            PARTS.replace("box(\"a\"", "box(\"side\"")
+            named.replace("box(\"a\"", "box(\"side\"")
         )
     );
     assert_eq!(occurrence(&app, "side"), Some(a));
+    assert_eq!(occurrence(&app, "b"), Some(b));
     assert_eq!(occurrence(&app, "a"), None);
+    assert_eq!(app.document.current().occurrences().count(), 2);
 }
 
 #[test]
