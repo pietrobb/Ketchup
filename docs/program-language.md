@@ -110,6 +110,21 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `contact(a, b)` | where two parts touch: `axis`, `face_a`, `face_b`, `min`, `max`, or `None` |
 | `joint(a, b, kind=, fasteners=, fastener=, volume=, max_gap=, name=, links=[])` | a declared connection; links explicitly associate operations and optional physical hardware |
 | `expect(name, terms=, op=, value=, tolerance=, unit=, hint=)` | a condition on the final model: a sum of `reach`/`distance`/`contact_area` measures compared with a value; the library's `expect_contact`, `expect_gap`, `expect_flush`, `expect_symmetric` and `expect_inside` are built on it |
+| `extrude(name, profile=, distance=, at=, tool=)`, `revolve(name, profile=, axis=, angle=, at=, tool=)` | a closed profile in the local XY plane padded along local +z or turned about `axis` |
+| `sweep(name, profile=, path=, bend=None, up=None, at=, tool=)`, `loft(name, sections=[(profile, z), ...], at=, tool=)` | a closed profile carried along a smooth path; a solid through 2 to 16 stacked sections |
+| `helix(radius=, pitch=, turns=, at=(0, 0, 0), axis=(0, 0, 1), start_angle=0, left=False)` | a sweep path; swept with `up=axis` the profile keeps its axial section on every turn, so a thread profile (`v_thread`, `trapezoid_thread`, `round_thread`) makes a thread |
+| `fillet(part, edges=[[face_a, face_b], ...], radius=, name=)`, `chamfer(part, edges=, distance=, name=)`, `cut(part, profile=, depth=, name=, through=False)`, `push_pull(part, face=, distance=, name=)` | operations on extruded and revolved parts |
+| `shell(part, thickness=, open=[faces], name=)` | the part hollowed to walls `thickness` thick, open at the listed faces; the inner wall along face F is `<name>.F` |
+| `subtract(part, tool, name=)`, `intersect(part, tool, name=)`, `union(part, other, name=)` | booleans in the order written; `union` needs the two to touch or overlap and leaves one part |
+| `copy(part, name)`, `mirror(part, axis="x", name=)` | an identical new part; the solid reflected across its own middle plane, faces keeping their names |
+| `move(part, by=)`, `rotate(part, axis=, angle=, pivot=)`, `place(part, origin=, z=, x=)` | a shift by a world vector, a turn in degrees, a new frame of the part |
+| `reach(part, direction)`, `material_along(part, point, direction)`, `distance(a, b)`, `nearest(part, among=None)` | how far a part reaches along a world direction; mm of material from a point, cuts and pockets taken out (`None` if unknown); `distance`, `overlap`, `touching` and `direction` to another part or to the closest one (`None` without one), on each part's box in its own frame |
+| `group(name, members, grounded=False)`, `component(name, members)`, `instance(name, component, at=, x=, z=)`, `continue_part(part, was=)` | groups in the document tree, a shared assembly and its instances, a renamed part keeping its ID |
+| `floor(z)`, `alternatives(tags)` | the support plane (z = 0 without it); tags that show the same thing in different detail, whose parts may overlap |
+| `slide(axis, min, max)`, `rotate_motion(axis, min, max, pivot=)`, `assembly_step(motion, start=, end=)`, `tool_access(name, envelope=, motion=, start=, end=)` | a motion for `joint(kind="motion")` in mm or degrees; an insertion in source order; a tool envelope's approach, checked by the `assembly_path` and `tool_access` validators |
+| `keep_clear(zone, name=, only=, ignore=[], hint=)`, `load_path(only=, carriers=[], name=, ignore=[], hint=)` | a zone no part may reach into; members that must pass their weight down |
+| `material_weight(material, source=, kg_m3=, kg_m2=)`, `weight_scope(tags)`, `area_load(name, kind=, kn_m2=, on=[tags], projected=True, source=)` | self weight and area loads in kN/m² on the load-path members |
+| `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design` |
 
 A box's faces are `x-`, `x+`, `y-`, `y+`, `z-` and `z+` in the part's own
 frame; their coordinates `(u, v)` are measured from the part's minimum corner:
@@ -135,6 +150,14 @@ cannot take half the dowel, it gets what it can and the other part (drilled
 into its edge) the rest, every hole `clearance` deeper than its dowel end
 (8x35 side to shelf: 12 mm + 26 mm). Parts that cannot hold the dowel report
 both parts' limits without aborting the model. A missing contact or impossible base row returns no centres, holes or hardware; correct the reported problem rather than treating the missing join as successful. An explicit row `offset` retains the requested centres and reports unsafe clearance instead of clamping them.
+
+`timber_design(materials, service_class=1, classes=TIMBER_CLASSES)` checks every
+`load_path()` member of the named materials after EN 1995-1-1 (EC5), e.g.
+`{"KVH C24": "C24"}`; `TIMBER_CLASSES` holds C16, C24 (EN 338:2016), GL24h and
+GL28h (EN 14080:2013). Report section `design.members` gives each member's checks
+(bending, shear, shear_notch, deflection_inst, deflection_fin, bearing and
+buckling of columns) with their utilization and `pass`, `fail` or `not_verified`
+when an input is missing. It is a computed check, not an authorized structural design.
 
 `distribute(parts, a, b, face=None)` spaces several parts between `a` and `b`
 with equal clear gaps (two shelves between bottom and top make three equal
