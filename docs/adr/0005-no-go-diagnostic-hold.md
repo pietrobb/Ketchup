@@ -4,7 +4,7 @@
 - Date: 2026-08-04
 - Decision owner: Architecture lead
 - Accountable approver: Project owner
-- Evidence: `artifacts/gate-a0/diagnostics/a0d-run-002/`, `crates/ketchup-exact/src/native_extrude_revolve.cc` (then `native.cc`), ADR 0004
+- Evidence: `crates/ketchup-exact/src/native_extrude_revolve.cc`, ADR 0004
 
 ## Context
 

@@ -81,6 +81,31 @@ def test_relative_links_of_current_documents_lead_to_tracked_files():
     assert missing == []
 
 
+QUOTED_PATH = re.compile(
+    r"`([\w.-]+(?:/[\w.-]+)+/?|[\w-]+\.(?:md|rs|cc|h|json|yaml|toml|py))`"
+)
+
+
+def test_the_files_an_adr_names_exist():
+    """Review 2026-10-17, documentation: ADRs 0002 and 0004 cite evidence files that are
+    not in the repository. A quoted path or file name must be a tracked file or folder,
+    named from the repository root or by its own name."""
+    tracked = set(
+        subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True)
+        .stdout.decode("utf-8")
+        .split("\0")
+    )
+    folders = {str(Path(name).parent).replace("\\", "/") for name in tracked}
+    names = {Path(name).name for name in tracked}
+    missing = []
+    for adr in sorted((ROOT / "docs" / "adr").glob("*.md")):
+        for path in sorted(set(QUOTED_PATH.findall(adr.read_text(encoding="utf-8")))):
+            path = path.rstrip("/")
+            if path not in tracked and path not in folders and path not in names:
+                missing.append(f"{adr.name}: {path}")
+    assert missing == []
+
+
 def test_the_readme_does_not_place_release_only_examples_in_the_repository():
     """Review 2026-10-15 status, low: `README.md` said every example is in
     `examples/`, but some are attached only to a release."""

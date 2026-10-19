@@ -4,7 +4,6 @@
 - Date: 2026-08-04
 - Decision owner: Architecture lead
 - Accountable approver: Project owner
-- Evidence: `artifacts/gate-a0/runs/strengthened-run-001/`, `artifacts/gate-a0/diagnostics/a0d-run-002/`, `KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md`
 
 ## Context
 

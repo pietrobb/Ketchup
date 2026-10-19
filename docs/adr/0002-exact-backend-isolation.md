@@ -3,7 +3,6 @@
 - Status: Accepted
 - Date: 2026-08-01
 - Decision owner: Project owner assisted by AI agents
-- Gate evidence: `artifacts/gate-b/metrics.json`
 
 ## Context
 
@@ -13,7 +12,7 @@ The in-process variant has the lowest conceptual complexity, but an unrecoverabl
 
 ## Evidence
 
-The formal release harness in `crates/ketchup-scheduler/tests/scheduler_reliability.rs` (formerly `gate_b.rs`) ran against the thresholds frozen in `thresholds/r0.yaml` and recorded every timing sample in `artifacts/gate-b/metrics.json`.
+The formal release harness in `crates/ketchup-scheduler/tests/scheduler_reliability.rs` ran against the frozen R0 thresholds.
 
 - 10,000 scheduling permutations produced zero stale-current inserts.
 - 100 deliberate worker aborts produced zero changes to the last committed canonical revision.
