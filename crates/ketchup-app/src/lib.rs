@@ -155,6 +155,7 @@ mod modal;
 mod native_document_inspection;
 mod occurrence_color_ui;
 mod planar_push_pull;
+mod program_detach;
 mod program_edit;
 mod program_evaluation;
 mod program_source_ui;
@@ -2287,6 +2288,7 @@ impl<E: std::error::Error> std::error::Error for WorkRecoveryMutationError<E> {
 struct ProgramDetachNotice {
     file_name: String,
     revision_id: u64,
+    reason: String,
 }
 
 pub struct KetchupApp {

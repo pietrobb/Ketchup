@@ -536,16 +536,18 @@ impl KetchupApp {
         publish: impl FnOnce(&mut Self, P),
     ) -> Result<T, WorkRecoveryMutationError<E>> {
         self.exact.mutation_readiness = MutationReadiness::Pending;
-        let owned_by_program = self.document.current_rule_program().is_some();
+        let owned_before =
+            (self.document.current_rule_program().is_some()).then(|| self.document.current());
         let result = self.mutate_document_with_work_recovery(mutate);
         match result {
             Ok(((value, publication), publication_error)) => {
-                if owned_by_program
+                if let Some(before) = owned_before
                     && !self.program_detach_warned
-                    && let Some(program) = self.document.detached_rule_program()
+                    && let Some(program) = self.document.detached_rule_program().cloned()
                 {
                     self.program_detach_notice = Some(crate::ProgramDetachNotice {
-                        file_name: program.file_name.clone(),
+                        reason: self.program_detach_reason(&before, &program),
+                        file_name: program.file_name,
                         revision_id: self.document.current().revision_id(),
                     });
                     self.program_detach_warned = true;

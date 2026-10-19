@@ -659,6 +659,9 @@ fn add_detach_warning(value: &mut Value, owned_before: bool, app: &KetchupApp) {
     value["program_detached"] = detached.into();
     if detached {
         value["warning"] = PROGRAM_DETACHED_WARNING.into();
+        if let Some(notice) = &app.program_detach_notice {
+            value["detach_reason"] = notice.reason.clone().into();
+        }
     }
 }
 

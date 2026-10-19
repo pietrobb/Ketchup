@@ -1224,7 +1224,10 @@ impl KetchupApp {
             self.program_detach_notice = None;
             return;
         }
-        let arguments = BTreeMap::from([("file", notice.file_name.clone())]);
+        let arguments = BTreeMap::from([
+            ("file", notice.file_name.clone()),
+            ("reason", notice.reason.clone()),
+        ]);
         let mut open = true;
         let mut undo = false;
         egui::Window::new(self.catalog.text("program-detached-title"))

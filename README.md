@@ -54,7 +54,7 @@ The [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketch
 | Example | Try it for |
 |---|---|
 | [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) | The drawer assembly described above, with joints, travel limits, and a motion study. |
-| [`table.ketchup`](examples/programs/table.ketchup) | A small table driven by a rule program ([`table.star`](examples/programs/table.star)). It is a good first model to edit by hand or with AI. |
+| [`table.ketchup`](examples/programs/table.ketchup) | A small table driven by a rule program ([`table.star`](examples/programs/table.star)). It is a good first model to edit by hand or with AI: moving, turning, mirroring, deleting, renaming or recolouring a part, or changing a value in the parameter panel, is written into the program, so the table stays parametric. |
 | [`wardrobe-chair-table.ketchup`](examples/wardrobe-chair-table.ketchup) | Furniture with 82 bodies and hundreds of drilled holes. |
 | [`tiny-house.ketchup`](https://github.com/pietrobb/Ketchup/releases/download/sample-files/tiny-house.ketchup) | A timber-frame house of about 750 parts, with studs, noggins, and insulation, generated from [`tiny-house.star`](examples/programs/tiny-house.star). You can try layers, material takeoff (**Tools**), and project drawings. A 25 MB download from the [sample files](https://github.com/pietrobb/Ketchup/releases/tag/sample-files) release. |
 | [`house-project.ketchup`](examples/house-project.ketchup) | A larger house generated from [`house-project.star`](examples/programs/house-project.star). |

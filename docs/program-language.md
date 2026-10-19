@@ -259,7 +259,15 @@ again or repair a separated joint; contact validation still reports that separat
   rotated. Fillet, chamfer, cut and push_pull apply to extruded and revolved
   parts only; paths are planar or spatial lines and arcs, not splines.
 - Program apply/patch retains the parametrically owned source and reconciles surviving
-  parts; arbitrary typed edits detach it (Undo restores ownership).
+  parts. Editing a part the program makes, in the window or by a typed edit, is written
+  into the source: a move edits a literal `at=` or adds `move()`, a turn adds `rotate()`,
+  delete removes the creating call, a colour sets `color=` in it, rename changes the name
+  and adds `continue_part()`, mirror adds `mirrored()`, Push/Pull, fillet and chamfer add
+  their call, and a panel value one `param()` drives becomes that parameter's override.
+  A part made in a loop or by the program's own function, a part another line uses, or a
+  value written in the source is refused with the line to change. Other edits (scaling,
+  components and their copies, new geometry) detach the program, the window says why, and
+  Undo restores ownership.
 - Preserve the user's requested simple joints: do not replace dowels with screws or
   brackets without approval. Check transport envelope, access and assembly order early;
   offer a modular alternative, do not impose it. Contact/support checks do not establish

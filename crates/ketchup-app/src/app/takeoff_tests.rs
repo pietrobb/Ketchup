@@ -191,6 +191,39 @@ fn the_first_detaching_edit_says_so_and_undo_keeps_the_program() {
     assert!(harness.query_by_label(&keep).is_none());
 }
 
+/// #2562: the detach notice says which part the edit changed and why the
+/// program cannot write that change.
+#[test]
+fn a_detaching_edit_names_the_part_and_why() {
+    let mut app = KetchupApp::new();
+    let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "house.star".into(),
+        source: SOURCE.into(),
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program.clone(), true).unwrap();
+    app.program_evaluations.get_blocking(&program).unwrap();
+    let part = app.document.current().occurrences().next().unwrap().clone();
+    let twice = Transform::from_matrix([
+        2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    app.apply_batch_with_work_recovery(&CommandBatch::new(vec![
+        CanonicalCommand::SetOccurrenceTransform {
+            id: part.id(),
+            transform: part.transform().compose(twice),
+        },
+    ]))
+    .unwrap();
+    assert!(app.document.current_rule_program().is_none());
+    let scaled = app.catalog.format(
+        "program-detached-reason-scaled",
+        &BTreeMap::from([("part", part.name().to_owned())]),
+    );
+    assert_eq!(app.program_detach_notice.as_ref().unwrap().reason, scaled);
+}
+
 /// Review 2026-10-09 UNDO-1: "Undo the edit" used to call Undo blindly, so an
 /// edit made after the detaching one (by hand or by an MCP client) was undone
 /// instead and the program stayed detached. A later edit closes the notice and
