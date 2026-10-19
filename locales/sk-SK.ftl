@@ -1479,6 +1479,7 @@ program-detached-reason-scaled = zmenila mierku dielu { $part } a program diel v
 program-detached-reason-shape = zmenila tvar dielu { $part } tak, ako to program zapísať nevie
 program-detached-reason-edit = okno túto úpravu dielu { $part } do programu zapísať nevie
 program-detached-reason-other = zmenila niečo, čo program neopisuje (skupiny, vrstvy, spoje alebo výkresy)
+program-detached-reason-emptied = zmazala všetky diely, ktoré program vytvára, a program nemôže byť prázdny
 program-detached-undo = Vrátiť úpravu a nechať program
 program-detached-keep = Ponechať úpravu
 digest-language-changed = Rozhranie je teraz po slovensky

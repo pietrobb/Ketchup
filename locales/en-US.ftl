@@ -1479,6 +1479,7 @@ program-detached-reason-scaled = it scaled { $part }, and the program can only m
 program-detached-reason-shape = it changed the shape of { $part } in a way the program cannot write
 program-detached-reason-edit = the window cannot write this edit of { $part } into the program
 program-detached-reason-other = it changed something the program does not describe (groups, layers, joints or drawings)
+program-detached-reason-emptied = it deleted every part the program makes, and a program cannot be empty
 program-detached-undo = Undo the edit and keep the program
 program-detached-keep = Keep the edit
 digest-language-changed = The interface is now in English

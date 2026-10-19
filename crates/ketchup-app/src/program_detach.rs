@@ -34,6 +34,9 @@ impl KetchupApp {
             self.catalog
                 .format(key, &BTreeMap::from([("part", part.to_owned())]))
         };
+        if after.occurrences().next().is_none() {
+            return self.catalog.text("program-detached-reason-emptied");
+        }
         for new in after.occurrences() {
             let Some(old) = before.occurrence(new.id()) else {
                 return reason("program-detached-reason-added", new.name());

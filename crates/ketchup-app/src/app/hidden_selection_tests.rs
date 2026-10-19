@@ -112,10 +112,30 @@ fn a_part_hidden_by_a_layer_or_by_redo_is_never_deleted() {
     assert!(snapshot.occurrence(rafter).is_some());
     assert!(snapshot.occurrence(wall).is_some());
 
-    // Shown again, the same selection deletes.
+    // Shown again, the same selection deletes. Both parts were every line of
+    // the program, which cannot be empty: the program goes to Undo, saying so.
     assert!(app.set_tag_visibility(roof, true));
     assert!(app.delete_selected());
     let snapshot = app.document.current();
     assert!(snapshot.occurrence(rafter).is_none());
     assert!(snapshot.occurrence(wall).is_none());
+    assert!(app.document.current_rule_program().is_none());
+    assert_eq!(
+        app.document
+            .detached_rule_program()
+            .map(|p| p.source.as_str()),
+        Some(SOURCE)
+    );
+    let notice = app.program_detach_notice.as_ref().unwrap();
+    assert_eq!(
+        notice.reason,
+        app.catalog.text("program-detached-reason-emptied")
+    );
+    assert!(app.undo());
+    assert_eq!(
+        app.document
+            .current_rule_program()
+            .map(|p| p.source.as_str()),
+        Some(SOURCE)
+    );
 }

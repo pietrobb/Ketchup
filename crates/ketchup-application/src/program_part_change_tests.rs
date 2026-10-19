@@ -213,3 +213,19 @@ fn nothing_is_written_for_what_the_program_does_not_make_as_a_part() {
             .is_none()
     );
 }
+
+#[test]
+fn deleting_every_part_writes_no_empty_program() {
+    let source = program(TWO);
+    let every = ["a", "b"].map(|name| (name.to_owned(), PartChange::Delete));
+    assert!(
+        rewrite_rule_program_parts(&source, &every)
+            .unwrap()
+            .is_none()
+    );
+    // A program with a line left keeps owning the parts it still makes.
+    let kept = program(&format!("size = param(\"size\", 5)\n{TWO}"));
+    let rewritten = rewrite_rule_program_parts(&kept, &every).unwrap().unwrap();
+    assert_eq!(rewritten.source, "size = param(\"size\", 5)\n");
+    assert!(model(&rewritten).parts.is_empty());
+}

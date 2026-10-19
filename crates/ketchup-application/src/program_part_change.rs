@@ -73,7 +73,8 @@ fn appended(source: &RuleProgramSource, lines: &str) -> RuleProgramSource {
 
 /// Rewrites `source` so that it makes each part changed as asked, in order,
 /// and nothing else changes. `None` when a change names something that is
-/// not a part the program makes (a component or a copy of one).
+/// not a part the program makes (a component or a copy of one), or the
+/// changes delete every line of the program.
 ///
 /// # Errors
 /// A part the program cannot change in place (made in a loop or by a
@@ -133,7 +134,9 @@ pub fn rewrite_rule_program_parts(
         source = rewritten;
         evaluated = after;
     }
-    Ok(Some(source))
+    // Every line deleted: a program cannot be empty, and nothing of it is left
+    // to keep, so the edit is committed as it is.
+    Ok((!source.source.trim().is_empty()).then_some(source))
 }
 
 /// What the program must make after a change, from what it made before.
