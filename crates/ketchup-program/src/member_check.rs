@@ -8,7 +8,9 @@
 
 use crate::continuous_span;
 use crate::loads::{LOAD_KINDS, LoadReport, Loads, MemberLoad, axes, extents};
-use crate::model::{Part, ProgramModel, ProgramOperation, ProgramPartBody, ProgramProfileSegment};
+use crate::model::{
+    Part, ProgramMirror, ProgramModel, ProgramOperation, ProgramPartBody, ProgramProfileSegment,
+};
 use ketchup_geometry::linalg::{cross, cross2, dot, length, normalize, scale, sub};
 use ketchup_tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
@@ -770,16 +772,54 @@ struct Shape {
     depth_at: Option<Box<dyn Fn(f64) -> f64>>,
 }
 
+/// The mirrors among `operations` (review 2026-10-19 PG-13: they reflect the
+/// solid as shaped before them, so a profile mirrored along the grain has its
+/// notch at the other end).
+fn mirrors(operations: &[ProgramOperation]) -> Vec<&ProgramMirror> {
+    operations
+        .iter()
+        .filter_map(|operation| match operation {
+            ProgramOperation::Mirror(mirror) => Some(mirror),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A point of the part's frame where `mirrors` leave it.
+fn reflected(mut point: [f64; 3], mirrors: &[&ProgramMirror]) -> [f64; 3] {
+    for mirror in mirrors {
+        point[mirror.axis] = 2.0 * mirror.center_mm - point[mirror.axis];
+    }
+    point
+}
+
+/// A line profile in the part's local XY where `mirrors` leave it; a mirror
+/// across the extrusion leaves it as it is.
+fn reflected_profile(
+    profile: &[ProgramProfileSegment],
+    mirrors: &[&ProgramMirror],
+) -> Vec<ProgramProfileSegment> {
+    let at = |p: [f64; 2]| {
+        let [x, y, _] = reflected([p[0], p[1], 0.0], mirrors);
+        [x, y]
+    };
+    profile
+        .iter()
+        .map(|s| ProgramProfileSegment::line(s.name.clone(), at(s.start_mm), at(s.end_mm)))
+        .collect()
+}
+
 /// The through-cuts of `part` that bore along its whole grain (when `outline`
 /// is its cross-section) and, when another operation changes its section along
-/// the grain in a way the check does not model, why. `grain` is in the part's
-/// frame; `narrower` is the narrower side of the section.
-fn changes<'a>(
-    part: &'a Part,
+/// the grain in a way the check does not model, why. `outline`, `grain` and
+/// the bores are where the part's mirrors leave them; `narrower` is the
+/// narrower side of the section.
+fn changes(
+    part: &Part,
     outline: Option<&[ProgramProfileSegment]>,
     grain: [f64; 3],
     narrower: f64,
-) -> (Vec<&'a [ProgramProfileSegment]>, Option<&'static str>) {
+) -> (Vec<Vec<ProgramProfileSegment>>, Option<&'static str>) {
     let mut bores = Vec::new();
     let mut unmodelled = None;
     // A hole across the grain or a rounded or chamfered edge up to 5 % of
@@ -788,16 +828,17 @@ fn changes<'a>(
     let small = 0.05 * narrower;
     // (start, end, diameter) along the grain of each such hole.
     let mut across = Vec::new();
-    for operation in &part.operations {
+    for (index, operation) in part.operations.iter().enumerate() {
+        let later = mirrors(&part.operations[index + 1..]);
         match operation {
             ProgramOperation::Cut(cut)
                 if outline.is_some_and(|outline| {
                     cut.depth_mm.is_none()
                         && cut.segments.iter().all(ProgramProfileSegment::is_line)
-                        && encloses(outline, &cut.segments)
+                        && encloses(outline, &reflected_profile(&cut.segments, &later))
                 }) =>
             {
-                bores.push(cut.segments.as_slice());
+                bores.push(reflected_profile(&cut.segments, &later));
             }
             ProgramOperation::Cut(_)
             | ProgramOperation::Pocket(_)
@@ -810,10 +851,15 @@ fn changes<'a>(
                 );
             }
             ProgramOperation::Hole(hole)
-                if dot(hole.inward, grain).abs() <= ROUNDING * length(hole.inward)
+                if dot(
+                    sub(reflected(hole.inward, &later), reflected([0.0; 3], &later)),
+                    grain,
+                )
+                .abs()
+                    <= ROUNDING * length(hole.inward)
                     && hole.diameter_mm <= small =>
             {
-                let at = dot(hole.entry_mm, grain);
+                let at = dot(reflected(hole.entry_mm, &later), grain);
                 let radius = hole.diameter_mm / 2.0;
                 across.push((at - radius, at + radius, hole.diameter_mm));
             }
@@ -830,7 +876,7 @@ fn changes<'a>(
                      edge larger than 5 % of its narrower side)",
                 );
             }
-            // A mirror leaves the section the same.
+            // Taken by `reflected` above and in `shape`.
             ProgramOperation::Mirror(_) => {}
         }
     }
@@ -876,6 +922,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     if !segments.iter().all(ProgramProfileSegment::is_line) {
         return Err("the member's profile has curved edges");
     }
+    let segments = &reflected_profile(segments, &mirrors(&part.operations));
     let size = extents(part);
     let world = axes(part);
     let long = (0..3)

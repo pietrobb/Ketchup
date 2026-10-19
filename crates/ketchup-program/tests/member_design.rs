@@ -282,6 +282,61 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
 }
 
 #[test]
+fn a_beam_mirrored_into_its_shape_is_checked_as_the_same_beam_drawn() {
+    // Review 2026-10-19 PG-13: the beam notched over post a, under a deck of
+    // 8 kN/m² on its half next to post a, drawn with its notch at the other
+    // end or on its top and mirrored into place. The check took the profile
+    // as drawn, so it found the notch over post b, which carries a quarter of
+    // the load, and passed what the beam drawn in place fails.
+    let source = |profile: &str, then: &str| {
+        format!(
+            "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 8.0, on = [\"deck\"], source = \"test\")
+timber_design({{\"C24\": \"C24\"}})
+box(\"post a\", (100, 100, 2040), material = \"C24\", grounded = True)
+box(\"post b\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+part = extrude(\"beam\", profile = {profile}, distance = 100, material = \"C24\", tags = [\"frame\"])
+{then}
+place(part, origin = (0, 100, 2000), z = (0, -1, 0), x = (1, 0, 0))
+box(\"deck\", (2000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+"
+        )
+    };
+    let checks = |profile: &str, then: &str| {
+        let report = report(&source(profile, then), &[]);
+        let member = member(&report, "beam").clone();
+        assert_eq!(member.role, "beam", "{then}");
+        assert_eq!(member.missing, Vec::<String>::new(), "{then}");
+        member
+    };
+    let drawn = checks(
+        "[(0, 40), (150, 40), (150, 0), (4000, 0), (4000, 200), (0, 200)]",
+        "",
+    );
+    assert_eq!(drawn.status, "fail");
+    assert!(utilization(&drawn, "shear_notch") > 1.0);
+    let mirrored = [
+        (
+            "[(0, 0), (3850, 0), (3850, 40), (4000, 40), (4000, 200), (0, 200)]",
+            "mirror(part, axis = \"x\")",
+        ),
+        (
+            "[(0, 0), (4000, 0), (4000, 200), (150, 200), (150, 160), (0, 160)]",
+            "mirror(part, axis = \"y\")",
+        ),
+    ];
+    for (profile, then) in mirrored {
+        let member = checks(profile, then);
+        for check in &drawn.checks {
+            close(utilization(&member, check.name), check.utilization);
+            let at = member.checks.iter().find(|c| c.name == check.name);
+            assert_eq!(at.map(|c| &c.at), Some(&check.at), "{then}");
+        }
+        assert_eq!(member.status, drawn.status, "{then}");
+    }
+}
+
+#[test]
 fn a_beam_drawn_from_the_side_bends_on_its_notched_section_at_mid_span() {
     // Review 2026-10-18 PG-8: the beam of `beam` 100 x 200 drawn as its side
     // profile, its underside notched 100 mm deep over 1950..2050 mm, where the
