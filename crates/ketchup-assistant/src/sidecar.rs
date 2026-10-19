@@ -3565,10 +3565,7 @@ impl AssistantCadEditProgram {
             } => {
                 let value_valid = match value {
                     AssistantCadParameterValue::Number(value) => {
-                        value.is_finite()
-                            && value.abs() <= MAX_COORDINATE_MM
-                            && (*value_type != AssistantCadParameterValueType::Length
-                                || *value > 0.0)
+                        value.is_finite() && value.abs() <= MAX_COORDINATE_MM
                     }
                     AssistantCadParameterValue::Points(points_mm) => {
                         parameter_path == "points"

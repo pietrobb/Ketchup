@@ -150,6 +150,78 @@ fn an_evaluator_input_takes_a_new_value_in_one_undo_step() {
     assert_eq!(session.snapshot().canonical_digest(), before);
 }
 
+fn set_length(feature: FeatureId, path: &str, value: f64) -> Operation {
+    Operation::SetFeatureParameter {
+        feature_id: feature.0,
+        parameter_path: path.into(),
+        value_type: AssistantCadParameterValueType::Length,
+        value: value.into(),
+    }
+}
+
+/// A coordinate may be zero or negative; whether a length must be positive is
+/// decided by the model for each parameter.
+#[test]
+fn a_coordinate_takes_zero_or_a_negative_value_and_the_model_judges_lengths() {
+    let mut session = DocumentSession::default();
+    commit(&mut session, vec![super::document_session::part()]);
+    let center_x = |snapshot: &Snapshot, sketch: FeatureId| {
+        let target =
+            FeatureParameterTarget::new(sketch, "entities.1.center.x", ParameterValueType::Length)
+                .unwrap();
+        snapshot.feature_parameter_value(&target)
+    };
+    let snapshot = session.snapshot();
+    let sketch = snapshot
+        .features()
+        .map(|feature| feature.id())
+        .find(|id| center_x(&snapshot, *id).is_some())
+        .expect("the part's circle sketch");
+    assert_eq!(center_x(&snapshot, sketch), Some(0.0));
+
+    commit(
+        &mut session,
+        vec![set_length(sketch, "entities.1.center.x", -10.0)],
+    );
+    assert_eq!(center_x(&session.snapshot(), sketch), Some(-10.0));
+    commit(
+        &mut session,
+        vec![set_length(sketch, "entities.1.center.x", 0.0)],
+    );
+    assert_eq!(center_x(&session.snapshot(), sketch), Some(0.0));
+
+    // A negative blind extrusion sweeps against the profile normal.
+    let feature = extrusion(&session.snapshot());
+    let distance =
+        FeatureParameterTarget::new(feature, "extent.distance", ParameterValueType::Length)
+            .unwrap();
+    commit(
+        &mut session,
+        vec![set_length(feature, "extent.distance", -5.0)],
+    );
+    assert_eq!(
+        session.snapshot().feature_parameter_value(&distance),
+        Some(-5.0)
+    );
+
+    // Whether a length must be positive is the model's rule for that parameter.
+    let digest = session.snapshot().canonical_digest();
+    for refused in [
+        set_length(feature, "extent.distance", 0.0),
+        set_length(sketch, "entities.1.radius", 0.0),
+        set_length(sketch, "entities.1.radius", -3.0),
+    ] {
+        let error = session
+            .plan_cad_program(&program(vec![refused.clone()]), &BTreeSet::new())
+            .expect_err(&format!("{refused:?} must be refused"));
+        assert!(
+            matches!(error, SessionError::Planning(_) | SessionError::Prepare(_)),
+            "{refused:?}: {error:?}"
+        );
+        assert_eq!(session.snapshot().canonical_digest(), digest);
+    }
+}
+
 #[test]
 fn dimensions_and_inputs_that_do_not_resolve_are_refused_without_a_change() {
     let mut session = DocumentSession::default();
