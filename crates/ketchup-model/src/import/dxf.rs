@@ -65,7 +65,7 @@ const UNDERLAY_READING: DxfReading = DxfReading {
 };
 
 mod underlay;
-pub use underlay::{DxfUnderlay, read_dxf_underlay};
+pub use underlay::{DxfUnderlay, read_dxf_underlay, read_dxf_underlay_from};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DxfImportOptions {
@@ -147,6 +147,8 @@ impl ParsedDxf {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DxfImportError {
     Empty,
+    /// The drawing could not be read on (an underlay is read from its file as it goes).
+    Read(std::io::ErrorKind),
     SourceTooLarge,
     NonAscii,
     LineTooLong,
@@ -208,6 +210,9 @@ impl fmt::Display for DxfImportError {
             }
             Self::InvalidReport(cause) => {
                 return write!(formatter, "DXF unsupported/loss report is invalid: {cause}");
+            }
+            Self::Read(kind) => {
+                return write!(formatter, "the DXF could not be read on: {kind}");
             }
             Self::Empty => "DXF source is empty",
             Self::SourceTooLarge => "DXF source exceeds the bounded 8 MiB envelope",

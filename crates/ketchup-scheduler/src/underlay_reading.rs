@@ -4,10 +4,11 @@
 //! worker alone.
 
 use std::fmt;
+use std::io::{BufReader, Cursor};
 use std::path::Path;
 use std::time::Duration;
 
-use ketchup_model::import::{DxfImportError, DxfImportOptions, read_dxf_underlay};
+use ketchup_model::import::{DxfImportError, DxfImportOptions, read_dxf_underlay_from};
 
 use crate::WorkerError;
 use crate::program_worker::PROGRAM_WORKER_MEMORY_BYTES;
@@ -19,8 +20,11 @@ pub(crate) fn read_underlay(input: &UnderlayInput) -> UnderlayOutcome {
 }
 
 fn read(input: &UnderlayInput) -> Result<UnderlayOutcome, UnderlayRefusal> {
-    let source = std::fs::read(&input.source).map_err(|error| file(&input.source, &error))?;
-    let (dxf, dwg) = if input.dwg {
+    let options = DxfImportOptions::new(input.unit_if_unitless);
+    // A DXF file is read line by line; a DWG drawing is converted whole, and its DXF text
+    // read line by line from memory.
+    let (underlay, dwg) = if input.dwg {
+        let source = std::fs::read(&input.source).map_err(|error| file(&input.source, &error))?;
         let drawing = ketchup_dwg::dwg_to_dxf(&source, usize::MAX)
             .map_err(|error| UnderlayRefusal::Dwg(error.into()))?;
         drop(source);
@@ -29,19 +33,22 @@ fn read(input: &UnderlayInput) -> Result<UnderlayOutcome, UnderlayRefusal> {
             .into_iter()
             .map(|records| (records.record_type, records.count))
             .collect();
-        (drawing.dxf, Some((drawing.version, skipped)))
+        let underlay = read_dxf_underlay_from(Cursor::new(drawing.dxf), options);
+        (underlay, Some((drawing.version, skipped)))
     } else {
-        (source, None)
+        let source =
+            std::fs::File::open(&input.source).map_err(|error| file(&input.source, &error))?;
+        (
+            read_dxf_underlay_from(BufReader::new(source), options),
+            None,
+        )
     };
-    let underlay = read_dxf_underlay(&dxf, DxfImportOptions::new(input.unit_if_unitless)).map_err(
-        |error| match error {
-            DxfImportError::UnitsRequired => UnderlayRefusal::UnitsRequired,
-            error => UnderlayRefusal::Dxf {
-                report: error.to_string(),
-            },
+    let underlay = underlay.map_err(|error| match error {
+        DxfImportError::UnitsRequired => UnderlayRefusal::UnitsRequired,
+        error => UnderlayRefusal::Dxf {
+            report: error.to_string(),
         },
-    )?;
-    drop(dxf);
+    })?;
     std::fs::write(&input.output, underlay.lines.encode())
         .map_err(|error| file(&input.output, &error))?;
     Ok(UnderlayOutcome::Read(Box::new(UnderlayRead {

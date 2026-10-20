@@ -2,7 +2,9 @@
 //! Undo step to add or remove it, and lines that survive their container blob.
 use ketchup_model::document::{DocumentStore, TagId};
 use ketchup_model::graph::sha256_bytes;
-use ketchup_model::import::{DxfImportOptions, read_dxf_underlay};
+use ketchup_model::import::{
+    DxfImportError, DxfImportOptions, read_dxf_underlay, read_dxf_underlay_from,
+};
 use ketchup_model::underlay::{
     UnderlayLines, UnderlayLinesError, plan_underlay, plan_underlay_removal,
 };
@@ -68,6 +70,68 @@ fn lines_join_only_where_two_of_them_meet_alone() {
     assert_eq!(polylines.len(), 4);
     let ring = polylines.iter().find(|points| points.len() == 4).unwrap();
     assert_eq!(ring.first(), ring.last());
+}
+
+#[test]
+fn a_drawing_read_line_by_line_keeps_entities_that_wait_for_their_seqend_whole() {
+    let blocks = concat!(
+        "0\nSECTION\n2\nBLOCKS\n",
+        "0\nBLOCK\n8\n0\n2\npart\n70\n0\n10\n0\n20\n0\n",
+        "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n2\n21\n0\n",
+        "0\nENDBLK\n0\nENDSEC\n",
+    );
+    let entities = concat!(
+        "999\na comment\n",
+        // Left out with its vertices: a POLYLINE in paper space.
+        "0\nPOLYLINE\n8\nframe\n67\n1\n66\n1\n70\n0\n",
+        "0\nVERTEX\n8\nframe\n10\n0\n20\n0\n0\nVERTEX\n8\nframe\n10\n9\n20\n0\n0\nSEQEND\n",
+        "0\nPOLYLINE\n8\nwalls\n66\n1\n70\n0\n",
+        "0\nVERTEX\n8\nwalls\n10\n0\n20\n0\n0\nVERTEX\n8\nwalls\n10\n5\n20\n0\n",
+        "0\nVERTEX\n8\nwalls\n10\n5\n20\n5\n0\nSEQEND\n",
+        "0\nINSERT\n8\ndoors\n2\npart\n10\n0\n20\n0\n66\n1\n",
+        "0\nATTRIB\n2\nNAME\n1\nfirst\n10\n0\n20\n0\n0\nSEQEND\n",
+        "0\nLINE\n8\naxes\n10\n0\n20\n0\n11\n0\n21\n7\n",
+    );
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n{blocks}0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+    )
+    .replace('\n', "\r\n");
+    let options = DxfImportOptions::new(None);
+    let whole = read_dxf_underlay(source.as_bytes(), options).unwrap();
+    // A buffer of four bytes splits every line across reads.
+    let by_lines = read_dxf_underlay_from(
+        std::io::BufReader::with_capacity(4, std::io::Cursor::new(source.as_bytes())),
+        options,
+    )
+    .unwrap();
+    assert_eq!(by_lines, whole);
+    assert_eq!(whole.layers, ["walls", "doors", "axes"]);
+    assert_eq!(whole.lines.segment_count(), 4);
+    let counted = |code: &str| {
+        whole
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code() == code)
+            .map(|diagnostic| diagnostic.count())
+    };
+    assert_eq!(counted("dxf.entity-paper-space"), Some(1));
+    assert_eq!(counted("dxf.entity-unsupported"), None);
+    assert_eq!(counted("dxf.entity-unreadable"), None);
+}
+
+#[test]
+fn a_line_too_long_or_a_missing_end_of_file_is_refused_while_reading() {
+    let long = dxf(&line(&"x".repeat(600), [0.0, 0.0], [1.0, 0.0]));
+    assert_eq!(
+        read_dxf_underlay(&long, DxfImportOptions::new(None)),
+        Err(DxfImportError::LineTooLong)
+    );
+    let source = dxf(&line("0", [0.0, 0.0], [1.0, 0.0]));
+    let cut = &source[..source.len() - "0\nEOF\n".len()];
+    assert_eq!(
+        read_dxf_underlay(cut, DxfImportOptions::new(None)),
+        Err(DxfImportError::MalformedSections)
+    );
 }
 
 #[test]

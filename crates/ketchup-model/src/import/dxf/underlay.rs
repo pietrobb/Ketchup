@@ -1,9 +1,16 @@
 //! A DXF drawing read as an underlay: every line, arc and curve it draws, by layer, as
 //! polylines, without making profiles of them. An entity it cannot read is left out and
 //! counted in the report.
+//!
+//! The drawing is read line by line, never whole: a first pass finds its text encoding, a
+//! second checks its sections and keeps its header and blocks, and a third reads its
+//! entities one at a time (with the vertices or attributes that follow one) straight into
+//! the lines. Memory grows with the lines kept, not with the size of the file.
 
 use super::*;
 use crate::underlay::{UnderlayLines, UnderlayLinesBuilder};
+use std::io::{BufRead, Seek, SeekFrom};
+use std::ops::Range;
 
 /// The lines of a DXF drawing and what reading it reported.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,23 +28,381 @@ pub fn read_dxf_underlay(
     source: &[u8],
     options: DxfImportOptions,
 ) -> Result<DxfUnderlay, DxfImportError> {
-    let (units, _, parsed, diagnostics) = read_dxf(source, options, UNDERLAY_READING)?;
+    read_dxf_underlay_from(std::io::Cursor::new(source), options)
+}
+
+/// [`read_dxf_underlay`] of a drawing read line by line from `source`, such as a buffered
+/// file, which is read three times from its start.
+pub fn read_dxf_underlay_from(
+    mut source: impl BufRead + Seek,
+    options: DxfImportOptions,
+) -> Result<DxfUnderlay, DxfImportError> {
+    let encoding = text_encoding(&mut source)?;
+    let mut diagnostics = DiagnosticCounts::new(UNDERLAY_READING);
+    let sections = read_sections(PairReader::new(&mut source, encoding)?, &mut diagnostics)?;
+    let (units, _) = parse_header(&sections.header.pairs(), options, &mut diagnostics)?;
+    let mut entity_count = 0;
+    let blocks = parse_blocks(
+        &sections.blocks.pairs(),
+        units,
+        &mut entity_count,
+        &mut diagnostics,
+    )?;
+    if !sections.entities {
+        return Err(DxfImportError::MissingEntitiesSection);
+    }
+    let mut reader = PairReader::new(&mut source, encoding)?;
     let mut builder = UnderlayLinesBuilder::default();
-    for loose in &parsed.loose {
-        builder.add_loose(&loose.layer, &loose.segment);
+    let mut layers = BTreeSet::new();
+    let mut entity = PairBuffer::default();
+    let mut read_entity = |entity: &mut PairBuffer, diagnostics: &mut DiagnosticCounts| {
+        let mut parsed = ParsedEntities::default();
+        parse_entities(
+            &entity.pairs(),
+            units,
+            Some(&blocks),
+            &mut entity_count,
+            &mut parsed,
+            diagnostics,
+        )?;
+        for loose in &parsed.loose {
+            builder.add_loose(&loose.layer, &loose.segment);
+        }
+        for profile in &parsed.explicit_profiles {
+            builder.add(&profile.layer, &profile.segments);
+        }
+        layers.append(&mut parsed.layers);
+        entity.clear();
+        Ok::<_, DxfImportError>(())
+    };
+    reader.skip_to_section("ENTITIES")?;
+    let mut value = String::new();
+    // An entity ends where the next begins, unless it waits for its SEQEND: a POLYLINE
+    // always, an INSERT whose own record has group 66 = 1 (as the profile import reads
+    // them, every entity up to the SEQEND belongs to it).
+    let (mut awaits_seqend, mut in_head) = (false, false);
+    loop {
+        let code = reader
+            .next_pair(&mut value)?
+            .ok_or(DxfImportError::MalformedSections)?;
+        if code == 0 && value.eq_ignore_ascii_case("ENDSEC") {
+            break;
+        }
+        if code == 0 && awaits_seqend {
+            awaits_seqend = !value.eq_ignore_ascii_case("SEQEND");
+            in_head = false;
+        } else if code == 0 {
+            if !entity.is_empty() {
+                read_entity(&mut entity, &mut diagnostics)?;
+            }
+            awaits_seqend = value.eq_ignore_ascii_case("POLYLINE");
+            in_head = true;
+        } else if code == 66 && in_head && entity.is_head("INSERT") {
+            // Waiting too long only joins whole entities into one read; ending too early
+            // would cut one.
+            awaits_seqend |= value.parse::<i64>() == Ok(1);
+        }
+        entity.push(code, &value);
     }
-    for profile in &parsed.explicit_profiles {
-        builder.add(&profile.layer, &profile.segments);
+    if !entity.is_empty() {
+        read_entity(&mut entity, &mut diagnostics)?;
     }
-    let (layers, lines) = builder.finish();
+    let (layer_names, lines) = builder.finish();
     if lines.segment_count() == 0 {
         return Err(DxfImportError::NoSupportedGeometry);
     }
-    let diagnostics = finish_report(diagnostics, &parsed.layers, units)?;
+    let diagnostics = finish_report(diagnostics, &layers, units)?;
     Ok(DxfUnderlay {
         units,
-        layers,
+        layers: layer_names,
         lines,
         diagnostics,
     })
+}
+
+/// Group codes and values, the values in one text so a section or an entity costs a
+/// few allocations, not one per value.
+#[derive(Default)]
+struct PairBuffer {
+    text: String,
+    pairs: Vec<(i16, Range<usize>)>,
+}
+
+impl PairBuffer {
+    fn push(&mut self, code: i16, value: &str) {
+        let start = self.text.len();
+        self.text.push_str(value);
+        self.pairs.push((code, start..self.text.len()));
+    }
+
+    fn pairs(&self) -> Vec<DxfPair<'_>> {
+        self.pairs
+            .iter()
+            .map(|(code, range)| DxfPair {
+                code: *code,
+                value: &self.text[range.clone()],
+            })
+            .collect()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+
+    /// Whether the buffer holds an entity of `kind`.
+    fn is_head(&self, kind: &str) -> bool {
+        self.pairs.first().is_some_and(|(code, range)| {
+            *code == 0 && self.text[range.clone()].eq_ignore_ascii_case(kind)
+        })
+    }
+
+    fn clear(&mut self) {
+        self.text.clear();
+        self.pairs.clear();
+    }
+}
+
+/// What the sections of a drawing hold that its entities need.
+struct Sections {
+    header: PairBuffer,
+    blocks: PairBuffer,
+    entities: bool,
+}
+
+/// Checks the SECTION/ENDSEC/EOF structure as a profile import does, keeping the header
+/// and the blocks.
+fn read_sections(
+    mut reader: PairReader<'_, impl BufRead>,
+    diagnostics: &mut DiagnosticCounts,
+) -> Result<Sections, DxfImportError> {
+    let mut sections = Sections {
+        header: PairBuffer::default(),
+        blocks: PairBuffer::default(),
+        entities: false,
+    };
+    let mut names = BTreeSet::new();
+    let mut value = String::new();
+    loop {
+        let code = reader
+            .next_pair(&mut value)?
+            .ok_or(DxfImportError::MalformedSections)?;
+        if code == 0 && value.eq_ignore_ascii_case("EOF") {
+            break;
+        }
+        if code != 0
+            || !value.eq_ignore_ascii_case("SECTION")
+            || reader.next_pair(&mut value)? != Some(2)
+        {
+            return Err(DxfImportError::MalformedSections);
+        }
+        let name = value.to_ascii_uppercase();
+        let mut kept = match name.as_str() {
+            "HEADER" => Some(&mut sections.header),
+            "BLOCKS" => Some(&mut sections.blocks),
+            _ => None,
+        };
+        loop {
+            let code = reader
+                .next_pair(&mut value)?
+                .ok_or(DxfImportError::MalformedSections)?;
+            if code == 0 && value.eq_ignore_ascii_case("ENDSEC") {
+                break;
+            }
+            if let Some(kept) = kept.as_mut() {
+                kept.push(code, &value);
+            }
+        }
+        if !names.insert(name.clone()) {
+            return Err(DxfImportError::DuplicateSection);
+        }
+        match name.as_str() {
+            "ENTITIES" => sections.entities = true,
+            "HEADER" | "BLOCKS" => {}
+            _ => diagnostics.add(
+                ImportDiagnosticSeverity::Warning,
+                "dxf.section-ignored",
+                Some(name),
+                1,
+            )?,
+        }
+    }
+    if reader.next_pair(&mut value)?.is_some() {
+        return Err(DxfImportError::MalformedSections);
+    }
+    Ok(sections)
+}
+
+/// The encoding of `source`'s text, as the profile import decides it for the whole file:
+/// UTF-8 when all of it is, otherwise the Windows code page its `$DWGCODEPAGE` names when
+/// it is older than DXF 2007.
+fn text_encoding(
+    source: &mut (impl BufRead + Seek),
+) -> Result<Option<&'static encoding_rs::Encoding>, DxfImportError> {
+    source.seek(SeekFrom::Start(0)).map_err(read_error)?;
+    let mut line = Vec::new();
+    let (mut utf8, mut empty) = (true, true);
+    // A header variable's value is the second line after its name.
+    let mut acadver = HeaderValue::default();
+    let mut code_page = HeaderValue::default();
+    while read_line(source, &mut line)? {
+        empty = false;
+        utf8 &= std::str::from_utf8(&line).is_ok();
+        let trimmed = line.trim_ascii();
+        acadver.see(trimmed, b"$ACADVER");
+        code_page.see(trimmed, b"$DWGCODEPAGE");
+    }
+    if empty {
+        return Err(DxfImportError::Empty);
+    }
+    if utf8 {
+        return Ok(None);
+    }
+    acadver
+        .value
+        .is_none_or(|version| version.as_slice() < b"AC1021".as_slice())
+        .then_some(code_page.value)
+        .flatten()
+        .and_then(|name| code_page_encoding(&name))
+        .map(Some)
+        .ok_or(DxfImportError::NonAscii)
+}
+
+/// The value of the first header variable of a name, seen line by line.
+#[derive(Default)]
+struct HeaderValue {
+    /// Lines until the value, once the name was seen.
+    until: Option<u8>,
+    value: Option<Vec<u8>>,
+}
+
+impl HeaderValue {
+    fn see(&mut self, line: &[u8], name: &[u8]) {
+        match self.until {
+            None if self.value.is_none() && line == name => self.until = Some(2),
+            Some(1) => {
+                self.value = Some(line.to_vec());
+                self.until = Some(0);
+            }
+            Some(left) if left > 1 => self.until = Some(left - 1),
+            _ => {}
+        }
+    }
+}
+
+/// Reads group-code/value pairs line by line in the drawing's text encoding.
+struct PairReader<'a, R> {
+    source: &'a mut R,
+    encoding: Option<&'static encoding_rs::Encoding>,
+    line: Vec<u8>,
+}
+
+impl<'a, R: BufRead + Seek> PairReader<'a, R> {
+    fn new(
+        source: &'a mut R,
+        encoding: Option<&'static encoding_rs::Encoding>,
+    ) -> Result<Self, DxfImportError> {
+        source.seek(SeekFrom::Start(0)).map_err(read_error)?;
+        Ok(Self {
+            source,
+            encoding,
+            line: Vec::new(),
+        })
+    }
+}
+
+impl<R: BufRead> PairReader<'_, R> {
+    /// The next pair's code, its value in `value`; `None` at the end of the drawing.
+    /// Comments (group 999) are passed over.
+    fn next_pair(&mut self, value: &mut String) -> Result<Option<i16>, DxfImportError> {
+        loop {
+            if !self.next_line(value)? {
+                return Ok(None);
+            }
+            let code = parse_integer::<i16>(value.trim())?;
+            if !self.next_line(value)? {
+                return Err(DxfImportError::MalformedPairs);
+            }
+            let trimmed = value.trim();
+            if trimmed.len() != value.len() {
+                *value = trimmed.to_owned();
+            }
+            if code != 999 {
+                return Ok(Some(code));
+            }
+        }
+    }
+
+    fn next_line(&mut self, text: &mut String) -> Result<bool, DxfImportError> {
+        if !read_line(self.source, &mut self.line)? {
+            return Ok(false);
+        }
+        text.clear();
+        text.push_str(
+            &self
+                .encoding
+                .unwrap_or(encoding_rs::UTF_8)
+                .decode_without_bom_handling_and_without_replacement(&self.line)
+                .ok_or(DxfImportError::NonAscii)?,
+        );
+        if text.len() > MAX_DXF_LINE_BYTES {
+            return Err(DxfImportError::LineTooLong);
+        }
+        Ok(true)
+    }
+
+    /// Reads on past the start of the section `name`, in a drawing whose sections were
+    /// checked.
+    fn skip_to_section(&mut self, name: &str) -> Result<(), DxfImportError> {
+        let mut value = String::new();
+        while let Some(code) = self.next_pair(&mut value)? {
+            if code == 0 && value.eq_ignore_ascii_case("SECTION") {
+                self.next_pair(&mut value)?;
+                if value.eq_ignore_ascii_case(name) {
+                    return Ok(());
+                }
+                loop {
+                    match self.next_pair(&mut value)? {
+                        Some(0) if value.eq_ignore_ascii_case("ENDSEC") => break,
+                        Some(_) => {}
+                        None => return Err(DxfImportError::MalformedSections),
+                    }
+                }
+            }
+        }
+        Err(DxfImportError::MissingEntitiesSection)
+    }
+}
+
+/// Reads the next line of `source` into `line` without its line break, as `str::lines`
+/// splits; `false` at the end. A line longer than any a DXF may hold is refused before it
+/// is read on, whatever its text encoding (decoding never shortens it).
+fn read_line(source: &mut impl BufRead, line: &mut Vec<u8>) -> Result<bool, DxfImportError> {
+    line.clear();
+    loop {
+        let available = source.fill_buf().map_err(read_error)?;
+        if available.is_empty() {
+            return Ok(!line.is_empty());
+        }
+        let (take, ended) = match available.iter().position(|byte| *byte == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (available.len(), false),
+        };
+        // The line break, `\r\n`, is not part of the line.
+        if line.len() + take > MAX_DXF_LINE_BYTES + 2 {
+            return Err(DxfImportError::LineTooLong);
+        }
+        line.extend_from_slice(&available[..take]);
+        source.consume(take);
+        if ended {
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            return Ok(true);
+        }
+    }
+}
+
+fn read_error(error: std::io::Error) -> DxfImportError {
+    DxfImportError::Read(error.kind())
 }
