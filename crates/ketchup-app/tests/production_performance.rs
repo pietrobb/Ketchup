@@ -285,7 +285,9 @@ fn memory_high_water_probe_child() {
     std::fs::write(&staged_path, high_water_before.to_string())
         .expect("stage memory probe baseline");
     std::fs::rename(&staged_path, &ready_path).expect("publish memory probe readiness");
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // The parent releases only after its process-tree query, which took over
+    // 30 s under a full local suite; the guard only ends an orphaned child.
+    let deadline = Instant::now() + MEMORY_PROBE_CHILD_HANG_GUARD;
     while !release_path.is_file() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }

@@ -7,8 +7,8 @@
 use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_geometry::linalg::{cross, dot};
 use ketchup_model::exact_brep_graph::{
-    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepNodeId, ExactBRepOperation,
-    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
 use ketchup_model::tolerance::{COINCIDENT_SLAB_TOLERANCES, CONTACT_FIT_MM, ROUNDING};
 
@@ -67,20 +67,17 @@ fn base_extrusion(
     graph: &ExactBRepGraph,
 ) -> Option<(Extrusion, &ExactBRepPlanarGeometry, CutBounds)> {
     let mut node = graph.nodes.len().checked_sub(1)?;
-    let mut cuts = Some(Vec::new());
+    let mut cuts = Vec::new();
     loop {
-        match &graph.nodes[node].operation {
+        let operation = &graph.nodes[node].operation;
+        match operation {
             ExactBRepOperation::ProfileCut { target, .. }
             | ExactBRepOperation::Boolean {
                 operation: ExactBRepBooleanOperation::Cut,
                 target,
                 ..
             } if (target.0 as usize) < node => {
-                let removed = graph.removed_bounds_mm(ExactBRepNodeId(node as u32));
-                cuts = cuts.zip(removed).map(|(mut cuts, removed)| {
-                    cuts.push(removed);
-                    cuts
-                });
+                cuts.push(graph.removed_bounds_mm(operation));
                 node = target.0 as usize;
             }
             ExactBRepOperation::Extrude {
@@ -104,7 +101,7 @@ fn base_extrusion(
                     direction,
                     interval: [interval.start_mm(), interval.end_mm()],
                 };
-                return Some((extrusion, &profile.geometry, cuts));
+                return Some((extrusion, &profile.geometry, cuts.into_iter().collect()));
             }
             _ => return None,
         }
