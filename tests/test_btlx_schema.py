@@ -46,14 +46,14 @@ def fetch(url: str, digest: str) -> bytes:
 
 @pytest.fixture(scope="module")
 def schema() -> etree.XMLSchema:
-    btlx = fetch(BTLX_URL, BTLX_SHA256).replace(X3D_URL.encode(), b"x3d-3.3.xsd")
+    btlx = fetch(BTLX_URL, BTLX_SHA256).replace(X3D_URL.encode(), b"x3d-3.3.local.xsd")
     x3d = fetch(X3D_URL, X3D_SHA256).replace(XMLDSIG_URL.encode(), b"xmldsig-core-schema.xsd")
     fetch(XMLDSIG_URL, XMLDSIG_SHA256)
     for name in ("x3d-3.3-Web3dExtensionsPublic.xsd", "x3d-3.3-Web3dExtensionsPrivate.xsd"):
         (CACHE / name).write_text(EMPTY_SCHEMA, encoding="utf-8")
-    (CACHE / "x3d-3.3.xsd").write_bytes(x3d)
-    (CACHE / "BTLx_2_3_1.xsd").write_bytes(btlx)
-    return etree.XMLSchema(etree.parse(str(CACHE / "BTLx_2_3_1.xsd")))
+    (CACHE / "x3d-3.3.local.xsd").write_bytes(x3d)
+    (CACHE / "BTLx_2_3_1.local.xsd").write_bytes(btlx)
+    return etree.XMLSchema(etree.parse(str(CACHE / "BTLx_2_3_1.local.xsd")))
 
 
 def test_there_are_goldens_and_one_carries_a_thread():

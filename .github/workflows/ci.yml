@@ -54,10 +54,23 @@ jobs:
         run: python scripts/check_test_env.py
       - name: Every ignored test runs in some CI step
         run: python scripts/check_ignored_tests.py
+      - name: BTLx schemas from the cache
+        id: btlx
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/btlx-schema
+          key: btlx-schema-${{ hashFiles('tests/test_btlx_schema.py', 'crates/ketchup-manufacturing/src/fabrication.rs') }}
+          restore-keys: btlx-schema-
       - name: Python tests
         run: |
           python -m pip install --quiet --require-hashes -r tests/requirements-ci.txt
           python -m pytest -q tests sdk/python/tests
+      - name: BTLx schemas into the cache
+        if: always() && steps.btlx.outputs.cache-hit != 'true' && hashFiles('target/btlx-schema/BTLx_2_3_1.xsd') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/btlx-schema
+          key: btlx-schema-${{ hashFiles('tests/test_btlx_schema.py', 'crates/ketchup-manufacturing/src/fabrication.rs') }}
 
   dependencies:
     name: dependency advisories, licenses and sources
