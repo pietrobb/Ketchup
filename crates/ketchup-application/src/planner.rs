@@ -4006,12 +4006,31 @@ pub fn plan_part_batch(
     // top of all earlier ones re-validated the growing document per part.
     let mut commands = Vec::new();
     for operation in parts {
+        let AssistantCadEditOperation::CreatePart {
+            name,
+            holes,
+            pockets,
+            ..
+        } = operation
+        else {
+            return Err(assistant_planning_rejection(
+                "planning.rule_part_expected",
+                "rule_part",
+                &document_target,
+                "rule program batches accept only independent part creation operations.",
+                "Pass create_part operations only.",
+            ));
+        };
+        let in_part = |mut rejection: Box<AssistantRejectionDiagnostic>| {
+            rejection.failed_invariant = format!("part {name:?}: {}", rejection.failed_invariant);
+            rejection
+        };
         AssistantCadEditProgram {
             operations: vec![operation.clone()],
         }
         .validate_rule_parts()
         .map_err(|error| {
-            assistant_rejection(
+            in_part(assistant_rejection(
                 AssistantRejectionPhase::IntentValidation,
                 "intent.rule_part_invalid",
                 "rule_part",
@@ -4019,39 +4038,22 @@ pub fn plan_part_batch(
                 error.to_string(),
                 "Fix the named part profile, body parameters, placement or machining.",
                 true,
-            )
+            ))
         })?;
-        match operation {
-            AssistantCadEditOperation::CreatePart {
-                name,
-                holes,
-                pockets,
-                ..
-            } => {
-                let mut staged = StagedPlanningContext::new(&snapshot);
-                plan_part(
-                    operation,
-                    name,
-                    holes,
-                    pockets,
-                    &mut staged,
-                    &mut next_definition,
-                    &mut next_feature,
-                    &mut next_occurrence,
-                    &document_target,
-                )?;
-                commands.extend(staged.commands);
-            }
-            _ => {
-                return Err(assistant_planning_rejection(
-                    "planning.rule_part_expected",
-                    "rule_part",
-                    &document_target,
-                    "rule program batches accept only independent part creation operations.",
-                    "Pass create_part operations only.",
-                ));
-            }
-        }
+        let mut staged = StagedPlanningContext::new(&snapshot);
+        plan_part(
+            operation,
+            name,
+            holes,
+            pockets,
+            &mut staged,
+            &mut next_definition,
+            &mut next_feature,
+            &mut next_occurrence,
+            &document_target,
+        )
+        .map_err(in_part)?;
+        commands.extend(staged.commands);
     }
     Ok(CommandBatch::new(commands))
 }
