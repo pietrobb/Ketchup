@@ -1753,6 +1753,8 @@ fn reach_follows_round_and_extruded_bodies_not_their_boxes() {
 seat = revolve("seat", profile = [(0, 0), (180, 0), (180, 30), (0, 30)], axis = [(0, 0), (0, 1)], at = (0, 0, 420))
 rotate(seat, axis = (1, 0, 0), angle = 90)
 wedge = extrude("wedge", profile = [(0, 0), (100, 0), (0, 50)], distance = 20, at = (500, 0, 0))
+mirror(extrude("flipped", profile = [(0, 0), (100, 0), (0, 50)], distance = 20, at = (1000, 0, 0)), axis = "x")
+mirror(union(box("host", (100, 50, 20), at = (2000, 0, 0)), extrude("ridge", profile = [(0, 0), (100, 0), (0, 50)], distance = 20, at = (2000, 0, 20))), axis = "x")
 leg = box("leg", (30, 30, 300))
 on(leg, seat, face = "y-", center = "xz")
 hanger = box("hanger", (10, 10, 10))
@@ -1777,6 +1779,11 @@ on(hanger, seat, face = (0, 0, -1))
         wedge.reach(slant) - 500.0 * slant[0],
         50.0 / 1.25f64.sqrt()
     ));
+    // Mirrored across x = 50, the far corners are (100, 50) and the ridge's (100, 50, 40).
+    let flipped = model.part("flipped").unwrap().reach(slant) - 1000.0 * slant[0];
+    let steep = [1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0];
+    let host = model.part("host").unwrap().reach(steep) - 2000.0 / 3.0;
+    assert!(close(flipped, 100.0 / 1.25f64.sqrt()) && close(host, 280.0 / 3.0));
     // The turned seat's bottom is its own y- face; world directions work too.
     let leg = model.part("leg").unwrap();
     assert_close(leg.at_mm, [-15.0, -15.0, 120.0]);

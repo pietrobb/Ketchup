@@ -1033,17 +1033,7 @@ impl Part {
     /// one by one (a bolt's head and its shank), where they are on the
     /// finished part.
     pub(crate) fn piece_bounds(&self) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_ {
-        let joined = self
-            .operations
-            .iter()
-            .enumerate()
-            .filter_map(|(index, operation)| match operation {
-                ProgramOperation::Boolean(boolean) if boolean.kind == ProgramBooleanKind::Union => {
-                    Some((index + 1, &boolean.tool))
-                }
-                _ => None,
-            });
-        std::iter::once(self.bounds_after(0, self.body_bounds())).chain(joined.map(
+        std::iter::once(self.bounds_after(0, self.body_bounds())).chain(self.joined().map(
             |(after, tool)| {
                 let (tool_min, tool_max) = tool.local_bounds();
                 let (mut min, mut max) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
@@ -1066,11 +1056,15 @@ impl Part {
         ))
     }
 
-    /// Bodies union() joined into this part.
-    fn joined(&self) -> impl Iterator<Item = &Part> {
-        self.booleans()
-            .filter(|boolean| boolean.kind == ProgramBooleanKind::Union)
-            .map(|boolean| &boolean.tool)
+    /// Bodies union() joined into this part, each with the index after its union.
+    fn joined(&self) -> impl Iterator<Item = (usize, &Part)> {
+        let unions = self.operations.iter().zip(1..);
+        unions.filter_map(|(operation, after)| match operation {
+            ProgramOperation::Boolean(boolean) if boolean.kind == ProgramBooleanKind::Union => {
+                Some((after, &boolean.tool))
+            }
+            _ => None,
+        })
     }
 
     fn body_bounds(&self) -> ([f64; 3], [f64; 3]) {
@@ -1242,7 +1236,8 @@ impl Part {
     /// a smooth loft through more may bulge slightly past them).
     #[must_use]
     pub fn reach(&self, direction: [f64; 3]) -> f64 {
-        let local = frame::apply_transposed(&self.rotation, direction);
+        let finished = frame::apply_transposed(&self.rotation, direction);
+        let (local, mirrored) = self.reach_before(0, finished);
         let bounds_reach = || {
             let (min, max) = self.body_bounds();
             (0..3)
@@ -1268,9 +1263,24 @@ impl Part {
             ProgramPartBody::Revolve { .. } => self.revolve_support(local),
             ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => self.local_reach(local),
         };
-        self.joined()
-            .map(|tool| tool.reach(direction))
-            .fold(dot(self.at_mm, direction) + body, f64::max)
+        let joined = self.joined().map(|(after, tool)| {
+            let (local, mirrored) = self.reach_before(after, finished);
+            let turned = frame::apply(&self.rotation, local);
+            tool.reach(turned) - dot(self.at_mm, turned) + mirrored
+        });
+        joined.fold(body + mirrored, f64::max) + dot(self.at_mm, direction)
+    }
+
+    /// A finished local `direction` as one before operation `first`, plus what later mirrors add.
+    fn reach_before(&self, first: usize, mut direction: [f64; 3]) -> ([f64; 3], f64) {
+        let mut mirrored = 0.0;
+        for operation in self.operations[first..].iter().rev() {
+            if let ProgramOperation::Mirror(mirror) = operation {
+                mirrored += 2.0 * mirror.center_mm * direction[mirror.axis];
+                direction[mirror.axis] = -direction[mirror.axis];
+            }
+        }
+        (direction, mirrored)
     }
 
     #[must_use]
