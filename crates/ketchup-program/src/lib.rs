@@ -200,9 +200,9 @@ impl Report {
             issues,
             relations,
         );
-        report.relations = listed.relations;
         report.truncated = listed.truncated;
         report.set_issues(listed.issues);
+        report.relations = listed.relations;
         report
     }
 }

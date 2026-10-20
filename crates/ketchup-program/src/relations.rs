@@ -11,6 +11,7 @@ use crate::validate::{self, COLLISION_UNVERIFIED, Issue};
 use ketchup_geometry::linalg::dot;
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// Parts closer than this are listed with their clearance.
 pub const GAP_LIMIT_MM: f64 = 20.0;
@@ -382,14 +383,15 @@ pub fn relations_with(
 /// Settles collision/unverified/boxes-only overlaps from the current issues,
 /// e.g. after the exact solids decided an unverified pair.
 pub fn sync_with_issues(relations: &mut [Relation], issues: &[Issue]) {
-    let issue_for = |parts: &[String; 2], kind: &str| {
-        issues.iter().any(|issue| {
-            issue.kind == kind
-                && issue.parts.len() == 2
-                && issue.parts.contains(&parts[0])
-                && issue.parts.contains(&parts[1])
-        })
-    };
+    fn pair<'a>(kind: &'a str, a: &'a str, b: &'a str) -> (&'a str, &'a str, &'a str) {
+        (kind, a.min(b), a.max(b))
+    }
+    let flagged: HashSet<(&str, &str, &str)> = issues
+        .iter()
+        .filter(|issue| issue.parts.len() == 2)
+        .map(|issue| pair(issue.kind, &issue.parts[0], &issue.parts[1]))
+        .collect();
+    let issue_for = |parts: &[String; 2], kind| flagged.contains(&pair(kind, &parts[0], &parts[1]));
     for relation in relations {
         if !matches!(
             relation.status,

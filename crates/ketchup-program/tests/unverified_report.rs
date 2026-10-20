@@ -53,4 +53,9 @@ fn a_shortened_report_keeps_the_counts_of_the_whole_one() {
     // Shortened again, it still counts the whole report, not the shortened one.
     assert_eq!(first.first(1, 0).truncated, Some(totals));
     assert_eq!(whole.truncated, None);
+    // A kept relation keeps its status even when its issue is left out.
+    assert_eq!(
+        whole.first(0, 1).relations[0].status,
+        whole.relations[0].status
+    );
 }
