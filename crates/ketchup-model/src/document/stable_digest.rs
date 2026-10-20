@@ -17,9 +17,7 @@ pub(super) fn digest_snapshot(snapshot: &Snapshot) -> String {
 pub(crate) fn digest_product(product: &impl Serialize) -> String {
     let mut digest = StableDigest::new();
     digest.bytes(b"ketchup.document.v4");
-    digest.value(
-        &identity_form(|| ciborium::Value::serialized(product)).expect("document values serialize"),
-    );
+    digest.value(product);
     digest.finish()
 }
 

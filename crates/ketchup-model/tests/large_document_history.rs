@@ -34,6 +34,7 @@ fn a_house_keeps_its_undo_history_through_save_and_open() {
         .unwrap();
     let tag = document.current().tags().next().unwrap().id();
     let mut digests = vec![document.current().canonical_digest()];
+    assert_eq!(digests[0], "39d21e96ba28b9ff", "pinned house digest");
     let mut saved = None;
     let mut first_history = 0;
     // Before format 4 every revision was a full copy: the third save of a house
