@@ -1194,10 +1194,8 @@ impl ExactBRepGraph {
                 if depth_bits.is_none() {
                     let target = self.node_bounds_mm(*target).ok()??;
                     let origin = profile.frame().to_vectors()[0];
-                    let [start, end] =
-                        projected_bounds(origin, interval.direction(), target, 0.0).ok()?;
-                    interval.start_bits = (start - 1.0).to_bits();
-                    interval.end_bits = (end + 1.0).to_bits();
+                    interval =
+                        through_all_interval(origin, interval.direction(), target, 0.0).ok()?;
                 }
                 swept_profile_bounds(profile, interval).ok()
             }

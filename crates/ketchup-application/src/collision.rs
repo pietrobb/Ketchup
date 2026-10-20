@@ -894,7 +894,7 @@ fn collision_hulls(graphs: &[ExactBRepGraph], bodies: &[Body]) -> Vec<Option<pie
             local
                 .get(body.graph?)?
                 .as_ref()?
-                .hull(body.occurrence.transform)
+                .world(body.occurrence.transform)
         })
         .collect()
 }
@@ -1844,39 +1844,9 @@ mod tests {
         );
     }
 
-    /// What the hulls of a program check answer for two parts of [`DRILLED`],
-    /// by contact area and distance; `None` leaves the pair to the exact check.
-    fn hull_answer(pair: [&str; 2], exact_gap: bool) -> Option<(f64, Option<f64>)> {
-        let mut session = crate::DocumentSession::new(crate::SessionSettings::default());
-        let source = ketchup_model::document::RuleProgramSource {
-            variants: Default::default(),
-            file_name: "hulls.star".into(),
-            source: DRILLED.into(),
-            overrides: BTreeMap::new(),
-        };
-        let snapshot = session.apply_rule_program(source, false).unwrap().snapshot;
-        let [a, b] = pair.map(|name| {
-            let part = snapshot
-                .scene_query()
-                .into_iter()
-                .find(|part| {
-                    crate::rule_program_part_name(&snapshot, &part.instance_path).as_deref()
-                        == Some(name)
-                })
-                .unwrap();
-            let definition = snapshot.definition(part.definition_id).unwrap();
-            let feature = *definition.feature_ids().last().unwrap();
-            let graph = ExactBRepGraph::from_snapshot(&snapshot, definition.id(), feature).unwrap();
-            pieces::local_pieces(&graph)
-                .unwrap()
-                .hull(part.transform)
-                .unwrap()
-        });
-        pieces::measure(&a, &b, snapshot.tolerance().linear_mm(), exact_gap)
-            .map(|(patches, gap)| (patches.iter().map(|p| p.area_mm2).sum::<f64>().round(), gap))
-    }
-
-    const DRILLED: &str = "base = box('base', (100, 100, 18))
+    #[test]
+    fn hulls_decide_apart_and_bearing_pairs_and_leave_a_face_a_hole_reaches_exact() {
+        let source = "base = box('base', (100, 100, 18))
 hole(base, 'z-', at=(50, 50), diameter=8, depth=8)
 box('on top', (100, 100, 18), at=(0, 0, 18))
 box('apart', (100, 100, 18), at=(300, 0, 0))
@@ -1885,25 +1855,43 @@ hole(drilled, 'z+', at=(50, 50), diameter=8, depth=8)
 box('lid', (100, 100, 18), at=(0, 300, 18))
 bored = box('bored', (100, 100, 18), at=(0, 600, 0))
 hole(bored, 'z+', at=(50, 50), diameter=8, depth=18, through=True)
-box('beside', (100, 100, 18), at=(100, 600, 0))
-";
-
-    #[test]
-    fn hulls_decide_apart_and_bearing_pairs_and_leave_a_face_a_hole_reaches_exact() {
+box('beside', (100, 100, 18), at=(100, 600, 0))";
+        let mut session = crate::DocumentSession::new(crate::SessionSettings::default());
+        let program = ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "hulls.star".into(),
+            source: source.into(),
+            overrides: BTreeMap::new(),
+        };
+        let snapshot = session.apply_rule_program(program, false).unwrap().snapshot;
+        let hulls: BTreeMap<_, _> = (snapshot.scene_query().into_iter())
+            .map(|part| {
+                let definition = snapshot.definition(part.definition_id).unwrap();
+                let feature = *definition.feature_ids().last().unwrap();
+                let graph = ExactBRepGraph::from_snapshot(&snapshot, definition.id(), feature);
+                let hull = pieces::local_pieces(&graph.unwrap())
+                    .unwrap()
+                    .world(part.transform);
+                let name = crate::rule_program_part_name(&snapshot, &part.instance_path);
+                (name.unwrap(), hull.unwrap())
+            })
+            .collect();
+        // Contact area and distance of a program check; `None` asks OCCT.
+        let answer = |a: &str, b: &str, gap| {
+            pieces::measure(&hulls[a], &hulls[b], snapshot.tolerance().linear_mm(), gap).map(
+                |(patches, gap)| (patches.iter().map(|p| p.area_mm2).sum::<f64>().round(), gap),
+            )
+        };
         // Separated parts are apart without a distance, unless the gap is read.
-        assert_eq!(hull_answer(["base", "apart"], false), Some((0.0, None)));
-        assert_eq!(hull_answer(["base", "apart"], true), None);
+        assert_eq!(answer("base", "apart", false), Some((0.0, None)));
+        assert_eq!(answer("base", "apart", true), None);
         // The hole of `base` is away from the face `on top` bears on.
-        assert_eq!(
-            hull_answer(["base", "on top"], true),
-            Some((10_000.0, Some(0.0)))
-        );
+        assert_eq!(answer("base", "on top", true), Some((10_000.0, Some(0.0))));
         // A hole reaching the bearing face leaves the contact to the exact check.
-        assert_eq!(hull_answer(["drilled", "lid"], true), None);
-        assert_eq!(hull_answer(["lid", "drilled"], true), None);
+        assert_eq!(answer("drilled", "lid", true), None);
+        assert_eq!(answer("lid", "drilled", true), None);
         // A hole through the board reaches both faces, but not a side.
-        let beside = hull_answer(["bored", "beside"], true).map(|(area, _)| area);
-        assert_eq!(beside, Some(1_800.0));
+        assert_eq!(answer("bored", "beside", true).unwrap().0, 1_800.0);
     }
 
     #[test]

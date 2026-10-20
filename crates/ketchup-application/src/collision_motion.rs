@@ -79,9 +79,9 @@ impl ExactMotionPair {
             pieces::local_pieces(&self.moving)?.world(Transform::from_matrix(start).ok()?)?;
         let obstacle = pieces::local_pieces(&self.obstacle)?.world(self.obstacle_transform)?;
         Some(pieces::sweep_clear(
-            &moving,
+            &moving.pieces,
             sweep,
-            &obstacle,
+            &obstacle.pieces,
             self.tolerance_mm,
         ))
     }

@@ -58,15 +58,10 @@ fn axis_aligned(v: [f64; 3]) -> bool {
     ones == 1
 }
 
-/// Boxes of what each cut of a solid may remove; `None` when one is unknown.
-type CutBounds = Option<Vec<[[f64; 3]; 2]>>;
-
 /// The extrusion the producer starts from, if it is followed only by
 /// subtractive cuts on that same solid, so anything enclosing it encloses the
 /// producer; and the bounds of what its cuts may remove.
-fn base_extrusion(
-    graph: &ExactBRepGraph,
-) -> Option<(Extrusion, &ExactBRepPlanarGeometry, CutBounds)> {
+pub(super) fn local_pieces(graph: &ExactBRepGraph) -> Option<LocalPieces> {
     let mut node = graph.nodes.len().checked_sub(1)?;
     let mut cuts = Vec::new();
     loop {
@@ -102,26 +97,28 @@ fn base_extrusion(
                     direction,
                     interval: [interval.start_mm(), interval.end_mm()],
                 };
-                return Some((extrusion, &profile.geometry, cuts.into_iter().collect()));
+                return Some(LocalPieces {
+                    extrusion,
+                    polygons: convex_pieces(&profile.geometry)?,
+                    cuts: cuts.into_iter().collect(),
+                });
             }
             _ => return None,
         }
     }
 }
 
-/// A solid's convex profile pieces and the boxes its cuts may remove, in
-/// definition-local coordinates.
+/// A solid's convex profile pieces and cut boxes, in definition-local coordinates.
 pub(super) struct LocalPieces {
     extrusion: Extrusion,
     polygons: Vec<Vec<[f64; 2]>>,
-    cuts: CutBounds,
+    cuts: Option<Vec<[[f64; 3]; 2]>>,
 }
 
-/// A placed solid: prisms that enclose it, and boxes enclosing everything its
-/// cuts remove (`None` when a cut's reach is unknown). Away from those boxes
-/// the solid is its prisms.
+/// A placed solid: prisms enclosing it, and boxes enclosing all its cuts
+/// remove (`None` when one is unknown). Away from those, it is its prisms.
 pub(super) struct Hull {
-    pieces: Vec<Piece>,
+    pub(super) pieces: Vec<Piece>,
     cuts: Option<Vec<Piece>>,
 }
 
@@ -141,59 +138,38 @@ struct Face {
     points: Vec<[f64; 3]>,
 }
 
-pub(super) fn local_pieces(graph: &ExactBRepGraph) -> Option<LocalPieces> {
-    let (extrusion, geometry, cuts) = base_extrusion(graph)?;
-    Some(LocalPieces {
-        extrusion,
-        polygons: convex_pieces(geometry)?,
-        cuts,
-    })
-}
-
-/// The prism between two local faces swept along local `along`, placed.
-fn placed_prism(place: Transform, faces: [Vec<[f64; 3]>; 2], along: [f64; 3]) -> Option<Piece> {
-    let [bottom, top] =
-        faces.map(|face| face.into_iter().map(|p| place.transform_point(p)).collect());
-    Piece::prism(bottom, top, place.transform_vector(along))
-}
-
 impl LocalPieces {
-    pub(super) fn hull(&self, transform: Transform) -> Option<Hull> {
-        let pieces = self.world(transform)?;
+    /// Rigid placements only; anything else stays exact-only.
+    pub(super) fn world(&self, place: Transform) -> Option<Hull> {
+        if !place.is_rigid() {
+            return None;
+        }
+        let prism = |faces: [Vec<[f64; 3]>; 2], along| {
+            let [b, t] = faces.map(|f| f.into_iter().map(|p| place.transform_point(p)).collect());
+            Piece::prism(b, t, place.transform_vector(along))
+        };
+        let x = &self.extrusion;
+        let pieces = self.polygons.iter().map(|polygon| {
+            let face = |t| polygon.iter().map(|p| x.point(*p, t)).collect();
+            prism([face(x.interval[0]), face(x.interval[1])], x.direction)
+        });
         let cuts = self.cuts.as_ref().and_then(|cuts| {
             cuts.iter()
                 .map(|[low, high]| {
+                    let corner = |[i, j]: [usize; 2], z| [[low, high][i][0], [low, high][j][1], z];
                     let face = |z| {
-                        [
-                            [low[0], low[1]],
-                            [high[0], low[1]],
-                            [high[0], high[1]],
-                            [low[0], high[1]],
-                        ]
-                        .map(|[x, y]| [x, y, z])
-                        .to_vec()
+                        [[0, 0], [1, 0], [1, 1], [0, 1]]
+                            .map(|c| corner(c, z))
+                            .to_vec()
                     };
-                    placed_prism(transform, [face(low[2]), face(high[2])], [0.0, 0.0, 1.0])
+                    prism([face(low[2]), face(high[2])], [0.0, 0.0, 1.0])
                 })
                 .collect()
         });
-        Some(Hull { pieces, cuts })
-    }
-
-    /// Rigid placements only; anything else stays exact-only.
-    pub(super) fn world(&self, transform: Transform) -> Option<Vec<Piece>> {
-        if !transform.is_rigid() {
-            return None;
-        }
-        let extrusion = &self.extrusion;
-        self.polygons
-            .iter()
-            .map(|polygon| {
-                let face = |t| polygon.iter().map(|p| extrusion.point(*p, t)).collect();
-                let [start, end] = extrusion.interval;
-                placed_prism(transform, [face(start), face(end)], extrusion.direction)
-            })
-            .collect()
+        Some(Hull {
+            pieces: pieces.collect::<Option<_>>()?,
+            cuts,
+        })
     }
 }
 
@@ -273,12 +249,13 @@ pub(super) fn measure(
         Some(patches) => [(a, b), (b, a)]
             .iter()
             .all(|(cut, other)| {
-                let apart = |c, p| least_overlap(c, [0.0; 3], 0.0, p, CONTACT_FIT_MM).is_none();
-                let cuts = cut.cuts.as_deref();
-                cuts.is_some_and(|cuts| {
-                    cuts.iter()
-                        .all(|c| other.pieces.iter().all(|p| apart(c, p)))
-                })
+                let apart = |c| {
+                    let mut pieces = other.pieces.iter();
+                    pieces.all(|p| least_overlap(c, [0.0; 3], 0.0, p, CONTACT_FIT_MM).is_none())
+                };
+                cut.cuts
+                    .as_deref()
+                    .is_some_and(|cuts| cuts.iter().all(apart))
             })
             .then_some((patches, Some(0.0))),
     }
