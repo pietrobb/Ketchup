@@ -26,7 +26,7 @@ pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
 }
 
 /// Every export format of the File menu with the file extensions it writes.
-const EXPORT_FORMATS: [(&str, &[&str], Exporter); 12] = [
+const EXPORT_FORMATS: [(&str, &[&str], Exporter); 13] = [
     (
         "step",
         &["step", "stp"],
@@ -44,6 +44,7 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 12] = [
         KetchupApp::export_current_model_three_mf_to,
     ),
     ("glb", &["glb"], KetchupApp::export_current_model_glb_to),
+    ("dae", &["dae"], KetchupApp::export_current_model_dae_to),
     ("dxf", &["dxf"], KetchupApp::export_current_profiles_dxf_to),
     ("sheet_metal_dxf", &["dxf"], |app, path| {
         let feature = app.sole_exportable_sheet_metal_feature_id()?;

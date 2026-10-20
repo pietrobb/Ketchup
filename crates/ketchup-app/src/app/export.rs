@@ -293,6 +293,58 @@ impl KetchupApp {
         self.report_export_outcome("glb", path, result)
     }
 
+    /// COLLADA for SketchUp from the same visible meshes as the GLB export.
+    pub(crate) fn export_current_model_dae_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<Written, ExportError> {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = self
+            .current_visible_mesh_scene(&snapshot)
+            .and_then(|scene| {
+                let instances = scene
+                    .iter()
+                    .map(|body| MeshGlbInstance {
+                        source: body.source.as_export_source(),
+                        occurrence: &body.occurrence,
+                    })
+                    .collect::<Vec<_>>();
+                model_dae_export(&snapshot, &instances).map_err(ExportError::failed)
+            })
+            .and_then(|bundle| {
+                let report_path = path.with_extension("dae.loss.txt");
+                let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+                let evidence = dae_export_evidence(path, &bundle);
+                self.authorize_export_bundle(
+                    ExportConsent {
+                        class: HighRiskClass::LossyConversion,
+                        operation: "export-current-model-dae-with-loss-report",
+                        title_key: "dialog-export-lossy-title",
+                        risk_key: "dialog-export-lossy-risk",
+                        overwrite_title_key: "dialog-export-overwrite-title",
+                        overwrite_operations: [
+                            "overwrite-current-model-dae-export",
+                            "overwrite-current-model-dae-loss-report",
+                        ],
+                    },
+                    path,
+                    &report_path,
+                    &precondition,
+                    &evidence,
+                )?;
+                write_export_bundle(
+                    path,
+                    bundle.dae.as_bytes(),
+                    &report_path,
+                    bundle.loss_report.as_bytes(),
+                    &precondition,
+                )?;
+                Ok(Written::with_loss_report(path, &report_path))
+            });
+        self.report_export_outcome("dae", path, result)
+    }
+
     pub(crate) fn btlx_export_options(&self) -> BtlxExportOptions {
         let profile_processing_request = match self.btlx_profile_strategy {
             BtlxProfileStrategy::PortableFreeContour => {
@@ -815,6 +867,16 @@ fn exact_glb_export_evidence(path: &Path, bundle: &ExactGlbExport) -> Vec<u8> {
         path,
         &bundle.glb,
         &path.with_extension("glb.loss.txt"),
+        bundle.loss_report.as_bytes(),
+    )
+}
+
+fn dae_export_evidence(path: &Path, bundle: &DaeExport) -> Vec<u8> {
+    export_bundle_evidence(
+        b"ketchup.current-model-dae-export.v1",
+        path,
+        bundle.dae.as_bytes(),
+        &path.with_extension("dae.loss.txt"),
         bundle.loss_report.as_bytes(),
     )
 }

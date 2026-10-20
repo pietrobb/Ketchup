@@ -421,20 +421,20 @@ fn allocate_node_ids(
     Ok(())
 }
 
-struct BoundedString {
+pub(crate) struct BoundedString {
     value: String,
     limit: usize,
 }
 
 impl BoundedString {
-    fn new(limit: usize) -> Self {
+    pub(crate) fn new(limit: usize) -> Self {
         Self {
             value: String::with_capacity(limit.min(1024 * 1024)),
             limit,
         }
     }
 
-    fn into_inner(self) -> String {
+    pub(crate) fn into_inner(self) -> String {
         self.value
     }
 }

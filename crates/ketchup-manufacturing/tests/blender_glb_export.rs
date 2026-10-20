@@ -23,7 +23,10 @@ const EXTRUSION: FeatureId = FeatureId(3);
 const FIRST: OccurrenceId = OccurrenceId(10);
 const SECOND: OccurrenceId = OccurrenceId(11);
 
-fn seeded_document(first_color: Option<[u8; 3]>, second_color: Option<[u8; 3]>) -> DocumentStore {
+pub(super) fn seeded_document(
+    first_color: Option<[u8; 3]>,
+    second_color: Option<[u8; 3]>,
+) -> DocumentStore {
     let mut commands = vec![
         CanonicalCommand::CreateDefinition {
             id: DEFINITION,
@@ -77,7 +80,7 @@ fn seeded_document(first_color: Option<[u8; 3]>, second_color: Option<[u8; 3]>) 
     document
 }
 
-fn current_package(snapshot: &ketchup_model::document::Snapshot) -> ExactBodyPackage {
+pub(super) fn current_package(snapshot: &ketchup_model::document::Snapshot) -> ExactBodyPackage {
     box_package(
         snapshot,
         DEFINITION,
@@ -107,7 +110,7 @@ fn sample_glb() -> Vec<u8> {
     exact_model_glb_export(&snapshot, &instances).unwrap().glb
 }
 
-fn glb_json(glb: &[u8]) -> Value {
+pub(super) fn glb_json(glb: &[u8]) -> Value {
     assert_eq!(&glb[0..4], b"glTF");
     assert_eq!(u32::from_le_bytes(glb[4..8].try_into().unwrap()), 2);
     assert_eq!(

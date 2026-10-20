@@ -10,7 +10,10 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::num::TryFromIntError;
 
+mod collada;
 mod edges;
+
+pub use collada::{DaeExport, model_dae_export};
 
 const GLB_MAGIC: u32 = 0x4654_6c67;
 const GLB_JSON_CHUNK: u32 = 0x4e4f_534a;
@@ -62,17 +65,18 @@ struct SceneLayout {
 
 struct SceneNode {
     name: String,
-    matrix: [f64; 16],
+    /// The Ketchup (Z-up, millimetre) local transform.
+    transform: Transform,
     mesh: Option<usize>,
     children: Vec<usize>,
     extras: Value,
 }
 
 impl SceneNode {
-    fn into_json(self) -> Value {
+    fn into_json(self) -> Result<Value, ExactProductError> {
         let mut node = json!({
             "name": self.name,
-            "matrix": self.matrix,
+            "matrix": gltf_matrix(self.transform)?,
             "extras": self.extras
         });
         if let Some(mesh) = self.mesh {
@@ -81,7 +85,7 @@ impl SceneNode {
         if !self.children.is_empty() {
             node["children"] = json!(self.children);
         }
-        node
+        Ok(node)
     }
 }
 
@@ -126,31 +130,7 @@ fn export_model(
     instances: &[MeshGlbInstance<'_>],
     include_edges: bool,
 ) -> Result<ExactGlbExport, ExactProductError> {
-    if instances.is_empty() {
-        return Err(ExactProductError::EmptyModelExport);
-    }
-    if instances.len() > limits::EXPORT_INSTANCES {
-        return Err(ExactProductError::ExportResourceLimit);
-    }
-    if instances
-        .iter()
-        .any(|instance| !instance.source.is_current(snapshot))
-    {
-        return Err(ExactProductError::StaleResult);
-    }
-    if instances
-        .iter()
-        .any(|instance| instance.source.definition_id() != instance.occurrence.definition_id)
-    {
-        return Err(ExactProductError::InvalidMeshExport);
-    }
-
-    if instances
-        .iter()
-        .any(|instance| !instance.occurrence.matches_snapshot(snapshot))
-    {
-        return Err(ExactProductError::StaleResult);
-    }
+    validate_instances(snapshot, instances)?;
     let mut binary = Vec::new();
     let mut buffer_views = Vec::<Value>::new();
     let mut accessors = Vec::<Value>::new();
@@ -237,7 +217,7 @@ fn export_model(
     let nodes = nodes
         .into_iter()
         .map(SceneNode::into_json)
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     let mut document = json!({
         "asset": {
             "version": "2.0",
@@ -284,6 +264,41 @@ fn export_model(
     })
 }
 
+/// The checks every mesh scene export makes before it writes anything: a
+/// bounded, non-empty set of current bodies on current scene occurrences.
+fn validate_instances(
+    snapshot: &Snapshot,
+    instances: &[MeshGlbInstance<'_>],
+) -> Result<(), ExactProductError> {
+    if instances.is_empty() {
+        return Err(ExactProductError::EmptyModelExport);
+    }
+    if instances.len() > limits::EXPORT_INSTANCES {
+        return Err(ExactProductError::ExportResourceLimit);
+    }
+    if instances
+        .iter()
+        .any(|instance| !instance.source.is_current(snapshot))
+    {
+        return Err(ExactProductError::StaleResult);
+    }
+    if instances
+        .iter()
+        .any(|instance| instance.source.definition_id() != instance.occurrence.definition_id)
+    {
+        return Err(ExactProductError::InvalidMeshExport);
+    }
+    if instances
+        .iter()
+        .any(|instance| !instance.occurrence.matches_snapshot(snapshot))
+    {
+        return Err(ExactProductError::StaleResult);
+    }
+    Ok(())
+}
+
+/// Builds the node hierarchy of the scene; `instance_meshes[i]` is the mesh
+/// (for COLLADA: the shared component) that the body of `instances[i]` uses.
 fn build_scene_nodes(
     snapshot: &Snapshot,
     instances: &[MeshGlbInstance<'_>],
@@ -293,7 +308,6 @@ fn build_scene_nodes(
     let mut root_nodes = Vec::new();
     let mut hierarchy = BTreeMap::<String, usize>::new();
     let mut occurrence_nodes = BTreeMap::new();
-    let identity = gltf_matrix(Transform::identity())?;
     for (instance, mesh_index) in instances.iter().zip(instance_meshes) {
         let root_id = instance.occurrence.instance_path.root_occurrence();
         let root_occurrence = snapshot
@@ -319,7 +333,7 @@ fn build_scene_nodes(
                 &mut nodes,
                 SceneNode {
                     name: root_occurrence.name().to_owned(),
-                    matrix: gltf_matrix(root_occurrence.transform())?,
+                    transform: root_occurrence.transform(),
                     mesh: None,
                     children: Vec::new(),
                     extras: json!({
@@ -367,7 +381,7 @@ fn build_scene_nodes(
                             "ketchupOwnerDefinitionId": owner_definition_id.0,
                             "ketchupInstancePath": path_key
                         }),
-                    )?;
+                    );
                 }
                 InstancePathStep::Occurrence(local_id) => {
                     path_key.push_str(&format!("/occurrence:{}", local_id.0));
@@ -395,7 +409,7 @@ fn build_scene_nodes(
                             "ketchupDefinition": definition.name(),
                             "ketchupInstancePath": path_key
                         }),
-                    )?;
+                    );
                     owner_definition_id = local.definition_id();
                     occurrence_nodes.insert(source_path.clone(), parent_index);
                 }
@@ -418,7 +432,7 @@ fn build_scene_nodes(
                         instance.occurrence.definition_name,
                         instance.source.producer_feature_id().0
                     ),
-                    matrix: identity,
+                    transform: Transform::identity(),
                     mesh: Some(*mesh_index),
                     children: Vec::new(),
                     extras: json!({
@@ -459,7 +473,7 @@ fn ensure_global_group(
         nodes,
         SceneNode {
             name: group.name().to_owned(),
-            matrix: gltf_matrix(group.transform())?,
+            transform: group.transform(),
             mesh: None,
             children: Vec::new(),
             extras: json!({"ketchupEntity": "group", "ketchupGroupId": group_id.0}),
@@ -478,15 +492,15 @@ fn ensure_local_scene_node(
     name: &str,
     transform: Transform,
     extras: Value,
-) -> Result<usize, ExactProductError> {
+) -> usize {
     if let Some(index) = hierarchy.get(key) {
-        return Ok(*index);
+        return *index;
     }
     let index = push_scene_node(
         nodes,
         SceneNode {
             name: name.to_owned(),
-            matrix: gltf_matrix(transform)?,
+            transform,
             mesh: None,
             children: Vec::new(),
             extras,
@@ -494,7 +508,7 @@ fn ensure_local_scene_node(
     );
     nodes[parent_index].children.push(index);
     hierarchy.insert(key.to_owned(), index);
-    Ok(index)
+    index
 }
 
 fn push_scene_node(nodes: &mut Vec<SceneNode>, node: SceneNode) -> usize {

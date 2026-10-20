@@ -2,6 +2,7 @@
 //! module here, so the crate links one test executable instead of one per file.
 
 mod blender_glb_export;
+mod collada_export;
 mod dxf_export;
 mod fabrication_validation;
 mod three_mf_export;
