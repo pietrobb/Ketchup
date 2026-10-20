@@ -2,7 +2,7 @@
 //! each checked against the request that produced it.
 use super::*;
 use crate::protocol::{
-    DwgInput, DwgOutcome, EvaluatedProgram, ExportReceipt, Frame, GraphInput,
+    ANY_FRAME_BYTES, DwgInput, DwgOutcome, EvaluatedProgram, ExportReceipt, Frame, GraphInput,
     MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MeshReceipt, ProgramInput, ProgramOutcome,
     RefineInput, RefineOutcome, ReportOutcome, SourceFile, WorkerFailure, WorkerImportPart,
     WorkerReply, WorkerRequest, encode_frame, protocol_identity, read_frame,
@@ -858,7 +858,7 @@ impl ExactWorkerClient {
         self.ensure_not_cancelled(cancelled)?;
         // A DWG file of any size goes to the program worker, which reads any frame.
         let max_bytes = match request {
-            WorkerRequest::ConvertDwg(_) => u32::MAX as usize,
+            WorkerRequest::ConvertDwg(_) => ANY_FRAME_BYTES,
             _ => MAX_REQUEST_FRAME_BYTES,
         };
         let frame = encode_frame(request, max_bytes)

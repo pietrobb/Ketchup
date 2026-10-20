@@ -12,9 +12,9 @@
 //! the DWG reader.
 pub use crate::protocol::DwgRefusal;
 use crate::protocol::{
-    DwgInput, Frame, MAX_REPLY_FRAME_BYTES, ProgramInput, RefineInput, RefineOutcome,
-    ReportOutcome, WorkerFailure, WorkerReply, WorkerRequest, protocol_identity, read_frame,
-    write_frame,
+    ANY_FRAME_BYTES, DwgInput, Frame, MAX_REPLY_FRAME_BYTES, ProgramInput, RefineInput,
+    RefineOutcome, ReportOutcome, WorkerFailure, WorkerReply, WorkerRequest, protocol_identity,
+    read_frame, write_frame,
 };
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
 use ketchup_dwg::DwgDrawing;
@@ -413,7 +413,7 @@ pub fn run_stdio() {
     let mut stdout = std::io::stdout().lock();
     loop {
         // Any frame its length can declare: the job's memory limit bounds what this holds.
-        let reply = match read_frame::<WorkerRequest>(&mut stdin, u32::MAX as usize) {
+        let reply = match read_frame::<WorkerRequest>(&mut stdin, ANY_FRAME_BYTES) {
             Frame::Message(WorkerRequest::Hello) => WorkerReply::Hello {
                 protocol: protocol_identity().to_owned(),
             },

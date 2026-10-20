@@ -503,6 +503,9 @@ impl WorkerFailure {
     }
 }
 
+/// A frame bounded only by its u32 length prefix, which `encode_frame` refuses to overflow.
+pub const ANY_FRAME_BYTES: usize = usize::MAX;
+
 /// Encodes one length-prefixed frame, refusing bodies above `max_bytes`.
 pub fn encode_frame(message: &impl Serialize, max_bytes: usize) -> io::Result<Vec<u8>> {
     let mut frame = vec![0; 4];
@@ -514,7 +517,9 @@ pub fn encode_frame(message: &impl Serialize, max_bytes: usize) -> io::Result<Ve
             format!("worker frame of {length} bytes exceeds the {max_bytes}-byte limit"),
         ));
     }
-    frame[..4].copy_from_slice(&(length as u32).to_le_bytes());
+    let prefix =
+        u32::try_from(length).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    frame[..4].copy_from_slice(&prefix.to_le_bytes());
     Ok(frame)
 }
 
