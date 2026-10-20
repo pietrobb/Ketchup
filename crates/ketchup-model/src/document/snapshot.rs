@@ -451,6 +451,15 @@ impl Snapshot {
         self.product.saved_views.values().map(Arc::as_ref)
     }
 
+    #[must_use]
+    pub fn underlay(&self, id: UnderlayId) -> Option<&Underlay> {
+        self.product.underlays.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn underlays(&self) -> impl Iterator<Item = &Underlay> {
+        self.product.underlays.values().map(Arc::as_ref)
+    }
+
     pub fn occurrences_with_tag(&self, id: TagId) -> impl Iterator<Item = &Occurrence> {
         self.product
             .occurrences

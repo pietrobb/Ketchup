@@ -543,6 +543,7 @@ fn encoded_snapshot(snapshot: &Snapshot) -> Arc<crate::document::EncodedSnapshot
     encoded
 }
 
+/// The blobs `snapshot` reads: the sources of imported bodies and the lines of underlays.
 fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
     snapshot
         .features()
@@ -555,6 +556,11 @@ fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
             ),
             _ => None,
         })
+        .chain(
+            snapshot
+                .underlays()
+                .map(crate::underlay::Underlay::lines_blob),
+        )
         .collect()
 }
 
@@ -2727,6 +2733,17 @@ fn load_document(
             .get(&hash)
             .is_some_and(|bytes| bytes.len() as u64 == byte_len)
         {
+            return Err(PersistenceError::InvalidBlobHash);
+        }
+        Arc::make_mut(&mut container_data.imported_source_blobs).insert(hash);
+    }
+    // An underlay's lines, like an imported source, leave the file with the last
+    // revision that names them.
+    for hash in loaded_snapshot
+        .underlays()
+        .map(crate::underlay::Underlay::lines_blob)
+    {
+        if !container_data.blobs.contains_key(&hash) {
             return Err(PersistenceError::InvalidBlobHash);
         }
         Arc::make_mut(&mut container_data.imported_source_blobs).insert(hash);

@@ -4,8 +4,9 @@ use super::*;
 use crate::protocol::{
     ANY_FRAME_BYTES, DwgInput, DwgOutcome, EvaluatedProgram, ExportReceipt, Frame, GraphInput,
     MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MeshReceipt, ProgramInput, ProgramOutcome,
-    RefineInput, RefineOutcome, ReportOutcome, SourceFile, WorkerFailure, WorkerImportPart,
-    WorkerReply, WorkerRequest, encode_frame, protocol_identity, read_frame,
+    RefineInput, RefineOutcome, ReportOutcome, SourceFile, UnderlayInput, UnderlayOutcome,
+    WorkerFailure, WorkerImportPart, WorkerReply, WorkerRequest, encode_frame, protocol_identity,
+    read_frame,
 };
 
 pub(crate) struct WorkerWriteRequest {
@@ -709,6 +710,18 @@ impl ExactWorkerClient {
     ) -> Result<DwgOutcome, WorkerError> {
         match self.call(&WorkerRequest::ConvertDwg(input), cancelled, timeout)? {
             WorkerReply::Dwg(outcome) => Ok(*outcome),
+            reply => self.unexpected(reply),
+        }
+    }
+
+    pub(crate) fn read_underlay(
+        &mut self,
+        input: UnderlayInput,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<UnderlayOutcome, WorkerError> {
+        match self.call(&WorkerRequest::ReadUnderlay(input), cancelled, timeout)? {
+            WorkerReply::Underlay(outcome) => Ok(*outcome),
             reply => self.unexpected(reply),
         }
     }

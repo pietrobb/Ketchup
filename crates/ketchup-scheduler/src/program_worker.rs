@@ -13,9 +13,10 @@
 pub use crate::protocol::DwgRefusal;
 use crate::protocol::{
     ANY_FRAME_BYTES, DwgInput, Frame, MAX_REPLY_FRAME_BYTES, ProgramInput, RefineInput,
-    RefineOutcome, ReportOutcome, WorkerFailure, WorkerReply, WorkerRequest, protocol_identity,
-    read_frame, write_frame,
+    RefineOutcome, ReportOutcome, UnderlayInput, UnderlayOutcome, UnderlayRead, WorkerFailure,
+    WorkerReply, WorkerRequest, protocol_identity, read_frame, write_frame,
 };
+use crate::underlay_reading::{UnderlayReadError, read_underlay};
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
 use ketchup_dwg::DwgDrawing;
 use ketchup_program::{
@@ -93,7 +94,7 @@ impl CheckDeadline {
     }
 }
 
-/// How long reading one DWG file may take.
+/// How long reading one DWG file, or one drawing as an underlay, may take.
 const DWG_DEADLINE: Duration = Duration::from_secs(60);
 
 /// The DXF text of a DWG drawing comes back in one reply.
@@ -348,6 +349,27 @@ impl ProgramWorker {
         Result::from(outcome).map_err(DwgConversionError::Refused)
     }
 
+    /// Reads the drawing `input` names as an underlay in the worker, which writes its
+    /// lines to `input.output`.
+    ///
+    /// # Errors
+    /// The drawing was refused, or the worker was stopped or died.
+    pub fn read_underlay(
+        &mut self,
+        input: UnderlayInput,
+        cancel: &CancelToken,
+    ) -> Result<UnderlayRead, UnderlayReadError> {
+        let outcome = self
+            .call(cancel, |client| {
+                client.read_underlay(input, cancel.flag(), DWG_DEADLINE)
+            })
+            .map_err(Stopped::underlay_error)?;
+        match outcome {
+            UnderlayOutcome::Read(read) => Ok(*read),
+            UnderlayOutcome::Refused(refusal) => Err(UnderlayReadError::Refused(refusal)),
+        }
+    }
+
     /// [`Self::call`] with the time `deadline` has left.
     fn call_by<T>(
         &mut self,
@@ -435,6 +457,9 @@ pub fn run_stdio() {
                 ketchup_dwg::dwg_to_dxf(&input.dwg, input.max_dxf_bytes.min(MAX_DWG_DXF_BYTES))
                     .into(),
             )),
+            Frame::Message(WorkerRequest::ReadUnderlay(input)) => {
+                WorkerReply::Underlay(Box::new(read_underlay(&input)))
+            }
             Frame::Message(_) | Frame::Malformed(_) => {
                 WorkerReply::Failure(WorkerFailure::invalid_request())
             }
@@ -623,6 +648,15 @@ impl Stopped {
             Self::TimeLimit(after) => DwgConversionError::TimeLimit(after),
             Self::MemoryLimit => DwgConversionError::MemoryLimit,
             Self::Failed(error) => DwgConversionError::WorkerFailed(error),
+        }
+    }
+
+    fn underlay_error(self) -> UnderlayReadError {
+        match self {
+            Self::Cancelled => UnderlayReadError::Cancelled,
+            Self::TimeLimit(after) => UnderlayReadError::TimeLimit(after),
+            Self::MemoryLimit => UnderlayReadError::MemoryLimit,
+            Self::Failed(error) => UnderlayReadError::WorkerFailed(error),
         }
     }
 }

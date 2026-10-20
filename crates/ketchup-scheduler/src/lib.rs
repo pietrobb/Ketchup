@@ -8,6 +8,7 @@ pub mod plugin;
 pub mod program_worker;
 pub mod protocol;
 mod request_budget;
+pub mod underlay_reading;
 pub use pair_query::{
     ExactPairAnswer, ExactPairCandidate, ExactPairQueryResult, ExactPairRelation,
 };

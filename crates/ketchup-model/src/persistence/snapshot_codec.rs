@@ -10,9 +10,9 @@
 //! field, also one with `#[serde(default)]` and a `skip_serializing_if` for that
 //! default. Format 103 shipped in Kečup 0.1.0, which ignores fields it does not know,
 //! so a new field under 103 would be dropped by 0.1.0 and lost at its next Save (PS-4).
-//! The optional fields of format 103 are listed in `tests/format_golden.rs`, which also
-//! fails on any other change. The reader refuses a current-format snapshot with fields
-//! it does not know (`PersistenceError::UnknownFields`). The encoder writes the serde
+//! Format 104 adds underlays. The optional fields of the current format are listed in
+//! `tests/format_golden.rs`, which also fails on any other change. The reader refuses a
+//! current-format snapshot with fields it does not know (`PersistenceError::UnknownFields`). The encoder writes the serde
 //! form directly, so every map in it must state its length: `#[serde(flatten)]` would
 //! write an indefinite-length map.
 
@@ -22,7 +22,7 @@ use crate::document::{FeatureId, ProductModel, Snapshot};
 use std::collections::BTreeMap;
 
 /// Format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 103;
+pub(super) const SNAPSHOT_FORMAT: u16 = 104;
 
 /// First format this codec wrote. Numbers below it belong to the retired hand-written
 /// codec.
@@ -113,7 +113,9 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
         if format < 102 {
             format_101_occurrence_tags(product, false);
         }
-        format_102_joint_participants(product, false);
+        if format < 103 {
+            format_102_joint_participants(product, false);
+        }
     }
     let decoded: DecodedSnapshot = value.deserialized().map_err(invalid_snapshot)?;
     // The writer hashed the identity form under its own field names, and before
@@ -122,7 +124,9 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
         crate::document::identity_form(|| ciborium::Value::serialized(&decoded.product))
             .map_err(invalid_snapshot)?;
     restore_format_100_sheet_metal(&mut writer_form, sheet_metal);
-    format_102_joint_participants(&mut writer_form, true);
+    if format < 103 {
+        format_102_joint_participants(&mut writer_form, true);
+    }
     if format < 102 {
         format_101_occurrence_tags(&mut writer_form, true);
     }

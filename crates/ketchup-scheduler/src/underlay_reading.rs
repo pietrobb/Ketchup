@@ -1,0 +1,109 @@
+//! A drawing read as an underlay in the program worker: the file is read, a DWG converted
+//! to DXF, and every line kept and written to the request's output file. The worker's
+//! memory and time limits bound it, so a drawing of any size either reads or stops the
+//! worker alone.
+
+use std::fmt;
+use std::path::Path;
+use std::time::Duration;
+
+use ketchup_model::import::{DxfImportError, DxfImportOptions, read_dxf_underlay};
+
+use crate::WorkerError;
+use crate::program_worker::PROGRAM_WORKER_MEMORY_BYTES;
+use crate::protocol::{UnderlayInput, UnderlayOutcome, UnderlayRead, UnderlayRefusal};
+
+/// Reads `input` in the worker process.
+pub(crate) fn read_underlay(input: &UnderlayInput) -> UnderlayOutcome {
+    read(input).unwrap_or_else(UnderlayOutcome::Refused)
+}
+
+fn read(input: &UnderlayInput) -> Result<UnderlayOutcome, UnderlayRefusal> {
+    let source = std::fs::read(&input.source).map_err(|error| file(&input.source, &error))?;
+    let (dxf, dwg) = if input.dwg {
+        let drawing = ketchup_dwg::dwg_to_dxf(&source, usize::MAX)
+            .map_err(|error| UnderlayRefusal::Dwg(error.into()))?;
+        drop(source);
+        let skipped = drawing
+            .skipped
+            .into_iter()
+            .map(|records| (records.record_type, records.count))
+            .collect();
+        (drawing.dxf, Some((drawing.version, skipped)))
+    } else {
+        (source, None)
+    };
+    let underlay = read_dxf_underlay(&dxf, DxfImportOptions::new(input.unit_if_unitless)).map_err(
+        |error| match error {
+            DxfImportError::UnitsRequired => UnderlayRefusal::UnitsRequired,
+            error => UnderlayRefusal::Dxf {
+                report: error.to_string(),
+            },
+        },
+    )?;
+    drop(dxf);
+    std::fs::write(&input.output, underlay.lines.encode())
+        .map_err(|error| file(&input.output, &error))?;
+    Ok(UnderlayOutcome::Read(Box::new(UnderlayRead {
+        segments: underlay.lines.segment_count(),
+        layers: underlay.layers,
+        units: underlay.units,
+        diagnostics: underlay.diagnostics,
+        dwg,
+    })))
+}
+
+fn file(path: &Path, error: &std::io::Error) -> UnderlayRefusal {
+    UnderlayRefusal::File {
+        path: path.to_owned(),
+        report: error.to_string(),
+    }
+}
+
+/// Why a drawing was not read as an underlay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UnderlayReadError {
+    /// The drawing was refused.
+    Refused(UnderlayRefusal),
+    Cancelled,
+    TimeLimit(Duration),
+    /// Reading needed more memory than the worker may commit.
+    MemoryLimit,
+    /// The worker could not be started or stopped otherwise.
+    WorkerFailed(WorkerError),
+}
+
+impl fmt::Display for UnderlayReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(refusal) => refusal.fmt(formatter),
+            Self::Cancelled => formatter.write_str("reading the drawing was cancelled"),
+            Self::TimeLimit(after) => write!(
+                formatter,
+                "reading the drawing took longer than {} s and was stopped",
+                after.as_secs()
+            ),
+            Self::MemoryLimit => write!(
+                formatter,
+                "reading the drawing needed more than {} GiB of memory and was stopped",
+                PROGRAM_WORKER_MEMORY_BYTES >> 30
+            ),
+            Self::WorkerFailed(error) => {
+                write!(
+                    formatter,
+                    "the process that reads drawings stopped: {error}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for UnderlayReadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Refused(refusal) => Some(refusal),
+            Self::WorkerFailed(error) => Some(error),
+            _ => None,
+        }
+    }
+}

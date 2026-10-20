@@ -1,4 +1,4 @@
-//! Tags, saved views, classification, collections and import receipts.
+//! Tags, saved views, underlays, classification, collections and import receipts.
 use super::*;
 
 pub(super) fn apply(
@@ -31,6 +31,19 @@ pub(super) fn apply(
         }
         CanonicalCommand::UpsertSavedView(_) | CanonicalCommand::DeleteSavedView { .. } => {
             apply_saved_view_command(&mut edit.product, command)?;
+        }
+        CanonicalCommand::UpsertUnderlay(underlay) => {
+            ensure_product_id(underlay.id.0)?;
+            validate_underlay(&edit.product, underlay)?;
+            edit.product
+                .underlays
+                .insert(underlay.id, Arc::new(underlay.clone()));
+        }
+        CanonicalCommand::DeleteUnderlay { id } => {
+            edit.product
+                .underlays
+                .remove(id)
+                .ok_or(CanonicalError::UnderlayNotFound(*id))?;
         }
         CanonicalCommand::SetTagVisibility { id, visible } => {
             let existing = edit

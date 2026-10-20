@@ -167,6 +167,7 @@ pub enum CanonicalError {
         problem: SavedViewProblem,
     },
     SavedViewNotFound(SavedViewId),
+    UnderlayNotFound(UnderlayId),
     InvalidClassificationDimension(ClassificationDimensionId),
     ClassificationDimensionNotFound(ClassificationDimensionId),
     ClassificationCategoryNotFound(ClassificationDimensionId, ClassificationCategoryId),
@@ -369,6 +370,7 @@ impl CanonicalError {
             Self::TagInUse { .. } => "canonical.tag_in_use",
             Self::InvalidSavedView { .. } => "canonical.invalid_saved_view",
             Self::SavedViewNotFound(..) => "canonical.saved_view_not_found",
+            Self::UnderlayNotFound(..) => "canonical.underlay_not_found",
             Self::InvalidClassificationDimension(..) => {
                 "canonical.invalid_classification_dimension"
             }
@@ -776,6 +778,7 @@ impl fmt::Display for CanonicalError {
                 write!(formatter, "saved view {} {problem}", id.0)
             }
             Self::SavedViewNotFound(id) => write!(formatter, "saved view {} does not exist", id.0),
+            Self::UnderlayNotFound(id) => write!(formatter, "underlay {} does not exist", id.0),
             Self::InvalidClassificationDimension(id) => {
                 write!(formatter, "classification dimension {} is invalid", id.0)
             }
@@ -891,11 +894,12 @@ fn write_invalid_thread(
     }
 }
 
-/// A part that carries a tag.
+/// A part or underlay that carries a tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TagHolder {
     Occurrence(OccurrenceId),
     LocalOccurrence(LocalOccurrenceKey),
+    Underlay(UnderlayId),
 }
 
 impl fmt::Display for TagHolder {
@@ -907,6 +911,7 @@ impl fmt::Display for TagHolder {
                 "local occurrence {} of definition {}",
                 key.local_id.0, key.definition_id.0
             ),
+            Self::Underlay(id) => write!(formatter, "underlay {}", id.0),
         }
     }
 }

@@ -27,6 +27,7 @@ pub mod state_view;
 pub mod testing;
 pub use ketchup_tolerance as tolerance;
 pub mod topology;
+pub mod underlay;
 pub mod validation;
 
 /// Returns the canonical application name for toolchain smoke tests.

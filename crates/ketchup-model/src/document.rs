@@ -53,6 +53,7 @@ use crate::space::{
 };
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
 use crate::topology::{TopologicalElementKind, TopologicalElementRef};
+use crate::underlay::{Underlay, UnderlayId};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use ketchup_geometry::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use ketchup_geometry::sketch::{
@@ -89,22 +90,6 @@ typed_id!(ClassificationCategoryId);
 typed_id!(CollectionId);
 typed_id!(LocalOccurrenceId);
 typed_id!(LocalGroupId);
-
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct LocalOccurrenceKey {
-    pub definition_id: DefinitionId,
-    pub local_id: LocalOccurrenceId,
-}
-
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct LocalGroupKey {
-    pub definition_id: DefinitionId,
-    pub local_id: LocalGroupId,
-}
 
 mod assembly_validation;
 mod command;
@@ -190,6 +175,8 @@ pub(crate) struct ProductModel {
     pub(crate) tags: BTreeMap<TagId, Arc<Tag>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) saved_views: BTreeMap<SavedViewId, Arc<SavedView>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) underlays: BTreeMap<UnderlayId, Arc<Underlay>>,
     pub(crate) classification_dimensions:
         BTreeMap<ClassificationDimensionId, Arc<ClassificationDimension>>,
     pub(crate) classification_assignments:
@@ -351,6 +338,7 @@ impl Default for ProductModel {
             persistent_dimensions: BTreeMap::new(),
             tags: BTreeMap::new(),
             saved_views: BTreeMap::new(),
+            underlays: BTreeMap::new(),
             classification_dimensions: BTreeMap::new(),
             classification_assignments: BTreeMap::new(),
             collections: BTreeMap::new(),

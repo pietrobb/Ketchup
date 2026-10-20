@@ -121,6 +121,11 @@ pub enum CanonicalCommand {
     DeleteSavedView {
         id: SavedViewId,
     },
+    /// Add or replace a drawing under the model; its tags must exist. It is no part.
+    UpsertUnderlay(Underlay),
+    DeleteUnderlay {
+        id: UnderlayId,
+    },
     UpsertClassificationDimension {
         id: ClassificationDimensionId,
         name: String,
@@ -558,7 +563,8 @@ pub enum ToolBodyPolicy {
 
 impl CanonicalCommand {
     /// Whether the command changes only how the model is viewed: tag or occurrence
-    /// visibility and saved views. A batch of such commands keeps the document's program.
+    /// visibility, saved views and underlays. A batch of such commands keeps the
+    /// document's program.
     #[must_use]
     pub const fn is_view_only(&self) -> bool {
         matches!(
@@ -567,6 +573,8 @@ impl CanonicalCommand {
                 | Self::SetOccurrenceVisibility { .. }
                 | Self::UpsertSavedView(_)
                 | Self::DeleteSavedView { .. }
+                | Self::UpsertUnderlay(_)
+                | Self::DeleteUnderlay { .. }
         )
     }
 
@@ -614,6 +622,7 @@ pub enum AuthoritativeDependency {
     PersistentDimension(PersistentDimensionId),
     Tag(TagId),
     SavedView(SavedViewId),
+    Underlay(UnderlayId),
     ClassificationDimension(ClassificationDimensionId),
     OccurrenceClassification(OccurrenceId, ClassificationDimensionId),
     Collection(CollectionId),

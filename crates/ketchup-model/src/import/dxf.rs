@@ -25,6 +25,48 @@ const MAX_DXF_SEGMENTS_PER_PROFILE: usize = 1_024;
 const MAX_DXF_BLOCK_DEPTH: usize = 32;
 const DXF_GEOMETRY_EPSILON_MM: f64 = ROUNDING;
 
+/// What one reading of a DXF keeps to. A profile import turns what it reads into canonical
+/// profiles in the window and keeps their bounded limits. An underlay is read in the program
+/// worker, whose memory and time limits bound it, and keeps every line it can read.
+#[derive(Clone, Copy)]
+struct DxfReading {
+    max_source_bytes: u64,
+    max_pairs: usize,
+    max_entities: usize,
+    max_profiles: usize,
+    max_segments: usize,
+    /// Joins loose lines and arcs into profiles; otherwise each stays one of its own.
+    chain: bool,
+    /// Leaves out, and counts, an entity it cannot read instead of refusing the file.
+    skip_unreadable: bool,
+}
+
+const PROFILE_READING: DxfReading = DxfReading {
+    max_source_bytes: MAX_DXF_SOURCE_BYTES,
+    max_pairs: MAX_DXF_PAIRS,
+    max_entities: MAX_DXF_ENTITIES,
+    max_profiles: MAX_DXF_PROFILES,
+    max_segments: MAX_DXF_SEGMENTS_PER_PROFILE,
+    chain: true,
+    skip_unreadable: false,
+};
+
+/// No limit, yet small enough that the `+ 1` of a check cannot overflow.
+const UNBOUNDED: usize = usize::MAX / 2;
+
+const UNDERLAY_READING: DxfReading = DxfReading {
+    max_source_bytes: u64::MAX,
+    max_pairs: UNBOUNDED,
+    max_entities: UNBOUNDED,
+    max_profiles: UNBOUNDED,
+    max_segments: UNBOUNDED,
+    chain: false,
+    skip_unreadable: true,
+};
+
+mod underlay;
+pub use underlay::{DxfUnderlay, read_dxf_underlay};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DxfImportOptions {
     unit_if_unitless: Option<ImportLengthUnit>,
@@ -252,12 +294,20 @@ struct DxfPair<'a> {
     value: &'a str,
 }
 
-#[derive(Default)]
+/// What a reading reports, and the limits it reads within.
 struct DiagnosticCounts {
     entries: BTreeMap<(ImportDiagnosticSeverity, String, Option<String>), u32>,
+    reading: DxfReading,
 }
 
 impl DiagnosticCounts {
+    const fn new(reading: DxfReading) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            reading,
+        }
+    }
+
     fn add(
         &mut self,
         severity: ImportDiagnosticSeverity,
@@ -311,6 +361,17 @@ struct OrderedProfile {
     closed: bool,
 }
 
+impl From<LooseSegment> for OrderedProfile {
+    fn from(loose: LooseSegment) -> Self {
+        Self {
+            layer: loose.layer,
+            ordinal: loose.ordinal,
+            segments: vec![loose.segment],
+            closed: false,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct BlockDefinition {
     base_mm: [f64; 2],
@@ -358,9 +419,66 @@ enum UndirectedSegmentKey {
 
 /// Inspect a bounded ASCII DXF without mutating a document.
 pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf, DxfImportError> {
+    let (units, insbase_mm, mut parsed_entities, diagnostics) =
+        read_dxf(source, options, PROFILE_READING)?;
+    let mut profiles =
+        assemble_loose_segments(parsed_entities.loose, MAX_DXF_SEGMENTS_PER_PROFILE)?;
+    profiles.append(&mut parsed_entities.explicit_profiles);
+    let layers = parsed_entities.layers;
+    if profiles.len() > MAX_DXF_PROFILES {
+        return Err(DxfImportError::TooManyProfiles);
+    }
+    reject_duplicate_segments(&profiles)?;
+    for left in 0..profiles.len() {
+        if profiles[left + 1..]
+            .iter()
+            .any(|right| profiles_are_duplicate(&profiles[left], right))
+        {
+            return Err(DxfImportError::AmbiguousGeometry);
+        }
+    }
+    profiles.sort_by(|left, right| {
+        (left.layer.as_str(), left.ordinal).cmp(&(right.layer.as_str(), right.ordinal))
+    });
+    if profiles.is_empty() {
+        return Err(DxfImportError::NoSupportedGeometry);
+    }
+    let diagnostics = finish_report(diagnostics, &layers, units)?;
+    Ok(ParsedDxf {
+        units,
+        insbase_mm,
+        layers: layers.into_iter().collect(),
+        profiles: profiles
+            .into_iter()
+            .map(|profile| ParsedDxfProfile {
+                layer: profile.layer,
+                segments: profile.segments,
+                closed: profile.closed,
+            })
+            .collect(),
+        diagnostics,
+    })
+}
+
+type ReadDxf = (
+    ImportUnitDecision,
+    Option<[f64; 3]>,
+    ParsedEntities,
+    DiagnosticCounts,
+);
+
+/// The units, base point, entities and report of `source`, read as `reading` says.
+fn read_dxf(
+    source: &[u8],
+    options: DxfImportOptions,
+    reading: DxfReading,
+) -> Result<ReadDxf, DxfImportError> {
+    if source.len() as u64 > reading.max_source_bytes {
+        return Err(DxfImportError::SourceTooLarge);
+    }
     let text = dxf_source_text(source)?;
-    let pairs = parse_pairs(&text)?;
-    let (sections, mut diagnostics) = parse_sections(&pairs)?;
+    let pairs = parse_pairs(&text, reading.max_pairs)?;
+    let (sections, mut diagnostics) = parse_sections(&pairs, reading)?;
     let header = sections.get("HEADER").map(Vec::as_slice).unwrap_or(&[]);
     let (units, insbase_mm) = parse_header(header, options, &mut diagnostics)?;
     let mut entity_count = 0;
@@ -382,28 +500,16 @@ pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf
         &mut parsed_entities,
         &mut diagnostics,
     )?;
-    let mut profiles = assemble_loose_segments(parsed_entities.loose)?;
-    profiles.append(&mut parsed_entities.explicit_profiles);
-    let layers = parsed_entities.layers;
-    if profiles.len() > MAX_DXF_PROFILES {
-        return Err(DxfImportError::TooManyProfiles);
-    }
-    reject_duplicate_segments(&profiles)?;
-    for left in 0..profiles.len() {
-        if profiles[left + 1..]
-            .iter()
-            .any(|right| profiles_are_duplicate(&profiles[left], right))
-        {
-            return Err(DxfImportError::AmbiguousGeometry);
-        }
-    }
-    profiles.sort_by(|left, right| {
-        (left.layer.as_str(), left.ordinal).cmp(&(right.layer.as_str(), right.ordinal))
-    });
-    if profiles.is_empty() {
-        return Err(DxfImportError::NoSupportedGeometry);
-    }
-    for layer in &layers {
+    Ok((units, insbase_mm, parsed_entities, diagnostics))
+}
+
+/// The report of a reading with its layers, origin and units.
+fn finish_report(
+    mut diagnostics: DiagnosticCounts,
+    layers: &BTreeSet<String>,
+    units: ImportUnitDecision,
+) -> Result<Vec<ImportDiagnostic>, DxfImportError> {
+    for layer in layers {
         diagnostics.add(
             ImportDiagnosticSeverity::Info,
             "dxf.layer",
@@ -426,21 +532,7 @@ pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf
         Some(unit_name(units.source_unit()).to_owned()),
         1,
     )?;
-    let diagnostics = diagnostics.finish()?;
-    Ok(ParsedDxf {
-        units,
-        insbase_mm,
-        layers: layers.into_iter().collect(),
-        profiles: profiles
-            .into_iter()
-            .map(|profile| ParsedDxfProfile {
-                layer: profile.layer,
-                segments: profile.segments,
-                closed: profile.closed,
-            })
-            .collect(),
-        diagnostics,
-    })
+    diagnostics.finish()
 }
 
 /// Build one detached canonical transaction for a reviewed DXF subset import.
@@ -539,9 +631,6 @@ fn dxf_source_text(source: &[u8]) -> Result<std::borrow::Cow<'_, str>, DxfImport
     if source.is_empty() {
         return Err(DxfImportError::Empty);
     }
-    if source.len() as u64 > MAX_DXF_SOURCE_BYTES {
-        return Err(DxfImportError::SourceTooLarge);
-    }
     if let Ok(text) = std::str::from_utf8(source) {
         return Ok(std::borrow::Cow::Borrowed(text));
     }
@@ -582,7 +671,7 @@ fn code_page_encoding(name: &[u8]) -> Option<&'static encoding_rs::Encoding> {
     }
 }
 
-fn parse_pairs(text: &str) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
+fn parse_pairs(text: &str, max_pairs: usize) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
     let lines = text.lines().collect::<Vec<_>>();
     if lines.iter().any(|line| line.len() > MAX_DXF_LINE_BYTES) {
         return Err(DxfImportError::LineTooLong);
@@ -590,7 +679,7 @@ fn parse_pairs(text: &str) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
     if lines.len() % 2 != 0 {
         return Err(DxfImportError::MalformedPairs);
     }
-    if lines.len() / 2 > MAX_DXF_PAIRS {
+    if lines.len() / 2 > max_pairs {
         return Err(DxfImportError::TooManyPairs);
     }
     lines
@@ -609,9 +698,10 @@ fn parse_pairs(text: &str) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
 
 fn parse_sections<'a>(
     pairs: &[DxfPair<'a>],
+    reading: DxfReading,
 ) -> Result<(BTreeMap<String, Vec<DxfPair<'a>>>, DiagnosticCounts), DxfImportError> {
     let mut sections = BTreeMap::new();
-    let mut diagnostics = DiagnosticCounts::default();
+    let mut diagnostics = DiagnosticCounts::new(reading);
     let mut index = 0;
     let mut saw_eof = false;
     while index < pairs.len() {
@@ -758,7 +848,7 @@ fn parse_blocks<'a>(
         if pairs[index].code != 0 || !pairs[index].value.eq_ignore_ascii_case("BLOCK") {
             return Err(DxfImportError::InvalidBlock);
         }
-        bump_entity_count(entity_count)?;
+        bump_entity_count(entity_count, diagnostics.reading.max_entities)?;
         let header_start = index + 1;
         index = header_start;
         while index < pairs.len() && pairs[index].code != 0 {
@@ -810,7 +900,7 @@ fn parse_blocks<'a>(
             index += 1;
         }
         let end_record = &pairs[end_start..index];
-        bump_entity_count(entity_count)?;
+        bump_entity_count(entity_count, diagnostics.reading.max_entities)?;
         parse_optional_layer(end_record)?;
         report_ignored_groups("ENDBLK", end_record, &[5, 8, 100], diagnostics)?;
 
@@ -869,10 +959,21 @@ fn resolve_block<'a>(
         &mut parsed_entities,
         resolution.diagnostics,
     )?;
-    let mut profiles = assemble_loose_segments(parsed_entities.loose)?;
+    let reading = resolution.diagnostics.reading;
+    let mut profiles = if reading.chain {
+        assemble_loose_segments(parsed_entities.loose, reading.max_segments)?
+    } else {
+        parsed_entities
+            .loose
+            .into_iter()
+            .map(OrderedProfile::from)
+            .collect()
+    };
     profiles.append(&mut parsed_entities.explicit_profiles);
-    reject_duplicate_segments(&profiles)?;
-    if profiles.len() > MAX_DXF_PROFILES {
+    if reading.chain {
+        reject_duplicate_segments(&profiles)?;
+    }
+    if profiles.len() > reading.max_profiles {
         return Err(DxfImportError::TooManyProfiles);
     }
     resolution.blocks.insert(
@@ -909,11 +1010,11 @@ fn block_dependencies(pairs: &[DxfPair<'_>]) -> Result<Vec<String>, DxfImportErr
     Ok(dependencies)
 }
 
-fn bump_entity_count(entity_count: &mut usize) -> Result<(), DxfImportError> {
+fn bump_entity_count(entity_count: &mut usize, max: usize) -> Result<(), DxfImportError> {
     *entity_count = entity_count
         .checked_add(1)
         .ok_or(DxfImportError::TooManyEntities)?;
-    if *entity_count > MAX_DXF_ENTITIES {
+    if *entity_count > max {
         Err(DxfImportError::TooManyEntities)
     } else {
         Ok(())
@@ -935,7 +1036,7 @@ fn parse_entities(
             return Err(DxfImportError::MalformedSections);
         }
         ordinal += 1;
-        bump_entity_count(entity_count)?;
+        bump_entity_count(entity_count, diagnostics.reading.max_entities)?;
         let kind = pairs[index].value.to_ascii_uppercase();
         let start = index + 1;
         index = start;
@@ -943,145 +1044,169 @@ fn parse_entities(
             index += 1;
         }
         let record = &pairs[start..index];
-        if !matches!(kind.as_str(), "ATTRIB" | "SEQEND")
-            && let Some((severity, code)) = left_out(record)?
-        {
-            skip_sub_entities(&kind, record, pairs, &mut index, &mut ordinal, entity_count)?;
-            diagnostics.add(severity, code, Some(kind), 1)?;
-            continue;
-        }
-        match kind.as_str() {
-            "LINE" => {
-                let segment = parse_line(record, units, diagnostics)?;
-                output.layers.insert(segment.layer.clone());
-                output.loose.push(LooseSegment {
-                    layer: segment.layer,
-                    ordinal,
-                    segment: segment.segment,
-                });
-            }
-            "ARC" => {
-                let segment = parse_arc(record, units, diagnostics)?;
-                output.layers.insert(segment.layer.clone());
-                output.loose.push(LooseSegment {
-                    layer: segment.layer,
-                    ordinal,
-                    segment: segment.segment,
-                });
-            }
-            "CIRCLE" => {
-                let profile = parse_circle(record, units, ordinal, diagnostics)?;
-                output.layers.insert(profile.layer.clone());
-                output.explicit_profiles.push(profile);
-            }
-            "ELLIPSE" => {
-                if let Some(profile) = parse_ellipse(record, units, ordinal, diagnostics)? {
-                    output.layers.insert(profile.layer.clone());
-                    output.explicit_profiles.push(profile);
-                }
-            }
-            "SPLINE" => {
-                if let Some(profile) = parse_spline(record, units, ordinal, diagnostics)? {
-                    output.layers.insert(profile.layer.clone());
-                    output.explicit_profiles.push(profile);
-                }
-            }
-            "HATCH" => {
-                for profile in parse_hatch(record, units, ordinal, diagnostics)? {
-                    output.layers.insert(profile.layer.clone());
-                    output.explicit_profiles.push(profile);
-                }
-            }
-            "MPOLYGON" => {
-                for profile in parse_mpolygon(record, units, ordinal, diagnostics)? {
-                    output.layers.insert(profile.layer.clone());
-                    output.explicit_profiles.push(profile);
-                }
-            }
-            "MESH" => {
-                for profile in parse_mesh(record, units, ordinal, diagnostics)? {
-                    output.layers.insert(profile.layer.clone());
-                    output.explicit_profiles.push(profile);
-                }
-            }
-            "SOLID" | "TRACE" => {
-                let profile = parse_trace(&kind, record, units, ordinal, diagnostics)?;
-                output.layers.insert(profile.layer.clone());
-                output.explicit_profiles.push(profile);
-            }
-            "3DFACE" => {
-                let profile = parse_3dface(record, units, ordinal, diagnostics)?;
-                output.layers.insert(profile.layer.clone());
-                output.explicit_profiles.push(profile);
-            }
-            "LEADER" => {
-                if let Some(profile) = parse_leader(record, units, ordinal, diagnostics)? {
-                    output.layers.insert(profile.layer.clone());
-                    output.explicit_profiles.push(profile);
-                }
-            }
-            "INSERT" => {
-                let profile_ordinal = ordinal;
-                parse_insert_attributes(
+        // An underlay leaves out an entity it cannot read, and counts it,
+        // instead of refusing the whole drawing.
+        let read = (|| -> Result<(), DxfImportError> {
+            if !matches!(kind.as_str(), "ATTRIB" | "SEQEND")
+                && let Some((severity, code)) = left_out(record)?
+            {
+                skip_sub_entities(
+                    &kind,
                     record,
                     pairs,
                     &mut index,
                     &mut ordinal,
                     entity_count,
-                    diagnostics,
+                    diagnostics.reading.max_entities,
                 )?;
-                let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
-                for profile in parse_insert(
-                    record,
-                    units,
-                    profile_ordinal,
-                    block_definitions,
-                    entity_count,
-                    diagnostics,
-                )? {
+                diagnostics.add(severity, code, Some(kind.clone()), 1)?;
+                return Ok(());
+            }
+            match kind.as_str() {
+                "LINE" => {
+                    let segment = parse_line(record, units, diagnostics)?;
+                    output.layers.insert(segment.layer.clone());
+                    output.loose.push(LooseSegment {
+                        layer: segment.layer,
+                        ordinal,
+                        segment: segment.segment,
+                    });
+                }
+                "ARC" => {
+                    let segment = parse_arc(record, units, diagnostics)?;
+                    output.layers.insert(segment.layer.clone());
+                    output.loose.push(LooseSegment {
+                        layer: segment.layer,
+                        ordinal,
+                        segment: segment.segment,
+                    });
+                }
+                "CIRCLE" => {
+                    let profile = parse_circle(record, units, ordinal, diagnostics)?;
                     output.layers.insert(profile.layer.clone());
                     output.explicit_profiles.push(profile);
                 }
-            }
-            "DIMENSION" => {
-                let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
-                for profile in
-                    parse_dimension(record, units, ordinal, block_definitions, diagnostics)?
-                {
+                "ELLIPSE" => {
+                    if let Some(profile) = parse_ellipse(record, units, ordinal, diagnostics)? {
+                        output.layers.insert(profile.layer.clone());
+                        output.explicit_profiles.push(profile);
+                    }
+                }
+                "SPLINE" => {
+                    if let Some(profile) = parse_spline(record, units, ordinal, diagnostics)? {
+                        output.layers.insert(profile.layer.clone());
+                        output.explicit_profiles.push(profile);
+                    }
+                }
+                "HATCH" => {
+                    for profile in parse_hatch(record, units, ordinal, diagnostics)? {
+                        output.layers.insert(profile.layer.clone());
+                        output.explicit_profiles.push(profile);
+                    }
+                }
+                "MPOLYGON" => {
+                    for profile in parse_mpolygon(record, units, ordinal, diagnostics)? {
+                        output.layers.insert(profile.layer.clone());
+                        output.explicit_profiles.push(profile);
+                    }
+                }
+                "MESH" => {
+                    for profile in parse_mesh(record, units, ordinal, diagnostics)? {
+                        output.layers.insert(profile.layer.clone());
+                        output.explicit_profiles.push(profile);
+                    }
+                }
+                "SOLID" | "TRACE" => {
+                    let profile = parse_trace(&kind, record, units, ordinal, diagnostics)?;
                     output.layers.insert(profile.layer.clone());
                     output.explicit_profiles.push(profile);
                 }
-            }
-            "POLYLINE" => {
-                for profile in parse_polyline(
-                    record,
-                    pairs,
-                    &mut index,
-                    &mut ordinal,
-                    entity_count,
-                    units,
-                    diagnostics,
-                )? {
+                "3DFACE" => {
+                    let profile = parse_3dface(record, units, ordinal, diagnostics)?;
                     output.layers.insert(profile.layer.clone());
                     output.explicit_profiles.push(profile);
                 }
+                "LEADER" => {
+                    if let Some(profile) = parse_leader(record, units, ordinal, diagnostics)? {
+                        output.layers.insert(profile.layer.clone());
+                        output.explicit_profiles.push(profile);
+                    }
+                }
+                "INSERT" => {
+                    let profile_ordinal = ordinal;
+                    parse_insert_attributes(
+                        record,
+                        pairs,
+                        &mut index,
+                        &mut ordinal,
+                        entity_count,
+                        diagnostics,
+                    )?;
+                    let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
+                    for profile in parse_insert(
+                        record,
+                        units,
+                        profile_ordinal,
+                        block_definitions,
+                        entity_count,
+                        diagnostics,
+                    )? {
+                        output.layers.insert(profile.layer.clone());
+                        output.explicit_profiles.push(profile);
+                    }
+                }
+                "DIMENSION" => {
+                    let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
+                    for profile in
+                        parse_dimension(record, units, ordinal, block_definitions, diagnostics)?
+                    {
+                        output.layers.insert(profile.layer.clone());
+                        output.explicit_profiles.push(profile);
+                    }
+                }
+                "POLYLINE" => {
+                    for profile in parse_polyline(
+                        record,
+                        pairs,
+                        &mut index,
+                        &mut ordinal,
+                        entity_count,
+                        units,
+                        diagnostics,
+                    )? {
+                        output.layers.insert(profile.layer.clone());
+                        output.explicit_profiles.push(profile);
+                    }
+                }
+                "LWPOLYLINE" => {
+                    let profile = parse_lwpolyline(record, units, ordinal, diagnostics)?;
+                    output.layers.insert(profile.layer.clone());
+                    output.explicit_profiles.push(profile);
+                }
+                "ATTRIB" | "SEQEND" => return Err(DxfImportError::MalformedPairs),
+                _ => diagnostics.add(
+                    ImportDiagnosticSeverity::Warning,
+                    "dxf.entity-unsupported",
+                    Some(kind.clone()),
+                    1,
+                )?,
             }
-            "LWPOLYLINE" => {
-                let profile = parse_lwpolyline(record, units, ordinal, diagnostics)?;
-                output.layers.insert(profile.layer.clone());
-                output.explicit_profiles.push(profile);
+            Ok(())
+        })();
+        if let Err(error) = read {
+            if !diagnostics.reading.skip_unreadable {
+                return Err(error);
             }
-            "ATTRIB" | "SEQEND" => return Err(DxfImportError::MalformedPairs),
-            _ => diagnostics.add(
+            diagnostics.add(
                 ImportDiagnosticSeverity::Warning,
-                "dxf.entity-unsupported",
-                Some(kind),
+                "dxf.entity-unreadable",
+                Some(format!("{kind}: {error}")),
                 1,
-            )?,
+            )?;
         }
         // Many INSERTs of a block each within the limit must not build millions
         // of profiles before the whole drawing is checked.
-        if output.explicit_profiles.len() > MAX_DXF_PROFILES {
+        if output.explicit_profiles.len() > diagnostics.reading.max_profiles {
             return Err(DxfImportError::TooManyProfiles);
         }
     }
@@ -1113,6 +1238,7 @@ fn skip_sub_entities(
     index: &mut usize,
     ordinal: &mut usize,
     entity_count: &mut usize,
+    max_entities: usize,
 ) -> Result<(), DxfImportError> {
     let followed = match kind {
         "POLYLINE" => true,
@@ -1127,7 +1253,7 @@ fn skip_sub_entities(
             return Err(DxfImportError::MalformedPairs);
         }
         *ordinal += 1;
-        bump_entity_count(entity_count)?;
+        bump_entity_count(entity_count, max_entities)?;
         let ended = pairs[*index].value.eq_ignore_ascii_case("SEQEND");
         *index += 1;
         while *index < pairs.len() && pairs[*index].code != 0 {
@@ -1420,7 +1546,7 @@ fn parse_spline(
         .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     let declared_fit_points = usize::try_from(declared_fit_points)
         .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
-    if declared_controls > MAX_DXF_SEGMENTS_PER_PROFILE + 1 {
+    if declared_controls > diagnostics.reading.max_segments + 1 {
         return Err(DxfImportError::TooManySegments);
     }
     if degree >= declared_controls {
@@ -1658,7 +1784,7 @@ fn parse_polygon_boundaries(
     }
     let path_count = usize::try_from(path_count)
         .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyProfiles)?;
-    if path_count > MAX_DXF_PROFILES {
+    if path_count > diagnostics.reading.max_profiles {
         return Err(DxfImportError::TooManyProfiles);
     }
 
@@ -1791,7 +1917,13 @@ fn parse_hatch_path(
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<Option<OrderedProfile>, DxfImportError> {
     if path_type & 2 == 0 {
-        return parse_hatch_edge_path(path, layer, ordinal, units);
+        return parse_hatch_edge_path(
+            path,
+            layer,
+            ordinal,
+            units,
+            diagnostics.reading.max_segments,
+        );
     }
 
     let has_bulge = parse_required_i64(path, 72)?;
@@ -1808,7 +1940,7 @@ fn parse_hatch_path(
     }
     let declared_count = usize::try_from(declared_count)
         .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManySegments)?;
-    if declared_count > MAX_DXF_SEGMENTS_PER_PROFILE {
+    if declared_count > diagnostics.reading.max_segments {
         return Err(DxfImportError::TooManySegments);
     }
 
@@ -1886,6 +2018,7 @@ fn parse_hatch_edge_path(
     layer: &str,
     ordinal: usize,
     units: ImportUnitDecision,
+    max_segments: usize,
 ) -> Result<Option<OrderedProfile>, DxfImportError> {
     let declared_count = parse_required_i64(path, 93)?;
     if declared_count < 1 {
@@ -1893,7 +2026,7 @@ fn parse_hatch_edge_path(
     }
     let declared_count = usize::try_from(declared_count)
         .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManySegments)?;
-    if declared_count > MAX_DXF_SEGMENTS_PER_PROFILE {
+    if declared_count > max_segments {
         return Err(DxfImportError::TooManySegments);
     }
     let count_index = path
@@ -2119,7 +2252,8 @@ fn parse_hatch_edge_path(
                 }) {
                     return Err(DxfImportError::MalformedPairs);
                 }
-                let Some(segments) = parse_hatch_linear_spline_edge(edge, scale)? else {
+                let Some(segments) = parse_hatch_linear_spline_edge(edge, scale, max_segments)?
+                else {
                     return Ok(None);
                 };
                 segments
@@ -2128,7 +2262,7 @@ fn parse_hatch_edge_path(
         };
 
         for segment in segments {
-            if loose.len() >= MAX_DXF_SEGMENTS_PER_PROFILE {
+            if loose.len() >= max_segments {
                 return Err(DxfImportError::TooManySegments);
             }
             let start = point_key(segment.start_mm());
@@ -2166,7 +2300,7 @@ fn parse_hatch_edge_path(
         }
     }
 
-    let mut profiles = assemble_loose_segments(loose)?;
+    let mut profiles = assemble_loose_segments(loose, max_segments)?;
     if profiles.len() != 1 {
         return Err(DxfImportError::AmbiguousGeometry);
     }
@@ -2181,6 +2315,7 @@ fn parse_hatch_edge_path(
 fn parse_hatch_linear_spline_edge(
     edge: &[DxfPair<'_>],
     scale: f64,
+    max_segments: usize,
 ) -> Result<Option<Vec<ProfileSegment>>, DxfImportError> {
     let degree = parse_required_i64(edge, 94)?;
     let rational = parse_required_i64(edge, 73)?;
@@ -2205,7 +2340,7 @@ fn parse_hatch_linear_spline_edge(
         .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     let declared_fit_points = usize::try_from(declared_fit_points)
         .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
-    if declared_controls > MAX_DXF_SEGMENTS_PER_PROFILE + 1 {
+    if declared_controls > max_segments + 1 {
         return Err(DxfImportError::TooManySegments);
     }
     if degree >= declared_controls {
@@ -2349,7 +2484,7 @@ fn parse_mesh(
             .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)
     };
     let declared_vertices = parse_marker_count(vertices_marker)?;
-    if !(3..=MAX_DXF_PAIRS / 3).contains(&declared_vertices) {
+    if !(3..=diagnostics.reading.max_pairs / 3).contains(&declared_vertices) {
         return Err(DxfImportError::MalformedPairs);
     }
     let vertex_record = &record[vertices_marker + 1..faces_marker];
@@ -2401,14 +2536,16 @@ fn parse_mesh(
         }
         let declared_face_vertices = usize::try_from(declared_face_vertices)
             .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
-        if declared_face_vertices > MAX_DXF_SEGMENTS_PER_PROFILE
+        if declared_face_vertices > diagnostics.reading.max_segments
             || cursor + declared_face_vertices > face_values.len()
         {
-            return Err(if declared_face_vertices > MAX_DXF_SEGMENTS_PER_PROFILE {
-                DxfImportError::TooManySegments
-            } else {
-                DxfImportError::MalformedPairs
-            });
+            return Err(
+                if declared_face_vertices > diagnostics.reading.max_segments {
+                    DxfImportError::TooManySegments
+                } else {
+                    DxfImportError::MalformedPairs
+                },
+            );
         }
         let mut face = Vec::with_capacity(declared_face_vertices);
         let mut unique_indices = BTreeSet::new();
@@ -2517,7 +2654,7 @@ fn build_mesh_boundary_profiles(
             },
         })
         .collect();
-    let mut profiles = assemble_loose_segments(loose)?;
+    let mut profiles = assemble_loose_segments(loose, diagnostics.reading.max_segments)?;
     if profiles.iter().any(|profile| !profile.closed) {
         return Err(DxfImportError::AmbiguousGeometry);
     }
@@ -2691,7 +2828,7 @@ fn parse_leader(
     }
     let declared_vertices = usize::try_from(declared_vertices)
         .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
-    if declared_vertices > MAX_DXF_SEGMENTS_PER_PROFILE + 1 {
+    if declared_vertices > diagnostics.reading.max_segments + 1 {
         return Err(DxfImportError::TooManySegments);
     }
     let points = parse_spline_points(record, 10, 20, 30)?;
@@ -2969,7 +3106,7 @@ fn parse_insert(
     let placement_count = row_count
         .checked_mul(column_count)
         .ok_or(DxfImportError::TooManyEntities)?;
-    if placement_count > MAX_DXF_ENTITIES {
+    if placement_count > diagnostics.reading.max_entities {
         return Err(DxfImportError::TooManyEntities);
     }
     let unit_scale = units.millimetres_per_unit();
@@ -3004,13 +3141,13 @@ fn parse_insert(
     let expanded_profile_count = placement_count
         .checked_mul(block.profiles.len())
         .ok_or(DxfImportError::TooManyProfiles)?;
-    if expanded_profile_count > MAX_DXF_PROFILES {
+    if expanded_profile_count > diagnostics.reading.max_profiles {
         return Err(DxfImportError::TooManyProfiles);
     }
     *entity_count = entity_count
         .checked_add(placement_count - 1)
         .ok_or(DxfImportError::TooManyEntities)?;
-    if *entity_count > MAX_DXF_ENTITIES {
+    if *entity_count > diagnostics.reading.max_entities {
         return Err(DxfImportError::TooManyEntities);
     }
     let insertion_mm = parse_xy(record, 10, 20, unit_scale)?;
@@ -3090,7 +3227,7 @@ fn parse_insert_attributes(
             return Err(DxfImportError::MalformedPairs);
         }
         *ordinal += 1;
-        bump_entity_count(entity_count)?;
+        bump_entity_count(entity_count, diagnostics.reading.max_entities)?;
         let kind = pairs[*index].value.to_ascii_uppercase();
         let start = *index + 1;
         *index = start;
@@ -3293,7 +3430,7 @@ fn parse_polyline(
             return Err(DxfImportError::MalformedPairs);
         }
         *ordinal += 1;
-        bump_entity_count(entity_count)?;
+        bump_entity_count(entity_count, diagnostics.reading.max_entities)?;
         let kind = pairs[*index].value.to_ascii_uppercase();
         let start = *index + 1;
         *index = start;
@@ -3326,7 +3463,7 @@ fn parse_polyline(
                 }
             },
             "VERTEX" => {
-                if vertices.len() > MAX_DXF_SEGMENTS_PER_PROFILE {
+                if vertices.len() > diagnostics.reading.max_segments {
                     return Err(DxfImportError::TooManySegments);
                 }
                 vertices.push(parse_polyline_vertex(
@@ -3435,7 +3572,7 @@ fn finish_polygon_mesh(
     let vertex_count = m_count
         .checked_mul(n_count)
         .ok_or(DxfImportError::TooManyEntities)?;
-    if vertex_count > MAX_DXF_ENTITIES {
+    if vertex_count > diagnostics.reading.max_entities {
         return Err(DxfImportError::TooManyEntities);
     }
     if native_vertices.len() != vertex_count {
@@ -3461,7 +3598,7 @@ fn finish_polygon_mesh(
             )
             .ok_or(DxfImportError::TooManySegments)?
     };
-    if max_boundary_segments > MAX_DXF_SEGMENTS_PER_PROFILE {
+    if max_boundary_segments > diagnostics.reading.max_segments {
         return Err(DxfImportError::TooManySegments);
     }
 
@@ -3695,7 +3832,7 @@ fn parse_lwpolyline(
         diagnostics,
     )?;
     let declared_count = parse_required_i64(record, 90)?;
-    if declared_count < 2 || declared_count as usize > MAX_DXF_SEGMENTS_PER_PROFILE + 1 {
+    if declared_count < 2 || declared_count as usize > diagnostics.reading.max_segments + 1 {
         return Err(DxfImportError::TooManySegments);
     }
     let flags = parse_optional_i64(record, 70)?.unwrap_or(0);
@@ -3769,7 +3906,7 @@ fn build_polyline_profile(
     } else {
         points.len() - 1
     };
-    if edge_count > MAX_DXF_SEGMENTS_PER_PROFILE {
+    if edge_count > diagnostics.reading.max_segments {
         return Err(DxfImportError::TooManySegments);
     }
     if !closed
@@ -4352,6 +4489,7 @@ fn connectivity_bucket(point: [f64; 2]) -> [i64; 2] {
 
 fn assemble_loose_segments(
     loose: Vec<LooseSegment>,
+    max_segments: usize,
 ) -> Result<Vec<OrderedProfile>, DxfImportError> {
     let mut by_layer: BTreeMap<String, Vec<LooseSegment>> = BTreeMap::new();
     for segment in loose {
@@ -4466,9 +4604,9 @@ fn assemble_loose_segments(
             }
             if (closed && current != start_point)
                 || (!closed && !degree_one.contains(&current))
-                || ordered.len() > MAX_DXF_SEGMENTS_PER_PROFILE
+                || ordered.len() > max_segments
             {
-                return Err(if ordered.len() > MAX_DXF_SEGMENTS_PER_PROFILE {
+                return Err(if ordered.len() > max_segments {
                     DxfImportError::TooManySegments
                 } else {
                     DxfImportError::AmbiguousGeometry

@@ -367,6 +367,13 @@ fn validate_document_entries(
         ensure_name(&tag.name)?;
     }
     validate_saved_views(product)?;
+    for (id, underlay) in &product.underlays {
+        if *id != underlay.id {
+            return Err(CanonicalError::UnderlayNotFound(*id));
+        }
+        ensure_product_id(id.0)?;
+        super::saved_view_commands::validate_underlay(product, underlay)?;
+    }
     for (id, collection) in &product.collections {
         if *id != collection.id {
             return Err(CanonicalError::CollectionNotFound(*id));

@@ -11,6 +11,7 @@ use crate::{
 use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_GRAPH_BYTES};
 use ketchup_model::graph::sha256_hex;
+use ketchup_model::import::{ImportDiagnostic, ImportLengthUnit, ImportUnitDecision};
 use ketchup_program::{
     Evaluated, ExactShapes, ProgramError, ProgramModel, Refined, Report, SourceLines,
 };
@@ -133,6 +134,9 @@ pub enum WorkerRequest {
     /// Reads a DWG file as DXF. Only the program worker gets it, for the same
     /// reason: the reader allocates what a damaged file declares.
     ConvertDwg(DwgInput),
+    /// Reads a DXF or DWG drawing as underlay lines. Only the program worker gets it: an
+    /// underlay keeps every line it reads, bounded by the worker's limits alone.
+    ReadUnderlay(UnderlayInput),
     /// Test hooks: a native exception, a long job and a hard crash.
     Exception,
     Sleep {
@@ -174,6 +178,7 @@ pub enum WorkerReply {
     Report(Box<ReportOutcome>),
     Refined(Box<RefineOutcome>),
     Dwg(Box<DwgOutcome>),
+    Underlay(Box<UnderlayOutcome>),
     Failure(WorkerFailure),
     /// The result did not fit one reply frame; the worker stays usable.
     TooLarge {
@@ -305,6 +310,69 @@ impl From<DwgOutcome> for Result<ketchup_dwg::DwgDrawing, DwgRefusal> {
         }
     }
 }
+
+/// A drawing file to read as an underlay. Its lines go to `output`, not into the reply:
+/// a large drawing's lines are more than one reply frame holds.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct UnderlayInput {
+    pub source: PathBuf,
+    /// The file is a DWG drawing, read as the DXF it converts to.
+    pub dwg: bool,
+    /// The length unit of a drawing that declares none.
+    pub unit_if_unitless: Option<ImportLengthUnit>,
+    pub output: PathBuf,
+}
+
+/// What reading an underlay gave, its lines being in the request's `output`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct UnderlayRead {
+    /// The names of the layers of the lines, in their order.
+    pub layers: Vec<String>,
+    pub units: ImportUnitDecision,
+    pub segments: usize,
+    pub diagnostics: Vec<ImportDiagnostic>,
+    /// The DWG file's version and the records its read left out, by type.
+    pub dwg: Option<(String, Vec<(String, usize)>)>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum UnderlayOutcome {
+    Read(Box<UnderlayRead>),
+    Refused(UnderlayRefusal),
+}
+
+/// Why a drawing was not read as an underlay, with its facts as fields.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum UnderlayRefusal {
+    Dwg(DwgRefusal),
+    /// The drawing declares no length unit and none was given.
+    UnitsRequired,
+    /// The DXF reader refused the drawing: the error's report with its cause, which does
+    /// not cross the process boundary as a type (its parse causes are not serializable).
+    Dxf {
+        report: String,
+    },
+    /// Reading the file or writing the lines failed: the `io::Error`'s report, for the
+    /// same reason.
+    File {
+        path: PathBuf,
+        report: String,
+    },
+}
+
+impl std::fmt::Display for UnderlayRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dwg(refusal) => refusal.fmt(formatter),
+            Self::UnitsRequired => formatter
+                .write_str("the drawing declares no length unit; choose the unit it is drawn in"),
+            Self::Dxf { report } => formatter.write_str(report),
+            Self::File { path, report } => write!(formatter, "{}: {report}", path.display()),
+        }
+    }
+}
+
+impl std::error::Error for UnderlayRefusal {}
 
 /// Bytes as one CBOR byte string, not an array of numbers twice their size.
 mod cbor_bytes {

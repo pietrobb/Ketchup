@@ -1,4 +1,4 @@
-//! Applying saved-view commands to the product model.
+//! Applying saved-view commands to the product model, and the tags parts and underlays hold.
 
 use super::*;
 
@@ -69,6 +69,13 @@ pub(super) fn ensure_tag_unassigned(
                 .filter(|(_, occurrence)| occurrence.tags.contains(&tag))
                 .map(|(key, _)| TagHolder::LocalOccurrence(*key)),
         )
+        .chain(
+            product
+                .underlays
+                .values()
+                .filter(|underlay| underlay.tags().any(|held| held == tag))
+                .map(|underlay| TagHolder::Underlay(underlay.id)),
+        )
         .collect::<Vec<_>>();
     match holders.first() {
         Some(holder) => Err(CanonicalError::TagInUse {
@@ -76,6 +83,22 @@ pub(super) fn ensure_tag_unassigned(
             holder: *holder,
             holders: holders.len(),
         }),
+        None => Ok(()),
+    }
+}
+
+/// Checks an underlay against the product it is (or will be) stored in: named, and
+/// shown by tags that exist.
+pub(super) fn validate_underlay(
+    product: &ProductModel,
+    underlay: &Underlay,
+) -> Result<(), CanonicalError> {
+    ensure_name(&underlay.name)?;
+    for layer in &underlay.layers {
+        ensure_name(&layer.name)?;
+    }
+    match underlay.tags().find(|tag| !product.tags.contains_key(tag)) {
+        Some(missing) => Err(CanonicalError::TagNotFound(missing)),
         None => Ok(()),
     }
 }

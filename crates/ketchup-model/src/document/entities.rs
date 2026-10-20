@@ -1,6 +1,22 @@
 use super::*;
 use ketchup_geometry::linalg::Affine3;
 
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct LocalOccurrenceKey {
+    pub definition_id: DefinitionId,
+    pub local_id: LocalOccurrenceId,
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct LocalGroupKey {
+    pub definition_id: DefinitionId,
+    pub local_id: LocalGroupId,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UnitSystem {
     Millimetres,

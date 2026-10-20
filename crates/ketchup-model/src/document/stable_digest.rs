@@ -85,6 +85,7 @@ impl StableDigest {
             D::PersistentDimension(id) => self.value(&product.persistent_dimensions.get(id)),
             D::Tag(id) => self.value(&product.tags.get(id)),
             D::SavedView(id) => self.value(&product.saved_views.get(id)),
+            D::Underlay(id) => self.value(&product.underlays.get(id)),
             D::ClassificationDimension(id) => {
                 self.value(&product.classification_dimensions.get(id));
             }

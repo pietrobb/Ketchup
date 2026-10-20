@@ -71,6 +71,8 @@ impl BatchEdit {
             | CanonicalCommand::DeleteTag { .. }
             | CanonicalCommand::UpsertSavedView(..)
             | CanonicalCommand::DeleteSavedView { .. }
+            | CanonicalCommand::UpsertUnderlay(..)
+            | CanonicalCommand::DeleteUnderlay { .. }
             | CanonicalCommand::SetTagVisibility { .. }
             | CanonicalCommand::SetTagName { .. }
             | CanonicalCommand::UpsertClassificationDimension { .. }

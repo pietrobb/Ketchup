@@ -16,9 +16,14 @@ const FIXTURE_102: &str = concat!(
     "/tests/fixtures/persistence/history-format102.bin"
 );
 
-const FIXTURE: &str = concat!(
+const FIXTURE_103: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/persistence/history-format103.bin"
+);
+
+const FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/history-format104.bin"
 );
 
 /// Canonical digest of every revision, oldest first, as format 102 wrote them.
@@ -33,7 +38,7 @@ const REVISION_DIGESTS_102: &[&str] = &[
 ];
 
 /// Canonical digest of every revision, oldest first, as format 103 wrote them.
-const REVISION_DIGESTS: &[&str] = &[
+const REVISION_DIGESTS_103: &[&str] = &[
     "a2bfa71d0ad7e6b3",
     "6cd3c1af4f1f9c26",
     "41e384da97b177b7",
@@ -42,6 +47,20 @@ const REVISION_DIGESTS: &[&str] = &[
     "0c7e44701364923c",
     "38598be34ea8becd",
     "695c01140f69ddb9",
+];
+
+/// Canonical digest of every revision, oldest first, as format 104 wrote them: the
+/// revisions of format 103 and one that adds an underlay.
+const REVISION_DIGESTS: &[&str] = &[
+    "48cb24a587a5e1a4",
+    "47c446366c7309af",
+    "e3e22fe400ae01f6",
+    "d06a1acc853fae01",
+    "fe70edd3b0e829c4",
+    "a1ab9927b9ea3ca5",
+    "ba55554281ad83f6",
+    "9b4fe31a50c9b5d6",
+    "05ed4c9169d7b1ae",
 ];
 
 fn occurrence(id: u64, name: &str) -> CanonicalCommand {
@@ -150,10 +169,55 @@ fn a_format_102_file_with_history_opens_with_every_revision_it_was_written_with(
 }
 
 #[test]
-fn a_format_103_file_with_history_opens_with_every_revision_and_saves_the_same_bytes() {
+fn a_format_103_file_with_history_opens_with_every_revision_it_was_written_with() {
+    let LoadOutcome::Editable {
+        document, audit, ..
+    } = persistence::load(&std::fs::read(FIXTURE_103).unwrap()).unwrap()
+    else {
+        panic!("the golden is editable")
+    };
+    assert_eq!(audit.source_schema, 103);
+    assert_eq!(audit.history_discarded(), None);
+    // A release recorded under this digest must still verify (FMT-1).
+    assert_eq!(
+        audit.source_canonical_digest,
+        *REVISION_DIGESTS_103.last().unwrap()
+    );
+    assert_eq!(revision_digests(&document), REVISION_DIGESTS_103);
+}
+
+/// [`written`] and a revision that adds an underlay, with its lines in the container.
+fn written_104() -> (DocumentStore, ContainerData) {
+    use ketchup_model::underlay::{UnderlayLinesBuilder, plan_underlay};
+    let mut document = written();
+    let mut builder = UnderlayLinesBuilder::default();
+    builder.add(
+        "stena",
+        &[ProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [100.0, 0.0],
+        }],
+    );
+    let (layers, lines) = builder.finish();
+    let bytes = lines.encode();
+    let (batch, _) = plan_underlay(
+        &document.current(),
+        "Pôdorys",
+        &layers,
+        ketchup_model::graph::sha256_bytes(&bytes),
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let mut container = ContainerData::default();
+    container.insert_import_blob(bytes).unwrap();
+    (document, container)
+}
+
+#[test]
+fn a_format_104_file_with_history_opens_with_every_revision_and_saves_the_same_bytes() {
     if ketchup_test_env::update_golden() {
-        let document = written();
-        let bytes = persistence::save_document_store(&document, &ContainerData::default()).unwrap();
+        let (document, container) = written_104();
+        let bytes = persistence::save_document_store(&document, &container).unwrap();
         std::fs::write(FIXTURE, bytes).unwrap();
         panic!(
             "wrote {FIXTURE}; record REVISION_DIGESTS = {:?}",
@@ -162,7 +226,10 @@ fn a_format_103_file_with_history_opens_with_every_revision_and_saves_the_same_b
     }
     let bytes = std::fs::read(FIXTURE).unwrap();
     let LoadOutcome::Editable {
-        document, audit, ..
+        document,
+        audit,
+        container_data,
+        ..
     } = persistence::load(&bytes).unwrap()
     else {
         panic!("the golden is editable")
@@ -170,29 +237,20 @@ fn a_format_103_file_with_history_opens_with_every_revision_and_saves_the_same_b
     assert_eq!(audit.source_schema, persistence::CURRENT_SCHEMA);
     assert_eq!(audit.history_discarded(), None);
     assert_eq!(revision_digests(&document), REVISION_DIGESTS);
+    assert_eq!(document.current().underlays().count(), 1);
     assert_eq!(
-        persistence::save_document_store(&document, &ContainerData::default()).unwrap(),
-        with_current_history_format(bytes),
+        persistence::save_document_store(&document, &container_data).unwrap(),
+        bytes,
         "the saved form changed; see the module comment"
     );
-}
-
-/// The fixture as it saves now: `history.bin` of a history without programs only
-/// numbers format 5 (PS-2, programs as chunks) where the fixture has format 4.
-fn with_current_history_format(mut bytes: Vec<u8>) -> Vec<u8> {
-    use crate::native_persistence::{container_entry_offsets, rehash_container_entry};
-    let (checksum, offset, len) = container_entry_offsets(&bytes, "history.bin");
-    assert_eq!(bytes[offset + 10..offset + 12], 4_u16.to_le_bytes());
-    bytes[offset + 10..offset + 12].copy_from_slice(&5_u16.to_le_bytes());
-    rehash_container_entry(&mut bytes, checksum, offset, len);
-    bytes
 }
 
 /// Every field of the model that is left out of the file while it has its default, as
 /// `file: field` under `src/`. Format 103 shipped in Kečup 0.1.0, which drops a field it
 /// does not know and loses it at its next Save, so a new optional field of the saved
-/// document needs a new format number like any other new field (PS-4).
-const OPTIONAL_FIELDS_103: &[&str] = &[
+/// document needs a new format number like any other new field (PS-4): `underlays`
+/// came with format 104.
+const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: contact_joints",
     "document.rs: floor_z_mm",
     "document.rs: grounded_instances",
@@ -201,6 +259,7 @@ const OPTIONAL_FIELDS_103: &[&str] = &[
     "document.rs: saved_views",
     "document.rs: shaft_threads",
     "document.rs: tolerance",
+    "document.rs: underlays",
     "document/entities.rs: modeled",
     "document/entities.rs: section",
     "document/entities.rs: up",
@@ -278,7 +337,7 @@ fn no_optional_field_is_added_without_a_new_format_number() {
     scan(&root, &root, &mut found);
     found.sort();
     assert_eq!(
-        found, OPTIONAL_FIELDS_103,
+        found, OPTIONAL_FIELDS,
         "the optional fields of the model changed. A field of the saved document left out \
          at its default still needs a new format number, because Kečup 0.1.0 would drop it \
          (see the snapshot_codec module comment); list a field outside the document here"

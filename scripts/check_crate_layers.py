@@ -57,7 +57,7 @@ OVERSIZED = {}
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
 FROZEN_MODULES = {
     "crates/ketchup-app/src/lib.rs": 2646,
-    "crates/ketchup-model/src/document.rs": 530,
+    "crates/ketchup-model/src/document.rs": 518,
 }
 
 MAX_FUNCTION_LINES = 400

@@ -258,6 +258,10 @@ pub(super) fn authoritative_writes(
             | CanonicalCommand::DeleteSavedView { id } => {
                 writes.insert(AuthoritativeDependency::SavedView(*id));
             }
+            CanonicalCommand::UpsertUnderlay(Underlay { id, .. })
+            | CanonicalCommand::DeleteUnderlay { id } => {
+                writes.insert(AuthoritativeDependency::Underlay(*id));
+            }
             CanonicalCommand::UpsertClassificationDimension { id, .. } => {
                 writes.insert(AuthoritativeDependency::ClassificationDimension(*id));
             }
@@ -549,6 +553,13 @@ fn add_structure_command_dependencies(
         }
         CanonicalCommand::DeleteSavedView { id } => {
             dependencies.insert(AuthoritativeDependency::SavedView(*id));
+        }
+        CanonicalCommand::UpsertUnderlay(underlay) => {
+            dependencies.insert(AuthoritativeDependency::Underlay(underlay.id));
+            dependencies.extend(underlay.tags().map(AuthoritativeDependency::Tag));
+        }
+        CanonicalCommand::DeleteUnderlay { id } => {
+            dependencies.insert(AuthoritativeDependency::Underlay(*id));
         }
         _ => {}
     }
@@ -1279,7 +1290,9 @@ pub(super) fn authoritative_dependencies(
             | CanonicalCommand::SetGroupTransform { .. }
             | CanonicalCommand::SetGroupParent { .. }
             | CanonicalCommand::UpsertSavedView(_)
-            | CanonicalCommand::DeleteSavedView { .. } => {
+            | CanonicalCommand::DeleteSavedView { .. }
+            | CanonicalCommand::UpsertUnderlay(_)
+            | CanonicalCommand::DeleteUnderlay { .. } => {
                 add_structure_command_dependencies(snapshot, command, &mut dependencies);
             }
             CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
@@ -1432,12 +1445,10 @@ pub(super) fn authoritative_dependencies(
             }
             CanonicalCommand::UpsertPinJoint(joint) => {
                 dependencies.insert(AuthoritativeDependency::PinJoint(joint.id));
-                dependencies.insert(AuthoritativeDependency::Occurrence(
-                    joint.first.instance_path.root_occurrence(),
-                ));
-                dependencies.insert(AuthoritativeDependency::Occurrence(
-                    joint.second.instance_path.root_occurrence(),
-                ));
+                for end in [&joint.first, &joint.second] {
+                    let occurrence = end.instance_path.root_occurrence();
+                    dependencies.insert(AuthoritativeDependency::Occurrence(occurrence));
+                }
             }
             CanonicalCommand::DeletePinJoint { id } => {
                 dependencies.insert(AuthoritativeDependency::PinJoint(*id));

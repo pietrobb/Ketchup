@@ -44,6 +44,7 @@ const KEPT: &[&str] = &[
     "persistent_dimensions",
     "tags",
     "saved_views",
+    "underlays",
     "classification_dimensions",
     "collections",
     "import_receipts",
