@@ -66,8 +66,9 @@ fn source(program: &str) -> RuleProgramSource {
     }
 }
 
-/// 400 boxes that all overlap evaluate in a fraction of a second, but checking
-/// their 79 800 pairs takes over two minutes in a debug build: the caller waits
+/// 800 boxes that all overlap evaluate in a fraction of a second, but checking
+/// their 319 600 pairs takes minutes in a debug build (400 boxes finished on CI
+/// once #110 made sync_with_issues linear): the caller waits
 /// no longer than the worker's 60 s deadline for a report. The report is no
 /// gate (review 2026-10-16 N-12, AGENTS.md §3): the model is applied and its
 /// report says that its checks did not finish.
@@ -78,11 +79,11 @@ fn a_model_too_large_to_check_is_applied_with_an_unfinished_report_and_the_sessi
     let mut window = DocumentSession::new(SessionSettings::default());
     let applied = window
         .apply_rule_program(
-            source("for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n"),
+            source("for i in range(800):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n"),
             false,
         )
         .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(applied.snapshot.occurrences().count(), 400);
+    assert_eq!(applied.snapshot.occurrences().count(), 800);
     let unfinished = applied
         .report
         .issues
