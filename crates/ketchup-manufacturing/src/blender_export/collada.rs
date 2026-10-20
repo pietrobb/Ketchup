@@ -260,7 +260,10 @@ fn write_geometry(
         let [a, b, c] = source
             .triangle_indices(triangle)
             .ok_or(ExactProductError::InvalidMeshExport)?;
-        if [a, b, c].iter().any(|vertex| *vertex as usize >= vertices) {
+        if [a, b, c]
+            .iter()
+            .any(|vertex| !usize::try_from(*vertex).is_ok_and(|vertex| vertex < vertices))
+        {
             return Err(ExactProductError::InvalidMeshExport);
         }
         let separator = if triangle == 0 { "" } else { " " };

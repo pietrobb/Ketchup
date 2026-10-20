@@ -1,6 +1,7 @@
 //! Exports of the current model and profiles (DXF, STL, 3MF, GLB, STEP, IGES, CAM, cut lists).
 
 use crate::*;
+use ketchup_manufacturing::blender_export::{DaeExport, model_dae_export};
 
 impl KetchupApp {
     pub(crate) fn homag_mpr_program_name(stem: &str) -> String {

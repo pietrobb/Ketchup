@@ -1,4 +1,5 @@
 use super::blender_glb_export::{current_package, glb_json, seeded_document};
+use ketchup_geometry::linalg::{cross, dot};
 use ketchup_manufacturing::blender_export::{
     ExactGlbInstance, MeshGlbInstance, exact_model_glb_export, model_dae_export,
 };
@@ -139,9 +140,7 @@ fn triangles_wind_outward_so_the_box_encloses_positive_volume() {
         .chunks(3)
         .map(|triangle| {
             let [a, b, c] = [point(triangle[0]), point(triangle[1]), point(triangle[2])];
-            (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-                + a[2] * (b[0] * c[1] - b[1] * c[0]))
-                / 6.0
+            dot(a, cross(b, c)) / 6.0
         })
         .sum::<f64>();
     // The 10 x 10 x 10 mm box, in millimetres, with every face turned outward.
