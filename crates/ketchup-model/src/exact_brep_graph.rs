@@ -1176,6 +1176,40 @@ impl ExactBRepGraph {
         Ok(node_bounds[target_index])
     }
 
+    /// Bounds of what the cut `node_id` may remove: its profile swept along
+    /// the cut (a through cut across its whole target, as the exact worker
+    /// sizes it), or its boolean tool. `None` for any other node.
+    #[must_use]
+    pub fn removed_bounds_mm(&self, node_id: ExactBRepNodeId) -> Option<[[f64; 3]; 2]> {
+        match &self.nodes.get(node_id.index())?.operation {
+            ExactBRepOperation::ProfileCut {
+                target,
+                profile,
+                depth_bits,
+                interval,
+                ..
+            } => {
+                let profile = self.profiles.get(profile.0 as usize)?;
+                let mut interval = *interval;
+                if depth_bits.is_none() {
+                    let target = self.node_bounds_mm(*target).ok()??;
+                    let origin = profile.frame().to_vectors()[0];
+                    let [start, end] =
+                        projected_bounds(origin, interval.direction(), target, 0.0).ok()?;
+                    interval.start_bits = (start - 1.0).to_bits();
+                    interval.end_bits = (end + 1.0).to_bits();
+                }
+                swept_profile_bounds(profile, interval).ok()
+            }
+            ExactBRepOperation::Boolean {
+                operation: ExactBRepBooleanOperation::Cut,
+                tool,
+                ..
+            } => self.node_bounds_mm(*tool).ok()?,
+            _ => None,
+        }
+    }
+
     pub fn to_bytes(&self) -> Result<Vec<u8>, ExactBRepGraphError> {
         self.validate()?;
         let bytes = serde_json::to_vec(self)

@@ -886,7 +886,7 @@ fn contact_candidates(
     .collect()
 }
 
-fn collision_hulls(graphs: &[ExactBRepGraph], bodies: &[Body]) -> Vec<Option<Vec<pieces::Piece>>> {
+fn collision_hulls(graphs: &[ExactBRepGraph], bodies: &[Body]) -> Vec<Option<pieces::Hull>> {
     let local = graphs.iter().map(pieces::local_pieces).collect::<Vec<_>>();
     bodies
         .iter()
@@ -894,7 +894,7 @@ fn collision_hulls(graphs: &[ExactBRepGraph], bodies: &[Body]) -> Vec<Option<Vec
             local
                 .get(body.graph?)?
                 .as_ref()?
-                .world(body.occurrence.transform.matrix())
+                .hull(body.occurrence.transform.matrix())
         })
         .collect()
 }
@@ -1585,8 +1585,8 @@ fn collision_report(
         let mut candidates = candidates.into_iter().collect::<Vec<_>>();
         candidates
             .sort_by_key(|(left, right)| (left / graph_block, right / graph_block, *left, *right));
-        // Separated hulls prove no contact; touching hulls prove contact only for
-        // uncut extrusions. Cuts may remove the entire bearing face, so ask OCCT.
+        // Separated hulls prove no contact; touching hulls prove contact only
+        // where no cut reaches the other solid. Anything else asks OCCT.
         let world_hulls = collision_hulls(&graphs, &bodies);
         let mut hull_decided = 0usize;
         for (left, right) in candidates {
@@ -1596,8 +1596,7 @@ fn collision_report(
             if !contact_pairs.contains(&(left, right))
                 && let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right])
             {
-                let graphs = [&graphs[l], &graphs[r]];
-                let decided = pieces::measure(a, b, graphs, tolerance.linear_mm(), exact_gaps);
+                let decided = pieces::measure(a, b, tolerance.linear_mm(), exact_gaps);
                 if let Some((patches, distance_mm)) = decided {
                     checked += 1;
                     hull_decided += 1;
@@ -1843,6 +1842,90 @@ mod tests {
             session.snapshot().scene_query(),
             applied.snapshot.scene_query()
         );
+    }
+
+    /// What the hulls of a program check answer for parts `a` and `b`, by
+    /// contact area and distance; `None` leaves the pair to the exact check.
+    fn hull_answer(source: &str, a: &str, b: &str, exact_gap: bool) -> Option<(f64, Option<f64>)> {
+        let mut session = crate::DocumentSession::new(crate::SessionSettings::default());
+        let applied = session
+            .apply_rule_program(
+                ketchup_model::document::RuleProgramSource {
+                    variants: Default::default(),
+                    file_name: "hulls.star".into(),
+                    source: source.into(),
+                    overrides: BTreeMap::new(),
+                },
+                false,
+            )
+            .unwrap();
+        let snapshot = &applied.snapshot;
+        let hull = |name: &str| {
+            let part = snapshot
+                .scene_query()
+                .into_iter()
+                .find(|part| {
+                    crate::rule_program_part_name(snapshot, &part.instance_path).as_deref()
+                        == Some(name)
+                })
+                .unwrap();
+            let definition = snapshot.definition(part.definition_id).unwrap();
+            let graph = ExactBRepGraph::from_snapshot(
+                snapshot,
+                definition.id(),
+                *definition.feature_ids().last().unwrap(),
+            )
+            .unwrap();
+            pieces::local_pieces(&graph)
+                .unwrap()
+                .hull(part.transform.matrix())
+                .unwrap()
+        };
+        pieces::measure(
+            &hull(a),
+            &hull(b),
+            snapshot.tolerance().linear_mm(),
+            exact_gap,
+        )
+        .map(|(patches, distance)| (patches.iter().map(|p| p.area_mm2).sum(), distance))
+    }
+
+    const DRILLED: &str = "base = box('base', (100, 100, 18))
+hole(base, 'z-', at=(50, 50), diameter=8, depth=8)
+box('on top', (100, 100, 18), at=(0, 0, 18))
+box('apart', (100, 100, 18), at=(300, 0, 0))
+drilled = box('drilled', (100, 100, 18), at=(0, 300, 0))
+hole(drilled, 'z+', at=(50, 50), diameter=8, depth=8)
+box('lid', (100, 100, 18), at=(0, 300, 18))
+bored = box('bored', (100, 100, 18), at=(0, 600, 0))
+hole(bored, 'z+', at=(50, 50), diameter=8, depth=18, through=True)
+box('beside', (100, 100, 18), at=(100, 600, 0))
+";
+
+    #[test]
+    fn separated_hulls_are_apart_without_a_distance_unless_the_gap_is_read() {
+        assert_eq!(
+            hull_answer(DRILLED, "base", "apart", false),
+            Some((0.0, None))
+        );
+        // A program check reports the clearance, which only OCCT measures.
+        assert_eq!(hull_answer(DRILLED, "base", "apart", true), None);
+    }
+
+    #[test]
+    fn a_board_bears_on_another_when_its_hole_is_away_from_the_bearing_face() {
+        let (area_mm2, distance) = hull_answer(DRILLED, "base", "on top", true).unwrap();
+        assert!((area_mm2 - 10_000.0).abs() < 1e-6, "{area_mm2}");
+        assert_eq!(distance, Some(0.0));
+    }
+
+    #[test]
+    fn a_hole_reaching_the_bearing_face_leaves_the_contact_to_the_exact_check() {
+        assert_eq!(hull_answer(DRILLED, "drilled", "lid", true), None);
+        assert_eq!(hull_answer(DRILLED, "lid", "drilled", true), None);
+        // A hole through the board reaches both faces, but not a side.
+        let (area_mm2, _) = hull_answer(DRILLED, "bored", "beside", true).unwrap();
+        assert!((area_mm2 - 1_800.0).abs() < 1e-6, "{area_mm2}");
     }
 
     #[test]

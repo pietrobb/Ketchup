@@ -7,10 +7,10 @@
 use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_geometry::linalg::{cross, dot};
 use ketchup_model::exact_brep_graph::{
-    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
-    ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepNodeId, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
-use ketchup_model::tolerance::{COINCIDENT_SLAB_TOLERANCES, ROUNDING};
+use ketchup_model::tolerance::{COINCIDENT_SLAB_TOLERANCES, CONTACT_FIT_MM, ROUNDING};
 
 const PARALLEL: f64 = 1.0 - ROUNDING;
 /// Most prisms one solid is split into; a more detailed profile stays exact-only.
@@ -57,10 +57,17 @@ fn axis_aligned(v: [f64; 3]) -> bool {
     ones == 1
 }
 
+/// Boxes of what each cut of a solid may remove; `None` when one is unknown.
+type CutBounds = Option<Vec<[[f64; 3]; 2]>>;
+
 /// The extrusion the producer starts from, if it is followed only by
-/// subtractive cuts on that same solid, so anything enclosing it encloses the producer.
-fn base_extrusion(graph: &ExactBRepGraph) -> Option<(Extrusion, &ExactBRepPlanarGeometry)> {
+/// subtractive cuts on that same solid, so anything enclosing it encloses the
+/// producer; and the bounds of what its cuts may remove.
+fn base_extrusion(
+    graph: &ExactBRepGraph,
+) -> Option<(Extrusion, &ExactBRepPlanarGeometry, CutBounds)> {
     let mut node = graph.nodes.len().checked_sub(1)?;
+    let mut cuts = Some(Vec::new());
     loop {
         match &graph.nodes[node].operation {
             ExactBRepOperation::ProfileCut { target, .. }
@@ -68,7 +75,14 @@ fn base_extrusion(graph: &ExactBRepGraph) -> Option<(Extrusion, &ExactBRepPlanar
                 operation: ExactBRepBooleanOperation::Cut,
                 target,
                 ..
-            } if (target.0 as usize) < node => node = target.0 as usize,
+            } if (target.0 as usize) < node => {
+                let removed = graph.removed_bounds_mm(ExactBRepNodeId(node as u32));
+                cuts = cuts.zip(removed).map(|(mut cuts, removed)| {
+                    cuts.push(removed);
+                    cuts
+                });
+                node = target.0 as usize;
+            }
             ExactBRepOperation::Extrude {
                 profile, interval, ..
             } => {
@@ -90,7 +104,7 @@ fn base_extrusion(graph: &ExactBRepGraph) -> Option<(Extrusion, &ExactBRepPlanar
                     direction,
                     interval: [interval.start_mm(), interval.end_mm()],
                 };
-                return Some((extrusion, &profile.geometry));
+                return Some((extrusion, &profile.geometry, cuts));
             }
             _ => return None,
         }
@@ -114,10 +128,20 @@ fn rigid_axes(matrix: &[f64; 16]) -> Option<[[f64; 3]; 3]> {
     Some(axes)
 }
 
-/// A solid's convex profile pieces, in definition-local coordinates.
+/// A solid's convex profile pieces and the boxes its cuts may remove, in
+/// definition-local coordinates.
 pub(super) struct LocalPieces {
     extrusion: Extrusion,
     polygons: Vec<Vec<[f64; 2]>>,
+    cuts: CutBounds,
+}
+
+/// A placed solid: prisms that enclose it, and boxes enclosing everything its
+/// cuts remove (`None` when a cut's reach is unknown). Away from those boxes
+/// the solid is its prisms.
+pub(super) struct Hull {
+    pieces: Vec<Piece>,
+    cuts: Option<Vec<Piece>>,
 }
 
 /// One convex prism in world coordinates.
@@ -137,42 +161,63 @@ struct Face {
 }
 
 pub(super) fn local_pieces(graph: &ExactBRepGraph) -> Option<LocalPieces> {
-    let (extrusion, geometry) = base_extrusion(graph)?;
+    let (extrusion, geometry, cuts) = base_extrusion(graph)?;
     Some(LocalPieces {
         extrusion,
         polygons: convex_pieces(geometry)?,
+        cuts,
+    })
+}
+
+/// `p` placed by `matrix`, translated when `point`.
+fn place(matrix: &[f64; 16], p: [f64; 3], point: bool) -> [f64; 3] {
+    [0, 1, 2].map(|row| {
+        matrix[4 * row] * p[0]
+            + matrix[4 * row + 1] * p[1]
+            + matrix[4 * row + 2] * p[2]
+            + if point { matrix[4 * row + 3] } else { 0.0 }
     })
 }
 
 impl LocalPieces {
+    pub(super) fn hull(&self, matrix: &[f64; 16]) -> Option<Hull> {
+        let pieces = self.world(matrix)?;
+        let up = place(matrix, [0.0, 0.0, 1.0], false);
+        let cuts = self.cuts.as_ref().and_then(|cuts| {
+            cuts.iter()
+                .map(|[low, high]| {
+                    let rectangle = |z: f64| {
+                        [
+                            [low[0], low[1]],
+                            [high[0], low[1]],
+                            [high[0], high[1]],
+                            [low[0], high[1]],
+                        ]
+                        .map(|[x, y]| place(matrix, [x, y, z], true))
+                        .to_vec()
+                    };
+                    Piece::prism(rectangle(low[2]), rectangle(high[2]), up)
+                })
+                .collect()
+        });
+        Some(Hull { pieces, cuts })
+    }
+
     /// Rigid placements only; anything else stays exact-only.
     pub(super) fn world(&self, matrix: &[f64; 16]) -> Option<Vec<Piece>> {
-        let axes = rigid_axes(matrix)?;
-        let place = |p: [f64; 3]| {
-            [0, 1, 2].map(|row| {
-                matrix[4 * row] * p[0]
-                    + matrix[4 * row + 1] * p[1]
-                    + matrix[4 * row + 2] * p[2]
-                    + matrix[4 * row + 3]
-            })
-        };
-        let local_direction = self.extrusion.direction;
-        let direction = [0, 1, 2].map(|row| {
-            (0..3)
-                .map(|k| axes[k][row] * local_direction[k])
-                .sum::<f64>()
-        });
+        rigid_axes(matrix)?;
+        let direction = place(matrix, self.extrusion.direction, false);
         let [start, end] = self.extrusion.interval;
         self.polygons
             .iter()
             .map(|polygon| {
                 let bottom = polygon
                     .iter()
-                    .map(|p| place(self.extrusion.point(*p, start)))
+                    .map(|p| place(matrix, self.extrusion.point(*p, start), true))
                     .collect::<Vec<_>>();
                 let top = polygon
                     .iter()
-                    .map(|p| place(self.extrusion.point(*p, end)))
+                    .map(|p| place(matrix, self.extrusion.point(*p, end), true))
                     .collect::<Vec<_>>();
                 Piece::prism(bottom, top, direction)
             })
@@ -241,27 +286,35 @@ fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
     (norm > ROUNDING && norm.is_finite()).then(|| v.map(|x| x / norm))
 }
 
-/// `a` and `b` are each one solid's pieces. Separation has no gap, so with
-/// `exact_gap` (program checks read it) a separated pair is left to OCCT.
+/// The answer for two solids, if their hulls decide it. Separation has no
+/// distance, so with `exact_gap` (program checks read it) a separated pair is
+/// left to OCCT. Touching faces count only where no cut comes within
+/// [`CONTACT_FIT_MM`] of the other solid, for a cut may remove the face.
 pub(super) fn measure(
-    a: &[Piece],
-    b: &[Piece],
-    graphs: [&ExactBRepGraph; 2],
+    a: &Hull,
+    b: &Hull,
     tolerance_mm: f64,
     exact_gap: bool,
 ) -> Option<(Vec<ContactPatch>, Option<f64>)> {
-    match relate_solids(a, b, tolerance_mm)? {
+    match relate_solids(&a.pieces, &b.pieces, tolerance_mm)? {
         None => (!exact_gap).then(|| (Vec::new(), None)),
-        Some(patches) => graphs
+        Some(patches) => [(a, b), (b, a)]
             .iter()
-            .all(|graph| {
-                matches!(
-                    graph.nodes.last().map(|node| &node.operation),
-                    Some(ExactBRepOperation::Extrude { .. })
-                )
+            .all(|(cut, other)| {
+                cut.cuts
+                    .as_ref()
+                    .is_some_and(|cuts| apart(cuts, &other.pieces, CONTACT_FIT_MM))
             })
             .then_some((patches, Some(0.0))),
     }
+}
+
+/// Whether every piece of `a` is farther than `gap_mm` from every piece of `b`.
+fn apart(a: &[Piece], b: &[Piece], gap_mm: f64) -> bool {
+    a.iter().all(|left| {
+        b.iter()
+            .all(|right| least_overlap(left, [0.0; 3], 0.0, right, gap_mm).is_none())
+    })
 }
 
 /// None when two pieces penetrate; otherwise the shared faces by A's outward
