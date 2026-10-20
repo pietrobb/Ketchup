@@ -4002,9 +4002,8 @@ pub fn plan_part_batch(
     let mut next_occurrence = next_id(snapshot.occurrences().map(|item| item.id().0));
     let mut next_feature = next_id(snapshot.features().map(|item| item.id().0));
     // The parts are independent, so each is planned against the document as
-    // it was and the whole batch is checked once: staging every part on top of
-    // all earlier ones re-validated the growing document per part (42 s for a
-    // fresh 1854-part program).
+    // it was; the proposal checks the whole batch once. Staging every part on
+    // top of all earlier ones re-validated the growing document per part.
     let mut commands = Vec::new();
     for operation in parts {
         AssistantCadEditProgram {
@@ -4054,13 +4053,7 @@ pub fn plan_part_batch(
             }
         }
     }
-    let batch = CommandBatch::new(commands);
-    if !batch.commands().is_empty() {
-        snapshot
-            .preview_batch(&batch)
-            .map_err(|error| assistant_canonical_rejection(error, "rule_part", &document_target))?;
-    }
-    Ok(batch)
+    Ok(CommandBatch::new(commands))
 }
 
 pub fn plan_rule_part_batch(
