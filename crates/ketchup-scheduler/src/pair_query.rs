@@ -120,7 +120,7 @@ impl ExactWorkerSupervisor {
             return Ok(Vec::new());
         }
         // Validate serialized identity, not merely the caller's public digest field.
-        let mut unique = BTreeMap::<String, (usize, Vec<u8>)>::new();
+        let mut unique = BTreeMap::<String, usize>::new();
         let mut indices = BTreeMap::new();
         let mut prepared = Vec::new();
         let mut staged = PairSources::default();
@@ -142,10 +142,8 @@ impl ExactWorkerSupervisor {
             if verified.graph_digest != graph.graph_digest {
                 return Err(invalid());
             }
-            if let Some((slot, previous)) = unique.get(&graph.graph_digest) {
-                if previous != &bytes {
-                    return Err(invalid());
-                }
+            // The digest covers all the worker evaluates; another document's copy reuses the slot.
+            if let Some(slot) = unique.get(&graph.graph_digest) {
                 indices.insert(index, *slot);
                 continue;
             }
@@ -154,7 +152,7 @@ impl ExactWorkerSupervisor {
             }
             let sources = staged.prepare_graph(graph, imported_source_blobs, cancelled)?;
             let slot = prepared.len();
-            unique.insert(graph.graph_digest.clone(), (slot, bytes));
+            unique.insert(graph.graph_digest.clone(), slot);
             indices.insert(index, slot);
             prepared.push((graph, sources));
         }

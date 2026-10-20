@@ -150,6 +150,14 @@ fn composite_envelope_and_rotating_approach_check_the_complete_volume() {
         let report = check(&session);
         assert_eq!(report["state"], expected, "{report}");
     }
+    // An envelope shaped like a fresh document's first part shares its digest, not its bytes.
+    let mut session = DocumentSession::default();
+    apply(
+        &mut session,
+        "a=box('base',(2,2,2),at=(-100,0,0))\nb=box('moving',(2,2,2))\njoint(a,b,kind='motion',name='travel',motion=slide((0,1,0),0,100))\nassembly_step('travel',start=100,end=0)\nt=box('holder',(2,2,2),at=(200,0,10),tool=True)\ntool_access('approach',envelope=t,motion=slide((0,0,1),0,20),start=20)",
+    );
+    let report = check(&session);
+    assert_eq!(report["state"], "passed", "{report}");
 }
 
 #[test]
