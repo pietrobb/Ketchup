@@ -7,7 +7,6 @@
 use super::drill_holes::{centroid, edit, face, saved};
 use super::program_edit::evaluate_exact;
 use super::*;
-use ketchup_model::document::InstancePath;
 use ketchup_model::drawing::{DrawingSheetId, project_orthographic_drawing};
 use ketchup_model::drawing_export::export_drawing;
 use std::collections::BTreeMap;
@@ -26,30 +25,30 @@ fn summary(app: &mut KetchupApp, bridge: &mut LiveBridge) -> Value {
     bridge.execute(app, request, false).unwrap()
 }
 
-/// The first part of the new document drawn on a sheet from the selection
-/// (MCP `create_drawing` draws only rigid assemblies), found through the summary.
+/// The first part of the new document drawn on a sheet by MCP `create_drawing`,
+/// found through the summary.
 fn sheet_of_the_block(app: &mut KetchupApp, bridge: &mut LiveBridge) -> u64 {
     evaluate_exact(app);
     let root = app.document.current().occurrences().next().unwrap().id();
-    app.selection.occurrences.insert(InstancePath::root(root));
-    assert!(app.preview_selection_drawing(), "{}", app.action_digest());
-    assert!(app.confirm_assembly_preview());
+    let instance_paths = vec![AssistantInstancePath {
+        root_occurrence_id: root.0,
+        steps: Vec::new(),
+    }];
+    let name = "Block".to_owned();
+    let created = edit(AssistantCadEditOperation::CreateDrawing {
+        name,
+        instance_paths,
+    });
+    let created = bridge.execute(app, created, false).unwrap();
+    assert_eq!(created["published"], true, "{created}");
     evaluate_exact(app);
-    let name = app
-        .document
-        .current()
-        .drawing_sheets()
-        .next()
-        .unwrap()
-        .name()
-        .to_owned();
     let listed = summary(app, bridge);
     assert_eq!(listed["counts"]["drawing_sheets"], 1, "{listed}");
     assert_eq!(listed["drawing_sheets_complete"], true);
     let [sheet] = listed["drawing_sheets"].as_array().unwrap().as_slice() else {
         panic!("one drawing sheet: {listed}");
     };
-    assert_eq!(sheet["name"]["text"], name.as_str());
+    assert_eq!(sheet["name"]["text"], "Block");
     sheet["id"].as_u64().unwrap()
 }
 

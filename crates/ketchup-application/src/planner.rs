@@ -2018,6 +2018,21 @@ fn mirror_copy_rejection(
     }
 }
 
+fn drawing_source(
+    snapshot: &Snapshot,
+    instance_paths: Vec<InstancePath>,
+    balloons: Vec<DrawingBomBalloon>,
+) -> (DrawingSource, Vec<DrawingBomBalloon>) {
+    if let [path] = instance_paths.as_slice()
+        && path.is_root()
+        && let Ok(part) = snapshot.resolve_instance_path(path)
+    {
+        return (DrawingSource::Definition(part.definition_id), Vec::new());
+    }
+    let source = DrawingSource::RigidAssemblyInstances { instance_paths };
+    (source, balloons)
+}
+
 /// Plans against the current document and explicit host-provided context without mutation.
 ///
 /// An empty selection is valid unless an operation uses `CurrentSelection`.
@@ -3205,9 +3220,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let source = DrawingSource::RigidAssemblyInstances {
-                    instance_paths: resolved_paths,
-                };
+                let (source, balloons) = drawing_source(&snapshot, resolved_paths, balloons);
                 let title_block =
                     DrawingTitleBlock::new(name.clone(), "", "", "").map_err(|error| {
                         assistant_planning_rejection(
