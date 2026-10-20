@@ -180,7 +180,7 @@ fn a_dwg_drawing_leaves_out_its_paper_space_and_invisible_entities() {
     );
     let read = |dxf: &str| {
         let dwg = ketchup_dwg::dxf_to_dwg(dxf.as_bytes()).unwrap();
-        let drawing = ketchup_dwg::dwg_to_dxf(&dwg, usize::MAX, usize::MAX).unwrap();
+        let drawing = ketchup_dwg::dwg_to_dxf(&dwg, usize::MAX).unwrap();
         inspect_dxf(&drawing.dxf, DxfImportOptions::new(None)).unwrap()
     };
     let plain = read(LAYERED_DRAWING_DXF);

@@ -48,8 +48,7 @@ fn a_dwg_reads_in_the_worker_as_it_reads_in_process() {
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
     let dwg = drawing_dwg();
-    let local =
-        ketchup_dwg::dwg_to_dxf(&dwg, ketchup_dwg::MAX_DWG_SOURCE_BYTES, DXF_LIMIT).unwrap();
+    let local = ketchup_dwg::dwg_to_dxf(&dwg, DXF_LIMIT).unwrap();
     let isolated = worker
         .convert_dwg(&dwg, DXF_LIMIT, &CancelToken::default())
         .unwrap();

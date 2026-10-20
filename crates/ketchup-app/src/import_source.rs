@@ -85,13 +85,14 @@ impl<U> ImportSourcePlan<U> {
 }
 
 /// Reads at most the format's bounded envelope, refusing larger files before and after reading.
-/// A `.dwg` drawing has its own: the DXF it converts to is bounded like a DXF file.
+/// A `.dwg` drawing is read whole: the program worker converts it under its memory limit, and
+/// the DXF it converts to is bounded like a DXF file.
 pub(crate) fn read_import_source(
     format: ImportFormat,
     path: &Path,
 ) -> Result<Vec<u8>, ImportError> {
     let limit_bytes = if format == ImportFormat::Dxf && super::dwg_import::is_dwg_path(path) {
-        u64::try_from(ketchup_dwg::MAX_DWG_SOURCE_BYTES).unwrap_or(u64::MAX)
+        u64::MAX
     } else {
         format.source_limit_bytes()
     };
@@ -109,7 +110,7 @@ pub(crate) fn read_import_source(
     let mut file = std::fs::File::open(path).map_err(failed)?;
     let mut source = Vec::new();
     std::io::Read::by_ref(&mut file)
-        .take(limit_bytes + 1)
+        .take(limit_bytes.saturating_add(1))
         .read_to_end(&mut source)
         .map_err(failed)?;
     if source.len() as u64 > limit_bytes {

@@ -8,7 +8,6 @@ use crate::{
     CamSimulationWireEvidence, CamSimulationWireRequest, ExactVolumeMeshWireOptions,
     StepAssemblyManifest, StepXdeWorkerEvidence, WorkerExactBRepGraphResult,
 };
-use ketchup_dwg::MAX_DWG_SOURCE_BYTES;
 use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_GRAPH_BYTES};
 use ketchup_model::graph::sha256_hex;
@@ -22,12 +21,9 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-/// A maximal graph or DWG file plus bounded request metadata (CAM motions, source paths).
-pub const MAX_REQUEST_FRAME_BYTES: usize = if MAX_EXACT_BREP_GRAPH_BYTES > MAX_DWG_SOURCE_BYTES {
-    MAX_EXACT_BREP_GRAPH_BYTES
-} else {
-    MAX_DWG_SOURCE_BYTES
-} + 1024 * 1024;
+/// A maximal graph plus bounded request metadata (CAM motions, source paths): the largest
+/// request the exact worker reads. The program worker reads any frame, under its memory limit.
+pub const MAX_REQUEST_FRAME_BYTES: usize = MAX_EXACT_BREP_GRAPH_BYTES + 1024 * 1024;
 /// Bulky meshes travel through files named in the request, not through replies.
 pub const MAX_REPLY_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
@@ -229,10 +225,6 @@ pub enum DwgOutcome {
 /// A [`ketchup_dwg::DwgError`] on the wire, with its facts as fields.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DwgRefusal {
-    SourceTooLarge {
-        bytes: usize,
-        limit: usize,
-    },
     DxfTooLarge {
         limit: usize,
     },
@@ -250,7 +242,6 @@ impl From<ketchup_dwg::DwgError> for DwgRefusal {
     fn from(error: ketchup_dwg::DwgError) -> Self {
         use ketchup_dwg::DwgError;
         match error {
-            DwgError::SourceTooLarge { bytes, limit } => Self::SourceTooLarge { bytes, limit },
             DwgError::DxfTooLarge { limit } => Self::DxfTooLarge { limit },
             DwgError::NothingRead { diagnostic } => Self::NothingRead { diagnostic },
             DwgError::Library { .. } | DwgError::Panicked { .. } => {
@@ -266,11 +257,6 @@ impl std::fmt::Display for DwgRefusal {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use ketchup_dwg::DwgError;
         match self {
-            Self::SourceTooLarge { bytes, limit } => DwgError::SourceTooLarge {
-                bytes: *bytes,
-                limit: *limit,
-            }
-            .fmt(formatter),
             Self::DxfTooLarge { limit } => DwgError::DxfTooLarge { limit: *limit }.fmt(formatter),
             Self::NothingRead { diagnostic } => DwgError::NothingRead {
                 diagnostic: diagnostic.clone(),

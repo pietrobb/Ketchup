@@ -24,9 +24,6 @@ mod tests;
 /// The DWG version Ketchup writes: AutoCAD 2018.
 pub const WRITTEN_VERSION: &str = "AC1032";
 
-/// The largest DWG file Ketchup reads.
-pub const MAX_DWG_SOURCE_BYTES: usize = 32 * 1024 * 1024;
-
 /// The DXF sections whose content [`dwg_to_dxf`] writes: the ones a drawing import reads.
 /// The others (classes, tables, objects) are written empty; the objects section alone is
 /// commonly most of a drawing's DXF text.
@@ -54,8 +51,6 @@ impl fmt::Display for Stage {
 
 #[derive(Debug)]
 pub enum DwgError {
-    /// The DWG file is larger than the caller reads; nothing was read.
-    SourceTooLarge { bytes: usize, limit: usize },
     /// The DXF text of the DWG drawing grew past the caller's limit; writing stopped there.
     DxfTooLarge { limit: usize },
     /// The DWG file's object stream could not be read at all (a damaged header or section
@@ -70,12 +65,6 @@ pub enum DwgError {
 impl fmt::Display for DwgError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SourceTooLarge { bytes, limit } => {
-                write!(
-                    formatter,
-                    "DWG file has {bytes} bytes, more than the {limit} read"
-                )
-            }
             Self::DxfTooLarge { limit } => write!(
                 formatter,
                 "the header, blocks and entities of the DWG drawing are more than the {limit} \
@@ -123,25 +112,14 @@ pub struct DwgDrawing {
 }
 
 /// Reads a DWG file and writes its drawing as DXF text with the content of
-/// [`DXF_SECTIONS_KEPT`] only. The size of the file is checked before reading and the DXF size
-/// while writing, so a runaway conversion stops at the limit. Object records the reader cannot
+/// [`DXF_SECTIONS_KEPT`] only. The DXF size is checked while writing, so a runaway conversion
+/// stops at the limit. Object records the reader cannot
 /// decode are left out and listed in [`DwgDrawing::skipped`]; a file whose object stream cannot
 /// be read at all is refused.
 ///
 /// The reader trusts sizes the file declares: a damaged or hostile file can make it allocate
 /// more memory than there is, which aborts the process. Run it in a process of its own.
-pub fn dwg_to_dxf(
-    dwg: &[u8],
-    max_dwg_bytes: usize,
-    max_dxf_bytes: usize,
-) -> Result<DwgDrawing, DwgError> {
-    let bytes = dwg.len();
-    if bytes > max_dwg_bytes {
-        return Err(DwgError::SourceTooLarge {
-            bytes,
-            limit: max_dwg_bytes,
-        });
-    }
+pub fn dwg_to_dxf(dwg: &[u8], max_dxf_bytes: usize) -> Result<DwgDrawing, DwgError> {
     let outcome = guarded(Stage::ReadDwg, || {
         DwgReader::from_stream_with_options(Cursor::new(dwg), DwgReadOptions::failsafe())
             .read_with_stats()

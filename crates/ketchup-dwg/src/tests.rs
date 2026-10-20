@@ -5,8 +5,6 @@ use acadrust::{Arc, CadDocument, Circle, DxfReader, DxfWriter, EntityType, Line}
 
 use super::*;
 
-const LIMIT: usize = 8 * 1024 * 1024;
-
 /// A drawing of two lines, a circle and an arc, as acadrust's DXF text.
 fn drawing_dxf() -> Vec<u8> {
     let mut document = CadDocument::new();
@@ -45,7 +43,7 @@ fn a_dxf_drawing_written_as_dwg_reads_back_with_the_same_lines_circle_and_arc() 
     let dwg = dxf_to_dwg(&dxf).expect("the drawing is written as DWG");
     assert!(dwg.starts_with(WRITTEN_VERSION.as_bytes()));
 
-    let read = dwg_to_dxf(&dwg, LIMIT, 64 * 1024 * 1024).expect("the DWG reads");
+    let read = dwg_to_dxf(&dwg, 64 * 1024 * 1024).expect("the DWG reads");
     assert_eq!(read.version, WRITTEN_VERSION);
     assert!(read.skipped.is_empty(), "{:?}", read.skipped);
     assert_eq!(
@@ -72,7 +70,7 @@ const R12_SHEET: &str = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$DWGC
 #[test]
 fn an_r12_sheet_written_as_dwg_keeps_its_line_and_its_text_with_the_escaped_characters() {
     let dwg = dxf_to_dwg(R12_SHEET.as_bytes()).expect("the R12 sheet is written as DWG");
-    let read = dwg_to_dxf(&dwg, LIMIT, 64 * 1024 * 1024).expect("the DWG reads");
+    let read = dwg_to_dxf(&dwg, 64 * 1024 * 1024).expect("the DWG reads");
     let document = DxfReader::from_reader(Cursor::new(read.dxf))
         .and_then(DxfReader::read)
         .expect("the DXF of the DWG reads");
@@ -87,20 +85,9 @@ fn an_r12_sheet_written_as_dwg_keeps_its_line_and_its_text_with_the_escaped_char
 }
 
 #[test]
-fn a_dwg_larger_than_the_limit_is_refused_before_it_is_read() {
-    let dwg = dxf_to_dwg(&drawing_dxf()).expect("the drawing is written as DWG");
-    let limit = dwg.len() - 1;
-    let error = dwg_to_dxf(&dwg, limit, usize::MAX).expect_err("the file is over the limit");
-    assert!(matches!(
-        error,
-        DwgError::SourceTooLarge { bytes, limit: refused } if bytes == dwg.len() && refused == limit
-    ));
-}
-
-#[test]
 fn a_dwg_whose_dxf_text_outgrows_the_limit_stops_at_the_limit() {
     let dwg = dxf_to_dwg(&drawing_dxf()).expect("the drawing is written as DWG");
-    let error = dwg_to_dxf(&dwg, LIMIT, 1000).expect_err("the DXF text is over the limit");
+    let error = dwg_to_dxf(&dwg, 1000).expect_err("the DXF text is over the limit");
     assert!(matches!(error, DwgError::DxfTooLarge { limit: 1000 }));
 }
 
@@ -141,7 +128,7 @@ fn the_dxf_of_a_dwg_keeps_header_blocks_and_entities_and_writes_the_rest_empty()
         whole.write_all(std::slice::from_ref(byte)).expect("kept");
     }
     let kept = whole.finish().expect("under the limit");
-    let read = dwg_to_dxf(&dwg, LIMIT, usize::MAX).expect("the DWG reads");
+    let read = dwg_to_dxf(&dwg, usize::MAX).expect("the DWG reads");
     assert_eq!(read.dxf, kept);
 
     let all = sections(&String::from_utf8(whole_dxf.clone()).unwrap());
@@ -195,7 +182,7 @@ fn layers_and_objects_the_import_does_not_read_do_not_count_against_the_limit() 
         .expect("the DWG reads");
     let limit = whole.len() / 2;
 
-    let read = dwg_to_dxf(&dwg, LIMIT, limit).expect("the kept sections fit the limit");
+    let read = dwg_to_dxf(&dwg, limit).expect("the kept sections fit the limit");
     assert!(
         read.dxf.len() < limit,
         "{} of {}",
@@ -207,7 +194,7 @@ fn layers_and_objects_the_import_does_not_read_do_not_count_against_the_limit() 
 
 #[test]
 fn bytes_that_are_not_a_dwg_file_are_a_named_error() {
-    let error = dwg_to_dxf(b"AC1032 is only the magic of a DWG file", LIMIT, usize::MAX)
+    let error = dwg_to_dxf(b"AC1032 is only the magic of a DWG file", usize::MAX)
         .expect_err("the bytes are not a DWG file");
     assert!(
         matches!(

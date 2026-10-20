@@ -856,7 +856,12 @@ impl ExactWorkerClient {
         timeout: Duration,
     ) -> Result<(), WorkerError> {
         self.ensure_not_cancelled(cancelled)?;
-        let frame = encode_frame(request, MAX_REQUEST_FRAME_BYTES)
+        // A DWG file of any size goes to the program worker, which reads any frame.
+        let max_bytes = match request {
+            WorkerRequest::ConvertDwg(_) => u32::MAX as usize,
+            _ => MAX_REQUEST_FRAME_BYTES,
+        };
+        let frame = encode_frame(request, max_bytes)
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
         let (acknowledgment, receiver) = mpsc::channel();
         if self

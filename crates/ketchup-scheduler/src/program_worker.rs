@@ -12,12 +12,12 @@
 //! the DWG reader.
 pub use crate::protocol::DwgRefusal;
 use crate::protocol::{
-    DwgInput, Frame, MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, ProgramInput, RefineInput,
-    RefineOutcome, ReportOutcome, WorkerFailure, WorkerReply, WorkerRequest, protocol_identity,
-    read_frame, write_frame,
+    DwgInput, Frame, MAX_REPLY_FRAME_BYTES, ProgramInput, RefineInput, RefineOutcome,
+    ReportOutcome, WorkerFailure, WorkerReply, WorkerRequest, protocol_identity, read_frame,
+    write_frame,
 };
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
-use ketchup_dwg::{DwgDrawing, MAX_DWG_SOURCE_BYTES};
+use ketchup_dwg::DwgDrawing;
 use ketchup_program::{
     CancelToken, EVALUATION_HEAP_BYTES, EVALUATION_TIME, Evaluated, ExactShapes, ProgramError,
     ProgramModel, Refined, Report,
@@ -326,8 +326,7 @@ impl ProgramWorker {
         }
     }
 
-    /// [`ketchup_dwg::dwg_to_dxf`] in the worker, for a file of at most
-    /// [`MAX_DWG_SOURCE_BYTES`] and DXF text of at most `max_dxf_bytes`.
+    /// [`ketchup_dwg::dwg_to_dxf`] in the worker, for DXF text of at most `max_dxf_bytes`.
     ///
     /// # Errors
     /// The reader refused the file, or the worker was stopped or died.
@@ -337,13 +336,6 @@ impl ProgramWorker {
         max_dxf_bytes: usize,
         cancel: &CancelToken,
     ) -> Result<DwgDrawing, DwgConversionError> {
-        // Refused here too: the request must fit its frame.
-        if dwg.len() > MAX_DWG_SOURCE_BYTES {
-            return Err(DwgConversionError::Refused(DwgRefusal::SourceTooLarge {
-                bytes: dwg.len(),
-                limit: MAX_DWG_SOURCE_BYTES,
-            }));
-        }
         let input = DwgInput {
             dwg: dwg.to_vec(),
             max_dxf_bytes: max_dxf_bytes.min(MAX_DWG_DXF_BYTES),
@@ -420,7 +412,8 @@ pub fn run_stdio() {
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
     loop {
-        let reply = match read_frame::<WorkerRequest>(&mut stdin, MAX_REQUEST_FRAME_BYTES) {
+        // Any frame its length can declare: the job's memory limit bounds what this holds.
+        let reply = match read_frame::<WorkerRequest>(&mut stdin, u32::MAX as usize) {
             Frame::Message(WorkerRequest::Hello) => WorkerReply::Hello {
                 protocol: protocol_identity().to_owned(),
             },
@@ -439,12 +432,8 @@ pub fn run_stdio() {
                 WorkerReply::Refined(Box::new(RefineOutcome::Refined(Box::new(refined))))
             }
             Frame::Message(WorkerRequest::ConvertDwg(input)) => WorkerReply::Dwg(Box::new(
-                ketchup_dwg::dwg_to_dxf(
-                    &input.dwg,
-                    MAX_DWG_SOURCE_BYTES,
-                    input.max_dxf_bytes.min(MAX_DWG_DXF_BYTES),
-                )
-                .into(),
+                ketchup_dwg::dwg_to_dxf(&input.dwg, input.max_dxf_bytes.min(MAX_DWG_DXF_BYTES))
+                    .into(),
             )),
             Frame::Message(_) | Frame::Malformed(_) => {
                 WorkerReply::Failure(WorkerFailure::invalid_request())

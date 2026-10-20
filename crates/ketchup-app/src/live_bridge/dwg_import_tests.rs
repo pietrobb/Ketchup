@@ -101,33 +101,24 @@ fn a_dwg_drawing_imports_as_the_profiles_of_its_dxf_in_one_undo_step() {
 }
 
 #[test]
-fn a_file_that_is_no_dwg_or_too_large_is_refused_and_changes_nothing() {
+fn a_file_that_is_no_dwg_is_refused_and_changes_nothing() {
     let directory = tempfile::tempdir().unwrap();
     let garbage = directory.path().join("garbage.dwg");
     std::fs::write(&garbage, b"AC1032 but no drawing follows").unwrap();
-    let large = directory.path().join("large.dwg");
-    std::fs::File::create(&large)
-        .unwrap()
-        .set_len(u64::try_from(ketchup_dwg::MAX_DWG_SOURCE_BYTES).unwrap() + 1)
-        .unwrap();
     let (mut app, mut bridge) = setup();
     let (digest, undo) = (app.canonical_digest(), app.undo_step_count());
 
-    for (path, reason) in [(&garbage, "DWG file"), (&large, "exceeds the bounded")] {
-        assert_eq!(
-            bridge.execute(&mut app, import(path), false),
-            Err("import_failed"),
-            "{}",
-            path.display()
-        );
-        let error = app
-            .import_file(ImportFormat::Dxf, path, None)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(reason), "{}: {error}", path.display());
-        assert_eq!(app.canonical_digest(), digest);
-        assert_eq!(app.undo_step_count(), undo);
-    }
+    assert_eq!(
+        bridge.execute(&mut app, import(&garbage), false),
+        Err("import_failed")
+    );
+    let error = app
+        .import_file(ImportFormat::Dxf, &garbage, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("DWG file"), "{error}");
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo);
 }
 
 /// Review SEC-5: a DWG file whose section map declares 300 GiB. Read in the
