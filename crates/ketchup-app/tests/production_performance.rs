@@ -16,6 +16,8 @@ const ONE_EDIT_BUDGET: Duration = Duration::from_millis(50);
 const MEMORY_GROWTH_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MEMORY_PROBE_ALLOCATION_BYTES: u64 = 64 * 1024 * 1024;
 const MEMORY_PROBE_MIN_OBSERVED_BYTES: u64 = MEMORY_PROBE_ALLOCATION_BYTES / 2;
+/// Ends only a child that hangs before readiness; a slow child is waited for.
+const MEMORY_PROBE_CHILD_HANG_GUARD: Duration = Duration::from_secs(300);
 const MEMORY_PROBE_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE";
 const MEMORY_PROBE_READY_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE_READY";
 const MEMORY_PROBE_RELEASE_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE_RELEASE";
@@ -299,7 +301,7 @@ fn verify_memory_high_water_observes_child_allocation() {
     let directory = tempfile::tempdir().expect("memory probe directory");
     let ready_path = directory.path().join("ready");
     let release_path = directory.path().join("release");
-    let child = Command::new(std::env::current_exe().expect("test executable path"))
+    let mut child = Command::new(std::env::current_exe().expect("test executable path"))
         .args([
             "--exact",
             &crate::integration_support::test_name(module_path!(), "memory_high_water_probe_child"),
@@ -312,11 +314,21 @@ fn verify_memory_high_water_observes_child_allocation() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn isolated child memory high-water probe");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !ready_path.is_file() && Instant::now() < deadline {
+    // Wait for the child's answer, ready or exited, not for a fixed time: on
+    // a loaded runner the child took 13.5 s to get ready (CI run 39332521756).
+    // The guard only ends a child that hangs, which then fails as not ready.
+    let hang_guard = Instant::now() + MEMORY_PROBE_CHILD_HANG_GUARD;
+    while !ready_path.is_file()
+        && child.try_wait().expect("poll memory probe child").is_none()
+        && Instant::now() < hang_guard
+    {
         std::thread::sleep(Duration::from_millis(10));
     }
     let ready = ready_path.is_file();
+    let hung = !ready && child.try_wait().expect("poll memory probe child").is_none();
+    if hung {
+        child.kill().expect("end hung memory probe child");
+    }
     let child_id = child.id();
     let child_in_tree = process_tree_memory_high_waters()
         .into_iter()
@@ -327,7 +339,7 @@ fn verify_memory_high_water_observes_child_allocation() {
         .expect("wait for child memory high-water probe");
     assert!(
         ready && output.status.success(),
-        "isolated child memory high-water probe failed:\n{}\n{}",
+        "isolated child memory high-water probe failed (ready={ready}, hung={hung}):\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
