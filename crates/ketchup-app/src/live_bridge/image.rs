@@ -74,7 +74,7 @@ struct VisualState {
     stamp: Stamp,
     camera: CameraViewState,
     distance: f64,
-    selection: Vec<u64>,
+    selection: Result<Vec<u64>, &'static str>,
     primary: Option<SelectionId>,
     exact: u64,
     topology: u64,
@@ -88,7 +88,7 @@ impl VisualState {
             stamp: app.live_bridge_stamp(),
             camera: app.camera_view_state(),
             distance: app.camera.distance_mm,
-            selection: LiveBridge::viewed_selection(app)?,
+            selection: LiveBridge::viewed_selection(app),
             primary: app.selection.primary.clone(),
             exact: app.exact.results.contents_stamp(),
             topology: app.exact.topology_results.contents_stamp(),
@@ -443,7 +443,7 @@ impl KetchupApp {
                 ImageFraming::Selection => selection_crop(
                     self,
                     rect,
-                    &state.selection,
+                    &state.selection.clone()?,
                     state.primary.as_ref(),
                     faces,
                     edges,
@@ -537,7 +537,7 @@ impl LiveBridge {
                     ));
                 }
             };
-            if *framing == ImageFraming::Selection && initial.selection.is_empty() {
+            if *framing == ImageFraming::Selection && initial.selection.clone()?.is_empty() {
                 return Err(failure(
                     "invalid_image_framing",
                     "Nothing is selected in the window. Select parts with the selection action first.",
@@ -768,7 +768,7 @@ fn thumbnail(
     let camera = &capture.state.camera;
     let framing_occurrence_ids = match framing {
         ImageFraming::Viewport => Vec::new(),
-        ImageFraming::Selection => capture.state.selection.clone(),
+        ImageFraming::Selection => capture.state.selection.clone()?,
         ImageFraming::DetailSelection => detail
             .map(|target| vec![target.request.occurrence_id])
             .ok_or("invalid_image_framing")?,
@@ -785,7 +785,7 @@ fn thumbnail(
         "framing":{"mode":framing.as_str(),"occurrence_ids":framing_occurrence_ids,"detail":framing_detail},
         "view":{"projection":format!("{:?}",camera.projection_mode),"yaw":camera.yaw,"pitch":camera.pitch,
             "target_z_mm":camera.target_z,"zoom":camera.zoom,"pan":[camera.pan.x,camera.pan.y],"distance_mm":capture.state.distance},
-        "selection":capture.state.selection,
+        "selection":capture.state.selection.as_ref().ok(),
         "render":{"render_correlated":true,"callback_correlated":!direct,
             "viewport_visibility_required":mode == CaptureMode::VisibleViewport,
             "viewport_unoccluded":mode == CaptureMode::VisibleViewport,"geometry_complete":false,

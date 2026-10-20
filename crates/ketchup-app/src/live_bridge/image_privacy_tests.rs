@@ -667,6 +667,48 @@ fn selection_framing_crops_real_cad_pixels_without_mutating_view_or_selection() 
     assert_eq!(h.state().selection.primary, primary);
 }
 
+/// A picked face does not block an image of the viewport; framing the
+/// selection still refuses it by name (idea #65).
+#[test]
+fn a_picked_face_refuses_only_selection_framing() {
+    use ketchup_interaction::exact_projection::TopologicalPickLocator;
+    let _gpu = gpu_test_guard();
+    let mut h = native_harness(1.0);
+    let mut bridge = h.state_mut().live.bridge.take().unwrap();
+    let query = serde_json::from_value(json!({"kind": "faces", "limit": 1})).unwrap();
+    let request = Request::Query {
+        expected: None,
+        query,
+    };
+    let faces = bridge.execute(h.state_mut(), request, false).unwrap();
+    let face = &faces["items"][0];
+    h.state_mut().live.bridge = Some(bridge);
+    assert!(
+        h.state_mut()
+            .select_topological_locator(TopologicalPickLocator {
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                producer_feature_id: crate::FeatureId(
+                    face["producer_feature_id"].as_u64().unwrap()
+                ),
+                kind: ketchup_model::topology::TopologicalElementKind::Face,
+                ordinal: u32::try_from(face["ordinal"].as_u64().unwrap()).unwrap(),
+            })
+    );
+    let refused = queue_with_framing(&mut h, 1, ImageFraming::Selection)
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("unsupported_selection_scope")
+    );
+    let rx = queue(&mut h, 2);
+    h.step();
+    render_private_capture(&mut h, "viewport with a picked face");
+    let reply = response(&mut h, &rx);
+    assert!(reply.ok, "{:?}", reply.error);
+    assert_eq!(reply.result.unwrap()["selection"], Value::Null);
+}
+
 /// Splayed legs, a turned board and a profile extrusion are not axis boxes;
 /// selection framing must still find them on screen.
 #[test]
