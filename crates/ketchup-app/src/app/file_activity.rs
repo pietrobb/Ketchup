@@ -12,6 +12,7 @@ pub(crate) struct FileActivity {
     pub(super) viewer_export: Option<super::viewer_export_activity::ViewerExportTask>,
     pub(super) exchange_export: Option<super::exchange_export::ExchangeExportTask>,
     pub(super) dwg_reading: Option<super::dwg_import::DwgReadTask>,
+    pub(crate) underlay: super::underlay::UnderlayImport,
 }
 
 type OpenResult = Result<
@@ -120,6 +121,7 @@ impl KetchupApp {
             || self.file.activity.viewer_export.is_some()
             || self.file.activity.exchange_export.is_some()
             || self.file.activity.dwg_reading.is_some()
+            || self.file.activity.underlay.reading.is_some()
         {
             return true;
         }
@@ -163,6 +165,8 @@ impl KetchupApp {
             AppCommand::Open
         } else if self.file.activity.dwg_reading.is_some() {
             AppCommand::ImportDrawingDxf
+        } else if self.file.activity.underlay.reading.is_some() {
+            AppCommand::ImportDrawingUnderlay
         } else if self.file.activity.viewer_export.is_some() {
             AppCommand::ExportViewer
         } else if let Some(task) = &self.file.activity.exchange_export {
@@ -188,6 +192,7 @@ impl KetchupApp {
             self.file.activity.pending = None;
             self.file.activity.opening = None;
             self.cancel_dwg_read();
+            self.cancel_underlay_read();
             self.defer_close_until_saved(context);
             self.defer_close_until_exported(context);
             self.cancel_save_preparation();
@@ -214,6 +219,7 @@ impl KetchupApp {
             self.file.activity.pending = None;
             self.file.activity.opening = None;
             self.cancel_dwg_read();
+            self.cancel_underlay_read();
             self.cancel_save_preparation();
             self.cancel_viewer_export_preparation();
             self.cancel_exchange_export();
@@ -238,6 +244,10 @@ impl KetchupApp {
         }
         if self.file.activity.dwg_reading.is_some() {
             self.poll_dwg_read(context);
+            return;
+        }
+        if self.file.activity.underlay.reading.is_some() {
+            self.poll_underlay_read(context);
             return;
         }
         let pending = self

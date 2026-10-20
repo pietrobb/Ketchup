@@ -161,6 +161,11 @@ impl IsolatedCapture {
                 .callback_resources
                 .insert(crate::GpuInstancedRenderer::new(device, format));
         }
+        renderer
+            .callback_resources
+            .insert(crate::renderer::underlay::GpuUnderlayRenderer::new(
+                device, format,
+            ));
         renderer.update_texture(
             device,
             queue,

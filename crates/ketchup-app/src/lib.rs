@@ -95,10 +95,9 @@ use ketchup_model::exact_validation::GeneralBodyParticipant;
 use ketchup_model::graph::{EvaluationStatus, EvaluatorNodeKind, sha256_bytes};
 use ketchup_model::import::{
     DxfImportOptions, IgesXdeImportEvidence, ImportDiagnosticSeverity, ImportFormat,
-    ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision, ParsedDxf, ParsedGlbScene,
-    ParsedSketchupScene, ParsedStlMesh, StepXdeImportEvidence, inspect_dxf, inspect_glb,
-    inspect_sketchup_scene, parse_stl, plan_dxf_import, plan_glb_import, plan_iges_xde_import,
-    plan_sketchup_scene_import, plan_step_xde_import, plan_stl_import,
+    ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision, ParsedDxf, ParsedSketchupScene,
+    ParsedStlMesh, StepXdeImportEvidence, inspect_dxf, parse_stl, plan_dxf_import,
+    plan_iges_xde_import, plan_step_xde_import, plan_stl_import,
 };
 #[cfg(test)]
 use ketchup_model::import::{
@@ -1062,6 +1061,7 @@ pub enum AppCommand {
     SaveAs,
     ImportMeshStl,
     ImportDrawingDxf,
+    ImportDrawingUnderlay,
     ImportExactStep,
     ImportExactIges,
     ImportSketchupScene,

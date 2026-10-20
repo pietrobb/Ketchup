@@ -241,6 +241,8 @@ impl KetchupApp {
                 plan_awaits_program: false,
                 moved_plan: None,
                 overlay_edge_cache: RefCell::new(BTreeMap::new()),
+                underlays: BTreeMap::new(),
+                underlay_frame: Vec::new(),
                 wgpu_target_format: None,
                 wgpu_device: None,
                 wgpu_queue: None,
@@ -258,14 +260,16 @@ impl KetchupApp {
             DialogParentWindow::from_creation_context(context),
         ));
         if let Some(render_state) = context.wgpu_render_state.as_ref() {
-            render_state
-                .renderer
-                .write()
-                .callback_resources
-                .insert(GpuInstancedRenderer::new(
-                    &render_state.device,
-                    render_state.target_format,
-                ));
+            let mut renderer = render_state.renderer.write();
+            let resources = &mut renderer.callback_resources;
+            resources.insert(GpuInstancedRenderer::new(
+                &render_state.device,
+                render_state.target_format,
+            ));
+            resources.insert(crate::renderer::underlay::GpuUnderlayRenderer::new(
+                &render_state.device,
+                render_state.target_format,
+            ));
             app.render.wgpu_target_format = Some(render_state.target_format);
             app.render.wgpu_device = Some(render_state.device.clone());
             app.render.wgpu_queue = Some(render_state.queue.clone());
@@ -945,6 +949,7 @@ impl KetchupApp {
                 ui.separator();
                 self.menu_command(ui, AppCommand::ImportMeshStl);
                 self.menu_command(ui, AppCommand::ImportDrawingDxf);
+                self.menu_command(ui, AppCommand::ImportDrawingUnderlay);
                 self.menu_command(ui, AppCommand::ImportExactStep);
                 self.menu_command(ui, AppCommand::ImportExactIges);
                 self.menu_command(ui, AppCommand::ImportSketchupScene);
@@ -1504,6 +1509,7 @@ impl KetchupApp {
         self.show_pdm_review_window(context);
         self.show_stl_import_window(context);
         self.show_dxf_import_window(context);
+        self.show_underlay_unit_window(context);
         self.show_step_import_window(context);
         self.show_iges_import_window(context);
         self.show_sketchup_scene_import_window(context);

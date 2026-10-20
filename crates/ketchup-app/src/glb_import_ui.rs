@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_model::import::{ParsedGlbScene, inspect_glb, plan_glb_import};
 
 #[derive(Clone, Debug, PartialEq)]
 struct GlbImportPreviewPlan {

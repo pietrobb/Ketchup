@@ -90,6 +90,10 @@ mod thread_display;
 mod thread_display_tests;
 pub(crate) mod tool_gesture;
 mod transform;
+pub(crate) mod underlay;
+#[cfg(test)]
+#[path = "app/underlay_tests.rs"]
+mod underlay_tests;
 mod viewer_export;
 mod viewer_export_activity;
 pub(crate) mod viewer_settings;

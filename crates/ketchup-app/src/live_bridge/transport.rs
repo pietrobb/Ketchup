@@ -252,6 +252,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::Open { .. }
         | Request::ExportDrawings { .. }
         | Request::Import { .. }
+        | Request::RemoveUnderlay { .. }
         | Request::Export { .. }
         | Request::Selection { .. }
         | Request::View { .. }

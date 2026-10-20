@@ -3322,6 +3322,7 @@ impl KetchupApp {
             scene_plan.clone(),
         );
         self.paint_projected_shadows(painter, response.rect, &viewport_boxes);
+        self.prepare_underlay_frame();
         self.paint_scene_base_layers(painter, response.rect, scene_plan);
 
         self.paint_projected_faces(painter, &faces);

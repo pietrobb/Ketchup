@@ -84,6 +84,21 @@ impl LiveBridge {
         source: Option<Vec<u8>>,
     ) -> Result<Value, &'static str> {
         let (path, format, unit) = Self::import_target(app, request, ui_busy)?;
+        if matches!(
+            request,
+            Request::Import {
+                as_underlay: true,
+                ..
+            }
+        ) {
+            let read = crate::app::underlay::read_underlay_file(
+                Path::new(&path),
+                unit,
+                &ketchup_program::CancelToken::default(),
+            )
+            .map_err(|error| import_failed(&path, error))?;
+            return Self::add_underlay(app, request, ui_busy, cancelled, read);
+        }
         Self::require_request_authority(cancelled)?;
         let summary = match source {
             Some(source) => app.import_drawing(Path::new(&path), source, unit),
@@ -103,6 +118,7 @@ impl LiveBridge {
             expected,
             path,
             unit,
+            as_underlay,
         } = request
         else {
             return Err("invalid_request");
@@ -125,6 +141,13 @@ impl LiveBridge {
                 json!({"path": path}),
             )
         })?;
+        if *as_underlay && format != ImportFormat::Dxf {
+            return Err(failure(
+                "invalid_params",
+                "as_underlay imports a .dxf or .dwg drawing.",
+                json!({"path": path}),
+            ));
+        }
         let unit = unit
             .as_deref()
             .map(|name| {

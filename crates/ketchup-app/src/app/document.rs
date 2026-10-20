@@ -1026,6 +1026,11 @@ impl KetchupApp {
                     }
                 }
             }
+            AppCommand::ImportDrawingUnderlay => {
+                if let Some(path) = self.choose_dxf_import_path() {
+                    self.start_underlay_read(path, None);
+                }
+            }
             AppCommand::ExportDrawingDxf => {
                 if let Some(path) = self.choose_export_path("dxf") {
                     self.export_current_profiles_dxf_to(&path).ok();

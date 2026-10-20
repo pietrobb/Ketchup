@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use wgpu::util::DeviceExt as _;
 
+pub mod underlay;
+
 pub const RENDER_PLAN_SCHEMA_V1: &str = "ketchup.render-plan.v1";
 pub const RENDER_EVALUATOR_V1: &str = "ketchup.renderer.instanced.v1";
 pub const RENDER_BACKEND_WGPU_V1: &str = "ketchup.renderer.wgpu.v1";

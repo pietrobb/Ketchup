@@ -434,6 +434,7 @@ impl KetchupApp {
         if self.view.contains(ViewFlag::GridAxes) {
             self.paint_ground_plane(painter, rect);
         }
+        self.paint_underlays(painter, rect);
         if let Some(plan) = scene_plan {
             let (_, _, forward) = self.camera_basis();
             painter.add(eframe::egui_wgpu::Callback::new_paint_callback(

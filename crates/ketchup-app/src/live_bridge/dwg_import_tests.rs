@@ -32,6 +32,16 @@ fn import(path: &Path) -> Request {
         expected: None,
         path: path.display().to_string(),
         unit: None,
+        as_underlay: false,
+    }
+}
+
+fn import_underlay(path: &Path) -> Request {
+    Request::Import {
+        expected: None,
+        path: path.display().to_string(),
+        unit: None,
+        as_underlay: true,
     }
 }
 
@@ -264,4 +274,81 @@ fn a_held_dwg_conversion_is_not_read_again() {
 
     let again = read_dwg(&reviewed, &cancel).unwrap();
     assert!(Arc::ptr_eq(&held, &again), "read again in the worker");
+}
+
+/// `file action=import as_underlay=true`: a DWG drawing is kept as an underlay in one Undo
+/// step and adds no part; the summary names its tags, `tag_visibility` hides one layer and
+/// `remove_underlay` takes it out again in one more step.
+#[test]
+fn a_dwg_drawing_imports_as_an_underlay_shown_by_its_tags_and_is_removed_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let dwg = layered_dwg(directory.path(), "plan.dwg");
+    let (mut app, mut bridge) = setup();
+    let (undo, occurrences) = (
+        app.undo_step_count(),
+        app.document.current().occurrences().count(),
+    );
+
+    let answer = bridge
+        .execute(&mut app, import_underlay(&dwg), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+
+    assert_eq!(answer["imported"], true, "{answer}");
+    // In the order the drawing first draws on them.
+    assert_eq!(
+        answer["underlay"]["layers"],
+        json!(["outline", "cut", "holes"])
+    );
+    assert_eq!(
+        answer["underlay"]["dwg_version"],
+        ketchup_dwg::WRITTEN_VERSION
+    );
+    assert_eq!(app.undo_step_count(), undo + 1, "one Undo step");
+    assert_eq!(app.document.current().occurrences().count(), occurrences);
+    let summary = bridge
+        .execute(&mut app, Request::Summary {}, false)
+        .unwrap();
+    let underlay = &summary["underlays"][0];
+    assert_eq!(underlay["id"], answer["underlay_id"], "{summary}");
+    let layer_tag = underlay["layers"][0]["tag"]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{summary}"))
+        .to_owned();
+    let hide = Request::TagVisibility {
+        expected: None,
+        name: layer_tag.clone(),
+        visible: false,
+    };
+    bridge.execute(&mut app, hide, false).unwrap();
+    assert!(app.underlay_draws()[0].visible.len() == 2);
+
+    let remove = Request::RemoveUnderlay {
+        expected: None,
+        underlay_id: answer["underlay_id"].as_u64().unwrap(),
+    };
+    let removed = bridge.execute(&mut app, remove, false).unwrap();
+    assert_eq!(removed["removed"], true);
+    assert_eq!(app.undo_step_count(), undo + 3);
+    assert_eq!(app.document.current().underlays().count(), 0);
+    let summary = bridge
+        .execute(&mut app, Request::Summary {}, false)
+        .unwrap();
+    assert!(
+        !summary["tags"].to_string().contains(&layer_tag),
+        "{summary}"
+    );
+}
+
+#[test]
+fn only_a_drawing_imports_as_an_underlay() {
+    let directory = tempfile::tempdir().unwrap();
+    let stl = directory.path().join("part.stl");
+    std::fs::write(&stl, "solid empty\nendsolid empty\n").unwrap();
+    let (mut app, mut bridge) = setup();
+    let digest = app.canonical_digest();
+    let code = bridge
+        .execute(&mut app, import_underlay(&stl), false)
+        .unwrap_err();
+    assert_eq!(code, "invalid_params");
+    assert_eq!(app.canonical_digest(), digest);
 }

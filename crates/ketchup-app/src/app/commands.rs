@@ -312,6 +312,7 @@ impl KetchupApp {
             | AppCommand::SaveAs
             | AppCommand::ImportMeshStl
             | AppCommand::ImportDrawingDxf
+            | AppCommand::ImportDrawingUnderlay
             | AppCommand::ImportExactStep
             | AppCommand::ImportExactIges
             | AppCommand::ImportSketchupScene

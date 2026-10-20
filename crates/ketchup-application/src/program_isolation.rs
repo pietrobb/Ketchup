@@ -11,6 +11,8 @@ use ketchup_program::{
 use ketchup_scheduler::WorkerError;
 pub use ketchup_scheduler::program_worker::{CheckDeadline, PROGRAM_CHECK_TIME};
 use ketchup_scheduler::program_worker::{DwgConversionError, ProgramWorker};
+pub use ketchup_scheduler::protocol::{UnderlayInput, UnderlayRead, UnderlayRefusal};
+pub use ketchup_scheduler::underlay_reading::UnderlayReadError;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Mutex;
@@ -139,6 +141,46 @@ pub fn convert_dwg(
     with_worker(|worker| worker.convert_dwg(dwg, max_dxf_bytes, cancel))
         .map_err(DwgReadError::Unavailable)?
         .map_err(DwgReadError::Conversion)
+}
+
+/// Reads the drawing `input` names as an underlay in a program worker, which writes its
+/// lines to `input.output`; `cancel` stops it.
+///
+/// # Errors
+/// No worker could take it, the drawing was refused, or reading it was cancelled or
+/// stopped at the worker's memory limit.
+pub fn read_underlay(
+    input: UnderlayInput,
+    cancel: &CancelToken,
+) -> Result<UnderlayRead, UnderlayWorkerError> {
+    with_worker(|worker| worker.read_underlay(input, cancel))
+        .map_err(UnderlayWorkerError::Unavailable)?
+        .map_err(UnderlayWorkerError::Read)
+}
+
+/// Why a drawing was not read as an underlay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UnderlayWorkerError {
+    Unavailable(WorkerUnavailable),
+    Read(UnderlayReadError),
+}
+
+impl fmt::Display for UnderlayWorkerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable(error) => write!(formatter, "drawings cannot be read: {error}"),
+            Self::Read(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for UnderlayWorkerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unavailable(error) => Some(error),
+            Self::Read(error) => Some(error),
+        }
+    }
 }
 
 /// Why no program worker could take a request.

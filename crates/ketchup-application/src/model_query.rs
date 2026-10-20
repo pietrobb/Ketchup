@@ -339,10 +339,32 @@ impl ModelQuery {
             .take(MAX_PAGE)
             .map(|sheet| json!({"id":sheet.id().0,"name":bounded_text(sheet.name())}))
             .collect::<Vec<_>>();
+        // Underlays show and hide by their tags (view action=tag_visibility): the whole
+        // drawing by its own tag, one layer by the layer's tag.
+        let tag_name = |id| snapshot.tag(id).map(|tag| bounded_text(tag.name()));
+        let underlays = snapshot
+            .underlays()
+            .take(MAX_PAGE)
+            .map(|underlay| {
+                let layers = underlay
+                    .layers
+                    .iter()
+                    .take(MAX_PAGE)
+                    .map(
+                        |layer| json!({"name":bounded_text(&layer.name),"tag":tag_name(layer.tag)}),
+                    )
+                    .collect::<Vec<_>>();
+                json!({"id":underlay.id.0,"name":bounded_text(&underlay.name),
+                    "tag":tag_name(underlay.tag),"layers":layers,
+                    "layers_complete":underlay.layers.len() <= MAX_PAGE})
+            })
+            .collect::<Vec<_>>();
         json!({"identity":identity(snapshot),"coverage":coverage(None),
             "tags":tags,"tags_complete":snapshot.tags().count() <= MAX_PAGE,
             "drawing_sheets":drawing_sheets,
             "drawing_sheets_complete":snapshot.drawing_sheets().count() <= MAX_PAGE,
+            "underlays":underlays,
+            "underlays_complete":snapshot.underlays().count() <= MAX_PAGE,
             "counts":{"root_occurrences":snapshot.occurrences().count(),
                 "tags":snapshot.tags().count(),
                 "instances":instance_count,

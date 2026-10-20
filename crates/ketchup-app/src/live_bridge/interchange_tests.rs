@@ -26,6 +26,7 @@ fn import(path: &Path, unit: Option<&str>) -> Request {
         expected: None,
         path: path.display().to_string(),
         unit: unit.map(str::to_owned),
+        as_underlay: false,
     }
 }
 

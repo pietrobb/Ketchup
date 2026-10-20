@@ -292,6 +292,10 @@ pub(crate) struct RenderState {
     /// it shows and the plan itself.
     pub(crate) moved_plan: Option<MovedPlan>,
     pub(crate) overlay_edge_cache: RefCell<BTreeMap<DefinitionId, OverlayEdges>>,
+    /// The GPU vertices of the underlays' lines, by the SHA-256 of their blob.
+    pub(crate) underlays: BTreeMap<[u8; 32], Arc<crate::renderer::underlay::UnderlayGeometry>>,
+    /// What the viewport paints of them this frame.
+    pub(crate) underlay_frame: Vec<crate::renderer::underlay::UnderlayDraw>,
     pub(crate) wgpu_target_format: Option<eframe::wgpu::TextureFormat>,
     pub(crate) wgpu_device: Option<eframe::wgpu::Device>,
     pub(crate) wgpu_queue: Option<eframe::wgpu::Queue>,

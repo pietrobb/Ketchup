@@ -2,6 +2,7 @@
 
 use crate::app::dwg_import::drawing_dxf;
 use crate::*;
+use ketchup_model::import::{inspect_sketchup_scene, plan_sketchup_scene_import};
 
 impl KetchupApp {
     pub(crate) fn invalidate_pending_import_reviews(&mut self) {

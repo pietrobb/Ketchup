@@ -222,6 +222,7 @@ impl Tools {
                         "save_as",
                         "open",
                         "import",
+                        "remove_underlay",
                         "export",
                         "export_drawings",
                     ],

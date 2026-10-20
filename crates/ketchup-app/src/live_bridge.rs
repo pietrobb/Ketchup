@@ -391,13 +391,22 @@ pub enum Request {
         #[serde(default)]
         title_block: BTreeMap<ketchup_manufacturing::title_block::TitleField, String>,
     },
-    /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step.
+    /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
+    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.
     Import {
         #[serde(default)]
         expected: Option<Stamp>,
         path: String,
         #[serde(default)]
         unit: Option<String>,
+        #[serde(default)]
+        as_underlay: bool,
+    },
+    /// Removes an underlay and the tags only it held, as one Undo step.
+    RemoveUnderlay {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        underlay_id: u64,
     },
     /// Writes the visible model in one File menu export format.
     Export {
@@ -2664,7 +2673,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -2918,6 +2927,9 @@ impl LiveBridge {
             }
             request @ Request::Import { .. } => {
                 Self::import_file(app, &request, ui_busy, cancelled, None)
+            }
+            request @ Request::RemoveUnderlay { .. } => {
+                self.remove_underlay(app, &request, ui_busy, cancelled)
             }
             request @ Request::Export { .. } => Self::export_file(app, request, ui_busy, cancelled),
             Request::Open { expected, path } => {
