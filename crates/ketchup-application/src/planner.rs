@@ -4001,9 +4001,12 @@ pub fn plan_part_batch(
     let mut next_definition = next_id(snapshot.definitions().map(|item| item.id().0));
     let mut next_occurrence = next_id(snapshot.occurrences().map(|item| item.id().0));
     let mut next_feature = next_id(snapshot.features().map(|item| item.id().0));
-    let mut staged = StagedPlanningContext::new(&snapshot);
+    // The parts are independent, so each is planned against the document as
+    // it was and the whole batch is checked once: staging every part on top of
+    // all earlier ones re-validated the growing document per part (42 s for a
+    // fresh 1854-part program).
+    let mut commands = Vec::new();
     for operation in parts {
-        staged.refresh("rule_part", &document_target)?;
         AssistantCadEditProgram {
             operations: vec![operation.clone()],
         }
@@ -4026,6 +4029,7 @@ pub fn plan_part_batch(
                 pockets,
                 ..
             } => {
+                let mut staged = StagedPlanningContext::new(&snapshot);
                 plan_part(
                     operation,
                     name,
@@ -4037,6 +4041,7 @@ pub fn plan_part_batch(
                     &mut next_occurrence,
                     &document_target,
                 )?;
+                commands.extend(staged.commands);
             }
             _ => {
                 return Err(assistant_planning_rejection(
@@ -4049,7 +4054,13 @@ pub fn plan_part_batch(
             }
         }
     }
-    Ok(staged.into_final_batch())
+    let batch = CommandBatch::new(commands);
+    if !batch.commands().is_empty() {
+        snapshot
+            .preview_batch(&batch)
+            .map_err(|error| assistant_canonical_rejection(error, "rule_part", &document_target))?;
+    }
+    Ok(batch)
 }
 
 pub fn plan_rule_part_batch(

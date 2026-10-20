@@ -10,6 +10,8 @@ mod busy_tests;
 mod idle_retry;
 #[path = "interchange_tests.rs"]
 mod interchange;
+#[path = "large_program_tests.rs"]
+mod large_program;
 #[path = "mesh_conversion_tests.rs"]
 mod mesh_conversion;
 #[path = "plugin_menu_tests.rs"]
