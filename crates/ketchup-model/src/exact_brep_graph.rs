@@ -1177,27 +1177,15 @@ impl ExactBRepGraph {
     }
 
     /// Bounds of what the cut `operation` may remove: its profile swept along
-    /// the cut (a through cut across its whole target, as the exact worker
-    /// sizes it), or its boolean tool. `None` for any other operation.
+    /// its interval (compiled across the target's bounds for a through cut), or its tool.
     #[must_use]
     pub fn removed_bounds_mm(&self, operation: &ExactBRepOperation) -> Option<[[f64; 3]; 2]> {
         match operation {
             ExactBRepOperation::ProfileCut {
-                target,
-                profile,
-                depth_bits,
-                interval,
-                ..
+                profile, interval, ..
             } => {
                 let profile = self.profiles.get(usize::try_from(profile.0).ok()?)?;
-                let mut interval = *interval;
-                if depth_bits.is_none() {
-                    let target = self.node_bounds_mm(*target).ok()??;
-                    let origin = profile.frame().to_vectors()[0];
-                    interval =
-                        through_all_interval(origin, interval.direction(), target, 0.0).ok()?;
-                }
-                swept_profile_bounds(profile, interval).ok()
+                swept_profile_bounds(profile, *interval).ok()
             }
             ExactBRepOperation::Boolean {
                 operation: ExactBRepBooleanOperation::Cut,

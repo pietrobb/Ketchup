@@ -1585,8 +1585,8 @@ fn collision_report(
         let mut candidates = candidates.into_iter().collect::<Vec<_>>();
         candidates
             .sort_by_key(|(left, right)| (left / graph_block, right / graph_block, *left, *right));
-        // Separated hulls prove no contact; touching hulls prove contact only
-        // where no cut reaches the other solid. Anything else asks OCCT.
+        // Separated hulls prove no contact; touching hulls prove contact only for
+        // faces no cut reaches. Cuts may remove the entire bearing face, so ask OCCT.
         let world_hulls = collision_hulls(&graphs, &bodies);
         let mut hull_decided = 0usize;
         for (left, right) in candidates {
@@ -1846,16 +1846,13 @@ mod tests {
 
     #[test]
     fn hulls_decide_apart_and_bearing_pairs_and_leave_a_face_a_hole_reaches_exact() {
-        let source = "base = box('base', (100, 100, 18))
-hole(base, 'z-', at=(50, 50), diameter=8, depth=8)
-box('on top', (100, 100, 18), at=(0, 0, 18))
-box('apart', (100, 100, 18), at=(300, 0, 0))
-drilled = box('drilled', (100, 100, 18), at=(0, 300, 0))
+        let source = "box('under', (100, 100, 18))
+drilled = box('drilled', (100, 100, 18), at=(0, 0, 18))
 hole(drilled, 'z+', at=(50, 50), diameter=8, depth=8)
-box('lid', (100, 100, 18), at=(0, 300, 18))
-bored = box('bored', (100, 100, 18), at=(0, 600, 0))
+box('lid', (100, 100, 18), at=(0, 0, 36))
+bored = box('bored', (100, 100, 18), at=(0, 300, 0))
 hole(bored, 'z+', at=(50, 50), diameter=8, depth=18, through=True)
-box('beside', (100, 100, 18), at=(100, 600, 0))";
+box('beside', (100, 100, 18), at=(100, 300, 0))";
         let mut session = crate::DocumentSession::new(crate::SessionSettings::default());
         let program = ketchup_model::document::RuleProgramSource {
             variants: Default::default(),
@@ -1869,29 +1866,29 @@ box('beside', (100, 100, 18), at=(100, 600, 0))";
                 let definition = snapshot.definition(part.definition_id).unwrap();
                 let feature = *definition.feature_ids().last().unwrap();
                 let graph = ExactBRepGraph::from_snapshot(&snapshot, definition.id(), feature);
-                let hull = pieces::local_pieces(&graph.unwrap())
-                    .unwrap()
-                    .world(part.transform);
-                let name = crate::rule_program_part_name(&snapshot, &part.instance_path);
-                (name.unwrap(), hull.unwrap())
+                let hull = pieces::local_pieces(&graph.ok()?)?.world(part.transform)?;
+                Some((
+                    crate::rule_program_part_name(&snapshot, &part.instance_path)?,
+                    hull,
+                ))
             })
-            .collect();
-        // Contact area and distance of a program check; `None` asks OCCT.
-        let answer = |a: &str, b: &str, gap| {
-            pieces::measure(&hulls[a], &hulls[b], snapshot.tolerance().linear_mm(), gap).map(
-                |(patches, gap)| (patches.iter().map(|p| p.area_mm2).sum::<f64>().round(), gap),
-            )
-        };
-        // Separated parts are apart without a distance, unless the gap is read.
-        assert_eq!(answer("base", "apart", false), Some((0.0, None)));
-        assert_eq!(answer("base", "apart", true), None);
-        // The hole of `base` is away from the face `on top` bears on.
-        assert_eq!(answer("base", "on top", true), Some((10_000.0, Some(0.0))));
-        // A hole reaching the bearing face leaves the contact to the exact check.
-        assert_eq!(answer("drilled", "lid", true), None);
-        assert_eq!(answer("lid", "drilled", true), None);
-        // A hole through the board reaches both faces, but not a side.
-        assert_eq!(answer("bored", "beside", true).unwrap().0, 1_800.0);
+            .collect::<Option<_>>()
+            .unwrap();
+        // Pair, gap read, contact area and distance (`None` asks OCCT): a hole
+        // reaching the bearing face (blind: top; through: top and bottom) asks.
+        let tolerance = snapshot.tolerance().linear_mm();
+        for (a, b, gap, answer) in [
+            ("drilled", "bored", false, Some((0.0, None))),
+            ("drilled", "bored", true, None),
+            ("drilled", "under", true, Some((10_000.0, Some(0.0)))),
+            ("drilled", "lid", true, None),
+            ("lid", "drilled", true, None),
+            ("bored", "beside", true, Some((1_800.0, Some(0.0)))),
+        ] {
+            let measured = pieces::measure(&hulls[a], &hulls[b], tolerance, gap);
+            let area = |p: Vec<ContactPatch>| p.iter().map(|p| p.area_mm2).sum::<f64>().round();
+            assert_eq!(measured.map(|(p, gap)| (area(p), gap)), answer, "{a} / {b}");
+        }
     }
 
     #[test]

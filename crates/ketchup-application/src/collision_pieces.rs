@@ -59,21 +59,19 @@ fn axis_aligned(v: [f64; 3]) -> bool {
 }
 
 /// The extrusion the producer starts from, if it is followed only by
-/// subtractive cuts on that same solid, so anything enclosing it encloses the
-/// producer; and the bounds of what its cuts may remove.
+/// subtractive cuts (kept as removed bounds), so anything enclosing it encloses the producer.
 pub(super) fn local_pieces(graph: &ExactBRepGraph) -> Option<LocalPieces> {
     let mut node = graph.nodes.len().checked_sub(1)?;
     let mut cuts = Vec::new();
     loop {
-        let operation = &graph.nodes[node].operation;
-        match operation {
-            ExactBRepOperation::ProfileCut { target, .. }
+        match &graph.nodes[node].operation {
+            cut @ (ExactBRepOperation::ProfileCut { target, .. }
             | ExactBRepOperation::Boolean {
                 operation: ExactBRepBooleanOperation::Cut,
                 target,
                 ..
-            } if (target.0 as usize) < node => {
-                cuts.push(graph.removed_bounds_mm(operation));
+            }) if (target.0 as usize) < node => {
+                cuts.push(graph.removed_bounds_mm(cut));
                 node = target.0 as usize;
             }
             ExactBRepOperation::Extrude {
@@ -108,15 +106,14 @@ pub(super) fn local_pieces(graph: &ExactBRepGraph) -> Option<LocalPieces> {
     }
 }
 
-/// A solid's convex profile pieces and cut boxes, in definition-local coordinates.
+/// A solid's convex profile pieces, in definition-local coordinates.
 pub(super) struct LocalPieces {
     extrusion: Extrusion,
     polygons: Vec<Vec<[f64; 2]>>,
     cuts: Option<Vec<[[f64; 3]; 2]>>,
 }
 
-/// A placed solid: prisms enclosing it, and boxes enclosing all its cuts
-/// remove (`None` when one is unknown). Away from those, it is its prisms.
+/// A placed solid's prisms, and boxes enclosing what its cuts remove (`None` if unknown).
 pub(super) struct Hull {
     pub(super) pieces: Vec<Piece>,
     cuts: Option<Vec<Piece>>,
@@ -141,9 +138,6 @@ struct Face {
 impl LocalPieces {
     /// Rigid placements only; anything else stays exact-only.
     pub(super) fn world(&self, place: Transform) -> Option<Hull> {
-        if !place.is_rigid() {
-            return None;
-        }
         let prism = |faces: [Vec<[f64; 3]>; 2], along| {
             let [b, t] = faces.map(|f| f.into_iter().map(|p| place.transform_point(p)).collect());
             Piece::prism(b, t, place.transform_vector(along))
@@ -155,21 +149,17 @@ impl LocalPieces {
         });
         let cuts = self.cuts.as_ref().and_then(|cuts| {
             cuts.iter()
-                .map(|[low, high]| {
-                    let corner = |[i, j]: [usize; 2], z| [[low, high][i][0], [low, high][j][1], z];
-                    let face = |z| {
-                        [[0, 0], [1, 0], [1, 1], [0, 1]]
-                            .map(|c| corner(c, z))
-                            .to_vec()
-                    };
-                    prism([face(low[2]), face(high[2])], [0.0, 0.0, 1.0])
+                .map(|[l, h]| {
+                    let corners = [[l[0], l[1]], [h[0], l[1]], [h[0], h[1]], [l[0], h[1]]];
+                    let face = |z| corners.map(|[x, y]| [x, y, z]).to_vec();
+                    prism([face(l[2]), face(h[2])], [0.0, 0.0, 1.0])
                 })
                 .collect()
         });
-        Some(Hull {
-            pieces: pieces.collect::<Option<_>>()?,
-            cuts,
-        })
+        pieces
+            .collect::<Option<_>>()
+            .filter(|_| place.is_rigid())
+            .map(|pieces| Hull { pieces, cuts })
     }
 }
 
@@ -234,10 +224,9 @@ fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
     (norm > ROUNDING && norm.is_finite()).then(|| v.map(|x| x / norm))
 }
 
-/// The answer for two solids, if their hulls decide it. Separation has no
-/// distance, so with `exact_gap` (program checks read it) a separated pair is
-/// left to OCCT. Touching faces count only where no cut comes within
-/// [`CONTACT_FIT_MM`] of the other solid, for a cut may remove the face.
+/// `a` and `b` are each one solid's hull. Separation has no gap, so with
+/// `exact_gap` (program checks read it) a separated pair is left to OCCT.
+/// Touching counts only if no cut comes within [`CONTACT_FIT_MM`] of the other solid.
 pub(super) fn measure(
     a: &Hull,
     b: &Hull,
@@ -249,13 +238,9 @@ pub(super) fn measure(
         Some(patches) => [(a, b), (b, a)]
             .iter()
             .all(|(cut, other)| {
-                let apart = |c| {
-                    let mut pieces = other.pieces.iter();
-                    pieces.all(|p| least_overlap(c, [0.0; 3], 0.0, p, CONTACT_FIT_MM).is_none())
-                };
-                cut.cuts
-                    .as_deref()
-                    .is_some_and(|cuts| cuts.iter().all(apart))
+                let near = |c, p| least_overlap(c, [0.0; 3], 0.0, p, CONTACT_FIT_MM).is_some();
+                let apart = |c| other.pieces.iter().all(|p| !near(c, p));
+                cut.cuts.as_deref().is_some_and(|c| c.iter().all(apart))
             })
             .then_some((patches, Some(0.0))),
     }
