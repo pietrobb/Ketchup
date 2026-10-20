@@ -1369,43 +1369,6 @@ pub fn work_recovery_path(path: &Path) -> PathBuf {
     PathBuf::from(recovery)
 }
 
-/// Writes `payload`, a prepared native file, as the work-recovery checkpoint of
-/// the file at `path` (see [`publish_work_recovery`]).
-fn write_work_recovery(
-    path: &Path,
-    payload: &[u8],
-    base_identity: FileIdentity,
-    expected_recovery: Option<FileIdentity>,
-    after_compare: impl FnOnce(),
-) -> Result<FileIdentity, FilePersistenceError> {
-    let _lock = lock_saves(path)?;
-    if read_native_document_identity(path)? != base_identity {
-        return Err(FilePersistenceError::ExternalConflict);
-    }
-    check_work_recovery_identity(path, expected_recovery)?;
-    after_compare();
-    let mut bytes = Vec::with_capacity(WORK_RECOVERY_MAGIC.len() + 2 + 8 + 32 + 8 + payload.len());
-    bytes.extend_from_slice(WORK_RECOVERY_MAGIC);
-    push_u16(&mut bytes, WORK_RECOVERY_SCHEMA);
-    push_u64(&mut bytes, base_identity.byte_len());
-    bytes.extend_from_slice(&base_identity.sha256());
-    push_u64(&mut bytes, payload.len() as u64);
-    bytes.extend_from_slice(payload);
-    write_atomic_after_prepare(
-        &work_recovery_path(path),
-        &bytes,
-        true,
-        || {
-            if read_native_document_identity(path)? != base_identity {
-                return Err(FilePersistenceError::ExternalConflict);
-            }
-            check_work_recovery_identity(path, expected_recovery)
-        },
-        sync_parent_directory,
-    )?;
-    Ok(FileIdentity::from_bytes(&bytes))
-}
-
 pub fn clear_work_recovery(
     path: &Path,
     expected: Option<FileIdentity>,
@@ -4231,12 +4194,18 @@ mod tests {
 
         let recovery_path = path.clone();
         let recovery_compared_tx = compared_tx.clone();
-        let dirty = save_document_store(&dirty, &container_data).unwrap();
         let recovery = std::thread::spawn(move || {
-            write_work_recovery(&recovery_path, &dirty, base_identity, None, || {
-                recovery_compared_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-            })
+            work_recovery::write_work_recovery(
+                &recovery_path,
+                &dirty,
+                &container_data,
+                base_identity,
+                None,
+                || {
+                    recovery_compared_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+            )
         });
         compared_rx.recv().unwrap();
 

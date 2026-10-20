@@ -6,7 +6,7 @@ use std::path::Path;
 use super::{
     ContainerData, FileIdentity, FilePersistenceError, PersistenceError, publish_bytes,
     save_container, save_document_store, save_document_store_current_snapshot,
-    sync_parent_directory, write_work_recovery,
+    sync_parent_directory, work_recovery::write_work_recovery,
 };
 use crate::document::{DocumentStore, Snapshot};
 
@@ -112,22 +112,10 @@ pub fn publish_work_recovery(
     base_identity: FileIdentity,
     expected_recovery: Option<FileIdentity>,
 ) -> Result<FileIdentity, FilePersistenceError> {
-    if let Some(expected) = expected_recovery
-        && let Some(identity) = super::work_recovery::append_work_recovery_step(
-            path,
-            document,
-            container,
-            base_identity,
-            expected,
-        )?
-    {
-        return Ok(identity);
-    }
-    let prepared = prepare_document(document, container, HistoryPolicy::KeepIfFits)
-        .map_err(FilePersistenceError::Format)?;
     write_work_recovery(
         path,
-        prepared.bytes(),
+        document,
+        container,
         base_identity,
         expected_recovery,
         || {},

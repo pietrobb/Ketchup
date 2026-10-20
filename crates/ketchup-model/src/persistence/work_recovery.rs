@@ -82,36 +82,71 @@ fn read_observed_work_recovery(
     }
 }
 
-/// Appends the step that brings the checkpoint of `path`, observed as
-/// `expected`, to `document` (idea #49). `None` when the checkpoint must be
-/// written whole. The same four identity checks guard the append as a whole write.
-pub(super) fn append_work_recovery_step(
+/// Writes `document` as the work-recovery checkpoint of the file at `path` (see
+/// [`publish_work_recovery`]). Over the checkpoint it observed as `expected` it
+/// appends only the step to `document` where a step can name it (idea #49), and
+/// otherwise writes the checkpoint whole; the same identity checks guard both.
+pub(super) fn write_work_recovery(
     path: &Path,
     document: &DocumentStore,
     container: &ContainerData,
     base_identity: FileIdentity,
-    expected: FileIdentity,
-) -> Result<Option<FileIdentity>, FilePersistenceError> {
+    expected: Option<FileIdentity>,
+    after_compare: impl FnOnce(),
+) -> Result<FileIdentity, FilePersistenceError> {
     let _lock = lock_saves(path)?;
     if read_native_document_identity(path)? != base_identity {
         return Err(FilePersistenceError::ExternalConflict);
     }
-    let Some(observed) = read_observed_work_recovery(path, Some(expected))? else {
-        return Err(FilePersistenceError::ExternalConflict);
+    let observed = read_observed_work_recovery(path, expected)?;
+    after_compare();
+    let unchanged = || {
+        if read_native_document_identity(path)? != base_identity {
+            return Err(FilePersistenceError::ExternalConflict);
+        }
+        check_work_recovery_identity(path, expected)
     };
-    let Some(step) =
-        work_recovery_steps::plan_step(&observed.bytes, document, container, base_identity)
-    else {
-        return Ok(None);
-    };
-    if read_native_document_identity(path)? != base_identity {
-        return Err(FilePersistenceError::ExternalConflict);
+    if let Some(observed) = observed
+        && let Some(step) =
+            work_recovery_steps::plan_step(&observed.bytes, document, container, base_identity)
+    {
+        unchanged()?;
+        return append_step(path, observed, &step);
     }
-    check_work_recovery_identity(path, Some(expected))?;
+    let prepared = prepare_document(document, container, HistoryPolicy::KeepIfFits)
+        .map_err(FilePersistenceError::Format)?;
+    let payload = prepared.bytes();
+    let mut bytes = Vec::with_capacity(WORK_RECOVERY_MAGIC.len() + 2 + 8 + 32 + 8 + payload.len());
+    bytes.extend_from_slice(WORK_RECOVERY_MAGIC);
+    push_u16(&mut bytes, WORK_RECOVERY_SCHEMA);
+    push_u64(&mut bytes, base_identity.byte_len());
+    bytes.extend_from_slice(&base_identity.sha256());
+    push_u64(
+        &mut bytes,
+        u64_len(payload.len()).map_err(FilePersistenceError::Format)?,
+    );
+    bytes.extend_from_slice(payload);
+    write_atomic_after_prepare(
+        &work_recovery_path(path),
+        &bytes,
+        true,
+        unchanged,
+        sync_parent_directory,
+    )?;
+    Ok(FileIdentity::from_bytes(&bytes))
+}
+
+/// Appends `step` to the checkpoint of `path`, which the caller observed and
+/// rechecked under the save lock.
+fn append_step(
+    path: &Path,
+    observed: ObservedWorkRecovery,
+    step: &[u8],
+) -> Result<FileIdentity, FilePersistenceError> {
     let format = FilePersistenceError::Format;
     let mut framed = Vec::with_capacity(8 + step.len());
     push_u64(&mut framed, u64_len(step.len()).map_err(format)?);
-    framed.extend_from_slice(&step);
+    framed.extend_from_slice(step);
     let recovery = work_recovery_path(path);
     let observed_len = u64_len(observed.bytes.len()).map_err(format)?;
     let mut file = fs::OpenOptions::new().write(true).open(&recovery)?;
@@ -139,7 +174,7 @@ pub(super) fn append_work_recovery_step(
         identity,
         error,
     })?;
-    Ok(Some(identity))
+    Ok(identity)
 }
 
 /// Moves a work-recovery checkpoint the open could not use (see
