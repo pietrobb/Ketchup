@@ -894,7 +894,7 @@ fn collision_hulls(graphs: &[ExactBRepGraph], bodies: &[Body]) -> Vec<Option<pie
             local
                 .get(body.graph?)?
                 .as_ref()?
-                .hull(body.occurrence.transform.matrix())
+                .hull(body.occurrence.transform)
         })
         .collect()
 }
@@ -1844,50 +1844,36 @@ mod tests {
         );
     }
 
-    /// What the hulls of a program check answer for parts `a` and `b`, by
-    /// contact area and distance; `None` leaves the pair to the exact check.
-    fn hull_answer(source: &str, a: &str, b: &str, exact_gap: bool) -> Option<(f64, Option<f64>)> {
+    /// What the hulls of a program check answer for two parts of [`DRILLED`],
+    /// by contact area and distance; `None` leaves the pair to the exact check.
+    fn hull_answer(pair: [&str; 2], exact_gap: bool) -> Option<(f64, Option<f64>)> {
         let mut session = crate::DocumentSession::new(crate::SessionSettings::default());
-        let applied = session
-            .apply_rule_program(
-                ketchup_model::document::RuleProgramSource {
-                    variants: Default::default(),
-                    file_name: "hulls.star".into(),
-                    source: source.into(),
-                    overrides: BTreeMap::new(),
-                },
-                false,
-            )
-            .unwrap();
-        let snapshot = &applied.snapshot;
-        let hull = |name: &str| {
+        let source = ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "hulls.star".into(),
+            source: DRILLED.into(),
+            overrides: BTreeMap::new(),
+        };
+        let snapshot = session.apply_rule_program(source, false).unwrap().snapshot;
+        let [a, b] = pair.map(|name| {
             let part = snapshot
                 .scene_query()
                 .into_iter()
                 .find(|part| {
-                    crate::rule_program_part_name(snapshot, &part.instance_path).as_deref()
+                    crate::rule_program_part_name(&snapshot, &part.instance_path).as_deref()
                         == Some(name)
                 })
                 .unwrap();
             let definition = snapshot.definition(part.definition_id).unwrap();
-            let graph = ExactBRepGraph::from_snapshot(
-                snapshot,
-                definition.id(),
-                *definition.feature_ids().last().unwrap(),
-            )
-            .unwrap();
+            let feature = *definition.feature_ids().last().unwrap();
+            let graph = ExactBRepGraph::from_snapshot(&snapshot, definition.id(), feature).unwrap();
             pieces::local_pieces(&graph)
                 .unwrap()
-                .hull(part.transform.matrix())
+                .hull(part.transform)
                 .unwrap()
-        };
-        pieces::measure(
-            &hull(a),
-            &hull(b),
-            snapshot.tolerance().linear_mm(),
-            exact_gap,
-        )
-        .map(|(patches, distance)| (patches.iter().map(|p| p.area_mm2).sum(), distance))
+        });
+        pieces::measure(&a, &b, snapshot.tolerance().linear_mm(), exact_gap)
+            .map(|(patches, gap)| (patches.iter().map(|p| p.area_mm2).sum::<f64>().round(), gap))
     }
 
     const DRILLED: &str = "base = box('base', (100, 100, 18))
@@ -1903,29 +1889,21 @@ box('beside', (100, 100, 18), at=(100, 600, 0))
 ";
 
     #[test]
-    fn separated_hulls_are_apart_without_a_distance_unless_the_gap_is_read() {
+    fn hulls_decide_apart_and_bearing_pairs_and_leave_a_face_a_hole_reaches_exact() {
+        // Separated parts are apart without a distance, unless the gap is read.
+        assert_eq!(hull_answer(["base", "apart"], false), Some((0.0, None)));
+        assert_eq!(hull_answer(["base", "apart"], true), None);
+        // The hole of `base` is away from the face `on top` bears on.
         assert_eq!(
-            hull_answer(DRILLED, "base", "apart", false),
-            Some((0.0, None))
+            hull_answer(["base", "on top"], true),
+            Some((10_000.0, Some(0.0)))
         );
-        // A program check reports the clearance, which only OCCT measures.
-        assert_eq!(hull_answer(DRILLED, "base", "apart", true), None);
-    }
-
-    #[test]
-    fn a_board_bears_on_another_when_its_hole_is_away_from_the_bearing_face() {
-        let (area_mm2, distance) = hull_answer(DRILLED, "base", "on top", true).unwrap();
-        assert!((area_mm2 - 10_000.0).abs() < 1e-6, "{area_mm2}");
-        assert_eq!(distance, Some(0.0));
-    }
-
-    #[test]
-    fn a_hole_reaching_the_bearing_face_leaves_the_contact_to_the_exact_check() {
-        assert_eq!(hull_answer(DRILLED, "drilled", "lid", true), None);
-        assert_eq!(hull_answer(DRILLED, "lid", "drilled", true), None);
+        // A hole reaching the bearing face leaves the contact to the exact check.
+        assert_eq!(hull_answer(["drilled", "lid"], true), None);
+        assert_eq!(hull_answer(["lid", "drilled"], true), None);
         // A hole through the board reaches both faces, but not a side.
-        let (area_mm2, _) = hull_answer(DRILLED, "bored", "beside", true).unwrap();
-        assert!((area_mm2 - 1_800.0).abs() < 1e-6, "{area_mm2}");
+        let beside = hull_answer(["bored", "beside"], true).map(|(area, _)| area);
+        assert_eq!(beside, Some(1_800.0));
     }
 
     #[test]

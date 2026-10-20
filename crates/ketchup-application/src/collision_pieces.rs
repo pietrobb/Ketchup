@@ -6,6 +6,7 @@
 //! also measure its touching faces.
 use ketchup_geometry::contact_patch::ContactPatch;
 use ketchup_geometry::linalg::{cross, dot};
+use ketchup_model::document::Transform;
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
     ExactBRepPlanarLoop, ExactBRepPlanarSegment,
@@ -108,23 +109,6 @@ fn base_extrusion(
     }
 }
 
-/// The rotation's columns of a rigid (rotation + translation) placement.
-fn rigid_axes(matrix: &[f64; 16]) -> Option<[[f64; 3]; 3]> {
-    if !matrix.iter().all(|x| x.is_finite()) || matrix[12..] != [0.0, 0.0, 0.0, 1.0] {
-        return None;
-    }
-    let axes = [0, 1, 2].map(|column| [matrix[column], matrix[4 + column], matrix[8 + column]]);
-    for i in 0..3 {
-        for j in 0..3 {
-            let expected = if i == j { 1.0 } else { 0.0 };
-            if (dot(axes[i], axes[j]) - expected).abs() > ROUNDING {
-                return None;
-            }
-        }
-    }
-    Some(axes)
-}
-
 /// A solid's convex profile pieces and the boxes its cuts may remove, in
 /// definition-local coordinates.
 pub(super) struct LocalPieces {
@@ -166,34 +150,30 @@ pub(super) fn local_pieces(graph: &ExactBRepGraph) -> Option<LocalPieces> {
     })
 }
 
-/// `p` placed by `matrix`, translated when `point`.
-fn place(matrix: &[f64; 16], p: [f64; 3], point: bool) -> [f64; 3] {
-    [0, 1, 2].map(|row| {
-        matrix[4 * row] * p[0]
-            + matrix[4 * row + 1] * p[1]
-            + matrix[4 * row + 2] * p[2]
-            + if point { matrix[4 * row + 3] } else { 0.0 }
-    })
+/// The prism between two local faces swept along local `along`, placed.
+fn placed_prism(place: Transform, faces: [Vec<[f64; 3]>; 2], along: [f64; 3]) -> Option<Piece> {
+    let [bottom, top] =
+        faces.map(|face| face.into_iter().map(|p| place.transform_point(p)).collect());
+    Piece::prism(bottom, top, place.transform_vector(along))
 }
 
 impl LocalPieces {
-    pub(super) fn hull(&self, matrix: &[f64; 16]) -> Option<Hull> {
-        let pieces = self.world(matrix)?;
-        let up = place(matrix, [0.0, 0.0, 1.0], false);
+    pub(super) fn hull(&self, transform: Transform) -> Option<Hull> {
+        let pieces = self.world(transform)?;
         let cuts = self.cuts.as_ref().and_then(|cuts| {
             cuts.iter()
                 .map(|[low, high]| {
-                    let rectangle = |z: f64| {
+                    let face = |z| {
                         [
                             [low[0], low[1]],
                             [high[0], low[1]],
                             [high[0], high[1]],
                             [low[0], high[1]],
                         ]
-                        .map(|[x, y]| place(matrix, [x, y, z], true))
+                        .map(|[x, y]| [x, y, z])
                         .to_vec()
                     };
-                    Piece::prism(rectangle(low[2]), rectangle(high[2]), up)
+                    placed_prism(transform, [face(low[2]), face(high[2])], [0.0, 0.0, 1.0])
                 })
                 .collect()
         });
@@ -201,22 +181,17 @@ impl LocalPieces {
     }
 
     /// Rigid placements only; anything else stays exact-only.
-    pub(super) fn world(&self, matrix: &[f64; 16]) -> Option<Vec<Piece>> {
-        rigid_axes(matrix)?;
-        let direction = place(matrix, self.extrusion.direction, false);
-        let [start, end] = self.extrusion.interval;
+    pub(super) fn world(&self, transform: Transform) -> Option<Vec<Piece>> {
+        if !transform.is_rigid() {
+            return None;
+        }
+        let extrusion = &self.extrusion;
         self.polygons
             .iter()
             .map(|polygon| {
-                let bottom = polygon
-                    .iter()
-                    .map(|p| place(matrix, self.extrusion.point(*p, start), true))
-                    .collect::<Vec<_>>();
-                let top = polygon
-                    .iter()
-                    .map(|p| place(matrix, self.extrusion.point(*p, end), true))
-                    .collect::<Vec<_>>();
-                Piece::prism(bottom, top, direction)
+                let face = |t| polygon.iter().map(|p| extrusion.point(*p, t)).collect();
+                let [start, end] = extrusion.interval;
+                placed_prism(transform, [face(start), face(end)], extrusion.direction)
             })
             .collect()
     }
@@ -298,20 +273,15 @@ pub(super) fn measure(
         Some(patches) => [(a, b), (b, a)]
             .iter()
             .all(|(cut, other)| {
-                cut.cuts
-                    .as_ref()
-                    .is_some_and(|cuts| apart(cuts, &other.pieces, CONTACT_FIT_MM))
+                let apart = |c, p| least_overlap(c, [0.0; 3], 0.0, p, CONTACT_FIT_MM).is_none();
+                let cuts = cut.cuts.as_deref();
+                cuts.is_some_and(|cuts| {
+                    cuts.iter()
+                        .all(|c| other.pieces.iter().all(|p| apart(c, p)))
+                })
             })
             .then_some((patches, Some(0.0))),
     }
-}
-
-/// Whether every piece of `a` is farther than `gap_mm` from every piece of `b`.
-fn apart(a: &[Piece], b: &[Piece], gap_mm: f64) -> bool {
-    a.iter().all(|left| {
-        b.iter()
-            .all(|right| least_overlap(left, [0.0; 3], 0.0, right, gap_mm).is_none())
-    })
 }
 
 /// None when two pieces penetrate; otherwise the shared faces by A's outward

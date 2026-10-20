@@ -75,9 +75,9 @@ impl ExactMotionPair {
             return None;
         }
         let sweep = [3, 7, 11].map(|i| end[i] - start[i]);
-        let moving = pieces::local_pieces(&self.moving)?.world(&start)?;
-        let obstacle =
-            pieces::local_pieces(&self.obstacle)?.world(self.obstacle_transform.matrix())?;
+        let moving =
+            pieces::local_pieces(&self.moving)?.world(Transform::from_matrix(start).ok()?)?;
+        let obstacle = pieces::local_pieces(&self.obstacle)?.world(self.obstacle_transform)?;
         Some(pieces::sweep_clear(
             &moving,
             sweep,
