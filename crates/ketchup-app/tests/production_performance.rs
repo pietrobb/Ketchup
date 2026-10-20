@@ -20,7 +20,6 @@ const MEMORY_PROBE_MIN_OBSERVED_BYTES: u64 = MEMORY_PROBE_ALLOCATION_BYTES / 2;
 const MEMORY_PROBE_CHILD_HANG_GUARD: Duration = Duration::from_secs(300);
 const MEMORY_PROBE_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE";
 const MEMORY_PROBE_READY_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE_READY";
-const MEMORY_PROBE_RELEASE_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE_RELEASE";
 
 #[derive(Clone, Copy)]
 struct CorpusEntry {
@@ -265,9 +264,6 @@ fn memory_high_water_probe_child() {
 
     let ready_path =
         PathBuf::from(std::env::var_os(MEMORY_PROBE_READY_ENV).expect("memory probe ready path"));
-    let release_path = PathBuf::from(
-        std::env::var_os(MEMORY_PROBE_RELEASE_ENV).expect("memory probe release path"),
-    );
     let high_water_before = process_memory_high_water_bytes();
     let mut allocation = vec![0_u8; usize::try_from(MEMORY_PROBE_ALLOCATION_BYTES).unwrap()];
     for page in allocation.chunks_mut(4096) {
@@ -285,13 +281,10 @@ fn memory_high_water_probe_child() {
     std::fs::write(&staged_path, high_water_before.to_string())
         .expect("stage memory probe baseline");
     std::fs::rename(&staged_path, &ready_path).expect("publish memory probe readiness");
-    // The parent releases only after its process-tree query, which took over
-    // 30 s under a full local suite; the guard only ends an orphaned child.
-    let deadline = Instant::now() + MEMORY_PROBE_CHILD_HANG_GUARD;
-    while !release_path.is_file() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(release_path.is_file(), "memory probe release timed out");
+    // Held until the parent closes stdin after its process-tree query, however
+    // long that takes; the pipe also closes if the parent exits.
+    std::io::Read::read_to_end(&mut std::io::stdin(), &mut Vec::new())
+        .expect("wait for memory probe release");
     std::hint::black_box(&allocation);
 }
 
@@ -302,7 +295,6 @@ fn memory_high_water_probe_child() {
 fn verify_memory_high_water_observes_child_allocation() {
     let directory = tempfile::tempdir().expect("memory probe directory");
     let ready_path = directory.path().join("ready");
-    let release_path = directory.path().join("release");
     let mut child = Command::new(std::env::current_exe().expect("test executable path"))
         .args([
             "--exact",
@@ -311,7 +303,7 @@ fn verify_memory_high_water_observes_child_allocation() {
         ])
         .env(MEMORY_PROBE_ENV, "1")
         .env(MEMORY_PROBE_READY_ENV, &ready_path)
-        .env(MEMORY_PROBE_RELEASE_ENV, &release_path)
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -335,7 +327,7 @@ fn verify_memory_high_water_observes_child_allocation() {
     let child_in_tree = process_tree_memory_high_waters()
         .into_iter()
         .find_map(|(pid, bytes)| (pid == child_id).then_some(bytes));
-    std::fs::write(&release_path, b"release").expect("release child memory probe");
+    drop(child.stdin.take()); // releases the child
     let output = child
         .wait_with_output()
         .expect("wait for child memory high-water probe");
