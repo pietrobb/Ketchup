@@ -204,13 +204,9 @@ pub(super) fn plan_step(
     let history = encode_history(&written, 0, next_revision_id, kept, HISTORY_BUDGET).ok()?;
     step.extend_from_slice(&history);
     let step = encode_container(BTreeMap::from([(STEP_ENTRY.to_owned(), (true, step))])).ok()?;
-    // The steps stay lighter than the base, and the file the open assembles,
-    // with at least the current revision, fits a native file.
+    // The steps stay lighter than the base.
     let checkpoint_len = observed.len() + 8 + step.len();
-    let current_len = revisions[cursor].encoded().bytes.len();
-    (checkpoint_len - payload.len() <= payload.len()
-        && checkpoint_len + 2 * current_len <= MAX_CONTAINER_BYTES)
-        .then_some(step)
+    (checkpoint_len - payload.len() <= payload.len()).then_some(step)
 }
 
 /// A revision as a checkpoint holds it, with its program JSON.

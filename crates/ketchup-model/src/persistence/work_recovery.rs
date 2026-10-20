@@ -57,16 +57,7 @@ fn read_observed_work_recovery(
             Err(FilePersistenceError::NotARegularFile(path))
         }
         Ok(_) => {
-            let mut file = fs::File::open(path)?;
-            let mut bytes = Vec::new();
-            std::io::Read::by_ref(&mut file)
-                .take(MAX_NATIVE_DOCUMENT_BYTES as u64 + 61)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() > MAX_NATIVE_DOCUMENT_BYTES + 60 {
-                return Err(FilePersistenceError::Format(
-                    PersistenceError::ResourceLimit,
-                ));
-            }
+            let bytes = fs::read(path)?;
             let mut hasher = Sha256::new();
             hasher.update(&bytes);
             let identity = FileIdentity {

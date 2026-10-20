@@ -81,19 +81,16 @@ const HISTORY_PROGRAMS_ENTRY: &str = "the programs of history.bin";
 pub const CURRENT_SCHEMA: u16 = snapshot_codec::SNAPSHOT_FORMAT;
 
 /// Largest serialized document snapshot: the current document or one revision in its
-/// history. A native file is a container of one or more snapshots plus history and
-/// blobs, so it may be larger: [`MAX_NATIVE_DOCUMENT_BYTES`].
+/// history. A native file has no size limit of its own: it is a container whose every
+/// entry must fit in the rest of the file, and its blobs (an underlay's lines, an
+/// imported source) are as large as they are.
 const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_STRING_BYTES: usize = 1024 * 1024;
 const MAX_COLLECTION_ITEMS: u32 = 500_000;
-/// Largest native `.ketchup` file: the container with the current snapshot, revision
-/// history and blobs.
-pub const MAX_NATIVE_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
-const _: () = assert!(MAX_SNAPSHOT_BYTES < MAX_NATIVE_DOCUMENT_BYTES);
-const MAX_CONTAINER_BYTES: usize = MAX_NATIVE_DOCUMENT_BYTES;
 const MAX_CONTAINER_ENTRIES: u32 = 4_096;
 const MAX_CONTAINER_PATH_BYTES: usize = 1_024;
-const MAX_SIDECAR_BYTES: usize = 32 * 1024 * 1024;
+/// Largest `history.bin`, whose revisions also keep [`HISTORY_BUDGET`].
+const MAX_HISTORY_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtensionEntry {
@@ -114,9 +111,6 @@ impl ExtensionEntry {
         let path = path.into();
         validate_namespace(&namespace)?;
         validate_relative_path(&path)?;
-        if bytes.len() > MAX_SIDECAR_BYTES {
-            return Err(PersistenceError::ResourceLimit);
-        }
         Ok(Self {
             namespace,
             path,
@@ -157,9 +151,6 @@ pub struct ContainerData {
 
 impl ContainerData {
     pub fn insert_blob(&mut self, bytes: Vec<u8>) -> Result<String, PersistenceError> {
-        if bytes.len() > MAX_SIDECAR_BYTES {
-            return Err(PersistenceError::ResourceLimit);
-        }
         let hash = crate::graph::sha256_hex(&bytes);
         Arc::make_mut(&mut self.blobs)
             .entry(hash.clone())
@@ -921,19 +912,20 @@ fn count_items(items: u64, more: usize, budget: u32) -> Result<u64, PersistenceE
     Ok(total)
 }
 
-/// Largest entry a container holds under `path`. Saving and opening check the same
-/// limit, so a file that saves also opens.
-fn container_entry_limit(path: &str) -> usize {
-    if path == "document.bin" {
-        MAX_SNAPSHOT_BYTES
-    } else {
-        MAX_SIDECAR_BYTES
+/// Largest entry a container holds under `path`, if any: blobs and extensions have
+/// none. Saving and opening check the same limit, so a file that saves also opens.
+fn container_entry_limit(path: &str) -> Option<usize> {
+    match path {
+        "document.bin" => Some(MAX_SNAPSHOT_BYTES),
+        "history.bin" => Some(MAX_HISTORY_BYTES),
+        _ => None,
     }
 }
 
 fn check_entry_size(path: &str, bytes: usize) -> Result<(), PersistenceError> {
-    let limit = container_entry_limit(path);
-    if bytes > limit {
+    if let Some(limit) = container_entry_limit(path)
+        && bytes > limit
+    {
         return Err(PersistenceError::TooLarge {
             entry: path.to_owned(),
             bytes: bytes as u64,
@@ -1113,13 +1105,6 @@ fn encode_container(
         push_u64(&mut encoded, u64_len(bytes.len())?);
         encoded.extend_from_slice(&crate::graph::sha256_bytes(&bytes));
         encoded.extend_from_slice(&bytes);
-        if encoded.len() > MAX_CONTAINER_BYTES {
-            return Err(PersistenceError::TooLarge {
-                entry: "the document file".to_owned(),
-                bytes: encoded.len() as u64,
-                limit: MAX_CONTAINER_BYTES as u64,
-            });
-        }
     }
     Ok(encoded)
 }
@@ -1231,22 +1216,7 @@ fn bounded_regular_file_identity(
 }
 
 pub fn read_native_document_file(path: impl AsRef<Path>) -> Result<Vec<u8>, FilePersistenceError> {
-    let path = path.as_ref();
-    let file = fs::File::open(path)?;
-    if file.metadata()?.len() > MAX_NATIVE_DOCUMENT_BYTES as u64 {
-        return Err(FilePersistenceError::Format(
-            PersistenceError::ResourceLimit,
-        ));
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_NATIVE_DOCUMENT_BYTES {
-        return Err(FilePersistenceError::Format(
-            PersistenceError::ResourceLimit,
-        ));
-    }
-    Ok(bytes)
+    Ok(fs::read(path)?)
 }
 
 pub fn read_native_document_identity(
@@ -1400,13 +1370,8 @@ fn clear_work_recovery_after_compare(
     let Some(expected) = expected else {
         return Ok(false);
     };
-    remove_regular_file_if_unchanged_after_check(
-        &recovery_path,
-        expected,
-        MAX_NATIVE_DOCUMENT_BYTES as u64 + 60,
-        after_compare,
-    )
-    .map_err(FilePersistenceError::Io)
+    remove_regular_file_if_unchanged_after_check(&recovery_path, expected, u64::MAX, after_compare)
+        .map_err(FilePersistenceError::Io)
 }
 
 fn recovery_path(path: &Path) -> PathBuf {
@@ -1443,8 +1408,6 @@ enum WorkRecoveryRead {
 /// Why a work-recovery checkpoint beside a file was not opened.
 #[derive(Debug)]
 enum UnusableWorkRecovery {
-    /// Larger than any checkpoint this version writes.
-    TooLarge,
     /// Not a checkpoint format this version reads.
     UnknownFormat,
     /// Made from another version of the file than the one on disk.
@@ -1460,9 +1423,6 @@ enum UnusableWorkRecovery {
 impl fmt::Display for UnusableWorkRecovery {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TooLarge => {
-                formatter.write_str("the checkpoint is larger than any this version writes")
-            }
             Self::UnknownFormat => {
                 formatter.write_str("it is not a work-recovery checkpoint this version reads")
             }
@@ -1490,17 +1450,8 @@ fn try_load_work_recovery(
         Err(error) => return Ok(Unusable(UnusableWorkRecovery::Unreadable(error))),
     };
     let damaged = || Unusable(UnusableWorkRecovery::Damaged);
-    let wrapper_limit = MAX_NATIVE_DOCUMENT_BYTES as u64 + 60;
-    if file.metadata()?.len() > wrapper_limit {
-        return Ok(Unusable(UnusableWorkRecovery::TooLarge));
-    }
     let mut bytes = Vec::new();
-    std::io::Read::by_ref(&mut file)
-        .take(wrapper_limit + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > wrapper_limit {
-        return Ok(Unusable(UnusableWorkRecovery::TooLarge));
-    }
+    file.read_to_end(&mut bytes)?;
     let mut reader = Reader::new(&bytes);
     if reader.take(WORK_RECOVERY_MAGIC.len()).ok() != Some(WORK_RECOVERY_MAGIC) {
         return Ok(Unusable(UnusableWorkRecovery::UnknownFormat));
@@ -1528,9 +1479,6 @@ fn try_load_work_recovery(
     else {
         return Ok(damaged());
     };
-    if payload_len > MAX_NATIVE_DOCUMENT_BYTES {
-        return Ok(damaged());
-    }
     let Some(payload) = reader.take(payload_len).ok() else {
         return Ok(damaged());
     };
@@ -1747,9 +1695,6 @@ struct ContainerEntry<'a> {
 /// The entries of a native container whose framing holds, their checksums not
 /// verified: for bytes whose file identity was already checked.
 fn container_directory(bytes: &[u8]) -> Result<Vec<ContainerEntry<'_>>, PersistenceError> {
-    if bytes.len() > MAX_CONTAINER_BYTES {
-        return Err(PersistenceError::ResourceLimit);
-    }
     let mut reader = Reader::new(bytes);
     if reader.take(CONTAINER_MAGIC.len())? != CONTAINER_MAGIC {
         return Err(PersistenceError::InvalidContainerMagic);
@@ -1767,6 +1712,10 @@ fn container_directory(bytes: &[u8]) -> Result<Vec<ContainerEntry<'_>>, Persiste
         let length = usize::try_from(reader.u64()?)
             .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         check_entry_size(&path, length)?;
+        // Every stored length fits in the rest of the file, its checksum first.
+        if length > (bytes.len() - reader.cursor).saturating_sub(32) {
+            return Err(PersistenceError::Truncated);
+        }
         let checksum: [u8; 32] = reader
             .take(32)?
             .try_into()
@@ -2039,7 +1988,7 @@ fn read_history_records<'a>(
     document_bytes: &'a [u8],
     budget: HistoryBudget,
 ) -> Result<ParsedHistory<'a>, PersistenceError> {
-    if bytes.len() > MAX_SIDECAR_BYTES {
+    if bytes.len() > MAX_HISTORY_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
     let mut reader = Reader::with_item_budget(bytes, budget.items);

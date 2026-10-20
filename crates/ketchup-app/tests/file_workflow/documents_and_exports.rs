@@ -897,24 +897,6 @@ fn native_document_inspection_counts_only_visible_modeled_root_occurrences() {
 }
 
 #[test]
-fn native_document_inspection_rejects_an_oversized_sparse_file() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("oversized-inspection.ketchup");
-    std::fs::File::create(&path)
-        .unwrap()
-        .set_len(ketchup_model::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
-        .unwrap();
-
-    let error = ketchup_app::inspect_native_document(&path).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("document exceeds a resource limit"),
-        "{error}"
-    );
-}
-
-#[test]
 fn native_document_inspection_refuses_a_lossy_legacy_file_with_its_audit() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("legacy-inspection.ketchup");
@@ -1008,7 +990,7 @@ fn confirmed_legacy_migration_writes_and_activates_only_a_new_copy() {
 
     std::fs::File::create(&source)
         .unwrap()
-        .set_len(ketchup_model::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .set_len(1024 * 1024)
         .unwrap();
     assert!(
         !shell
@@ -1081,7 +1063,7 @@ fn recovered_migration_review_revalidates_the_recovery_source() {
     assert!(shell.app().has_review_candidate());
     std::fs::File::create(&recovery)
         .unwrap()
-        .set_len(ketchup_model::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .set_len(1024 * 1024)
         .unwrap();
 
     assert!(

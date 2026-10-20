@@ -2591,63 +2591,41 @@ fn stale_session_cleanup_does_not_delete_a_newer_work_recovery_checkpoint() {
     assert!(!work_recovery.exists());
 }
 
+/// A native file has no size limit of its own (an underlay's lines alone may pass the
+/// 64 MiB it once had), but every length it stores must fit in the rest of it.
 #[test]
-fn sparse_native_documents_and_recovery_fail_before_unbounded_reads() {
+fn a_native_file_has_no_size_limit_but_its_stored_lengths_fit_the_rest_of_it() {
+    const BLOB: usize = 65 * 1024 * 1024;
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("oversized.ketchup");
-    let recovery = path.with_extension("ketchup.recovery");
+    let path = directory.path().join("large.ketchup");
     let store = graph_document();
-    let valid =
-        persistence::save_container(&store.current(), &persistence::ContainerData::default())
-            .unwrap();
+    let mut container_data = persistence::ContainerData::default();
+    let hash = container_data.insert_blob(vec![7; BLOB]).unwrap();
+    let bytes = persistence::save_container(&store.current(), &container_data).unwrap();
+    assert!(bytes.len() > BLOB);
+    std::fs::write(&path, &bytes).unwrap();
+    let loaded = persistence::load_file(&path).unwrap();
+    assert_eq!(loaded.container_data().blobs()[&hash].len(), BLOB);
 
-    std::fs::File::create(&path)
+    // The blob's stored length sits just before its checksum, the SHA-256 its name is.
+    let checksum = (0..32)
+        .map(|index| u8::from_str_radix(&hash[2 * index..2 * index + 2], 16).unwrap())
+        .collect::<Vec<_>>();
+    let at = bytes
+        .windows(32)
+        .position(|window| window == checksum.as_slice())
         .unwrap()
-        .set_len(persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
-        .unwrap();
-    std::fs::write(&recovery, &valid).unwrap();
-    assert!(matches!(
-        persistence::load_file(&path),
-        Err(persistence::FilePersistenceError::Format(
-            PersistenceError::ResourceLimit
-        ))
-    ));
-
-    std::fs::write(&path, b"corrupt primary").unwrap();
-    std::fs::File::create(&recovery)
-        .unwrap()
-        .set_len(persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
-        .unwrap();
-    let Err(persistence::FilePersistenceError::BackupUnusable {
-        primary, backup, ..
-    }) = persistence::load_file(&path)
-    else {
-        panic!("an oversized backup must be refused, naming the primary's failure too");
-    };
-    assert!(matches!(
-        *primary,
-        persistence::FilePersistenceError::Format(PersistenceError::InvalidMagic)
-    ));
-    assert!(matches!(
-        *backup,
-        persistence::FilePersistenceError::Format(PersistenceError::ResourceLimit)
-    ));
-
-    let save_path = directory.path().join("oversized-existing.ketchup");
-    std::fs::File::create(&save_path)
-        .unwrap()
-        .set_len(persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
-        .unwrap();
-    assert!(matches!(
-        persistence::save_atomic(&save_path, &store.current()),
-        Err(persistence::FilePersistenceError::Format(
-            PersistenceError::ResourceLimit
-        ))
-    ));
-    assert_eq!(
-        std::fs::metadata(save_path).unwrap().len(),
-        persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1
-    );
+        - 8;
+    let rest = (bytes.len() - at - 8 - 32) as u64;
+    for length in [rest + 1, u64::MAX] {
+        let mut damaged = bytes.clone();
+        damaged[at..at + 8].copy_from_slice(&length.to_le_bytes());
+        assert_eq!(
+            persistence::load(&damaged).err(),
+            Some(PersistenceError::Truncated),
+            "a stored length of {length}"
+        );
+    }
 }
 
 #[test]
