@@ -29,6 +29,8 @@ fn plan_with_report(
 pub(super) const PROGRAM_EXACT_TIMEOUT: Duration = Duration::from_secs(20);
 /// How much longer than its deadline a program request's check is waited for.
 pub(super) const PROGRAM_EXACT_GRACE: Duration = Duration::from_secs(5);
+/// After this an apply answers incomplete; its check finishes into the report.
+pub(super) const PROGRAM_EXACT_RUNNING_AFTER: Duration = Duration::from_secs(5);
 
 /// The one deadline of a program request, taken when it starts: its report and
 /// exact check share it, applied or only checked, and it ends early enough to
@@ -94,7 +96,7 @@ pub(super) struct ProgramPlanJob {
 
 pub(super) struct ExactCheckJob {
     id: u64,
-    reply: mpsc::SyncSender<Response>,
+    reply: Option<mpsc::SyncSender<Response>>,
     cancelled: Arc<AtomicBool>,
     worker_cancelled: Arc<AtomicBool>,
     started: Instant,
@@ -207,7 +209,7 @@ impl LiveBridge {
             self.query.invalidate();
         }
         self.observed = Some(stamp.clone());
-        self.program_report = Some((stamp.clone(), report.clone(), "apply_report"));
+        self.program_report = Some((stamp.clone(), report.clone(), "apply_report", None));
         Ok(AppliedProgram {
             edit,
             report,
@@ -389,7 +391,7 @@ impl LiveBridge {
         }
         self.program_check_job = Some(ProgramCheckJob::Checking(Box::new(ExactCheckJob {
             id,
-            reply,
+            reply: Some(reply),
             cancelled,
             worker_cancelled,
             started: Instant::now(),
@@ -466,10 +468,19 @@ impl LiveBridge {
                 job.applied.stamp.clone(),
                 job.applied.report.clone(),
                 "apply_report",
+                Some(exact.clone()),
             ));
-            Self::reply(app, job.id, &job.reply, Ok(job.applied.result(Some(exact))));
+            if let Some(reply) = &job.reply {
+                Self::reply(app, job.id, reply, Ok(job.applied.result(Some(exact))));
+            }
             context.request_repaint();
         } else {
+            if job.started.elapsed() >= PROGRAM_EXACT_RUNNING_AFTER
+                && let Some(reply) = job.reply.take()
+            {
+                let result = job.applied.result(Some(unfinished("exact_check_running")));
+                Self::reply(app, job.id, &reply, Ok(result));
+            }
             self.program_check_job = Some(ProgramCheckJob::Checking(job));
             context.request_repaint_after(Duration::from_millis(10));
         }

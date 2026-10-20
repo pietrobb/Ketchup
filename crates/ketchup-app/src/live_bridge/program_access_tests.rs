@@ -1,6 +1,6 @@
 use super::*;
 
-fn apply_source(source: &str) -> Request {
+pub(crate) fn apply_source(source: &str) -> Request {
     Request::ApplyProgram {
         expected: None,
         source: source.into(),

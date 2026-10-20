@@ -1113,7 +1113,7 @@ pub(crate) struct LiveBridge {
     next_proposal: u64,
     apply_and_verify_job: Option<ApplyAndVerifyJob>,
     program_check_job: Option<program_check::ProgramCheckJob>,
-    program_report: Option<(Stamp, ketchup_program::Report, &'static str)>,
+    program_report: Option<(Stamp, ketchup_program::Report, &'static str, Option<Value>)>,
     #[cfg(test)]
     apply_and_verify_fault: Option<ApplyAndVerifyFault>,
     batch_jobs: VecDeque<BatchJob>,

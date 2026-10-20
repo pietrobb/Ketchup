@@ -295,7 +295,7 @@ impl LiveBridge {
         let report = run_report(&source, &ketchup_program::CancelToken::default())
             .map_err(|error| failed_because("program_rejected", error))?;
         let page = report_page(&report, section, offset, limit, "program_evaluation");
-        self.program_report = Some((expected, report, "program_evaluation"));
+        self.program_report = Some((expected, report, "program_evaluation", None));
         page
     }
 
@@ -370,10 +370,14 @@ impl LiveBridge {
             )
             .map(ReportPage::Ready);
         }
-        if let Some((stamp, report, basis)) = self.program_report.as_ref()
+        if let Some((stamp, report, basis, exact)) = self.program_report.as_ref()
             && stamp == expected
         {
-            return report_page(report, section, offset, limit, basis).map(ReportPage::Ready);
+            let mut page = report_page(report, section, offset, limit, basis)?;
+            if let Some(exact) = exact {
+                page["exact_collisions"] = exact.clone();
+            }
+            return Ok(ReportPage::Ready(page));
         }
         app.document
             .current_rule_program()
@@ -499,7 +503,7 @@ impl LiveBridge {
                         limit,
                     } = job.page;
                     let page = report_page(&report, section, offset, limit, "program_evaluation");
-                    self.program_report = Some((expected, report, "program_evaluation"));
+                    self.program_report = Some((expected, report, "program_evaluation", None));
                     page
                 }
                 Ok(Err(error)) => Err(failed_because("program_rejected", error)),

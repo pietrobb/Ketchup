@@ -53,7 +53,7 @@ mod dwg_import;
 #[path = "product_integration_tests.rs"]
 mod product_integration;
 #[path = "program_access_tests.rs"]
-mod program_access;
+pub(super) mod program_access;
 #[path = "program_tests.rs"]
 mod program_edit;
 #[test]

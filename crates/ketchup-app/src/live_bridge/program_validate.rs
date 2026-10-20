@@ -211,7 +211,8 @@ impl LiveBridge {
             ValidationOptions::new(app, validators, motion),
         )
         .map(|(value, report)| {
-            self.program_report = Some((app.live_bridge_stamp(), report, "explicit_validation"));
+            self.program_report =
+                Some((app.live_bridge_stamp(), report, "explicit_validation", None));
             value
         })
         .map_err(|error| failed_because("program_rejected", error))
@@ -323,7 +324,7 @@ impl LiveBridge {
                 Ok(result) => result
                     .map(|(value, report)| {
                         self.program_report =
-                            Some((job.before.clone(), report, "explicit_validation"));
+                            Some((job.before.clone(), report, "explicit_validation", None));
                         value
                     })
                     .map_err(|error| failed_because("program_rejected", error)),
