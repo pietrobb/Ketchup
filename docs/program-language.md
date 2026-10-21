@@ -243,8 +243,10 @@ report. Valid cuboid through cuts use canonical ThroughAll geometry and retain t
 intent in neutral manufacturing output after Save/Open. Too-short through cuts keep
 the requested depth as boolean geometry and report an issue; they cannot masquerade
 as approved blind machining. Later/non-cuboid bores remain boolean operations, not
-inferred machine drilling. BTLx/HOMAG export of through cuts is currently unsupported
-and rejected rather than emitting an unverified machine cycle.
+inferred machine drilling. BTLx drills a through hole, or a blind one that reaches the
+far face, with `DepthLimited` `no` and the depth at which its axis leaves the stock,
+never the padded cutter. woodWOP (HOMAG) export of through cuts is unsupported and
+rejected rather than emitting an unverified machine cycle.
 
 Joint fastener centres are anchored to the first endpoint when that part is moved or
 rotated after the joint declaration. Moving the second endpoint does not move them

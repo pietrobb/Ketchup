@@ -92,7 +92,8 @@ const UNDRILLED_PIN_HOLE: &str = "it takes only the machining modelled in the pa
      or export a woodWOP program or the production job, which drill the joint's holes";
 const THROUGH_HOLE: &str = "it drills only holes with a depth that stops inside the part, and a \
      through-all hole has no machine depth, only the Boolean cutter that runs past the part; export \
-     the production job or the drawing, which carry the hole as through-all";
+     BTLx, which drills it through the stock, or the production job or the drawing, which carry \
+     the hole as through-all";
 const WOODWOP_PROFILE_WITHOUT_TOOL: &str =
     "a profile cut is milled as a vertical pocket; choose the vertical pocket tool number";
 const WOODWOP_OTHER_CUT: &str =
@@ -110,6 +111,7 @@ pub fn carriage(format: ShopFormat, element: &ShopElement) -> Carriage {
         | (ShopFormat::Drawing, _)
         | (ShopFormat::ProductionJob | ShopFormat::Btlx, ShopElement::Operation(_))
         | (ShopFormat::ProductionJob, ShopElement::Thread(_) | ShopElement::ThroughHole)
+        | (ShopFormat::Btlx, ShopElement::ThroughHole)
         | (ShopFormat::Woodwop { .. }, ShopElement::Operation(Kind::Stock | Kind::CircularDrill))
         | (
             ShopFormat::Woodwop {
@@ -118,9 +120,7 @@ pub fn carriage(format: ShopFormat, element: &ShopElement) -> Carriage {
             ShopElement::Operation(Kind::ProfileCut),
         ) => Carriage::Carries,
         (_, ShopElement::MirroredCopy) => Carriage::Refuses(MIRRORED_COPY),
-        (ShopFormat::Btlx | ShopFormat::Woodwop { .. }, ShopElement::ThroughHole) => {
-            Carriage::Refuses(THROUGH_HOLE)
-        }
+        (ShopFormat::Woodwop { .. }, ShopElement::ThroughHole) => Carriage::Refuses(THROUGH_HOLE),
         (ShopFormat::Btlx, ShopElement::Thread(_)) => Carriage::Loses(BTLX_THREAD_LOSS),
         (ShopFormat::Woodwop { .. }, ShopElement::Thread(_)) => Carriage::Refuses(WOODWOP_THREAD),
         (ShopFormat::Woodwop { .. }, ShopElement::Operation(Kind::ProfileCut)) => {
@@ -285,11 +285,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_job_and_the_drawing_carry_a_through_all_hole() {
+    fn only_woodwop_refuses_a_through_all_hole() {
         for (format, carried) in [
             (ShopFormat::Drawing, true),
             (ShopFormat::ProductionJob, true),
-            (ShopFormat::Btlx, false),
+            (ShopFormat::Btlx, true),
             (
                 ShopFormat::Woodwop {
                     vertical_pocket_tool: true,

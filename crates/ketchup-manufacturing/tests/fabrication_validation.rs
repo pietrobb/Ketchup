@@ -2464,14 +2464,33 @@ fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_mac
         let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
         assert!(drawing.contains("through-all (Boolean cutter interval, not machine depth)"));
         assert_eq!(projection.production_job(&snapshot, &[]).err(), None);
+        // BTLx drills the hole through the 1000 mm the bore runs in the stock,
+        // not the padded cutter (review 2026-10-19 MF-17). The through cut
+        // enters the end the blind drilling leaves by.
+        let btlx = projection.btlx_2_3_1_export(&snapshot).unwrap();
+        let blind_golden = include_str!("fixtures/btlx/circular-drilling-2.3.1.btlx");
+        assert_eq!(
+            String::from_utf8(btlx.clone()).unwrap(),
+            blind_golden
+                .replace(
+                    "<ReferencePoint X=\"1000\" Y=\"0\" Z=\"0\"/>",
+                    "<ReferencePoint X=\"0\" Y=\"0\" Z=\"0\"/>"
+                )
+                .replace(
+                    "<YVector X=\"0\" Y=\"0\" Z=\"-1\"/>",
+                    "<YVector X=\"0\" Y=\"0\" Z=\"1\"/>"
+                )
+                .replace("<StartY>-25</StartY>", "<StartY>25</StartY>")
+                .replace(
+                    "<DepthLimited>yes</DepthLimited>",
+                    "<DepthLimited>no</DepthLimited>"
+                )
+                .replace("<Depth>50</Depth>", "<Depth>1000</Depth>")
+        );
         // Review 2026-10-17 P3: the capability table names the through hole
         // the machine files refuse, rather than a generic block.
         let part = "Timber with circular drilling";
         let refused = |format| Some(cannot_carry(format, part, ShopElement::ThroughHole));
-        assert_eq!(
-            projection.btlx_2_3_1_export(&snapshot).err(),
-            refused(ShopFormat::Btlx)
-        );
         let woodwop = ShopFormat::Woodwop {
             vertical_pocket_tool: false,
         };
@@ -2508,15 +2527,8 @@ fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_mac
     }
 }
 
-/// A machine-file export blocked by the named part.
-fn blocked_at<T>(part: &str) -> Result<T, GeneralFabricationError> {
-    Err(GeneralFabricationError::PartExportBlocked {
-        part: part.to_owned(),
-    })
-}
-
 #[test]
-fn blind_drilling_at_or_beyond_stock_depth_cannot_export_after_reopen() {
+fn blind_drilling_at_or_beyond_stock_depth_is_drilled_through_after_reopen() {
     use ketchup_geometry::sketch::{
         CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
     };
@@ -2565,11 +2577,18 @@ fn blind_drilling_at_or_beyond_stock_depth_cannot_export_after_reopen() {
             };
             assert!(!through);
             assert_eq!(end_mm - start_mm, depth.parse::<f64>().unwrap());
-            let export = projection.btlx_2_3_1_export(&snapshot);
+            let export = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap());
             if depth == "50" {
-                assert_btlx_golden(&export.unwrap(), "circular-drilling-2.3.1.btlx");
+                assert_btlx_golden(export.unwrap().as_bytes(), "circular-drilling-2.3.1.btlx");
             } else {
-                assert_eq!(export, blocked_at("Timber with circular drilling"));
+                // Reaching the far face, the hole is drilled through the 1000 mm
+                // stock, however deep the cut (review 2026-10-19 MF-17).
+                let export = export.unwrap();
+                assert!(
+                    export.contains("<DepthLimited>no</DepthLimited>"),
+                    "{export}"
+                );
+                assert!(export.contains("<Depth>1000</Depth>"), "{export}");
             }
         }
     }

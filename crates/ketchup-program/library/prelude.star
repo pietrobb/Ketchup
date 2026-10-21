@@ -590,7 +590,7 @@ def round_thread(radius, name = "thread"):
 #     depth is always explicit; through=True declares an intentional through bore, not a blind bore accidentally breaking out.
 #     Set depth to at least the part span along the drilling direction; a shorter through bore reports an error.
 #     Intent is retained in source, machining reports and canonical through cuts. Shallow through requests keep numeric geometry and report an error, not a silently deeper cut.
-#     Neutral manufacturing output preserves through intent; machine-specific BTLx/HOMAG through export is unsupported and rejected. Later/non-cuboid bores remain boolean cuts, not inferred machine drilling.
+#     Neutral manufacturing output preserves through intent; BTLx drills it through the stock (DepthLimited no); woodWOP/HOMAG through export is unsupported and rejected. Later/non-cuboid bores remain boolean cuts, not inferred machine drilling.
 #     On a round face at=(angle in degrees, v): a radial hole, see face(); keep 3 mm between opposite bores (report warns below 3 mm, errors when they meet).
 #   pocket(part, face, rect=(u_min, v_min, u_max, v_max), depth=, id=)
 #   pocket_shape(part, face, profile, depth, name=)  -> part: any closed

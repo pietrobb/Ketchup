@@ -212,10 +212,9 @@ fn detached_btlx_projection(
 }
 
 #[test]
-fn blind_depth_btlx_export_stays_fail_closed_after_detach_and_reopen() {
+fn blind_depth_btlx_export_drills_through_only_the_stock_after_detach_and_reopen() {
     use ketchup_manufacturing::fabrication::{
-        FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralMachiningGeometry,
-        TIMBER_MEMBER_ROLE_V1,
+        FABRICATION_ROLE_DIMENSION_V1, GeneralMachiningGeometry, TIMBER_MEMBER_ROLE_V1,
     };
     use ketchup_model::document::{
         CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
@@ -223,8 +222,9 @@ fn blind_depth_btlx_export_stays_fail_closed_after_detach_and_reopen() {
     };
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
-    // Equal depth and overdepth must both fail; opposite entry and world rotation
-    // must not bypass the local stock check. A valid blind hole still exports.
+    // Equal depth and overdepth are both drilled through the local stock, never
+    // deeper; opposite entry and world rotation must not bypass the local stock
+    // check. A valid blind hole still exports with its depth.
     for (face, depth) in [("z+", 12.0), ("z+", 18.0), ("z+", 22.0), ("z-", 22.0)] {
         let mut session = DocumentSession::default();
         let applied = session
@@ -288,18 +288,15 @@ fn blind_depth_btlx_export_stays_fail_closed_after_detach_and_reopen() {
             };
             assert!(!through);
             assert_eq!(end_mm - start_mm, depth);
-            let output = projection.btlx_2_3_1_export(&snapshot);
+            let xml = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+            assert!(xml.contains("<Drilling "), "{xml}");
             if depth < 18.0 {
-                let xml = String::from_utf8(output.unwrap()).unwrap();
-                assert!(xml.contains("<Drilling "), "{xml}");
+                assert!(xml.contains("<DepthLimited>yes</DepthLimited>"), "{xml}");
                 assert!(xml.contains("<Depth>12</Depth>"), "{xml}");
             } else {
-                assert_eq!(
-                    output,
-                    Err(GeneralFabricationError::PartExportBlocked {
-                        part: "stock".to_owned()
-                    })
-                );
+                // Review 2026-10-19 MF-17: drilled through the 18 mm stock.
+                assert!(xml.contains("<DepthLimited>no</DepthLimited>"), "{xml}");
+                assert!(xml.contains("<Depth>18</Depth>"), "{xml}");
             }
         }
     }

@@ -551,14 +551,41 @@ fn btlx_blind_depth_uses_entry_and_direction_in_stock_coordinates() {
         end_mm: 50.0,
     };
     let dimensions = blank_at_origin([100.0, 100.0, 18.0]);
-    assert_eq!(btlx_drilling(&drill, dimensions).unwrap().depth, "50");
-    for depth in [100.0, 122.0] {
-        let GeneralMachiningGeometry::CircularDrill { end_mm, .. } = &mut drill else {
+    let blind = btlx_drilling(&drill, dimensions).unwrap();
+    assert_eq!((blind.depth.as_str(), blind.depth_limited), ("50", true));
+    // A hole that reaches the far face is drilled through the 100 mm the axis
+    // runs in the stock, however far past it the cut goes (review 2026-10-19
+    // MF-17), and a through-all cutter's padding never becomes the depth.
+    for (depth, through) in [(100.0, false), (122.0, false), (1000.0, true)] {
+        let GeneralMachiningGeometry::CircularDrill {
+            start_mm,
+            end_mm,
+            through: drilled_through,
+            ..
+        } = &mut drill
+        else {
             panic!("expected drill")
         };
+        *start_mm = if through { -500.0 } else { 0.0 };
         *end_mm = depth;
-        assert!(btlx_drilling(&drill, dimensions).is_none());
+        *drilled_through = through;
+        let drilling = btlx_drilling(&drill, dimensions).unwrap();
+        assert_eq!(
+            (drilling.depth.as_str(), drilling.depth_limited),
+            ("100", false)
+        );
+        assert_eq!(drilling.reference_point_mm, blind.reference_point_mm);
     }
+    // A through-all cutter that stops inside the stock is not drilled through.
+    let GeneralMachiningGeometry::CircularDrill { end_mm, .. } = &mut drill else {
+        panic!("expected drill")
+    };
+    *end_mm = 60.0;
+    assert!(btlx_drilling(&drill, dimensions).is_none());
+    let GeneralMachiningGeometry::CircularDrill { through, .. } = &mut drill else {
+        panic!("expected drill")
+    };
+    *through = false;
     let GeneralMachiningGeometry::CircularDrill {
         start_mm, end_mm, ..
     } = &mut drill

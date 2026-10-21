@@ -1482,8 +1482,12 @@ impl BtlxProcessing {
                     },
                 );
                 format!(
-                    "          <Drilling Name=\"{name} ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\">\n{thread}            <StartX>{}</StartX>\n            <StartY>{}</StartY>\n            <Angle>0</Angle>\n            <Inclination>90</Inclination>\n            <DepthLimited>yes</DepthLimited>\n            <Depth>{}</Depth>\n            <Diameter>{}</Diameter>\n          </Drilling>\n",
-                    drilling.start_x, drilling.start_y, drilling.depth, drilling.diameter
+                    "          <Drilling Name=\"{name} ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\">\n{thread}            <StartX>{}</StartX>\n            <StartY>{}</StartY>\n            <Angle>0</Angle>\n            <Inclination>90</Inclination>\n            <DepthLimited>{}</DepthLimited>\n            <Depth>{}</Depth>\n            <Diameter>{}</Diameter>\n          </Drilling>\n",
+                    drilling.start_x,
+                    drilling.start_y,
+                    if drilling.depth_limited { "yes" } else { "no" },
+                    drilling.depth,
+                    drilling.diameter
                 )
             }
             Self::FreeContour(contour) => {
@@ -1534,6 +1538,8 @@ struct BtlxDrilling {
     y_vector: [f64; 3],
     start_x: String,
     start_y: String,
+    /// False when drilled through: `depth` is then where the axis leaves the stock.
+    depth_limited: bool,
     depth: String,
     diameter: String,
     /// BTLx has no tapping processing: the thread goes with the drilling as
@@ -1714,13 +1720,11 @@ fn btlx_edge_saw_contours(
 }
 
 fn btlx_drilling(geometry: &GeneralMachiningGeometry, blank: StockBlank) -> Option<BtlxDrilling> {
-    // Only depth-limited drilling is verified here. ThroughAll's padded Boolean
-    // cutter interval must never become an authorized machine drilling depth.
     let GeneralMachiningGeometry::CircularDrill {
         frame,
         center_mm,
         diameter_mm,
-        through: false,
+        through,
         start_mm,
         end_mm,
     } = geometry
@@ -1732,37 +1736,73 @@ fn btlx_drilling(geometry: &GeneralMachiningGeometry, blank: StockBlank) -> Opti
         || !start_mm.is_finite()
         || !end_mm.is_finite()
         || end_mm <= start_mm
+        || blank
+            .extents_mm
+            .iter()
+            .any(|extent| !extent.is_finite() || *extent <= 0.0)
     {
         return None;
     }
-    let depth_mm = end_mm - start_mm;
     // Check the directed distance to the stock exit, not its smallest dimension
     // or the occurrence's world bounds. This also covers offset/angled frames.
     let tolerance = blank.extents_mm.into_iter().fold(1.0_f64, f64::max) * ROUNDING;
-    let entry_point = blank.local(std::array::from_fn(|axis| {
-        frame.origin_mm[axis]
-            + frame.x_axis[axis] * center_mm[0]
-            + frame.y_axis[axis] * center_mm[1]
-            + frame.normal[axis] * start_mm
-    }));
+    let axis_point = |depth: f64| {
+        blank.local(std::array::from_fn(|axis| {
+            frame.origin_mm[axis]
+                + frame.x_axis[axis] * center_mm[0]
+                + frame.y_axis[axis] * center_mm[1]
+                + frame.normal[axis] * depth
+        }))
+    };
+    // Where the drill axis enters and leaves the stock, along the normal.
+    let at_zero = axis_point(0.0);
+    let (mut stock_entry, mut stock_exit) = (f64::NEG_INFINITY, f64::INFINITY);
     for (axis, extent) in blank.extents_mm.into_iter().enumerate() {
-        let entry = entry_point[axis];
-        let end = entry + frame.normal[axis] * depth_mm;
-        let tip_radius = diameter_mm / 2.0 * frame.x_axis[axis].hypot(frame.y_axis[axis]);
-        if !extent.is_finite()
-            || extent <= 0.0
-            || !entry.is_finite()
-            || !end.is_finite()
-            || entry < -tolerance
-            || entry > extent + tolerance
-            || end < -tolerance
-            || end > extent + tolerance
-            || (frame.normal[axis] > 0.0 && end + tip_radius >= extent - tolerance)
-            || (frame.normal[axis] < 0.0 && end - tip_radius <= tolerance)
-        {
+        let direction = frame.normal[axis];
+        if direction == 0.0 {
+            if !(-tolerance..=extent + tolerance).contains(&at_zero[axis]) {
+                return None;
+            }
+            continue;
+        }
+        let low = -at_zero[axis] / direction;
+        let high = (extent - at_zero[axis]) / direction;
+        stock_entry = stock_entry.max(low.min(high));
+        stock_exit = stock_exit.min(low.max(high));
+    }
+    if !(stock_entry.is_finite() && stock_exit.is_finite() && stock_entry < stock_exit) {
+        return None;
+    }
+    // A hole that reaches the far face is drilled through, from where its axis
+    // enters the stock to where it leaves; ThroughAll's padded Boolean cutter
+    // interval only has to span the stock and never becomes the machine depth.
+    let drilled_through = *through || *end_mm >= stock_exit - tolerance;
+    let (start_mm, depth_mm) = if drilled_through {
+        if *start_mm > stock_entry + tolerance || *end_mm < stock_exit - tolerance {
             return None;
         }
-    }
+        (stock_entry, stock_exit - stock_entry)
+    } else {
+        let depth_mm = end_mm - start_mm;
+        let entry_point = axis_point(*start_mm);
+        for (axis, extent) in blank.extents_mm.into_iter().enumerate() {
+            let entry = entry_point[axis];
+            let end = entry + frame.normal[axis] * depth_mm;
+            let tip_radius = diameter_mm / 2.0 * frame.x_axis[axis].hypot(frame.y_axis[axis]);
+            if !entry.is_finite()
+                || !end.is_finite()
+                || entry < -tolerance
+                || entry > extent + tolerance
+                || end < -tolerance
+                || end > extent + tolerance
+                || (frame.normal[axis] > 0.0 && end + tip_radius >= extent - tolerance)
+                || (frame.normal[axis] < 0.0 && end - tip_radius <= tolerance)
+            {
+                return None;
+            }
+        }
+        (*start_mm, depth_mm)
+    };
     let reference_point_mm = btlx_part_coordinate(blank.local(std::array::from_fn(|axis| {
         frame.origin_mm[axis] + frame.normal[axis] * start_mm
     })));
@@ -1772,6 +1812,7 @@ fn btlx_drilling(geometry: &GeneralMachiningGeometry, blank: StockBlank) -> Opti
         y_vector: btlx_part_coordinate(frame.y_axis),
         start_x: format_btlx_number_in_range(center_mm[0], -100_000.0, 100_000.0)?,
         start_y: format_btlx_number_in_range(center_mm[1], -50_000.0, 50_000.0)?,
+        depth_limited: !drilled_through,
         depth: format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, 50_000.0)?,
         diameter: format_btlx_number_in_range(*diameter_mm, f64::MIN_POSITIVE, 50_000.0)?,
         thread: None,
