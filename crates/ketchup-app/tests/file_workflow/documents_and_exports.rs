@@ -1712,7 +1712,6 @@ fn save_as_asks_before_keeping_the_current_revision_without_a_history_that_does_
         .queue_open(&boundary)
         .queue_save(&fits)
         .queue_save(&saved)
-        .queue_save(&saved)
         .queue_open(&saved)
         .queue_history_truncation_approval(false)
         .queue_history_truncation_approval(true);
@@ -1734,9 +1733,15 @@ fn save_as_asks_before_keeping_the_current_revision_without_a_history_that_does_
     assert_eq!(expected_undo_steps, 2);
     assert!(shell.app().is_dirty());
 
-    // Refused: nothing is written and the history stays.
-    shell.click_menu_command("menu-file", AppCommand::SaveAs);
-    assert!(!saved.exists(), "a refused Save As writes nothing");
+    // Refused: the document's own file keeps its bytes and the history stays.
+    let fits_bytes = std::fs::read(&fits).unwrap();
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert_eq!(
+        std::fs::read(&fits).unwrap(),
+        fits_bytes,
+        "a refused Save writes nothing"
+    );
+    assert!(!saved.exists());
     assert!(shell.app().is_dirty());
     assert_eq!(shell.app().canonical_digest(), expected_digest);
     assert_eq!(shell.app().undo_step_count(), expected_undo_steps);
