@@ -12,6 +12,7 @@ pub(crate) struct FileActivity {
     pub(super) viewer_export: Option<super::viewer_export_activity::ViewerExportTask>,
     pub(super) exchange_export: Option<super::exchange_export::ExchangeExportTask>,
     pub(super) dwg_reading: Option<super::dwg_import::DwgReadTask>,
+    pub(super) exact_import_reading: Option<super::exact_import_activity::ExactImportReadTask>,
     pub(crate) underlay: super::underlay::UnderlayImport,
 }
 
@@ -168,6 +169,7 @@ impl KetchupApp {
             || self.file.activity.viewer_export.is_some()
             || self.file.activity.exchange_export.is_some()
             || self.file.activity.dwg_reading.is_some()
+            || self.file.activity.exact_import_reading.is_some()
             || self.file.activity.underlay.reading.is_some()
         {
             return true;
@@ -212,6 +214,8 @@ impl KetchupApp {
             AppCommand::Open
         } else if self.file.activity.dwg_reading.is_some() {
             AppCommand::ImportDrawingDxf
+        } else if let Some(task) = &self.file.activity.exact_import_reading {
+            task.command()
         } else if self.file.activity.underlay.reading.is_some() {
             AppCommand::ImportDrawingUnderlay
         } else if self.file.activity.viewer_export.is_some() {
@@ -266,6 +270,7 @@ impl KetchupApp {
             self.file.activity.pending = None;
             self.file.activity.opening = None;
             self.cancel_dwg_read();
+            self.cancel_exact_import_read();
             self.cancel_underlay_read();
             self.defer_close_until_saved(context);
             self.defer_close_until_exported(context);
@@ -298,6 +303,7 @@ impl KetchupApp {
             self.file.activity.pending = None;
             self.file.activity.opening = None;
             self.cancel_dwg_read();
+            self.cancel_exact_import_read();
             self.cancel_underlay_read();
             self.cancel_save_preparation();
             self.cancel_viewer_export_preparation();
@@ -323,6 +329,10 @@ impl KetchupApp {
         }
         if self.file.activity.dwg_reading.is_some() {
             self.poll_dwg_read(context);
+            return;
+        }
+        if self.file.activity.exact_import_reading.is_some() {
+            self.poll_exact_import_read(context);
             return;
         }
         if self.file.activity.underlay.reading.is_some() {

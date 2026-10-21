@@ -1,6 +1,7 @@
 //! Imports with review previews (STL, DXF and DWG, STEP, IGES, SketchUp scenes).
 
 use crate::app::dwg_import::drawing_dxf;
+use crate::app::exact_import_activity::{ExactImportEvidence, inspect_exact_import};
 use crate::*;
 use ketchup_model::import::{inspect_sketchup_scene, plan_sketchup_scene_import};
 
@@ -237,41 +238,44 @@ impl KetchupApp {
         read_import_source(ImportFormat::Step, path)
     }
 
-    pub(crate) fn inspect_step_for_review(
+    /// The XDE evidence of `source` read here, the window waiting for it: for
+    /// a client's import, which answers only once it is done. The menu reads it
+    /// on a thread ([`Self::start_exact_import_read`]).
+    fn inspect_exact_import_now(
         &mut self,
-        path: &Path,
-        source_sha256: &[u8; 32],
-    ) -> Result<StepXdeImportEvidence, ImportError> {
+        source: &ImportSourcePlan,
+    ) -> Result<ExactImportEvidence, ImportError> {
         let executable = self
             .exact_worker_executable()
-            .map_err(|error| ImportError::failed(ImportFormat::Step, error))?;
-        let source_sha256 = source_sha256
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let cancelled = AtomicBool::new(false);
-        let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(executable, &cancelled)
-            .map_err(|error| ImportError::failed(ImportFormat::Step, error))?;
-        worker
-            .inspect_step_xde_import_with_cancellation(path, &source_sha256, &cancelled)
-            .map_err(|error| ImportError::failed(ImportFormat::Step, error))
+            .map_err(|error| source.failed(error))?;
+        inspect_exact_import(
+            source.format,
+            &executable,
+            &source.source,
+            &AtomicBool::new(false),
+        )
     }
 
     pub(crate) fn prepare_step_import_preview_plan(
         &mut self,
         source: ImportSourcePlan,
     ) -> Result<StepImportPreviewPlan, ImportError> {
+        match self.inspect_exact_import_now(&source)? {
+            ExactImportEvidence::Step(evidence) => {
+                self.step_import_preview_plan_from(source, evidence)
+            }
+            ExactImportEvidence::Iges(_) => Err(source.failed("the STEP file was read as IGES")),
+        }
+    }
+
+    /// The review of `source` from the `evidence` the exact worker read of it.
+    pub(crate) fn step_import_preview_plan_from(
+        &mut self,
+        source: ImportSourcePlan,
+        evidence: StepXdeImportEvidence,
+    ) -> Result<StepImportPreviewPlan, ImportError> {
         let snapshot = self.document.current();
         let source_name = source.verify_seal(&snapshot)?;
-        let mut temporary = tempfile::Builder::new()
-            .suffix(".step")
-            .tempfile()
-            .map_err(|error| source.failed(error))?;
-        temporary
-            .write_all(&source.source)
-            .and_then(|()| temporary.flush())
-            .map_err(|error| source.failed(error))?;
-        let evidence = self.inspect_step_for_review(temporary.path(), &source.source_sha256)?;
         let batch = plan_step_xde_import(&snapshot, &source.source, source_name, &evidence)
             .map_err(|error| source.failed(error))?;
         let proposal = self
@@ -302,8 +306,11 @@ impl KetchupApp {
             if pending.invalidated {
                 return Err(source.error(ImportFailure::ReviewStale));
             }
+            // The bytes are the reviewed ones, so the worker's evidence of them
+            // stands: confirming does not read the file in XDE again (UI-14).
             source.reread_unchanged()?;
-            if self.prepare_step_import_preview_plan(source.clone())? != pending.plan {
+            let evidence = pending.plan.evidence.clone();
+            if self.step_import_preview_plan_from(source.clone(), evidence)? != pending.plan {
                 return Err(source.error(ImportFailure::ReviewChanged));
             }
             let mut staged_container = self.file.container_data.clone();
@@ -342,30 +349,22 @@ impl KetchupApp {
         &mut self,
         source: ImportSourcePlan,
     ) -> Result<IgesImportPreviewPlan, ImportError> {
+        match self.inspect_exact_import_now(&source)? {
+            ExactImportEvidence::Iges(evidence) => {
+                self.iges_import_preview_plan_from(source, evidence)
+            }
+            ExactImportEvidence::Step(_) => Err(source.failed("the IGES file was read as STEP")),
+        }
+    }
+
+    /// The review of `source` from the `evidence` the exact worker read of it.
+    pub(crate) fn iges_import_preview_plan_from(
+        &mut self,
+        source: ImportSourcePlan,
+        evidence: IgesXdeImportEvidence,
+    ) -> Result<IgesImportPreviewPlan, ImportError> {
         let snapshot = self.document.current();
         let source_name = source.verify_seal(&snapshot)?;
-        let mut temporary = tempfile::Builder::new()
-            .suffix(".iges")
-            .tempfile()
-            .map_err(|error| source.failed(error))?;
-        temporary
-            .write_all(&source.source)
-            .and_then(|()| temporary.flush())
-            .map_err(|error| source.failed(error))?;
-        let executable = self
-            .exact_worker_executable()
-            .map_err(|error| source.failed(error))?;
-        let source_sha256 = source
-            .source_sha256
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let cancelled = AtomicBool::new(false);
-        let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(executable, &cancelled)
-            .map_err(|error| source.failed(error))?;
-        let evidence = worker
-            .inspect_iges_xde_import_with_cancellation(temporary.path(), &source_sha256, &cancelled)
-            .map_err(|error| source.failed(error))?;
         let batch = plan_iges_xde_import(&snapshot, &source.source, source_name, &evidence)
             .map_err(|error| source.failed(error))?;
         let proposal = self
@@ -393,8 +392,10 @@ impl KetchupApp {
             if pending.invalidated {
                 return Err(source.error(ImportFailure::ReviewStale));
             }
+            // As for STEP: the reviewed bytes keep the worker's evidence (UI-14).
             let bytes = source.reread_unchanged()?;
-            if self.prepare_iges_import_preview_plan(source.clone())? != pending.plan {
+            let evidence = pending.plan.evidence.clone();
+            if self.iges_import_preview_plan_from(source.clone(), evidence)? != pending.plan {
                 return Err(source.error(ImportFailure::ReviewChanged));
             }
             let mut staged_container = self.file.container_data.clone();

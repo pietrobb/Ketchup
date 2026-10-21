@@ -910,52 +910,12 @@ impl KetchupApp {
             }
             AppCommand::ImportExactStep => {
                 if let Some(path) = self.choose_step_import_path() {
-                    let result = Self::read_step_source(&path).and_then(|source| {
-                        let source_plan = ImportSourcePlan::seal(
-                            ImportFormat::Step,
-                            path.clone(),
-                            source,
-                            (),
-                            &self.document.current(),
-                        );
-                        let plan = self.prepare_step_import_preview_plan(source_plan)?;
-                        Ok(PendingStepImport {
-                            plan,
-                            invalidated: false,
-                        })
-                    });
-                    match result {
-                        Ok(pending) => self.modal.open(pending),
-                        Err(reason) => {
-                            self.modal.close::<PendingStepImport>();
-                            self.report_import_failure(&path, &reason);
-                        }
-                    }
+                    self.start_exact_import_read(ImportFormat::Step, path);
                 }
             }
             AppCommand::ImportExactIges => {
                 if let Some(path) = self.choose_iges_import_path() {
-                    let result = Self::read_iges_source(&path).and_then(|source| {
-                        let source_plan = ImportSourcePlan::seal(
-                            ImportFormat::Iges,
-                            path.clone(),
-                            source,
-                            (),
-                            &self.document.current(),
-                        );
-                        let plan = self.prepare_iges_import_preview_plan(source_plan)?;
-                        Ok(PendingIgesImport {
-                            plan,
-                            invalidated: false,
-                        })
-                    });
-                    match result {
-                        Ok(pending) => self.modal.open(pending),
-                        Err(reason) => {
-                            self.modal.close::<PendingIgesImport>();
-                            self.report_import_failure(&path, &reason);
-                        }
-                    }
+                    self.start_exact_import_read(ImportFormat::Iges, path);
                 }
             }
             AppCommand::ImportSketchupScene => {

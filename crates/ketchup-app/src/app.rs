@@ -21,6 +21,10 @@ pub(crate) mod dwg_import;
 #[path = "app/dwg_import_tests.rs"]
 mod dwg_import_tests;
 mod exact;
+pub(crate) mod exact_import_activity;
+#[cfg(test)]
+#[path = "app/exact_import_activity_tests.rs"]
+mod exact_import_activity_tests;
 pub(crate) mod exchange_export;
 mod export;
 mod fea_review;

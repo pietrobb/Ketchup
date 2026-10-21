@@ -204,7 +204,7 @@ pub(super) fn through_cut_document() -> DocumentStore {
     document
 }
 
-fn exact_worker_executable() -> PathBuf {
+pub(crate) fn exact_worker_executable() -> PathBuf {
     let executable_name = if cfg!(windows) {
         "ketchup-exact-worker.exe"
     } else {
