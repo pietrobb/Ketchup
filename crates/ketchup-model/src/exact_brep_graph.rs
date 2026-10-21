@@ -552,10 +552,16 @@ pub enum ExactBRepOperation {
         k_factor_bits: u64,
         bends: Vec<ExactBRepSheetMetalBend>,
     },
+    /// The whole source file read as one body, or XDE part
+    /// `source_part_index` of it, read as `source_format`.
     ImportedExact {
         source_sha256: [u8; 32],
         source_byte_len: u64,
         result_fingerprint: String,
+        #[serde(default, skip_serializing_if = "ExactBRepImportedFormat::is_step")]
+        source_format: ExactBRepImportedFormat,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_part_index: Option<u32>,
     },
     RigidTransform {
         target: ExactBRepNodeId,
@@ -567,6 +573,22 @@ pub enum ExactBRepOperation {
         matrix_bits: [u64; 16],
     },
     ThreadGroove(ExactBRepThreadGroove),
+}
+
+/// The exchange format an imported exact source is read as. Absent from the
+/// serialized graph for STEP, so graphs of whole STEP files keep their digest.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ExactBRepImportedFormat {
+    #[default]
+    Step,
+    Iges,
+}
+
+impl ExactBRepImportedFormat {
+    #[must_use]
+    pub fn is_step(&self) -> bool {
+        *self == Self::Step
+    }
 }
 
 /// Cuts a modelled thread into `target`: the closed groove section

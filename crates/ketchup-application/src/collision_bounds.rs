@@ -337,6 +337,8 @@ mod tests {
                 source_sha256: [0; 32],
                 source_byte_len: 1,
                 result_fingerprint: "unknown".into(),
+                source_format: Default::default(),
+                source_part_index: None,
             },
         ] {
             let mut graph = square();

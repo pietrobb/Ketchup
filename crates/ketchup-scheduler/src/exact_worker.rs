@@ -27,11 +27,12 @@ use ketchup_model::cam::CAM_SIMULATION_SCHEMA_V1;
 use ketchup_model::document::Transform;
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepChamferMode, ExactBRepDraft, ExactBRepEdgeFinishKind,
-    ExactBRepGraph, ExactBRepLinearInterval, ExactBRepLoftContinuity, ExactBRepLoftSection,
-    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
-    ExactBRepProfile, ExactBRepProfileFaceReference, ExactBRepShellDirection, ExactBRepSpatialPath,
-    ExactBRepSpatialPathSegment, ExactBRepThreadGroove, ExactBRepTopologyKind,
-    ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
+    ExactBRepGraph, ExactBRepImportedFormat, ExactBRepLinearInterval, ExactBRepLoftContinuity,
+    ExactBRepLoftSection, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
+    ExactBRepPlanarSegment, ExactBRepProfile, ExactBRepProfileFaceReference,
+    ExactBRepShellDirection, ExactBRepSpatialPath, ExactBRepSpatialPathSegment,
+    ExactBRepThreadGroove, ExactBRepTopologyKind, ExactBRepTopologySelector,
+    ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
     exact_brep_planar_rectangle_bounds, exact_sheet_metal_shape,
 };
 use ketchup_model::exact_product::{
@@ -217,12 +218,13 @@ fn verified_exact_brep_graph_sources(
     graph: &ExactBRepGraph,
     supplied: &[SourceFile],
 ) -> Result<Vec<(String, tempfile::NamedTempFile)>, WorkerFailure> {
-    let mut expected = BTreeMap::<String, u64>::new();
+    let mut expected = BTreeMap::<String, (u64, ExactBRepImportedFormat)>::new();
     let mut source_order = Vec::new();
     for node in &graph.nodes {
         let ExactBRepOperation::ImportedExact {
             source_sha256,
             source_byte_len,
+            source_format,
             ..
         } = &node.operation
         else {
@@ -232,12 +234,12 @@ fn verified_exact_brep_graph_sources(
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        if let Some(previous_len) = expected.get(&source_sha256) {
-            if previous_len != source_byte_len {
+        if let Some(previous) = expected.get(&source_sha256) {
+            if *previous != (*source_byte_len, *source_format) {
                 return Err(WorkerFailure::invalid_request());
             }
         } else {
-            expected.insert(source_sha256.clone(), *source_byte_len);
+            expected.insert(source_sha256.clone(), (*source_byte_len, *source_format));
             source_order.push(source_sha256);
         }
     }
@@ -251,8 +253,12 @@ fn verified_exact_brep_graph_sources(
         if source.sha256 != *expected_sha256 {
             return Err(WorkerFailure::invalid_request());
         }
-        let expected_byte_len = expected[expected_sha256];
-        let copy = verified_step_copy(source, "evaluate_exact_brep_graph")?;
+        let (expected_byte_len, format) = expected[expected_sha256];
+        let label = match format {
+            ExactBRepImportedFormat::Step => "STEP",
+            ExactBRepImportedFormat::Iges => "IGES",
+        };
+        let copy = verified_copy(source, label, "evaluate_exact_brep_graph")?;
         if copy
             .as_file()
             .metadata()
@@ -262,7 +268,7 @@ fn verified_exact_brep_graph_sources(
         {
             return Err(backend_failure(
                 "evaluate_exact_brep_graph",
-                "STEP source byte length does not match the exact graph identity",
+                &format!("{label} source byte length does not match the exact graph identity"),
             ));
         }
         sources.push((expected_sha256.clone(), copy));
@@ -975,6 +981,7 @@ fn evaluate_exact_brep_graph(
     let mut outputs = Vec::<ExactOpOutput>::with_capacity(graph.nodes.len());
     let mut face_names = Vec::<Option<Vec<String>>>::with_capacity(graph.nodes.len());
     let mut extrusion_lineage = Vec::<bool>::with_capacity(graph.nodes.len());
+    let mut xde_documents = Vec::<(String, ketchup_exact::StepXdeDocument)>::new();
     for (node_index, node) in graph.nodes.iter().enumerate() {
         let mut produced_face_names = None;
         let output = match &node.operation {
@@ -1450,34 +1457,13 @@ fn evaluate_exact_brep_graph(
                 graph,
                 &exact_sheet_metal_shape(base_mm_bits, *thickness_bits, *k_factor_bits, bends),
             )?,
-            ExactBRepOperation::ImportedExact {
-                source_sha256,
-                result_fingerprint,
-                ..
-            } => {
-                let source_sha256 = source_sha256
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>();
-                let source = imported_sources
-                    .iter()
-                    .find_map(|(digest, source)| {
-                        (digest == &source_sha256).then_some(source.path())
-                    })
-                    .ok_or_else(|| {
-                        exact_brep_graph_error(graph, "imported exact graph source is unavailable")
-                    })?;
-                let mut output = backend.import_step(&source.to_string_lossy())?;
-                if step_import_result_fingerprint(&source_sha256, &output) != *result_fingerprint {
-                    return Err(exact_brep_graph_error(
-                        graph,
-                        "imported exact graph result fingerprint does not match its source",
-                    ));
-                }
-                output.body.result_fingerprint = result_fingerprint.clone();
-                output.input_digest = source_sha256;
-                output
-            }
+            ExactBRepOperation::ImportedExact { .. } => exact_brep_imported_body(
+                backend,
+                graph,
+                &node.operation,
+                imported_sources,
+                &mut xde_documents,
+            )?,
         };
         let extrusion = extrusion_lineage_of(&node.operation, &extrusion_lineage);
         let mut output = output;
@@ -1491,6 +1477,71 @@ fn evaluate_exact_brep_graph(
     outputs
         .pop()
         .ok_or_else(|| exact_brep_graph_error(graph, "graph produced no exact body"))
+}
+
+/// The body an `ImportedExact` node names: its whole source, or one XDE part
+/// of it read as STEP or IGES. Parts of one source read it once per graph,
+/// into `xde_documents`.
+fn exact_brep_imported_body(
+    backend: &ExactBackend,
+    graph: &ExactBRepGraph,
+    operation: &ExactBRepOperation,
+    imported_sources: &[(String, tempfile::NamedTempFile)],
+    xde_documents: &mut Vec<(String, ketchup_exact::StepXdeDocument)>,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let ExactBRepOperation::ImportedExact {
+        source_sha256,
+        result_fingerprint,
+        source_format,
+        source_part_index,
+        ..
+    } = operation
+    else {
+        return Err(exact_brep_graph_error(
+            graph,
+            "node is not an imported body",
+        ));
+    };
+    let source_sha256 = source_sha256
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let source = imported_sources
+        .iter()
+        .find_map(|(digest, source)| (digest == &source_sha256).then_some(source.path()))
+        .ok_or_else(|| exact_brep_graph_error(graph, "imported exact graph source is unavailable"))?
+        .to_string_lossy();
+    let mut output = match (source_format, source_part_index) {
+        (ExactBRepImportedFormat::Step, None) => backend.import_step(&source)?,
+        (ExactBRepImportedFormat::Iges, None) => backend.import_iges(&source)?,
+        (format, Some(part_index)) => {
+            let read = match xde_documents
+                .iter()
+                .position(|(digest, _)| *digest == source_sha256)
+            {
+                Some(position) => position,
+                None => {
+                    let document = match format {
+                        ExactBRepImportedFormat::Step => backend.open_step_xde(&source),
+                        ExactBRepImportedFormat::Iges => backend.open_iges_xde(&source),
+                    }
+                    .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
+                    xde_documents.push((source_sha256.clone(), document));
+                    xde_documents.len() - 1
+                }
+            };
+            xde_documents[read].1.part(*part_index)?
+        }
+    };
+    if step_import_result_fingerprint(&source_sha256, &output) != *result_fingerprint {
+        return Err(exact_brep_graph_error(
+            graph,
+            "imported exact graph result fingerprint does not match its source",
+        ));
+    }
+    output.body.result_fingerprint = result_fingerprint.clone();
+    output.input_digest = source_sha256;
+    Ok(output)
 }
 
 /// Whether a node's body still descends from an extrusion: an extrusion

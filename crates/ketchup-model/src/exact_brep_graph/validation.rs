@@ -1054,17 +1054,23 @@ pub(super) fn valid_operation(
         } => exact_sheet_metal_shape(base_mm_bits, *thickness_bits, *k_factor_bits, bends)
             .validate()
             .is_ok(),
+        ExactBRepOperation::ImportedExact { .. } => valid_imported_exact(operation),
+    }
+}
+
+fn valid_imported_exact(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
         ExactBRepOperation::ImportedExact {
             source_sha256,
             source_byte_len,
             result_fingerprint,
-        } => {
-            source_sha256.iter().any(|byte| *byte != 0)
-                && *source_byte_len > 0
-                && !result_fingerprint.is_empty()
-                && result_fingerprint.len() <= 128
-        }
-    }
+            ..
+        } if source_sha256.iter().any(|byte| *byte != 0)
+            && *source_byte_len > 0
+            && !result_fingerprint.is_empty()
+            && result_fingerprint.len() <= 128
+    )
 }
 
 pub(super) fn digest(bytes: &[u8]) -> String {

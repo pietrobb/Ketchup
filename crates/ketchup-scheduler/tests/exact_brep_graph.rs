@@ -492,5 +492,6 @@ fn generated_boolean_document(
 }
 
 mod exchange_booleans_and_lofts;
+mod imported_parts;
 mod sketch_sweeps_and_drafts;
 mod surfaces_offsets_and_finishes;

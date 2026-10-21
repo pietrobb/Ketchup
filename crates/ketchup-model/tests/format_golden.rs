@@ -111,6 +111,8 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: profile_edges",
     "exact_brep_graph.rs: profile_faces",
     "exact_brep_graph.rs: segment_entity_ids",
+    "exact_brep_graph.rs: source_format",
+    "exact_brep_graph.rs: source_part_index",
     "exact_brep_graph.rs: tolerance",
     "exact_brep_graph.rs: tolerance",
     "exact_brep_graph.rs: tool_name",

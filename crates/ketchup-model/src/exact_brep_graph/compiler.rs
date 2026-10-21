@@ -103,6 +103,31 @@ impl<'a> GraphCompiler<'a> {
             .ok_or(ExactBRepGraphError::InvalidDependencyGraph)
     }
 
+    /// An imported body keeps which XDE part of its source it is and the
+    /// format its receipt read the source as (review 2026-10-19 EX-13).
+    fn imported_operation(
+        &self,
+        feature_id: FeatureId,
+        spec: &crate::document::ImportedExactBodySpec,
+    ) -> Result<ExactBRepOperation, ExactBRepGraphError> {
+        let source_format = match self
+            .snapshot
+            .import_receipt(spec.import_id)
+            .map(crate::import::ImportReceipt::format)
+        {
+            Some(crate::import::ImportFormat::Step) => ExactBRepImportedFormat::Step,
+            Some(crate::import::ImportFormat::Iges) => ExactBRepImportedFormat::Iges,
+            _ => return Err(ExactBRepGraphError::UnsupportedFeature(feature_id)),
+        };
+        Ok(ExactBRepOperation::ImportedExact {
+            source_sha256: spec.source_sha256,
+            source_byte_len: spec.source_byte_len,
+            result_fingerprint: spec.result_fingerprint.clone(),
+            source_format,
+            source_part_index: spec.source_part_index,
+        })
+    }
+
     pub(super) fn compile_node(
         &mut self,
         feature_id: FeatureId,
@@ -635,11 +660,7 @@ impl<'a> GraphCompiler<'a> {
                     })
                     .collect::<Result<Vec<_>, ExactBRepGraphError>>()?,
             },
-            FeatureKind::ImportedExactBody(spec) => ExactBRepOperation::ImportedExact {
-                source_sha256: spec.source_sha256,
-                source_byte_len: spec.source_byte_len,
-                result_fingerprint: spec.result_fingerprint.clone(),
-            },
+            FeatureKind::ImportedExactBody(spec) => self.imported_operation(feature_id, spec)?,
             FeatureKind::RigidTransform { target, .. } | FeatureKind::Scale { target, .. } => {
                 transform_operation(feature_id, feature.kind(), self.body_id(*target)?)?
             }
