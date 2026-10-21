@@ -298,10 +298,7 @@ impl PairSources {
             .total_bytes
             .checked_add(expected_len)
             .ok_or_else(invalid)?;
-        if source.len() as u64 != expected_len
-            || expected_len > MAX_STEP_SOURCE_BYTES
-            || total > MAX_EXACT_PAIR_SOURCE_BYTES
-        {
+        if source.len() as u64 != expected_len || total > MAX_EXACT_PAIR_SOURCE_BYTES {
             return Err(invalid());
         }
         // Hash once per distinct source, with cancellation on both sides of the
@@ -442,7 +439,12 @@ mod tests {
         );
         assert!(
             staged
-                .stage(&hash, MAX_STEP_SOURCE_BYTES + 1, &blobs, &NEVER_CANCELLED)
+                .stage(
+                    &hash,
+                    MAX_EXACT_PAIR_SOURCE_BYTES + 1,
+                    &blobs,
+                    &NEVER_CANCELLED
+                )
                 .is_err()
         );
         assert!(staged.files.is_empty());

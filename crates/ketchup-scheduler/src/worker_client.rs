@@ -583,7 +583,7 @@ impl ExactWorkerClient {
         }
         self.read_bounded_output(
             output_path,
-            MAX_STEP_SOURCE_BYTES,
+            MAX_EXACT_EXPORT_BYTES,
             "exact worker IGES output exceeds the bounded 32 MiB envelope",
         )
     }
@@ -616,7 +616,7 @@ impl ExactWorkerClient {
         };
         let bytes = self.read_bounded_output(
             output_path,
-            MAX_STEP_SOURCE_BYTES,
+            MAX_EXACT_EXPORT_BYTES,
             "exact worker STEP output exceeds the bounded 32 MiB envelope",
         )?;
         if sha256_hex(&bytes) != sha256 {
@@ -655,7 +655,7 @@ impl ExactWorkerClient {
         };
         let bytes = self.read_bounded_output(
             path,
-            MAX_STEP_SOURCE_BYTES,
+            MAX_EXACT_EXPORT_BYTES,
             "exact worker STEP output exceeds the bounded 32 MiB envelope",
         )?;
         if sha256_hex(&bytes) != sha256 {

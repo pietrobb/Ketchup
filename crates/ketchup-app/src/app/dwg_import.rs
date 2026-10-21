@@ -38,7 +38,7 @@ pub(crate) fn read_dwg(
         return Ok(Arc::clone(drawing));
     }
     let max_dxf_bytes =
-        usize::try_from(ImportFormat::Dxf.source_limit_bytes()).unwrap_or(usize::MAX);
+        usize::try_from(ketchup_model::import::MAX_DXF_SOURCE_BYTES).unwrap_or(usize::MAX);
     let drawing = Arc::new(
         ketchup_application::program_isolation::convert_dwg(source, max_dxf_bytes, cancel)
             .map_err(|error| ImportError::failed(ImportFormat::Dxf, error))?,

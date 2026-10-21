@@ -19,7 +19,6 @@ use crate::document::{
 pub const SKETCHUP_SCENE_SCHEMA_V1: &str = "ketchup.sketchup-scene.v1";
 pub const SKETCHUP_SCENE_PARSER_ID: &str = "ketchup-sketchup-scene";
 pub const SKETCHUP_SCENE_PARSER_VERSION: &str = "1";
-pub const MAX_SKETCHUP_SCENE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_DEFINITIONS: usize = 128;
 const MAX_INSTANCES: usize = 512;
 const MAX_TOTAL_VERTICES: usize = 200_000;
@@ -240,7 +239,6 @@ struct MetadataFile {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SketchupSceneImportError {
     Empty,
-    SourceTooLarge,
     InvalidUtf8(std::str::Utf8Error),
     InvalidJson,
     UnsupportedSchema,
@@ -265,7 +263,6 @@ impl fmt::Display for SketchupSceneImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Empty => "SketchUp scene package is empty",
-            Self::SourceTooLarge => "SketchUp scene package exceeds the bounded 32 MiB envelope",
             Self::InvalidUtf8(error) => {
                 return write!(
                     formatter,
@@ -343,9 +340,6 @@ pub fn inspect_sketchup_scene(
 ) -> Result<ParsedSketchupScene, SketchupSceneImportError> {
     if source.is_empty() {
         return Err(SketchupSceneImportError::Empty);
-    }
-    if source.len() as u64 > MAX_SKETCHUP_SCENE_SOURCE_BYTES {
-        return Err(SketchupSceneImportError::SourceTooLarge);
     }
     let text = std::str::from_utf8(source).map_err(SketchupSceneImportError::InvalidUtf8)?;
     let file: SceneFile =

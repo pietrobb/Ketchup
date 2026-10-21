@@ -30,15 +30,16 @@ pub enum ImportFormat {
 }
 
 impl ImportFormat {
-    /// The bounded source envelope every reader of this format enforces before parsing.
-    pub const fn source_limit_bytes(self) -> u64 {
+    /// The source envelope a reader of this format enforces before parsing, if any.
+    /// STEP, IGES, SketchUp scene and GLB sources have none: what a reader allocates is
+    /// bounded by the bytes the source holds and by the format's count limits (vertices,
+    /// triangles, definitions, instances), and OCCT reads STEP and IGES in the exact
+    /// worker, a process of its own.
+    pub const fn source_limit_bytes(self) -> Option<u64> {
         match self {
-            Self::Stl => MAX_STL_SOURCE_BYTES,
-            Self::Dxf => dxf::MAX_DXF_SOURCE_BYTES,
-            Self::Step => MAX_STEP_SOURCE_BYTES,
-            Self::Iges => iges::MAX_IGES_SOURCE_BYTES,
-            Self::SketchupScene => sketchup_scene::MAX_SKETCHUP_SCENE_SOURCE_BYTES,
-            Self::Glb => glb::MAX_GLB_SOURCE_BYTES,
+            Self::Stl => Some(MAX_STL_SOURCE_BYTES),
+            Self::Dxf => Some(dxf::MAX_DXF_SOURCE_BYTES),
+            Self::Step | Self::Iges | Self::SketchupScene | Self::Glb => None,
         }
     }
 }
@@ -264,7 +265,12 @@ impl ImportReceipt {
         if self.schema != IMPORT_RECEIPT_SCHEMA_V1 || self.id.0 == 0 {
             return Err(ImportContractError::InvalidIdentity);
         }
-        if self.source_byte_len == 0 || self.source_byte_len > self.format.source_limit_bytes() {
+        if self.source_byte_len == 0
+            || self
+                .format
+                .source_limit_bytes()
+                .is_some_and(|limit| self.source_byte_len > limit)
+        {
             return Err(ImportContractError::InvalidSource);
         }
         validate_text(&self.source_name)?;
@@ -388,7 +394,6 @@ pub use iges::*;
 pub const STEP_PARSER_ID: &str = "ketchup-occt-step";
 pub const STEP_PARSER_VERSION: &str = "2";
 pub const STEP_XDE_PARSER_VERSION: &str = "3";
-pub const MAX_STEP_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepImportEvidence {
@@ -561,7 +566,6 @@ impl std::error::Error for StepMeshError {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StepImportPlanError {
     Empty,
-    SourceTooLarge,
     InvalidSourceIdentity(ImportContractError),
     MissingOrAmbiguousUnits,
     InvalidWorkerEvidence,
@@ -573,7 +577,6 @@ impl fmt::Display for StepImportPlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Empty => "STEP source is empty",
-            Self::SourceTooLarge => "STEP source exceeds the bounded 32 MiB envelope",
             Self::InvalidSourceIdentity(error) => {
                 return write!(
                     formatter,
@@ -610,9 +613,6 @@ pub fn plan_step_import(
 ) -> Result<CommandBatch, StepImportPlanError> {
     if source.is_empty() {
         return Err(StepImportPlanError::Empty);
-    }
-    if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
-        return Err(StepImportPlanError::SourceTooLarge);
     }
     if evidence.source_sha256 != sha256_bytes(source)
         || evidence.source_byte_len != source.len() as u64
@@ -782,9 +782,6 @@ pub fn plan_step_xde_import(
 ) -> Result<CommandBatch, StepImportPlanError> {
     if source.is_empty() {
         return Err(StepImportPlanError::Empty);
-    }
-    if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
-        return Err(StepImportPlanError::SourceTooLarge);
     }
     if evidence.source_sha256 != sha256_bytes(source)
         || evidence.source_byte_len != source.len() as u64

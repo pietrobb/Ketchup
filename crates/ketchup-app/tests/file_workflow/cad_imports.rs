@@ -1593,7 +1593,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
 }
 
 #[test]
-fn file_import_step_cancel_worker_source_stale_and_oversize_refuse_without_mutation() {
+fn file_import_step_cancel_worker_source_and_stale_refuse_without_mutation() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../corpora/r0/step/self-authored-box.step");
     let original = std::fs::read(&fixture).unwrap();
@@ -1601,7 +1601,6 @@ fn file_import_step_cancel_worker_source_stale_and_oversize_refuse_without_mutat
     let source = directory.path().join("reviewed.step");
     let corrupt = directory.path().join("corrupt.step");
     let unsupported_unit = directory.path().join("unsupported-unit.step");
-    let oversized = directory.path().join("oversized.step");
     let replacement = directory.path().join("replacement.ketchup");
     let unavailable_worker = directory.path().join("unavailable-worker");
     std::fs::write(&source, &original).unwrap();
@@ -1612,10 +1611,6 @@ fn file_import_step_cancel_worker_source_stale_and_oversize_refuse_without_mutat
         .into_bytes();
     assert_ne!(unsupported_source, original);
     std::fs::write(&unsupported_unit, unsupported_source).unwrap();
-    std::fs::File::create(&oversized)
-        .unwrap()
-        .set_len(MAX_STEP_SOURCE_BYTES + 1)
-        .unwrap();
     std::fs::write(&unavailable_worker, b"not an exact worker").unwrap();
     let mut replacement_shell =
         Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&replacement));
@@ -1632,7 +1627,6 @@ fn file_import_step_cancel_worker_source_stale_and_oversize_refuse_without_mutat
         .queue_import(ImportFormat::Step, &source)
         .queue_import(ImportFormat::Step, &source)
         .queue_import(ImportFormat::Step, &source)
-        .queue_import(ImportFormat::Step, &oversized)
         .queue_open(&replacement)
         .always_discard();
     let mut shell = Shell::with_dialogs(script);
@@ -1717,13 +1711,164 @@ fn file_import_step_cancel_worker_source_stale_and_oversize_refuse_without_mutat
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
     assert!(digest_starts_like(&shell, "error-import-step"));
     assert_state_and_history_unchanged(&mut shell, &after_open, &after_open_history);
-
-    let before_oversize = canonical_state(&shell);
-    let before_oversize_history = reachable_history_digests(&mut shell);
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
-    assert!(digest_starts_like(&shell, "error-import-step"));
-    assert_state_and_history_unchanged(&mut shell, &before_oversize, &before_oversize_history);
     assert_eq!(std::fs::read(&source).unwrap(), original);
+}
+
+const OVER_32_MIB: usize = 32 * 1024 * 1024 + 1;
+
+/// Comment lines, which a STEP reader skips, until the file holds at least `len` bytes.
+fn padded_step(source: &[u8], len: usize) -> Vec<u8> {
+    let text = std::str::from_utf8(source).unwrap();
+    let line = format!("/* {} */\n", "padding ".repeat(9));
+    let lines = len.saturating_sub(source.len()).div_ceil(line.len());
+    let padded = text.replacen("DATA;\n", &format!("DATA;\n{}", line.repeat(lines)), 1);
+    assert!(padded.len() >= len);
+    padded.into_bytes()
+}
+
+/// Blank Start-section lines, which carry only the sender's prose, until the file holds at
+/// least `len` bytes; the Terminate line counts them.
+fn padded_iges(source: &[u8], len: usize) -> Vec<u8> {
+    let text = std::str::from_utf8(source).unwrap();
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let section = |line: &str| line.as_bytes().get(72).copied();
+    let starts = text
+        .lines()
+        .filter(|line| section(line) == Some(b'S'))
+        .count();
+    let extra = len
+        .saturating_sub(source.len())
+        .div_ceil(80 + newline.len());
+    let mut padded = String::with_capacity(len + 1024);
+    let mut seen = 0;
+    for line in text.lines() {
+        if section(line) == Some(b'T') {
+            padded.push_str(&format!("S{:07}{}", starts + extra, &line[8..]));
+        } else {
+            padded.push_str(line);
+        }
+        padded.push_str(newline);
+        if section(line) == Some(b'S') {
+            seen += 1;
+            if seen == starts {
+                for number in starts + 1..=starts + extra {
+                    padded.push_str(&format!("{:72}S{number:7}{newline}", ""));
+                }
+            }
+        }
+    }
+    assert!(padded.len() >= len);
+    padded.into_bytes()
+}
+
+/// Spaces at the end of the JSON chunk, which the glTF JSON allows, until the file holds at
+/// least `len` bytes; the chunk and file lengths in the header grow with them.
+fn padded_glb(source: &[u8], len: usize) -> Vec<u8> {
+    let read = |at: usize| u32::from_le_bytes(source[at..at + 4].try_into().unwrap()) as usize;
+    let json_len = read(12);
+    let extra = len.saturating_sub(source.len()).next_multiple_of(4);
+    let mut padded = Vec::with_capacity(source.len() + extra);
+    padded.extend_from_slice(&source[..20 + json_len]);
+    padded.resize(20 + json_len + extra, b' ');
+    padded.extend_from_slice(&source[20 + json_len..]);
+    let total = u32::try_from(padded.len()).unwrap();
+    padded[8..12].copy_from_slice(&total.to_le_bytes());
+    let json = u32::try_from(json_len + extra).unwrap();
+    padded[12..16].copy_from_slice(&json.to_le_bytes());
+    assert!(padded.len() >= len);
+    padded
+}
+
+/// STEP, IGES, SketchUp scene and GLB sources have no size limit of their own: each, padded
+/// past 32 MiB with what its format skips, imports as one Undo step whose receipt keeps the
+/// whole length, and the document saves and opens with all four.
+#[test]
+fn step_iges_sketchup_scene_and_glb_sources_over_32_mib_import_save_and_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let step_fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let small_iges = directory.path().join("small.iges");
+    ExactWorkerSupervisor::spawn(exact_worker_path())
+        .unwrap()
+        .convert_step_to_iges_with_cancellation(&step_fixture, &small_iges, &AtomicBool::new(false))
+        .unwrap();
+    let glb_fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/blender/garden-studio-colored.glb");
+    let mut scene = valid_sketchup_scene_bridge();
+    scene.resize(scene.len().max(OVER_32_MIB), b' ');
+    let sources = [
+        (
+            ImportFormat::Step,
+            "large.step",
+            padded_step(&std::fs::read(&step_fixture).unwrap(), OVER_32_MIB),
+            AppCommand::ImportExactStep,
+            "dialog-import-step-confirm",
+        ),
+        (
+            ImportFormat::Iges,
+            "large.iges",
+            padded_iges(&std::fs::read(&small_iges).unwrap(), OVER_32_MIB),
+            AppCommand::ImportExactIges,
+            "dialog-import-iges-confirm",
+        ),
+        (
+            ImportFormat::SketchupScene,
+            "large.kscene",
+            scene,
+            AppCommand::ImportSketchupScene,
+            "dialog-import-sketchup-scene-confirm",
+        ),
+        (
+            ImportFormat::Glb,
+            "large.glb",
+            padded_glb(&std::fs::read(&glb_fixture).unwrap(), OVER_32_MIB),
+            AppCommand::ImportBlenderGlb,
+            "dialog-import-glb-confirm",
+        ),
+    ];
+    let document_path = directory.path().join("large-imports.ketchup");
+    let mut script = ScriptedFileDialogs::new();
+    for (format, name, source, ..) in &sources {
+        let path = directory.path().join(name);
+        std::fs::write(&path, source).unwrap();
+        script = script.queue_import(*format, &path);
+    }
+    let script = script
+        .queue_save(&document_path)
+        .queue_open(&document_path)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+
+    for (format, _, source, command, confirm) in &sources {
+        let before = canonical_state(&shell);
+        shell.click_menu_command("menu-file", *command);
+        shell.click_button_label(&shell.catalog().text(confirm));
+        assert_eq!(
+            shell.app().import_receipt_count(),
+            before.import_receipts + 1,
+            "{format:?}: {}",
+            shell.app().action_digest()
+        );
+        assert_eq!(shell.app().undo_step_count(), before.undo_steps + 1);
+        let snapshot = shell.app().document_snapshot();
+        let receipt = snapshot
+            .import_receipts()
+            .find(|receipt| receipt.format() == *format)
+            .unwrap();
+        assert_eq!(receipt.source_byte_len(), source.len() as u64);
+        assert_eq!(receipt.source_sha256(), &sha256_bytes(source));
+    }
+
+    let imported = shell.app().canonical_digest();
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), imported);
+    assert_eq!(shell.app().import_receipt_count(), sources.len());
 }
 
 #[test]

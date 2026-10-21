@@ -304,7 +304,10 @@ fn assert_child_dies_with_its_killed_parent(parent_test: &str) {
 fn oversized_step_xde_worker_output_is_rejected_before_hashing() {
     let (mut worker, writes, responses) = controlled_worker();
     let output = tempfile::NamedTempFile::new().unwrap();
-    output.as_file().set_len(MAX_STEP_SOURCE_BYTES + 1).unwrap();
+    output
+        .as_file()
+        .set_len(MAX_EXACT_EXPORT_BYTES + 1)
+        .unwrap();
     let source_sha256 = "b".repeat(64);
     let result_fingerprint = "fnv1a64:0123456789abcdef";
     let receipt = WorkerReply::Exported(ExportReceipt {
@@ -371,7 +374,10 @@ fn converted_iges_returns_bounded_snapshot_not_later_path_contents() {
 fn oversized_converted_iges_is_rejected_before_returning_bytes() {
     let (mut worker, writes, responses) = controlled_worker();
     let output = tempfile::NamedTempFile::new().unwrap();
-    output.as_file().set_len(MAX_STEP_SOURCE_BYTES + 1).unwrap();
+    output
+        .as_file()
+        .set_len(MAX_EXACT_EXPORT_BYTES + 1)
+        .unwrap();
     let source_sha256 = "b".repeat(64);
     let receipt = WorkerReply::Exported(ExportReceipt {
         result_fingerprint: "fnv1a64:0123456789abcdef".to_owned(),

@@ -18,7 +18,6 @@ use crate::document::{
 
 pub const GLB_PARSER_ID: &str = "ketchup-glb";
 pub const GLB_PARSER_VERSION: &str = "1";
-pub const MAX_GLB_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// glTF is Y-up in metres, Kečup Z-up in millimetres: the Kečup point
 /// `(x, y, z)` mm is the glTF point `(x, z, −y) / 1000`.
@@ -151,7 +150,6 @@ enum AccessorKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GlbImportError {
     Empty,
-    SourceTooLarge,
     InvalidContainer,
     InvalidJson,
     UnsupportedVersion,
@@ -179,7 +177,6 @@ impl fmt::Display for GlbImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Empty => "GLB source is empty",
-            Self::SourceTooLarge => "GLB source exceeds the bounded 32 MiB envelope",
             Self::InvalidContainer => "GLB container or chunk layout is malformed",
             Self::InvalidJson => "GLB JSON document is malformed",
             Self::UnsupportedVersion => "GLB must contain a glTF 2.0 document",
@@ -221,9 +218,6 @@ impl std::error::Error for GlbImportError {}
 pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
     if source.is_empty() {
         return Err(GlbImportError::Empty);
-    }
-    if source.len() as u64 > MAX_GLB_SOURCE_BYTES {
-        return Err(GlbImportError::SourceTooLarge);
     }
     let (json_bytes, binary) = parse_container(source)?;
     let root: Value = serde_json::from_slice(json_bytes)

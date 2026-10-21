@@ -368,12 +368,12 @@ CASTS_AND_ALLOWS = {
     "ketchup-mcp allows": 2,
     "ketchup-mcp casts": 10,
     "ketchup-model allows": 16,
-    "ketchup-model casts": 287,
+    "ketchup-model casts": 281,
     "ketchup-pdm casts": 5,
     "ketchup-program allows": 9,
     "ketchup-program casts": 50,
     "ketchup-scheduler allows": 3,
-    "ketchup-scheduler casts": 80,
+    "ketchup-scheduler casts": 79,
 }
 
 

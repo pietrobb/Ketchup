@@ -1060,7 +1060,7 @@ pub(super) fn valid_operation(
             result_fingerprint,
         } => {
             source_sha256.iter().any(|byte| *byte != 0)
-                && (1..=32 * 1024 * 1024).contains(source_byte_len)
+                && *source_byte_len > 0
                 && !result_fingerprint.is_empty()
                 && result_fingerprint.len() <= 128
         }

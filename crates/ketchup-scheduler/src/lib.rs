@@ -38,9 +38,9 @@ use ketchup_model::exact_product::{
 use ketchup_model::graph::sha256_hex;
 use ketchup_model::import::{
     IgesImportEvidence, IgesXdeImportEvidence, IgesXdeNodeEvidence, IgesXdePartEvidence,
-    ImportLengthUnit, MAX_STEP_MESH_TRIANGLES, MAX_STEP_MESH_VERTICES, MAX_STEP_SOURCE_BYTES,
-    STEP_MESH_MAGIC, StepImportEvidence, StepImportMesh, StepXdeImportEvidence,
-    StepXdeNodeEvidence, StepXdePartEvidence,
+    ImportLengthUnit, MAX_STEP_MESH_TRIANGLES, MAX_STEP_MESH_VERTICES, STEP_MESH_MAGIC,
+    StepImportEvidence, StepImportMesh, StepXdeImportEvidence, StepXdeNodeEvidence,
+    StepXdePartEvidence,
 };
 use process_wrap::std::JobMemoryLimit;
 #[cfg(unix)]
@@ -469,6 +469,9 @@ const MAX_CAM_SIMULATION_PAIR_CHECKS: usize = 16_384;
 const MAX_STEP_ASSEMBLY_NODES: usize = 1_024;
 /// Longest part or node name one STEP assembly export writes, in bytes.
 const MAX_STEP_ASSEMBLY_NAME_BYTES: usize = 4_096;
+/// Largest STEP or IGES file the exact worker writes for an export, read back whole.
+/// Imported sources have no size limit of their own.
+pub const MAX_EXACT_EXPORT_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -908,11 +911,6 @@ impl ExactWorkerSupervisor {
         let source_byte_len = std::fs::metadata(path)
             .map_err(|error| WorkerError::Transport(error.to_string()))?
             .len();
-        if source_byte_len > MAX_STEP_SOURCE_BYTES {
-            return Err(WorkerError::Transport(
-                "STEP source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
         self.client.ensure_not_cancelled(cancelled)?;
         let evidence = match self.client.inspect_step_xde_request_with_cancellation(
             path,
@@ -949,15 +947,6 @@ impl ExactWorkerSupervisor {
         part_index: u32,
         cancelled: &AtomicBool,
     ) -> Result<StepImportEvidence, WorkerError> {
-        if std::fs::metadata(path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?
-            .len()
-            > MAX_STEP_SOURCE_BYTES
-        {
-            return Err(WorkerError::Transport(
-                "STEP source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
         self.client.ensure_not_cancelled(cancelled)?;
         match self.client.inspect_step_part_request_with_cancellation(
             path,
@@ -989,15 +978,6 @@ impl ExactWorkerSupervisor {
         source_sha256: &str,
         cancelled: &AtomicBool,
     ) -> Result<StepImportEvidence, WorkerError> {
-        if std::fs::metadata(path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?
-            .len()
-            > MAX_STEP_SOURCE_BYTES
-        {
-            return Err(WorkerError::Transport(
-                "STEP source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
         self.client.ensure_not_cancelled(cancelled)?;
         match self.client.inspect_step_part_request_with_cancellation(
             path,
@@ -1032,11 +1012,6 @@ impl ExactWorkerSupervisor {
         let source_byte_len = std::fs::metadata(path)
             .map_err(|error| WorkerError::Transport(error.to_string()))?
             .len();
-        if source_byte_len > MAX_STEP_SOURCE_BYTES {
-            return Err(WorkerError::Transport(
-                "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
         self.client.ensure_not_cancelled(cancelled)?;
         let evidence = match self.client.inspect_iges_xde_request_with_cancellation(
             path,
@@ -1073,15 +1048,6 @@ impl ExactWorkerSupervisor {
         part_index: u32,
         cancelled: &AtomicBool,
     ) -> Result<StepImportEvidence, WorkerError> {
-        if std::fs::metadata(path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?
-            .len()
-            > MAX_STEP_SOURCE_BYTES
-        {
-            return Err(WorkerError::Transport(
-                "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
         self.client.ensure_not_cancelled(cancelled)?;
         match self.client.inspect_iges_part_request_with_cancellation(
             path,
@@ -1116,11 +1082,6 @@ impl ExactWorkerSupervisor {
         let source_byte_len = std::fs::metadata(path)
             .map_err(|error| WorkerError::Transport(error.to_string()))?
             .len();
-        if source_byte_len > MAX_STEP_SOURCE_BYTES {
-            return Err(WorkerError::Transport(
-                "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
         self.client.ensure_not_cancelled(cancelled)?;
         let evidence = match self.client.inspect_iges_part_request_with_cancellation(
             path,
@@ -1171,15 +1132,6 @@ impl ExactWorkerSupervisor {
         part_index: u32,
         cancelled: &AtomicBool,
     ) -> Result<StepImportMesh, WorkerError> {
-        if std::fs::metadata(path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?
-            .len()
-            > MAX_STEP_SOURCE_BYTES
-        {
-            return Err(WorkerError::Transport(
-                "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
         self.client.ensure_not_cancelled(cancelled)?;
         match self.client.tessellate_iges_part_request_with_cancellation(
             path,
@@ -1217,15 +1169,6 @@ impl ExactWorkerSupervisor {
         output_path: &Path,
         cancelled: &AtomicBool,
     ) -> Result<StepImportMesh, WorkerError> {
-        if std::fs::metadata(path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?
-            .len()
-            > MAX_STEP_SOURCE_BYTES
-        {
-            return Err(WorkerError::Transport(
-                "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
         self.client.ensure_not_cancelled(cancelled)?;
         match self.client.tessellate_iges_part_request_with_cancellation(
             path,
@@ -1263,7 +1206,7 @@ impl ExactWorkerSupervisor {
     ) -> Result<Vec<u8>, WorkerError> {
         let source = read_bounded_regular_file(
             source_path,
-            MAX_STEP_SOURCE_BYTES,
+            MAX_EXACT_EXPORT_BYTES,
             "STEP staging source exceeds the bounded 32 MiB envelope",
         )?;
         let source_sha256 = sha256_hex(&source);
@@ -1301,15 +1244,6 @@ impl ExactWorkerSupervisor {
         part_index: u32,
         cancelled: &AtomicBool,
     ) -> Result<StepImportMesh, WorkerError> {
-        if std::fs::metadata(path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?
-            .len()
-            > MAX_STEP_SOURCE_BYTES
-        {
-            return Err(WorkerError::Transport(
-                "STEP source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
         self.client.ensure_not_cancelled(cancelled)?;
         match self.client.tessellate_step_part_request_with_cancellation(
             path,
@@ -1349,15 +1283,6 @@ impl ExactWorkerSupervisor {
         output_path: &Path,
         cancelled: &AtomicBool,
     ) -> Result<StepImportMesh, WorkerError> {
-        if std::fs::metadata(path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?
-            .len()
-            > MAX_STEP_SOURCE_BYTES
-        {
-            return Err(WorkerError::Transport(
-                "STEP source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
         self.client.ensure_not_cancelled(cancelled)?;
         match self.client.tessellate_step_part_request_with_cancellation(
             path,
@@ -1725,8 +1650,7 @@ impl ExactWorkerSupervisor {
                     "imported exact sources exceed the bounded envelope".to_owned(),
                 )
             })?;
-            if source_len > MAX_STEP_SOURCE_BYTES
-                || total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
+            if total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
                 || supplied.insert(sha256_hex(source), *source).is_some()
             {
                 return Err(WorkerError::Protocol(
@@ -2238,7 +2162,7 @@ impl ExactWorkerSupervisor {
             }
             let source_bytes = self.client.read_bounded_output(
                 &source,
-                MAX_STEP_SOURCE_BYTES,
+                MAX_EXACT_EXPORT_BYTES,
                 "exact worker STEP output exceeds the bounded 32 MiB envelope",
             )?;
             let source_sha256 = sha256_hex(&source_bytes);
@@ -2791,8 +2715,7 @@ fn prepare_exact_brep_graph_sources(
         total_bytes = total_bytes.checked_add(source_len).ok_or_else(|| {
             WorkerError::Protocol("imported exact sources exceed the bounded envelope".to_owned())
         })?;
-        if source_len > MAX_STEP_SOURCE_BYTES
-            || total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
+        if total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
             || supplied.insert(sha256_hex(source), *source).is_some()
         {
             return Err(WorkerError::Protocol(

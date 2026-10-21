@@ -85,8 +85,9 @@ impl<U> ImportSourcePlan<U> {
 }
 
 /// Reads at most the format's bounded envelope, refusing larger files before and after reading.
-/// A `.dwg` drawing is read whole: the program worker converts it under its memory limit, and
-/// the DXF it converts to is bounded like a DXF file.
+/// STEP, IGES, SketchUp scene and GLB sources have none and are read whole. A `.dwg` drawing
+/// is read whole: the program worker converts it under its memory limit, and the DXF it
+/// converts to is bounded like a DXF file.
 pub(crate) fn read_import_source(
     format: ImportFormat,
     path: &Path,
@@ -94,7 +95,7 @@ pub(crate) fn read_import_source(
     let limit_bytes = if format == ImportFormat::Dxf && super::dwg_import::is_dwg_path(path) {
         u64::MAX
     } else {
-        format.source_limit_bytes()
+        format.source_limit_bytes().unwrap_or(u64::MAX)
     };
     let failed = |cause: std::io::Error| ImportError {
         format,
@@ -287,13 +288,13 @@ mod tests {
         let large = directory.path().join("large.dxf");
         std::fs::File::create(&large)
             .unwrap()
-            .set_len(ImportFormat::Dxf.source_limit_bytes() + 1)
+            .set_len(ImportFormat::Dxf.source_limit_bytes().unwrap() + 1)
             .unwrap();
         let error = read_import_source(ImportFormat::Dxf, &large).unwrap_err();
         assert!(matches!(
             error.failure,
             ImportFailure::SourceTooLarge { limit_bytes }
-                if limit_bytes == ImportFormat::Dxf.source_limit_bytes()
+                if Some(limit_bytes) == ImportFormat::Dxf.source_limit_bytes()
         ));
         assert!(
             error

@@ -1290,7 +1290,6 @@ pub(super) fn validate_imported_exact_body(
     }
     if (!legacy_solid && !typed_body)
         || spec.source_byte_len == 0
-        || spec.source_byte_len > 32 * 1024 * 1024
         || spec.source_sha256.iter().all(|byte| *byte == 0)
     {
         return reject(ImportContractError::InvalidSource);

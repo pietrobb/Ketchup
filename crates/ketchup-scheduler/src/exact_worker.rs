@@ -38,9 +38,7 @@ use ketchup_model::exact_product::{
     EXACT_BREP_GRAPH_EVALUATOR_V1, ExactConeFaceEvidence, ExactFaceRole,
 };
 use ketchup_model::graph::{is_sha256_hex, sha256_hex};
-use ketchup_model::import::{
-    MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
-};
+use ketchup_model::import::{MAX_STEP_MESH_TRIANGLES, StepImportMesh, StepMeshTriangle};
 use ketchup_model::sheet_metal::{SheetMetalError, SheetMetalShape};
 use ketchup_model::tolerance::limits;
 use ketchup_model::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM};
@@ -258,9 +256,7 @@ fn verified_exact_brep_graph_sources(
         total_bytes = total_bytes
             .checked_add(expected_byte_len)
             .ok_or_else(WorkerFailure::invalid_request)?;
-        if expected_byte_len > MAX_STEP_SOURCE_BYTES
-            || total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
-        {
+        if total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES {
             return Err(WorkerFailure::invalid_request());
         }
         let copy = verified_step_copy(source, "evaluate_exact_brep_graph")?;
@@ -2988,15 +2984,8 @@ fn verified_copy(
     let mut file =
         std::fs::File::open(&source.path).map_err(|error| failure(&error.to_string()))?;
     let mut source_bytes = Vec::new();
-    std::io::Read::by_ref(&mut file)
-        .take(MAX_STEP_SOURCE_BYTES + 1)
-        .read_to_end(&mut source_bytes)
+    file.read_to_end(&mut source_bytes)
         .map_err(|error| failure(&error.to_string()))?;
-    if source_bytes.len() as u64 > MAX_STEP_SOURCE_BYTES {
-        return Err(failure(&format!(
-            "{label} source exceeds the bounded 32 MiB envelope"
-        )));
-    }
     if !is_sha256_hex(&source.sha256) || sha256_hex(&source_bytes) != source.sha256 {
         return Err(failure(&format!(
             "{label} source bytes do not match the declared SHA-256"
@@ -3474,7 +3463,7 @@ fn read_step_output(path: &str, operation: &str) -> Result<Vec<u8>, WorkerFailur
     let metadata = file
         .metadata()
         .map_err(|error| backend_failure(operation, &error.to_string()))?;
-    if !metadata.is_file() || metadata.len() > MAX_STEP_SOURCE_BYTES {
+    if !metadata.is_file() || metadata.len() > crate::MAX_EXACT_EXPORT_BYTES {
         return Err(backend_failure(
             operation,
             "STEP output is not a bounded regular file",
@@ -3482,10 +3471,10 @@ fn read_step_output(path: &str, operation: &str) -> Result<Vec<u8>, WorkerFailur
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     (&file)
-        .take(MAX_STEP_SOURCE_BYTES + 1)
+        .take(crate::MAX_EXACT_EXPORT_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| backend_failure(operation, &error.to_string()))?;
-    if bytes.len() as u64 > MAX_STEP_SOURCE_BYTES {
+    if bytes.len() as u64 > crate::MAX_EXACT_EXPORT_BYTES {
         return Err(backend_failure(
             operation,
             "STEP output exceeds the bounded 32 MiB envelope",
@@ -3722,7 +3711,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("oversized.step");
         let file = std::fs::File::create(&path).unwrap();
-        file.set_len(MAX_STEP_SOURCE_BYTES + 1).unwrap();
+        file.set_len(crate::MAX_EXACT_EXPORT_BYTES + 1).unwrap();
 
         let failure = read_step_output(path.to_str().unwrap(), "test_step_output").unwrap_err();
         assert_eq!(failure.code, "backend_exception");

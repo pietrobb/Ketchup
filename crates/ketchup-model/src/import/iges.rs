@@ -15,7 +15,6 @@ use super::{
 pub const IGES_PARSER_ID: &str = "ketchup-occt-iges";
 pub const IGES_PARSER_VERSION: &str = "1";
 pub const IGES_XDE_PARSER_VERSION: &str = "2";
-pub const MAX_IGES_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IgesImportEvidence {
@@ -63,7 +62,6 @@ pub struct IgesXdeImportEvidence {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IgesImportPlanError {
     Empty,
-    SourceTooLarge,
     InvalidSourceIdentity(ImportContractError),
     InvalidWorkerEvidence,
     InvalidDiagnostic(ImportContractError),
@@ -77,7 +75,6 @@ impl fmt::Display for IgesImportPlanError {
                 return write!(formatter, "IGES import diagnostic is invalid: {error}");
             }
             Self::Empty => "IGES source is empty",
-            Self::SourceTooLarge => "IGES source exceeds the bounded 32 MiB envelope",
             Self::InvalidSourceIdentity(error) => {
                 return write!(
                     formatter,
@@ -107,9 +104,6 @@ pub fn plan_iges_import(
 ) -> Result<CommandBatch, IgesImportPlanError> {
     if source.is_empty() {
         return Err(IgesImportPlanError::Empty);
-    }
-    if source.len() as u64 > MAX_IGES_SOURCE_BYTES {
-        return Err(IgesImportPlanError::SourceTooLarge);
     }
     let exact = super::StepImportEvidence {
         source_sha256: evidence.source_sha256,
@@ -251,9 +245,6 @@ pub fn plan_iges_xde_import(
 ) -> Result<CommandBatch, IgesImportPlanError> {
     if source.is_empty() {
         return Err(IgesImportPlanError::Empty);
-    }
-    if source.len() as u64 > MAX_IGES_SOURCE_BYTES {
-        return Err(IgesImportPlanError::SourceTooLarge);
     }
     if evidence.source_sha256 != sha256_bytes(source)
         || evidence.source_byte_len != source.len() as u64
