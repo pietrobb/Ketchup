@@ -206,6 +206,63 @@ fn a_drawing_in_national_grid_coordinates_is_moved_near_the_origin_by_its_median
 }
 
 #[test]
+fn every_entity_kind_in_s_jtsk_metres_reaches_the_move_instead_of_being_refused() {
+    // A drawing in metres around X = -300,000 m, Y = -1,200,000 m: a line, a polyline
+    // with an arc segment, an arc and a circle, each on its own layer. The reader must
+    // keep all of them for move_near_origin, not refuse them as out of range first.
+    let [x, y] = [-300_123.456, -1_200_456.789];
+    let entities = [
+        line("line", [x, y], [x + 10.0, y]),
+        format!(
+            "0\nLWPOLYLINE\n8\npoly\n90\n3\n70\n0\n10\n{}\n20\n{}\n42\n0.5\n10\n{}\n20\n{}\n10\n{}\n20\n{}\n",
+            x,
+            y + 20.0,
+            x + 10.0,
+            y + 20.0,
+            x + 10.0,
+            y + 30.0
+        ),
+        format!(
+            "0\nARC\n8\narc\n10\n{}\n20\n{}\n40\n5\n50\n0\n51\n90\n",
+            x + 30.0,
+            y
+        ),
+        format!("0\nCIRCLE\n8\ncircle\n10\n{}\n20\n{}\n40\n3\n", x + 50.0, y),
+    ]
+    .concat();
+    let source = dxf(&entities)
+        .into_iter()
+        .map(char::from)
+        .collect::<String>()
+        .replace("$INSUNITS\n70\n4\n", "$INSUNITS\n70\n6\n");
+    let underlay = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
+    assert_eq!(underlay.layers, ["line", "poly", "arc", "circle"]);
+    assert!(
+        underlay
+            .lines
+            .layers()
+            .iter()
+            .all(|layer| layer.segment_count() > 0)
+    );
+    let codes = underlay
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code())
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"dxf.wcs-origin-moved"), "{codes:?}");
+    assert!(!codes.contains(&"dxf.entity-unreadable"), "{codes:?}");
+    assert!(!codes.contains(&"dxf.lines-outside-envelope"), "{codes:?}");
+    // The offset is whole metres near the drawing, and added back it gives the line's
+    // own start point in millimetres.
+    let [dx, dy] = underlay.offset_mm;
+    assert!(dx % 1000.0 == 0.0 && dy % 1000.0 == 0.0);
+    assert!((dx - x * 1000.0).abs() < 100_000.0 && (dy - y * 1000.0).abs() < 100_000.0);
+    let start = underlay.lines.layers()[0].polylines().next().unwrap()[0];
+    assert!((start[0] + dx - x * 1000.0).abs() < 1e-3);
+    assert!((start[1] + dy - y * 1000.0).abs() < 1e-3);
+}
+
+#[test]
 fn lines_decode_as_they_were_encoded_and_damaged_bytes_are_refused() {
     let underlay = read(&line("0", [0.0, 0.0], [10.0, 0.0]));
     let bytes = underlay.lines.encode();
