@@ -1622,6 +1622,150 @@ fn two_open_windows_detect_external_save_and_offer_safe_save_as() {
     );
 }
 
+/// A history that no longer fits a file asks before Save As keeps the current
+/// revision alone. It is reached through the container's 4,096-entry limit
+/// rather than the 2 GiB revision budget: 4,094 underlays, each with its own
+/// lines blob, fill the file opened at the revision that holds them; the Redo
+/// step deletes them and binds a program, whose entry takes the whole history
+/// one entry past the limit, while the current revision alone needs three.
+#[test]
+fn save_as_asks_before_keeping_the_current_revision_without_a_history_that_does_not_fit() {
+    use ketchup_model::document::{RuleProgramSource, TagId};
+    use ketchup_model::persistence::ContainerData;
+    use ketchup_model::underlay::{Underlay, UnderlayId, UnderlayLayer, UnderlayLinesBuilder};
+    const UNDERLAYS: u64 = 4_094;
+    let directory = tempfile::tempdir().unwrap();
+    let boundary = directory.path().join("history-boundary.ketchup");
+    let fits = directory.path().join("history-fits.ketchup");
+    let saved = directory.path().join("current-only.ketchup");
+    let mut document = DocumentStore::new();
+    let mut container = ContainerData::default();
+    let mut add = vec![CanonicalCommand::CreateTag {
+        id: TagId(1),
+        name: "Podklady".into(),
+        visible: true,
+    }];
+    for id in 1..=UNDERLAYS {
+        let mut builder = UnderlayLinesBuilder::default();
+        builder.add(
+            "stena",
+            &[ProfileSegment::Line {
+                start_mm: [0.0, 0.0],
+                end_mm: [id as f64, 0.0],
+            }],
+        );
+        let (layers, lines) = builder.finish();
+        let bytes = lines.encode();
+        let lines_sha256 = sha256_bytes(&bytes);
+        container.insert_import_blob(bytes).unwrap();
+        add.push(CanonicalCommand::UpsertUnderlay(Underlay {
+            id: UnderlayId(id),
+            name: format!("Podklad {id}"),
+            tag: TagId(1),
+            layers: layers
+                .into_iter()
+                .map(|name| UnderlayLayer {
+                    name,
+                    tag: TagId(1),
+                })
+                .collect(),
+            lines_sha256,
+            offset_mm_bits: [0.0_f64.to_bits(); 2],
+        }));
+    }
+    document.apply_batch(&CommandBatch::new(add)).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(
+            (1..=UNDERLAYS)
+                .map(|id| CanonicalCommand::DeleteUnderlay { id: UnderlayId(id) })
+                .collect(),
+        ))
+        .unwrap();
+    document
+        .bind_rule_program(RuleProgramSource {
+            file_name: "shelf.star".into(),
+            source: "w = param('width', 600)\n".into(),
+            overrides: Default::default(),
+            variants: Default::default(),
+        })
+        .unwrap();
+    let saves_whole =
+        |document: &DocumentStore| match ketchup_model::persistence::save_document_store(
+            document, &container,
+        ) {
+            Ok(bytes) => Some(bytes),
+            Err(ketchup_model::persistence::PersistenceError::ResourceLimit) => None,
+            Err(error) => panic!("unexpected save error {error:?}"),
+        };
+    assert!(
+        saves_whole(&document).is_none(),
+        "the program's entry takes the whole history past the container limit"
+    );
+    assert!(document.undo().is_some());
+    std::fs::write(
+        &boundary,
+        saves_whole(&document).expect("the boundary fits"),
+    )
+    .unwrap();
+
+    let script = ScriptedFileDialogs::new()
+        .queue_open(&boundary)
+        .queue_save(&fits)
+        .queue_save(&saved)
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .queue_history_truncation_approval(false)
+        .queue_history_truncation_approval(true);
+    let mut shell = Shell::with_dialogs(script.clone());
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(
+        (shell.app().undo_step_count(), shell.app().redo_step_count()),
+        (1, 1)
+    );
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(fits.is_file(), "a history that fits saves whole");
+    assert!(script.history_truncation_prompts().is_empty());
+    assert!(!shell.app().is_dirty());
+
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    let expected_digest = shell.app().canonical_digest();
+    let expected_revision = shell.app().document_revision();
+    let expected_undo_steps = shell.app().undo_step_count();
+    assert_eq!(expected_undo_steps, 2);
+    assert!(shell.app().is_dirty());
+
+    // Refused: nothing is written and the history stays.
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(!saved.exists(), "a refused Save As writes nothing");
+    assert!(shell.app().is_dirty());
+    assert_eq!(shell.app().canonical_digest(), expected_digest);
+    assert_eq!(shell.app().undo_step_count(), expected_undo_steps);
+    assert_eq!(script.history_truncation_prompts().len(), 1);
+    assert!(script.history_truncation_prompts()[0].contains(&expected_undo_steps.to_string()));
+
+    // Approved: the current revision is saved alone.
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(saved.is_file());
+    assert!(!shell.app().is_dirty());
+    assert_eq!(shell.app().canonical_digest(), expected_digest);
+    assert_eq!(shell.app().document_revision(), expected_revision);
+    assert_eq!(shell.app().undo_step_count(), 0);
+    assert_eq!(shell.app().redo_step_count(), 0);
+    assert_eq!(script.history_truncation_prompts().len(), 2);
+    assert!(digest_starts_like(
+        &shell,
+        "digest-saved-document-current-only"
+    ));
+
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), expected_digest);
+    assert_eq!(shell.app().document_revision(), expected_revision);
+    assert_eq!(shell.app().undo_step_count(), 0);
+    assert_eq!(shell.app().redo_step_count(), 0);
+    assert!(!shell.app().is_dirty());
+}
+
 #[test]
 fn overwrite_save_requires_payload_bound_human_receipt_before_disk_write() {
     let directory = tempfile::tempdir().unwrap();
