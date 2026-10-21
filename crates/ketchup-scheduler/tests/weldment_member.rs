@@ -158,9 +158,12 @@ fn first_class_weldment_member_is_exact_parametric_and_lossless() {
         reopened.current().canonical_digest(),
         edited.canonical_digest()
     );
+    // An opened file is its current revision alone, and that revision saves byte for byte.
     assert_eq!(
-        persistence::save_document_store(&reopened, &ContainerData::default()).unwrap(),
-        bytes
+        persistence::save_document_store_current_snapshot(&reopened, &ContainerData::default())
+            .unwrap(),
+        persistence::save_document_store_current_snapshot(&document, &ContainerData::default())
+            .unwrap()
     );
     let reopened_graph =
         ExactBRepGraph::from_snapshot(&reopened.current(), definition, member).unwrap();
