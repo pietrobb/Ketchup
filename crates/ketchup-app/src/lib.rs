@@ -121,6 +121,7 @@ use modal::Modal;
 use slot::Slot;
 use tool_preview::ToolPreview;
 pub use view_settings::{ViewFlag, ViewSettings};
+mod active_tool;
 mod app;
 use app::*;
 mod app_state;
@@ -966,85 +967,10 @@ enum ActiveTool {
     Rotate,
     Scale,
     Measure,
+    FitUnderlay,
     Orbit,
     Pan,
     ZoomWindow,
-}
-
-impl ActiveTool {
-    const fn label_key(self) -> &'static str {
-        match self {
-            Self::Select => "tool-select",
-            Self::Line => "tool-line",
-            Self::Rectangle => "tool-rectangle",
-            Self::Circle => "tool-circle",
-            Self::Arc => "tool-arc",
-            Self::Polygon => "tool-polygon",
-            Self::Ellipse => "tool-ellipse",
-            Self::Spline => "tool-spline",
-            Self::Mirror => "tool-mirror",
-            Self::SolidSubtract => "solid-tool-subtract",
-            Self::SolidTrim => "solid-tool-trim",
-            Self::SolidUnion => "solid-tool-union",
-            Self::SolidIntersect => "solid-tool-intersect",
-            Self::SolidSplit => "solid-tool-split",
-            Self::PlanarOffset => "feature-planar-offset",
-            Self::Helix => "feature-helix",
-            Self::Sweep => "feature-sweep",
-            Self::Loft => "feature-loft",
-            Self::Revolve => "feature-revolve",
-            Self::Shell => "feature-shell",
-            Self::Fillet => "feature-fillet",
-            Self::Chamfer => "feature-chamfer",
-            Self::Hole => "tool-hole",
-            Self::Draft => "tool-draft",
-            Self::PushPull => "tool-push-pull",
-            Self::Move => "tool-move",
-            Self::Rotate => "tool-rotate",
-            Self::Scale => "tool-scale",
-            Self::Measure => "tool-measure",
-            Self::Orbit => "tool-orbit",
-            Self::Pan => "tool-pan",
-            Self::ZoomWindow => "view-zoom-window",
-        }
-    }
-
-    const fn hint_key(self) -> &'static str {
-        match self {
-            Self::Select => "hint-select",
-            Self::Line => "hint-line",
-            Self::Rectangle => "hint-rectangle",
-            Self::Circle => "hint-circle",
-            Self::Arc => "hint-arc",
-            Self::Polygon => "hint-polygon",
-            Self::Ellipse => "hint-ellipse",
-            Self::Spline => "hint-spline",
-            Self::Mirror => "hint-mirror",
-            Self::SolidSubtract => "hint-solid-subtract",
-            Self::SolidTrim => "hint-solid-trim",
-            Self::SolidUnion => "hint-solid-union",
-            Self::SolidIntersect => "hint-solid-intersect",
-            Self::SolidSplit => "hint-solid-split",
-            Self::PlanarOffset => "hint-planar-offset",
-            Self::Helix => "hint-helix",
-            Self::Sweep => "hint-sweep",
-            Self::Loft => "hint-loft",
-            Self::Revolve => "hint-revolve",
-            Self::Shell => "hint-shell",
-            Self::Fillet => "hint-fillet",
-            Self::Chamfer => "hint-chamfer",
-            Self::Hole => "hint-hole",
-            Self::Draft => "hint-draft",
-            Self::PushPull => "hint-push-pull",
-            Self::Move => "hint-move",
-            Self::Rotate => "hint-rotate",
-            Self::Scale => "hint-scale",
-            Self::Measure => "hint-measure",
-            Self::Orbit => "hint-orbit",
-            Self::Pan => "hint-pan",
-            Self::ZoomWindow => "hint-zoom-window",
-        }
-    }
 }
 
 /// Every command the designed shell can dispatch.
@@ -1113,6 +1039,7 @@ pub enum AppCommand {
     Rotate,
     Scale,
     Measure,
+    FitUnderlay,
     Orbit,
     Pan,
     Undo,

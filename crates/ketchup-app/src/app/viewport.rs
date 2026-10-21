@@ -2070,6 +2070,8 @@ impl KetchupApp {
             if let Some(point) = self.measurement_point_at_screen(pointer, response.rect, plane_z) {
                 self.add_measured_point(point);
             }
+        } else if self.active_tool == ActiveTool::FitUnderlay {
+            self.pick_underlay_fit_point(pointer, response.rect);
         }
     }
 

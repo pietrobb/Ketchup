@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 135] = [
+    pub(crate) const COMMANDS: [CommandSpec; 136] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -350,6 +350,12 @@ impl CommandRegistry {
             id: AppCommand::Measure,
             label_key: "tool-measure",
             tool: Some(ActiveTool::Measure),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::FitUnderlay,
+            label_key: "tool-fit-underlay",
+            tool: Some(ActiveTool::FitUnderlay),
             implemented: true,
         },
         CommandSpec {

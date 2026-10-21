@@ -225,6 +225,74 @@ fn drawing_and_measure_snap_to_the_lines_where_a_two_point_fit_placed_them() {
     );
 }
 
+/// The Fit underlay tool in the window: two clicks on the wall's ends, then two model points,
+/// place the wall's ends on those points as one Undo step, and snapping follows. A click off
+/// the underlay's lines is named and picks nothing; Esc drops the picks and leaves the tool.
+#[test]
+fn the_fit_underlay_tool_places_two_clicked_underlay_points_on_two_clicked_model_points() {
+    let mut app = imported();
+    let rect = viewport();
+    let click = |app: &mut KetchupApp, point: Vec3| {
+        let pointer = app.project(point, rect) + Vec2::new(2.0, 1.0);
+        app.pick_underlay_fit_point(pointer, rect);
+    };
+    app.dispatch_command(AppCommand::FitUnderlay);
+    assert_eq!(app.active_tool, ActiveTool::FitUnderlay);
+    assert!(!app.gesture.underlay_fit.scaled);
+    let undo = app.undo_step_count();
+    let digest = app.canonical_digest();
+
+    click(&mut app, Vec3::new(600.0, 600.0, 0.0));
+    assert!(app.gesture.underlay_fit.from.is_none());
+    assert_eq!(
+        app.digest,
+        app.catalog.text("digest-fit-underlay-line-required")
+    );
+
+    click(&mut app, Vec3::new(40.0, 20.0, 0.0));
+    click(&mut app, Vec3::new(240.0, 20.0, 0.0));
+    assert_eq!(app.status_key, "status-fit-underlay-first-model");
+    app.cancel_or_deselect(false);
+    assert_eq!(app.active_tool, ActiveTool::Select);
+    assert!(app.gesture.underlay_fit.from.is_none());
+    assert_eq!(
+        (app.canonical_digest(), app.undo_step_count()),
+        (digest, undo)
+    );
+
+    app.dispatch_command(AppCommand::FitUnderlay);
+    let targets = [Vec3::new(400.0, 100.0, 0.0), Vec3::new(400.0, 300.0, 0.0)];
+    let model: Vec<Vec3> = targets
+        .iter()
+        .map(|target| {
+            let pointer = app.project(*target, rect) + Vec2::new(2.0, 1.0);
+            app.measurement_point_at_screen(pointer, rect, 0.0).unwrap()
+        })
+        .collect();
+    click(&mut app, Vec3::new(40.0, 20.0, 0.0));
+    click(&mut app, Vec3::new(240.0, 20.0, 0.0));
+    click(&mut app, targets[0]);
+    click(&mut app, targets[1]);
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(app.gesture.underlay_fit.from.is_none() && app.gesture.underlay_fit.to.is_empty());
+
+    // The first wall end sits on the first model point; the second on the line to the
+    // second model point, 200 mm along it, since the fit does not scale.
+    let direction = (model[1] - model[0]) * (1.0 / (model[1] - model[0]).length());
+    for (end, expected) in [
+        (model[0], model[0]),
+        (model[0] + direction * 200.0, model[0] + direction * 200.0),
+    ] {
+        let snap = snap_near(&app, end, Vec2::new(2.0, 1.0)).unwrap();
+        assert_eq!(snap.kind, SnapKind::Endpoint, "{snap:?}");
+        assert!((snap.position_mm - expected).length() < 1e-6, "{snap:?}");
+    }
+    assert_eq!(
+        snap_near(&app, Vec3::new(240.0, 20.0, 0.0), Vec2::ZERO),
+        None
+    );
+}
+
 #[test]
 fn a_hidden_underlay_layer_or_underlay_gives_no_snap() {
     let mut app = imported();

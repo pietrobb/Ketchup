@@ -25,6 +25,7 @@ pub(crate) struct Gesture {
     /// profile's outline in its plane, negative inside.
     pub(crate) planar_offset_mm: Option<f64>,
     pub(crate) drag: Option<PointerDrag>,
+    pub(crate) underlay_fit: crate::app::underlay_fit_tool::UnderlayFitGesture,
 }
 
 /// A point on a picked face and the face's outward normal; the Mirror tool

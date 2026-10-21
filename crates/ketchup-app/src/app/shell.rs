@@ -581,6 +581,7 @@ impl KetchupApp {
         self.gesture.drag.close::<ZoomWindowDrag>();
         self.gesture.drag.close::<SelectionWindowDrag>();
         self.clear_measurement();
+        self.gesture.underlay_fit.clear_points();
         self.gesture.mirror = None;
         self.gesture.planar_offset_mm = None;
     }
@@ -1088,6 +1089,11 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Mirror);
                 self.menu_command(ui, AppCommand::Scale);
                 self.menu_command(ui, AppCommand::Measure);
+                self.menu_command(ui, AppCommand::FitUnderlay);
+                ui.checkbox(
+                    &mut self.gesture.underlay_fit.scaled,
+                    self.catalog.text("tool-fit-underlay-scale"),
+                );
                 self.menu_command(ui, AppCommand::Orbit);
                 self.menu_command(ui, AppCommand::Pan);
             });

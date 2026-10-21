@@ -1157,7 +1157,11 @@ impl KetchupApp {
             self.cancel_feature_history_preview();
         } else if matches!(
             self.active_tool,
-            ActiveTool::Helix | ActiveTool::PlanarOffset | ActiveTool::Hole | ActiveTool::Draft
+            ActiveTool::Helix
+                | ActiveTool::PlanarOffset
+                | ActiveTool::Hole
+                | ActiveTool::Draft
+                | ActiveTool::FitUnderlay
         ) {
             self.clear_ephemeral_edit_state();
             self.active_tool = ActiveTool::Select;

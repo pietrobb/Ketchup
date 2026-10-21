@@ -268,6 +268,8 @@ impl KetchupApp {
                 self.status_key = "status-draft-neutral";
             } else if tool == ActiveTool::Measure {
                 self.status_key = "status-measure-first-point";
+            } else if tool == ActiveTool::FitUnderlay {
+                self.status_key = "status-fit-underlay-first-line";
             } else if matches!(
                 tool,
                 ActiveTool::SolidSubtract
@@ -503,6 +505,7 @@ impl KetchupApp {
             | AppCommand::Rotate
             | AppCommand::Scale
             | AppCommand::Measure
+            | AppCommand::FitUnderlay
             | AppCommand::Orbit
             | AppCommand::Pan
             | AppCommand::ZoomWindow => {}
