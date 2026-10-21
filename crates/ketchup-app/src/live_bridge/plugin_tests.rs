@@ -1317,6 +1317,9 @@ fn a_plugin_command_line_runs_only_hashed_code() {
         vec!["-m".into(), "evil".into()],
         vec!["-mevil".into(), "plugin.py".into()],
         vec!["-Bm".into(), "evil".into(), "plugin.py".into()],
+        // Review 2026-10-19 SEC-9: PowerShell reads -C as -Command.
+        vec!["-C".into(), "Remove-Item".into(), "plugin.py".into()],
+        vec!["-BC".into(), "evil".into(), "plugin.py".into()],
         vec!["--require=evil".into(), "plugin.py".into()],
         vec!["--import=evil".into(), "plugin.py".into()],
         vec!["-".into()],

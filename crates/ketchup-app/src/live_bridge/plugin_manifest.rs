@@ -309,9 +309,10 @@ fn runs_unhashed_code(argument: &str) -> bool {
     let Some(short) = argument.strip_prefix('-') else {
         return false;
     };
-    short.starts_with(|c| CODE_SHORT_OPTIONS.contains(c))
-        || (short.chars().all(|c| c.is_ascii_alphabetic())
-            && short.chars().any(|c| CODE_SHORT_OPTIONS.contains(c)))
+    // In any letter case: PowerShell reads `-C` as `-Command`.
+    let code = |c: char| CODE_SHORT_OPTIONS.contains(c.to_ascii_lowercase());
+    short.starts_with(code)
+        || (short.chars().all(|c| c.is_ascii_alphabetic()) && short.chars().any(code))
 }
 
 /// The interpreter options [`runs_unhashed_code`] refuses; docs/plugins.md
@@ -329,7 +330,7 @@ pub(super) const CODE_LONG_OPTIONS: [&str; 11] = [
     "interactive",
     "include",
 ];
-pub(super) const CODE_SHORT_OPTIONS: &str = "ceEmMpri";
+pub(super) const CODE_SHORT_OPTIONS: &str = "cempri";
 
 /// Whether the text starts with a URL scheme (`file:`, `data:`, `https:`): two
 /// or more letters, digits or `+.-` from a letter up to a colon. A drive

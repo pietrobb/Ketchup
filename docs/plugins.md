@@ -37,8 +37,9 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
   Refused are an argument starting with `@` (arguments read from a file), a
   URL, network share, device or stream, and the options that run code given
   as text, from standard input or found by name: `-`, the short options `-c`,
-  `-e`, `-E`, `-m`, `-M`, `-p`, `-r` and `-i` (alone, with a joined value or
-  anywhere in a cluster of letters such as `-Bm`) and the long options
+  `-e`, `-m`, `-p`, `-r` and `-i` in any letter case, so also `-C`, which
+  PowerShell reads as `-Command` (alone, with a joined value or anywhere in a
+  cluster of letters such as `-Bm`) and the long options
   `--eval`, `--print`, `--require`, `--import`, `--loader`,
   `--experimental-loader`, `--module`, `--command`, `--encodedcommand`,
   `--interactive` and `--include`, in any letter case.
