@@ -366,6 +366,7 @@ impl KetchupApp {
     pub(crate) fn underlay_draws(&mut self) -> Vec<UnderlayDraw> {
         let snapshot = self.document.current();
         let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
+        let dragged = self.underlay_drag_edit();
         let mut draws = Vec::new();
         for underlay in snapshot.underlays() {
             let key = underlay.lines_sha256;
@@ -409,10 +410,14 @@ impl KetchupApp {
             } else {
                 Vec::new()
             };
+            let placement = match dragged {
+                Some((id, edit)) if id == underlay.id => edit.compose(underlay.placement),
+                _ => underlay.placement,
+            };
             draws.push(UnderlayDraw {
                 geometry,
                 visible,
-                placement: gpu_placement(underlay.placement.matrix()),
+                placement: gpu_placement(placement.matrix()),
             });
         }
         let named = |key: &[u8; 32]| {

@@ -309,6 +309,7 @@ fn program_part_names(snapshot: &Snapshot, target: &TransformTarget) -> Vec<Stri
                 *group_id,
                 item.instance_path.root_occurrence(),
             ),
+            TransformTarget::Underlay(_) => false,
         };
         if moved
             && let Some(name) =

@@ -1,12 +1,14 @@
 //! A DXF drawing read as an underlay: every line kept by layer, no profile limits, one
 //! Undo step to add or remove it, and lines that survive their container blob.
-use ketchup_model::document::{DocumentStore, TagId};
+use ketchup_model::document::{DocumentStore, TagId, Transform};
 use ketchup_model::graph::sha256_bytes;
 use ketchup_model::import::{
     DxfImportError, DxfImportOptions, read_dxf_underlay, read_dxf_underlay_from,
 };
 use ketchup_model::persistence::{self, LoadOutcome};
-use ketchup_model::underlay::placement::{UnderlayFitError, plan_underlay_fit};
+use ketchup_model::underlay::placement::{
+    UnderlayFitError, plan_underlay_edit, plan_underlay_fit, planar_turn,
+};
 use ketchup_model::underlay::{
     UnderlayLines, UnderlayLinesError, plan_underlay, plan_underlay_removal,
 };
@@ -424,5 +426,26 @@ fn a_two_point_fit_places_the_underlay_on_the_model_in_one_undo_step() {
     assert_eq!(
         plan_underlay_fit(&snapshot, id, ends, point, true).unwrap_err(),
         UnderlayFitError::ModelPointsCoincide
+    );
+
+    // A move or turn of the document goes into the placement as one Undo step; one that
+    // would lift or tilt the underlay is refused.
+    let turn = planar_turn([1000.0, 0.0], 90.0).unwrap();
+    let shift = Transform::from_translation(0.0, 0.0, 5.0).unwrap();
+    document
+        .apply_batch(&plan_underlay_edit(&snapshot, id, turn).unwrap())
+        .unwrap();
+    on(&document, ends[0], [1000.0, -1000.0]);
+    on(&document, ends[1], ends[1]);
+    let matrix = *document.current().underlay(id).unwrap().placement.matrix();
+    assert_eq!(
+        [matrix[2], matrix[6], matrix[8], matrix[9], matrix[10]],
+        [0.0, 0.0, 0.0, 0.0, 1.0]
+    );
+    document.undo().unwrap();
+    on(&document, ends[0], ends[0]);
+    assert_eq!(
+        plan_underlay_edit(&document.current(), id, shift).unwrap_err(),
+        UnderlayFitError::OffPlane
     );
 }

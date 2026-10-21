@@ -21,6 +21,14 @@ pub(crate) fn underlay_reference(underlay: UnderlayId, segment: usize) -> Select
     }
 }
 
+/// The underlay `reference` names, if it names one.
+pub(crate) const fn underlay_of(reference: &SelectionId) -> Option<UnderlayId> {
+    match reference.element {
+        ElementId::Underlay { underlay, .. } => Some(underlay),
+        _ => None,
+    }
+}
+
 /// The snap kind of the model's snaps a snap on an underlay line ranks as.
 pub(crate) fn snap_kind(kind: UnderlaySnapKind) -> SnapKind {
     match kind {

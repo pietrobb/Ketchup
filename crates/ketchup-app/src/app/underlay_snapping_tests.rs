@@ -18,7 +18,7 @@ fn viewport() -> Rect {
     Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 900.0))
 }
 
-fn imported() -> KetchupApp {
+pub(super) fn imported() -> KetchupApp {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("plan.dxf");
     std::fs::write(&path, PLAN_DXF).unwrap();

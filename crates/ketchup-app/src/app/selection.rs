@@ -117,7 +117,8 @@ impl KetchupApp {
     pub(crate) fn deselect_source_plan(&self) -> Option<DeselectSourcePlan> {
         (!self.selection.occurrences.is_empty()
             || self.selection.primary.is_some()
-            || self.selection.selected_group.is_some())
+            || self.selection.selected_group.is_some()
+            || self.selection.underlay.is_some())
         .then(|| DeselectSourcePlan {
             source_revision: self.document_revision(),
             occurrence_paths: self.selection.occurrences.clone(),
@@ -1196,7 +1197,7 @@ impl KetchupApp {
         } else if dropped_value || cancelled_edit {
             self.status_key = "status-ready";
             self.digest = self.catalog.text("digest-cancelled");
-        } else if self.selection_count() > 0 {
+        } else if self.selection_count() > 0 || self.selection.underlay.is_some() {
             self.dispatch_command(AppCommand::Deselect);
         } else {
             self.exit_edit_context();

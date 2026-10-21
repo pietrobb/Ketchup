@@ -507,6 +507,10 @@ impl KetchupApp {
             }
             return;
         };
+        if let ElementId::Underlay { underlay, .. } = target.element {
+            self.select_underlay(underlay);
+            return;
+        }
         let occurrence_id = target.instance_path.root_occurrence();
         if !self.occurrence_in_active_context(&target.instance_path) {
             return;
@@ -1869,6 +1873,9 @@ impl KetchupApp {
                             && self.hover.target.as_ref().is_none_or(|hit| {
                                 hit.instance_path != snap.reference.instance_path
                             }))
+                        // A line of an underlay where no part is under the pointer.
+                        || (matches!(snap.reference.element, ElementId::Underlay { .. })
+                            && self.hover.target.is_none())
                 })
                 .map(|snap| snap.reference.clone())
                 .or_else(|| self.hover.target.clone());

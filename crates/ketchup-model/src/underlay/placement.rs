@@ -64,7 +64,7 @@ pub struct UnderlayFit {
     pub length_mismatch_mm: f64,
 }
 
-/// Why two pairs of points do not place an underlay.
+/// Why a fit, move or turn does not place an underlay.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UnderlayFitError {
     NotFound(UnderlayId),
@@ -76,6 +76,8 @@ pub enum UnderlayFitError {
     ModelPointsCoincide,
     /// The fitted placement is no transform of the document.
     Placement(CanonicalError),
+    /// The edit would lift or tilt the underlay out of the ground plane.
+    OffPlane,
 }
 
 impl fmt::Display for UnderlayFitError {
@@ -92,6 +94,9 @@ impl fmt::Display for UnderlayFitError {
                 "the two target points of the model are less than {PICK_MATCH_MM} mm apart"
             ),
             Self::Placement(error) => write!(formatter, "the fitted placement is invalid: {error}"),
+            Self::OffPlane => formatter.write_str(
+                "an underlay stays in the ground plane: it moves along X and Y and turns about Z only",
+            ),
         }
     }
 }
@@ -169,6 +174,13 @@ fn turn_onto(
         .compose(Transform::from_translation(-from[0], -from[1], 0.0)?))
 }
 
+/// The turn by `angle_degrees` about the vertical line through `centre_mm`, built in the
+/// plane so it keeps an underlay's placement exactly planar.
+pub fn planar_turn(centre_mm: [f64; 2], angle_degrees: f64) -> Result<Transform, CanonicalError> {
+    let (sin, cos) = angle_degrees.to_radians().sin_cos();
+    turn_onto(centre_mm, centre_mm, cos, sin)
+}
+
 /// One batch, so one Undo step, that places the underlay `id` by [`fit_two_points`].
 pub fn plan_underlay_fit(
     snapshot: &Snapshot,
@@ -186,4 +198,26 @@ pub fn plan_underlay_fit(
         ..underlay.clone()
     })]);
     Ok((batch, fit))
+}
+
+/// One batch, so one Undo step, that moves the underlay `id` by `edit`, a move or turn of
+/// the document; an edit that would take it out of the ground plane is refused.
+pub fn plan_underlay_edit(
+    snapshot: &Snapshot,
+    id: UnderlayId,
+    edit: Transform,
+) -> Result<CommandBatch, UnderlayFitError> {
+    let underlay = snapshot
+        .underlay(id)
+        .ok_or(UnderlayFitError::NotFound(id))?;
+    let placement = edit.compose(underlay.placement);
+    if !is_planar(&placement) {
+        return Err(UnderlayFitError::OffPlane);
+    }
+    Ok(CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+        Underlay {
+            placement,
+            ..underlay.clone()
+        },
+    )]))
 }

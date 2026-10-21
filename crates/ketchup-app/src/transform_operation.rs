@@ -5,11 +5,15 @@ use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DocumentId, GroupId, InstancePath, OccurrenceId,
     Snapshot, Transform,
 };
+use ketchup_model::underlay::UnderlayId;
+use ketchup_model::underlay::placement::plan_underlay_edit;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum TransformTarget {
     Occurrences(BTreeSet<InstancePath>),
     Group(GroupId),
+    /// The underlay's placement takes the edit, as a fit does ([`plan_underlay_edit`]).
+    Underlay(UnderlayId),
 }
 
 #[derive(Clone)]
@@ -31,6 +35,11 @@ pub(crate) struct TransformPlan {
 
 impl TransformRequest {
     pub(crate) fn matches_source(&self, snapshot: &Snapshot) -> bool {
+        if let TransformTarget::Underlay(id) = self.target {
+            return self.source_document_id == snapshot.document_id()
+                && self.source_revision == snapshot.revision_id()
+                && snapshot.underlay(id).is_some();
+        }
         self.source_document_id == snapshot.document_id()
             && self.source_revision == snapshot.revision_id()
             && snapshot
@@ -46,6 +55,7 @@ impl TransformRequest {
                         })
                 }
                 TransformTarget::Group(group_id) => snapshot.group(*group_id).is_some(),
+                TransformTarget::Underlay(_) => false,
             }
     }
 }
@@ -116,6 +126,10 @@ impl TransformPlan {
                     preview_overrides,
                 )
             }
+            TransformTarget::Underlay(id) => {
+                let batch = plan_underlay_edit(snapshot, *id, request.world_edit).ok()?;
+                (batch.commands().to_vec(), BTreeMap::new())
+            }
         };
 
         (!commands.is_empty()).then(|| Self {
@@ -128,6 +142,10 @@ impl TransformPlan {
 
     pub(crate) fn preview_overrides(&self) -> &BTreeMap<InstancePath, Transform> {
         &self.preview_overrides
+    }
+
+    pub(crate) const fn target(&self) -> &TransformTarget {
+        &self.target
     }
 
     pub(crate) fn into_commit(self) -> (TransformTarget, CommandBatch) {

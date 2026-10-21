@@ -1,7 +1,9 @@
 //! Moving, rotating, scaling, copying, pasting, Push/Pull, patterns and alignment of the selection.
 
+use crate::app::underlay_snapping::{underlay_of, underlay_reference};
 use crate::*;
 use ketchup_geometry::linalg::CubicBezier;
+use ketchup_model::underlay::placement::planar_turn;
 
 impl KetchupApp {
     pub(crate) fn selected_alignment_pair(&self) -> Option<(OccurrenceId, OccurrenceId)> {
@@ -370,6 +372,9 @@ impl KetchupApp {
     pub(crate) fn commit_move_drag(&mut self, drag: &MoveDrag) -> bool {
         self.gesture.transform.move_copy = false;
         self.transform_tool.input.reset();
+        if self.underlay_drag_refused(&drag.selection, drag.axis == Some(Axis::Z)) {
+            return false;
+        }
         if !self.move_preview_is_current(drag) {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
@@ -445,24 +450,29 @@ impl KetchupApp {
                 self.selection
                     .select_exact(primary_selection.clone(), false);
                 self.selection.occurrences.extend(paths.iter().cloned());
-                CorrectionSelection::Occurrences {
+                Some(CorrectionSelection::Occurrences {
                     occurrence_ids: paths.iter().map(InstancePath::root_occurrence).collect(),
                     primary_occurrence_id: None,
-                }
+                })
             }
             TransformTarget::Group(group_id) => {
                 self.select_group(group_id);
-                CorrectionSelection::Group(group_id)
+                Some(CorrectionSelection::Group(group_id))
             }
+            // Stays selected; a typed value after it starts a new move.
+            TransformTarget::Underlay(_) => None,
         };
-        self.record_transform_correction(
-            selection,
-            CorrectionOperation::Move(MoveCorrection {
-                direction: delta_mm * (1.0 / distance_mm),
-                applied_distance_mm: distance_mm,
-                accepts_vector_correction: false,
-            }),
-        );
+        match selection {
+            Some(selection) => self.record_transform_correction(
+                selection,
+                CorrectionOperation::Move(MoveCorrection {
+                    direction: delta_mm * (1.0 / distance_mm),
+                    applied_distance_mm: distance_mm,
+                    accepts_vector_correction: false,
+                }),
+            ),
+            None => self.end_transform_correction(),
+        }
         self.status_key = "status-object-moved";
         self.digest = self.catalog.format(
             "digest-move-committed",
@@ -474,6 +484,9 @@ impl KetchupApp {
     pub(crate) fn commit_rotate_drag(&mut self, drag: &RotateDrag) -> bool {
         self.gesture.transform.rotate_copy = false;
         self.transform_tool.input.reset();
+        if self.underlay_drag_refused(&drag.selection, drag.axis != Axis::Z) {
+            return false;
+        }
         if !self.rotate_preview_is_current(drag) {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
@@ -518,24 +531,28 @@ impl KetchupApp {
                 self.selection
                     .select_exact(primary_selection.clone(), false);
                 self.selection.occurrences = paths.clone();
-                CorrectionSelection::Occurrences {
+                Some(CorrectionSelection::Occurrences {
                     occurrence_ids: paths.iter().map(InstancePath::root_occurrence).collect(),
                     primary_occurrence_id: None,
-                }
+                })
             }
             TransformTarget::Group(group_id) => {
                 self.select_group(group_id);
-                CorrectionSelection::Group(group_id)
+                Some(CorrectionSelection::Group(group_id))
             }
+            TransformTarget::Underlay(_) => None,
         };
-        self.record_transform_correction(
-            selection,
-            CorrectionOperation::Rotate(RotateCorrection {
-                copy_source_occurrence_ids: None,
-                centre_mm,
-                axis,
-            }),
-        );
+        match selection {
+            Some(selection) => self.record_transform_correction(
+                selection,
+                CorrectionOperation::Rotate(RotateCorrection {
+                    copy_source_occurrence_ids: None,
+                    centre_mm,
+                    axis,
+                }),
+            ),
+            None => self.end_transform_correction(),
+        }
         self.status_key = "status-object-rotated";
         self.digest = self.catalog.format(
             "digest-rotate-committed",
@@ -1784,10 +1801,13 @@ impl KetchupApp {
                 source_revision,
                 primary_occurrence: selection.instance_path.root_occurrence(),
                 primary_definition: selection.definition_id,
-                target: group_id.map_or_else(
-                    || TransformTarget::Occurrences(occurrence_paths.clone()),
-                    TransformTarget::Group,
-                ),
+                target: match (&selection.element, group_id) {
+                    (ElementId::Underlay { underlay, .. }, _) => {
+                        TransformTarget::Underlay(*underlay)
+                    }
+                    (_, Some(group_id)) => TransformTarget::Group(group_id),
+                    (_, None) => TransformTarget::Occurrences(occurrence_paths.clone()),
+                },
                 world_edit,
             })
     }
@@ -1822,13 +1842,19 @@ impl KetchupApp {
         {
             return None;
         }
+        // An underlay moves in plan: a point picked above the ground lands where it lies in plan.
+        let delta_z = if underlay_of(&drag.selection).is_some() {
+            0.0
+        } else {
+            drag.delta_mm.z
+        };
         let request = self.transform_request(
             drag.source_document_id,
             drag.source_revision,
             &drag.selection,
             &drag.occurrence_paths,
             drag.group_id,
-            Transform::from_translation(drag.delta_mm.x, drag.delta_mm.y, drag.delta_mm.z).ok()?,
+            Transform::from_translation(drag.delta_mm.x, drag.delta_mm.y, delta_z).ok()?,
         )?;
         TransformPlan::prepare(&self.document.current(), request)
     }
@@ -1843,13 +1869,22 @@ impl KetchupApp {
         {
             return None;
         }
+        let world_edit = if underlay_of(&drag.selection).is_some() {
+            // Turned about Z only, built in the plane so the placement stays exactly planar.
+            if drag.axis != Axis::Z {
+                return None;
+            }
+            planar_turn([drag.centre_mm.x, drag.centre_mm.y], drag.angle_degrees).ok()?
+        } else {
+            world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees).ok()?
+        };
         let request = self.transform_request(
             drag.source_document_id,
             drag.source_revision,
             &drag.selection,
             &drag.occurrence_paths,
             drag.group_id,
-            world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees).ok()?,
+            world_edit,
         )?;
         TransformPlan::prepare(&self.document.current(), request)
     }
@@ -2173,6 +2208,9 @@ impl KetchupApp {
     }
 
     pub(crate) fn begin_move_drag_at(&mut self, pointer: Pos2, rect: Rect, copy: bool) -> bool {
+        if let Some(id) = self.selected_underlay() {
+            return self.begin_underlay_move(id, pointer, rect, copy);
+        }
         let snapshot = self.document.current();
         let circular_profile = (!copy)
             .then(|| self.circular_cut_profile_target_at_screen(&snapshot, pointer, rect))
@@ -2805,7 +2843,15 @@ impl KetchupApp {
     }
 
     pub(crate) fn begin_rotate_drag_at(&mut self, pointer: Pos2, rect: Rect, copy: bool) -> bool {
-        let selected = self.selected_move_reference();
+        let underlay = self.selected_underlay();
+        if underlay.is_some()
+            && self.underlay_copy_refused(copy || self.gesture.transform.rotate_copy)
+        {
+            return false;
+        }
+        let selected = underlay
+            .map(|id| underlay_reference(id, 0))
+            .or_else(|| self.selected_move_reference());
         let Some(selection) = selected.clone().or_else(|| {
             self.hover
                 .snap
@@ -2851,7 +2897,8 @@ impl KetchupApp {
                     self.rotation_centre_for(&applies)?,
                     axis,
                 )
-            });
+            })
+            .or_else(|| underlay.and_then(|_| self.screen_to_plane(pointer, rect, 0.0)));
         let Some(centre_mm) = centre_mm else {
             return false;
         };
