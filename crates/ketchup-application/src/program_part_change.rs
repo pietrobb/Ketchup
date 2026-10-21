@@ -10,7 +10,9 @@ use crate::rule_program::evaluate;
 use ketchup_model::document::{RuleProgramSource, Transform};
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM};
 use ketchup_program::frame::{self, Mat3};
-use ketchup_program::model::{Part, ProgramEdgeFinishKind, ProgramPartBody};
+use ketchup_program::model::{
+    Part, ProgramEdgeFinishKind, ProgramFeature, ProgramOperation, ProgramPartBody,
+};
 use ketchup_program::source_edit::{
     self, CreatingCall, number_literal, point_literal, quote, written, written_point,
 };
@@ -744,15 +746,30 @@ impl Edit<'_> {
                 .is_some_and(|after| (after - value).abs() <= ACCUMULATED_ROUNDING)
                 .then_some((rewritten, after))
         })?;
-        let parts = self.other_parts_changed(&after.model);
-        Some(if parts.is_empty() {
+        let changes = self.changed_besides(reading, &after.model);
+        Some(if changes.is_empty() {
             Driven::Alone(rewritten)
         } else {
             Driven::Shared {
                 parameter: parameter.clone(),
-                parts,
+                changes,
             }
         })
+    }
+
+    /// What `after` makes differently besides what `reading` reads of this
+    /// part: other parts and tools, other values of this part, and what the
+    /// program declares besides parts, each named for a message.
+    fn changed_besides(&self, reading: &Reading, after: &ProgramModel) -> Vec<String> {
+        let before = &self.evaluated.model;
+        let mut changes = (self.other_parts_changed(after).iter())
+            .map(|name| quote(name))
+            .collect::<Vec<_>>();
+        if let (Some(old), Some(new)) = (before.part(self.name), after.part(self.name)) {
+            changes.extend(own_values_changed(old, new, reading));
+        }
+        changes.extend(declarations_changed(before, after));
+        changes
     }
 
     /// The parts and tools other than this one that `after` adds, removes
@@ -884,11 +901,9 @@ impl Edit<'_> {
         let line = self
             .found_call()
             .map_or_else(String::new, |call| format!(" on line {}", call.lines.first));
-        if let Some(Driven::Shared { parameter, parts }) = driven {
-            let more = parts.len().saturating_sub(5);
-            let mut named = (parts.iter().take(5))
-                .map(|part| quote(part))
-                .collect::<Vec<_>>();
+        if let Some(Driven::Shared { parameter, changes }) = driven {
+            let more = changes.len().saturating_sub(5);
+            let mut named = changes.into_iter().take(5).collect::<Vec<_>>();
             if more > 0 {
                 named.push(format!("{more} more"));
             }
@@ -1022,14 +1037,162 @@ impl Edit<'_> {
 /// Name of the `push_pull()` that sets an extrusion's length typed for it.
 const LENGTH: &str = "Length";
 
+/// The values of part `old` besides what `reading` reads that `new` makes
+/// differently, named for a message: what the part is and how it is turned,
+/// the numbers of its feature tree and where its holes are on their faces.
+/// The points of a sketch the edit sets move together, so they are the one
+/// value, but a box's width and depth are two; an extrusion's length is its
+/// Pad with the Push/Pulls of the faces read.
+fn own_values_changed(old: &Part, new: &Part, reading: &Reading) -> Vec<String> {
+    let name = quote(&old.name);
+    let mut changes = Vec::new();
+    if let (serde_json::Value::Object(before), serde_json::Value::Object(after)) =
+        (skeleton(old), skeleton(new))
+    {
+        let keys = before.keys().chain(after.keys()).collect::<BTreeSet<_>>();
+        changes.extend(
+            (keys.into_iter())
+                .filter(|key| before.get(*key) != after.get(*key))
+                .map(|key| format!("{} of part {name}", key.replace('_', " "))),
+        );
+    }
+    let offset_face = |feature: &str| {
+        old.operations.iter().find_map(|operation| match operation {
+            ProgramOperation::FaceOffset(offset) if offset.name == feature => {
+                Some(offset.face.as_str())
+            }
+            _ => None,
+        })
+    };
+    let caps = match &old.body {
+        ProgramPartBody::Extrusion { caps, .. } => Some(caps),
+        _ => None,
+    };
+    let read = |feature: &ProgramFeature, path: &str| match reading {
+        Reading::Feature {
+            feature: read,
+            path: at,
+        } => {
+            feature.name == *read
+                && (path == at
+                    || (feature.kind == ProgramFeatureKind::Sketch
+                        && !(feature.parameters.iter())
+                            .any(|made| made.path.starts_with("bounds."))))
+        }
+        Reading::Length => {
+            feature.kind == ProgramFeatureKind::Pad
+                || offset_face(&feature.name).is_some_and(|face| {
+                    caps.is_some_and(|caps| {
+                        caps.iter().any(|cap| face.split('#').next() == Some(cap))
+                    })
+                })
+        }
+        Reading::Face(face) => {
+            (feature.kind == ProgramFeatureKind::Pad
+                && caps.is_some_and(|caps| face == "end" || *face == caps[1]))
+                || offset_face(&feature.name) == Some(face.as_str())
+        }
+        Reading::Operations => false,
+    };
+    let values = |part: &Part| {
+        let mut values = BTreeMap::new();
+        for feature in &part.features {
+            if feature.kind != ProgramFeatureKind::Workplane {
+                for made in &feature.parameters {
+                    values.insert((feature.name.clone(), made.path.clone()), made.value);
+                }
+            }
+        }
+        values
+    };
+    let now = values(new);
+    for feature in old.features.iter() {
+        for made in &feature.parameters {
+            let key = (feature.name.clone(), made.path.clone());
+            if feature.kind != ProgramFeatureKind::Workplane
+                && now.get(&key) != Some(&made.value)
+                && !read(feature, &made.path)
+            {
+                changes.push(format!("{} · {} of part {name}", key.0, key.1));
+            }
+        }
+    }
+    for (was, hole) in old.holes().zip(new.holes()) {
+        if was.at_mm != hole.at_mm {
+            changes.push(format!("where hole {} is on part {name}", quote(&was.id)));
+        }
+    }
+    changes
+}
+
+/// A part without the numbers its feature tree lists or that follow from
+/// them: its size, its place, the points and lengths of its body and of
+/// its operations. A shell's thickness and a swept or lofted body, which
+/// the tree does not list, stay.
+fn skeleton(part: &Part) -> serde_json::Value {
+    fn zeroed(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Number(_) => *value = 0.into(),
+            serde_json::Value::Array(items) => items.iter_mut().for_each(zeroed),
+            serde_json::Value::Object(fields) => fields.values_mut().for_each(zeroed),
+            _ => {}
+        }
+    }
+    let mut value = serde_json::to_value(part).expect("parts serialize");
+    if let Some(fields) = value.as_object_mut() {
+        for derived in ["size_mm", "at_mm", "features"] {
+            fields.remove(derived);
+        }
+        if matches!(
+            part.body,
+            ProgramPartBody::Extrusion { .. } | ProgramPartBody::Revolve { .. }
+        ) && let Some(body) = fields.get_mut("body")
+        {
+            zeroed(body);
+        }
+        if let Some(serde_json::Value::Array(operations)) = fields.get_mut("operations") {
+            for (operation, made) in operations.iter_mut().zip(&part.operations) {
+                if !matches!(made, ProgramOperation::Shell(_)) {
+                    zeroed(operation);
+                }
+            }
+        }
+    }
+    value
+}
+
+/// What the program declares besides its parameters, parts and tools
+/// (joints, loads, expectations, ...) that `after` declares differently,
+/// named for a message.
+fn declarations_changed(before: &ProgramModel, after: &ProgramModel) -> Vec<String> {
+    let fields = |model: &ProgramModel| {
+        let mut value = serde_json::to_value(model).expect("models serialize");
+        let mut fields = value
+            .as_object_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        for made in ["params", "parts", "tools"] {
+            fields.remove(made);
+        }
+        fields
+    };
+    let (before, after) = (fields(before), fields(after));
+    let keys = before.keys().chain(after.keys()).collect::<BTreeSet<_>>();
+    keys.into_iter()
+        .filter(|key| before.get(*key) != after.get(*key))
+        .map(|key| format!("the {} of the program", key.replace('_', " ")))
+        .collect()
+}
+
 /// What overriding the one `param()` that drives a part's value does.
 enum Driven {
     /// The overridden source, which changes this part alone.
     Alone(RuleProgramSource),
-    /// The `param()` changes these other parts too, or adds or removes them.
+    /// The `param()` changes these too: other parts it changes, adds or
+    /// removes, other values of this part, what the program declares.
     Shared {
         parameter: String,
-        parts: Vec<String>,
+        changes: Vec<String>,
     },
     /// The one `param()` that drives the value would have to be `value`,
     /// outside the range the program declares for it.

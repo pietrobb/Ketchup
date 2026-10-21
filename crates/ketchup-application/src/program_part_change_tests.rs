@@ -313,6 +313,68 @@ fn a_param_that_drives_other_parts_too_is_not_overridden() {
     others_same(&before, &after, "a");
 }
 
+/// Review 2026-10-21 WB-10: a param() that drove only this part was
+/// overridden even when it also set another value of the part (a box's depth
+/// with its width), a load or an expected gap.
+#[test]
+fn a_param_that_drives_more_of_the_part_or_the_program_is_not_overridden() {
+    let width = |source: &str| {
+        let before = model(&program(source));
+        refusal(
+            source,
+            "a",
+            PartChange::Parameter {
+                feature: feature_with(&before, "a", "bounds.width"),
+                path: "bounds.width".to_owned(),
+                value: 150.0,
+            },
+        )
+    };
+    let message = width("W = param(\"w\", 100)\nbox(\"a\", (W, W, 10))\n");
+    assert!(
+        message.contains("param(\"w\")") && message.contains("bounds.height of part \"a\""),
+        "{message}"
+    );
+    let message = width(
+        "W = param(\"w\", 100)\nbox(\"a\", (W, 20, 10))\n\
+         area_load(\"living\", kind=\"imposed\", kn_m2=W / 50, on=[\"a\"], source=\"test\")\n",
+    );
+    assert!(
+        message.contains("param(\"w\")") && message.contains("the area loads of the program"),
+        "{message}"
+    );
+    let message = width(
+        "W = param(\"w\", 100)\na = box(\"a\", (W, 20, 10))\n\
+         b = box(\"b\", (10, 20, 10), at=(300, 0, 0))\nexpect_gap(a, b, W + 100)\n",
+    );
+    assert!(
+        message.contains("the expectations of the program"),
+        "{message}"
+    );
+    // A length the param() also loads with is this part's own push_pull(),
+    // and the load stays.
+    let source = "H = param(\"h\", 18)\nbox(\"a\", (10, 20, H))\n\
+                  area_load(\"living\", kind=\"imposed\", kn_m2=H / 9, on=[\"a\"], source=\"test\")\n";
+    let before = model(&program(source));
+    let lengthened = change(
+        source,
+        "a",
+        PartChange::Parameter {
+            feature: feature_with(&before, "a", "extent.distance"),
+            path: "extent.distance".to_owned(),
+            value: 23.0,
+        },
+    );
+    assert!(
+        lengthened.overrides.is_empty(),
+        "{:?}",
+        lengthened.overrides
+    );
+    let after = model(&lengthened);
+    assert_eq!(Reading::Length.of(&after, "a"), Some(23.0));
+    assert_eq!(after.area_loads, before.area_loads);
+}
+
 #[test]
 fn a_side_of_the_cabinet_changes_alone() {
     let source = include_str!("../../../examples/programs/cabinet.star");
