@@ -1174,43 +1174,45 @@ fn conflicting_local_dependency_preserves_canonical_history_and_transforms() {
     );
 }
 
+/// Ungrounding a part of a sheet's rigid assembly is an ordinary edit: the
+/// sheet stays, and drawing it names the sheet that no longer draws a rigid
+/// component (review 2026-10-19 M-14).
 #[test]
-fn underconstrained_local_dependency_is_rejected_before_fork_preview() {
+fn ungrounding_a_drawn_assembly_part_is_applied_and_the_sheet_says_it_is_not_rigid() {
     let mut document = seed(false);
     let source = document.current();
-    let source_transforms = [FIRST, SECOND].map(|id| source.occurrence(id).unwrap().transform());
     let source_mates = source.assembly_mates().cloned().collect::<Vec<_>>();
-    let exact_results = registry(&source, "source-underconstrained");
-    let before = stamp(&document);
-    let results_before = exact_results.contents_stamp();
-    let saved_before = persistence::save(&source);
 
-    let failed = document.apply_batch(&CommandBatch::new(vec![
-        CanonicalCommand::SetOccurrenceGrounded {
-            id: SECOND,
-            grounded: false,
-        },
-    ]));
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: SECOND,
+                grounded: false,
+            },
+        ]))
+        .unwrap();
 
-    assert!(matches!(
-        failed,
-        Err(CanonicalError::Drawing(DrawingError::SourceNotRigid))
-    ));
-    assert_eq!(stamp(&document), before);
-    assert_eq!(exact_results.contents_stamp(), results_before);
-    assert_eq!(persistence::save(&document.current()), saved_before);
+    let edited = document.current();
+    assert!(!edited.occurrence_is_grounded(SECOND));
     assert_eq!(
-        [FIRST, SECOND].map(|id| document.current().occurrence(id).unwrap().transform()),
-        source_transforms
-    );
-    assert_eq!(
-        document
-            .current()
-            .assembly_mates()
-            .cloned()
-            .collect::<Vec<_>>(),
+        edited.assembly_mates().cloned().collect::<Vec<_>>(),
         source_mates
     );
+    let sheet = edited.drawing_sheet(SHEET).unwrap();
+    let exact_results = registry(&edited, "edited-underconstrained");
+    let refused = project_orthographic_drawing(&edited, &exact_results, sheet).unwrap_err();
+    assert_eq!(refused, DrawingError::SourceNotRigid(SHEET));
+    assert!(
+        refused.to_string().contains(&SHEET.0.to_string()),
+        "{refused}"
+    );
+    let reopened = persistence::load(&persistence::save(&edited))
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap()
+        .current();
+    assert_eq!(reopened.drawing_sheet(SHEET), Some(sheet));
 }
 
 #[test]

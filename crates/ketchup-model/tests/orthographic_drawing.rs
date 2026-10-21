@@ -826,7 +826,9 @@ fn under_constrained_assembly_source_is_rejected_without_mutation() {
     let before = stamp(&document);
     assert!(matches!(
         prepare_create_drawing_sheet(&document, &exact, assembly_sheet),
-        Err(DrawingAuthoringError::Drawing(DrawingError::SourceNotRigid))
+        Err(DrawingAuthoringError::Drawing(
+            DrawingError::SourceNotRigid(SHEET)
+        ))
     ));
     assert_eq!(stamp(&document), before);
 }

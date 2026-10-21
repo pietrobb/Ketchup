@@ -368,7 +368,8 @@ pub(super) fn validate_drawing_sheet(
     if sheet.schema() != crate::drawing::ORTHOGRAPHIC_DRAWING_SCHEMA_V2 {
         return Err(CanonicalError::Drawing(DrawingError::InvalidSheet));
     }
-    crate::drawing::validate_source(snapshot, sheet.source()).map_err(CanonicalError::Drawing)
+    crate::drawing::validate_source_identity(snapshot, sheet.source())
+        .map_err(CanonicalError::Drawing)
 }
 
 pub(super) fn validate_assembly_joint_motion_publication(

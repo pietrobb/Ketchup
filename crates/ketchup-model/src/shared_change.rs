@@ -448,7 +448,7 @@ pub fn project_occurrence_edit_impact(
             occurrence_ids: occurrence_ids_after.clone(),
         };
         let update = (!occurrence_ids_after.is_empty()
-            && validate_source(&dependency_candidate, &updated_source).is_ok())
+            && validate_source(&dependency_candidate, sheet_id, &updated_source).is_ok())
         .then(|| sheet.with_source(updated_source))
         .transpose()
         .map_err(|error| OccurrenceEditImpactError::InvalidCandidate(error.to_string()))?;

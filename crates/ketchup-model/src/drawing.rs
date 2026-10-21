@@ -2207,7 +2207,8 @@ pub enum DrawingError {
     SourceStale,
     SourceFailed,
     SourceAmbiguous,
-    SourceNotRigid,
+    /// The sheet draws an assembly that is not a resolved rigid component.
+    SourceNotRigid(DrawingSheetId),
     ScaledPlacement(ScaledPlacement),
     AssemblyNotSolved(Box<AssemblySolveError>),
     InvalidGeometry,
@@ -2230,6 +2231,14 @@ impl fmt::Display for DrawingError {
             Self::ScaledPlacement(error) => {
                 return write!(formatter, "drawing source cannot be projected: {error}");
             }
+            Self::SourceNotRigid(sheet) => {
+                return write!(
+                    formatter,
+                    "drawing sheet {} draws an assembly that is not a resolved rigid component; \
+                     ground or mate its parts, or point the sheet at the parts that stay rigid",
+                    sheet.0
+                );
+            }
             Self::InvalidSheet => "drawing sheet identity or source is invalid",
             Self::InvalidPageTemplate => "drawing page template or border is invalid",
             Self::InvalidScale => "drawing scale is invalid",
@@ -2249,7 +2258,6 @@ impl fmt::Display for DrawingError {
             Self::SourceStale => "drawing source geometry is stale",
             Self::SourceFailed => "drawing source geometry failed or is unavailable",
             Self::SourceAmbiguous => "drawing source geometry is ambiguous",
-            Self::SourceNotRigid => "drawing assembly source is not a resolved rigid component",
             Self::InvalidGeometry => "drawing source geometry is invalid",
             Self::ResourceLimit => "drawing projection exceeded its resource limit",
         })
@@ -2346,7 +2354,7 @@ pub fn project_orthographic_drawing(
     results: &ExactResultRegistry,
     sheet: &DrawingSheet,
 ) -> Result<OrthographicDrawing, DrawingError> {
-    validate_source(snapshot, sheet.source())?;
+    validate_source(snapshot, sheet.id(), sheet.source())?;
     let instances = source_instances(snapshot, results, sheet.source())?;
     let stable_source_identity = stable_source_identity(sheet.source(), &instances);
     let mut views = Vec::with_capacity(sheet.views().len());
@@ -2368,35 +2376,43 @@ pub fn project_orthographic_drawing(
     })
 }
 
-pub(crate) fn validate_source(
-    snapshot: &Snapshot,
+/// The instance paths a rigid-assembly source draws, or the definition a
+/// definition source draws.
+fn rigid_source_paths(
     source: &DrawingSource,
-) -> Result<(), DrawingError> {
+) -> Result<std::borrow::Cow<'_, [InstancePath]>, DefinitionId> {
     match source {
-        DrawingSource::Definition(id) => {
-            if snapshot.definition(*id).is_none() {
-                return Err(DrawingError::SourceLost);
-            }
-        }
-        DrawingSource::RigidAssembly { occurrence_ids } => {
-            let instance_paths = occurrence_ids
+        DrawingSource::Definition(id) => Err(*id),
+        DrawingSource::RigidAssembly { occurrence_ids } => Ok(std::borrow::Cow::Owned(
+            occurrence_ids
                 .iter()
                 .copied()
                 .map(InstancePath::root)
-                .collect::<Vec<_>>();
-            validate_rigid_source(snapshot, &instance_paths)?;
-        }
+                .collect(),
+        )),
         DrawingSource::RigidAssemblyInstances { instance_paths } => {
-            validate_rigid_source(snapshot, instance_paths)?;
+            Ok(std::borrow::Cow::Borrowed(instance_paths))
         }
     }
-    Ok(())
 }
 
-fn validate_rigid_source(
+/// What a stored sheet needs of the document: everything it draws exists.
+/// Whether an assembly is still rigid is checked where the sheet is drawn, so
+/// ungrounding a part or mating it out of the assembly is not refused for the
+/// sheet (review 2026-10-19 M-14).
+pub(crate) fn validate_source_identity(
     snapshot: &Snapshot,
-    instance_paths: &[InstancePath],
+    source: &DrawingSource,
 ) -> Result<(), DrawingError> {
+    let instance_paths = match rigid_source_paths(source) {
+        Ok(instance_paths) => instance_paths,
+        Err(id) => {
+            return snapshot
+                .definition(id)
+                .map(drop)
+                .ok_or(DrawingError::SourceLost);
+        }
+    };
     if instance_paths.len() > limits::EXPORT_INSTANCES {
         return Err(DrawingError::ResourceLimit);
     }
@@ -2408,11 +2424,34 @@ fn validate_rigid_source(
     {
         return Err(DrawingError::SourceLost);
     }
+    Ok(())
+}
+
+/// [`validate_source_identity`], and an assembly source of `sheet` is a
+/// resolved rigid component.
+pub(crate) fn validate_source(
+    snapshot: &Snapshot,
+    sheet: DrawingSheetId,
+    source: &DrawingSource,
+) -> Result<(), DrawingError> {
+    validate_source_identity(snapshot, source)?;
+    if let Ok(instance_paths) = rigid_source_paths(source)
+        && !rigid_source_is_rigid(snapshot, &instance_paths)?
+    {
+        return Err(DrawingError::SourceNotRigid(sheet));
+    }
+    Ok(())
+}
+
+fn rigid_source_is_rigid(
+    snapshot: &Snapshot,
+    instance_paths: &[InstancePath],
+) -> Result<bool, DrawingError> {
     if !instance_paths
         .iter()
         .any(|path| snapshot.occurrence_is_grounded(path.root_occurrence()))
     {
-        return Err(DrawingError::SourceNotRigid);
+        return Ok(false);
     }
     let mut has_internal_mate = false;
     for mate in snapshot.assembly_mates() {
@@ -2427,7 +2466,7 @@ fn validate_rigid_source(
                 && (mate.endpoint_a().health() != AssemblyReferenceHealth::Resolved
                     || mate.endpoint_b().health() != AssemblyReferenceHealth::Resolved))
         {
-            return Err(DrawingError::SourceNotRigid);
+            return Ok(false);
         }
         has_internal_mate |= a_in && b_in;
     }
@@ -2435,25 +2474,21 @@ fn validate_rigid_source(
         .iter()
         .all(|path| snapshot.occurrence_is_grounded(path.root_occurrence()))
     {
-        return Ok(());
+        return Ok(true);
     }
     if !has_internal_mate {
-        return Err(DrawingError::SourceNotRigid);
+        return Ok(false);
     }
     let solved = solve_rigid_assembly(snapshot, AssemblySolverPolicy::default())
         .map_err(|error| DrawingError::AssemblyNotSolved(Box::new(error)))?;
-    if solved.status() != AssemblySolveStatus::FullyConstrained
-        || !solved.conflicting_mate_ids().is_empty()
-        || !solved.maximum_residual().is_finite()
-        || instance_paths.iter().any(|path| {
+    Ok(solved.status() == AssemblySolveStatus::FullyConstrained
+        && solved.conflicting_mate_ids().is_empty()
+        && solved.maximum_residual().is_finite()
+        && instance_paths.iter().all(|path| {
             solved
                 .occurrence_at_path(path)
-                .is_none_or(|occurrence| occurrence.remaining_dof() != 0)
-        })
-    {
-        return Err(DrawingError::SourceNotRigid);
-    }
-    Ok(())
+                .is_some_and(|occurrence| occurrence.remaining_dof() == 0)
+        }))
 }
 
 #[derive(Clone)]
