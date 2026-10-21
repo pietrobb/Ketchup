@@ -478,9 +478,10 @@ fn a_typed_length_keeps_the_push_pulls_of_other_lines() {
     let typed = set_length(&set_length(&pushed, 30.0).unwrap().unwrap(), 25.0)
         .unwrap()
         .unwrap();
-    // The extrusion is 25 long and the 2 below it stays: 27 in all.
-    assert_eq!(length(&typed), 27.0);
+    // The part is 25 long: the 2 below it stays and the extrusion is 23.
+    assert_eq!(length(&typed), 25.0);
     assert_eq!(typed.source.matches("name=\"Length\"").count(), 1);
+    assert!(typed.source.contains("distance=2, name=\"Lower\""));
 }
 
 #[test]
@@ -492,12 +493,17 @@ fn a_length_of_zero_or_less_is_refused_and_the_program_stays() {
             "{refusal}"
         );
     }
-    // A pull of 15 below leaves a length of 10 at -5.
+    // A push of 15 below leaves the extrusion -5 for a part 10 long.
+    let pushed = program(&format!(
+        "{PADDED}push_pull(\"a\", face=\"z-\", distance=15, name=\"Lower\")\n"
+    ));
+    let refusal = set_length(&pushed, 10.0).expect_err("refused");
+    assert!(refusal.to_string().contains("-5 mm long"), "{refusal}");
+    // A pull of 15 below makes the extrusion 25 for a part 10 long.
     let pulled = program(&format!(
         "{PADDED}push_pull(\"a\", face=\"z-\", distance=-15, name=\"Lower\")\n"
     ));
-    let refusal = set_length(&pulled, 10.0).expect_err("refused");
-    assert!(refusal.to_string().contains("-5 mm long"), "{refusal}");
+    assert_eq!(length(&set_length(&pulled, 10.0).unwrap().unwrap()), 10.0);
 }
 
 /// WB-8: once a param() drives the length alone again, the length line is
@@ -550,19 +556,26 @@ fn a_value_past_the_range_of_its_param_is_refused_with_the_range() {
     );
 }
 
-/// WB-8: a param() that drives the length alone is checked with the
-/// Push/Pulls of other lines, so a pull that leaves -5 is refused.
+/// WB-8: a param() that drives the length alone is set so the part with the
+/// Push/Pulls of other lines is as long as typed; only a parameter of 0 or
+/// less is refused.
 #[test]
-fn a_param_driven_length_is_refused_when_other_pulls_leave_zero_or_less() {
+fn a_param_driven_length_makes_the_typed_length_with_other_pulls() {
     let source = program(
         "H = param(\"h\", 30)\n\
          box(\"a\", (10, 20, H), at=(0, 0, 0))\n\
          push_pull(\"a\", face=\"z+\", distance=-15, name=\"Shorter\")\n",
     );
-    let refusal = set_length(&source, 10.0).expect_err("refused");
+    for (value, h) in [(10.0, 25.0), (25.0, 40.0)] {
+        let typed = set_length(&source, value).unwrap().unwrap();
+        assert_eq!(typed.overrides["h"], h);
+        assert_eq!(length(&typed), value);
+    }
+    let pushed = program(
+        "H = param(\"h\", 30)\n\
+         box(\"a\", (10, 20, H), at=(0, 0, 0))\n\
+         push_pull(\"a\", face=\"z+\", distance=15, name=\"Longer\")\n",
+    );
+    let refusal = set_length(&pushed, 10.0).expect_err("refused");
     assert!(refusal.to_string().contains("-5 mm long"), "{refusal}");
-    // Typed 25, the parameter is 25 and the part 10 long with the pull.
-    let typed = set_length(&source, 25.0).unwrap().unwrap();
-    assert_eq!(typed.overrides["h"], 25.0);
-    assert_eq!(length(&typed), 10.0);
 }

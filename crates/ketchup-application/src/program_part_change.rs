@@ -910,12 +910,13 @@ impl Edit<'_> {
         ))
     }
 
-    /// The extrusion `feature`, `pad` long as the program writes it, made
-    /// `value` long: by the one `param()` that alone makes its length, else
-    /// by one `push_pull()` of its `end` named [`LENGTH`]. A value typed
-    /// again writes that line again, so it replaces the first value instead
-    /// of adding to it; the Push/Pulls of other lines stay, and the whole
-    /// length with them must stay above 0.
+    /// The part of the extrusion `feature`, `pad` long as the program writes
+    /// it, made `value` long in all: by the one `param()` that alone makes
+    /// its length, else by one `push_pull()` of its `end` named [`LENGTH`].
+    /// A value typed again writes that line again, so it replaces the first
+    /// value instead of adding to it. The Push/Pulls of other lines stay, so
+    /// the extrusion is made `value` less what they add, and a value they
+    /// leave no extrusion above 0 for is refused.
     fn length(
         &self,
         feature: &str,
@@ -937,16 +938,27 @@ impl Edit<'_> {
         let others = length.map_or(0.0, |length| {
             length - pad - written_before.unwrap_or_default()
         });
-        let total = value + others;
-        if !total.is_finite() || total <= DEFAULT_LINEAR_TOLERANCE_MM {
-            return Err(self.too_short(feature, total));
+        if !value.is_finite() || value <= DEFAULT_LINEAR_TOLERANCE_MM {
+            return Err(self.too_short(feature, value));
+        }
+        let extrusion = value - others;
+        if extrusion <= DEFAULT_LINEAR_TOLERANCE_MM {
+            return Err(refused(
+                "program_length_not_positive",
+                format!(
+                    "{feature} of part {name} would be {} mm long for the part to be {} mm long with the Push/Pulls of other lines; type a length above {}",
+                    number_literal(written(extrusion)),
+                    number_literal(written(value)),
+                    number_literal(written(others))
+                ),
+            ));
         }
         // With no line of its own yet, the one param() that makes the whole
         // length alone is overridden; once the line is there, it is written
         // again, so a parameter never adds to it.
-        match self.driven(&Reading::Length, total) {
+        match self.driven(&Reading::Length, value) {
             Some(Driven::Alone(rewritten)) if written_before.is_none() => {
-                return Ok((rewritten, self.reads(Reading::Length, total)));
+                return Ok((rewritten, self.reads(Reading::Length, value)));
             }
             Some(driven) => {
                 // The length line would pass by the range the program
@@ -957,7 +969,7 @@ impl Edit<'_> {
             }
             None => {}
         }
-        let distance = written(value - pad);
+        let distance = written(extrusion - pad);
         let line = (distance.abs() > DEFAULT_LINEAR_TOLERANCE_MM).then(|| {
             format!(
                 "push_pull({name}, face={}, distance={}, name={})\n",
@@ -988,7 +1000,7 @@ impl Edit<'_> {
             (None, Some(line)) => self.appended(&line),
             (None, None) => self.source.clone(),
         };
-        Ok((rewritten, self.reads(Reading::Length, total)))
+        Ok((rewritten, self.reads(Reading::Length, value)))
     }
 
     fn too_short(&self, feature: &str, length: f64) -> RuleProgramApplyError {
