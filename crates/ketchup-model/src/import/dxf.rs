@@ -37,6 +37,8 @@ struct DxfReading {
     chain: bool,
     /// Leaves out, and counts, an entity it cannot read instead of refusing the file.
     skip_unreadable: bool,
+    /// Reads texts and attributes instead of reporting them unsupported or dropped.
+    texts: bool,
 }
 
 const PROFILE_READING: DxfReading = DxfReading {
@@ -46,6 +48,7 @@ const PROFILE_READING: DxfReading = DxfReading {
     max_segments: MAX_DXF_SEGMENTS_PER_PROFILE,
     chain: true,
     skip_unreadable: false,
+    texts: false,
 };
 
 /// No limit, yet small enough that the `+ 1` of a check cannot overflow.
@@ -58,9 +61,12 @@ const UNDERLAY_READING: DxfReading = DxfReading {
     max_segments: UNBOUNDED,
     chain: false,
     skip_unreadable: true,
+    texts: true,
 };
 
+mod text;
 mod underlay;
+use text::OrderedText;
 pub use underlay::{DxfUnderlay, read_dxf_underlay, read_dxf_underlay_from};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -375,6 +381,13 @@ impl From<LooseSegment> for OrderedProfile {
 struct BlockDefinition {
     base_mm: [f64; 2],
     profiles: Vec<OrderedProfile>,
+    texts: Vec<OrderedText>,
+}
+
+impl BlockDefinition {
+    fn is_empty(&self) -> bool {
+        self.profiles.is_empty() && self.texts.is_empty()
+    }
 }
 
 #[derive(Clone)]
@@ -395,6 +408,16 @@ struct ParsedEntities {
     loose: Vec<LooseSegment>,
     explicit_profiles: Vec<OrderedProfile>,
     layers: BTreeSet<String>,
+    texts: Vec<OrderedText>,
+}
+
+impl ParsedEntities {
+    fn push_texts(&mut self, texts: impl IntoIterator<Item = OrderedText>) {
+        for text in texts {
+            self.layers.insert(text.layer.clone());
+            self.texts.push(text);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1000,6 +1023,7 @@ fn resolve_block<'a>(
         BlockDefinition {
             base_mm: raw.base_mm,
             profiles,
+            texts: parsed_entities.texts,
         },
     );
     resolution.resolving.remove(key);
@@ -1153,35 +1177,42 @@ fn parse_entities(
                 }
                 "INSERT" => {
                     let profile_ordinal = ordinal;
-                    parse_insert_attributes(
+                    let attributes = parse_insert_attributes(
                         record,
                         pairs,
                         &mut index,
                         &mut ordinal,
                         entity_count,
+                        units,
                         diagnostics,
                     )?;
                     let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
-                    for profile in parse_insert(
+                    let (profiles, texts) = parse_insert(
                         record,
                         units,
                         profile_ordinal,
                         block_definitions,
                         entity_count,
                         diagnostics,
-                    )? {
+                    )?;
+                    for profile in profiles {
                         output.layers.insert(profile.layer.clone());
                         output.explicit_profiles.push(profile);
                     }
+                    output.push_texts(texts.into_iter().chain(attributes));
                 }
                 "DIMENSION" => {
                     let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
-                    for profile in
-                        parse_dimension(record, units, ordinal, block_definitions, diagnostics)?
-                    {
+                    let (profiles, texts) =
+                        parse_dimension(record, units, ordinal, block_definitions, diagnostics)?;
+                    for profile in profiles {
                         output.layers.insert(profile.layer.clone());
                         output.explicit_profiles.push(profile);
                     }
+                    output.push_texts(texts);
+                }
+                "TEXT" | "MTEXT" | "ATTDEF" if diagnostics.reading.texts => {
+                    output.push_texts(text::parse_text(&kind, record, units, diagnostics)?);
                 }
                 "POLYLINE" => {
                     for profile in parse_polyline(
@@ -3012,7 +3043,7 @@ fn parse_dimension(
     ordinal: usize,
     blocks: &BTreeMap<String, BlockDefinition>,
     diagnostics: &mut DiagnosticCounts,
-) -> Result<Vec<OrderedProfile>, DxfImportError> {
+) -> Result<(Vec<OrderedProfile>, Vec<OrderedText>), DxfImportError> {
     let layer = parse_layer(record)?;
     ensure_planar(record)?;
     report_ignored_groups(
@@ -3035,7 +3066,7 @@ fn parse_dimension(
     }
     let block = blocks
         .get(&key)
-        .filter(|block| !block.profiles.is_empty() && block.base_mm == [0.0, 0.0])
+        .filter(|block| !block.is_empty() && block.base_mm == [0.0, 0.0])
         .ok_or(DxfImportError::InvalidBlock)?;
     let clone_x = parse_optional_number(record, 12)?;
     let clone_y = parse_optional_number(record, 22)?;
@@ -3088,7 +3119,16 @@ fn parse_dimension(
         Some(name.to_owned()),
         1,
     )?;
-    Ok(profiles)
+    let texts = text::place_texts(
+        &block.texts,
+        &layer,
+        [0.0, 0.0],
+        clone_offset_mm,
+        [1.0, 1.0],
+        0.0,
+        1.0,
+    )?;
+    Ok((profiles, texts))
 }
 
 fn parse_insert(
@@ -3098,7 +3138,7 @@ fn parse_insert(
     blocks: &BTreeMap<String, BlockDefinition>,
     entity_count: &mut usize,
     diagnostics: &mut DiagnosticCounts,
-) -> Result<Vec<OrderedProfile>, DxfImportError> {
+) -> Result<(Vec<OrderedProfile>, Vec<OrderedText>), DxfImportError> {
     let layer = parse_layer(record)?;
     ensure_planar(record)?;
     report_ignored_groups(
@@ -3145,7 +3185,7 @@ fn parse_insert(
     let name = parse_required_text(record, 2)?;
     let block = blocks
         .get(&block_name_key(name)?)
-        .filter(|block| !block.profiles.is_empty())
+        .filter(|block| !block.is_empty())
         .ok_or(DxfImportError::InvalidBlock)?;
     if scale_x.abs() != scale_y.abs()
         && block.profiles.iter().any(|profile| {
@@ -3172,6 +3212,7 @@ fn parse_insert(
     let insertion_mm = parse_xy(record, 10, 20, unit_scale)?;
     let (rotation_sin, rotation_cos) = deterministic_sin_cos_degrees(rotation_degrees);
     let mut profiles = Vec::with_capacity(expanded_profile_count);
+    let mut texts = Vec::new();
     for row in 0..row_count {
         for column in 0..column_count {
             let array_offset_mm = [
@@ -3214,6 +3255,15 @@ fn parse_insert(
                     closed: profile.closed,
                 });
             }
+            texts.append(&mut text::place_texts(
+                &block.texts,
+                &layer,
+                block.base_mm,
+                array_insertion_mm,
+                [scale_x, scale_y],
+                rotation_sin,
+                rotation_cos,
+            )?);
         }
     }
     diagnostics.add(
@@ -3223,7 +3273,7 @@ fn parse_insert(
         u32::try_from(placement_count)
             .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyEntities)?,
     )?;
-    Ok(profiles)
+    Ok((profiles, texts))
 }
 
 fn parse_insert_attributes(
@@ -3232,15 +3282,18 @@ fn parse_insert_attributes(
     index: &mut usize,
     ordinal: &mut usize,
     entity_count: &mut usize,
+    units: ImportUnitDecision,
     diagnostics: &mut DiagnosticCounts,
-) -> Result<(), DxfImportError> {
+) -> Result<Vec<OrderedText>, DxfImportError> {
     match parse_optional_i64(insert_record, 66)? {
-        None | Some(0) => return Ok(()),
+        None | Some(0) => return Ok(Vec::new()),
         Some(1) => {}
         Some(_) => return Err(DxfImportError::MalformedPairs),
     }
     let block_name = parse_required_text(insert_record, 2)?;
+    let insert_layer = parse_layer(insert_record)?;
     let mut attribute_count = 0_u32;
+    let mut texts = Vec::new();
     loop {
         if *index >= pairs.len() || pairs[*index].code != 0 || pairs[*index].value.is_empty() {
             return Err(DxfImportError::MalformedPairs);
@@ -3260,6 +3313,23 @@ fn parse_insert_attributes(
                 attribute_count = attribute_count
                     .checked_add(1)
                     .ok_or(DxfImportError::TooManyEntities)?;
+                if diagnostics.reading.texts {
+                    // An attribute it cannot read is counted; the insert's lines stay.
+                    match text::parse_text("ATTRIB", record, units, diagnostics) {
+                        Ok(text) => texts.extend(text.map(|mut text| {
+                            if text.layer == "0" {
+                                text.layer.clone_from(&insert_layer);
+                            }
+                            text
+                        })),
+                        Err(error) => diagnostics.add(
+                            ImportDiagnosticSeverity::Warning,
+                            "dxf.entity-unreadable",
+                            Some(format!("ATTRIB: {error}")),
+                            1,
+                        )?,
+                    }
+                }
             }
             "SEQEND" => {
                 if attribute_count == 0 {
@@ -3272,13 +3342,15 @@ fn parse_insert_attributes(
             _ => return Err(DxfImportError::MalformedPairs),
         }
     }
-    diagnostics.add(
-        ImportDiagnosticSeverity::Warning,
-        "dxf.insert-attributes-dropped",
-        Some(block_name.to_owned()),
-        attribute_count,
-    )?;
-    Ok(())
+    if !diagnostics.reading.texts {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Warning,
+            "dxf.insert-attributes-dropped",
+            Some(block_name.to_owned()),
+            attribute_count,
+        )?;
+    }
+    Ok(texts)
 }
 
 fn validate_insert_attribute(record: &[DxfPair<'_>]) -> Result<(), DxfImportError> {
@@ -3300,6 +3372,30 @@ fn validate_insert_attribute(record: &[DxfPair<'_>]) -> Result<(), DxfImportErro
     Ok(())
 }
 
+/// A point of a block where an INSERT places it: from the block's base, scaled, turned and
+/// moved to the insertion point.
+fn place_point(
+    point: [f64; 2],
+    base_mm: [f64; 2],
+    insertion_mm: [f64; 2],
+    scale: [f64; 2],
+    rotation_sin: f64,
+    rotation_cos: f64,
+) -> Result<[f64; 2], DxfImportError> {
+    let relative = [
+        (point[0] - base_mm[0]) * scale[0],
+        (point[1] - base_mm[1]) * scale[1],
+    ];
+    Ok([
+        normalize_coordinate(
+            insertion_mm[0] + relative[0] * rotation_cos - relative[1] * rotation_sin,
+        )?,
+        normalize_coordinate(
+            insertion_mm[1] + relative[0] * rotation_sin + relative[1] * rotation_cos,
+        )?,
+    ])
+}
+
 fn transform_segment(
     segment: &ProfileSegment,
     base_mm: [f64; 2],
@@ -3309,18 +3405,14 @@ fn transform_segment(
     rotation_cos: f64,
 ) -> Result<ProfileSegment, DxfImportError> {
     let transform = |point: [f64; 2]| {
-        let relative = [
-            (point[0] - base_mm[0]) * scale[0],
-            (point[1] - base_mm[1]) * scale[1],
-        ];
-        Ok([
-            normalize_coordinate(
-                insertion_mm[0] + relative[0] * rotation_cos - relative[1] * rotation_sin,
-            )?,
-            normalize_coordinate(
-                insertion_mm[1] + relative[0] * rotation_sin + relative[1] * rotation_cos,
-            )?,
-        ])
+        place_point(
+            point,
+            base_mm,
+            insertion_mm,
+            scale,
+            rotation_sin,
+            rotation_cos,
+        )
     };
     match segment {
         ProfileSegment::Line { start_mm, end_mm } => {

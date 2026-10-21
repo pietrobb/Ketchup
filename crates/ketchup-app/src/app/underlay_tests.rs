@@ -5,13 +5,13 @@ use crate::app::dwg_import::LAYERED_DRAWING_DXF;
 use crate::*;
 
 /// The vertex count each underlay of the frame draws.
-fn drawn(app: &mut KetchupApp) -> Vec<u32> {
+fn drawn(app: &mut KetchupApp) -> Vec<u64> {
     app.underlay_draws()
         .iter()
         .map(|draw| {
             draw.visible
                 .iter()
-                .map(|range| range.end - range.start)
+                .map(|&layer| draw.geometry.layer_vertices(layer))
                 .sum()
         })
         .collect()
@@ -64,6 +64,45 @@ fn an_underlay_imports_in_one_undo_step_and_its_tags_hide_the_drawing_or_one_lay
     }
     assert_eq!(app.document.current().underlays().count(), 0);
     assert!(drawn(&mut app).is_empty());
+}
+
+#[test]
+fn an_underlay_draws_its_texts_on_their_layer_which_hides_them() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("labelled.dxf");
+    std::fs::write(
+        &path,
+        concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nLINE\n8\nwalls\n10\n0\n20\n0\n11\n4000\n21\n0\n",
+            "0\nTEXT\n8\nlabels\n10\n500\n20\n500\n40\n250\n1\nKitchen\n",
+            "0\nENDSEC\n0\nEOF\n",
+        ),
+    )
+    .unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &path);
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    let underlay = app
+        .document
+        .current()
+        .underlays()
+        .next()
+        .unwrap_or_else(|| panic!("no underlay: {}", app.action_digest()))
+        .clone();
+    assert!(
+        app.action_digest().contains("1 texts"),
+        "{}",
+        app.action_digest()
+    );
+
+    // The wall is two vertices; the letters of "Kitchen" are many more.
+    let all = drawn(&mut app);
+    assert!(all[0] > 100, "{all:?}");
+    let labels = underlay.layers.iter().find(|layer| layer.name == "labels");
+    assert!(app.set_tag_visibility(labels.unwrap().tag, false));
+    assert_eq!(drawn(&mut app), vec![2]);
 }
 
 #[test]

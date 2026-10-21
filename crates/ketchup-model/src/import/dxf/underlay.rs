@@ -1,8 +1,8 @@
 //! A DXF drawing read as an underlay: every line, arc and curve it draws, by layer, as
-//! polylines, without making profiles of them. An entity it cannot read is left out and
-//! counted in the report. A drawing whose coordinates leave the canonical envelope, such
-//! as one in national grid coordinates, is moved near the origin by an offset the report
-//! names and the underlay keeps.
+//! polylines, without making profiles of them, and its texts. An entity it cannot read is
+//! left out and counted in the report. A drawing whose coordinates leave the canonical
+//! envelope, such as one in national grid coordinates, is moved near the origin by an
+//! offset the report names and the underlay keeps.
 //!
 //! The drawing is read line by line, never whole: a first pass finds its text encoding, a
 //! second checks its sections and keeps its header and blocks, and a third reads its
@@ -77,11 +77,15 @@ pub fn read_dxf_underlay_from(
         for profile in &parsed.explicit_profiles {
             builder.add(&profile.layer, &profile.segments);
         }
+        for text in parsed.texts.drain(..) {
+            builder.add_text(&text.layer, text.text);
+        }
         layers.append(&mut parsed.layers);
         entity.clear();
         Ok::<_, DxfImportError>(())
     };
     reader.skip_to_section("ENTITIES")?;
+    reader.in_drawing = true;
     let mut value = String::new();
     // An entity ends where the next begins, unless it waits for its SEQEND: a POLYLINE
     // always, an INSERT whose own record has group 66 = 1 (as the profile import reads
@@ -114,16 +118,22 @@ pub fn read_dxf_underlay_from(
         read_entity(&mut entity, &mut diagnostics)?;
     }
     let (layer_names, mut lines) = builder.finish();
-    let (offset_mm, outside) = lines.move_near_origin();
-    if outside > 0 {
-        diagnostics.add(
-            ImportDiagnosticSeverity::Warning,
-            "dxf.lines-outside-envelope",
-            None,
-            u32::try_from(outside).unwrap_or(u32::MAX),
-        )?;
+    let moved = lines.move_near_origin();
+    let offset_mm = moved.offset_mm;
+    for (code, outside) in [
+        ("dxf.lines-outside-envelope", moved.segments_outside),
+        ("dxf.texts-outside-envelope", moved.texts_outside),
+    ] {
+        if outside > 0 {
+            diagnostics.add(
+                ImportDiagnosticSeverity::Warning,
+                code,
+                None,
+                u32::try_from(outside).unwrap_or(u32::MAX),
+            )?;
+        }
     }
-    if lines.segment_count() == 0 {
+    if lines.segment_count() == 0 && lines.text_count() == 0 {
         return Err(DxfImportError::NoSupportedGeometry);
     }
     let diagnostics = finish_report(diagnostics, &layers, units, offset_mm)?;
@@ -212,6 +222,7 @@ fn read_sections(
             return Err(DxfImportError::MalformedSections);
         }
         let name = value.to_ascii_uppercase();
+        reader.in_drawing = name != "HEADER";
         let mut kept = match name.as_str() {
             "HEADER" => Some(&mut sections.header),
             "BLOCKS" => Some(&mut sections.blocks),
@@ -310,6 +321,8 @@ struct PairReader<'a, R> {
     source: &'a mut R,
     encoding: Option<&'static encoding_rs::Encoding>,
     line: Vec<u8>,
+    /// Past the header: in the blocks or entities, whose texts keep their spaces.
+    in_drawing: bool,
 }
 
 impl<'a, R: BufRead + Seek> PairReader<'a, R> {
@@ -322,13 +335,16 @@ impl<'a, R: BufRead + Seek> PairReader<'a, R> {
             source,
             encoding,
             line: Vec::new(),
+            in_drawing: false,
         })
     }
 }
 
 impl<R: BufRead> PairReader<'_, R> {
     /// The next pair's code, its value in `value`; `None` at the end of the drawing.
-    /// Comments (group 999) are passed over.
+    /// Comments (group 999) are passed over. A value is trimmed, but out of the header
+    /// the text of a text (groups 1 and 3) is not: its spaces are part of it, and an MTEXT
+    /// is cut into pieces wherever 250 characters end, at a space too.
     fn next_pair(&mut self, value: &mut String) -> Result<Option<i16>, DxfImportError> {
         loop {
             if !self.next_line(value)? {
@@ -339,7 +355,7 @@ impl<R: BufRead> PairReader<'_, R> {
                 return Err(DxfImportError::MalformedPairs);
             }
             let trimmed = value.trim();
-            if trimmed.len() != value.len() {
+            if trimmed.len() != value.len() && !(self.in_drawing && matches!(code, 1 | 3)) {
                 *value = trimmed.to_owned();
             }
             if code != 999 {

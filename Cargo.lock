@@ -2347,6 +2347,7 @@ dependencies = [
 name = "ketchup-app"
 version = "0.2.0"
 dependencies = [
+ "ab_glyph",
  "eframe",
  "egui_kittest",
  "getrandom 0.3.4",

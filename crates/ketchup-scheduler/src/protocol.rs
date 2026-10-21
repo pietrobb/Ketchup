@@ -318,6 +318,7 @@ pub struct UnderlayRead {
     pub layers: Vec<String>,
     pub units: ImportUnitDecision,
     pub segments: usize,
+    pub texts: usize,
     /// What the lines were moved by from the drawing's own coordinates.
     pub offset_mm: [f64; 2],
     pub diagnostics: Vec<ImportDiagnostic>,

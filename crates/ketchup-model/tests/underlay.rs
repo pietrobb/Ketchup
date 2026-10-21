@@ -89,7 +89,7 @@ fn a_drawing_read_line_by_line_keeps_entities_that_wait_for_their_seqend_whole()
         "0\nVERTEX\n8\nwalls\n10\n0\n20\n0\n0\nVERTEX\n8\nwalls\n10\n5\n20\n0\n",
         "0\nVERTEX\n8\nwalls\n10\n5\n20\n5\n0\nSEQEND\n",
         "0\nINSERT\n8\ndoors\n2\npart\n10\n0\n20\n0\n66\n1\n",
-        "0\nATTRIB\n2\nNAME\n1\nfirst\n10\n0\n20\n0\n0\nSEQEND\n",
+        "0\nATTRIB\n2\nNAME\n1\nfirst\n10\n0\n20\n0\n40\n2.5\n0\nSEQEND\n",
         "0\nLINE\n8\naxes\n10\n0\n20\n0\n11\n0\n21\n7\n",
     );
     let source = format!(

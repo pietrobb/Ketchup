@@ -5,9 +5,10 @@
 //! exports and validators never meet it. The document keeps its name, its layers and the
 //! tags that show them; its lines are one blob of the document's container
 //! ([`UnderlayLines::encode`]), shared by every revision, so an Undo history does not copy
-//! them.
+//! them. The texts of a layer travel with its lines; snapping only meets the lines.
 
 pub mod snap;
+pub mod text;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -16,6 +17,7 @@ use ketchup_geometry::typed_id;
 
 use crate::document::{CanonicalCommand, CommandBatch, ProfileSegment, Snapshot, TagId};
 use crate::tolerance::{MAX_COORDINATE_MM, UNDERLAY_ARC_CHORD_MM};
+use text::UnderlayText;
 
 typed_id!(UnderlayId);
 
@@ -70,15 +72,26 @@ pub struct UnderlayLines {
     layers: Vec<LayerLines>,
 }
 
-/// The polylines of one layer: their points one after another, and where each ends.
+/// The polylines of one layer: their points one after another, and where each ends; and
+/// the layer's texts.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayerLines {
     points_mm: Vec<[f64; 2]>,
     /// The index in `points_mm` one past the last point of each polyline.
     ends: Vec<usize>,
+    texts: Vec<UnderlayText>,
 }
 
 impl LayerLines {
+    pub fn texts(&self) -> &[UnderlayText] {
+        &self.texts
+    }
+
+    fn points_and_anchors(&self) -> impl Iterator<Item = [f64; 2]> + '_ {
+        let anchors = self.texts.iter().map(|text| text.anchor_mm);
+        self.points_mm.iter().copied().chain(anchors)
+    }
+
     pub fn polylines(&self) -> impl Iterator<Item = &[[f64; 2]]> {
         let starts = std::iter::once(0).chain(self.ends.iter().copied());
         starts
@@ -98,7 +111,10 @@ impl LayerLines {
     }
 }
 
+/// Lines only: a drawing without texts is encoded so, as before texts were kept.
 const MAGIC: &[u8; 8] = b"KUNDRLY1";
+/// Lines, then each layer's texts after its points.
+const MAGIC_WITH_TEXTS: &[u8; 8] = b"KUNDRLY2";
 
 /// Why the bytes of a container blob are not underlay lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,6 +129,8 @@ pub enum UnderlayLinesError {
     InvalidPolyline,
     /// A coordinate that is not a finite number.
     NotFinite,
+    /// A text whose height, width, alignment or characters cannot be drawn.
+    InvalidText,
     /// The blob holds another number of layers than the underlay names.
     LayerCount { blob: usize, underlay: usize },
 }
@@ -127,6 +145,10 @@ impl fmt::Display for UnderlayLinesError {
                 formatter.write_str("an underlay polyline has fewer than two points")
             }
             Self::NotFinite => formatter.write_str("an underlay point is not a finite number"),
+            Self::InvalidText => formatter.write_str(
+                "an underlay text has no height or width, an unknown alignment, or bytes that \
+                 are not UTF-8",
+            ),
             Self::LayerCount { blob, underlay } => write!(
                 formatter,
                 "the underlay lines hold {blob} layers, the underlay names {underlay}"
@@ -147,6 +169,11 @@ impl UnderlayLines {
         self.layers.iter().map(LayerLines::segment_count).sum()
     }
 
+    #[must_use]
+    pub fn text_count(&self) -> usize {
+        self.layers.iter().map(|layer| layer.texts.len()).sum()
+    }
+
     /// The smallest and largest corner of every point, or `None` without points.
     #[must_use]
     pub fn bounds_mm(&self) -> Option<[[f64; 2]; 2]> {
@@ -164,32 +191,41 @@ impl UnderlayLines {
     /// drawing in national grid coordinates (S-JTSK: hundreds of kilometres) is kept
     /// instead of left out. The lines move by the median of their points, rounded to whole
     /// metres, so that a stray line far away does not decide where the drawing lands.
-    /// Returns that offset, which added back gives the drawing's own coordinates, and the
-    /// number of straight pieces left out because even moved they leave the envelope.
-    pub fn move_near_origin(&mut self) -> ([f64; 2], usize) {
+    /// Texts move with the lines, by their anchors, and count in the median too.
+    /// Returns that offset, which added back gives the drawing's own coordinates, and what
+    /// was left out because even moved it leaves the envelope.
+    pub fn move_near_origin(&mut self) -> MovedNearOrigin {
         let inside = |point: &[f64; 2]| point.iter().all(|value| value.abs() <= MAX_COORDINATE_MM);
+        let points = LayerLines::points_and_anchors;
         if self
             .layers
             .iter()
-            .flat_map(|layer| &layer.points_mm)
-            .all(inside)
+            .flat_map(points)
+            .all(|point| inside(&point))
         {
-            return ([0.0, 0.0], 0);
+            return MovedNearOrigin::default();
         }
         let offset_mm = [0, 1].map(|axis| {
             let mut values = self
                 .layers
                 .iter()
-                .flat_map(|layer| layer.points_mm.iter().map(|point| point[axis]))
+                .flat_map(|layer| points(layer).map(|point| point[axis]))
                 .collect::<Vec<_>>();
             let middle = values.len() / 2;
             let (_, median, _) = values.select_nth_unstable_by(middle, f64::total_cmp);
             // `+ 0.0` makes a -0.0 of a median just below zero 0.0.
             (*median / 1000.0).round() * 1000.0 + 0.0
         });
-        let before = self.segment_count();
+        let before = (self.segment_count(), self.text_count());
         for layer in &mut self.layers {
-            let mut kept = LayerLines::default();
+            let mut kept = LayerLines {
+                texts: std::mem::take(&mut layer.texts),
+                ..LayerLines::default()
+            };
+            kept.texts.retain_mut(|text| {
+                text.anchor_mm = [0, 1].map(|axis| text.anchor_mm[axis] - offset_mm[axis]);
+                inside(&text.anchor_mm)
+            });
             for polyline in layer.polylines() {
                 // A point outside ends the polyline; the pieces on both sides of it are
                 // left out.
@@ -206,7 +242,11 @@ impl UnderlayLines {
             }
             *layer = kept;
         }
-        (offset_mm, before - self.segment_count())
+        MovedNearOrigin {
+            offset_mm,
+            segments_outside: before.0 - self.segment_count(),
+            texts_outside: before.1 - self.text_count(),
+        }
     }
 
     /// The bytes of the container blob: little-endian counts, ends and coordinates.
@@ -220,7 +260,8 @@ impl UnderlayLines {
                 .map(|layer| 8 + layer.ends.len() * 4 + layer.points_mm.len() * 16)
                 .sum::<usize>();
         let mut bytes = Vec::with_capacity(capacity);
-        bytes.extend_from_slice(MAGIC);
+        let texts = self.text_count() > 0;
+        bytes.extend_from_slice(if texts { MAGIC_WITH_TEXTS } else { MAGIC });
         push_count(&mut bytes, self.layers.len());
         for layer in &self.layers {
             push_count(&mut bytes, layer.ends.len());
@@ -232,6 +273,12 @@ impl UnderlayLines {
                 bytes.extend_from_slice(&point[0].to_le_bytes());
                 bytes.extend_from_slice(&point[1].to_le_bytes());
             }
+            if texts {
+                push_count(&mut bytes, layer.texts.len());
+                for text in &layer.texts {
+                    text.encode(&mut bytes);
+                }
+            }
         }
         bytes
     }
@@ -239,11 +286,15 @@ impl UnderlayLines {
     /// Reads what [`Self::encode`] wrote; every count is checked against the bytes
     /// before anything is allocated for it.
     pub fn decode(bytes: &[u8]) -> Result<Self, UnderlayLinesError> {
-        let mut reader = Reader(
-            bytes
-                .strip_prefix(MAGIC.as_slice())
-                .ok_or(UnderlayLinesError::NotUnderlayLines)?,
-        );
+        let (rest, texts) = if let Some(rest) = bytes.strip_prefix(MAGIC.as_slice()) {
+            (rest, false)
+        } else {
+            let rest = bytes
+                .strip_prefix(MAGIC_WITH_TEXTS.as_slice())
+                .ok_or(UnderlayLinesError::NotUnderlayLines)?;
+            (rest, true)
+        };
+        let mut reader = Reader(rest);
         let layer_count = reader.count()?;
         let mut layers = Vec::new();
         for _ in 0..layer_count {
@@ -270,13 +321,34 @@ impl UnderlayLines {
             if points_mm.iter().flatten().any(|value| !value.is_finite()) {
                 return Err(UnderlayLinesError::NotFinite);
             }
-            layers.push(LayerLines { points_mm, ends });
+            let mut layer_texts = Vec::new();
+            if texts {
+                // Pushed one by one: each text checks its own bytes before it is kept.
+                for _ in 0..reader.count()? {
+                    layer_texts.push(UnderlayText::decode(&mut reader)?);
+                }
+            }
+            layers.push(LayerLines {
+                points_mm,
+                ends,
+                texts: layer_texts,
+            });
         }
         if !reader.0.is_empty() {
             return Err(UnderlayLinesError::TrailingBytes);
         }
         Ok(Self { layers })
     }
+}
+
+/// What [`UnderlayLines::move_near_origin`] moved the drawing by, and what it left out.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MovedNearOrigin {
+    pub offset_mm: [f64; 2],
+    /// Straight pieces that even moved leave the envelope.
+    pub segments_outside: usize,
+    /// Texts whose anchor even moved leaves the envelope.
+    pub texts_outside: usize,
 }
 
 fn push_count(bytes: &mut Vec<u8>, count: usize) {
@@ -335,6 +407,12 @@ impl UnderlayLinesBuilder {
     pub fn add_loose(&mut self, layer: &str, segment: &ProfileSegment) {
         let index = self.layer_index(layer);
         push_polyline(&mut self.loose[index], std::slice::from_ref(segment));
+    }
+
+    /// Adds a text of `layer`.
+    pub fn add_text(&mut self, layer: &str, text: UnderlayText) {
+        let index = self.layer_index(layer);
+        self.layers[index].texts.push(text);
     }
 
     fn layer_index(&mut self, layer: &str) -> usize {

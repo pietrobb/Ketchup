@@ -25,6 +25,9 @@ pub(crate) struct ReadUnderlay {
     lines: UnderlayLines,
     /// The snap index of `lines`, built on the reading thread: the window does not wait for it.
     snaps: Arc<UnderlaySnapIndex>,
+    /// The GPU lines of `lines` and of the letters of its texts, laid out on the reading
+    /// thread too.
+    geometry: Arc<UnderlayGeometry>,
 }
 
 impl ReadUnderlay {
@@ -36,6 +39,7 @@ impl ReadUnderlay {
             "layers": read.layers.iter().take(LISTED).collect::<Vec<_>>(),
             "layers_total": read.layers.len(),
             "lines": read.segments,
+            "texts": read.texts,
             "polylines": self.lines.layers().iter().map(|layer| layer.polylines().count()).sum::<usize>(),
             "units": read.units,
             "offset_mm": read.offset_mm,
@@ -69,11 +73,13 @@ pub(crate) fn read_underlay_file(
     let bytes = std::fs::read(&output).map_err(|error| failed(error.into()))?;
     let lines = UnderlayLines::decode(&bytes).map_err(|error| failed(error.into()))?;
     let snaps = Arc::new(UnderlaySnapIndex::new(&lines));
+    let geometry = Arc::new(UnderlayGeometry::new(sha256_bytes(&bytes), &lines));
     Ok(ReadUnderlay {
         read,
         bytes,
         lines,
         snaps,
+        geometry,
     })
 }
 
@@ -236,9 +242,7 @@ impl KetchupApp {
             .map_err(|error| failed(error.into()))?;
         self.commit_verified_proposal_with_container_work_recovery(&proposal, container)
             .map_err(|error| failed(error.into()))?;
-        self.render
-            .underlays
-            .insert(key, Arc::new(UnderlayGeometry::new(key, &read.lines)));
+        self.render.underlays.insert(key, read.geometry);
         self.render
             .underlay_snaps
             .get_mut()
@@ -249,6 +253,7 @@ impl KetchupApp {
                 ("path", path.display().to_string()),
                 ("layers", read.read.layers.len().to_string()),
                 ("lines", read.read.segments.to_string()),
+                ("texts", read.read.texts.to_string()),
             ]),
         );
         Ok(id)
@@ -321,17 +326,19 @@ impl KetchupApp {
             return;
         }
         let dim = self.palette().dim;
+        let pixels = rect.size() * painter.ctx().pixels_per_point();
         painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
             rect,
             UnderlayPaintCallback::new(
                 self.render.underlay_frame.clone(),
                 self.world_to_clip(rect),
+                [pixels.x, pixels.y],
                 [dim.r(), dim.g(), dim.b()],
             ),
         ));
     }
 
-    /// Every underlay of the document with the vertex ranges of its visible layers. Lines
+    /// Every underlay of the document with the indices of its visible layers. Lines
     /// are decoded from the document's blob once and kept while an underlay names them.
     pub(crate) fn underlay_draws(&mut self) -> Vec<UnderlayDraw> {
         let snapshot = self.document.current();
@@ -371,9 +378,10 @@ impl KetchupApp {
                 underlay
                     .layers
                     .iter()
-                    .zip(geometry.layers())
-                    .filter(|(layer, _)| shown(layer.tag))
-                    .map(|(_, range)| range.clone())
+                    .take(geometry.layer_count())
+                    .enumerate()
+                    .filter(|(_, layer)| shown(layer.tag))
+                    .map(|(index, _)| index)
                     .collect()
             } else {
                 Vec::new()

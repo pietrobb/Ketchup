@@ -52,6 +52,7 @@ fn read(input: &UnderlayInput) -> Result<UnderlayOutcome, UnderlayRefusal> {
         .map_err(|error| file(&input.output, &error))?;
     Ok(UnderlayOutcome::Read(Box::new(UnderlayRead {
         segments: underlay.lines.segment_count(),
+        texts: underlay.lines.text_count(),
         layers: underlay.layers,
         units: underlay.units,
         offset_mm: underlay.offset_mm,
