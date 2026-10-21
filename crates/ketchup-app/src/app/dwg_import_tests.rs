@@ -93,17 +93,17 @@ fn a_long_dwg_read_shows_its_estimated_progress_and_cancel_stops_it() {
             KetchupApp::new(),
         );
     harness.step();
-    let (cancelled, seen) = std::sync::mpsc::channel();
+    let (token, reader_token) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
     let context = harness.ctx.clone();
     harness
         .state_mut()
         .queue_dwg_read(path, &context, move |_, cancel| {
-            while !cancel.is_cancelled() {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            cancelled.send(()).unwrap();
+            token.send(cancel.clone()).unwrap();
+            let _ = released.recv();
             Err(ImportError::failed(ImportFormat::Dxf, "cancelled"))
         });
+    let reader_token = reader_token.recv_timeout(Duration::from_secs(10)).unwrap();
     let shown = |harness: &mut egui_kittest::Harness<'_, KetchupApp>, ago: u64| {
         let task = harness
             .state_mut()
@@ -140,8 +140,8 @@ fn a_long_dwg_read_shows_its_estimated_progress_and_cancel_stops_it() {
         .click();
     harness.step();
     assert!(harness.state().file.activity.dwg_reading.is_none());
-    seen.recv_timeout(Duration::from_secs(10))
-        .expect("the reader saw the cancel");
+    assert!(reader_token.is_cancelled(), "the reader saw the cancel");
+    drop(release);
 }
 
 /// The refusal of the hostile file stays in the status line until the next

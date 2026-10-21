@@ -411,6 +411,9 @@ pub enum WorkerError {
     ResourceLimit {
         faces: Option<u64>,
     },
+    /// The named worker output is not a regular file.
+    NotRegularFile(String),
+    OutOfMemory(OutOfMemory),
 }
 
 impl fmt::Display for WorkerError {
@@ -445,11 +448,32 @@ impl fmt::Display for WorkerError {
                     None => Ok(()),
                 }
             }
+            Self::NotRegularFile(label) => write!(formatter, "{label} is not a regular file"),
+            Self::OutOfMemory(error) => error.fmt(formatter),
         }
     }
 }
 
 impl std::error::Error for WorkerError {}
+
+/// Memory that could not be reserved to hold `bytes` of `what` whole.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutOfMemory {
+    pub what: String,
+    pub bytes: u64,
+}
+
+impl fmt::Display for OutOfMemory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "not enough memory to hold the {} ({} bytes)",
+            self.what, self.bytes
+        )
+    }
+}
+
+impl std::error::Error for OutOfMemory {}
 
 impl WorkerError {
     /// Whether a fresh worker may repeat the request: only when the worker was
@@ -551,16 +575,19 @@ const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_EXACT_WORKER_EXECUTABLE_BYTES: u64 = 128 * 1024 * 1024;
 static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-/// An empty buffer that already holds room for `len` bytes, or a message naming
-/// what could not be held when the memory is not there. A file or source of any
-/// size is taken whole; this turns a lack of memory into a refusal instead of
-/// the abort a growing `Vec` would raise.
-pub fn reserve_whole(len: u64, label: &str) -> Result<Vec<u8>, String> {
+/// An empty buffer that already holds room for `len` bytes, or the refusal
+/// naming what could not be held when the memory is not there. A file or source
+/// of any size is taken whole; this turns a lack of memory into a refusal
+/// instead of the abort a growing `Vec` would raise.
+pub fn reserve_whole(len: u64, label: &str) -> Result<Vec<u8>, OutOfMemory> {
     let mut bytes = Vec::new();
     usize::try_from(len)
         .ok()
         .and_then(|len| bytes.try_reserve_exact(len).ok())
-        .ok_or_else(|| format!("not enough memory to hold the {label} ({len} bytes)"))?;
+        .ok_or_else(|| OutOfMemory {
+            what: label.to_owned(),
+            bytes: len,
+        })?;
     Ok(bytes)
 }
 
@@ -573,11 +600,9 @@ fn read_regular_file(path: &Path, label: &str) -> Result<Vec<u8>, WorkerError> {
         .metadata()
         .map_err(|error| WorkerError::Transport(error.to_string()))?;
     if !metadata.is_file() {
-        return Err(WorkerError::Transport(format!(
-            "{label} is not a regular file"
-        )));
+        return Err(WorkerError::NotRegularFile(label.to_owned()));
     }
-    let mut bytes = reserve_whole(metadata.len(), label).map_err(WorkerError::Transport)?;
+    let mut bytes = reserve_whole(metadata.len(), label).map_err(WorkerError::OutOfMemory)?;
     file.read_to_end(&mut bytes)
         .map_err(|error| WorkerError::Transport(error.to_string()))?;
     Ok(bytes)
@@ -2832,10 +2857,8 @@ mod tests {
         // even fit an allocation. Both are refused, never an abort.
         for len in [1_u64 << 62, u64::MAX] {
             assert_eq!(
-                reserve_whole(len, "STEP output"),
-                Err(format!(
-                    "not enough memory to hold the STEP output ({len} bytes)"
-                ))
+                reserve_whole(len, "STEP output").unwrap_err().to_string(),
+                format!("not enough memory to hold the STEP output ({len} bytes)")
             );
         }
     }

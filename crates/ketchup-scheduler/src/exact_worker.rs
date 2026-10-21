@@ -2981,7 +2981,7 @@ fn verified_copy(
         .map_err(|error| failure(&error.to_string()))?
         .len();
     let mut source_bytes = crate::reserve_whole(len, &format!("{label} source"))
-        .map_err(|message| failure(&message))?;
+        .map_err(|error| failure(&error.to_string()))?;
     file.read_to_end(&mut source_bytes)
         .map_err(|error| failure(&error.to_string()))?;
     if !is_sha256_hex(&source.sha256) || sha256_hex(&source_bytes) != source.sha256 {
@@ -3468,7 +3468,7 @@ fn read_step_output(path: &str, operation: &str) -> Result<Vec<u8>, WorkerFailur
         ));
     }
     let mut bytes = crate::reserve_whole(metadata.len(), "STEP output")
-        .map_err(|message| backend_failure(operation, &message))?;
+        .map_err(|error| backend_failure(operation, &error.to_string()))?;
     (&file)
         .read_to_end(&mut bytes)
         .map_err(|error| backend_failure(operation, &error.to_string()))?;

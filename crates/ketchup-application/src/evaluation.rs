@@ -51,7 +51,7 @@ enum ExactProducerError {
         sha256: String,
     },
     /// The memory for the worker's copy of the imported sources is not there.
-    OutOfMemory(String),
+    OutOfMemory(ketchup_scheduler::OutOfMemory),
     DefinitionUnavailable(DefinitionId),
     DefinitionNotSingular(DefinitionId),
     FeatureUnavailable(FeatureId),
@@ -85,7 +85,7 @@ impl std::fmt::Display for ExactProducerError {
                 f,
                 "imported exact source blob {sha256} does not match its canonical identity"
             ),
-            Self::OutOfMemory(message) => f.write_str(message),
+            Self::OutOfMemory(error) => error.fmt(f),
             Self::DefinitionUnavailable(id) => {
                 write!(f, "imported exact definition {} is unavailable", id.0)
             }

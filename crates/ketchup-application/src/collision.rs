@@ -345,18 +345,18 @@ impl std::error::Error for FabricationCollisionError {
 }
 
 /// Why the imported exact sources of a collision check cannot be loaded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CollisionSourceError {
     MissingBlob,
-    OutOfMemory,
+    OutOfMemory(ketchup_scheduler::OutOfMemory),
     InvalidBlob,
 }
 
 impl CollisionSourceError {
-    fn code(self) -> &'static str {
+    fn code(&self) -> &'static str {
         match self {
             Self::MissingBlob => "missing_imported_source_blob",
-            Self::OutOfMemory => "imported_source_out_of_memory",
+            Self::OutOfMemory(_) => "imported_source_out_of_memory",
             Self::InvalidBlob => "invalid_imported_source_blob",
         }
     }
@@ -1412,7 +1412,7 @@ fn collision_report(
                             *source_byte_len,
                             "imported exact source",
                         )
-                        .map_err(|_| CollisionSourceError::OutOfMemory)?;
+                        .map_err(CollisionSourceError::OutOfMemory)?;
                         copy.extend_from_slice(source);
                         sources.insert(hash, copy);
                     }

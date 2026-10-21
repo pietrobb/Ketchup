@@ -129,8 +129,12 @@ pub enum DwgConversionError {
     MemoryLimit,
     /// The worker could not be started or stopped otherwise.
     WorkerFailed(WorkerError),
+    /// No directory could be made for the DXF text the worker writes.
+    OutputDirectory(std::io::ErrorKind),
     /// The DXF text the worker wrote could not be read back, for example for lack of memory.
-    Output(String),
+    Output(WorkerError),
+    /// The DXF text read back is not the text the worker wrote.
+    OutputDigestMismatch,
 }
 
 impl fmt::Display for DwgConversionError {
@@ -156,6 +160,13 @@ impl fmt::Display for DwgConversionError {
                     "the DXF of the DWG drawing could not be read back: {error}"
                 )
             }
+            Self::OutputDirectory(kind) => write!(
+                formatter,
+                "no directory could be made for the DXF of the DWG drawing: {kind}"
+            ),
+            Self::OutputDigestMismatch => {
+                formatter.write_str("the DXF file does not match the worker's digest")
+            }
         }
     }
 }
@@ -164,7 +175,7 @@ impl std::error::Error for DwgConversionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Refused(refusal) => Some(refusal),
-            Self::WorkerFailed(error) => Some(error),
+            Self::WorkerFailed(error) | Self::Output(error) => Some(error),
             _ => None,
         }
     }
@@ -340,8 +351,8 @@ impl ProgramWorker {
         dwg: &[u8],
         cancel: &CancelToken,
     ) -> Result<DwgDrawing, DwgConversionError> {
-        let directory =
-            tempfile::tempdir().map_err(|error| DwgConversionError::Output(error.to_string()))?;
+        let directory = tempfile::tempdir()
+            .map_err(|error| DwgConversionError::OutputDirectory(error.kind()))?;
         let output = directory.path().join("drawing.dxf");
         let input = DwgInput {
             dwg: dwg.to_vec(),
@@ -361,11 +372,9 @@ impl ProgramWorker {
             DwgOutcome::Refused(refusal) => return Err(DwgConversionError::Refused(refusal)),
         };
         let dxf = crate::read_regular_file(&output, "DXF of the DWG drawing")
-            .map_err(|error| DwgConversionError::Output(error.to_string()))?;
+            .map_err(DwgConversionError::Output)?;
         if sha256_hex(&dxf) != dxf_sha256 {
-            return Err(DwgConversionError::Output(
-                "the DXF file does not match the worker's digest".to_owned(),
-            ));
+            return Err(DwgConversionError::OutputDigestMismatch);
         }
         Ok(DwgDrawing {
             dxf,
