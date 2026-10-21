@@ -86,8 +86,8 @@ fn a_format_104_file_with_history_opens_at_its_current_revision_and_saves_the_go
 /// Every field of the model that is left out of the file while it has its default, as
 /// `file: field` under `src/`. Format 103 shipped in Kečup 0.1.0, which drops a field it
 /// does not know and loses it at its next Save, so a new optional field of the saved
-/// document needs a new format number like any other new field (PS-4): `underlays`
-/// came with format 104.
+/// document needs a new format number like any other new field (PS-4): `underlays` and an
+/// underlay's `placement` came with format 104.
 const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: contact_joints",
     "document.rs: floor_z_mm",
@@ -117,6 +117,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: tool_name",
     "exact_brep_graph.rs: trim_bits",
     "exact_brep_graph.rs: up_bits",
+    "underlay.rs: placement",
 ];
 
 #[test]

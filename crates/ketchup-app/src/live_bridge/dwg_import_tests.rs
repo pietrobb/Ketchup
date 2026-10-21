@@ -473,3 +473,77 @@ fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() 
         .unwrap();
     assert_eq!(hidden["nearest"], Value::Null);
 }
+
+/// `file action=fit_underlay`: the 10 m parcel line of a drawing in S-JTSK metres, its ends
+/// picked where they are drawn, lands on a model edge turned a quarter; `underlay_snap`
+/// then finds its end there and still names the drawing's own coordinates. Scaled onto an
+/// edge twice as long it measures 20 m; two picks at one point are refused.
+#[test]
+fn a_client_fits_an_underlay_onto_two_model_points() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("site.dxf");
+    let site = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n6\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n",
+        "0\nLINE\n8\nparcel\n10\n-500000\n20\n-1200000\n11\n-499990\n21\n-1200000\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+    std::fs::write(&path, site).unwrap();
+    let (mut app, mut bridge) = setup();
+    let answer = bridge
+        .execute(&mut app, import_underlay(&path), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let offset: [f64; 2] = serde_json::from_value(answer["underlay"]["offset_mm"].clone()).unwrap();
+    let underlay_id = answer["underlay_id"].as_u64().unwrap();
+    let start = [-500_000_000.0 - offset[0], -1_200_000_000.0 - offset[1]];
+    let ends = [start, [start[0] + 10_000.0, start[1]]];
+    let fit = |from_mm, to_mm, scale| Request::FitUnderlay {
+        expected: None,
+        underlay_id,
+        from_mm,
+        to_mm,
+        scale,
+    };
+    let undo = app.undo_step_count();
+
+    let edge = [[1_000.0, 0.0], [1_000.0, 10_000.0]];
+    let fitted = bridge
+        .execute(&mut app, fit(ends, edge, false), false)
+        .unwrap();
+    assert_eq!(fitted["fitted"], true, "{fitted}");
+    assert_eq!(fitted["length_mismatch_mm"], 0.0);
+    assert_eq!(app.undo_step_count(), undo + 1);
+    let near_end = || Request::UnderlaySnap {
+        expected: None,
+        point_mm: [1_003.0, 10_000.0],
+        to_mm: None,
+        radius_mm: None,
+        underlay_id: None,
+    };
+    let found = bridge.execute(&mut app, near_end(), false).unwrap();
+    let end: [f64; 2] = serde_json::from_value(found["endpoint"]["point_mm"].clone()).unwrap();
+    assert!(
+        (end[0] - 1_000.0).hypot(end[1] - 10_000.0) < 1e-6,
+        "{found}"
+    );
+    let drawing: [f64; 2] =
+        serde_json::from_value(found["endpoint"]["drawing_mm"].clone()).unwrap();
+    assert!((drawing[0] + 499_990_000.0).hypot(drawing[1] + 1_200_000_000.0) < 1e-3);
+    assert!((found["line"]["length_mm"].as_f64().unwrap() - 10_000.0).abs() < 1e-6);
+
+    let twice = [[1_000.0, 0.0], [1_000.0, 20_000.0]];
+    let scaled = bridge
+        .execute(&mut app, fit(edge, twice, true), false)
+        .unwrap();
+    assert!(
+        (scaled["scale"].as_f64().unwrap() - 2.0).abs() < 1e-12,
+        "{scaled}"
+    );
+    let found = bridge.execute(&mut app, near_end(), false).unwrap();
+    assert!((found["line"]["length_mm"].as_f64().unwrap() - 20_000.0).abs() < 1e-6);
+
+    let digest = app.canonical_digest();
+    let point = [[5.0, 5.0], [5.0, 5.0]];
+    let refused = bridge.execute(&mut app, fit(ends, point, false), false);
+    assert_eq!(refused.unwrap_err(), "invalid_params");
+    assert_eq!(app.canonical_digest(), digest);
+}

@@ -179,6 +179,53 @@ impl LiveBridge {
         Ok(json!({"removed": true, "underlay_id": underlay_id, "dirty": app.is_dirty()}))
     }
 
+    /// `fit_underlay`: places the underlay so two points of its lines land on two model
+    /// points, as one Undo step; two picks at one point are refused with the reason.
+    pub(super) fn fit_underlay(
+        &mut self,
+        app: &mut KetchupApp,
+        request: &Request,
+        ui_busy: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Value, &'static str> {
+        let Request::FitUnderlay {
+            expected,
+            underlay_id,
+            from_mm,
+            to_mm,
+            scale,
+        } = request
+        else {
+            return Err("invalid_request");
+        };
+        Self::guard(app, expected)?;
+        Self::available(app, ui_busy)?;
+        let id = ketchup_model::underlay::UnderlayId(*underlay_id);
+        if app.document.current().underlay(id).is_none() {
+            return Err("entity_not_found");
+        }
+        Self::require_request_authority(cancelled)?;
+        let fit = app
+            .fit_underlay(id, *from_mm, *to_mm, *scale)
+            .map_err(|error| match error {
+                crate::app::underlay::UnderlayEditError::Commit(_) => {
+                    failed_because("commit_rejected", error)
+                }
+                _ => failed_because("invalid_params", error),
+            })?;
+        self.query.invalidate();
+        Ok(json!({
+            "fitted": true,
+            "underlay_id": underlay_id,
+            "turn_deg": fit.turn_deg,
+            "scale": fit.scale,
+            // How far the second point misses its target along the line from the first,
+            // as the two pairs lie apart by different lengths and the fit did not scale.
+            "length_mismatch_mm": fit.length_mismatch_mm,
+            "dirty": app.is_dirty(),
+        }))
+    }
+
     /// Adds the drawing read for the import `request` as an underlay.
     pub(super) fn add_underlay(
         app: &mut KetchupApp,

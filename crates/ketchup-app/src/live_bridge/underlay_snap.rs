@@ -141,11 +141,12 @@ fn kind_name(kind: UnderlaySnapKind) -> &'static str {
 fn describe(snapshot: &Snapshot, id: UnderlayId, snap: &UnderlaySnap) -> Value {
     let underlay = snapshot.underlay(id).expect("the underlay snapped to");
     let offset = underlay.offset_mm();
+    let local = underlay.to_local(snap.point_mm);
     json!({
         "underlay_id": id.0,
         "layer": underlay.layers.get(snap.layer).map(|layer| &layer.name),
         "point_mm": snap.point_mm,
-        "drawing_mm": [snap.point_mm[0] + offset[0], snap.point_mm[1] + offset[1]],
+        "drawing_mm": [local[0] + offset[0], local[1] + offset[1]],
         "distance_mm": snap.distance_mm,
     })
 }

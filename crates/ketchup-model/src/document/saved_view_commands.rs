@@ -94,6 +94,9 @@ pub(super) fn validate_underlay(
     underlay: &Underlay,
 ) -> Result<(), CanonicalError> {
     ensure_name(&underlay.name)?;
+    if !crate::underlay::placement::is_planar(&underlay.placement) {
+        return Err(CanonicalError::InvalidTransform);
+    }
     for layer in &underlay.layers {
         ensure_name(&layer.name)?;
     }

@@ -223,6 +223,7 @@ impl Tools {
                         "open",
                         "import",
                         "remove_underlay",
+                        "fit_underlay",
                         "export",
                         "export_drawings",
                     ],

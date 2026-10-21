@@ -179,12 +179,30 @@ fn vertex_index(count: usize) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX)
 }
 
-/// One underlay of the frame and the indices of its visible layers (none while it or all
-/// its layers are hidden: its upload is kept for when it is shown again).
+/// One underlay of the frame, the indices of its visible layers (none while it or all its
+/// layers are hidden: its upload is kept for when it is shown again) and its placement,
+/// column-major, from its lines to the world.
 #[derive(Clone, Debug)]
 pub struct UnderlayDraw {
     pub geometry: Arc<UnderlayGeometry>,
     pub visible: Vec<usize>,
+    pub placement: [f32; 16],
+}
+
+/// A row-major placement column-major in single precision, as the GPU reads it.
+#[must_use]
+pub fn gpu_placement(row_major: &[f64; 16]) -> [f32; 16] {
+    std::array::from_fn(|at| single_precision([row_major[(at % 4) * 4 + at / 4], 0.0, 0.0])[0])
+}
+
+/// The column-major product `outer · inner`: `inner` applied first.
+fn column_major_product(outer: &[f32; 16], inner: &[f32; 16]) -> [f32; 16] {
+    std::array::from_fn(|at| {
+        let (column, row) = (at / 4, at % 4);
+        (0..4)
+            .map(|index| outer[index * 4 + row] * inner[column * 4 + index])
+            .sum()
+    })
 }
 
 /// A piece of a buffer too large for one: the elements `first..first + count`.
@@ -274,6 +292,9 @@ pub struct GpuUnderlayRenderer {
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     underlay_layout: wgpu::BindGroupLayout,
+    placement_layout: wgpu::BindGroupLayout,
+    /// Per draw of the frame, the uniform of its placement.
+    placements: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
     uploaded: BTreeMap<[u8; 32], Uploaded>,
     draws: Vec<UnderlayDraw>,
     /// How many underlays were uploaded: once per underlay, not per frame.
@@ -307,6 +328,10 @@ impl GpuUnderlayRenderer {
             label: Some("Ketchup underlay bind group layout"),
             entries: &[entry(0, wgpu::BufferBindingType::Uniform)],
         });
+        let placement_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Ketchup underlay placement layout"),
+            entries: &[entry(0, wgpu::BufferBindingType::Uniform)],
+        });
         let storage = wgpu::BufferBindingType::Storage { read_only: true };
         let underlay_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Ketchup underlay layers and styles layout"),
@@ -322,7 +347,7 @@ impl GpuUnderlayRenderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Ketchup underlay pipeline layout"),
-            bind_group_layouts: &[&layout, &underlay_layout],
+            bind_group_layouts: &[&layout, &underlay_layout, &placement_layout],
             push_constant_ranges: &[],
         });
         let pipeline = |label: &str,
@@ -404,6 +429,8 @@ impl GpuUnderlayRenderer {
             uniform,
             bind_group,
             underlay_layout,
+            placement_layout,
+            placements: Vec::new(),
             uploaded: BTreeMap::new(),
             draws: Vec::new(),
             uploads: 0,
@@ -430,6 +457,27 @@ impl GpuUnderlayRenderer {
             .flat_map(f32::to_ne_bytes)
             .collect::<Vec<_>>();
         queue.write_buffer(&self.uniform, 0, &uniform);
+        while self.placements.len() < draws.len() {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Ketchup underlay placement"),
+                size: 64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Ketchup underlay placement"),
+                layout: &self.placement_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            self.placements.push((buffer, group));
+        }
+        for (draw, (buffer, _)) in draws.iter().zip(&self.placements) {
+            let bytes = draw.placement.map(f32::to_ne_bytes).concat();
+            queue.write_buffer(buffer, 0, &bytes);
+        }
         self.uploaded.retain(|key, _| {
             draws
                 .iter()
@@ -462,13 +510,14 @@ impl GpuUnderlayRenderer {
                 queue.write_buffer(&uploaded.shown, 0, &bytes);
                 uploaded.shown_layers = shown;
             }
+            let lines_to_clip = column_major_product(&world_to_clip, &draw.placement);
             uploaded.cell_views.clear();
             uploaded.cell_views.extend(
                 geometry
                     .letters
                     .cells
                     .iter()
-                    .map(|cell| cell.view(&world_to_clip, viewport_px)),
+                    .map(|cell| cell.view(&lines_to_clip, viewport_px)),
             );
         }
         self.draws = draws.to_vec();
@@ -541,13 +590,17 @@ impl GpuUnderlayRenderer {
         let drawn = || {
             self.draws
                 .iter()
-                .filter(|draw| !draw.visible.is_empty())
-                .filter_map(|draw| Some((draw, self.uploaded.get(&draw.geometry.key)?)))
+                .zip(&self.placements)
+                .filter(|(draw, _)| !draw.visible.is_empty())
+                .filter_map(|(draw, (_, placement))| {
+                    Some((draw, placement, self.uploaded.get(&draw.geometry.key)?))
+                })
         };
         pass.set_pipeline(&self.lines_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        for (draw, uploaded) in drawn() {
+        for (draw, placement, uploaded) in drawn() {
             pass.set_bind_group(1, &uploaded.group, &[]);
+            pass.set_bind_group(2, placement, &[]);
             for chunk in &uploaded.segments {
                 pass.set_vertex_buffer(0, chunk.buffer.slice(..));
                 for range in draw
@@ -563,11 +616,12 @@ impl GpuUnderlayRenderer {
         }
         // The cells of letters drawn whole, glyph by glyph.
         pass.set_pipeline(&self.letters_pipeline);
-        for (draw, uploaded) in drawn() {
+        for (draw, placement, uploaded) in drawn() {
             let Some(outlines) = &uploaded.outlines else {
                 continue;
             };
             pass.set_bind_group(1, &uploaded.group, &[]);
+            pass.set_bind_group(2, placement, &[]);
             pass.set_vertex_buffer(0, outlines.slice(..));
             let letters = &draw.geometry.letters;
             for chunk in &uploaded.instances {
@@ -583,9 +637,10 @@ impl GpuUnderlayRenderer {
         }
         // The cells of letters too small to read, one stroke per letter.
         pass.set_pipeline(&self.strokes_pipeline);
-        for (draw, uploaded) in drawn() {
+        for (draw, placement, uploaded) in drawn() {
             let letters = &draw.geometry.letters;
             pass.set_bind_group(1, &uploaded.group, &[]);
+            pass.set_bind_group(2, placement, &[]);
             for chunk in &uploaded.instances {
                 pass.set_vertex_buffer(0, chunk.buffer.slice(..));
                 for cell in cells_drawn(uploaded, letters, CellView::Strokes) {
@@ -695,6 +750,10 @@ var<storage, read> styles: array<Style>;
 @group(1) @binding(2)
 var<storage, read> pattern_mm: array<f32>;
 
+// From the underlay's lines to the world.
+@group(2) @binding(0)
+var<uniform> placement: mat4x4<f32>;
+
 struct Drawn {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) style: u32,
@@ -718,8 +777,8 @@ fn vs_line(
     var drawn: Drawn;
     drawn.style = style;
     drawn.along_mm = 0.0;
-    let a = underlay.world_to_clip * vec4<f32>(start, 0.0, 1.0);
-    let b = underlay.world_to_clip * vec4<f32>(end, 0.0, 1.0);
+    let a = underlay.world_to_clip * placement * vec4<f32>(start, 0.0, 1.0);
+    let b = underlay.world_to_clip * placement * vec4<f32>(end, 0.0, 1.0);
     // What lies behind the camera is cut off before the segment is widened on screen.
     // not a tolerance: the clip-space w where a segment is cut, kept off 0 to divide by.
     let near = 1e-5;
@@ -783,7 +842,7 @@ fn letter_point(position: vec2<f32>, layer: u32, style: u32) -> Drawn {
     drawn.style = style;
     drawn.along_mm = 0.0;
     drawn.position = select(
-        underlay.world_to_clip * vec4<f32>(position, 0.0, 1.0),
+        underlay.world_to_clip * placement * vec4<f32>(position, 0.0, 1.0),
         NOWHERE,
         layer_shown[layer] == 0u,
     );

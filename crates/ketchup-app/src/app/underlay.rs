@@ -5,12 +5,15 @@
 
 use super::underlay_snapping::UnderlaySnapSlot;
 use crate::import_source::BoxedCause;
-use crate::renderer::underlay::{UnderlayDraw, UnderlayGeometry, UnderlayPaintCallback};
+use crate::renderer::underlay::{
+    UnderlayDraw, UnderlayGeometry, UnderlayPaintCallback, gpu_placement,
+};
 use crate::*;
 use ketchup_application::program_isolation::{
     UnderlayInput, UnderlayRead, UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
     read_underlay,
 };
+use ketchup_model::underlay::placement::{UnderlayFit, UnderlayFitError, plan_underlay_fit};
 use ketchup_model::underlay::snap::UnderlaySnapIndex;
 use ketchup_model::underlay::{
     UnderlayId, UnderlayLines, UnderlayPlanError, plan_underlay, plan_underlay_removal,
@@ -95,26 +98,29 @@ fn needs_unit(error: &ImportError) -> bool {
 
 pub(crate) type UnderlayReadResult = Result<ReadUnderlay, ImportError>;
 
-/// Why an underlay was not removed.
+/// Why an underlay was not removed or placed.
 #[derive(Debug)]
-pub(crate) enum UnderlayRemovalError {
+pub(crate) enum UnderlayEditError {
     Plan(UnderlayPlanError),
+    Fit(UnderlayFitError),
     Commit(WorkRecoveryMutationError<CanonicalError>),
 }
 
-impl std::fmt::Display for UnderlayRemovalError {
+impl std::fmt::Display for UnderlayEditError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Plan(error) => error.fmt(formatter),
-            Self::Commit(error) => write!(formatter, "the removal was not kept: {error}"),
+            Self::Fit(error) => error.fmt(formatter),
+            Self::Commit(error) => write!(formatter, "the change was not kept: {error}"),
         }
     }
 }
 
-impl std::error::Error for UnderlayRemovalError {
+impl std::error::Error for UnderlayEditError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Plan(error) => Some(error),
+            Self::Fit(error) => Some(error),
             Self::Commit(error) => Some(error),
         }
     }
@@ -260,11 +266,28 @@ impl KetchupApp {
     }
 
     /// Removes the underlay `id` and the tags only it held, as one Undo step.
-    pub(crate) fn remove_underlay(&mut self, id: UnderlayId) -> Result<(), UnderlayRemovalError> {
-        let batch = plan_underlay_removal(&self.document.current(), id)
-            .map_err(UnderlayRemovalError::Plan)?;
+    pub(crate) fn remove_underlay(&mut self, id: UnderlayId) -> Result<(), UnderlayEditError> {
+        let batch =
+            plan_underlay_removal(&self.document.current(), id).map_err(UnderlayEditError::Plan)?;
         self.apply_batch_with_work_recovery(&batch)
-            .map_err(UnderlayRemovalError::Commit)
+            .map_err(UnderlayEditError::Commit)
+    }
+
+    /// Places the underlay `id` so that the document points `from_mm`, two points of its
+    /// lines where they are drawn now, land on the model points `to_mm`, scaled only when
+    /// `scaled` ([`plan_underlay_fit`]), as one Undo step.
+    pub(crate) fn fit_underlay(
+        &mut self,
+        id: UnderlayId,
+        from_mm: [[f64; 2]; 2],
+        to_mm: [[f64; 2]; 2],
+        scaled: bool,
+    ) -> Result<UnderlayFit, UnderlayEditError> {
+        let (batch, fit) = plan_underlay_fit(&self.document.current(), id, from_mm, to_mm, scaled)
+            .map_err(UnderlayEditError::Fit)?;
+        self.apply_batch_with_work_recovery(&batch)
+            .map_err(UnderlayEditError::Commit)?;
+        Ok(fit)
     }
 
     /// Asks for the unit of a drawing that declares none, then reads it again.
@@ -386,7 +409,11 @@ impl KetchupApp {
             } else {
                 Vec::new()
             };
-            draws.push(UnderlayDraw { geometry, visible });
+            draws.push(UnderlayDraw {
+                geometry,
+                visible,
+                placement: gpu_placement(underlay.placement.matrix()),
+            });
         }
         let named = |key: &[u8; 32]| {
             snapshot

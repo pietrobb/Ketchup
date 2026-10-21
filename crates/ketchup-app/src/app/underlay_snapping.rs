@@ -114,8 +114,9 @@ impl KetchupApp {
     }
 
     /// The best endpoint, intersection, midpoint and nearest point of each underlay's shown
-    /// lines within `radius_mm` of `point_mm`, in the document's XY plane, and whether the
-    /// snap index of every shown underlay was there to ask.
+    /// lines, where its placement puts them, within `radius_mm` of `point_mm`, in the
+    /// document's XY plane, and whether the snap index of every shown underlay was there to
+    /// ask.
     pub(crate) fn underlay_snaps_near(
         &self,
         snapshot: &Snapshot,
@@ -132,19 +133,37 @@ impl KetchupApp {
                 ready = false;
                 continue;
             };
-            let snaps = index.snaps(point_mm, radius_mm, |layer| {
+            let scale = underlay.scale();
+            let snaps = index.snaps(underlay.to_local(point_mm), radius_mm / scale, |layer| {
                 Self::underlay_layer_shown(snapshot, underlay, layer)
             });
-            found.extend(snaps.iter().map(|snap| (underlay.id, *snap)));
+            found.extend(snaps.iter().map(|snap| {
+                let placed = UnderlaySnap {
+                    point_mm: underlay.to_document(snap.point_mm),
+                    distance_mm: snap.distance_mm * scale,
+                    ..*snap
+                };
+                (underlay.id, placed)
+            }));
         }
         (found, ready)
     }
 
-    /// The line or arc of underlay `id` its straight piece `segment` belongs to.
+    /// The line or arc of underlay `id` its straight piece `segment` belongs to, where the
+    /// underlay's placement puts it.
     pub(crate) fn underlay_piece(&self, id: UnderlayId, segment: usize) -> Option<UnderlayPiece> {
         let snapshot = self.document.current();
-        self.underlay_snap_index(snapshot.underlay(id)?)?
-            .piece(segment)
+        let underlay = snapshot.underlay(id)?;
+        let piece = self.underlay_snap_index(underlay)?.piece(segment)?;
+        Some(UnderlayPiece {
+            points_mm: piece
+                .points_mm
+                .iter()
+                .map(|point| underlay.to_document(*point))
+                .collect(),
+            length_mm: piece.length_mm * underlay.scale(),
+            ..piece
+        })
     }
 
     /// Where the pointer meets the underlays' plane, z = 0, and how far from there a point

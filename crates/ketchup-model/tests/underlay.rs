@@ -5,6 +5,8 @@ use ketchup_model::graph::sha256_bytes;
 use ketchup_model::import::{
     DxfImportError, DxfImportOptions, read_dxf_underlay, read_dxf_underlay_from,
 };
+use ketchup_model::persistence::{self, LoadOutcome};
+use ketchup_model::underlay::placement::{UnderlayFitError, plan_underlay_fit};
 use ketchup_model::underlay::{
     UnderlayLines, UnderlayLinesError, plan_underlay, plan_underlay_removal,
 };
@@ -345,4 +347,82 @@ fn an_underlay_is_added_and_removed_with_its_tags_in_one_undo_step_each() {
     document.undo().unwrap();
     assert!(document.current().underlay(id).is_none());
     assert_eq!(document.current().tags().count(), 0);
+}
+
+/// Two points picked on an underlay land on two points of the model: turned, and scaled
+/// only when asked. Each fit is one Undo step, the placement is saved with the file, and
+/// two picks at one point are refused.
+#[test]
+fn a_two_point_fit_places_the_underlay_on_the_model_in_one_undo_step() {
+    let underlay = read(&line("walls", [0.0, 0.0], [1000.0, 0.0]));
+    let bytes = underlay.lines.encode();
+    let mut document = DocumentStore::new();
+    let (batch, id) = plan_underlay(
+        &document.current(),
+        "Plan",
+        &underlay.layers,
+        sha256_bytes(&bytes),
+        [0.0; 2],
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let on = |document: &DocumentStore, local: [f64; 2], target: [f64; 2]| {
+        let at = document.current().underlay(id).unwrap().to_document(local);
+        assert!(
+            (at[0] - target[0]).hypot(at[1] - target[1]) < 1e-9,
+            "{local:?} lies at {at:?}, not {target:?}"
+        );
+    };
+
+    // The line's ends onto a model edge 2 m away, turned a quarter.
+    let ends = [[0.0, 0.0], [1000.0, 0.0]];
+    let edge = [[2000.0, 500.0], [2000.0, 1500.0]];
+    let (batch, fit) = plan_underlay_fit(&document.current(), id, ends, edge, false).unwrap();
+    document.apply_batch(&batch).unwrap();
+    on(&document, ends[0], edge[0]);
+    on(&document, ends[1], edge[1]);
+    assert!((fit.turn_deg - 90.0).abs() < 1e-9);
+    assert_eq!((fit.scale, fit.length_mismatch_mm), (1.0, 0.0));
+
+    // Picked where it is drawn now, onto an edge ten times as long: without scaling the
+    // first lands and the second misses by what the lengths differ; scaled, both land.
+    let long = [[2000.0, 500.0], [2000.0, 10_500.0]];
+    let (_, rigid) = plan_underlay_fit(&document.current(), id, edge, long, false).unwrap();
+    assert!((rigid.length_mismatch_mm - 9000.0).abs() < 1e-6);
+    let (batch, fit) = plan_underlay_fit(&document.current(), id, edge, long, true).unwrap();
+    document.apply_batch(&batch).unwrap();
+    on(&document, ends[0], long[0]);
+    on(&document, ends[1], long[1]);
+    assert!((fit.scale - 10.0).abs() < 1e-9 && fit.length_mismatch_mm.abs() < 1e-6);
+    assert!((document.current().underlay(id).unwrap().scale() - 10.0).abs() < 1e-9);
+
+    // Saved and opened again, the placement stays.
+    let placement = document.current().underlay(id).unwrap().placement;
+    let mut container = persistence::ContainerData::default();
+    container.insert_blob(bytes).unwrap();
+    let saved = persistence::save_container(&document.current(), &container).unwrap();
+    let LoadOutcome::Editable {
+        document: opened, ..
+    } = persistence::load(&saved).unwrap()
+    else {
+        panic!("the saved document is editable")
+    };
+    assert_eq!(opened.current().underlay(id).unwrap().placement, placement);
+
+    // One Undo step per fit.
+    document.undo().unwrap();
+    on(&document, ends[1], edge[1]);
+    document.undo().unwrap();
+    on(&document, ends[1], ends[1]);
+
+    let snapshot = document.current();
+    let point = [[3.0, 4.0], [3.0, 4.0]];
+    assert_eq!(
+        plan_underlay_fit(&snapshot, id, point, edge, false).unwrap_err(),
+        UnderlayFitError::UnderlayPointsCoincide
+    );
+    assert_eq!(
+        plan_underlay_fit(&snapshot, id, ends, point, true).unwrap_err(),
+        UnderlayFitError::ModelPointsCoincide
+    );
 }

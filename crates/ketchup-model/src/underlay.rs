@@ -8,6 +8,7 @@
 //! them. The texts of a layer travel with its lines; snapping only meets the lines. Each
 //! polyline and text names the style it is drawn in ([`style::LineStyle`]).
 
+pub mod placement;
 pub mod snap;
 pub mod style;
 pub mod text;
@@ -17,7 +18,7 @@ use std::fmt;
 
 use ketchup_geometry::typed_id;
 
-use crate::document::{CanonicalCommand, CommandBatch, ProfileSegment, Snapshot, TagId};
+use crate::document::{CanonicalCommand, CommandBatch, ProfileSegment, Snapshot, TagId, Transform};
 use crate::tolerance::{MAX_COORDINATE_MM, UNDERLAY_ARC_CHORD_MM};
 use style::LineStyle;
 use text::UnderlayText;
@@ -25,7 +26,7 @@ use text::UnderlayText;
 typed_id!(UnderlayId);
 
 /// A drawing under the model, shown while its tag and the tag of a layer are visible.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Underlay {
     pub id: UnderlayId,
     pub name: String,
@@ -39,6 +40,14 @@ pub struct Underlay {
     /// ([`UnderlayLines::move_near_origin`]); added back it gives the drawing's own
     /// coordinates.
     pub offset_mm_bits: [u64; 2],
+    /// Where its lines lie in the document, as an occurrence's transform places its part:
+    /// a turn about Z, a uniform scale and a move in the XY plane
+    /// ([`placement::fit_two_points`]); none until it is placed.
+    #[serde(
+        default = "Transform::identity",
+        skip_serializing_if = "placement::is_identity"
+    )]
+    pub placement: Transform,
 }
 
 impl Underlay {
@@ -819,6 +828,7 @@ pub fn plan_underlay(
         layers,
         lines_sha256,
         offset_mm_bits: offset_mm.map(f64::to_bits),
+        placement: Transform::identity(),
     }));
     Ok((CommandBatch::new(commands), id))
 }

@@ -173,6 +173,58 @@ fn drawing_and_measure_snap_where_underlay_lines_cross_and_measure_between_snaps
     );
 }
 
+/// After a two-point fit the wall's ends lie on the picked model points: drawing and
+/// Measure snap there and no longer where the wall was, and a scaled fit measures longer.
+/// Each fit is one Undo step; two picks at one point are refused and change nothing.
+#[test]
+fn drawing_and_measure_snap_to_the_lines_where_a_two_point_fit_placed_them() {
+    use crate::app::underlay::UnderlayEditError;
+    use ketchup_model::underlay::placement::UnderlayFitError;
+
+    let mut app = imported();
+    let rect = viewport();
+    let id = app.document.current().underlays().next().unwrap().id;
+    let undo = app.undo_step_count();
+    let wall = [[40.0, 20.0], [240.0, 20.0]];
+    let target = [[300.0, 100.0], [300.0, 300.0]];
+    let fit = app.fit_underlay(id, wall, target, false).unwrap();
+    assert!((fit.turn_deg - 90.0).abs() < 1e-9 && fit.length_mismatch_mm == 0.0);
+    assert_eq!(app.undo_step_count(), undo + 1);
+
+    let end = Vec3::new(300.0, 300.0, 0.0);
+    let snap = snap_near(&app, end, Vec2::new(2.0, 1.0)).unwrap();
+    assert_eq!(snap.kind, SnapKind::Endpoint);
+    assert!((snap.position_mm - end).length() < 1e-9, "{snap:?}");
+    assert_eq!(
+        snap_near(&app, Vec3::new(240.0, 20.0, 0.0), Vec2::ZERO),
+        None
+    );
+    let on_wall = app.project(Vec3::new(300.0, 250.0, 0.0), rect) + Vec2::new(2.0, 0.0);
+    let (points, length) = app.edge_at_screen(on_wall, rect, 8.0).unwrap();
+    assert!((length - 200.0).abs() < 1e-9);
+    assert!((points[0] - Vec3::new(300.0, 100.0, 0.0)).length() < 1e-9);
+
+    // Scaled onto a wall twice as long, from where its ends are drawn now.
+    let twice = [[300.0, 100.0], [300.0, 500.0]];
+    let fit = app.fit_underlay(id, target, twice, true).unwrap();
+    assert!((fit.scale - 2.0).abs() < 1e-9);
+    let (_, length) = app.edge_at_screen(on_wall, rect, 8.0).unwrap();
+    assert!((length - 400.0).abs() < 1e-9, "{length}");
+
+    let digest = app.canonical_digest();
+    let refused = app.fit_underlay(id, [[1.0, 1.0], [1.0, 1.0]], twice, false);
+    assert!(matches!(
+        refused,
+        Err(UnderlayEditError::Fit(
+            UnderlayFitError::UnderlayPointsCoincide
+        ))
+    ));
+    assert_eq!(
+        (app.canonical_digest(), app.undo_step_count()),
+        (digest, undo + 2)
+    );
+}
+
 #[test]
 fn a_hidden_underlay_layer_or_underlay_gives_no_snap() {
     let mut app = imported();
