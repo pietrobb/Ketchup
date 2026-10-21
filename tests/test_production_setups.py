@@ -86,7 +86,25 @@ def test_native_physical_identity_is_independent_of_program_code_and_saved_manif
             wb.close()
 
 
-@pytest.mark.parametrize("machining", ["bottom", "through-drill", "through-pocket"])
+def test_native_part_drilled_only_from_below_exports_laid_drilled_face_up(tmp_path):
+    # Review 2026-10-19 MF-19: a part machined from one face only is laid with
+    # that face up, so the bottom drilling is one vertical drilling 8 mm deep.
+    executable = os.environ.get("KETCHUP_HEADLESS")
+    if not executable:
+        pytest.skip("Set KETCHUP_HEADLESS for native setup regressions")
+    with Session(executable=executable) as session:
+        doc = make_document(session, tmp_path, "bottom")
+        original_digest = doc.state["canonical_digest"]
+        doc.export_production(tmp_path / "order", [HomagWoodwopAdapter()],
+                              machine_adapters=["homag-woodwop4"], confirmed=True,
+                              setup_codes={"PANEL-42": {"A": "000000000042"}})
+        assert doc.state["canonical_digest"] == original_digest
+        mpr = (tmp_path / "order" / "000000000042.mpr").read_text("ascii")
+        assert mpr.count("\\BohrVert\\") == 1
+        assert 'TI="8"\nDU="8"\n' in mpr
+
+
+@pytest.mark.parametrize("machining", ["through-drill", "through-pocket"])
 def test_native_unqualified_jaf_machining_never_publishes(tmp_path, machining):
     executable = os.environ.get("KETCHUP_HEADLESS")
     if not executable:
