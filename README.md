@@ -136,7 +136,7 @@ This is an evolving assembly and drafting path, not yet a complete mechanical si
 
 ### Ketchup Viewer
 
-Ketchup Viewer opens a read-only `.ketchup-view` package exported from Ketchup. A customer can orbit the model, pick a part to see its name, material, size, and notes, switch the saved scenes, and send back comments with arrows and the camera position, without being able to change the geometry. The Windows Viewer is installed with Ketchup; Android, macOS, and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in [`viewer`](viewer).
+Ketchup Viewer opens a read-only `.ketchup-view` package exported from Ketchup. A customer can orbit the model, pick a part to see its name, material, size, and notes, switch the saved scenes, and send back comments with arrows and the camera position, without being able to change the geometry. The Windows Viewer is installed with Ketchup; Android, macOS, and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
 
 ## Connect your AI harness (MCP)
 
