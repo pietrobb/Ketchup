@@ -117,6 +117,12 @@ pub enum ElementId {
         other_instance_path: InstancePath,
         other_edge: u8,
     },
+    /// A straight piece of an underlay's lines, numbered across its layers. An underlay
+    /// is no part: it only gives snap points, nothing selects it.
+    Underlay {
+        underlay: ketchup_model::underlay::UnderlayId,
+        segment: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

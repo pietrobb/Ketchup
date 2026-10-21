@@ -352,3 +352,87 @@ fn only_a_drawing_imports_as_an_underlay() {
     assert_eq!(code, "invalid_params");
     assert_eq!(app.canonical_digest(), digest);
 }
+
+/// `inspect action=underlay_snap`: a drawing in S-JTSK metres, moved near the origin on
+/// import, snaps at the end, middle and line of its line, names the point in the drawing's
+/// own coordinates and measures the line; a hidden layer gives nothing.
+#[test]
+fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("site.dxf");
+    let site = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n6\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n",
+        "0\nLINE\n8\nparcel\n10\n-500000\n20\n-1200000\n11\n-499990\n21\n-1200000\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+    std::fs::write(&path, site).unwrap();
+    let (mut app, mut bridge) = setup();
+    let answer = bridge
+        .execute(&mut app, import_underlay(&path), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let offset: [f64; 2] = serde_json::from_value(answer["underlay"]["offset_mm"].clone()).unwrap();
+    // After the move the 10 m line starts here.
+    let start = [-500_000_000.0 - offset[0], -1_200_000_000.0 - offset[1]];
+    let snap = |point_mm: [f64; 2], radius_mm: Option<f64>| Request::UnderlaySnap {
+        expected: None,
+        point_mm,
+        radius_mm,
+        underlay_id: None,
+    };
+    let digest = app.canonical_digest();
+
+    let near_middle = [start[0] + 5_000.0, start[1] + 3.0];
+    let found = bridge
+        .execute(&mut app, snap(near_middle, None), false)
+        .unwrap();
+    assert_eq!(
+        found["midpoint"]["point_mm"],
+        json!([start[0] + 5_000.0, start[1]]),
+        "{found}"
+    );
+    assert_eq!(
+        found["midpoint"]["drawing_mm"],
+        json!([-499_995_000.0, -1_200_000_000.0])
+    );
+    assert_eq!(found["midpoint"]["layer"], "parcel");
+    assert_eq!(found["nearest"]["distance_mm"], 3.0);
+    assert_eq!(found["endpoint"], Value::Null, "the ends are 5 m away");
+    assert_eq!(found["line"]["length_mm"], 10_000.0);
+    assert_eq!(found["line"]["start_mm"], json!(start));
+
+    let found = bridge
+        .execute(
+            &mut app,
+            snap([start[0] - 4.0, start[1] + 3.0], None),
+            false,
+        )
+        .unwrap();
+    assert_eq!(found["endpoint"]["point_mm"], json!(start));
+    assert_eq!(found["endpoint"]["distance_mm"], 5.0);
+    assert_eq!(app.canonical_digest(), digest, "a snap changes nothing");
+
+    let far = bridge
+        .execute(&mut app, snap(near_middle, Some(2.0)), false)
+        .unwrap();
+    assert_eq!(far["nearest"], Value::Null);
+    assert_eq!(far["line"], Value::Null);
+    let refused = bridge.execute(&mut app, snap(near_middle, Some(-1.0)), false);
+    assert_eq!(refused.unwrap_err(), "invalid_params");
+    let missing = Request::UnderlaySnap {
+        expected: None,
+        point_mm: near_middle,
+        radius_mm: None,
+        underlay_id: Some(99),
+    };
+    assert_eq!(
+        bridge.execute(&mut app, missing, false).unwrap_err(),
+        "entity_not_found"
+    );
+
+    let underlay = app.document.current().underlays().next().unwrap().clone();
+    assert!(app.set_tag_visibility(underlay.layers[0].tag, false));
+    let hidden = bridge
+        .execute(&mut app, snap(near_middle, None), false)
+        .unwrap();
+    assert_eq!(hidden["nearest"], Value::Null);
+}

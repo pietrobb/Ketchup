@@ -7,6 +7,8 @@
 //! ([`UnderlayLines::encode`]), shared by every revision, so an Undo history does not copy
 //! them.
 
+pub mod snap;
+
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -458,6 +460,19 @@ fn push_oriented(points: &mut Vec<[f64; 2]>, piece: &[[f64; 2]], reversed: bool,
     }
 }
 
+/// The angle an arc of `radius` turns by from chord to chord at most: its chords stay
+/// within [`UNDERLAY_ARC_CHORD_MM`] of it, and a whole circle has at most
+/// [`MAX_CIRCLE_CHORDS`] of them.
+fn arc_chord_step(radius: f64) -> f64 {
+    let tau = std::f64::consts::TAU;
+    let step = if radius > UNDERLAY_ARC_CHORD_MM {
+        2.0 * (1.0 - UNDERLAY_ARC_CHORD_MM / radius).acos()
+    } else {
+        tau
+    };
+    step.max(tau / MAX_CIRCLE_CHORDS)
+}
+
 /// Appends the points after the start of `segment`.
 fn push_segment(points: &mut Vec<[f64; 2]>, segment: &ProfileSegment) {
     match segment {
@@ -480,12 +495,7 @@ fn push_segment(points: &mut Vec<[f64; 2]>, segment: &ProfileSegment) {
             if sweep == 0.0 {
                 sweep = if *clockwise { -tau } else { tau };
             }
-            let step = if radius > UNDERLAY_ARC_CHORD_MM {
-                2.0 * (1.0 - UNDERLAY_ARC_CHORD_MM / radius).acos()
-            } else {
-                tau
-            };
-            let chords = (sweep.abs() / step.max(tau / MAX_CIRCLE_CHORDS)).ceil();
+            let chords = (sweep.abs() / arc_chord_step(radius)).ceil();
             let mut index = 1.0;
             while index < chords {
                 let angle = start + sweep * index / chords;

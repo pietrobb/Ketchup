@@ -1,0 +1,182 @@
+//! Snapping to and measuring on the shown lines of the underlays: their endpoints,
+//! midpoints and nearest points join the snap points of the model, so drawing, Measure
+//! and the bridge's `underlay_snap` all find the same points.
+
+use crate::*;
+use ketchup_model::underlay::snap::{
+    UnderlayPiece, UnderlaySnap, UnderlaySnapIndex, UnderlaySnapKind,
+};
+use ketchup_model::underlay::{Underlay, UnderlayId, UnderlayLines};
+
+/// What a snap on an underlay line references: no definition and no occurrence.
+pub(crate) fn underlay_reference(underlay: UnderlayId, segment: usize) -> SelectionId {
+    SelectionId {
+        definition_id: DefinitionId(0),
+        instance_path: InstancePath::root(OccurrenceId(0)),
+        element: ElementId::Underlay {
+            underlay,
+            segment: u32::try_from(segment).unwrap_or(u32::MAX),
+        },
+    }
+}
+
+/// The snap kind of the model's snaps a snap on an underlay line ranks as.
+pub(crate) fn snap_kind(kind: UnderlaySnapKind) -> SnapKind {
+    match kind {
+        UnderlaySnapKind::Endpoint => SnapKind::Endpoint,
+        UnderlaySnapKind::Midpoint => SnapKind::Midpoint,
+        UnderlaySnapKind::Nearest => SnapKind::Edge,
+    }
+}
+
+impl KetchupApp {
+    /// The snap index of `underlay`'s lines, built once per blob of lines. Lines that do
+    /// not decode give no snaps; drawing them reports why.
+    pub(crate) fn underlay_snap_index(&self, underlay: &Underlay) -> Arc<UnderlaySnapIndex> {
+        let key = underlay.lines_sha256;
+        if let Some(index) = self.render.underlay_snaps.borrow().get(&key) {
+            return Arc::clone(index);
+        }
+        let lines = self
+            .file
+            .container_data
+            .blobs()
+            .get(&underlay.lines_blob())
+            .and_then(|bytes| UnderlayLines::decode(bytes).ok())
+            .unwrap_or_default();
+        self.keep_underlay_snap_index(key, &lines)
+    }
+
+    /// Builds and keeps the snap index of the lines of blob `key`.
+    pub(crate) fn keep_underlay_snap_index(
+        &self,
+        key: [u8; 32],
+        lines: &UnderlayLines,
+    ) -> Arc<UnderlaySnapIndex> {
+        let index = Arc::new(UnderlaySnapIndex::new(lines));
+        self.render
+            .underlay_snaps
+            .borrow_mut()
+            .insert(key, Arc::clone(&index));
+        index
+    }
+
+    /// Whether `underlay` and its layer `layer` are shown.
+    fn underlay_layer_shown(snapshot: &Snapshot, underlay: &Underlay, layer: usize) -> bool {
+        let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
+        shown(underlay.tag)
+            && underlay
+                .layers
+                .get(layer)
+                .is_some_and(|layer| shown(layer.tag))
+    }
+
+    /// The best endpoint, midpoint and nearest point of each underlay's shown lines within
+    /// `radius_mm` of `point_mm`, in the document's XY plane.
+    pub(crate) fn underlay_snaps_near(
+        &self,
+        snapshot: &Snapshot,
+        point_mm: [f64; 2],
+        radius_mm: f64,
+    ) -> Vec<(UnderlayId, UnderlaySnap)> {
+        let mut found = Vec::new();
+        for underlay in snapshot.underlays() {
+            if !snapshot.tag(underlay.tag).is_some_and(|tag| tag.visible()) {
+                continue;
+            }
+            let snaps = self
+                .underlay_snap_index(underlay)
+                .snaps(point_mm, radius_mm, |layer| {
+                    Self::underlay_layer_shown(snapshot, underlay, layer)
+                });
+            found.extend(snaps.iter().map(|snap| (underlay.id, *snap)));
+        }
+        found
+    }
+
+    /// The line or arc of underlay `id` its straight piece `segment` belongs to.
+    pub(crate) fn underlay_piece(&self, id: UnderlayId, segment: usize) -> Option<UnderlayPiece> {
+        let snapshot = self.document.current();
+        self.underlay_snap_index(snapshot.underlay(id)?)
+            .piece(segment)
+    }
+
+    /// Where the pointer meets the underlays' plane, z = 0, and how far from there a point
+    /// of that plane may lie to be within `tolerance_px` of the pointer.
+    pub(crate) fn underlay_snap_window(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        tolerance_px: f32,
+    ) -> Option<([f64; 2], f64)> {
+        let at = |offset: Vec2| self.screen_to_plane(pointer + offset, rect, 0.0);
+        let center = at(Vec2::ZERO)?;
+        let radius = [
+            Vec2::new(tolerance_px, 0.0),
+            Vec2::new(-tolerance_px, 0.0),
+            Vec2::new(0.0, tolerance_px),
+            Vec2::new(0.0, -tolerance_px),
+        ]
+        .into_iter()
+        .filter_map(at)
+        .map(|point| point.distance(center))
+        .fold(0.0, f64::max);
+        Some(([center.x, center.y], radius))
+    }
+
+    /// The snaps on the shown underlay lines within `tolerance_px` of the pointer, as the
+    /// model's snaps rank them.
+    pub(crate) fn underlay_snaps_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        tolerance_px: f32,
+    ) -> Vec<(SelectionId, SnapKind, Vec3)> {
+        let snapshot = self.document.current();
+        if snapshot.underlays().next().is_none() {
+            return Vec::new();
+        }
+        let Some((point, radius)) = self.underlay_snap_window(pointer, rect, tolerance_px) else {
+            return Vec::new();
+        };
+        self.underlay_snaps_near(&snapshot, point, radius)
+            .into_iter()
+            .map(|(id, snap)| {
+                (
+                    underlay_reference(id, snap.segment),
+                    snap_kind(snap.kind),
+                    Vec3::new(snap.point_mm[0], snap.point_mm[1], 0.0),
+                )
+            })
+            .collect()
+    }
+
+    /// Per underlay, its shown line or arc nearest the pointer within `tolerance_px`, as
+    /// world points, and its length; `edge_at_screen` picks the nearest on screen.
+    pub(crate) fn underlay_pieces_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        tolerance_px: f32,
+    ) -> Vec<(Vec<Vec3>, f64)> {
+        self.underlay_snaps_at_screen(pointer, rect, tolerance_px)
+            .into_iter()
+            .filter_map(|(reference, kind, _)| match reference.element {
+                ElementId::Underlay { underlay, segment } if kind == SnapKind::Edge => {
+                    self.underlay_piece(underlay, usize::try_from(segment).ok()?)
+                }
+                _ => None,
+            })
+            .map(|piece| {
+                (
+                    piece
+                        .points_mm
+                        .iter()
+                        .map(|point| Vec3::new(point[0], point[1], 0.0))
+                        .collect(),
+                    piece.length_mm,
+                )
+            })
+            .collect()
+    }
+}

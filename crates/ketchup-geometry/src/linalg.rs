@@ -257,10 +257,9 @@ pub fn cross2(left: [f64; 2], right: [f64; 2]) -> f64 {
     cross([left[0], left[1], 0.0], [right[0], right[1], 0.0])[2]
 }
 
-/// The distance in the plane from `point` to the nearest point of the segment
-/// from `start` to `end`.
+/// The point of the segment from `start` to `end` nearest `point`, in the plane.
 #[must_use]
-pub fn point_segment_distance2(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+pub fn nearest_point_on_segment2(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> [f64; 2] {
     let direction = [end[0] - start[0], end[1] - start[1]];
     let from_start = [point[0] - start[0], point[1] - start[1]];
     let length_squared = dot2(direction, direction);
@@ -269,7 +268,18 @@ pub fn point_segment_distance2(point: [f64; 2], start: [f64; 2], end: [f64; 2]) 
     } else {
         0.0
     };
-    (from_start[0] - parameter * direction[0]).hypot(from_start[1] - parameter * direction[1])
+    [
+        start[0] + parameter * direction[0],
+        start[1] + parameter * direction[1],
+    ]
+}
+
+/// The distance in the plane from `point` to the nearest point of the segment
+/// from `start` to `end`.
+#[must_use]
+pub fn point_segment_distance2(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let nearest = nearest_point_on_segment2(point, start, end);
+    (point[0] - nearest[0]).hypot(point[1] - nearest[1])
 }
 
 /// The distance from `point` to the closed outline through `outline` (the last

@@ -352,6 +352,7 @@ impl Tools {
                 "workset_status",
                 "measure",
                 "mass",
+                "underlay_snap",
             ],
         )?;
         match action.as_str() {

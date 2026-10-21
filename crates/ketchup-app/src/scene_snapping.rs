@@ -715,6 +715,11 @@ impl KetchupApp {
             }
             add(reference, SnapKind::Edge, at((low + high) * 0.5));
         }
+        for (reference, kind, point) in
+            self.underlay_snaps_at_screen(pointer, rect, tolerance_px * 1.5)
+        {
+            add(&reference, kind, point);
+        }
         if self.active_tool == ActiveTool::Arc
             && self.gesture.sketch.end.is_none()
             && let Some(anchor) = self.gesture.sketch.start
@@ -810,9 +815,14 @@ impl KetchupApp {
                 Some((distance, points, length))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0));
+        let nearest_underlay = self
+            .underlay_pieces_at_screen(pointer, rect, tolerance_px)
+            .into_iter()
+            .filter_map(|(points, length)| Some((screen_distance(&points)?, points, length)));
         nearest_edge
             .into_iter()
             .chain(nearest_circle)
+            .chain(nearest_underlay)
             .filter(|(distance, _, _)| *distance <= tolerance_px)
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, points, length)| (points, length))

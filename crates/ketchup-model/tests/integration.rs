@@ -50,6 +50,7 @@ mod suffix_suppress_resume;
 mod suffix_suppress_resume_verifier;
 mod topology_identity;
 mod underlay;
+mod underlay_snap;
 mod workplane_sketch;
 
 #[path = "support/integration_support.rs"]

@@ -69,3 +69,26 @@ fn measurement_schema_and_transport_preserve_both_modes_and_nested_paths() {
         json!({"method":"mass","expected":stamp,"occurrence_ids":[4, 8]})
     );
 }
+
+#[test]
+fn underlay_snap_reaches_the_window_with_its_point_and_radius() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let schemas = crate::schema::tools();
+    let schema = &schemas
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "inspect")
+        .unwrap()["inputSchema"];
+    assert_eq!(schema["allOf"][2]["then"]["required"], json!(["point_mm"]));
+    let arguments =
+        json!({"action":"underlay_snap", "point_mm":[120.5, -3], "radius_mm":25, "underlay_id":2});
+    let result = call(&mut tools, "inspect", arguments);
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"underlay_snap", "point_mm":[120.5, -3], "radius_mm":25, "underlay_id":2})
+    );
+}

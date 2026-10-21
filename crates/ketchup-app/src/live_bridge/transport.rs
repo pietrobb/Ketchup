@@ -229,6 +229,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::MeasureFaces { .. }
         | Request::ValidateProgram { .. }
         | Request::SavedViews { .. }
+        | Request::UnderlaySnap { .. }
         | Request::Image(_) => false,
         Request::WorksetCreate { .. }
         | Request::BatchJobStart { .. }
