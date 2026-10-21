@@ -849,9 +849,14 @@ impl ExactWorkerClient {
         timeout: Duration,
     ) -> Result<(), WorkerError> {
         self.ensure_not_cancelled(cancelled)?;
-        // A DWG file of any size goes to the program worker, which reads any frame.
+        // A DWG file, a program or a model of any size goes to the program worker, which
+        // reads any frame: the job's memory limit bounds what it holds.
         let max_bytes = match request {
-            WorkerRequest::ConvertDwg(_) => ANY_FRAME_BYTES,
+            WorkerRequest::ConvertDwg(_)
+            | WorkerRequest::EvaluateProgram(_)
+            | WorkerRequest::ReportProgram(_)
+            | WorkerRequest::RefineReport(_)
+            | WorkerRequest::ReadUnderlay(_) => ANY_FRAME_BYTES,
             _ => MAX_REQUEST_FRAME_BYTES,
         };
         let frame = encode_frame(request, max_bytes)
