@@ -6,7 +6,6 @@
 use std::fmt;
 use std::io::{BufReader, Cursor};
 use std::path::Path;
-use std::time::Duration;
 
 use ketchup_model::import::{DxfImportError, DxfImportOptions, read_dxf_underlay_from};
 
@@ -74,7 +73,6 @@ pub enum UnderlayReadError {
     /// The drawing was refused.
     Refused(UnderlayRefusal),
     Cancelled,
-    TimeLimit(Duration),
     /// Reading needed more memory than the worker may commit.
     MemoryLimit,
     /// The worker could not be started or stopped otherwise.
@@ -86,11 +84,6 @@ impl fmt::Display for UnderlayReadError {
         match self {
             Self::Refused(refusal) => refusal.fmt(formatter),
             Self::Cancelled => formatter.write_str("reading the drawing was cancelled"),
-            Self::TimeLimit(after) => write!(
-                formatter,
-                "reading the drawing took longer than {} s and was stopped",
-                after.as_secs()
-            ),
             Self::MemoryLimit => write!(
                 formatter,
                 "reading the drawing needed more than {} GiB of memory and was stopped",

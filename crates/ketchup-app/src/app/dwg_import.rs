@@ -71,24 +71,33 @@ pub(crate) struct DwgReadTask {
     path: PathBuf,
     cancel: CancelToken,
     receiver: std::sync::mpsc::Receiver<DwgRead>,
+    pub(crate) progress: super::file_activity::ReadProgress,
 }
 
 impl KetchupApp {
     /// Reads the DWG file at `path` on a thread; [`Self::poll_dwg_read`] opens
     /// the review when it is read.
     pub(crate) fn start_dwg_read(&mut self, path: PathBuf, context: &egui::Context) {
+        self.queue_dwg_read(path, context, read_dwg_file);
+    }
+
+    /// [`Self::start_dwg_read`] with the reader the thread runs.
+    pub(crate) fn queue_dwg_read(
+        &mut self,
+        path: PathBuf,
+        context: &egui::Context,
+        read: impl FnOnce(&Path, &CancelToken) -> DwgRead + Send + 'static,
+    ) {
         let (sender, receiver) = std::sync::mpsc::channel();
         let cancel = CancelToken::default();
         let (thread_path, thread_cancel, repaint) = (path.clone(), cancel.clone(), context.clone());
         std::thread::spawn(move || {
-            if sender
-                .send(read_dwg_file(&thread_path, &thread_cancel))
-                .is_ok()
-            {
+            if sender.send(read(&thread_path, &thread_cancel)).is_ok() {
                 repaint.request_repaint();
             }
         });
         self.file.activity.dwg_reading = Some(DwgReadTask {
+            progress: super::file_activity::ReadProgress::start(&path),
             path,
             cancel,
             receiver,

@@ -15,6 +15,40 @@ pub(crate) struct FileActivity {
     pub(crate) underlay: super::underlay::UnderlayImport,
 }
 
+/// Source bytes a drawing read gets through in a second: Levoča, a 38.9 MB DWG, was read
+/// and converted in 4.1 s in a release build; rounded down. The DWG and DXF readers report
+/// no progress of their own, so a read's progress is estimated from its file's size.
+const DRAWING_READ_BYTES_PER_SECOND: f64 = 8.0e6;
+
+/// When a drawing read started and how large its file is, for its estimated progress.
+pub(crate) struct ReadProgress {
+    pub(crate) started: Instant,
+    pub(crate) source_bytes: u64,
+}
+
+impl ReadProgress {
+    pub(crate) fn start(path: &Path) -> Self {
+        Self {
+            started: Instant::now(),
+            source_bytes: std::fs::metadata(path).map_or(0, |metadata| metadata.len()),
+        }
+    }
+
+    /// The estimated share done, below 1 until the read ends, and the time estimated to be
+    /// left, none once the read takes longer than estimated.
+    fn estimate(&self) -> (f32, Option<Duration>) {
+        let expected = Duration::from_secs_f64(
+            (self.source_bytes as f64 / DRAWING_READ_BYTES_PER_SECOND).max(0.5),
+        );
+        let elapsed = self.started.elapsed();
+        let fraction = (elapsed.as_secs_f64() / expected.as_secs_f64()).min(0.99) as f32;
+        (
+            fraction,
+            expected.checked_sub(elapsed).filter(|left| !left.is_zero()),
+        )
+    }
+}
+
 type OpenResult = Result<
     ketchup_model::persistence::LoadedFile,
     ketchup_model::persistence::FilePersistenceError,
@@ -182,6 +216,33 @@ impl KetchupApp {
         ))
     }
 
+    /// The estimated progress of the drawing being read, and its text.
+    pub(crate) fn drawing_read_estimate(&self) -> Option<(f32, String)> {
+        let progress = match (
+            &self.file.activity.dwg_reading,
+            &self.file.activity.underlay.reading,
+        ) {
+            (Some(task), _) => &task.progress,
+            (None, Some(task)) => &task.progress,
+            (None, None) => return None,
+        };
+        let (fraction, left) = progress.estimate();
+        let text = match left {
+            Some(left) => self.catalog.format(
+                "file-activity-read-estimate",
+                &BTreeMap::from([
+                    ("percent", ((fraction * 100.0) as u32).to_string()),
+                    ("seconds", left.as_secs_f64().ceil().to_string()),
+                ]),
+            ),
+            None => self.catalog.format(
+                "file-activity-read-overdue",
+                &BTreeMap::from([("seconds", progress.started.elapsed().as_secs().to_string())]),
+            ),
+        };
+        Some((fraction, text))
+    }
+
     pub(crate) fn file_write_in_progress(&self) -> bool {
         self.native_save_is_writing() || self.viewer_export_is_writing()
     }
@@ -202,6 +263,7 @@ impl KetchupApp {
         let Some(label) = self.file_activity_label() else {
             return;
         };
+        let estimate = self.drawing_read_estimate();
         let response = egui::Modal::new(egui::Id::new("file-activity")).show(context, |ui| {
             // The spinner keeps frames coming, so the finished worker is
             // picked up without waiting for unrelated input.
@@ -209,6 +271,10 @@ impl KetchupApp {
                 ui.spinner();
                 ui.label(label);
             });
+            if let Some((fraction, text)) = estimate {
+                ui.add(egui::ProgressBar::new(fraction).desired_width(320.0));
+                ui.label(text);
+            }
             ui.add_enabled(
                 !self.file_write_in_progress(),
                 egui::Button::new(self.catalog.text("action-cancel")),

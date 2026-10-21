@@ -74,6 +74,76 @@ fn the_window_reads_a_dwg_file_on_a_thread_and_outlives_a_hostile_one() {
     assert_eq!(app.undo_step_count(), undo);
 }
 
+/// A DWG read has no deadline: while it runs, the window shows how far it is estimated to
+/// be and how long is left, from the file's size, then that it takes longer than estimated;
+/// Cancel stops it.
+#[test]
+fn a_long_dwg_read_shows_its_estimated_progress_and_cancel_stops_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("large.dwg");
+    // 16 MB: estimated at 2 s.
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(16_000_000)
+        .unwrap();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1600.0, 1200.0))
+        .build_state(
+            |context, app: &mut KetchupApp| app.ui(context),
+            KetchupApp::new(),
+        );
+    harness.step();
+    let (cancelled, seen) = std::sync::mpsc::channel();
+    let context = harness.ctx.clone();
+    harness
+        .state_mut()
+        .queue_dwg_read(path, &context, move |_, cancel| {
+            while !cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            cancelled.send(()).unwrap();
+            Err(ImportError::failed(ImportFormat::Dxf, "cancelled"))
+        });
+    let shown = |harness: &mut egui_kittest::Harness<'_, KetchupApp>, ago: u64| {
+        let task = harness
+            .state_mut()
+            .file
+            .activity
+            .dwg_reading
+            .as_mut()
+            .unwrap();
+        task.progress.started = Instant::now() - Duration::from_secs(ago);
+        harness.step();
+        let (fraction, text) = harness.state().drawing_read_estimate().unwrap();
+        assert!(
+            harness
+                .query_all(egui_kittest::kittest::by().label(&text))
+                .next()
+                .is_some(),
+            "{text}"
+        );
+        (fraction, text)
+    };
+    let (fraction, text) = shown(&mut harness, 1);
+    assert!((0.5..0.6).contains(&fraction), "{fraction}");
+    assert!(text.contains("50") && text.contains('1'), "{text}");
+    let (fraction, text) = shown(&mut harness, 3);
+    assert_eq!(fraction, 0.99);
+    let overdue = harness.state().catalog.format(
+        "file-activity-read-overdue",
+        &BTreeMap::from([("seconds", "3".to_owned())]),
+    );
+    assert_eq!(text, overdue);
+
+    harness
+        .get_by_label(&harness.state().catalog.text("action-cancel"))
+        .click();
+    harness.step();
+    assert!(harness.state().file.activity.dwg_reading.is_none());
+    seen.recv_timeout(Duration::from_secs(10))
+        .expect("the reader saw the cancel");
+}
+
 /// The refusal of the hostile file stays in the status line until the next
 /// file is chosen; read alone so the line is checked before it is replaced.
 #[test]

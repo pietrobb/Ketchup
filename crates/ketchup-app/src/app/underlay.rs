@@ -110,6 +110,7 @@ pub(crate) struct UnderlayReadTask {
     unit: Option<ImportLengthUnit>,
     cancel: CancelToken,
     receiver: mpsc::Receiver<UnderlayReadResult>,
+    pub(crate) progress: super::file_activity::ReadProgress,
 }
 
 /// The window's underlay import: the read in progress, or the drawing that waits for the
@@ -141,6 +142,7 @@ impl KetchupApp {
             }
         });
         self.file.activity.underlay.reading = Some(UnderlayReadTask {
+            progress: super::file_activity::ReadProgress::start(&path),
             path,
             unit,
             cancel,

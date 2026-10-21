@@ -95,8 +95,10 @@ impl CheckDeadline {
     }
 }
 
-/// How long reading one DWG file, or one drawing as an underlay, may take.
-const DWG_DEADLINE: Duration = Duration::from_secs(60);
+/// Reading one DWG file, or one drawing as an underlay, has no deadline: it ends, is
+/// cancelled by the user, or stops at the worker's memory limit. A century stands in
+/// for "never" where the worker client wants a time.
+const UNTIL_CANCELLED: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
 
 /// How long a dead worker's standard error may take to arrive.
 const STDERR_WAIT: Duration = Duration::from_secs(3);
@@ -123,7 +125,6 @@ pub enum DwgConversionError {
     /// The DWG reader refused the file.
     Refused(DwgRefusal),
     Cancelled,
-    TimeLimit(Duration),
     /// Reading needed more memory than the worker may commit.
     MemoryLimit,
     /// The worker could not be started or stopped otherwise.
@@ -137,11 +138,6 @@ impl fmt::Display for DwgConversionError {
         match self {
             Self::Refused(refusal) => refusal.fmt(formatter),
             Self::Cancelled => formatter.write_str("reading the DWG file was cancelled"),
-            Self::TimeLimit(after) => write!(
-                formatter,
-                "reading the DWG file took longer than {} s and was stopped",
-                after.as_secs()
-            ),
             Self::MemoryLimit => write!(
                 formatter,
                 "reading the DWG file needed more than {} GiB of memory and was stopped; the \
@@ -353,7 +349,7 @@ impl ProgramWorker {
         };
         let outcome = self
             .call(cancel, |client| {
-                client.convert_dwg(input, cancel.flag(), DWG_DEADLINE)
+                client.convert_dwg(input, cancel.flag(), UNTIL_CANCELLED)
             })
             .map_err(Stopped::dwg_error)?;
         let (dxf_sha256, version, skipped) = match outcome {
@@ -393,7 +389,7 @@ impl ProgramWorker {
     ) -> Result<UnderlayRead, UnderlayReadError> {
         let outcome = self
             .call(cancel, |client| {
-                client.read_underlay(input, cancel.flag(), DWG_DEADLINE)
+                client.read_underlay(input, cancel.flag(), UNTIL_CANCELLED)
             })
             .map_err(Stopped::underlay_error)?;
         match outcome {
@@ -676,7 +672,9 @@ impl Stopped {
     fn dwg_error(self) -> DwgConversionError {
         match self {
             Self::Cancelled => DwgConversionError::Cancelled,
-            Self::TimeLimit(after) => DwgConversionError::TimeLimit(after),
+            Self::TimeLimit(after) => {
+                DwgConversionError::WorkerFailed(WorkerError::RequestTimedOut(after))
+            }
             Self::MemoryLimit => DwgConversionError::MemoryLimit,
             Self::Failed(error) => DwgConversionError::WorkerFailed(error),
         }
@@ -685,7 +683,9 @@ impl Stopped {
     fn underlay_error(self) -> UnderlayReadError {
         match self {
             Self::Cancelled => UnderlayReadError::Cancelled,
-            Self::TimeLimit(after) => UnderlayReadError::TimeLimit(after),
+            Self::TimeLimit(after) => {
+                UnderlayReadError::WorkerFailed(WorkerError::RequestTimedOut(after))
+            }
             Self::MemoryLimit => UnderlayReadError::MemoryLimit,
             Self::Failed(error) => UnderlayReadError::WorkerFailed(error),
         }
