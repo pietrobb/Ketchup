@@ -676,6 +676,7 @@ impl Edit<'_> {
     fn driven(&self, reading: &Reading, value: f64) -> Option<Driven> {
         let baseline = reading.of(&self.evaluated.model, self.name)?;
         let mut drivers = Vec::new();
+        let mut outside = Vec::new();
         for parameter in &self.evaluated.model.params {
             let within = |value: f64| {
                 parameter.min.is_none_or(|minimum| value >= minimum)
@@ -702,12 +703,27 @@ impl Edit<'_> {
             };
             let slope = (probed_value - baseline) / (probed - current);
             let replacement = current + (value - baseline) / slope;
-            if slope.abs() > ACCUMULATED_ROUNDING && within(replacement) {
+            if slope.abs() <= ACCUMULATED_ROUNDING {
+                continue;
+            }
+            if within(replacement) {
                 drivers.push((parameter.name.clone(), replacement));
+            } else {
+                outside.push((parameter, replacement));
             }
         }
         let [(parameter, replacement)] = drivers.as_slice() else {
-            return None;
+            // The one parameter that drives the value, past the range the
+            // program declares for it.
+            return match outside.as_slice() {
+                [(parameter, replacement)] if drivers.is_empty() => Some(Driven::OutOfRange {
+                    parameter: parameter.name.clone(),
+                    min: parameter.min,
+                    max: parameter.max,
+                    value: *replacement,
+                }),
+                _ => None,
+            };
         };
         // Without the noise of the probe: a whole default stays whole, else
         // nine decimals, as long as the part still reads `value`.
@@ -859,6 +875,12 @@ impl Edit<'_> {
         if let Some(Driven::Alone(rewritten)) = driven {
             return Ok((rewritten, self.reads(reading, value)));
         }
+        let what = format!("{feature} · {path}");
+        if let Some(refusal) =
+            (driven.as_ref()).and_then(|driven| driven.out_of_range(self.name, &what))
+        {
+            return Err(refusal);
+        }
         let line = self
             .found_call()
             .map_or_else(String::new, |call| format!(" on line {}", call.lines.first));
@@ -922,10 +944,18 @@ impl Edit<'_> {
         // With no line of its own yet, the one param() that makes the whole
         // length alone is overridden; once the line is there, it is written
         // again, so a parameter never adds to it.
-        if written_before.is_none()
-            && let Some(Driven::Alone(rewritten)) = self.driven(&Reading::Length, total)
-        {
-            return Ok((rewritten, self.reads(Reading::Length, total)));
+        match self.driven(&Reading::Length, total) {
+            Some(Driven::Alone(rewritten)) if written_before.is_none() => {
+                return Ok((rewritten, self.reads(Reading::Length, total)));
+            }
+            Some(driven) => {
+                // The length line would pass by the range the program
+                // declares for the parameter that makes the length.
+                if let Some(refusal) = driven.out_of_range(self.name, feature) {
+                    return Err(refusal);
+                }
+            }
+            None => {}
         }
         let distance = written(value - pad);
         let line = (distance.abs() > DEFAULT_LINEAR_TOLERANCE_MM).then(|| {
@@ -989,6 +1019,45 @@ enum Driven {
         parameter: String,
         parts: Vec<String>,
     },
+    /// The one `param()` that drives the value would have to be `value`,
+    /// outside the range the program declares for it.
+    OutOfRange {
+        parameter: String,
+        min: Option<f64>,
+        max: Option<f64>,
+        value: f64,
+    },
+}
+
+impl Driven {
+    /// The refusal of a value its one parameter cannot take, if it is one.
+    fn out_of_range(&self, part: &str, what: &str) -> Option<RuleProgramApplyError> {
+        let Self::OutOfRange {
+            parameter,
+            min,
+            max,
+            value,
+        } = self
+        else {
+            return None;
+        };
+        let number = |value: f64| number_literal(written(value));
+        let range = match (min, max) {
+            (Some(min), Some(max)) => format!("from {} to {}", number(*min), number(*max)),
+            (Some(min), None) => format!("at least {}", number(*min)),
+            (None, Some(max)) => format!("at most {}", number(*max)),
+            (None, None) => return None,
+        };
+        Some(refused(
+            "program_parameter_out_of_range",
+            format!(
+                "{what} of part {} is set by param({}), which the program allows {range}, and it would be {}; type a value within that range, or change the range in the program",
+                quote(part),
+                quote(parameter),
+                number(*value)
+            ),
+        ))
+    }
 }
 
 #[cfg(test)]

@@ -518,6 +518,38 @@ fn a_length_typed_after_its_param_became_its_own_rewrites_the_length_line() {
     assert_eq!(second.source.matches("name=\"Length\"").count(), 1);
 }
 
+/// WB-12: a typed value its one param() could only make past the range the
+/// program declares for it is refused with that range, not written as a
+/// length line that passes the range by.
+#[test]
+fn a_value_past_the_range_of_its_param_is_refused_with_the_range() {
+    let source = program(
+        "H = param(\"h\", 18, min=12, max=40)\n\
+         box(\"a\", (10, 20, H), at=(0, 0, 0))\n",
+    );
+    for value in [10.0, 60.0] {
+        let refusal = set_length(&source, value).expect_err("refused");
+        assert!(refusal.to_string().contains("from 12 to 40"), "{refusal}");
+    }
+    let wide = "W = param(\"w\", 100, max=150)\nbox(\"p\", (W, 20, 10))\n";
+    let before = model(&program(wide));
+    let refusal = refusal(
+        wide,
+        "p",
+        PartChange::Parameter {
+            feature: feature_with(&before, "p", "bounds.width"),
+            path: "bounds.width".to_owned(),
+            value: 200.0,
+        },
+    );
+    assert!(refusal.contains("at most 150"), "{refusal}");
+    // Within the range the parameter is overridden as before.
+    assert_eq!(
+        set_length(&source, 30.0).unwrap().unwrap().overrides["h"],
+        30.0
+    );
+}
+
 /// WB-8: a param() that drives the length alone is checked with the
 /// Push/Pulls of other lines, so a pull that leaves -5 is refused.
 #[test]
