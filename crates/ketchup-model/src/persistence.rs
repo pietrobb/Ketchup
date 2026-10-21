@@ -47,9 +47,8 @@ const HISTORY_SCHEMA: u16 = 5;
 const WORK_RECOVERY_MAGIC: &[u8; 10] = b"KETCHUPWRK";
 /// Format 2: the whole file, then the steps appended per edit (idea #49).
 const WORK_RECOVERY_SCHEMA: u16 = 2;
-/// Most revisions a native file's history may hold. Files written before the shared
-/// [`crate::tolerance::limits::UNDO_REVISIONS`] can hold this many; loading keeps only the
-/// revisions within the Undo limit.
+/// Most revisions a native file's history may hold; files written before the shared
+/// [`crate::tolerance::limits::UNDO_REVISIONS`] can hold this many.
 const FILE_HISTORY_REVISIONS: u32 = 4_096;
 /// What the chunks of a history may assemble to. Chunks shared between revisions
 /// keep `history.bin` small, so without these a small file could name gigabytes.
@@ -1863,9 +1862,8 @@ fn decode_revision_history(
         next_revision_id,
         chunks,
         records,
-    } = read_history_records(bytes, document_bytes, budget)?;
-    // Only the kept revisions' programs are assembled and checked (N-5); one the
-    // history names again is decoded once and shared.
+    } = read_history_records(bytes, document_bytes, budget, false)?;
+    // A program the history names again is decoded once and shared.
     let mut decoded = BTreeMap::new();
     let rule_programs = records
         .iter()
@@ -1914,7 +1912,7 @@ fn current_history_program(
         chunks,
         records,
         ..
-    } = read_history_records(bytes, document_bytes, HISTORY_BUDGET)?;
+    } = read_history_records(bytes, document_bytes, HISTORY_BUDGET, true)?;
     let current = &records[cursor];
     if current.revision_id != expected_revision_id {
         return Err(PersistenceError::InvalidRevisionHistory);
@@ -1945,6 +1943,7 @@ fn read_history_records<'a>(
     bytes: &'a [u8],
     document_bytes: &'a [u8],
     budget: HistoryBudget,
+    current_only: bool,
 ) -> Result<ParsedHistory<'a>, PersistenceError> {
     let mut reader = Reader::with_item_budget(bytes, budget.items);
     if reader.take(HISTORY_MAGIC.len())? != HISTORY_MAGIC {
@@ -1960,13 +1959,10 @@ fn read_history_records<'a>(
     if count == 0 || cursor >= count {
         return Err(PersistenceError::InvalidRevisionHistory);
     }
-    // A file written before the shared Undo limit can hold up to 4 096 revisions; the
-    // store keeps those within the limit around the cursor, so only they are kept here
-    // and count against the budget (PS-12). The others are read only to reach the next
-    // one. Older formats load whole: their migrated digests chain across revisions.
-    let kept = if schema >= 4 {
-        cursor.saturating_sub(crate::tolerance::limits::UNDO_REVISIONS)
-            ..=(cursor + crate::tolerance::limits::UNDO_REVISIONS).min(count - 1)
+    // Opening a file needs only the program of the revision it opens at; the
+    // others are read only to reach the next one and count against no budget.
+    let kept = if current_only {
+        cursor..=cursor
     } else {
         0..=count - 1
     };
@@ -3395,180 +3391,6 @@ mod tests {
         assert_eq!(
             decode(&history(chunk, repeats), u64::MAX).err(),
             Some(PersistenceError::InvalidRevisionHistory)
-        );
-    }
-
-    /// PS-12: opening loads only the revisions the Undo limit keeps around the
-    /// cursor. Those before the window belong to another document here, so the
-    /// history opens only if they are never loaded.
-    #[test]
-    fn opening_a_long_history_loads_only_the_revisions_it_keeps() {
-        use crate::document::{CanonicalCommand, CommandBatch, NodeId};
-        use crate::tolerance::limits::UNDO_REVISIONS;
-        use ketchup_geometry::dimension::Dimension;
-        let edited = |edits: u64| {
-            let mut store = DocumentStore::new();
-            for id in 1..=edits {
-                store
-                    .apply_batch(&CommandBatch::new(vec![
-                        CanonicalCommand::CreateEvaluatorNode {
-                            id: NodeId(id),
-                            name: format!("parameter-{id}"),
-                            dimension: Dimension::new("1", 1.0).unwrap(),
-                            dependencies: vec![],
-                        },
-                    ]))
-                    .unwrap();
-            }
-            store
-        };
-        let window = u64::try_from(UNDO_REVISIONS).unwrap();
-        let (other, store) = (edited(window - 1), edited(3 * window / 2));
-        let kept = store.revision_history().collect::<Vec<_>>();
-        assert_eq!(kept[0].id(), window / 2);
-        // The other document's revisions take the ids before the kept ones.
-        let revisions = other
-            .revision_history()
-            .filter(|revision| revision.id() < kept[0].id())
-            .chain(kept.iter().copied())
-            .collect::<Vec<_>>();
-        let cursor = revisions.len() - 1;
-        assert!(cursor > UNDO_REVISIONS);
-        let document_bin = encoded_snapshot(&store.current());
-        let history = encode_history(
-            &revisions,
-            cursor,
-            store.next_revision_id(),
-            &document_bin,
-            HISTORY_BUDGET,
-        )
-        .unwrap();
-        let outcome = load(&save(&store.current())).unwrap();
-        let opened = decode_revision_history(
-            &history,
-            &document_bin.bytes,
-            &outcome,
-            &ContainerData::default(),
-            HISTORY_BUDGET,
-        )
-        .unwrap();
-        assert_eq!(opened.revision_count(), UNDO_REVISIONS + 1);
-        assert_eq!(
-            opened.revision_history().next().unwrap().id(),
-            revisions[cursor - UNDO_REVISIONS].id()
-        );
-        assert_eq!(
-            opened.current().revision_id(),
-            store.current().revision_id()
-        );
-        // Review 2026-10-16 PS-12: the revisions outside the window count against no
-        // budget either, so the budget of the kept ones alone opens the long history.
-        let window_history = encode_history(
-            &kept,
-            kept.len() - 1,
-            store.next_revision_id(),
-            &document_bin,
-            HISTORY_BUDGET,
-        )
-        .unwrap();
-        let window_bytes =
-            read_history_records(&window_history, &document_bin.bytes, HISTORY_BUDGET)
-                .unwrap()
-                .records
-                .iter()
-                .map(|record| record.encoded_snapshot.assembled_len() as u64)
-                .sum();
-        assert!(window_bytes > 0);
-        let opened = decode_revision_history(
-            &history,
-            &document_bin.bytes,
-            &outcome,
-            &ContainerData::default(),
-            HistoryBudget {
-                snapshots: window_bytes,
-                ..HISTORY_BUDGET
-            },
-        )
-        .unwrap();
-        assert_eq!(opened.revision_count(), UNDO_REVISIONS + 1);
-    }
-
-    /// Review 2026-10-15 status N-5: the program of a revision outside the kept
-    /// window is never assembled nor checked, so a damaged one there costs
-    /// nothing (a kept one is checked as before).
-    #[test]
-    fn only_the_kept_revisions_programs_are_read() {
-        use crate::document::{CanonicalCommand, CommandBatch, NodeId, RuleProgramSource};
-        use crate::tolerance::limits::UNDO_REVISIONS;
-        use ketchup_geometry::dimension::Dimension;
-        const MARKER: &[u8] = b"# retired program";
-        let edited = |edits: u64, program: bool| {
-            let mut store = DocumentStore::new();
-            for id in 1..=edits {
-                store
-                    .apply_batch(&CommandBatch::new(vec![
-                        CanonicalCommand::CreateEvaluatorNode {
-                            id: NodeId(id),
-                            name: format!("parameter-{id}"),
-                            dimension: Dimension::new("1", 1.0).unwrap(),
-                            dependencies: vec![],
-                        },
-                    ]))
-                    .unwrap();
-                // The first edit is the program's revision.
-                if program && id == 1 {
-                    store
-                        .bind_rule_program(RuleProgramSource {
-                            file_name: "model.star".into(),
-                            source: format!("{}\nx = 1\n", std::str::from_utf8(MARKER).unwrap()),
-                            overrides: BTreeMap::new(),
-                            variants: BTreeMap::new(),
-                        })
-                        .unwrap();
-                }
-            }
-            store
-        };
-        let window = u64::try_from(UNDO_REVISIONS).unwrap();
-        let store = edited(3 * window / 2, false);
-        let kept = store.revision_history().collect::<Vec<_>>();
-        let document_bin = encoded_snapshot(&store.current());
-        let outcome = load(&save(&store.current())).unwrap();
-        let damaged = |other: &DocumentStore| {
-            let revisions = other
-                .revision_history()
-                .filter(|revision| revision.id() < kept[0].id())
-                .chain(kept.iter().copied())
-                .collect::<Vec<_>>();
-            let cursor = revisions.len() - 1;
-            let mut history = encode_history(
-                &revisions,
-                cursor,
-                store.next_revision_id(),
-                &document_bin,
-                HISTORY_BUDGET,
-            )
-            .unwrap();
-            let at = history
-                .windows(MARKER.len())
-                .position(|window| window == MARKER)
-                .expect("the history holds the retired program");
-            history[at + 2] ^= 0x20;
-            decode_revision_history(
-                &history,
-                &document_bin.bytes,
-                &outcome,
-                &ContainerData::default(),
-                HISTORY_BUDGET,
-            )
-        };
-        // The other document's revisions, all with the program, take the ids
-        // before the kept ones.
-        let opened = damaged(&edited(window - 1, true)).unwrap();
-        assert_eq!(opened.revision_count(), UNDO_REVISIONS + 1);
-        assert_eq!(
-            opened.current().revision_id(),
-            store.current().revision_id()
         );
     }
 

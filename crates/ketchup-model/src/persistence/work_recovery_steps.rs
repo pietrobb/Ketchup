@@ -55,7 +55,7 @@ fn read_base<'e, 'a>(
     };
     let document = entry("document.bin").ok_or(PersistenceError::MissingDocumentEntry)?;
     let history = entry("history.bin").ok_or(PersistenceError::InvalidRevisionHistory)?;
-    let history = read_history_records(history.content, document.content, HISTORY_BUDGET)?;
+    let history = read_history_records(history.content, document.content, HISTORY_BUDGET, false)?;
     Ok((document, history))
 }
 
@@ -305,7 +305,8 @@ pub(super) fn assemble_checkpoint(
     for (number, step) in steps.iter().enumerate() {
         let applied = Step::read(step).and_then(|step| {
             let kept = &revisions[step.kept(revisions.len())?];
-            let history = read_history_records(step.history, &kept.snapshot.bytes, HISTORY_BUDGET)?;
+            let history =
+                read_history_records(step.history, &kept.snapshot.bytes, HISTORY_BUDGET, false)?;
             let mut added = Vec::with_capacity(step.added.len());
             for (record, (held, as_kept)) in history.records.iter().skip(1).zip(&step.added) {
                 let mut revision = Assembled::of_record(record, &history.chunks, [0; 32])?;
