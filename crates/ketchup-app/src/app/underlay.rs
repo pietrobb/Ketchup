@@ -3,6 +3,7 @@
 //! worker's DWG deadline), then added as one Undo step with its lines as a blob of the document. The
 //! viewport draws the lines of every visible layer under the model.
 
+use super::underlay_snapping::UnderlaySnapSlot;
 use crate::import_source::BoxedCause;
 use crate::renderer::underlay::{UnderlayDraw, UnderlayGeometry, UnderlayPaintCallback};
 use crate::*;
@@ -10,6 +11,7 @@ use ketchup_application::program_isolation::{
     UnderlayInput, UnderlayRead, UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
     read_underlay,
 };
+use ketchup_model::underlay::snap::UnderlaySnapIndex;
 use ketchup_model::underlay::{
     UnderlayId, UnderlayLines, UnderlayPlanError, plan_underlay, plan_underlay_removal,
 };
@@ -21,6 +23,8 @@ pub(crate) struct ReadUnderlay {
     /// The encoded lines, the blob the document keeps.
     bytes: Vec<u8>,
     lines: UnderlayLines,
+    /// The snap index of `lines`, built on the reading thread: the window does not wait for it.
+    snaps: Arc<UnderlaySnapIndex>,
 }
 
 impl ReadUnderlay {
@@ -64,7 +68,13 @@ pub(crate) fn read_underlay_file(
     .map_err(|error| failed(error.into()))?;
     let bytes = std::fs::read(&output).map_err(|error| failed(error.into()))?;
     let lines = UnderlayLines::decode(&bytes).map_err(|error| failed(error.into()))?;
-    Ok(ReadUnderlay { read, bytes, lines })
+    let snaps = Arc::new(UnderlaySnapIndex::new(&lines));
+    Ok(ReadUnderlay {
+        read,
+        bytes,
+        lines,
+        snaps,
+    })
 }
 
 /// Whether `error` refused a drawing only because it declares no length unit.
@@ -229,7 +239,10 @@ impl KetchupApp {
         self.render
             .underlays
             .insert(key, Arc::new(UnderlayGeometry::new(key, &read.lines)));
-        self.build_underlay_snap_index(key, read.lines);
+        self.render
+            .underlay_snaps
+            .get_mut()
+            .insert(key, UnderlaySnapSlot::Ready(read.snaps));
         self.digest = self.catalog.format(
             "digest-imported-underlay",
             &BTreeMap::from([

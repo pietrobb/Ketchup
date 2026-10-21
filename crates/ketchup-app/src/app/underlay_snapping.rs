@@ -31,8 +31,10 @@ pub(crate) fn snap_kind(kind: UnderlaySnapKind) -> SnapKind {
     }
 }
 
-/// The snap index of one blob of underlay lines: built off the window thread, since a
-/// large drawing takes about 100 ms, and giving no snaps until it is there.
+/// The snap index of one blob of underlay lines, never built on the window thread, since a
+/// large drawing takes about 100 ms: an imported drawing brings it from the thread that read
+/// it, an opened document's underlay builds it on a thread of its own and gives no snaps
+/// until it is there.
 pub(crate) enum UnderlaySnapSlot {
     Building(Receiver<UnderlaySnapIndex>),
     Ready(Arc<UnderlaySnapIndex>),
@@ -88,17 +90,17 @@ impl KetchupApp {
             .insert(key, UnderlaySnapSlot::Building(receiver));
     }
 
-    /// Waits until every snap index being built is there.
+    /// Whether the snap index of every underlay of the document is there, none still being
+    /// built or not started.
     #[cfg(test)]
-    pub(crate) fn wait_for_underlay_snaps(&self) {
-        for slot in self.render.underlay_snaps.borrow_mut().values_mut() {
-            if let UnderlaySnapSlot::Building(receiver) = slot {
-                let index = receiver
-                    .recv()
-                    .unwrap_or_else(|_| UnderlaySnapIndex::new(&UnderlayLines::default()));
-                *slot = UnderlaySnapSlot::Ready(Arc::new(index));
-            }
-        }
+    pub(crate) fn underlay_snaps_built(&self) -> bool {
+        let slots = self.render.underlay_snaps.borrow();
+        self.document.current().underlays().all(|underlay| {
+            matches!(
+                slots.get(&underlay.lines_sha256),
+                Some(UnderlaySnapSlot::Ready(_))
+            )
+        })
     }
 
     /// Whether `underlay` and its layer `layer` are shown.

@@ -374,7 +374,8 @@ fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() 
         .execute(&mut app, import_underlay(&path), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     let offset: [f64; 2] = serde_json::from_value(answer["underlay"]["offset_mm"].clone()).unwrap();
-    app.wait_for_underlay_snaps();
+    // Built on the job's thread that read the drawing: there without waiting.
+    assert!(app.underlay_snaps_built());
     // After the move the 10 m line starts here.
     let start = [-500_000_000.0 - offset[0], -1_200_000_000.0 - offset[1]];
     let snap = |point_mm: [f64; 2], radius_mm: Option<f64>| Request::UnderlaySnap {

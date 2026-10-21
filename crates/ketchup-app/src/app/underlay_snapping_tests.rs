@@ -31,7 +31,8 @@ fn imported() -> KetchupApp {
         "{}",
         app.action_digest()
     );
-    app.wait_for_underlay_snaps();
+    // Built on the thread that read the drawing: there without waiting.
+    assert!(app.underlay_snaps_built());
     app
 }
 
