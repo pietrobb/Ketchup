@@ -67,10 +67,8 @@ const MAX_COLLISION_BODIES: usize = 512;
 const MAX_SCOPED_COLLISION_OCCURRENCES: usize = 10_000;
 const MAX_SCOPED_COLLISION_BODIES: usize = 10_000;
 const MAX_SCOPED_COLLISION_CANDIDATES: usize = 10_000;
-const MAX_COLLISION_GRAPH_BYTES: usize = 64 * 1024 * 1024;
 // Pair batches send at most MAX_EXACT_PAIR_GRAPHS graphs each; this bounds the whole check.
 const MAX_COLLISION_UNIQUE_GRAPHS: usize = 10_000;
-const MAX_COLLISION_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 // Program checks: most declared assembly steps or tool approaches checked, and most
 // pairs one motion or tool-access check evaluates before it reports a work limit.
 const MAX_PROGRAM_DECLARATIONS: usize = 128;
@@ -350,7 +348,7 @@ impl std::error::Error for FabricationCollisionError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CollisionSourceError {
     MissingBlob,
-    ResourceLimit,
+    OutOfMemory,
     InvalidBlob,
 }
 
@@ -358,7 +356,7 @@ impl CollisionSourceError {
     fn code(self) -> &'static str {
         match self {
             Self::MissingBlob => "missing_imported_source_blob",
-            Self::ResourceLimit => "imported_source_resource_limit",
+            Self::OutOfMemory => "imported_source_out_of_memory",
             Self::InvalidBlob => "invalid_imported_source_blob",
         }
     }
@@ -1091,10 +1089,9 @@ fn collision_report(
             "max_scoped_candidates": MAX_SCOPED_COLLISION_CANDIDATES,
             "max_scene_path_steps": limits::INSTANCE_PATH_STEPS,
             "max_scene_text_bytes": limits::REPORT_TEXT_BYTES,
-            "max_graph_bytes": MAX_COLLISION_GRAPH_BYTES,
             "max_unique_graphs": MAX_COLLISION_UNIQUE_GRAPHS,
             "max_graphs_per_batch": MAX_EXACT_PAIR_GRAPHS,
-            "max_pairs_per_batch": MAX_EXACT_PAIR_CANDIDATES, "max_imported_source_bytes": MAX_COLLISION_SOURCE_BYTES},
+            "max_pairs_per_batch": MAX_EXACT_PAIR_CANDIDATES},
         "method": if worker.is_some() {"worker_brep_common_volume"} else {"canonical_box_analytic"}});
     let collect_gravity_contacts = worker.is_some()
         && gravity_contacts.is_some()
@@ -1305,24 +1302,11 @@ fn collision_report(
                     }
                     match graph {
                         Ok(graph) => match graph.to_bytes() {
-                            Ok(bytes)
-                                if graph_bytes.saturating_add(bytes.len())
-                                    <= MAX_COLLISION_GRAPH_BYTES =>
-                            {
-                                graph_bytes += bytes.len();
+                            Ok(bytes) => {
+                                graph_bytes = graph_bytes.saturating_add(bytes.len());
                                 body.graph = Some(graphs.len());
                                 graph_indices.insert(key, graphs.len());
                                 graphs.push(graph);
-                            }
-                            Ok(bytes) => {
-                                return not_evaluated(
-                                    report,
-                                    json!({
-                                        "reason": "exact_graph_bytes_resource_limit",
-                                        "limit": MAX_COLLISION_GRAPH_BYTES,
-                                        "observed_at_least": graph_bytes.saturating_add(bytes.len()),
-                                    }),
-                                );
                             }
                             Err(error) => {
                                 let reason = format!("exact_graph_unavailable: {error}");
@@ -1400,7 +1384,6 @@ fn collision_report(
         }
         let sources = (|| -> Result<BTreeMap<String, Vec<u8>>, CollisionSourceError> {
             let mut sources = BTreeMap::new();
-            let mut bytes = 0usize;
             for graph in &graphs {
                 for node in &graph.nodes {
                     if let ExactBRepOperation::ImportedExact {
@@ -1420,18 +1403,18 @@ fn collision_report(
                             .blobs()
                             .get(&hash)
                             .ok_or(CollisionSourceError::MissingBlob)?;
-                        bytes = bytes
-                            .checked_add(source.len())
-                            .ok_or(CollisionSourceError::ResourceLimit)?;
-                        if bytes > MAX_COLLISION_SOURCE_BYTES {
-                            return Err(CollisionSourceError::ResourceLimit);
-                        }
                         if source.len() as u64 != *source_byte_len
                             || ketchup_model::graph::sha256_bytes(source) != *source_sha256
                         {
                             return Err(CollisionSourceError::InvalidBlob);
                         }
-                        sources.insert(hash, source.clone());
+                        let mut copy = ketchup_scheduler::reserve_whole(
+                            *source_byte_len,
+                            "imported exact source",
+                        )
+                        .map_err(|_| CollisionSourceError::OutOfMemory)?;
+                        copy.extend_from_slice(source);
+                        sources.insert(hash, copy);
                     }
                 }
             }

@@ -81,7 +81,6 @@ pub(super) fn bodies(
             );
         }
     };
-    let mut bytes = 0usize;
     for occurrence in scene.into_iter().filter(|p| p.visible) {
         if cancelled.load(Ordering::Acquire) {
             unavailable.push(json!({"reason": "motion_cancelled"}));
@@ -102,23 +101,15 @@ pub(super) fn bodies(
             {
                 continue;
             }
-            if bodies.len() >= MAX_COLLISION_BODIES || bytes > MAX_COLLISION_GRAPH_BYTES {
+            if bodies.len() >= MAX_COLLISION_BODIES {
                 unavailable.push(json!({"reason": "motion_geometry_resource_limit"}));
                 return (bodies, unavailable);
             }
             match preparation.graph(occurrence.definition_id, producer) {
                 Ok(graph) => {
-                    let encoded = match graph.to_bytes() {
-                        Ok(encoded) => encoded,
-                        Err(error) => {
-                            unavailable.push(json!({"reason": "invalid_exact_graph", "cause": error.to_string()}));
-                            continue;
-                        }
-                    };
-                    bytes = bytes.saturating_add(encoded.len());
-                    if bytes > MAX_COLLISION_GRAPH_BYTES {
-                        unavailable.push(json!({"reason": "motion_geometry_resource_limit"}));
-                        return (bodies, unavailable);
+                    if let Err(error) = graph.to_bytes() {
+                        unavailable.push(json!({"reason": "invalid_exact_graph", "cause": error.to_string()}));
+                        continue;
                     }
                     let name = crate::rule_program_part_name(snapshot, &occurrence.instance_path);
                     bodies.push(MotionBody { moving: name.is_some_and(|n| moving.contains(&n)), occurrence: occurrence.clone(), body_id, graph });

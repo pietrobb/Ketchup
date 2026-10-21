@@ -258,17 +258,12 @@ pub fn exact_motion_pair_with_worker(
 }
 
 fn graph_failure(graphs: &[ExactBRepGraph]) -> Option<Value> {
-    let mut size = 0usize;
-    for graph in graphs {
-        match graph.to_bytes() {
-            Ok(bytes) => size = size.saturating_add(bytes.len()),
-            Err(error) => {
-                return Some(json!({"reason": "invalid_exact_graph", "cause": error.to_string()}));
-            }
-        }
-    }
-    (size > MAX_COLLISION_GRAPH_BYTES)
-        .then(|| json!({"reason": "exact_graph_bytes_resource_limit"}))
+    graphs.iter().find_map(|graph| {
+        graph
+            .to_bytes()
+            .err()
+            .map(|error| json!({"reason": "invalid_exact_graph", "cause": error.to_string()}))
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

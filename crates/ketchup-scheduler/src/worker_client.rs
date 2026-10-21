@@ -23,18 +23,6 @@ pub(crate) enum WorkerResponse {
 }
 
 impl ExactWorkerClient {
-    pub(crate) fn read_bounded_output(
-        &mut self,
-        path: &Path,
-        maximum_bytes: u64,
-        limit_message: &str,
-    ) -> Result<Vec<u8>, WorkerError> {
-        match read_bounded_regular_file(path, maximum_bytes, limit_message) {
-            Ok(bytes) => Ok(bytes),
-            Err(error) => self.fail(error),
-        }
-    }
-
     /// Reads an output the worker wrote, whole and with no size limit.
     pub(crate) fn read_output(&mut self, path: &Path, label: &str) -> Result<Vec<u8>, WorkerError> {
         match read_regular_file(path, label) {
@@ -213,11 +201,7 @@ impl ExactWorkerClient {
         {
             return self.fail_protocol(format!("invalid volume-mesh receipt {receipt:?}"));
         }
-        let encoded = self.read_bounded_output(
-            output_path,
-            MAX_EXACT_VOLUME_MESH_OUTPUT_BYTES,
-            "exact worker volume-mesh output exceeds the bounded 64 MiB envelope",
-        )?;
+        let encoded = self.read_output(output_path, "volume-mesh output")?;
         if sha256_hex(&encoded) != receipt.sha256 {
             return Err(WorkerError::Transport(
                 "exact volume-mesh digest does not match the worker receipt".to_owned(),

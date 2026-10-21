@@ -549,31 +549,7 @@ pub struct StepAssemblyNode {
 
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_EXACT_WORKER_EXECUTABLE_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_EXACT_VOLUME_MESH_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
-
-fn read_bounded_regular_file(
-    path: &Path,
-    maximum_bytes: u64,
-    limit_message: &str,
-) -> Result<Vec<u8>, WorkerError> {
-    let file = fs::File::open(path).map_err(|error| WorkerError::Transport(error.to_string()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| WorkerError::Transport(error.to_string()))?;
-    if !metadata.is_file() || metadata.len() > maximum_bytes {
-        return Err(WorkerError::Transport(limit_message.to_owned()));
-    }
-    let mut bytes = Vec::new();
-    (&file)
-        .take(maximum_bytes + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| WorkerError::Transport(error.to_string()))?;
-    if bytes.len() as u64 > maximum_bytes {
-        return Err(WorkerError::Transport(limit_message.to_owned()));
-    }
-    Ok(bytes)
-}
 
 /// An empty buffer that already holds room for `len` bytes, or a message naming
 /// what could not be held when the memory is not there. A file or source of any
