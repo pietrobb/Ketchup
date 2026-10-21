@@ -1950,11 +1950,12 @@ mod tests {
         assert_eq!(warnings[0]["path"], backup.display().to_string());
     }
 
-    /// PS-9 follow-up: an agent whose Undo history is past what a file stores
-    /// is told so and can save the current revision with explicit consent,
-    /// as the window asks the user; nothing is dropped without it.
+    /// An Undo history over 32 MiB saves and reopens whole, and an agent can
+    /// still drop it on purpose with `discard_history`, keeping the current
+    /// revision. Only a history past the 2 GiB revision budget is refused as
+    /// `history_too_large`; a unit test does not build one.
     #[test]
-    fn a_history_past_the_file_limits_saves_the_current_revision_on_consent() {
+    fn a_history_over_32_mib_saves_whole_and_discard_history_keeps_the_current_revision() {
         use ketchup_model::document::{Dimension, NodeId};
         let mut server = Server::new(SessionSettings::default());
         let mut apply = |command| {
@@ -1971,7 +1972,7 @@ mod tests {
             dependencies: vec![],
         });
         // Each revision brings 256 KiB nothing else shares: 200 of them
-        // outgrow the 32 MiB a file stores for the history.
+        // make a history of about 50 MiB.
         let mut state = 1_u64;
         for _ in 0..limits::UNDO_REVISIONS {
             let name = (0..256 * 1024)
@@ -1988,9 +1989,12 @@ mod tests {
             });
         }
         let current = server.session.snapshot();
+        let undo_steps = server.session.visible_undo_steps();
+        assert!(undo_steps > 0);
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("model.ketchup");
-        let stamp = |server: &Server| {
+        let whole = directory.path().join("whole.ketchup");
+        let current_only = directory.path().join("current-only.ketchup");
+        let stamp = |server: &Server, path: &std::path::Path| {
             let state = server.state_result();
             json!({
                 "expected_revision": state["state"]["revision"],
@@ -1998,13 +2002,20 @@ mod tests {
                 "path": path,
             })
         };
-        let params = stamp(&server);
-        let refused = request(&mut server, "save", params);
-        assert_eq!(refused["error"]["code"], "history_too_large", "{refused}");
-        assert!(!path.exists());
-        assert!(server.session.visible_undo_steps() > 0);
+        let params = stamp(&server, &whole);
+        let saved = request(&mut server, "save", params);
+        assert!(saved["error"].is_null(), "{saved}");
+        assert!(saved["result"]["warnings"].is_null(), "{saved}");
+        assert_eq!(server.session.visible_undo_steps(), undo_steps);
+        assert!(std::fs::metadata(&whole).unwrap().len() > 32 * 1024 * 1024);
+        let reopened = DocumentSession::open(&whole, SessionSettings::default()).unwrap();
+        assert_eq!(
+            reopened.snapshot().canonical_digest(),
+            current.canonical_digest()
+        );
+        assert_eq!(reopened.visible_undo_steps(), undo_steps);
 
-        let mut params = stamp(&server);
+        let mut params = stamp(&server, &current_only);
         params["discard_history"] = json!(true);
         let saved = request(&mut server, "save", params);
         assert_eq!(
@@ -2012,11 +2023,12 @@ mod tests {
             "{saved}"
         );
         assert_eq!(server.session.visible_undo_steps(), 0);
-        let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+        let reopened = DocumentSession::open(&current_only, SessionSettings::default()).unwrap();
         assert_eq!(
             reopened.snapshot().canonical_digest(),
             current.canonical_digest()
         );
+        assert_eq!(reopened.visible_undo_steps(), 0);
     }
 
     #[test]
