@@ -13,7 +13,7 @@ use std::fmt;
 use ketchup_geometry::typed_id;
 
 use crate::document::{CanonicalCommand, CommandBatch, ProfileSegment, Snapshot, TagId};
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{MAX_COORDINATE_MM, UNDERLAY_ARC_CHORD_MM};
 
 typed_id!(UnderlayId);
 
@@ -317,8 +317,6 @@ pub struct UnderlayLinesBuilder {
     loose: Vec<LayerLines>,
 }
 
-/// The largest distance between an arc and the chords drawn for it.
-const ARC_CHORD_TOLERANCE_MM: f64 = 0.1;
 /// Chords of a whole circle at most, however large it is.
 const MAX_CIRCLE_CHORDS: f64 = 1024.0;
 /// Chords of one cubic Bézier piece.
@@ -482,8 +480,8 @@ fn push_segment(points: &mut Vec<[f64; 2]>, segment: &ProfileSegment) {
             if sweep == 0.0 {
                 sweep = if *clockwise { -tau } else { tau };
             }
-            let step = if radius > ARC_CHORD_TOLERANCE_MM {
-                2.0 * (1.0 - ARC_CHORD_TOLERANCE_MM / radius).acos()
+            let step = if radius > UNDERLAY_ARC_CHORD_MM {
+                2.0 * (1.0 - UNDERLAY_ARC_CHORD_MM / radius).acos()
             } else {
                 tau
             };
