@@ -253,6 +253,11 @@ pub enum GeneralFabricationError {
     PartExportBlocked {
         part: String,
     },
+    /// `part` is drilled into both its top and its bottom face, and one
+    /// woodWOP setup machines one face and the edges.
+    DrilledFromBothFaces {
+        part: String,
+    },
     /// `format` cannot carry `element` of `part`, for `reason` (the
     /// capability table, [`carriage`]).
     CannotCarry {
@@ -277,6 +282,9 @@ impl GeneralFabricationError {
     pub fn at_part(self, part: &str) -> Self {
         match self {
             Self::ExportBlocked => Self::PartExportBlocked {
+                part: part.to_owned(),
+            },
+            Self::DrilledFromBothFaces { .. } => Self::DrilledFromBothFaces {
                 part: part.to_owned(),
             },
             other => other,
@@ -337,6 +345,10 @@ impl fmt::Display for GeneralFabricationError {
             Self::PartExportBlocked { part } => write!(
                 formatter,
                 "part \"{part}\" cannot be written to the machine file: its stock is not a rectangular box, a cut is not one the format describes, reaches outside the stock or starts inside the material (a cavity, or a cut that opens only to a side and is not rectangular), or its exact result is stale; let each cut tool reach past the face it enters, or evaluate the model again",
+            ),
+            Self::DrilledFromBothFaces { part } => write!(
+                formatter,
+                "part \"{part}\" is drilled into both its top and its bottom face, and a woodWOP program machines one face and the edges in one setup; export a production job, or drill the part from one face",
             ),
             Self::CannotCarry {
                 format,
@@ -1050,21 +1062,37 @@ impl GeneralFabricationProjection {
         }
         let stock_frame =
             woodwop_stock_frame(&stock.machining).ok_or(GeneralFabricationError::ExportBlocked)?;
-        let macros = machining
-            .iter()
-            .map(|operation| match operation.kind {
-                GeneralManufacturingKind::CircularDrill => {
-                    woodwop_drilling_macro(&operation.machining, stock_frame)
-                }
-                GeneralManufacturingKind::ProfileCut => {
-                    options.vertical_pocket_tool_number.and_then(|tool| {
-                        woodwop_vertical_pocket_macro(&operation.machining, stock_frame, tool)
+        let part = snapshot
+            .definition(row.definition_id)
+            .map_or("", |definition| definition.name());
+        let (stock_frame, macros) = woodwop_setup(
+            stock_frame,
+            &drilling_normals(machining.iter().copied(), &[]),
+            |stock_frame| {
+                machining
+                    .iter()
+                    .map(|operation| match operation.kind {
+                        GeneralManufacturingKind::CircularDrill => {
+                            woodwop_drilling_macro(&operation.machining, stock_frame)
+                        }
+                        GeneralManufacturingKind::ProfileCut => {
+                            options.vertical_pocket_tool_number.and_then(|tool| {
+                                woodwop_vertical_pocket_macro(
+                                    &operation.machining,
+                                    stock_frame,
+                                    tool,
+                                )
+                            })
+                        }
+                        _ => None,
                     })
-                }
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>()
-            .ok_or(GeneralFabricationError::ExportBlocked)?;
+                    .collect::<Option<Vec<_>>>()
+            },
+        )
+        .map_err(|error| match error {
+            GeneralFabricationError::DrilledFromBothFaces { .. } => error.at_part(part),
+            other => other,
+        })?;
         let export_contract = if machining
             .iter()
             .any(|operation| operation.kind == GeneralManufacturingKind::ProfileCut)
@@ -1175,32 +1203,34 @@ impl GeneralFabricationProjection {
                     if machining.is_empty() && instance_holes.is_empty() {
                         continue;
                     }
-                    let mut macros = machining
-                        .iter()
-                        .map(|operation| match operation.kind {
-                            GeneralManufacturingKind::CircularDrill => {
-                                woodwop_drilling_macro(&operation.machining, stock_frame)
-                            }
-                            GeneralManufacturingKind::ProfileCut => {
-                                options.vertical_pocket_tool_number.and_then(|tool| {
-                                    woodwop_vertical_pocket_macro(
-                                        &operation.machining,
-                                        stock_frame,
-                                        tool,
-                                    )
+                    let (stock_frame, macros) = woodwop_setup(
+                        stock_frame,
+                        &drilling_normals(machining.iter().copied(), &instance_holes),
+                        |stock_frame| {
+                            let mut macros = machining
+                                .iter()
+                                .map(|operation| match operation.kind {
+                                    GeneralManufacturingKind::CircularDrill => {
+                                        woodwop_drilling_macro(&operation.machining, stock_frame)
+                                    }
+                                    GeneralManufacturingKind::ProfileCut => {
+                                        options.vertical_pocket_tool_number.and_then(|tool| {
+                                            woodwop_vertical_pocket_macro(
+                                                &operation.machining,
+                                                stock_frame,
+                                                tool,
+                                            )
+                                        })
+                                    }
+                                    _ => None,
                                 })
+                                .collect::<Option<Vec<_>>>()?;
+                            for hole in &instance_holes {
+                                macros.push(woodwop_pin_macro(hole, stock_frame)?);
                             }
-                            _ => None,
-                        })
-                        .collect::<Option<Vec<_>>>()
-                        .ok_or(GeneralFabricationError::ExportBlocked)?;
-                    macros.extend(
-                        instance_holes
-                            .into_iter()
-                            .map(|hole| woodwop_pin_macro(hole, stock_frame))
-                            .collect::<Option<Vec<_>>>()
-                            .ok_or(GeneralFabricationError::ExportBlocked)?,
-                    );
+                            Some(macros)
+                        },
+                    )?;
                     if !program_paths.insert(instance_path.clone()) {
                         return Err(GeneralFabricationError::ExportBlocked);
                     }
@@ -2045,6 +2075,54 @@ struct WoodwopStockFrame {
     /// An odd axis permutation is a reflection; measuring machine Y from the
     /// far edge keeps the machine frame right-handed.
     reversed_y: bool,
+    /// The part laid the other face up: a half turn about the machine X axis.
+    turned_over: bool,
+}
+
+/// The directions, in the part's frame, of its drillings and pin holes.
+fn drilling_normals<'a>(
+    operations: impl Iterator<Item = &'a GeneralManufacturingOperation>,
+    holes: &[&PinHole],
+) -> Vec<[f64; 3]> {
+    operations
+        .filter_map(|operation| match &operation.machining {
+            GeneralMachiningGeometry::CircularDrill { frame, .. } => Some(frame.normal),
+            _ => None,
+        })
+        .chain(holes.iter().map(|hole| hole.inward_unit_local))
+        .collect()
+}
+
+/// The stock frame and macros of one woodWOP setup, which machines the top face
+/// and the edges. A part drilled from below only is laid the other face up; one
+/// drilled from both faces is refused by name, as `normals` (the drilling
+/// directions in the part's frame) show it.
+fn woodwop_setup<T>(
+    stock_frame: WoodwopStockFrame,
+    normals: &[[f64; 3]],
+    macros: impl Fn(WoodwopStockFrame) -> Option<T>,
+) -> Result<(WoodwopStockFrame, T), GeneralFabricationError> {
+    for turned_over in [false, true] {
+        let frame = WoodwopStockFrame {
+            turned_over,
+            ..stock_frame
+        };
+        if let Some(macros) = macros(frame) {
+            return Ok((frame, macros));
+        }
+    }
+    let vertical = |sign: f64| {
+        normals
+            .iter()
+            .any(|normal| sign * woodwop_direction(*normal, stock_frame)[2] >= 1.0 - ROUNDING)
+    };
+    Err(if vertical(1.0) && vertical(-1.0) {
+        GeneralFabricationError::DrilledFromBothFaces {
+            part: String::new(),
+        }
+    } else {
+        GeneralFabricationError::ExportBlocked
+    })
 }
 
 fn woodwop_stock_frame(geometry: &GeneralMachiningGeometry) -> Option<WoodwopStockFrame> {
@@ -2063,13 +2141,17 @@ fn woodwop_stock_frame(geometry: &GeneralMachiningGeometry) -> Option<WoodwopSto
         definition_axes,
         dimensions_mm: definition_axes.map(|axis| definition_dimensions[axis]),
         reversed_y: inversions % 2 == 1,
+        turned_over: false,
     })
 }
 
 fn woodwop_coordinate(definition_coordinate: [f64; 3], stock_frame: WoodwopStockFrame) -> [f64; 3] {
     let mut point = woodwop_direction(stock_frame.blank.local(definition_coordinate), stock_frame);
-    if stock_frame.reversed_y {
+    if stock_frame.reversed_y != stock_frame.turned_over {
         point[1] += stock_frame.dimensions_mm[1];
+    }
+    if stock_frame.turned_over {
+        point[2] += stock_frame.dimensions_mm[2];
     }
     point
 }
@@ -2080,6 +2162,10 @@ fn woodwop_direction(definition_vector: [f64; 3], stock_frame: WoodwopStockFrame
         .map(|axis| definition_vector[axis]);
     if stock_frame.reversed_y {
         vector[1] = -vector[1];
+    }
+    if stock_frame.turned_over {
+        vector[1] = -vector[1];
+        vector[2] = -vector[2];
     }
     vector
 }

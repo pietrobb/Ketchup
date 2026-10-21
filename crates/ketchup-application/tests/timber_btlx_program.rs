@@ -269,6 +269,85 @@ fn a_drilled_board_exports_to_woodwop_and_a_production_job() {
     );
 }
 
+/// `source` with a production code on every part, and its woodWOP programs.
+fn woodwop_programs(
+    worker: &mut ExactWorkerSupervisor,
+    source: &str,
+) -> Result<Vec<(ketchup_model::document::InstancePath, Vec<u8>)>, String> {
+    use ketchup_model::document::{CanonicalCommand, CommandBatch};
+    let snapshot = apply(source);
+    let codes = snapshot
+        .scene_query()
+        .into_iter()
+        .enumerate()
+        .map(|(index, occurrence)| CanonicalCommand::SetProductionCode {
+            instance_path: occurrence.instance_path,
+            code: Some(format!("{:012}", index + 1)),
+        })
+        .collect();
+    let snapshot = snapshot.preview_batch(&CommandBatch::new(codes)).unwrap();
+    let projection = fabrication(worker, &snapshot).map_err(|error| error.to_string())?;
+    // The cabinet's back groove is milled as a vertical pocket.
+    let options = ketchup_manufacturing::fabrication::WoodwopMprOptions {
+        vertical_pocket_tool_number: Some(101),
+    };
+    projection
+        .woodwop_mpr_4_0_setup_a_programs(&snapshot, options)
+        .map_err(|error| error.to_string())
+}
+
+/// Review 2026-10-21 MF-19: a board drilled from below only is laid the other
+/// face up, so its holes are drilled from above; one drilled into both faces
+/// is refused by name, not as a stock that is not a box.
+#[test]
+fn a_board_drilled_from_below_is_turned_over_and_one_drilled_from_both_faces_is_named() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let below = woodwop_programs(
+        &mut worker,
+        "shelf = board('shelf', (600, 300, 18))\n\
+         hole(shelf, 'z-', at = (100, 150), diameter = 8, depth = 10)\n",
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let [(_, mpr)] = below.as_slice() else {
+        panic!("one program")
+    };
+    let mpr = String::from_utf8_lossy(mpr);
+    assert_eq!(mpr.matches("\\BohrVert\\").count(), 1, "{mpr}");
+    // Turned over about X: x stays 100, y is 300 - 150 from the near edge.
+    assert!(
+        mpr.contains("XA=\"100\"") && mpr.contains("YA=\"150\""),
+        "{mpr}"
+    );
+    let both = woodwop_programs(
+        &mut worker,
+        "shelf = board('shelf', (600, 300, 18))\n\
+         hole(shelf, 'z-', at = (100, 150), diameter = 8, depth = 5)\n\
+         hole(shelf, 'z+', at = (300, 150), diameter = 8, depth = 5)\n",
+    )
+    .expect_err("refused");
+    assert!(
+        both.contains("\"shelf\" is drilled into both its top and its bottom face"),
+        "{both}"
+    );
+}
+
+/// MF-19: the cabinet and the table, both doweled from below or from inside,
+/// are each part one woodWOP program.
+#[test]
+fn the_cabinet_and_the_table_export_to_woodwop() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    for source in [
+        include_str!("../../../examples/programs/cabinet.star"),
+        include_str!("../../../examples/programs/table.star"),
+    ] {
+        let programs =
+            woodwop_programs(&mut worker, source).unwrap_or_else(|error| panic!("{error}"));
+        assert!(!programs.is_empty());
+    }
+}
+
 /// A stock box with a notch (box tool) and a slanted end cut (extruded profile
 /// tool), each subtracted in turn, is one stock and two cuts in one BTLx part.
 #[test]
