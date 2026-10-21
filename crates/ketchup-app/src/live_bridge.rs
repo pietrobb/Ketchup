@@ -409,12 +409,15 @@ pub enum Request {
         expected: Option<Stamp>,
         underlay_id: u64,
     },
-    /// The endpoint, midpoint and nearest point of the shown underlay lines within
-    /// `radius_mm` of `point_mm`, and the length of the line or arc nearest it.
+    /// The endpoint, intersection, midpoint and nearest point of the shown underlay lines
+    /// within `radius_mm` of `point_mm`, the length of the line or arc nearest it, and with
+    /// `to_mm` the distance from the snap at `point_mm` to the snap at `to_mm`.
     UnderlaySnap {
         #[serde(default)]
         expected: Option<Stamp>,
         point_mm: [f64; 2],
+        #[serde(default)]
+        to_mm: Option<[f64; 2]>,
         #[serde(default)]
         radius_mm: Option<f64>,
         #[serde(default)]

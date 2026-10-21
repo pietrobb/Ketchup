@@ -1,5 +1,5 @@
-//! Snapping to and measuring on the lines of an underlay: the endpoint, midpoint and
-//! nearest point of its lines and arcs near a point, and the length of one of them.
+//! Snapping to and measuring on the lines of an underlay: the endpoint, intersection,
+//! midpoint and nearest point of its lines and arcs near a point, and the length of one.
 //!
 //! The lines keep no record of the drawing's entities: an arc is a run of chords
 //! ([`super::UnderlayLines`]), and loose lines and arcs that meet end to end are one
@@ -17,6 +17,8 @@ use ketchup_geometry::linalg::{cross2, dot2, nearest_point_on_segment2};
 pub enum UnderlaySnapKind {
     /// An end of a line or an arc.
     Endpoint,
+    /// Where two lines or arcs cross, or one ends on another.
+    Intersection,
     /// The middle of a line or an arc, halfway along it.
     Midpoint,
     /// The point of a line or arc nearest the point asked about.
@@ -40,16 +42,22 @@ pub struct UnderlaySnap {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UnderlaySnaps {
     pub endpoint: Option<UnderlaySnap>,
+    pub intersection: Option<UnderlaySnap>,
     pub midpoint: Option<UnderlaySnap>,
     pub nearest: Option<UnderlaySnap>,
 }
 
 impl UnderlaySnaps {
-    /// Endpoint, midpoint, nearest: the order a snap prefers them in.
+    /// Endpoint, intersection, midpoint, nearest: the order a snap prefers them in.
     pub fn iter(&self) -> impl Iterator<Item = &UnderlaySnap> {
-        [&self.endpoint, &self.midpoint, &self.nearest]
-            .into_iter()
-            .flatten()
+        [
+            &self.endpoint,
+            &self.intersection,
+            &self.midpoint,
+            &self.nearest,
+        ]
+        .into_iter()
+        .flatten()
     }
 }
 
@@ -99,6 +107,10 @@ pub struct UnderlaySnapIndex {
 
 const START_CORNER: u8 = 1;
 const END_CORNER: u8 = 2;
+
+/// The most segments near a point whose crossings are looked for, the nearest ones: a
+/// dense hatch under a wide snap radius would otherwise cost the square of thousands.
+const MAX_CROSSING_SEGMENTS: usize = 256;
 
 impl UnderlaySnapIndex {
     #[must_use]
@@ -162,6 +174,7 @@ impl UnderlaySnapIndex {
                 *slot = Some(snap);
             }
         };
+        let mut near = Vec::new();
         self.grid.near(point_mm, radius_mm, |segment| {
             let layer = self.layer_of(segment);
             if !shown(layer) {
@@ -188,14 +201,42 @@ impl UnderlaySnapIndex {
                     snap(UnderlaySnapKind::Midpoint, midpoint),
                 );
             }
-            offer(
-                &mut snaps.nearest,
-                snap(
-                    UnderlaySnapKind::Nearest,
-                    nearest_point_on_segment2(point_mm, start, end),
-                ),
+            let nearest = snap(
+                UnderlaySnapKind::Nearest,
+                nearest_point_on_segment2(point_mm, start, end),
             );
+            if nearest.distance_mm <= radius_mm {
+                near.push((nearest.distance_mm, segment));
+            }
+            offer(&mut snaps.nearest, nearest);
         });
+        // A crossing within the radius lies on two segments within it.
+        near.sort_unstable_by_key(|(_, segment)| *segment);
+        near.dedup_by_key(|(_, segment)| *segment);
+        if near.len() > MAX_CROSSING_SEGMENTS {
+            near.select_nth_unstable_by(MAX_CROSSING_SEGMENTS, |a, b| {
+                a.0.total_cmp(&b.0).then(a.1.cmp(&b.1))
+            });
+            near.truncate(MAX_CROSSING_SEGMENTS);
+        }
+        for (position, (_, first)) in near.iter().enumerate() {
+            for (_, second) in &near[position + 1..] {
+                let (first, second) = ((*first).min(*second), (*first).max(*second));
+                let Some(at) = crossing(self.segments[first], self.segments[second]) else {
+                    continue;
+                };
+                offer(
+                    &mut snaps.intersection,
+                    UnderlaySnap {
+                        kind: UnderlaySnapKind::Intersection,
+                        point_mm: at,
+                        distance_mm: distance(at, point_mm),
+                        layer: self.layer_of(first),
+                        segment: first,
+                    },
+                );
+            }
+        }
         snaps
     }
 
@@ -333,6 +374,34 @@ fn difference(to: [f64; 2], from: [f64; 2]) -> [f64; 2] {
 
 fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+/// Where segments `a` and `b` cross, or one ends on the other; not where both merely end,
+/// as the chords of one polyline do at their shared corner, and not along parallel ones.
+fn crossing(a: [[f64; 2]; 2], b: [[f64; 2]; 2]) -> Option<[f64; 2]> {
+    let (along_a, along_b) = (difference(a[1], a[0]), difference(b[1], b[0]));
+    let (length_a, length_b) = (distance(a[0], a[1]), distance(b[0], b[1]));
+    let denominator = cross2(along_a, along_b);
+    if length_a <= ROUNDING
+        || length_b <= ROUNDING
+        || denominator.abs() <= APPROXIMATION * length_a * length_b
+    {
+        return None;
+    }
+    let between = difference(b[0], a[0]);
+    let t = cross2(between, along_b) / denominator;
+    let u = cross2(between, along_a) / denominator;
+    let inside = |value: f64, length: f64| {
+        let slack = APPROXIMATION / length;
+        (-slack..=1.0 + slack).contains(&value)
+    };
+    if !inside(t, length_a) || !inside(u, length_b) {
+        return None;
+    }
+    let at = [a[0][0] + along_a[0] * t, a[0][1] + along_a[1] * t];
+    let ends_here =
+        |[start, end]: [[f64; 2]; 2]| distance(at, start).min(distance(at, end)) <= APPROXIMATION;
+    (!(ends_here(a) && ends_here(b))).then_some(at)
 }
 
 /// A count as a coordinate factor; grid counts stay far below `u32::MAX`.

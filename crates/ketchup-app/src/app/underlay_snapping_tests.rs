@@ -3,13 +3,14 @@
 use crate::*;
 
 /// On "walls" a 200 mm line and a quarter arc of radius 50 from its end; on "axes" a line
-/// 100 mm above it.
+/// 100 mm above it, and one across both at x = 60.
 const PLAN_DXF: &str = concat!(
     "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
     "0\nSECTION\n2\nENTITIES\n",
     "0\nLINE\n8\nwalls\n10\n40\n20\n20\n11\n240\n21\n20\n",
     "0\nARC\n8\nwalls\n10\n240\n20\n70\n40\n50\n50\n270\n51\n0\n",
     "0\nLINE\n8\naxes\n10\n40\n20\n120\n11\n240\n21\n120\n",
+    "0\nLINE\n8\naxes\n10\n60\n20\n0\n11\n60\n21\n150\n",
     "0\nENDSEC\n0\nEOF\n",
 );
 
@@ -87,6 +88,51 @@ fn drawing_and_measure_snap_to_the_end_middle_and_line_of_a_shown_underlay() {
         .unwrap();
     let quarter = std::f64::consts::FRAC_PI_2 * 50.0;
     assert!(arc < quarter && quarter - arc < 0.1, "{arc}");
+}
+
+#[test]
+fn drawing_and_measure_snap_where_underlay_lines_cross_and_measure_between_snaps() {
+    let mut app = imported();
+    let rect = viewport();
+    let cross = Vec3::new(60.0, 20.0, 0.0);
+    let snap = snap_near(&app, cross, Vec2::new(2.0, 1.0)).unwrap();
+    assert_eq!(snap.kind, SnapKind::Intersection);
+    assert!((snap.position_mm - cross).length() < 1e-9, "{snap:?}");
+
+    let pointer = app.project(cross, rect) + Vec2::new(2.0, 1.0);
+    app.active_tool = ActiveTool::Line;
+    app.update_viewport_inference(Some(pointer), rect);
+    assert_eq!(app.hovered_snap_kind(), Some(SnapKind::Intersection));
+
+    // Measure from the crossing to the wall's end: 180 mm along it.
+    app.active_tool = ActiveTool::Measure;
+    let from = app.measurement_point_at_screen(pointer, rect, 0.0).unwrap();
+    let end = Vec3::new(240.0, 20.0, 0.0);
+    let to = app
+        .measurement_point_at_screen(app.project(end, rect) + Vec2::new(2.0, 1.0), rect, 0.0)
+        .unwrap();
+    assert_eq!(to, end);
+    app.add_measured_point(from);
+    app.add_measured_point(to);
+    assert!(((to - from).length() - 180.0).abs() < 1e-9);
+    assert!(app.digest.contains("180"), "{}", app.digest);
+
+    // The crossing of a shown and a hidden line is no snap.
+    let underlay = app.document.current().underlays().next().unwrap().clone();
+    let axes = underlay.layers.iter().find(|layer| layer.name == "axes");
+    assert!(app.set_tag_visibility(axes.unwrap().tag, false));
+    let snap = snap_near(&app, cross, Vec2::new(2.0, 1.0)).unwrap();
+    assert_ne!(snap.kind, SnapKind::Intersection);
+    // The underlay itself is read, never changed.
+    assert_eq!(
+        app.document
+            .current()
+            .underlays()
+            .next()
+            .unwrap()
+            .lines_sha256,
+        underlay.lines_sha256
+    );
 }
 
 #[test]

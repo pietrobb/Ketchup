@@ -354,8 +354,9 @@ fn only_a_drawing_imports_as_an_underlay() {
 }
 
 /// `inspect action=underlay_snap`: a drawing in S-JTSK metres, moved near the origin on
-/// import, snaps at the end, middle and line of its line, names the point in the drawing's
-/// own coordinates and measures the line; a hidden layer gives nothing.
+/// import, snaps at the end, middle and line of its line and where another crosses it,
+/// names the point in the drawing's own coordinates, measures the line and between two
+/// snaps; a hidden layer gives nothing.
 #[test]
 fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() {
     let directory = tempfile::tempdir().unwrap();
@@ -363,6 +364,8 @@ fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() 
     let site = concat!(
         "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n6\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n",
         "0\nLINE\n8\nparcel\n10\n-500000\n20\n-1200000\n11\n-499990\n21\n-1200000\n",
+        // Across it 4 m from its start.
+        "0\nLINE\n8\nparcel\n10\n-499996\n20\n-1200001\n11\n-499996\n21\n-1199999\n",
         "0\nENDSEC\n0\nEOF\n",
     );
     std::fs::write(&path, site).unwrap();
@@ -376,6 +379,7 @@ fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() 
     let snap = |point_mm: [f64; 2], radius_mm: Option<f64>| Request::UnderlaySnap {
         expected: None,
         point_mm,
+        to_mm: None,
         radius_mm,
         underlay_id: None,
     };
@@ -409,6 +413,35 @@ fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() 
         .unwrap();
     assert_eq!(found["endpoint"]["point_mm"], json!(start));
     assert_eq!(found["endpoint"]["distance_mm"], 5.0);
+
+    // From near the crossing to near the start: the crossing and the start, 4 m apart.
+    let cross = [start[0] + 4_000.0, start[1]];
+    let measured = bridge
+        .execute(
+            &mut app,
+            Request::UnderlaySnap {
+                expected: None,
+                point_mm: [cross[0] + 2.0, cross[1] + 1.0],
+                to_mm: Some([start[0] - 4.0, start[1] + 3.0]),
+                radius_mm: None,
+                underlay_id: None,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        measured["intersection"]["point_mm"],
+        json!(cross),
+        "{measured}"
+    );
+    assert_eq!(
+        measured["intersection"]["drawing_mm"],
+        json!([-499_996_000.0, -1_200_000_000.0])
+    );
+    assert_eq!(measured["measure"]["from"]["snap"], "intersection");
+    assert_eq!(measured["measure"]["to"]["snap"], "endpoint");
+    assert_eq!(measured["measure"]["to"]["point_mm"], json!(start));
+    assert_eq!(measured["measure"]["distance_mm"], 4_000.0);
     assert_eq!(app.canonical_digest(), digest, "a snap changes nothing");
 
     let far = bridge
@@ -421,6 +454,7 @@ fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() 
     let missing = Request::UnderlaySnap {
         expected: None,
         point_mm: near_middle,
+        to_mm: None,
         radius_mm: None,
         underlay_id: Some(99),
     };

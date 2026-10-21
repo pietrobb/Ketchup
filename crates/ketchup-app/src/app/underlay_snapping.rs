@@ -1,5 +1,5 @@
 //! Snapping to and measuring on the shown lines of the underlays: their endpoints,
-//! midpoints and nearest points join the snap points of the model, so drawing, Measure
+//! intersections, midpoints and nearest points join the snap points of the model, so drawing, Measure
 //! and the bridge's `underlay_snap` all find the same points.
 
 use crate::*;
@@ -24,6 +24,7 @@ pub(crate) fn underlay_reference(underlay: UnderlayId, segment: usize) -> Select
 pub(crate) fn snap_kind(kind: UnderlaySnapKind) -> SnapKind {
     match kind {
         UnderlaySnapKind::Endpoint => SnapKind::Endpoint,
+        UnderlaySnapKind::Intersection => SnapKind::Intersection,
         UnderlaySnapKind::Midpoint => SnapKind::Midpoint,
         UnderlaySnapKind::Nearest => SnapKind::Edge,
     }

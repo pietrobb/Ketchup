@@ -138,6 +138,51 @@ fn a_line_or_an_arc_measures_from_corner_to_corner() {
 }
 
 #[test]
+fn lines_and_arcs_snap_where_they_cross_or_one_ends_on_another() {
+    let mut builder = UnderlayLinesBuilder::default();
+    // A cross at (500, 500), on two layers.
+    builder.add("walls", &[line([0.0, 500.0], [1000.0, 500.0])]);
+    builder.add("axes", &[line([500.0, 0.0], [500.0, 1000.0])]);
+    // A T: a line ending on the wall at (2000, 500).
+    builder.add("walls", &[line([1500.0, 500.0], [2500.0, 500.0])]);
+    builder.add("walls", &[line([2000.0, 500.0], [2000.0, 900.0])]);
+    // Two separate lines meeting end to end at (4000, 0): an end, not a crossing.
+    builder.add("walls", &[line([3000.0, 0.0], [4000.0, 0.0])]);
+    builder.add("walls", &[line([4000.0, 0.0], [4000.0, 1000.0])]);
+    // A circle of radius 200 about (6000, 0), crossed by a line along y = 0.
+    builder.add_loose("walls", &arc([6200.0, 0.0], [6200.0, 0.0], [6000.0, 0.0]));
+    builder.add("walls", &[line([5500.0, 0.0], [6500.0, 0.0])]);
+    let index = UnderlaySnapIndex::new(&builder.finish().1);
+    let all = |_| true;
+    let cross = index.snaps([503.0, 504.0], 10.0, all).intersection.unwrap();
+    assert_eq!(cross.kind, UnderlaySnapKind::Intersection);
+    assert!(close(cross.point_mm, [500.0, 500.0], 1e-9), "{cross:?}");
+    assert!((cross.distance_mm - 5.0).abs() < 1e-9);
+    let tee = index
+        .snaps([2002.0, 498.0], 10.0, all)
+        .intersection
+        .unwrap();
+    assert!(close(tee.point_mm, [2000.0, 500.0], 1e-9), "{tee:?}");
+    let corner = index.snaps([4001.0, 1.0], 10.0, all);
+    assert_eq!(corner.intersection, None);
+    assert_eq!(corner.endpoint.unwrap().point_mm, [4000.0, 0.0]);
+    // The chords of the circle meet each other everywhere along it, but cross nothing.
+    let on_circle = [6000.0 + 200.0 * 1.0_f64.cos(), 200.0 * 1.0_f64.sin()];
+    assert_eq!(index.snaps(on_circle, 20.0, all).intersection, None);
+    // Where the line crosses the circle, on its chords: the chords end on y = 0 there.
+    for x in [5800.0, 6200.0] {
+        let hit = index.snaps([x + 3.0, 4.0], 10.0, all).intersection.unwrap();
+        assert!(close(hit.point_mm, [x, 0.0], 0.1), "{hit:?}");
+    }
+    // A crossing needs both lines shown.
+    let walls_only = index.snaps([503.0, 504.0], 10.0, |layer| layer == 0);
+    assert_eq!(walls_only.intersection, None);
+    assert!(walls_only.nearest.is_some());
+    // Nothing beyond the distance asked for.
+    assert_eq!(index.snaps([520.0, 520.0], 10.0, all).intersection, None);
+}
+
+#[test]
 fn the_grid_finds_what_looking_at_every_line_finds() {
     // 20,000 short lines scattered over 100 m, and a few long ones across all of it.
     let mut seed = 0x2545_f491_u64;
