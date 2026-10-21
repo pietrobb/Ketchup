@@ -455,7 +455,7 @@ fn rigid_assembly_authoring_is_previewed_atomic_undoable_and_losslessly_persiste
     assert_eq!(shell.app().assembly_mate_count(), 1);
     assert_eq!(shell.app().grounded_occurrence_count(), 1);
     assert_eq!(shell.app().occurrence_count(), 3);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
 }
 
 #[test]
@@ -580,7 +580,7 @@ fn prismatic_joint_and_motion_study_previews_cancel_confirm_undo_and_reopen() {
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().assembly_joint_count(), 1);
     assert_eq!(shell.app().assembly_motion_study_count(), 1);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
 }
 
 #[test]
@@ -740,7 +740,7 @@ fn helical_joint_is_created_edited_driven_and_reopened_through_accesskit() {
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().assembly_joint_count(), 1);
     assert_eq!(shell.app().assembly_motion_study_count(), 1);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
 }
 
 #[test]
@@ -1022,7 +1022,7 @@ fn all_motion_couplings_are_authored_edited_and_reopened_through_accesskit() {
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().assembly_motion_coupling_count(), 5);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
 }
 
 #[test]
@@ -1173,7 +1173,7 @@ fn mechanism_drag_collision_preview_blocks_or_allows_contact_through_accesskit()
             .position(),
         Some(20.0)
     );
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
 }
 
 #[test]
@@ -1445,7 +1445,7 @@ fn mechanism_drag_is_previewed_clamped_coupled_and_reopened_through_accesskit() 
             .position(),
         Some(2.0)
     );
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
 }
 
 #[test]
@@ -2054,7 +2054,7 @@ fn selection_drawing_rejects_drift_and_non_rigid_sources_then_round_trips_exactl
         shell.app().headless_drawing_fingerprint(sheet_id),
         Some(exact_fingerprint)
     );
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
 }
 
 #[test]

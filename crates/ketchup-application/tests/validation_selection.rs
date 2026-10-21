@@ -1908,7 +1908,6 @@ fn requested_checks_without_applicable_roles_are_not_a_success() {
     let prepared = ketchup_model::persistence::prepare_document(
         &document,
         &ketchup_model::persistence::ContainerData::default(),
-        ketchup_model::persistence::HistoryPolicy::Keep,
     )
     .unwrap();
     ketchup_model::persistence::publish_document(

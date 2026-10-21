@@ -687,37 +687,7 @@ impl KetchupApp {
         let prepared = match prepared.unwrap_or_else(|| {
             super::save_activity::prepare_save(&self.document, &self.file.container_data)
         }) {
-            Ok(prepared) if prepared.keeps_history() => prepared,
-            Ok(prepared) => {
-                let title = self.catalog.text("dialog-save-current-only-title");
-                let description = self.catalog.format(
-                    "dialog-save-current-only-description",
-                    &BTreeMap::from([
-                        ("undo", self.document.visible_undo_steps().to_string()),
-                        ("redo", self.document.visible_redo_steps().to_string()),
-                    ]),
-                );
-                if !self
-                    .dialogs
-                    .confirm_history_truncation(HistoryTruncationRequest {
-                        title: &title,
-                        description: &description,
-                    })
-                {
-                    self.digest = self.catalog.format(
-                        "error-save-document",
-                        &BTreeMap::from([
-                            ("path", path.display().to_string()),
-                            ("reason", self.catalog.text("save-current-only-refused")),
-                        ]),
-                    );
-                    return Err(SaveFailure::Declined);
-                }
-                if !request_authorized() {
-                    return Err(SaveFailure::Cancelled);
-                }
-                prepared
-            }
+            Ok(prepared) => prepared,
             Err(error) => {
                 self.digest = self.catalog.format(
                     "error-save-document",
@@ -729,7 +699,6 @@ impl KetchupApp {
                 return Err(SaveFailure::Failed);
             }
         };
-        let truncate_history = !prepared.keeps_history();
         let saved_identity = prepared.identity();
         let owned_identity = (self.file.path.as_deref() == Some(path))
             .then_some(self.file.identity)
@@ -795,13 +764,12 @@ impl KetchupApp {
             &prepared,
             ketchup_model::persistence::Publish::over(expected_identity),
         );
-        self.finish_document_save(path, truncate_history, saved_identity, result)
+        self.finish_document_save(path, saved_identity, result)
     }
 
     pub(super) fn finish_document_save(
         &mut self,
         path: &Path,
-        truncate_history: bool,
         saved_identity: ketchup_model::persistence::FileIdentity,
         result: Result<(), ketchup_model::persistence::FilePersistenceError>,
     ) -> Result<(), SaveFailure> {
@@ -811,9 +779,6 @@ impl KetchupApp {
         };
         match result {
             Ok(()) => {
-                if truncate_history {
-                    self.document.discard_history_before_current();
-                }
                 let owned_recovery_path = self.file.path.clone().or_else(|| {
                     self.file
                         .recovery_open
@@ -840,13 +805,8 @@ impl KetchupApp {
                 self.file.saved_digest = self.document.history_digest();
                 self.drawings.unsaved = false;
                 self.viewer_prep.unsaved = false;
-                let digest_key = if truncate_history {
-                    "digest-saved-document-current-only"
-                } else {
-                    "digest-saved-document"
-                };
                 self.digest = self.catalog.format(
-                    digest_key,
+                    "digest-saved-document",
                     &BTreeMap::from([("path", path.display().to_string())]),
                 );
                 if let Some(error) = publication_error {

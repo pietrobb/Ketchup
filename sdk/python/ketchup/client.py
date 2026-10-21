@@ -751,12 +751,9 @@ class Document:
             raise ValueError("Verify job handle must be a nonempty string of at most 128 characters")
         return self._call("verify_job_cancel", {"handle": handle})
 
-    def save(self, path, *, overwrite=False, discard_history=False):
-        """Save; a history past the file's limits is refused (history_too_large)
-        until saved again with discard_history=True, which keeps only the current revision."""
+    def save(self, path, *, overwrite=False):
+        """Save the current revision; the Undo history stays in the session."""
         params = {"path": os.fspath(path), "overwrite": overwrite}
-        if discard_history:
-            params["discard_history"] = True
         return self._call("save", params, mutation=True, state=True)
 
     def undo(self):

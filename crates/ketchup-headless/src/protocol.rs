@@ -270,8 +270,6 @@ impl From<SessionError> for Error {
 }
 type Result<T> = std::result::Result<T, Error>;
 
-/// A Save refused because the Undo history is past what a file stores or a
-/// reader accepts; the current revision still saves with `discard_history`.
 /// The warning `open` answers for one thing the open did other than read the
 /// file as it is.
 fn load_warning(
@@ -333,27 +331,6 @@ fn load_warning(
             ),
         }),
     }
-}
-
-fn history_too_large(error: SessionError) -> Error {
-    use ketchup_model::persistence::{FilePersistenceError, PersistenceError};
-    let too_large = matches!(
-        &error,
-        SessionError::Persistence(FilePersistenceError::Format(
-            PersistenceError::ResourceLimit | PersistenceError::TooLarge { .. }
-        ))
-    );
-    let mut answer = Error::from(error);
-    if too_large {
-        answer.code = "history_too_large".into();
-        answer.message = format!(
-            "{}; the Undo history is past what a file stores, so nothing was written. \
-             Save again with \"discard_history\": true to keep only the current revision \
-             and its program (the Undo history is dropped).",
-            answer.message
-        );
-    }
-    answer
 }
 
 #[derive(Deserialize)]
@@ -969,7 +946,7 @@ impl Server {
             "run_validators" => (&["ids"], false),
             "set_grounded" => (&["occurrence_ids", "grounded"], true),
             "undo" | "redo" => (&[], true),
-            "save" => (&["path", "overwrite", "discard_history"], true),
+            "save" => (&["path", "overwrite"], true),
             _ => {
                 return Err(Error::new(
                     "unknown_method",
@@ -1033,26 +1010,9 @@ impl Server {
                 let options = SaveOptions {
                     overwrite: boolean(p, "overwrite", false)?,
                 };
-                // Dropping the Undo history needs consent, as the window asks
-                // for it: a history past the file's limits is refused with a
-                // code naming the explicit way to save the current revision.
-                let discard_history = boolean(p, "discard_history", false)?;
-                if discard_history {
-                    self.session.save_current_snapshot(path, options)?;
-                } else {
-                    self.session
-                        .save(path, options)
-                        .map_err(history_too_large)?;
-                }
+                self.session.save(path, options)?;
                 self.initial_placeholder = false;
-                let mut result = self.state_result();
-                if discard_history {
-                    result["warnings"] = json!([{
-                        "kind": "history_discarded",
-                        "message": "only the current revision was saved; the Undo history was dropped",
-                    }]);
-                }
-                Ok(result)
+                Ok(self.state_result())
             }
             "apply" => {
                 let program: AssistantCadEditProgram = serde_json::from_value(
@@ -1950,12 +1910,10 @@ mod tests {
         assert_eq!(warnings[0]["path"], backup.display().to_string());
     }
 
-    /// An Undo history over 32 MiB saves and reopens whole, and an agent can
-    /// still drop it on purpose with `discard_history`, keeping the current
-    /// revision. Only a history past the 2 GiB revision budget is refused as
-    /// `history_too_large`; a unit test does not build one.
+    /// 31 edits leave 30 Undo steps. Save writes the current revision alone, the
+    /// file opens without any Undo step, and the session keeps and can use its own.
     #[test]
-    fn a_history_over_32_mib_saves_whole_and_discard_history_keeps_the_current_revision() {
+    fn save_writes_the_current_revision_alone_and_keeps_the_sessions_undo() {
         use ketchup_model::document::{Dimension, NodeId};
         let mut server = Server::new(SessionSettings::default());
         let mut apply = |command| {
@@ -1971,10 +1929,9 @@ mod tests {
             dimension: Dimension::new("10", 10.0).unwrap(),
             dependencies: vec![],
         });
-        // Each revision brings 256 KiB nothing else shares: 200 of them
-        // make a history of about 50 MiB.
+        // Each revision brings 256 KiB nothing else shares.
         let mut state = 1_u64;
-        for _ in 0..limits::UNDO_REVISIONS {
+        for _ in 0..30 {
             let name = (0..256 * 1024)
                 .map(|_| {
                     state = state
@@ -1988,47 +1945,36 @@ mod tests {
                 name,
             });
         }
+        assert_eq!(server.session.visible_undo_steps(), 30);
         let current = server.session.snapshot();
-        let undo_steps = server.session.visible_undo_steps();
-        assert!(undo_steps > 0);
         let directory = tempfile::tempdir().unwrap();
-        let whole = directory.path().join("whole.ketchup");
-        let current_only = directory.path().join("current-only.ketchup");
-        let stamp = |server: &Server, path: &std::path::Path| {
-            let state = server.state_result();
+        let path = directory.path().join("saved.ketchup");
+        let state = server.state_result();
+        let saved = request(
+            &mut server,
+            "save",
             json!({
                 "expected_revision": state["state"]["revision"],
                 "expected_digest": state["state"]["canonical_digest"],
                 "path": path,
-            })
-        };
-        let params = stamp(&server, &whole);
-        let saved = request(&mut server, "save", params);
+            }),
+        );
         assert!(saved["error"].is_null(), "{saved}");
-        assert!(saved["result"]["warnings"].is_null(), "{saved}");
-        assert_eq!(server.session.visible_undo_steps(), undo_steps);
-        assert!(std::fs::metadata(&whole).unwrap().len() > 32 * 1024 * 1024);
-        let reopened = DocumentSession::open(&whole, SessionSettings::default()).unwrap();
-        assert_eq!(
-            reopened.snapshot().canonical_digest(),
-            current.canonical_digest()
-        );
-        assert_eq!(reopened.visible_undo_steps(), undo_steps);
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!bytes.windows(11).any(|entry| entry == b"history.bin"));
+        // The current name alone, not the 30 before it.
+        assert!(bytes.len() < 2 * 256 * 1024, "{}", bytes.len());
 
-        let mut params = stamp(&server, &current_only);
-        params["discard_history"] = json!(true);
-        let saved = request(&mut server, "save", params);
-        assert_eq!(
-            saved["result"]["warnings"][0]["kind"], "history_discarded",
-            "{saved}"
-        );
-        assert_eq!(server.session.visible_undo_steps(), 0);
-        let reopened = DocumentSession::open(&current_only, SessionSettings::default()).unwrap();
+        let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
         assert_eq!(
             reopened.snapshot().canonical_digest(),
             current.canonical_digest()
         );
         assert_eq!(reopened.visible_undo_steps(), 0);
+
+        assert_eq!(server.session.visible_undo_steps(), 30);
+        let undone = server.session.undo().unwrap();
+        assert_ne!(undone.canonical_digest(), current.canonical_digest());
     }
 
     #[test]
@@ -2502,7 +2448,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_history_drives_compact_redo_modified_and_discard_guard() {
+    fn history_drives_compact_redo_modified_and_discard_guard() {
         let mut author = Server::new(SessionSettings::default());
         let initial = request(&mut author, "state", json!({}))["result"]["state"].clone();
         let created = request(
@@ -2571,30 +2517,14 @@ mod tests {
         assert_eq!(saved["result"]["modified"], false);
         assert_eq!(saved["result"]["state"]["redo_steps"], 1);
 
-        let mut reopened = Server::new(SessionSettings::default());
-        let placeholder = request(&mut reopened, "state", json!({}))["result"]["state"].clone();
-        let opened = request(
-            &mut reopened,
-            "open",
-            json!({
-                "expected_revision":placeholder["revision"],
-                "expected_digest":placeholder["canonical_digest"],
-                "path":path,
-                "discard_unsaved":false,
-                "response":"compact"
-            }),
-        );
-        assert_eq!(opened["result"]["response"], "compact");
-        assert_eq!(opened["result"]["state"]["redo_steps"], 1);
-        assert_eq!(opened["result"]["modified"], false);
-        let opened_state = opened["result"]["state"].clone();
+        let saved_state = saved["result"]["state"].clone();
 
         let redone = request(
-            &mut reopened,
+            &mut author,
             "redo",
             json!({
-                "expected_revision":opened_state["revision"],
-                "expected_digest":opened_state["canonical_digest"],
+                "expected_revision":saved_state["revision"],
+                "expected_digest":saved_state["canonical_digest"],
                 "response":"compact"
             }),
         );
@@ -2602,7 +2532,7 @@ mod tests {
         assert_eq!(redone["result"]["modified"], true);
         assert_eq!(redone_state["redo_steps"], 0);
         let reverted = request(
-            &mut reopened,
+            &mut author,
             "set_grounded",
             json!({
                 "expected_revision":redone_state["revision"],
@@ -2615,12 +2545,12 @@ mod tests {
         let reverted_state = reverted["result"]["state"].clone();
         assert_eq!(
             reverted_state["canonical_digest"],
-            opened_state["canonical_digest"]
+            saved_state["canonical_digest"]
         );
         assert_eq!(reverted["result"]["modified"], true);
 
         let refused = request(
-            &mut reopened,
+            &mut author,
             "new",
             json!({
                 "expected_revision":reverted_state["revision"],
@@ -2630,7 +2560,7 @@ mod tests {
             }),
         );
         assert_eq!(refused["error"]["code"], "unsaved_changes");
-        let after_refusal = request(&mut reopened, "state", json!({}));
+        let after_refusal = request(&mut author, "state", json!({}));
         assert_eq!(
             after_refusal["result"]["state"]["revision"],
             reverted_state["revision"]

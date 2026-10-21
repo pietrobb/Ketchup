@@ -353,7 +353,7 @@ pub(super) fn assemble_checkpoint(
         encode_container(file)
     };
     // A history that does not fit keeps only the current revision, as a whole
-    // checkpoint does ([`HistoryPolicy::KeepIfFits`]).
+    // checkpoint does.
     let file = match file(&revisions, cursor) {
         Err(PersistenceError::ResourceLimit | PersistenceError::TooLarge { .. }) => {
             file(&[current], 0)?

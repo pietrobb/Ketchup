@@ -145,7 +145,7 @@ fn parameter_expression_recomputes_dependents_atomically_and_round_trips_through
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), changed_digest);
     assert_eq!(shell.app().document_revision(), changed_revision);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
     let reopened = shell.app().document_snapshot();
     assert!(matches!(
         reopened.evaluator_node(PARAMETRIC_RULE).unwrap().kind(),

@@ -103,7 +103,11 @@ mod tests {
         let old = indefinite_snapshot(&document.current());
         assert_ne!(old, save(&document.current()));
         let bytes = with_history_snapshot(&document, &old);
-        let mut reopened = load(&bytes).unwrap().into_editable().ok().unwrap();
+        let mut reopened = crate::persistence::load_with_history(&bytes, true)
+            .unwrap()
+            .into_editable()
+            .ok()
+            .unwrap();
         assert_eq!(reopened.current().floor_z_mm(), Some(250.));
         reopened.undo().unwrap();
         assert_eq!(reopened.current().floor_z_mm(), None);
@@ -113,11 +117,11 @@ mod tests {
         assert_eq!(load(&saved).unwrap().snapshot().floor_z_mm(), Some(250.));
     }
 
-    /// The document opens with only its current revision and names why.
+    /// A checkpoint opens with only its current revision and names why.
     fn opens_without_history(bytes: &[u8], reason: &str) {
         let LoadOutcome::Editable {
             document, audit, ..
-        } = load(bytes).unwrap()
+        } = crate::persistence::load_with_history(bytes, true).unwrap()
         else {
             panic!("editable document")
         };
@@ -179,11 +183,10 @@ mod tests {
             .unwrap();
         let mut corrupt = save(&document.current());
         corrupt[MAGIC.len() + 2 + 32] ^= 1;
-        let LoadOutcome::ReviewOnly(candidate) = load(&with_history_snapshot_in(
-            &document,
-            &corrupt,
-            &newer_writer,
-        ))
+        let LoadOutcome::ReviewOnly(candidate) = crate::persistence::load_with_history(
+            &with_history_snapshot_in(&document, &corrupt, &newer_writer),
+            true,
+        )
         .unwrap() else {
             panic!("review-only document")
         };

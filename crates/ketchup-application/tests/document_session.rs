@@ -53,10 +53,10 @@ fn evaluation_retry_distinguishes_failed_topology_from_unsupported_topology() {
     assert!(report.needs_retry());
 }
 
-/// A file whose Undo history no longer opens opens with its program, says why
-/// the history is gone, and the next Save keeps the program.
+/// A file opens without the Undo history an older Kečup stored in it: a damaged
+/// one is not even read, the file opens with its program and the next Save keeps it.
 #[test]
-fn an_unreadable_history_is_reported_and_its_program_survives_the_next_save() {
+fn a_files_stored_history_is_not_read_and_its_program_survives_the_next_save() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("programmed.ketchup");
     let mut document = DocumentStore::new();
@@ -81,10 +81,8 @@ fn an_unreadable_history_is_reported_and_its_program_survives_the_next_save() {
     .unwrap();
 
     let mut session = DocumentSession::open(&path, SessionSettings::default()).unwrap();
-    assert!(matches!(
-        session.load_notices(),
-        [persistence::LoadNotice::HistoryDiscarded { .. }]
-    ));
+    assert_eq!(session.load_notices(), []);
+    assert_eq!(session.visible_undo_steps(), 0);
     assert_eq!(session.rule_program(), Some(&program));
     session
         .save(&path, SaveOptions { overwrite: true })
@@ -245,107 +243,42 @@ fn shared_python_contract_corpus_plans_and_evaluates_with_real_worker() {
     }
 }
 
-/// PS-6: a session Save encodes the history once and publishes those bytes.
+/// A Save writes the current revision without any Undo history: the session keeps
+/// its steps in memory, and the saved file reopens without Undo or Redo.
 #[test]
-fn session_save_encodes_the_history_once() {
+fn a_saved_file_reopens_without_undo_steps() {
     let mut session = DocumentSession::default();
-    for value in [10.0, 20.0] {
-        let command = if value == 10.0 {
-            CanonicalCommand::CreateEvaluatorNode {
-                id: NodeId(1),
-                name: "parameter".into(),
-                dimension: Dimension::new("10", value).unwrap(),
-                dependencies: vec![],
-            }
-        } else {
-            CanonicalCommand::SetEvaluatorDimension {
-                id: NodeId(1),
-                dimension: Dimension::new("20", value).unwrap(),
-            }
-        };
+    for command in [
+        CanonicalCommand::CreateEvaluatorNode {
+            id: NodeId(1),
+            name: "parameter".into(),
+            dimension: Dimension::new("10", 10.0).unwrap(),
+            dependencies: vec![],
+        },
+        CanonicalCommand::SetEvaluatorDimension {
+            id: NodeId(1),
+            dimension: Dimension::new("20", 20.0).unwrap(),
+        },
+    ] {
         let proposal = session
             .plan_commands(CommandBatch::new(vec![command]))
             .unwrap();
         session.apply_proposal(&proposal).unwrap();
     }
+    let expected = session.snapshot();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("model.ketchup");
     let (saved, encodes) =
         persistence::headless_count_history_encodes(|| session.save(&path, SaveOptions::default()));
     saved.unwrap();
-    assert_eq!(encodes, 1, "new file");
-    let (saved, encodes) = persistence::headless_count_history_encodes(|| {
-        session.save(&path, SaveOptions { overwrite: true })
-    });
-    saved.unwrap();
-    assert_eq!(encodes, 1, "over the session's file");
-    let other = directory.path().join("other.ketchup");
-    let (saved, encodes) = persistence::headless_count_history_encodes(|| {
-        session.save_current_snapshot(&other, SaveOptions::default())
-    });
-    saved.unwrap();
-    assert_eq!(encodes, 1, "current revision only");
-    let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
-    assert_eq!(reopened.visible_undo_steps(), 2);
-}
-
-#[test]
-fn explicit_current_snapshot_save_is_atomic_and_resets_the_persistent_history_boundary() {
-    let mut session = DocumentSession::default();
-    let proposal = session
-        .plan_commands(CommandBatch::new(vec![
-            CanonicalCommand::CreateEvaluatorNode {
-                id: NodeId(1),
-                name: "parameter".into(),
-                dimension: Dimension::new("10", 10.0).unwrap(),
-                dependencies: vec![],
-            },
-        ]))
-        .unwrap();
-    session.apply_proposal(&proposal).unwrap();
-    let proposal = session
-        .plan_commands(CommandBatch::new(vec![
-            CanonicalCommand::SetEvaluatorDimension {
-                id: NodeId(1),
-                dimension: Dimension::new("20", 20.0).unwrap(),
-            },
-        ]))
-        .unwrap();
-    session.apply_proposal(&proposal).unwrap();
-    let expected = session.snapshot();
+    assert_eq!(encodes, 0);
     assert_eq!(session.visible_undo_steps(), 2);
-
-    let directory = tempfile::tempdir().unwrap();
-    let occupied = directory.path().join("occupied.ketchup");
-    std::fs::write(&occupied, b"existing").unwrap();
-    assert!(
-        session
-            .save_current_snapshot(&occupied, SaveOptions::default())
-            .is_err()
-    );
-    assert_eq!(std::fs::read(&occupied).unwrap(), b"existing");
-    assert_eq!(session.visible_undo_steps(), 2);
-    assert!(session.is_modified());
-
-    let path = directory.path().join("current.ketchup");
-    session
-        .save_current_snapshot(&path, SaveOptions::default())
-        .unwrap();
-    assert_eq!(
-        session.snapshot().canonical_digest(),
-        expected.canonical_digest()
-    );
-    assert_eq!(session.snapshot().revision_id(), expected.revision_id());
-    assert_eq!(session.visible_undo_steps(), 0);
-    assert_eq!(session.visible_redo_steps(), 0);
-    assert!(!session.is_modified());
 
     let mut reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
     assert_eq!(
         reopened.snapshot().canonical_digest(),
         expected.canonical_digest()
     );
-    assert_eq!(reopened.snapshot().revision_id(), expected.revision_id());
     assert_eq!(reopened.visible_undo_steps(), 0);
     assert_eq!(reopened.visible_redo_steps(), 0);
     let proposal = reopened
@@ -962,21 +895,11 @@ fn real_worker_session_save_open_and_read_only_reports() {
         reopened.snapshot().canonical_digest(),
         snapshot.canonical_digest()
     );
-    assert_eq!(reopened.visible_undo_steps(), 1);
+    assert_eq!(reopened.visible_undo_steps(), 0);
     assert!(reopened.evaluate().unwrap().complete);
     assert_eq!(
         reopened.validators(&AssistantValidationSelection::only(&["collision"])),
         validation
-    );
-    reopened.undo().unwrap();
-    assert_eq!(
-        reopened.snapshot().canonical_digest(),
-        empty.canonical_digest()
-    );
-    reopened.redo().unwrap();
-    assert_eq!(
-        reopened.snapshot().canonical_digest(),
-        snapshot.canonical_digest()
     );
     session.undo().unwrap();
     assert_eq!(
@@ -1533,16 +1456,7 @@ fn real_worker_query_selects_two_upper_circular_edges_for_one_fillet_operation()
     );
     let report = reopened.evaluate().unwrap();
     assert!(report.complete && report.topology_complete, "{report:?}");
-    reopened.undo().unwrap();
-    assert_eq!(
-        reopened.snapshot().canonical_digest(),
-        created.canonical_digest()
-    );
-    reopened.redo().unwrap();
-    assert_eq!(
-        reopened.snapshot().canonical_digest(),
-        filleted.canonical_digest()
-    );
+    assert_eq!(reopened.visible_undo_steps(), 0);
 }
 
 #[test]

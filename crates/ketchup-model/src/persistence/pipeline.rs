@@ -1,31 +1,18 @@
 //! One save pipeline (review 2026-10-15 S2): [`prepare_document`] encodes a
-//! document once, with one rule for an Undo history that does not fit, and
-//! [`publish_document`] or [`publish_work_recovery`] write those bytes.
+//! document's current revision once, and [`publish_document`] or [`publish_work_recovery`] write those bytes.
 use std::path::Path;
 
 use super::{
     ContainerData, FileIdentity, FilePersistenceError, PersistenceError, publish_bytes,
-    save_container, save_document_store, save_document_store_current_snapshot,
-    sync_parent_directory, work_recovery::write_work_recovery,
+    save_container, save_document_store_current_snapshot, sync_parent_directory,
+    work_recovery::write_work_recovery,
 };
 use crate::document::{DocumentStore, Snapshot};
-
-/// Which Undo history a prepared file carries.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HistoryPolicy {
-    /// The whole history; a history that does not fit is an error.
-    Keep,
-    /// The whole history, or only the current revision when the history does not fit.
-    KeepIfFits,
-    /// Only the current revision.
-    CurrentOnly,
-}
 
 /// A native document file encoded by [`prepare_document`], ready to publish.
 #[derive(Clone, Debug)]
 pub struct PreparedDocument {
     bytes: Vec<u8>,
-    keeps_history: bool,
 }
 
 impl PreparedDocument {
@@ -38,36 +25,16 @@ impl PreparedDocument {
     pub fn identity(&self) -> FileIdentity {
         FileIdentity::from_bytes(&self.bytes)
     }
-
-    /// Whether the file carries the document's Undo history; without it, the
-    /// history before the current revision is gone once the file is published.
-    #[must_use]
-    pub fn keeps_history(&self) -> bool {
-        self.keeps_history
-    }
 }
 
-/// Encodes `document` once as a native file under `policy`.
+/// Encodes the current revision of `document` once as a native file. The Undo
+/// history stays in memory: a file holds none.
 pub fn prepare_document(
     document: &DocumentStore,
     container: &ContainerData,
-    policy: HistoryPolicy,
 ) -> Result<PreparedDocument, PersistenceError> {
-    let current_only = || save_document_store_current_snapshot(document, container);
-    let (bytes, keeps_history) = match policy {
-        HistoryPolicy::Keep => (save_document_store(document, container)?, true),
-        HistoryPolicy::CurrentOnly => (current_only()?, false),
-        HistoryPolicy::KeepIfFits => match save_document_store(document, container) {
-            Ok(bytes) => (bytes, true),
-            Err(PersistenceError::ResourceLimit | PersistenceError::TooLarge { .. }) => {
-                (current_only()?, false)
-            }
-            Err(error) => return Err(error),
-        },
-    };
     Ok(PreparedDocument {
-        bytes,
-        keeps_history,
+        bytes: save_document_store_current_snapshot(document, container)?,
     })
 }
 
@@ -99,7 +66,7 @@ pub fn publish_document(
     publish_bytes(path, prepared.bytes(), mode, || {}, sync_parent_directory)
 }
 
-/// Writes `document` ([`HistoryPolicy::KeepIfFits`]) as the work-recovery
+/// Writes `document` with its Undo history, where it fits, as the work-recovery
 /// checkpoint of the file at `path`, bound to that file's `base_identity`; it
 /// replaces only the checkpoint this writer observed (`None` requires there is
 /// none). Live sessions must also hold a `WorkRecoveryLock` to protect a recovery

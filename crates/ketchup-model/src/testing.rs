@@ -190,6 +190,14 @@ pub fn save_with_program_entry(
     crate::persistence::save_with_history_entry(document, history, Some(program))
 }
 
+/// Opens `bytes` with the Undo history they hold, as a work-recovery checkpoint
+/// does; a file opened by the user ignores it.
+pub fn load_with_history(
+    bytes: &[u8],
+) -> Result<crate::persistence::LoadOutcome, crate::persistence::PersistenceError> {
+    crate::persistence::load_with_history(bytes, true)
+}
+
 /// Returns the entry of a CBOR map by text key or integer key.
 ///
 /// # Panics

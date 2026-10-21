@@ -158,7 +158,7 @@ fn program_variants_survive_save_open_and_a_variant_change_is_its_own_revision()
 
     let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
         .unwrap();
-    let (mut reopened, _) = persistence::load(&bytes)
+    let (mut reopened, _) = ketchup_model::testing::load_with_history(&bytes)
         .unwrap()
         .into_editable_with_container()
         .unwrap_or_else(|_| panic!("expected editable roundtrip"));
@@ -358,12 +358,12 @@ fn load_error(bytes: &[u8]) -> PersistenceError {
     }
 }
 
-/// Opens a file whose history is damaged: the current revision stays editable,
+/// Opens a checkpoint whose history is damaged: the current revision stays editable,
 /// Undo is empty and the returned reason says why the history was dropped.
 fn discarded_history(bytes: &[u8]) -> String {
     let Ok(LoadOutcome::Editable {
         document, audit, ..
-    }) = persistence::load(bytes)
+    }) = ketchup_model::testing::load_with_history(bytes)
     else {
         panic!("a damaged history must not stop the current revision from opening")
     };
@@ -435,8 +435,7 @@ fn publish(
     data: &persistence::ContainerData,
     mode: persistence::Publish,
 ) -> Result<persistence::FileIdentity, persistence::FilePersistenceError> {
-    let prepared =
-        persistence::prepare_document(store, data, persistence::HistoryPolicy::Keep).unwrap();
+    let prepared = persistence::prepare_document(store, data).unwrap();
     persistence::publish_document(path, &prepared, mode).map(|()| prepared.identity())
 }
 
@@ -1147,7 +1146,7 @@ fn revision_history_round_trips_with_cursor_and_monotonic_branching() {
         persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
     assert_eq!(second, first);
 
-    let loaded = persistence::load(&first).unwrap();
+    let loaded = ketchup_model::testing::load_with_history(&first).unwrap();
     let container_data = loaded.container_data().clone();
     let mut reopened = loaded.into_editable().ok().unwrap();
     assert_eq!(reopened.history_cursor(), expected_cursor);
@@ -1212,7 +1211,7 @@ fn opening_a_history_shares_its_blobs_instead_of_copying_them_per_revision() {
     let hash = container_data.insert_blob(vec![7; BLOB]).unwrap();
     let bytes = persistence::save_document_store(&store, &container_data).unwrap();
 
-    let loaded = persistence::load(&bytes).unwrap();
+    let loaded = ketchup_model::testing::load_with_history(&bytes).unwrap();
     let opened = loaded.container_data().clone();
     assert_eq!(opened.blobs()[&hash].len(), BLOB);
     let copy = opened.clone();
@@ -1267,7 +1266,7 @@ fn multi_version_history_golden_migrates_losslessly_and_drops_corrupt_history() 
         );
     }
 
-    let loaded = persistence::load(&golden).unwrap();
+    let loaded = ketchup_model::testing::load_with_history(&golden).unwrap();
     assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);
     let document_id = loaded.snapshot().document_id();
     let expected_digests = store
@@ -1308,7 +1307,7 @@ fn multi_version_history_golden_migrates_losslessly_and_drops_corrupt_history() 
             persistence::CURRENT_SCHEMA
         );
     }
-    let round_trip = persistence::load(&upgraded)
+    let round_trip = ketchup_model::testing::load_with_history(&upgraded)
         .unwrap()
         .into_editable()
         .ok()
@@ -1365,7 +1364,7 @@ fn multi_version_history_golden_migrates_losslessly_and_drops_corrupt_history() 
 }
 
 /// PS-1: a small history whose revisions within the Undo window each name the whole
-/// `document.bin` many times over (≈ 6 GiB assembled) is refused before anything is
+/// `document.bin` many times over (≈ 2.4 GiB assembled) is refused before anything is
 /// assembled; the document opens without Undo at once. Revisions outside the window
 /// count against no budget (PS-12), so the gigabytes are named inside it.
 #[test]
@@ -1388,8 +1387,8 @@ fn a_history_naming_gigabytes_through_shared_chunks_is_refused_before_it_is_asse
     let (_, offset, len) = container_entry_offsets(&saved, "document.bin");
     let document = &saved[offset..offset + len];
     let revisions = u32::try_from(ketchup_model::tolerance::limits::UNDO_REVISIONS + 1).unwrap();
-    // Each revision names the one chunk about 32 MiB worth of times.
-    let repeats = u32::try_from(32 * 1024 * 1024 / len).unwrap();
+    // Each revision names the one chunk about 80 MiB worth of times.
+    let repeats = u32::try_from(80 * 1024 * 1024 / len).unwrap();
     let length = u64::from(repeats) * len as u64;
     assert!(u64::from(revisions - 1) * length > 2 * 1024 * 1024 * 1024);
 
@@ -1486,7 +1485,7 @@ fn revision_programs(
 }
 
 fn reopened(bytes: &[u8]) -> DocumentStore {
-    persistence::load(bytes)
+    ketchup_model::testing::load_with_history(bytes)
         .unwrap()
         .into_editable_with_container()
         .unwrap_or_else(|_| panic!("expected editable roundtrip"))
@@ -1560,7 +1559,7 @@ fn a_file_without_program_json_keeps_the_current_program_when_an_older_step_is_d
             panic!("{name}: a damaged older step must not refuse the file");
         };
         assert_eq!(document.revision_count(), 1, "{name}");
-        assert!(audit.history_discarded().is_some(), "{name}");
+        assert_eq!(audit.history_discarded(), None, "{name}");
         assert_eq!(document.current_rule_program(), Some(&current), "{name}");
     }
 
@@ -1654,10 +1653,10 @@ fn unique_text(seed: u64, len: usize) -> String {
 }
 
 #[test]
-fn manual_history_keeps_the_shared_undo_limit_and_saves_in_full() {
+fn thirty_one_edits_keep_thirty_undo_steps_and_a_saved_file_reopens_without_them() {
     let mut store = graph_document();
-    let extra = 20;
-    for index in 0..(limits::UNDO_REVISIONS + extra) as u64 {
+    assert_eq!(limits::UNDO_REVISIONS, 30);
+    for index in 0..31_u64 {
         let value = 10_000 + index;
         store
             .apply_batch(&CommandBatch::new(vec![
@@ -1668,11 +1667,13 @@ fn manual_history_keeps_the_shared_undo_limit_and_saves_in_full() {
             ]))
             .unwrap();
     }
-    assert_eq!(store.revision_count(), limits::UNDO_REVISIONS + 1);
-    assert_eq!(store.visible_undo_steps(), limits::UNDO_REVISIONS);
-    let bytes =
-        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
-    let mut reopened = persistence::load(&bytes)
+    assert_eq!(store.revision_count(), 31);
+    assert_eq!(store.visible_undo_steps(), 30);
+    let saved = persistence::prepare_document(&store, &persistence::ContainerData::default())
+        .unwrap()
+        .bytes()
+        .to_vec();
+    let reopened = persistence::load(&saved)
         .unwrap()
         .into_editable()
         .ok()
@@ -1681,87 +1682,12 @@ fn manual_history_keeps_the_shared_undo_limit_and_saves_in_full() {
         reopened.current().canonical_digest(),
         store.current().canonical_digest()
     );
-    assert_eq!(reopened.visible_undo_steps(), limits::UNDO_REVISIONS);
-    while reopened.undo().is_some() {
+    assert_eq!(reopened.visible_undo_steps(), 0);
+    assert_eq!(reopened.visible_redo_steps(), 0);
+    // Saving leaves the document's own 30 steps in memory.
+    assert_eq!(store.visible_undo_steps(), 30);
+    for _ in 0..30 {
         store.undo().unwrap();
-        assert_eq!(
-            reopened.current().canonical_digest(),
-            store.current().canonical_digest()
-        );
-    }
-    assert!(store.undo().is_none());
-}
-
-#[test]
-fn a_history_over_32_mib_saves_and_opens_whole() {
-    let commands = (1..=256_u64)
-        .map(|id| CanonicalCommand::CreateEvaluatorNode {
-            id: NodeId(id),
-            name: format!("parameter-{id:03}-{}", "x".repeat(1_024)),
-            dimension: Dimension::new(id.to_string(), id as f64).unwrap(),
-            dependencies: vec![],
-        })
-        .collect();
-    let mut store = DocumentStore::new();
-    store.apply_batch(&CommandBatch::new(commands)).unwrap();
-    // A history stores the bytes revisions share once, so each revision brings
-    // 256 KiB nothing else has: 200 of them make about 50 MB.
-    for index in 0..limits::UNDO_REVISIONS as u64 {
-        store
-            .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::RenameEvaluatorNode {
-                    id: NodeId(1),
-                    name: unique_text(index, 256 * 1024),
-                },
-            ]))
-            .unwrap();
-    }
-    let bytes =
-        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
-    let (_, _, history_len) = container_entry_offsets(&bytes, "history.bin");
-    assert!(history_len > 32 * 1024 * 1024, "{history_len}");
-    let mut reopened = reopened(&bytes);
-    assert_eq!(reopened.revision_count(), store.revision_count());
-    while reopened.undo().is_some() {
-        store.undo().unwrap();
-        assert_eq!(
-            reopened.current().canonical_digest(),
-            store.current().canonical_digest()
-        );
-    }
-
-    // Neither entry has a size limit of its own, but its stored length must fit
-    // in the rest of the file.
-    for entry in ["document.bin", "history.bin"] {
-        let (checksum_offset, _, _) = container_entry_offsets(&bytes, entry);
-        let rest = (bytes.len() - checksum_offset - 32) as u64;
-        for length in [rest + 1, u64::MAX] {
-            let mut damaged = bytes.clone();
-            damaged[checksum_offset - 8..checksum_offset].copy_from_slice(&length.to_le_bytes());
-            assert_eq!(
-                load_error(&damaged),
-                PersistenceError::Truncated,
-                "{entry} with a stored length of {length}"
-            );
-        }
-    }
-}
-
-/// A model over 32 MB keeps its Undo through Save and Open, every step alike.
-#[test]
-fn a_model_over_32_mb_saves_and_opens_with_its_undo() {
-    let mut store = large_model_after_an_edit();
-    let bytes =
-        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
-    let mut reopened = reopened(&bytes);
-    assert_eq!(reopened.revision_count(), store.revision_count());
-    assert_eq!(reopened.visible_undo_steps(), 2);
-    while reopened.undo().is_some() {
-        store.undo().unwrap();
-        assert_eq!(
-            reopened.current().canonical_digest(),
-            store.current().canonical_digest()
-        );
     }
     assert!(store.undo().is_none());
 }
@@ -1842,13 +1768,8 @@ fn explicit_current_snapshot_save_keeps_the_current_revision_only() {
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("compacted.ketchup");
-    let prepared = persistence::prepare_document(
-        &store,
-        &persistence::ContainerData::default(),
-        persistence::HistoryPolicy::CurrentOnly,
-    )
-    .unwrap();
-    assert!(!prepared.keeps_history());
+    let prepared =
+        persistence::prepare_document(&store, &persistence::ContainerData::default()).unwrap();
     persistence::publish_document(&path, &prepared, persistence::Publish::Replace).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), first);
 }
@@ -1895,7 +1816,7 @@ fn corrupt_or_incompatible_revision_history_opens_only_the_current_revision() {
     newer[history_offset + 10..history_offset + 12].copy_from_slice(&6_u16.to_le_bytes());
     rehash_container_entry(&mut newer, checksum_offset, history_offset, history_len);
     assert!(matches!(
-        persistence::load(&newer),
+        ketchup_model::testing::load_with_history(&newer),
         Err(PersistenceError::UnsupportedHistorySchema(6))
     ));
 }
@@ -2030,7 +1951,7 @@ fn revision_catalog_checkpoint_diff_and_rollback_are_auditable_and_persistent() 
 
     let bytes =
         persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
-    let mut reopened = persistence::load(&bytes)
+    let mut reopened = ketchup_model::testing::load_with_history(&bytes)
         .unwrap()
         .into_editable()
         .ok()
@@ -2248,24 +2169,6 @@ fn a_primary_from_a_newer_format_is_refused_and_never_replaced_by_its_recovery()
             "{name}: {error}"
         );
     }
-
-    // A history a newer Kečup wrote is refused the same way (PS-3), not dropped
-    // and not replaced by the recovery.
-    let path = directory.path().join("history.ketchup");
-    publish(&path, &store, &data, persistence::Publish::Replace).unwrap();
-    publish(&path, &store, &data, persistence::Publish::Replace).unwrap();
-    assert!(path.with_extension("ketchup.recovery").is_file());
-    let mut newer = std::fs::read(&path).unwrap();
-    let (checksum_offset, history_offset, history_len) =
-        container_entry_offsets(&newer, "history.bin");
-    newer[history_offset + 10..history_offset + 12].copy_from_slice(&u16::MAX.to_le_bytes());
-    rehash_container_entry(&mut newer, checksum_offset, history_offset, history_len);
-    std::fs::write(&path, newer).unwrap();
-    let Err(persistence::FilePersistenceError::Format(error)) = persistence::load_file(&path)
-    else {
-        panic!("a newer history must not open without its steps or from the recovery");
-    };
-    assert_eq!(error, PersistenceError::UnsupportedHistorySchema(u16::MAX));
 }
 
 /// A program a newer Kečup stored with a field this version does not know is

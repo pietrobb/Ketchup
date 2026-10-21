@@ -171,12 +171,8 @@ impl KetchupApp {
                 .confirm_semantic_migration()
                 .map_err(MigrationError::failed)?;
             let (document, container_data) = confirmed.into_parts();
-            let prepared = ketchup_model::persistence::prepare_document(
-                &document,
-                &container_data,
-                ketchup_model::persistence::HistoryPolicy::CurrentOnly,
-            )
-            .map_err(MigrationError::failed)?;
+            let prepared = ketchup_model::persistence::prepare_document(&document, &container_data)
+                .map_err(MigrationError::failed)?;
             ketchup_model::persistence::publish_document(
                 destination,
                 &prepared,

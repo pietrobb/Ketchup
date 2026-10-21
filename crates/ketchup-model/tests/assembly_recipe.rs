@@ -513,7 +513,7 @@ fn recipe_round_trip_preserves_keys_geometry_appearance_joinery_and_history() {
     let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
         .unwrap();
     let loaded = persistence::load(&bytes).unwrap();
-    let mut reopened = loaded.into_editable().ok().unwrap();
+    let reopened = loaded.into_editable().ok().unwrap();
     let snapshot = reopened.current();
     assert_eq!(snapshot.assembly_recipe(), Some(&recipe));
     assert_eq!(snapshot.canonical_digest(), expected_digest);
@@ -536,12 +536,7 @@ fn recipe_round_trip_preserves_keys_geometry_appearance_joinery_and_history() {
         &FeatureKind::extrusion(FeatureId(1), Dimension::new("19", 19.0).unwrap())
     );
 
-    assert_eq!(reopened.visible_undo_steps(), 1);
-    reopened.undo().unwrap();
-    assert!(reopened.current().assembly_recipe().is_none());
-    assert_eq!(reopened.current().canonical_digest(), geometry_digest);
-    reopened.redo().unwrap();
-    assert_eq!(reopened.current().assembly_recipe(), Some(&recipe));
+    assert_eq!(reopened.visible_undo_steps(), 0);
 }
 
 #[test]
@@ -1919,9 +1914,8 @@ fn dependent_physical_holes_follow_rebound_joinery_without_changing_identity() {
 }
 
 #[test]
-fn physical_joinery_recipe_and_probe_evidence_survive_history_round_trip() {
+fn physical_joinery_recipe_and_probe_evidence_survive_save_and_open() {
     let mut document = dependent_joinery_document_with_physical_holes(true);
-    let before_digest = document.current().canonical_digest();
     let compilation =
         compile_assembly_recipe_patch(&document.current(), &dependent_joinery_patch()).unwrap();
     document.apply_batch(&compilation.batch.unwrap()).unwrap();
@@ -1932,7 +1926,7 @@ fn physical_joinery_recipe_and_probe_evidence_survive_history_round_trip() {
 
     let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
         .unwrap();
-    let mut reopened = persistence::load(&bytes)
+    let reopened = persistence::load(&bytes)
         .unwrap()
         .into_editable()
         .ok()
@@ -1958,21 +1952,7 @@ fn physical_joinery_recipe_and_probe_evidence_survive_history_round_trip() {
         0.0
     );
 
-    assert_eq!(reopened.visible_undo_steps(), 1);
-    assert_eq!(reopened.undo().unwrap().canonical_digest(), before_digest);
-    assert_eq!(reopened.visible_redo_steps(), 1);
-    assert_eq!(reopened.redo().unwrap().canonical_digest(), after_digest);
-    let redone = reopened.current();
-    let redone_projection = ketchup_model::pin_joint::project_pin_joint_contract(
-        &redone,
-        redone.pin_joint(PinJointId(9)).unwrap(),
-    )
-    .unwrap();
-    assert!(
-        redone_projection.pairs[0]
-            .physical_probe_coincidence
-            .is_some()
-    );
+    assert_eq!(reopened.visible_undo_steps(), 0);
 }
 
 #[test]
@@ -2008,11 +1988,6 @@ fn format_98_joint_records_load_as_pin_joints_with_the_same_geometry() {
     // The digest the format-98 writer computed, so releases that recorded it still verify.
     assert_eq!(loaded.audit().source_canonical_digest, WRITER_DIGEST);
     assert_ne!(migrated.canonical_digest(), WRITER_DIGEST);
-
-    let mut history = loaded.into_editable().ok().unwrap();
-    assert_eq!(history.visible_undo_steps(), 1);
-    let before = history.undo().unwrap();
-    assert!(before.pin_joint(PinJointId(9)).is_some());
 }
 
 #[test]

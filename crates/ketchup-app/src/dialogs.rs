@@ -114,11 +114,6 @@ fn one_line(text: &str) -> String {
     out
 }
 
-pub struct HistoryTruncationRequest<'a> {
-    pub title: &'a str,
-    pub description: &'a str,
-}
-
 /// How the shell obtains file paths and destructive-action confirmation.
 pub trait FileDialogs {
     /// Ask for an existing document to open. `None` cancels the command.
@@ -139,9 +134,6 @@ pub trait FileDialogs {
 
     /// Ask whether unsaved changes in the active document may be discarded.
     fn confirm_discard(&mut self, request: DiscardRequest<'_>) -> bool;
-
-    /// Ask whether bounded persistence may keep the current revision but reset saved Undo/Redo.
-    fn confirm_history_truncation(&mut self, request: HistoryTruncationRequest<'_>) -> bool;
 
     /// Return the authenticated local human who approved the exact high-risk evidence.
     fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest) -> Option<u64>;
@@ -281,16 +273,6 @@ impl FileDialogs for NativeFileDialogs {
             == rfd::MessageDialogResult::Yes
     }
 
-    fn confirm_history_truncation(&mut self, request: HistoryTruncationRequest<'_>) -> bool {
-        self.message_dialog()
-            .set_level(rfd::MessageLevel::Warning)
-            .set_title(request.title)
-            .set_description(request.description)
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show()
-            == rfd::MessageDialogResult::Yes
-    }
-
     fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest) -> Option<u64> {
         (self
             .message_dialog()
@@ -333,7 +315,6 @@ struct ScriptState {
     export_paths: VecDeque<Option<PathBuf>>,
     import_paths: VecDeque<(ImportFormat, Option<PathBuf>)>,
     discard: bool,
-    history_truncation_approvals: VecDeque<bool>,
     high_risk_approvals: VecDeque<Option<u64>>,
     high_risk_writes: VecDeque<Option<ScriptedWrite>>,
     high_risk_write_attempts: Vec<std::io::Result<()>>,
@@ -342,7 +323,6 @@ struct ScriptState {
     export_requests: Vec<ExportRequestRecord>,
     import_requests: Vec<ImportDialogRequestRecord>,
     discard_prompts: usize,
-    history_truncation_prompts: Vec<String>,
     high_risk_prompts: Vec<String>,
     shown_folders: Vec<PathBuf>,
 }
@@ -413,19 +393,6 @@ impl ScriptedFileDialogs {
     pub fn always_discard(self) -> Self {
         self.state().discard = true;
         self
-    }
-
-    #[must_use]
-    pub fn queue_history_truncation_approval(self, approved: bool) -> Self {
-        self.state()
-            .history_truncation_approvals
-            .push_back(approved);
-        self
-    }
-
-    #[must_use]
-    pub fn history_truncation_prompts(&self) -> Vec<String> {
-        self.state().history_truncation_prompts.clone()
     }
 
     #[must_use]
@@ -594,17 +561,6 @@ impl FileDialogs for ScriptedFileDialogs {
         let mut state = self.state();
         state.discard_prompts += 1;
         state.discard
-    }
-
-    fn confirm_history_truncation(&mut self, request: HistoryTruncationRequest<'_>) -> bool {
-        let mut state = self.state();
-        state
-            .history_truncation_prompts
-            .push(format!("{}\n{}", request.title, request.description));
-        state
-            .history_truncation_approvals
-            .pop_front()
-            .unwrap_or(false)
     }
 
     fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest) -> Option<u64> {

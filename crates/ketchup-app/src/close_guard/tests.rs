@@ -119,11 +119,11 @@ fn discard_does_not_authorize_later_model_changes() {
 }
 
 #[test]
-fn save_on_close_preserves_model_and_undo_on_disk() {
+fn save_on_close_preserves_the_model_on_disk_without_undo() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("close-save.ketchup");
     let mut harness = shell(ScriptedFileDialogs::new().queue_save(&path), true);
-    let history = harness.state().document.history_digest();
+    let model = harness.state().document.current().canonical_digest();
     close_event(&mut harness);
     assert!(canceled(&harness));
     click(&mut harness, "file-save");
@@ -134,7 +134,8 @@ fn save_on_close_preserves_model_and_undo_on_disk() {
     assert!(!canceled(&harness));
     let mut reopened = KetchupApp::new().with_dialogs(Box::new(ScriptedFileDialogs::new()));
     reopened.open_document_from(&path);
-    assert_eq!(reopened.document.history_digest(), history);
+    assert_eq!(reopened.document.current().canonical_digest(), model);
+    assert_eq!(reopened.document.visible_undo_steps(), 0);
     assert!(!reopened.is_dirty());
 }
 

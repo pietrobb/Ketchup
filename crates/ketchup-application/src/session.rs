@@ -193,28 +193,13 @@ impl DocumentSession {
     }
     /// No-clobber publication is atomic, including when another process creates the destination.
     /// Explicit overwrite uses the core's atomic save/recovery implementation.
+    /// The file holds the current revision; the Undo history stays in the session.
     pub fn save(
         &mut self,
         path: impl AsRef<Path>,
         options: SaveOptions,
     ) -> Result<(), SessionError> {
-        self.save_with_history(path.as_ref(), options, true)
-    }
-    /// Explicitly saves only the current revision after discarding persistent Undo/Redo history.
-    /// The live history is truncated only after the atomic or no-clobber write succeeds.
-    pub fn save_current_snapshot(
-        &mut self,
-        path: impl AsRef<Path>,
-        options: SaveOptions,
-    ) -> Result<(), SessionError> {
-        self.save_with_history(path.as_ref(), options, false)
-    }
-    fn save_with_history(
-        &mut self,
-        path: &Path,
-        options: SaveOptions,
-        preserve_history: bool,
-    ) -> Result<(), SessionError> {
+        let path = path.as_ref();
         self.retry_pending_work_recovery_cleanup()?;
         let owns_target = self.work_recovery_lock.is_some()
             && (self.path.as_deref() == Some(path)
@@ -238,12 +223,7 @@ impl DocumentSession {
         persistence::check_work_recovery_identity(path, expected_recovery)
             .map_err(SessionError::Persistence)?;
         let mut publication_error = None;
-        let policy = if preserve_history {
-            persistence::HistoryPolicy::Keep
-        } else {
-            persistence::HistoryPolicy::CurrentOnly
-        };
-        let prepared = persistence::prepare_document(&self.document, &self.container_data, policy)
+        let prepared = persistence::prepare_document(&self.document, &self.container_data)
             .map_err(|error| {
                 SessionError::Persistence(persistence::FilePersistenceError::Format(error))
             })?;
@@ -262,9 +242,6 @@ impl DocumentSession {
                 return Err(SessionError::Persistence(error));
             }
             publication_error = Some(error);
-        }
-        if !prepared.keeps_history() {
-            self.document.discard_history_before_current();
         }
         let owned_recovery_path = self.path.clone().or_else(|| {
             self.recovery

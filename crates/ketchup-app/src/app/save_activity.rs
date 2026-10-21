@@ -1,15 +1,15 @@
 //! Native saving: prepare and publish on workers, ask for consent on the UI thread.
 use crate::*;
 use ketchup_model::persistence::{
-    self, ContainerData, FileIdentity, FilePersistenceError, HistoryPolicy, PersistenceError,
-    PreparedDocument, Publish, WorkRecoveryLock,
+    self, ContainerData, FileIdentity, FilePersistenceError, PersistenceError, PreparedDocument,
+    Publish, WorkRecoveryLock,
 };
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 pub(super) type PreparedSave = Result<PreparedDocument, PersistenceError>;
 
 pub(super) fn prepare_save(document: &DocumentStore, container: &ContainerData) -> PreparedSave {
-    persistence::prepare_document(document, container, HistoryPolicy::KeepIfFits)
+    persistence::prepare_document(document, container)
 }
 
 struct Source {
@@ -42,7 +42,6 @@ enum Stage {
     Writing {
         receiver: Receiver<(Result<(), FilePersistenceError>, Option<WorkRecoveryLock>)>,
         identity: FileIdentity,
-        truncate: bool,
     },
 }
 
@@ -122,7 +121,6 @@ impl KetchupApp {
     ) {
         let source = Source::capture(self);
         let identity = prepared.identity();
-        let truncate = !prepared.keeps_history();
         let worker_path = path.to_owned();
         let repaint = context.clone();
         let (sender, receiver) = mpsc::channel();
@@ -136,11 +134,7 @@ impl KetchupApp {
         self.file.activity.saving = Some(SaveTask {
             path: path.to_owned(),
             source,
-            stage: Stage::Writing {
-                receiver,
-                identity,
-                truncate,
-            },
+            stage: Stage::Writing { receiver, identity },
             close_requested: false,
         });
     }
@@ -176,11 +170,7 @@ impl KetchupApp {
                     );
                 }
             }
-            Stage::Writing {
-                receiver,
-                identity,
-                truncate,
-            } => {
+            Stage::Writing { receiver, identity } => {
                 let (result, target_lock) = match receiver.try_recv() {
                     Ok(result) => result,
                     Err(TryRecvError::Empty) => {
@@ -201,7 +191,7 @@ impl KetchupApp {
                     self.report_file_persistence_error("error-save-document", &task.path, error);
                 }
                 if task.source.current(self) {
-                    let _ = self.finish_document_save(&task.path, *truncate, *identity, result);
+                    let _ = self.finish_document_save(&task.path, *identity, result);
                 } else if task.source.document == self.document.current().document_id()
                     && task.source.original_path == self.file.path
                     && task.source.original_path.as_deref() == Some(task.path.as_path())

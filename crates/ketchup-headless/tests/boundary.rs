@@ -36,7 +36,7 @@ fn request(id: u64, method: &str, params: Value) -> String {
 }
 
 #[test]
-fn program_source_survives_native_save_open_and_follows_document_undo() {
+fn program_source_survives_native_save_open_and_session_undo_after_save() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("rule.ketchup");
     let path = path.to_str().unwrap();
@@ -49,11 +49,11 @@ fn program_source_survives_native_save_open_and_follows_document_undo() {
         ),
         request(2, "program_source", json!({})),
         request(3, "save", json!({"path":path})),
-        request(4, "open", json!({"path":path})),
+        request(4, "undo", json!({})),
         request(5, "program_source", json!({})),
-        request(6, "undo", json!({})),
+        request(6, "redo", json!({})),
         request(7, "program_source", json!({})),
-        request(8, "redo", json!({})),
+        request(8, "open", json!({"path":path})),
         request(9, "program_source", json!({})),
     ]);
     for response in &responses {
@@ -61,13 +61,13 @@ fn program_source_survives_native_save_open_and_follows_document_undo() {
     }
     let expected = json!({"file_name":"program.star","source":source,"overrides":{"width":120.0}});
     assert_eq!(responses[1]["result"]["source"], expected);
-    assert_eq!(responses[4]["result"]["source"], expected);
-    assert!(responses[6]["result"]["source"].is_null());
+    assert!(responses[4]["result"]["source"].is_null());
+    assert_eq!(responses[6]["result"]["source"], expected);
     assert_eq!(responses[8]["result"]["source"], expected);
 }
 
 #[test]
-fn canonical_program_history_keeps_the_undo_limit_across_save_open() {
+fn canonical_program_history_keeps_the_undo_limit_in_memory_and_a_reopened_file_has_none() {
     let limit = UNDO_REVISIONS as u64;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("bounded.ketchup");
@@ -88,33 +88,22 @@ fn canonical_program_history_keeps_the_undo_limit_across_save_open() {
         id += 1;
         id
     };
-    requests.push(request(
-        next(),
-        "save",
-        json!({"path":path.to_str().unwrap()}),
-    ));
-    requests.push(request(
-        next(),
-        "open",
-        json!({"path":path.to_str().unwrap()}),
-    ));
     for _ in 0..limit {
         requests.push(request(next(), "undo", json!({})));
     }
     requests.push(request(next(), "program_source", json!({})));
     requests.push(request(next(), "redo", json!({})));
     requests.push(request(next(), "program_source", json!({})));
+    let file = json!({"path":path.to_str().unwrap()});
+    requests.push(request(next(), "save", file.clone()));
+    requests.push(request(next(), "open", file));
     let responses = exchange(&requests);
     for response in &responses {
         assert!(response.get("error").is_none(), "{response:?}");
     }
     let applied = last as usize;
     assert_eq!(responses[applied]["result"]["state"]["undo_steps"], limit);
-    assert_eq!(
-        responses[applied + 2]["result"]["state"]["undo_steps"],
-        limit
-    );
-    let undone = applied + 2 + UNDO_REVISIONS;
+    let undone = applied + UNDO_REVISIONS;
     assert_eq!(responses[undone]["result"]["state"]["undo_steps"], 0);
     assert_eq!(
         responses[undone + 1]["result"]["source"]["source"],
@@ -124,6 +113,9 @@ fn canonical_program_history_keeps_the_undo_limit_across_save_open() {
         responses[undone + 3]["result"]["source"]["source"],
         version_source(last - limit + 1)
     );
+    let opened = &responses[undone + 5]["result"]["state"];
+    assert_eq!(opened["undo_steps"], 0, "{opened}");
+    assert_eq!(opened["redo_steps"], 0, "{opened}");
 }
 
 #[test]
@@ -587,11 +579,10 @@ fn editing_hole_dimensions_preserves_part_identity_and_shared_history() {
             json!({"targets":[{"root_occurrence_id":1,"steps":[]}]}),
         ),
         request(4, "save", json!({"path":path.to_str().unwrap()})),
-        request(5, "open", json!({"path":path.to_str().unwrap()})),
-        request(6, "program_source", json!({})),
-        request(7, "undo", json!({})),
-        request(8, "program_source", json!({})),
-        request(9, "redo", json!({})),
+        request(5, "program_source", json!({})),
+        request(6, "undo", json!({})),
+        request(7, "program_source", json!({})),
+        request(8, "redo", json!({})),
     ]);
     for response in &responses {
         assert!(response.get("error").is_none(), "{response:?}");
@@ -624,12 +615,12 @@ fn editing_hole_dimensions_preserves_part_identity_and_shared_history() {
         "{params:?}"
     );
     assert_eq!(
-        responses[5]["result"]["source"]["overrides"],
+        responses[4]["result"]["source"]["overrides"],
         json!({"diameter":12.0,"depth":14.0})
     );
-    assert_eq!(responses[7]["result"]["source"]["overrides"], json!({}));
+    assert_eq!(responses[6]["result"]["source"]["overrides"], json!({}));
     assert_eq!(
-        responses[8]["result"]["state"]["occurrences"],
+        responses[7]["result"]["state"]["occurrences"],
         responses[1]["result"]["state"]["occurrences"]
     );
 }
@@ -649,11 +640,10 @@ fn moving_a_hole_preserves_part_identity_and_shared_history() {
             json!({"targets":[{"root_occurrence_id":1,"steps":[]}]}),
         ),
         request(4, "save", json!({"path":path.to_str().unwrap()})),
-        request(5, "open", json!({"path":path.to_str().unwrap()})),
-        request(6, "program_source", json!({})),
-        request(7, "undo", json!({})),
-        request(8, "program_source", json!({})),
-        request(9, "redo", json!({})),
+        request(5, "program_source", json!({})),
+        request(6, "undo", json!({})),
+        request(7, "program_source", json!({})),
+        request(8, "redo", json!({})),
     ]);
     for response in &responses {
         assert!(response.get("error").is_none(), "{response:?}");
@@ -688,10 +678,10 @@ fn moving_a_hole_preserves_part_identity_and_shared_history() {
     assert!(origins.contains(&vec![25.0, 30.0, 18.0]), "{origins:?}");
     assert!(origins.contains(&vec![60.0, 20.0, 18.0]), "{origins:?}");
     assert!(origins.contains(&vec![100.0, 32.0, 10.0]), "{origins:?}");
-    assert_eq!(responses[5]["result"]["source"]["source"], moved);
-    assert_eq!(responses[7]["result"]["source"]["source"], source);
+    assert_eq!(responses[4]["result"]["source"]["source"], moved);
+    assert_eq!(responses[6]["result"]["source"]["source"], source);
     assert_eq!(
-        responses[8]["result"]["state"]["occurrences"],
+        responses[7]["result"]["state"]["occurrences"],
         responses[1]["result"]["state"]["occurrences"]
     );
 }
@@ -714,11 +704,10 @@ fn resizing_a_drilled_part_updates_face_anchors_in_one_shared_revision() {
             json!({"targets":[{"root_occurrence_id":1,"steps":[]}]}),
         ),
         request(4, "save", json!({"path":path.to_str().unwrap()})),
-        request(5, "open", json!({"path":path.to_str().unwrap()})),
-        request(6, "undo", json!({})),
-        request(7, "program_source", json!({})),
-        request(8, "redo", json!({})),
-        request(9, "program_source", json!({})),
+        request(5, "undo", json!({})),
+        request(6, "program_source", json!({})),
+        request(7, "redo", json!({})),
+        request(8, "program_source", json!({})),
     ]);
     for response in &responses {
         assert!(response.get("error").is_none(), "{response:?}");
@@ -753,13 +742,13 @@ fn resizing_a_drilled_part_updates_face_anchors_in_one_shared_revision() {
     assert!(origins.contains(&vec![20.0, 20.0, 24.0]), "{origins:?}");
     assert!(origins.contains(&vec![140.0, 30.0, 9.0]), "{origins:?}");
     assert!(origins.contains(&vec![40.0, 80.0, 9.0]), "{origins:?}");
-    assert_eq!(responses[6]["result"]["source"]["overrides"], json!({}));
+    assert_eq!(responses[5]["result"]["source"]["overrides"], json!({}));
     assert_eq!(
-        responses[8]["result"]["source"]["overrides"],
+        responses[7]["result"]["source"]["overrides"],
         json!({"width":140.0,"length":80.0,"thickness":24.0})
     );
     assert_eq!(
-        responses[7]["result"]["state"]["occurrences"],
+        responses[6]["result"]["state"]["occurrences"],
         responses[1]["result"]["state"]["occurrences"]
     );
 }
@@ -782,11 +771,10 @@ fn editing_pocket_depth_preserves_part_and_shared_history() {
             json!({"targets":[{"root_occurrence_id":1,"steps":[]}]}),
         ),
         request(4, "save", json!({"path":path.to_str().unwrap()})),
-        request(5, "open", json!({"path":path.to_str().unwrap()})),
-        request(6, "undo", json!({})),
-        request(7, "program_source", json!({})),
-        request(8, "redo", json!({})),
-        request(9, "program_source", json!({})),
+        request(5, "undo", json!({})),
+        request(6, "program_source", json!({})),
+        request(7, "redo", json!({})),
+        request(8, "program_source", json!({})),
     ]);
     for response in &responses {
         assert!(response.get("error").is_none(), "{response:?}");
@@ -806,9 +794,9 @@ fn editing_pocket_depth_preserves_part_and_shared_history() {
             .any(|p| p["path"] == "extent.distance" && p["value"] == 8.0)),
         "{features:?}"
     );
-    assert_eq!(responses[6]["result"]["source"]["overrides"], json!({}));
+    assert_eq!(responses[5]["result"]["source"]["overrides"], json!({}));
     assert_eq!(
-        responses[8]["result"]["source"]["overrides"],
+        responses[7]["result"]["source"]["overrides"],
         json!({"depth":8.0})
     );
 }
@@ -831,11 +819,10 @@ fn resizing_and_moving_programmed_pockets_keeps_identity_and_history() {
             json!({"targets":[{"root_occurrence_id":1,"steps":[]}]}),
         ),
         request(4, "save", json!({"path":path.to_str().unwrap()})),
-        request(5, "open", json!({"path":path.to_str().unwrap()})),
-        request(6, "undo", json!({})),
-        request(7, "program_source", json!({})),
-        request(8, "redo", json!({})),
-        request(9, "program_source", json!({})),
+        request(5, "undo", json!({})),
+        request(6, "program_source", json!({})),
+        request(7, "redo", json!({})),
+        request(8, "program_source", json!({})),
     ]);
     for response in &responses {
         assert!(response.get("error").is_none(), "{response:?}");
@@ -883,13 +870,13 @@ fn resizing_and_moving_programmed_pockets_keeps_identity_and_history() {
             .iter()
             .any(|p| p["path"] == "entities.1.end.x" && p["value"] == 15.0)
     );
-    assert_eq!(responses[6]["result"]["source"]["overrides"], json!({}));
+    assert_eq!(responses[5]["result"]["source"]["overrides"], json!({}));
     assert_eq!(
-        responses[8]["result"]["source"]["overrides"],
+        responses[7]["result"]["source"]["overrides"],
         json!({"width":140.0,"length":80.0,"thickness":24.0,"start":25.0,"span":30.0,"side":6.0})
     );
     assert_eq!(
-        responses[7]["result"]["state"]["occurrences"],
+        responses[6]["result"]["state"]["occurrences"],
         responses[1]["result"]["state"]["occurrences"]
     );
 }

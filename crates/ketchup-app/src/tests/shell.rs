@@ -145,7 +145,6 @@ fn lossless_open_replaces_the_document_preserves_history_and_clears_review() {
     assert!(source.create_box());
     assert!(source.create_box());
     let expected = source.document.current();
-    let expected_undo_steps = source.document.visible_undo_steps();
     let expected_bytes = ketchup_model::persistence::save(&expected);
     assert!(source.save_document_to(&lossless_path));
 
@@ -166,9 +165,7 @@ fn lossless_open_replaces_the_document_preserves_history_and_clears_review() {
     assert_eq!(ketchup_model::persistence::save(&opened), expected_bytes);
     assert_eq!(app.file.path.as_deref(), Some(lossless_path.as_path()));
     assert!(!app.is_dirty());
-    assert_eq!(app.document.visible_undo_steps(), expected_undo_steps);
-    assert_eq!(app.document.visible_redo_steps(), 0);
-    assert_eq!(app.document.revision_count(), expected_undo_steps + 1);
+    assert_eq!(app.document.revision_count(), 1);
     assert!(!app.has_review_candidate());
 }
 
@@ -235,7 +232,7 @@ fn a_file_whose_history_does_not_decode_opens_without_undo_and_says_so() {
         panic!("editable document")
     };
     assert_eq!(audit.history_discarded(), None);
-    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(document.visible_undo_steps(), 0);
 }
 
 #[test]
@@ -251,7 +248,6 @@ fn file_workflow_round_trips_composed_model_and_tracks_dirty_state() {
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
     assert!(app.group_selected());
     let expected = app.document.current();
-    let expected_undo_steps = app.document.visible_undo_steps();
     assert!(app.is_dirty());
     assert!(app.save_document_to(&path));
     assert!(!app.is_dirty());
@@ -283,7 +279,7 @@ fn file_workflow_round_trips_composed_model_and_tracks_dirty_state() {
         expected.feature(FeatureId(2)).unwrap().kind()
     );
     assert!(!reopened.is_dirty());
-    assert_eq!(reopened.document.visible_undo_steps(), expected_undo_steps);
+    assert_eq!(reopened.document.visible_undo_steps(), 0);
 
     reopened.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(reopened.move_selected(Vec3::new(10.0, 0.0, 0.0)));

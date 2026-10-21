@@ -256,7 +256,7 @@ fn manufacturing_export_is_associative_tamper_evident_and_history_stable() {
     );
 
     let saved = save_document_store(&document, &ContainerData::default()).unwrap();
-    let (mut reopened, _) = load(&saved)
+    let (reopened, _) = load(&saved)
         .unwrap()
         .into_editable_with_container()
         .ok()
@@ -267,13 +267,5 @@ fn manufacturing_export_is_associative_tamper_evident_and_history_stable() {
             .artifacts(&reopened.current())
             .unwrap(),
         edited
-    );
-    reopened.undo().unwrap();
-    assert_eq!(
-        project_sheet_metal_manufacturing(&reopened.current(), feature_id)
-            .unwrap()
-            .artifacts(&reopened.current())
-            .unwrap(),
-        original
     );
 }

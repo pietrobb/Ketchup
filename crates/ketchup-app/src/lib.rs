@@ -188,7 +188,7 @@ pub mod renderer;
 
 use dialogs::{
     DialogParentWindow, DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest,
-    HistoryTruncationRequest, ImportDialogRequest, NativeFileDialogs, SaveRequest,
+    ImportDialogRequest, NativeFileDialogs, SaveRequest,
 };
 use renderer::{DerivedRenderCache, GpuInstancedRenderer, InstancedRenderPlan, ScenePaintCallback};
 

@@ -527,29 +527,12 @@ fn revision_catalog_checkpoint_diff_rollback_and_save_open_work_through_accesski
 
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
     assert!(fixture.is_file(), "{}", shell.app().action_digest());
-    let saved_catalog = shell.app().revision_catalog();
-    assert_eq!(
-        persistence::load_file(&fixture)
-            .unwrap()
-            .into_editable()
-            .ok()
-            .unwrap()
-            .revision_catalog(),
-        saved_catalog,
-    );
+    // The catalog and its checkpoints live with the session's Undo, not in the file.
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
-    assert_eq!(shell.app().revision_catalog(), saved_catalog);
     assert_eq!(shell.app().canonical_digest(), base_digest);
-    assert_eq!(
-        shell
-            .app()
-            .revision_catalog()
-            .iter()
-            .find(|entry| entry.revision_id == changed_revision)
-            .and_then(|entry| entry.checkpoint.as_deref()),
-        Some("Reviewed option")
-    );
+    assert_eq!(shell.app().revision_catalog().len(), 1);
+    assert!(!shell.app().can_undo());
 }
 
 #[test]
@@ -972,10 +955,7 @@ fn fitting_pocket_position_and_depth_edit_cancel_undo_and_persist_through_access
         shell.app().document_snapshot().feature(FITTING_POCKET).unwrap().kind(),
         FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(depth), operation: PadOperation::Cut { .. }, .. }) if depth.millimetres() == 8.0
     ));
-    shell.click_menu_command("menu-edit", AppCommand::Undo);
-    assert_eq!(shell.app().canonical_digest(), moved_digest);
-    shell.click_menu_command("menu-edit", AppCommand::Redo);
-    assert_eq!(shell.app().canonical_digest(), depth_digest);
+    assert!(!shell.app().can_undo());
 
     for catalog in [
         ketchup_interaction::LocaleCatalog::english(),

@@ -23,8 +23,8 @@ mod work_recovery;
 mod work_recovery_steps;
 
 pub use pipeline::{
-    HistoryPolicy, PreparedDocument, Publish, prepare_document, publish_document,
-    publish_work_recovery, save_atomic,
+    PreparedDocument, Publish, prepare_document, publish_document, publish_work_recovery,
+    save_atomic,
 };
 #[cfg(feature = "testing")]
 pub use work_recovery::headless_with_parent_sync_failure;
@@ -53,8 +53,8 @@ const WORK_RECOVERY_SCHEMA: u16 = 2;
 const FILE_HISTORY_REVISIONS: u32 = 4_096;
 /// What the chunks of a history may assemble to. Chunks shared between revisions
 /// keep `history.bin` small, so without these a small file could name gigabytes.
-/// Saving and opening check the same budget, so a file that saves also opens;
-/// past it, Save keeps the current revision only.
+/// Writing and opening a work-recovery checkpoint check the same budget, so one
+/// that is written also opens; past it, the checkpoint keeps the current revision only.
 #[derive(Clone, Copy)]
 struct HistoryBudget {
     /// Revision snapshots, the current one aside, each assembled only while it
@@ -853,23 +853,6 @@ fn encode_revision_history(
     )
 }
 
-fn encode_current_revision_history(
-    document: &DocumentStore,
-    document_bin: &crate::document::EncodedSnapshot,
-) -> Result<Vec<u8>, PersistenceError> {
-    let revision = document
-        .revision_history()
-        .nth(document.history_cursor())
-        .ok_or(PersistenceError::InvalidRevisionHistory)?;
-    encode_history(
-        &[revision],
-        0,
-        document.next_revision_id(),
-        document_bin,
-        HISTORY_BUDGET,
-    )
-}
-
 /// `assembled` plus `bytes` more of `entry`, within `budget`.
 fn check_assembled(
     entry: &str,
@@ -944,7 +927,7 @@ pub fn save_document_store_current_snapshot(
         &document_bin,
         container_data,
         imported_source_blob_hashes(&snapshot),
-        Some(encode_current_revision_history(document, &document_bin)?),
+        None,
         encoded_program(document.current_rule_program())?,
     )
 }
@@ -1455,7 +1438,7 @@ fn try_load_work_recovery(
             Err(error) => return Ok(Unusable(UnusableWorkRecovery::Document(error))),
         }
     };
-    let mut outcome = match load(&opened) {
+    let mut outcome = match load_with_history(&opened, true) {
         Ok(outcome) => outcome,
         Err(error) => return Ok(Unusable(UnusableWorkRecovery::Document(error))),
     };
@@ -1606,9 +1589,19 @@ fn open_backup(
     })
 }
 
+/// The document `bytes` hold at their current revision; an Undo history they
+/// hold is ignored.
 pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
+    load_with_history(bytes, false)
+}
+
+/// [`load`] that also restores the Undo history a work-recovery checkpoint holds.
+pub(crate) fn load_with_history(
+    bytes: &[u8],
+    restore_history: bool,
+) -> Result<LoadOutcome, PersistenceError> {
     if bytes.starts_with(CONTAINER_MAGIC) {
-        return load_container(bytes);
+        return load_container(bytes, restore_history);
     }
     load_document(bytes, ContainerData::default(), &mut BTreeMap::new())
 }
@@ -1693,7 +1686,7 @@ fn container_directory(bytes: &[u8]) -> Result<Vec<ContainerEntry<'_>>, Persiste
     Ok(entries)
 }
 
-fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
+fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, PersistenceError> {
     let mut entries = container_entries(bytes)?;
     let (document_required, document) = entries
         .remove("document.bin")
@@ -1753,24 +1746,22 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         (None, _) => {}
     }
     if let Some(revision_history) = revision_history {
-        // The current revision was verified on its own; a history that no longer
-        // decodes (a writer that changed the snapshot form without a new format, a
-        // damaged entry) costs the Undo steps, not the document.
-        let restored = decode_revision_history(
-            &revision_history,
-            &document,
-            &outcome,
-            &history_container_data,
-            HISTORY_BUDGET,
-        );
-        if program.is_none()
-            && let Err(error) = &restored
-            && !matches!(error, PersistenceError::UnsupportedHistorySchema(schema) if *schema > HISTORY_SCHEMA)
-        {
-            // Without program.json the history is the program's only home. A
-            // history that does not open whole costs the Undo steps, but the
-            // revision the file opens at keeps its program (PS-1); a current
-            // program that does not decode is refused by name.
+        // A file opens without Undo steps; only a work-recovery checkpoint restores
+        // them. The current revision was verified on its own; a history that no
+        // longer decodes (a damaged entry) costs the Undo steps, not the document.
+        let restored = restore_history.then(|| {
+            decode_revision_history(
+                &revision_history,
+                &document,
+                &outcome,
+                &history_container_data,
+                HISTORY_BUDGET,
+            )
+        });
+        if program.is_none() && !matches!(restored, Some(Ok(_))) {
+            // Without program.json (files before 2026-10-15) the history is the
+            // program's only home: the revision the file opens at keeps its program
+            // (PS-1); a current program that does not decode is refused by name.
             match current_history_program(
                 &revision_history,
                 &document,
@@ -1788,13 +1779,20 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
                 Ok(Err(current)) => return Err(current),
                 // The current program cannot be read apart from the steps, so
                 // one that breaks its rules may be the current one.
-                Err(_) => {
-                    if let PersistenceError::InvalidRuleProgram(invalid) = error {
+                Err(error) => match &restored {
+                    Some(Err(PersistenceError::InvalidRuleProgram(invalid))) => {
                         return Err(PersistenceError::InvalidRuleProgram(invalid.clone()));
                     }
-                }
+                    Some(_) => {}
+                    None => outcome.notice(LoadNotice::HistoryDiscarded {
+                        reason: error.to_string(),
+                    }),
+                },
             }
         }
+        let Some(restored) = restored else {
+            return Ok(outcome);
+        };
         let discarded = |reason: String| LoadNotice::HistoryDiscarded { reason };
         match (&mut outcome, restored) {
             // A history a newer Kečup wrote is not damaged: opened without it,
@@ -3601,7 +3599,7 @@ mod tests {
     }
 
     /// PS-6: Save checks the bytes it writes and the file it replaces without
-    /// decoding either Undo history; opening the saved file still restores it.
+    /// decoding an Undo history; the saved file opens without Undo steps.
     #[test]
     fn saving_over_a_file_decodes_no_history() {
         use crate::document::{CanonicalCommand, CommandBatch, NodeId};
@@ -3622,7 +3620,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("model.ketchup");
         let container = ContainerData::default();
-        let prepared = prepare_document(&store, &container, HistoryPolicy::Keep).unwrap();
+        let prepared = prepare_document(&store, &container).unwrap();
         publish_document(&path, &prepared, Publish::IfAbsent).unwrap();
         HISTORY_DECODES.with(|count| count.set(0));
         publish_document(&path, &prepared, Publish::IfUnchanged(prepared.identity())).unwrap();
@@ -3630,7 +3628,7 @@ mod tests {
         assert!(load(&fs::read(recovery_path(&path)).unwrap()).is_ok());
         let opened = load_file(&path).unwrap();
         let opened = opened.editable_document().expect("editable");
-        assert_eq!(opened.revision_count(), store.revision_count());
+        assert_eq!(opened.revision_count(), 1);
     }
 
     /// PS-1: a file that opens only for migration review keeps the program it
@@ -3776,7 +3774,7 @@ mod tests {
             .unwrap();
         store.bind_rule_program(a.clone()).unwrap();
         // View-only edits keep the program: written as "same as the previous".
-        for edit in 0..16 {
+        for edit in 0..8 {
             store
                 .apply_batch(&CommandBatch::new(vec![
                     CanonicalCommand::SetOccurrenceVisibility {
@@ -3786,14 +3784,14 @@ mod tests {
                 ]))
                 .unwrap();
         }
-        for edit in 0..64 {
+        for edit in 0..20 {
             let next = if edit % 2 == 0 { &b } else { &a };
             store.replace_rule_program_source(next.clone()).unwrap();
         }
         let document_bin = encoded_snapshot(&store.current());
         let history = encode_revision_history(&store, &document_bin).unwrap();
         let program_bytes = serde_json::to_vec(&a).unwrap().len();
-        // 81 programs of 240 KB, two of them distinct.
+        // A 240 KB program in almost every revision, two of them distinct.
         assert!(history.len() < 3 * program_bytes, "{}", history.len());
 
         let outcome = load(&save(&store.current())).unwrap();
@@ -3815,7 +3813,7 @@ mod tests {
             .filter_map(|revision| revision.rule_program())
             .map(|program| program.source.as_ptr())
             .collect::<BTreeSet<_>>();
-        assert_eq!(opened.revision_count(), 82);
+        assert_eq!(opened.revision_count(), store.revision_count());
         assert_eq!(held.len(), 2, "programs held, one per distinct program");
 
         // The distinct programs count against their budget, alike on Save and opening.
@@ -3839,7 +3837,10 @@ mod tests {
             Err(PersistenceError::TooLarge { entry, bytes, .. })
                 if entry == HISTORY_PROGRAMS_ENTRY && bytes == fits
         ));
-        assert_eq!(decode(&history, fits).unwrap().revision_count(), 82);
+        assert_eq!(
+            decode(&history, fits).unwrap().revision_count(),
+            store.revision_count()
+        );
         assert!(matches!(
             decode(&history, fits - 1),
             Err(PersistenceError::TooLarge { entry, bytes, .. })

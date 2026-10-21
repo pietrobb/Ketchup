@@ -396,7 +396,7 @@ fn serial_rectangle_push_pull(exact: ExactGeometry) {
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().document_height_mm(), 25.0);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
 }
 
 #[test]
@@ -1372,7 +1372,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
             if segments.len() == 3
     ));
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
 }
 
 #[test]

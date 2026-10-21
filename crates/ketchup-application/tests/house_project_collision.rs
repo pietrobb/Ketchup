@@ -77,7 +77,7 @@ fn the_house_sample_is_the_current_program_and_exports_to_btlx() {
         program.source = HOUSE.to_owned();
         session.apply_rule_program(program, false).unwrap();
         session
-            .save_current_snapshot(&path, ketchup_application::SaveOptions { overwrite: true })
+            .save(&path, ketchup_application::SaveOptions { overwrite: true })
             .unwrap();
     }
     assert_eq!(

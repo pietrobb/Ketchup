@@ -1,7 +1,7 @@
 use super::*;
 use crate::dialogs::{
-    DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest,
-    HistoryTruncationRequest, ImportDialogRequest, SaveRequest, ScriptedFileDialogs,
+    DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest, ImportDialogRequest,
+    SaveRequest, ScriptedFileDialogs,
 };
 use crate::slot::Slot;
 #[path = "busy_tests.rs"]
@@ -302,10 +302,6 @@ impl FileDialogs for DisconnectOnHighRisk {
     }
 
     fn confirm_discard(&mut self, _request: DiscardRequest<'_>) -> bool {
-        false
-    }
-
-    fn confirm_history_truncation(&mut self, _request: HistoryTruncationRequest<'_>) -> bool {
         false
     }
 

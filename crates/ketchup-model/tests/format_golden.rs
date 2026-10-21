@@ -1,14 +1,14 @@
-//! Snapshot formats with an Undo history, committed as written (MD-3).
+//! Snapshot formats, committed as written (MD-3).
 //!
-//! The saved serde form of the product model is the file format. The fixture of the
-//! current format must keep opening with every revision and the digests it was written
-//! with, and saving it again must give the same bytes. When that test fails because the
-//! bytes changed, the change altered the format: give it a new number and its
-//! conversion in `snapshot_codec::decode`, keep the fixture as the golden of its format
-//! (drop the byte comparison for it) and add a golden of the new format. Regenerate
-//! only for a new format with `KETCHUP_UPDATE_GOLDEN=1`.
-use ketchup_geometry::prismatic::{Aabb, CanonicalJoint, JointId};
-use ketchup_model::document::*;
+//! The saved serde form of the product model is the file format. A file of any format,
+//! including one an older Kečup wrote with its Undo history, must open at its current
+//! revision with the digest it was written with and no Undo steps. Saving the current
+//! format must give the bytes of its golden. When that test fails because the bytes
+//! changed, the change altered the format: give it a new number and its conversion in
+//! `snapshot_codec::decode`, keep the golden as the fixture of its format and add a
+//! golden of the new format. Regenerate only for a new format with
+//! `KETCHUP_UPDATE_GOLDEN=1`.
+use ketchup_model::document::DocumentStore;
 use ketchup_model::persistence::{self, ContainerData, LoadOutcome};
 
 const FIXTURE_102: &str = concat!(
@@ -21,228 +21,65 @@ const FIXTURE_103: &str = concat!(
     "/tests/fixtures/persistence/history-format103.bin"
 );
 
-const FIXTURE: &str = concat!(
+const FIXTURE_104: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/persistence/history-format104.bin"
 );
 
-/// Canonical digest of every revision, oldest first, as format 102 wrote them.
-const REVISION_DIGESTS_102: &[&str] = &[
-    "e51eff18704562b7",
-    "1ebf22ce3f9227c2",
-    "ba84736e268125d3",
-    "c6a97bdcf9e1a6d0",
-    "ac95765522bbdcd1",
-    "37d5c7ca6e51948c",
-    "32004c2fb9d7739d",
-];
+/// The current format as Save writes it: the current revision alone.
+const GOLDEN: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format104.bin"
+);
 
-/// Canonical digest of every revision, oldest first, as format 103 wrote them.
-const REVISION_DIGESTS_103: &[&str] = &[
-    "a2bfa71d0ad7e6b3",
-    "6cd3c1af4f1f9c26",
-    "41e384da97b177b7",
-    "ceba4f5a02d6379c",
-    "bd01bc074ad79469",
-    "0c7e44701364923c",
-    "38598be34ea8becd",
-    "695c01140f69ddb9",
-];
+/// Canonical digest of the current revision each fixture was written with.
+const DIGEST_102: &str = "32004c2fb9d7739d";
+const DIGEST_103: &str = "695c01140f69ddb9";
+const DIGEST_104: &str = "36c397ed20d2ec76";
 
-/// Canonical digest of every revision, oldest first, as format 104 wrote them: the
-/// revisions of format 103 and one that adds an underlay.
-const REVISION_DIGESTS: &[&str] = &[
-    "89a95b6fe7799446",
-    "342d2544304c6099",
-    "028b341f87955f20",
-    "305ab8bc58c935ab",
-    "d8929ea505205e6e",
-    "162ee92758ce9657",
-    "979ebbad6b0fa8e8",
-    "1eb2bf5c4932abe0",
-    "36c397ed20d2ec76",
-];
-
-fn occurrence(id: u64, name: &str) -> CanonicalCommand {
-    CanonicalCommand::CreateOccurrence {
-        id: OccurrenceId(id),
-        definition_id: DefinitionId(1),
-        name: name.into(),
-        transform: Transform::from_translation(id as f64 * 60.0, 0.0, 0.0).unwrap(),
-        parent: None,
-        tags: Default::default(),
-        visible: true,
-    }
-}
-
-/// Seven revisions that touch the product fields most likely to move: support
-/// declarations, contact joints, tags, classification, local structure. Format 103
-/// adds a joint of two placed parts.
-fn written() -> DocumentStore {
-    let mut document = DocumentStore::new();
-    let batches = vec![
-        vec![
-            CanonicalCommand::CreateDefinition {
-                id: DefinitionId(1),
-                name: "Doska".into(),
-            },
-            CanonicalCommand::CreateFeature {
-                id: FeatureId(10),
-                definition_id: DefinitionId(1),
-                name: "Profil".into(),
-                kind: FeatureKind::polygon(&[[0., 0.], [50., 0.], [50., 30.], [0., 30.]]),
-            },
-            CanonicalCommand::CreateFeature {
-                id: FeatureId(11),
-                definition_id: DefinitionId(1),
-                name: "Teleso".into(),
-                kind: FeatureKind::extrusion(FeatureId(10), Dimension::from_decimal("18").unwrap()),
-            },
-            occurrence(20, "Bok ľavý"),
-        ],
-        vec![occurrence(21, "Bok pravý")],
-        vec![CanonicalCommand::SetFloorHeight { z_mm: Some(-20.0) }],
-        vec![CanonicalCommand::SetGroundedInstances {
-            paths: [InstancePath::root(OccurrenceId(20))].into(),
-        }],
-        vec![CanonicalCommand::SetContactJoints {
-            joints: vec![ContactJoint {
-                name: "spoj".into(),
-                parts: [
-                    InstancePath::root(OccurrenceId(20)),
-                    InstancePath::root(OccurrenceId(21)),
-                ],
-                max_gap_mm: 0.5,
-            }],
-        }],
-        vec![
-            CanonicalCommand::UpsertClassificationDimension {
-                id: ClassificationDimensionId(1),
-                name: "Fáza".into(),
-                categories: vec![(ClassificationCategoryId(1), "Korpus".into())],
-            },
-            CanonicalCommand::SetOccurrenceClassification {
-                occurrence_id: OccurrenceId(21),
-                dimension_id: ClassificationDimensionId(1),
-                category_id: Some(ClassificationCategoryId(1)),
-            },
-        ],
-        vec![CanonicalCommand::UpsertJoint(
-            CanonicalJoint::new(
-                JointId(1),
-                InstancePath::root(OccurrenceId(20)).into(),
-                InstancePath::root(OccurrenceId(21)).into(),
-                Aabb::new([50., 0., 0.], [60., 30., 18.]).unwrap(),
-            )
-            .unwrap(),
-        )],
-    ];
-    for commands in batches {
-        document.apply_batch(&CommandBatch::new(commands)).unwrap();
-    }
-    document
-}
-
-fn revision_digests(document: &DocumentStore) -> Vec<String> {
-    document
-        .revision_history()
-        .map(|revision| revision.snapshot().canonical_digest())
-        .collect()
-}
-
-#[test]
-fn a_format_102_file_with_history_opens_with_every_revision_it_was_written_with() {
-    let LoadOutcome::Editable {
-        document, audit, ..
-    } = persistence::load(&std::fs::read(FIXTURE_102).unwrap()).unwrap()
-    else {
-        panic!("the golden is editable")
-    };
-    assert_eq!(audit.source_schema, 102);
-    assert_eq!(audit.history_discarded(), None);
-    // A release recorded under this digest must still verify (FMT-1).
-    assert_eq!(
-        audit.source_canonical_digest,
-        *REVISION_DIGESTS_102.last().unwrap()
-    );
-    assert_eq!(revision_digests(&document), REVISION_DIGESTS_102);
-}
-
-#[test]
-fn a_format_103_file_with_history_opens_with_every_revision_it_was_written_with() {
-    let LoadOutcome::Editable {
-        document, audit, ..
-    } = persistence::load(&std::fs::read(FIXTURE_103).unwrap()).unwrap()
-    else {
-        panic!("the golden is editable")
-    };
-    assert_eq!(audit.source_schema, 103);
-    assert_eq!(audit.history_discarded(), None);
-    // A release recorded under this digest must still verify (FMT-1).
-    assert_eq!(
-        audit.source_canonical_digest,
-        *REVISION_DIGESTS_103.last().unwrap()
-    );
-    assert_eq!(revision_digests(&document), REVISION_DIGESTS_103);
-}
-
-/// [`written`] and a revision that adds an underlay, with its lines in the container.
-fn written_104() -> (DocumentStore, ContainerData) {
-    use ketchup_model::underlay::{UnderlayLinesBuilder, plan_underlay};
-    let mut document = written();
-    let mut builder = UnderlayLinesBuilder::default();
-    builder.add(
-        "stena",
-        &[ProfileSegment::Line {
-            start_mm: [0.0, 0.0],
-            end_mm: [100.0, 0.0],
-        }],
-    );
-    let (layers, lines) = builder.finish();
-    let bytes = lines.encode();
-    let (batch, _) = plan_underlay(
-        &document.current(),
-        "Pôdorys",
-        &layers,
-        ketchup_model::graph::sha256_bytes(&bytes),
-        [-560_120_000.0, -1_210_987_000.0],
-    )
-    .unwrap();
-    document.apply_batch(&batch).unwrap();
-    let mut container = ContainerData::default();
-    container.insert_import_blob(bytes).unwrap();
-    (document, container)
-}
-
-#[test]
-fn a_format_104_file_with_history_opens_with_every_revision_and_saves_the_same_bytes() {
-    if ketchup_test_env::update_golden() {
-        let (document, container) = written_104();
-        let bytes = persistence::save_document_store(&document, &container).unwrap();
-        std::fs::write(FIXTURE, bytes).unwrap();
-        panic!(
-            "wrote {FIXTURE}; record REVISION_DIGESTS = {:?}",
-            revision_digests(&document)
-        );
-    }
-    let bytes = std::fs::read(FIXTURE).unwrap();
+/// The document of a fixture, checked to open at `digest` with no Undo steps.
+fn opened(path: &str, schema: u16, digest: &str) -> (DocumentStore, ContainerData) {
     let LoadOutcome::Editable {
         document,
         audit,
         container_data,
         ..
-    } = persistence::load(&bytes).unwrap()
+    } = persistence::load(&std::fs::read(path).unwrap()).unwrap()
     else {
-        panic!("the golden is editable")
+        panic!("the fixture is editable")
     };
-    assert_eq!(audit.source_schema, persistence::CURRENT_SCHEMA);
-    assert_eq!(audit.history_discarded(), None);
-    assert_eq!(revision_digests(&document), REVISION_DIGESTS);
+    assert_eq!(audit.source_schema, schema);
+    // A release recorded under this digest must still verify (FMT-1).
+    assert_eq!(audit.source_canonical_digest, digest);
+    assert_eq!(document.current().canonical_digest(), digest);
+    assert_eq!(document.visible_undo_steps(), 0);
+    (document, container_data)
+}
+
+#[test]
+fn format_102_and_103_files_with_history_open_at_their_current_revision() {
+    opened(FIXTURE_102, 102, DIGEST_102);
+    opened(FIXTURE_103, 103, DIGEST_103);
+}
+
+#[test]
+fn a_format_104_file_with_history_opens_at_its_current_revision_and_saves_the_golden() {
+    let (document, container) = opened(FIXTURE_104, persistence::CURRENT_SCHEMA, DIGEST_104);
     assert_eq!(document.current().underlays().count(), 1);
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    if ketchup_test_env::update_golden() {
+        std::fs::write(GOLDEN, saved).unwrap();
+        panic!("wrote {GOLDEN}");
+    }
+    let golden = std::fs::read(GOLDEN).unwrap();
     assert_eq!(
-        persistence::save_document_store(&document, &container_data).unwrap(),
-        bytes,
+        saved, golden,
         "the saved form changed; see the module comment"
+    );
+    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_104);
+    assert_eq!(
+        persistence::save_document_store_current_snapshot(&reopened, &container).unwrap(),
+        golden
     );
 }
 

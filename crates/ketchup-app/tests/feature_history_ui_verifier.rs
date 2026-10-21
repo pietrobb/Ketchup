@@ -886,7 +886,7 @@ fn component_replacement_serial_accesskit_replay_is_atomic_local_exportable_and_
     wait_for_exact_bodies(&mut shell, 2);
     assert_eq!(shell.app().canonical_digest(), replaced_digest);
     assert_eq!(shell.app().document_revision(), persisted_revision);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
     assert_eq!(
         shell.app().occurrence_definition_id(REPLACEMENT_SELECTED),
         Some(REPLACEMENT_TARGET)
@@ -1241,7 +1241,7 @@ fn shared_change_serial_accesskit_replay_rebinds_dependencies_exports_and_persis
     open_history(&mut shell);
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().document_revision(), persisted_revision);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
     assert_eq!(mate_fingerprints(&shell), persisted_fingerprints);
     assert_eq!(
         shell.app().feature_history_current_dependency_counts(),
@@ -1419,7 +1419,7 @@ fn make_unique_serial_accesskit_replay_rebinds_locally_exports_and_persists() {
     wait_for_exact_bodies(&mut shell, 2);
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().document_revision(), persisted_revision);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
     assert_eq!(
         shell.app().occurrence_definition_id(FIRST),
         Some(DEFINITION)
@@ -1894,7 +1894,7 @@ fn complete_serial_accesskit_history_replay_is_atomic_stale_safe_and_persistent(
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().document_revision(), persisted_revision);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
     assert_eq!(
         shell
             .app()

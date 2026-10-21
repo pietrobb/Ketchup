@@ -35,17 +35,11 @@ fn joint(id: u64, a: &str, b: &str, min: [f64; 3], max: [f64; 3]) -> DocumentJoi
     .unwrap()
 }
 
-/// The joints of each revision, oldest first, as format 102 wrote them.
-fn written_revisions() -> Vec<Vec<DocumentJoint>> {
-    let first = joint(1, "bok-lavy", "dno", [0., 0., 0.], [18., 500., 18.]);
-    let second = joint(2, "bok-pravy", "dno", [782., 0., 0.], [800., 500., 18.]);
-    let widened = joint(1, "bok-lavy", "dno", [0., 0., 0.], [18., 560., 18.]);
+/// The joints of the revision format 102 wrote last.
+fn written_joints() -> Vec<DocumentJoint> {
     vec![
-        vec![],
-        vec![],
-        vec![first.clone()],
-        vec![first, second.clone()],
-        vec![widened, second],
+        joint(1, "bok-lavy", "dno", [0., 0., 0.], [18., 560., 18.]),
+        joint(2, "bok-pravy", "dno", [782., 0., 0.], [800., 500., 18.]),
     ]
 }
 
@@ -64,30 +58,19 @@ fn editable(bytes: &[u8]) -> (DocumentStore, persistence::LoadAudit) {
 }
 
 #[test]
-fn format_102_rule_joints_open_unchanged_in_every_revision_and_save_as_format_103() {
-    let (mut document, audit) = editable(&std::fs::read(FIXTURE).unwrap());
+fn format_102_rule_joints_open_unchanged_and_save_as_format_103() {
+    let (document, audit) = editable(&std::fs::read(FIXTURE).unwrap());
     assert_eq!(audit.source_schema, 102);
     assert_eq!(audit.history_discarded(), None);
     assert_eq!(audit.source_canonical_digest, WRITER_DIGEST);
-
-    let expected = written_revisions();
-    assert_eq!(document.revision_count(), expected.len());
-    assert_eq!(&joints(&document), expected.last().unwrap());
-    for revision in expected.iter().rev().skip(1) {
-        document.undo().unwrap();
-        assert_eq!(&joints(&document), revision);
-    }
-    for _ in 1..expected.len() {
-        document.redo().unwrap();
-    }
+    assert_eq!(joints(&document), written_joints());
+    assert_eq!(document.visible_undo_steps(), 0);
 
     let saved = persistence::save_document_store(&document, &ContainerData::default()).unwrap();
-    let (mut reopened, audit) = editable(&saved);
+    let (reopened, audit) = editable(&saved);
     assert_eq!(audit.source_schema, persistence::CURRENT_SCHEMA);
     assert_eq!(audit.history_discarded(), None);
-    assert_eq!(&joints(&reopened), expected.last().unwrap());
-    reopened.undo().unwrap();
-    assert_eq!(joints(&reopened), expected[expected.len() - 2]);
+    assert_eq!(joints(&reopened), written_joints());
 }
 
 fn part_joint(a: u64, b: u64) -> DocumentJoint {

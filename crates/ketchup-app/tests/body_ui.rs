@@ -414,7 +414,7 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), combined_digest);
     assert_eq!(shell.app().document_revision(), persisted_revision);
-    assert!(shell.app().can_undo());
+    assert!(!shell.app().can_undo());
     wait_for_exact_bodies(&mut shell, 2);
     assert_eq!(shell.app().instanced_scene_triangle_count(), 24);
 

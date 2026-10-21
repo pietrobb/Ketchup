@@ -104,9 +104,14 @@ pub(super) fn write_work_recovery(
         unchanged()?;
         return append_step(path, observed, &step);
     }
-    let prepared = prepare_document(document, container, HistoryPolicy::KeepIfFits)
-        .map_err(FilePersistenceError::Format)?;
-    let payload = prepared.bytes();
+    // The checkpoint keeps the Undo history the file does not, unless it does not fit.
+    let payload = &match save_document_store(document, container) {
+        Err(PersistenceError::ResourceLimit | PersistenceError::TooLarge { .. }) => {
+            save_document_store_current_snapshot(document, container)
+        }
+        saved => saved,
+    }
+    .map_err(FilePersistenceError::Format)?;
     let mut bytes = Vec::with_capacity(WORK_RECOVERY_MAGIC.len() + 2 + 8 + 32 + 8 + payload.len());
     bytes.extend_from_slice(WORK_RECOVERY_MAGIC);
     push_u16(&mut bytes, WORK_RECOVERY_SCHEMA);

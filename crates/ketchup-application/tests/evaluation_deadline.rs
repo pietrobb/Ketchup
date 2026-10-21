@@ -338,10 +338,10 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
     session
         .save(&path, ketchup_application::SaveOptions { overwrite: false })
         .unwrap();
-    let mut reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
     assert!(reopened.exact_results().is_empty());
     assert!(reopened.topology_results().is_empty());
-    assert_eq!(reopened.visible_undo_steps(), undo_before + 1);
+    assert_eq!(reopened.visible_undo_steps(), 0);
     for (stage, expected, render, topology) in [
         ("open", &after, &after_exact, &after_topology),
         ("undo", &before, &before_exact, &before_topology),
@@ -349,16 +349,16 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
     ] {
         match stage {
             "undo" => {
-                reopened.undo().unwrap();
-                assert_eq!(reopened.visible_redo_steps(), 1);
+                session.undo().unwrap();
+                assert_eq!(session.visible_redo_steps(), 1);
             }
             "redo" => {
-                reopened.redo().unwrap();
-                assert_eq!(reopened.visible_undo_steps(), undo_before + 1);
+                session.redo().unwrap();
+                assert_eq!(session.visible_undo_steps(), undo_before + 1);
             }
             _ => {}
         }
-        let actual = reopened.snapshot();
+        let actual = session.snapshot();
         assert_eq!(
             actual.canonical_digest(),
             expected.canonical_digest(),
@@ -389,7 +389,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
         }
         // A new session has no render/topology evidence from the edited session or history.
         let cold_path = directory.path().join(format!("{stage}.ketchup"));
-        reopened
+        session
             .save(
                 &cold_path,
                 ketchup_application::SaveOptions { overwrite: false },
