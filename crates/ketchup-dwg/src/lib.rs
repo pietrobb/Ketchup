@@ -68,7 +68,7 @@ impl fmt::Display for DwgError {
             Self::DxfTooLarge { limit } => write!(
                 formatter,
                 "the header, blocks and entities of the DWG drawing are more than the {limit} \
-                 bytes of DXF a drawing import reads"
+                 bytes of DXF asked for"
             ),
             Self::NothingRead {
                 diagnostic: Some(diagnostic),

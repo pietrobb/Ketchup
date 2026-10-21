@@ -416,7 +416,7 @@ enum UndirectedSegmentKey {
     Spline(Vec<[i64; 2]>),
 }
 
-/// Inspect a bounded ASCII DXF without mutating a document.
+/// Inspect an ASCII DXF of any size, within the profile count limits, without mutating a document.
 pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf, DxfImportError> {
     let (units, insbase_mm, mut parsed_entities, diagnostics) =
         read_dxf(source, options, PROFILE_READING)?;

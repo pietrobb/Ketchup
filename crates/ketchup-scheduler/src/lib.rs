@@ -469,8 +469,8 @@ const MAX_CAM_SIMULATION_PAIR_CHECKS: usize = 16_384;
 const MAX_STEP_ASSEMBLY_NODES: usize = 1_024;
 /// Longest part or node name one STEP assembly export writes, in bytes.
 const MAX_STEP_ASSEMBLY_NAME_BYTES: usize = 4_096;
-/// Neither the STEP or IGES file an export writes nor the imported sources one
-/// evaluation reads have a size limit: each is bounded by the bytes it holds.
+/// Most imported sources one evaluation reads. Their bytes, like the STEP or IGES
+/// file an export writes, have no size limit.
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 // General graph operations may rebuild many sequential exact Boolean features.
