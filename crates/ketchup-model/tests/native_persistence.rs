@@ -1388,7 +1388,7 @@ fn a_history_naming_gigabytes_through_shared_chunks_is_refused_before_it_is_asse
     let (_, offset, len) = container_entry_offsets(&saved, "document.bin");
     let document = &saved[offset..offset + len];
     let revisions = u32::try_from(ketchup_model::tolerance::limits::UNDO_REVISIONS + 1).unwrap();
-    // Each revision names the one chunk as often as a snapshot may be long.
+    // Each revision names the one chunk about 32 MiB worth of times.
     let repeats = u32::try_from(32 * 1024 * 1024 / len).unwrap();
     let length = u64::from(repeats) * len as u64;
     assert!(u64::from(revisions - 1) * length > 2 * 1024 * 1024 * 1024);
@@ -1617,10 +1617,9 @@ fn a_program_edit_stores_only_the_chunks_around_the_change() {
     assert_eq!(revision_programs(&reopened), revision_programs(&document));
 }
 
-/// A document whose Undo history holds more bytes than a native file stores.
-fn oversized_history_document() -> DocumentStore {
-    // Each earlier revision a history assembles is at most 32 MiB; this one is
-    // about 34 MB, and one edit makes it an earlier revision.
+/// A model of about 34 MB with two Undo steps: creating it and one edit, which
+/// makes the 34 MB revision an earlier one.
+fn large_model_after_an_edit() -> DocumentStore {
     let commands = (1..=33_u64)
         .map(|id| CanonicalCommand::CreateEvaluatorNode {
             id: NodeId(id),
@@ -1748,8 +1747,27 @@ fn a_history_over_32_mib_saves_and_opens_whole() {
     }
 }
 
+/// A model over 32 MB keeps its Undo through Save and Open, every step alike.
 #[test]
-fn work_recovery_of_a_history_beyond_the_file_limit_keeps_the_current_revision() {
+fn a_model_over_32_mb_saves_and_opens_with_its_undo() {
+    let mut store = large_model_after_an_edit();
+    let bytes =
+        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
+    let mut reopened = reopened(&bytes);
+    assert_eq!(reopened.revision_count(), store.revision_count());
+    assert_eq!(reopened.visible_undo_steps(), 2);
+    while reopened.undo().is_some() {
+        store.undo().unwrap();
+        assert_eq!(
+            reopened.current().canonical_digest(),
+            store.current().canonical_digest()
+        );
+    }
+    assert!(store.undo().is_none());
+}
+
+#[test]
+fn work_recovery_of_a_model_over_32_mb_restores_it() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("large.ketchup");
     let container_data = persistence::ContainerData::default();
@@ -1761,14 +1779,8 @@ fn work_recovery_of_a_history_beyond_the_file_limit_keeps_the_current_revision()
     )
     .unwrap();
     let base_identity = persistence::read_native_document_identity(&path).unwrap();
-    let store = oversized_history_document();
-    assert!(matches!(
-        persistence::save_document_store(&store, &container_data),
-        Err(PersistenceError::ResourceLimit)
-    ));
+    let store = large_model_after_an_edit();
 
-    // Every edit writes a checkpoint; one too large for its history must not
-    // refuse the edit.
     checkpoint(&path, &store, &container_data, base_identity, None).unwrap();
     let recovered = persistence::load_file_with_source(&path).unwrap();
     assert_eq!(
@@ -1782,17 +1794,13 @@ fn work_recovery_of_a_history_beyond_the_file_limit_keeps_the_current_revision()
 }
 
 #[test]
-fn explicit_current_snapshot_save_preserves_work_beyond_history_byte_limit() {
-    let store = oversized_history_document();
+fn explicit_current_snapshot_save_keeps_the_current_revision_only() {
+    let store = large_model_after_an_edit();
     let current = store.current();
     let expected_next_revision_id = store.next_revision_id();
     let original_revision_count = store.revision_count();
     // The empty document, the large one and the edit.
     assert_eq!(original_revision_count, 3);
-    assert!(matches!(
-        persistence::save_document_store(&store, &persistence::ContainerData::default()),
-        Err(PersistenceError::ResourceLimit)
-    ));
 
     let first = persistence::save_document_store_current_snapshot(
         &store,

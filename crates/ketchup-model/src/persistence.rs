@@ -63,8 +63,6 @@ struct HistoryBudget {
     /// Distinct programs, which an opened history holds all at once, each once
     /// however many revisions keep it (PS-2).
     programs: u64,
-    /// Largest revision snapshot, which opening allocates before assembling it.
-    snapshot_bytes: usize,
     /// Counts and string lengths of `history.bin` together, which its reader
     /// counts like every reader (PS-9).
     items: u32,
@@ -72,7 +70,6 @@ struct HistoryBudget {
 const HISTORY_BUDGET: HistoryBudget = HistoryBudget {
     snapshots: 2 * 1024 * 1024 * 1024,
     programs: 256 * 1024 * 1024,
-    snapshot_bytes: MAX_REVISION_SNAPSHOT_BYTES,
     items: MAX_COLLECTION_ITEMS,
 };
 /// The entries the budget is reported for.
@@ -80,11 +77,6 @@ const HISTORY_REVISIONS_ENTRY: &str = "the revisions of history.bin";
 const HISTORY_PROGRAMS_ENTRY: &str = "the programs of history.bin";
 pub const CURRENT_SCHEMA: u16 = snapshot_codec::SNAPSHOT_FORMAT;
 
-/// Largest earlier revision a history assembles from its chunks. Its stored length is
-/// no bound of what it allocates: chunks are shared, so a few bytes can name a whole
-/// snapshot many times. A native file and its entries have no size limit of their
-/// own: every entry the container stores must fit in the rest of the file.
-const MAX_REVISION_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_STRING_BYTES: usize = 1024 * 1024;
 const MAX_COLLECTION_ITEMS: u32 = 500_000;
 const MAX_CONTAINER_ENTRIES: u32 = 4_096;
@@ -821,9 +813,6 @@ fn encode_history<R: HistoryRevision>(
             continue;
         }
         let snapshot = revision.encoded();
-        if snapshot.bytes.len() > budget.snapshot_bytes {
-            return Err(PersistenceError::ResourceLimit);
-        }
         assembled = check_assembled(
             HISTORY_REVISIONS_ENTRY,
             assembled,
@@ -2114,7 +2103,6 @@ fn read_history_records<'a>(
             &mut reader,
             schema,
             (index == cursor).then_some(document_bytes),
-            budget.snapshot_bytes,
         )?;
         previous_revision_id = Some(revision_id);
         if !keep {
@@ -2334,19 +2322,29 @@ impl<'a> HistorySnapshot<'a> {
                 checksum,
                 numbers,
             } => {
-                let mut encoded = Vec::with_capacity(length);
-                for number in numbers.chunks_exact(4) {
+                let parts = numbers.chunks_exact(4).map(|number| {
                     let number = u32::from_le_bytes(number.try_into().expect("four bytes"));
-                    let chunk = chunks
+                    chunks
                         .get(number as usize)
+                        .copied()
+                        .ok_or(PersistenceError::InvalidRevisionHistory)
+                });
+                // The chunks are summed before anything is allocated, so a length
+                // the file names but its chunks do not fill reserves nothing; the
+                // length itself counted against the budget when the history was read.
+                let mut total = 0usize;
+                for part in parts.clone() {
+                    total = total
+                        .checked_add(part?.len())
+                        .filter(|total| *total <= length)
                         .ok_or(PersistenceError::InvalidRevisionHistory)?;
-                    if encoded.len() + chunk.len() > length {
-                        return Err(PersistenceError::InvalidRevisionHistory);
-                    }
-                    encoded.extend_from_slice(chunk);
                 }
-                if encoded.len() != length {
+                if total != length {
                     return Err(PersistenceError::HistoryChecksumMismatch);
+                }
+                let mut encoded = Vec::with_capacity(length);
+                for part in parts {
+                    encoded.extend_from_slice(part?);
                 }
                 (std::borrow::Cow::Owned(encoded), checksum)
             }
@@ -2453,7 +2451,6 @@ fn read_history_snapshot<'a>(
     reader: &mut Reader<'a>,
     schema: u16,
     document_bytes: Option<&'a [u8]>,
-    max_length: usize,
 ) -> Result<HistorySnapshot<'a>, PersistenceError> {
     if schema >= 4 {
         match reader.u8()? {
@@ -2468,9 +2465,6 @@ fn read_history_snapshot<'a>(
     }
     let length = usize::try_from(reader.u64()?)
         .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
-    if length > max_length {
-        return Err(PersistenceError::ResourceLimit);
-    }
     let checksum: [u8; 32] = reader
         .take(32)?
         .try_into()
@@ -3242,11 +3236,11 @@ mod tests {
         ));
     }
 
-    /// PS-9: Save keeps the limits the reader of a history keeps, its item budget
-    /// and the largest revision snapshot, so a history that saves also opens and
-    /// one past them is refused on Save (which keeps the current revision then).
+    /// PS-9: Save keeps the item budget the reader of a history keeps, so a
+    /// history that saves also opens and one past it is refused on Save (which
+    /// keeps the current revision then).
     #[test]
-    fn saving_and_opening_a_history_keep_the_same_item_and_snapshot_limits() {
+    fn saving_and_opening_a_history_keep_the_same_item_limit() {
         use crate::document::{CanonicalCommand, CommandBatch, NodeId, RuleProgramSource};
         use ketchup_geometry::dimension::Dimension;
         let mut store = DocumentStore::new();
@@ -3325,33 +3319,84 @@ mod tests {
             decode(&history, items(fits - 1)),
             Err(PersistenceError::ResourceLimit)
         ));
+    }
 
-        let snapshot_bytes = |snapshot_bytes| HistoryBudget {
-            snapshot_bytes,
-            ..HISTORY_BUDGET
+    /// An earlier revision's length is the file's word: a short list of chunk
+    /// numbers can repeat one chunk far past the revision budget. Opening sums the
+    /// chunks before it allocates, so a length they do not fill is refused without
+    /// reserving it, and one they fill counts against the budget first.
+    #[test]
+    fn a_revision_length_its_chunks_do_not_fill_is_refused_before_it_is_allocated() {
+        let store = DocumentStore::new();
+        let document_bin = encoded_snapshot(&store.current());
+        let outcome = load(&save(&store.current())).unwrap();
+        let chunk = document_bin.bytes.len() as u64;
+        let checksum = crate::graph::sha256_bytes(&document_bin.bytes);
+        // Revision 1 names `repeats` copies of document.bin as `length` bytes;
+        // revision 2 is document.bin. Both are refused before their ids matter.
+        let history = |length: u64, repeats: u32| {
+            let mut history = HISTORY_MAGIC.to_vec();
+            push_u16(&mut history, 4);
+            push_u32(&mut history, 2);
+            push_u32(&mut history, 1);
+            push_u64(&mut history, 3);
+            push_u32(&mut history, 1);
+            history.push(HISTORY_CHUNK_IN_DOCUMENT);
+            push_u32(&mut history, 0);
+            push_u32(&mut history, u32::try_from(chunk).unwrap());
+            for (index, revision_id) in [1_u64, 2].into_iter().enumerate() {
+                push_u64(&mut history, revision_id);
+                push_u32(&mut history, 0); // no batch digest
+                if index == 0 {
+                    history.push(0); // initial
+                } else {
+                    history.extend_from_slice(&[1, 0]); // the manual client
+                }
+                history.extend_from_slice(&[0, 0]); // no checkpoint, no program
+                if index == 1 {
+                    history.push(HISTORY_SNAPSHOT_IS_DOCUMENT);
+                } else {
+                    history.push(HISTORY_SNAPSHOT_IN_CHUNKS);
+                    push_u64(&mut history, length);
+                    history.extend_from_slice(&checksum);
+                    push_u32(&mut history, repeats);
+                    for _ in 0..repeats {
+                        push_u32(&mut history, 0);
+                    }
+                }
+            }
+            history
         };
-        let largest = revisions
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != cursor)
-            .map(|(_, revision)| encoded_snapshot(revision.snapshot()).bytes.len())
-            .max()
-            .unwrap();
-        let history = encode(snapshot_bytes(largest)).unwrap();
+        let decode = |history: &[u8], snapshots| {
+            decode_revision_history(
+                history,
+                &document_bin.bytes,
+                &outcome,
+                &ContainerData::default(),
+                HistoryBudget {
+                    snapshots,
+                    ..HISTORY_BUDGET
+                },
+            )
+        };
+        let repeats = 100_000;
+        let named = chunk * u64::from(repeats);
+
+        // Filled by its chunks but past the budget: refused on the length alone.
+        assert!(matches!(
+            decode(&history(named, repeats), named - 1),
+            Err(PersistenceError::TooLarge { bytes, .. }) if bytes == named
+        ));
+        // A petabyte with no budget to stop it: reserving it would abort the test.
         assert_eq!(
-            decode(&history, snapshot_bytes(largest))
-                .unwrap()
-                .revision_count(),
-            revisions.len()
+            decode(&history(1 << 50, repeats), u64::MAX).err(),
+            Some(PersistenceError::HistoryChecksumMismatch)
         );
-        assert!(matches!(
-            encode(snapshot_bytes(largest - 1)),
-            Err(PersistenceError::ResourceLimit)
-        ));
-        assert!(matches!(
-            decode(&history, snapshot_bytes(largest - 1)),
-            Err(PersistenceError::ResourceLimit)
-        ));
+        // Fewer bytes than the chunks hold: refused while summing them.
+        assert_eq!(
+            decode(&history(chunk, repeats), u64::MAX).err(),
+            Some(PersistenceError::InvalidRevisionHistory)
+        );
     }
 
     /// PS-12: opening loads only the revisions the Undo limit keeps around the

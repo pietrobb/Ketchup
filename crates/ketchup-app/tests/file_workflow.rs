@@ -24,8 +24,8 @@ use ketchup_assistant::sidecar::{
 use ketchup_interaction::Vec3;
 use ketchup_model::document::{
     CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
-    DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, NodeId, OccurrenceId,
-    ProfileSegment, SpatialPathSegment, Transform,
+    DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, OccurrenceId, ProfileSegment,
+    SpatialPathSegment, Transform,
 };
 use ketchup_model::graph::sha256_bytes;
 use ketchup_model::import::{
