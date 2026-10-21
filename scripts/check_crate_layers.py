@@ -68,7 +68,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 746,
     "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 628,
     "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 660,
-    "crates/ketchup-application/src/collision.rs::collision_report": 700,
+    "crates/ketchup-application/src/collision.rs::collision_report": 685,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
     "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1798,
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
@@ -352,7 +352,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-analysis allows": 1,
     "ketchup-analysis casts": 6,
     "ketchup-app allows": 9,
-    "ketchup-app casts": 233,
+    "ketchup-app casts": 232,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
     "ketchup-assistant allows": 3,
@@ -368,12 +368,12 @@ CASTS_AND_ALLOWS = {
     "ketchup-mcp allows": 2,
     "ketchup-mcp casts": 10,
     "ketchup-model allows": 16,
-    "ketchup-model casts": 281,
+    "ketchup-model casts": 277,
     "ketchup-pdm casts": 5,
     "ketchup-program allows": 9,
     "ketchup-program casts": 50,
     "ketchup-scheduler allows": 3,
-    "ketchup-scheduler casts": 79,
+    "ketchup-scheduler casts": 74,
 }
 
 

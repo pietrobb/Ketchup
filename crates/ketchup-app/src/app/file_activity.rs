@@ -15,10 +15,10 @@ pub(crate) struct FileActivity {
     pub(crate) underlay: super::underlay::UnderlayImport,
 }
 
-/// Source bytes a drawing read gets through in a second: Levoča, a 38.9 MB DWG, was read
+/// Source bytes a drawing read gets through in a millisecond (8 MB/s): Levoča, a 38.9 MB DWG, was read
 /// and converted in 4.1 s in a release build; rounded down. The DWG and DXF readers report
 /// no progress of their own, so a read's progress is estimated from its file's size.
-const DRAWING_READ_BYTES_PER_SECOND: f64 = 8.0e6;
+const DRAWING_READ_BYTES_PER_MILLISECOND: u64 = 8_000;
 
 /// When a drawing read started and how large its file is, for its estimated progress.
 pub(crate) struct ReadProgress {
@@ -37,11 +37,11 @@ impl ReadProgress {
     /// The estimated share done, below 1 until the read ends, and the time estimated to be
     /// left, none once the read takes longer than estimated.
     fn estimate(&self) -> (f32, Option<Duration>) {
-        let expected = Duration::from_secs_f64(
-            (self.source_bytes as f64 / DRAWING_READ_BYTES_PER_SECOND).max(0.5),
-        );
+        let expected =
+            Duration::from_millis(self.source_bytes / DRAWING_READ_BYTES_PER_MILLISECOND)
+                .max(Duration::from_millis(500));
         let elapsed = self.started.elapsed();
-        let fraction = (elapsed.as_secs_f64() / expected.as_secs_f64()).min(0.99) as f32;
+        let fraction = (elapsed.as_secs_f32() / expected.as_secs_f32()).min(0.99);
         (
             fraction,
             expected.checked_sub(elapsed).filter(|left| !left.is_zero()),
@@ -231,7 +231,7 @@ impl KetchupApp {
             Some(left) => self.catalog.format(
                 "file-activity-read-estimate",
                 &BTreeMap::from([
-                    ("percent", ((fraction * 100.0) as u32).to_string()),
+                    ("percent", (fraction * 100.0).floor().to_string()),
                     ("seconds", left.as_secs_f64().ceil().to_string()),
                 ]),
             ),
