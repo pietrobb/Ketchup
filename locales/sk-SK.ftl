@@ -1284,6 +1284,7 @@ digest-opened-document = Otvorené „{ $path }“ — kanonická identita obnov
 digest-opened-recovery = Varovanie: zdroj obnovy „{ $source }“ bol otvorený, pretože „{ $requested }“ je nedostupný alebo poškodený. Obnovený dokument nie je uložený; bezpečne ho zachovajte cez Uložiť ako.
 digest-opened-work-recovery = Upozornenie: neuložená práca „{ $path }“ bola obnovená z kontrolného bodu „{ $source }“. Obnovený dokument nie je uložený; zachovajte ho cez Uložiť ako.
 digest-opened-work-recovery-step-damaged = Upozornenie: posledné úpravy v kontrolnom bode neuloženej práce „{ $path }“ sa nedali prečítať ({ $reason }). Obnovila sa práca po úpravu pred nimi.
+digest-opened-without-work-recovery = „{ $path }“ sa otvoril z priečinka len na čítanie: neuložená práca sa tam nezálohuje, preto ju uložte cez Uložiť ako do iného priečinka.
 digest-opened-without-history = Upozornenie: „{ $path }“ sa otvoril bez histórie Undo ({ $reason }). Model je celý.
 digest-opened-work-recovery-set-aside = Upozornenie: „{ $path }“ sa otvoril. Jeho záznam neuloženej práce sa nedal použiť ({ $reason }), preto sa presunul do „{ $set_aside }“; úpravy sa odtiaľto znova zaznamenávajú.
 error-work-recovery-set-aside = Upozornenie: „{ $path }“ sa otvoril, ale jeho záznam neuloženej práce sa nedal použiť ({ $reason }) ani odsunúť ({ $error }). Úpravy sa nedajú zachovať, kým sa ten súbor nepresunie alebo nezmaže.

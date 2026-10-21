@@ -25,6 +25,23 @@ impl WorkRecoveryLock {
             Err(std::fs::TryLockError::Error(error)) => Err(FilePersistenceError::Io(error)),
         }
     }
+
+    /// [`Self::acquire`], or `None` where the file's folder cannot take the lock
+    /// file at all (a read-only share, a protected USB key, a mounted DMG). No
+    /// checkpoint can be written there either, so the file opens without one.
+    pub fn acquire_unless_read_only(path: &Path) -> Result<Option<Self>, FilePersistenceError> {
+        match Self::acquire(path) {
+            Err(FilePersistenceError::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+                ) =>
+            {
+                Ok(None)
+            }
+            acquired => acquired.map(Some),
+        }
+    }
 }
 
 /// Checks the observed checkpoint while the caller holds its WorkRecoveryLock.

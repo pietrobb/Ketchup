@@ -15,6 +15,9 @@ pub(crate) struct FileState {
     pub(crate) identity: Option<ketchup_model::persistence::FileIdentity>,
     pub(crate) work_recovery_identity: Option<ketchup_model::persistence::FileIdentity>,
     pub(crate) work_recovery_lock: Option<ketchup_model::persistence::WorkRecoveryLock>,
+    /// The file's folder is read-only, so it was opened without a work-recovery
+    /// checkpoint and edits are not checkpointed until it is saved elsewhere.
+    pub(crate) work_recovery_off: bool,
     pub(crate) pending_work_recovery_cleanup:
         Option<(PathBuf, ketchup_model::persistence::FileIdentity)>,
     pub(crate) work_recovery_digest: Option<String>,

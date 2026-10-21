@@ -205,8 +205,8 @@ impl KetchupApp {
             self.file.work_recovery_digest = None;
             None
         } else {
-            match ketchup_model::persistence::WorkRecoveryLock::acquire(path) {
-                Ok(lock) => Some(lock),
+            match ketchup_model::persistence::WorkRecoveryLock::acquire_unless_read_only(path) {
+                Ok(lock) => lock,
                 Err(error) => {
                     self.report_file_persistence_error("error-open-document", path, &error);
                     return false;
@@ -314,6 +314,9 @@ impl KetchupApp {
                 self.file.recovery_open = recovery_open;
                 self.file.identity = file_identity;
                 self.file.work_recovery_identity = work_recovery_identity;
+                // Only a read-only folder opens without a lock of its own or kept.
+                self.file.work_recovery_off =
+                    recovery_lock.is_none() && self.file.work_recovery_lock.is_none();
                 self.file.work_recovery_lock = work_recovery_identity
                     .and(recovery_lock.or_else(|| self.file.work_recovery_lock.take()));
                 self.file.work_recovery_digest = None;
@@ -326,7 +329,7 @@ impl KetchupApp {
                 }
                 // Every warning of the open is shown, not only the first.
                 let requested = path.display().to_string();
-                let warnings: Vec<String> = notices
+                let mut warnings: Vec<String> = notices
                     .into_iter()
                     .map(|notice| {
                         let (key, mut args) = match notice {
@@ -374,6 +377,12 @@ impl KetchupApp {
                         self.catalog.format(key, &args.into_iter().collect())
                     })
                     .collect();
+                if self.file.work_recovery_off {
+                    warnings.push(self.catalog.format(
+                        "digest-opened-without-work-recovery",
+                        &BTreeMap::from([("path", requested)]),
+                    ));
+                }
                 self.digest = if warnings.is_empty() {
                     self.catalog.format(
                         "digest-opened-document",
@@ -515,8 +524,12 @@ impl KetchupApp {
     }
 
     /// Where the window checkpoints its work and the file the checkpoints are
-    /// made from: its own file, or the one a checkpoint was opened for.
+    /// made from: its own file, or the one a checkpoint was opened for. None in
+    /// a read-only folder.
     fn checkpoint_target(&self) -> Option<(PathBuf, ketchup_model::persistence::FileIdentity)> {
+        if self.file.work_recovery_off {
+            return None;
+        }
         match (
             &self.file.path,
             self.file.identity,
@@ -567,6 +580,7 @@ impl KetchupApp {
         let checkpoint_digest = self.document.history_digest();
         if !self.is_dirty() {
             if let Some(path) = self.file.path.clone()
+                && !self.file.work_recovery_off
                 && let Err(error) = ketchup_model::persistence::clear_work_recovery(
                     &path,
                     self.file.work_recovery_identity,
@@ -800,6 +814,7 @@ impl KetchupApp {
                 self.file.recovery_open = None;
                 self.file.identity = Some(saved_identity);
                 self.file.work_recovery_lock = None;
+                self.file.work_recovery_off = false;
                 self.file.work_recovery_identity = None;
                 self.file.work_recovery_digest = None;
                 self.file.saved_digest = self.document.history_digest();
@@ -1264,7 +1279,11 @@ impl KetchupApp {
             self.report_file_persistence_error("error-save-document", &path, &error);
             return Err(WorkRecoveryMutationError::Recovery(error));
         }
-        let document_path = self.file.path.clone();
+        let document_path = self
+            .file
+            .path
+            .clone()
+            .filter(|_| !self.file.work_recovery_off);
         let checkpoint_target = self.checkpoint_target();
         let recovery_open = self.file.recovery_open.is_some();
         let saved_digest = self.file.saved_digest.clone();

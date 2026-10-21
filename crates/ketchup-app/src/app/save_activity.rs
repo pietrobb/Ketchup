@@ -204,6 +204,7 @@ impl KetchupApp {
                             .is_some_and(|error| error.published_identity(&task.path).is_some())
                     {
                         self.file.path = Some(task.path.clone());
+                        self.file.work_recovery_off = false;
                         self.file.identity = Some(*identity);
                         self.file.saved_digest = task.source.history;
                     }
