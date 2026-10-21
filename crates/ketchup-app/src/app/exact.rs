@@ -1,6 +1,11 @@
 //! Exact worker connection, exact products and topology results, and solid tools.
 
 use crate::*;
+use ketchup_application::evaluation::ExactEvaluationResult;
+
+/// Longest Enter waits for the exact solid its value needs: a backstop only,
+/// the worker ends each request well before it.
+const EXACT_CONFIRMATION_WAIT: Duration = Duration::from_secs(60);
 
 /// Prefer discrete hardware for normal startup; explicit diagnostics remain unique.
 fn select_native_adapter(
@@ -311,37 +316,8 @@ impl KetchupApp {
             match task.poll() {
                 Ok(result) => {
                     let task = self.exact.task.take().expect("completed task exists");
-                    let published = match result {
-                        Ok(products) => self
-                            .complete_mutation_and_exact_results_with_work_recovery(
-                                |document, exact_results, topology_results| {
-                                    ketchup_application::evaluation::publish_exact_products(
-                                        document,
-                                        exact_results,
-                                        topology_results,
-                                        &task,
-                                        products,
-                                    )
-                                },
-                            ),
-                        Err(error) => Err(WorkRecoveryMutationError::Mutation(error)),
-                    };
-                    match published {
-                        Ok(report) => {
-                            self.rebuild_render_plan(&snapshot);
-                            self.hover.projection_cache.get_mut().take();
-                            self.carry_box_face_selection_to_exact();
-                            self.exact.source = (!report.needs_retry()).then(|| source.clone());
-                            self.exact.retry_at = report
-                                .needs_retry()
-                                .then(|| Instant::now() + Duration::from_secs(1));
-                            // Continue through the shared retry wake-up below.
-                        }
-                        Err(error) => {
-                            eprintln!("exact evaluation rejected: {error}");
-                            self.exact.retry_at = Some(Instant::now() + Duration::from_secs(1));
-                        }
-                    }
+                    // Continue through the shared retry wake-up below.
+                    self.publish_exact_evaluation(&task, result, &snapshot, &source);
                 }
                 Err(TryRecvError::Empty) => {
                     // Wake for the progress indicator of a long evaluation.
@@ -390,6 +366,57 @@ impl KetchupApp {
         );
         self.exact.producers_requested += task.requested_producers();
         self.exact.task = Some(task);
+    }
+
+    fn publish_exact_evaluation(
+        &mut self,
+        task: &ExactEvaluationTask,
+        result: ExactEvaluationResult,
+        snapshot: &Snapshot,
+        source: &ExactSource,
+    ) {
+        let published = match result {
+            Ok(products) => self.complete_mutation_and_exact_results_with_work_recovery(
+                |document, exact_results, topology_results| {
+                    ketchup_application::evaluation::publish_exact_products(
+                        document,
+                        exact_results,
+                        topology_results,
+                        task,
+                        products,
+                    )
+                },
+            ),
+            Err(error) => Err(WorkRecoveryMutationError::Mutation(error)),
+        };
+        match published {
+            Ok(report) => {
+                self.rebuild_render_plan(snapshot);
+                self.hover.projection_cache.get_mut().take();
+                self.carry_box_face_selection_to_exact();
+                self.exact.source = (!report.needs_retry()).then(|| source.clone());
+                self.exact.retry_at = report
+                    .needs_retry()
+                    .then(|| Instant::now() + Duration::from_secs(1));
+            }
+            Err(error) => {
+                eprintln!("exact evaluation rejected: {error}");
+                self.exact.retry_at = Some(Instant::now() + Duration::from_secs(1));
+            }
+        }
+    }
+
+    /// Waits for the exact evaluation of the current document and publishes
+    /// it, as the frame that finds it finished does. False when none runs.
+    pub(crate) fn finish_exact_evaluation_now(&mut self) -> bool {
+        let snapshot = self.document.current();
+        let source = ketchup_application::evaluation::exact_source(&snapshot);
+        let Some(task) = self.exact.task.take_if(|task| task.source == source) else {
+            return false;
+        };
+        let result = task.wait(EXACT_CONFIRMATION_WAIT);
+        self.publish_exact_evaluation(&task, result, &snapshot, &source);
+        true
     }
 
     /// From now on exact geometry is evaluated by `executable`: an evaluation

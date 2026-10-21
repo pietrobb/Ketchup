@@ -234,9 +234,8 @@ fn wait_for_one_exact_body(shell: &mut Shell) {
 
 /// Types a Push/Pull depth for the selected drawn shape and waits until it is
 /// applied. While a part's exact solid is still on its way the shape may be
-/// drawn on it, so Enter waits ("Computing exact result…") and the frame the
-/// solid arrives in applies the value; a next action taken before that drops
-/// the waiting value, as it does for the user.
+/// drawn on it, so Enter waits for that solid before it applies the value;
+/// a program still being evaluated is waited for by a later frame.
 fn push_pull_typed_depth(shell: &mut Shell, depth: &str) {
     let revision = shell.app().document_revision();
     shell.type_text(depth);

@@ -348,10 +348,12 @@ fn a_shape_around_a_whole_part_pulled_through_it_becomes_a_part_of_its_own() {
 }
 
 /// Enter on a shape drawn on a part whose exact solid is still being
-/// evaluated waits for the solid and mills the pocket; before, the missing
-/// solid made the shape a part of its own standing in the block.
+/// evaluated waits for the solid and mills the pocket in that same call, one
+/// revision. Earlier the missing solid made the shape a part of its own, and
+/// then the value was parked for a later frame ("Computing exact result…"),
+/// where picking another tool or selection first dropped it with no revision.
 #[test]
-fn enter_before_the_parts_exact_solid_arrives_waits_and_mills_the_pocket() {
+fn enter_before_the_parts_exact_solid_arrives_mills_the_pocket_at_once() {
     let mut app = KetchupApp::new();
     let [block] = place_blocks(&mut app, &[placement(0.0, [0.0; 3])])[..] else {
         unreachable!()
@@ -368,9 +370,10 @@ fn enter_before_the_parts_exact_solid_arrives_waits_and_mills_the_pocket() {
         .find(|path| path.is_file())
         .expect("build ketchup-exact-worker alongside the app tests");
     app.headless_force_exact_worker_path(&worker);
-    let snapshot = app.document.current();
+    // The evaluation is still held by the window when Enter is pressed,
+    // however fast the worker answers: no frame has polled it yet.
     app.exact.task = Some(ketchup_application::evaluation::start_exact_evaluation(
-        snapshot.clone(),
+        app.document.current(),
         &app.file.container_data,
         &app.exact.results,
         &app.exact.topology_results,
@@ -380,31 +383,10 @@ fn enter_before_the_parts_exact_solid_arrives_waits_and_mills_the_pocket() {
     let revision = app.document_revision();
     app.active_tool = ActiveTool::PushPull;
     app.value_box.input = "-5".into();
-    assert!(!app.apply_value_input(), "{}", app.digest);
-    assert_eq!(app.status_key, "status-exact-pending");
-    assert_eq!(
-        app.value_input_awaits_program
-            .as_ref()
-            .map(|awaited| awaited.tool),
-        Some(ActiveTool::PushPull)
-    );
-    assert_eq!(app.document_revision(), revision);
-
-    let task = app.exact.task.take().unwrap();
-    let products = task.wait(Duration::from_secs(60)).unwrap();
-    ketchup_application::evaluation::publish_exact_products(
-        &mut app.document,
-        &mut app.exact.results,
-        &mut app.exact.topology_results,
-        &task,
-        products,
-    )
-    .unwrap();
-    app.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
-    // The solid arriving changes nothing the value was typed for, so the frame
-    // that finds it applies the waiting value.
-    assert_eq!(app.value_input_awaits_program, Some(app.awaited_value()));
     assert!(app.apply_value_input(), "{}", app.digest);
+    assert_eq!(app.document_revision(), revision + 1);
+    assert!(!app.value_awaits_evaluation());
+    assert!(app.exact.task.is_none());
     assert_eq!(app.document.current().occurrences().count(), 1);
     evaluate_exact(&mut app);
     assert_volume(volume(&app, block), VOLUME - 20.0 * 20.0 * 5.0);
