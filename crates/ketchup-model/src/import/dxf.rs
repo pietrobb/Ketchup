@@ -448,7 +448,7 @@ pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf
     if profiles.is_empty() {
         return Err(DxfImportError::NoSupportedGeometry);
     }
-    let diagnostics = finish_report(diagnostics, &layers, units)?;
+    let diagnostics = finish_report(diagnostics, &layers, units, [0.0, 0.0])?;
     Ok(ParsedDxf {
         units,
         insbase_mm,
@@ -513,6 +513,7 @@ fn finish_report(
     mut diagnostics: DiagnosticCounts,
     layers: &BTreeSet<String>,
     units: ImportUnitDecision,
+    offset_mm: [f64; 2],
 ) -> Result<Vec<ImportDiagnostic>, DxfImportError> {
     for layer in layers {
         diagnostics.add(
@@ -522,12 +523,25 @@ fn finish_report(
             1,
         )?;
     }
-    diagnostics.add(
-        ImportDiagnosticSeverity::Info,
-        "dxf.wcs-origin-preserved",
-        None,
-        1,
-    )?;
+    if offset_mm == [0.0, 0.0] {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Info,
+            "dxf.wcs-origin-preserved",
+            None,
+            1,
+        )?;
+    } else {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Info,
+            "dxf.wcs-origin-moved",
+            Some(format!(
+                "x {} m, y {} m",
+                offset_mm[0] / 1000.0,
+                offset_mm[1] / 1000.0
+            )),
+            1,
+        )?;
+    }
     diagnostics.add(
         ImportDiagnosticSeverity::Info,
         match units.authority() {
@@ -4270,8 +4284,33 @@ fn deterministic_sin_cos_degrees(degrees: f64) -> (f64, f64) {
     }
 }
 
+thread_local! {
+    /// The largest coordinate a reading on this thread keeps: the canonical envelope,
+    /// except while an underlay is read ([`AnyFiniteCoordinate`]).
+    static COORDINATE_LIMIT_MM: std::cell::Cell<f64> = const {
+        std::cell::Cell::new(MAX_COORDINATE_MM)
+    };
+}
+
+/// While it lives, a reading on this thread keeps every finite coordinate: an underlay's
+/// lines are moved into the envelope after they are read
+/// ([`crate::underlay::UnderlayLines::move_near_origin`]).
+struct AnyFiniteCoordinate(f64);
+
+impl AnyFiniteCoordinate {
+    fn new() -> Self {
+        Self(COORDINATE_LIMIT_MM.replace(f64::MAX))
+    }
+}
+
+impl Drop for AnyFiniteCoordinate {
+    fn drop(&mut self) {
+        COORDINATE_LIMIT_MM.set(self.0);
+    }
+}
+
 fn normalize_coordinate(value: f64) -> Result<f64, DxfImportError> {
-    if !value.is_finite() || value.abs() > MAX_COORDINATE_MM {
+    if !value.is_finite() || value.abs() > COORDINATE_LIMIT_MM.get() {
         return Err(DxfImportError::CoordinateOutOfRange);
     }
     Ok(if value == 0.0 { 0.0 } else { value })

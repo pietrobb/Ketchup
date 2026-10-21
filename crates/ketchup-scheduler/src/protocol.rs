@@ -330,6 +330,8 @@ pub struct UnderlayRead {
     pub layers: Vec<String>,
     pub units: ImportUnitDecision,
     pub segments: usize,
+    /// What the lines were moved by from the drawing's own coordinates.
+    pub offset_mm: [f64; 2],
     pub diagnostics: Vec<ImportDiagnostic>,
     /// The DWG file's version and the records its read left out, by type.
     pub dwg: Option<(String, Vec<(String, usize)>)>,

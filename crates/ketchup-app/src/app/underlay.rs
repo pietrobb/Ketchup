@@ -34,6 +34,7 @@ impl ReadUnderlay {
             "lines": read.segments,
             "polylines": self.lines.layers().iter().map(|layer| layer.polylines().count()).sum::<usize>(),
             "units": read.units,
+            "offset_mm": read.offset_mm,
             "diagnostics": read.diagnostics.iter().take(LISTED).collect::<Vec<_>>(),
             "diagnostics_total": read.diagnostics.len(),
             "dwg_version": read.dwg.as_ref().map(|(version, _)| version),
@@ -205,8 +206,14 @@ impl KetchupApp {
             .file_stem()
             .map_or_else(|| "underlay".into(), |stem| stem.to_string_lossy());
         let key = sha256_bytes(&read.bytes);
-        let (batch, id) = plan_underlay(&self.document.current(), &name, &read.read.layers, key)
-            .map_err(|error| failed(error.into()))?;
+        let (batch, id) = plan_underlay(
+            &self.document.current(),
+            &name,
+            &read.read.layers,
+            key,
+            read.read.offset_mm,
+        )
+        .map_err(|error| failed(error.into()))?;
         let mut container = self.file.container_data.clone();
         container
             .insert_import_blob(read.bytes)

@@ -153,6 +153,59 @@ fn an_entity_it_cannot_read_is_left_out_and_counted() {
 }
 
 #[test]
+fn a_drawing_in_national_grid_coordinates_is_moved_near_the_origin_by_its_median() {
+    // Five lines in S-JTSK, hundreds of kilometres from the origin, a stray line at the
+    // origin and one 5 km off.
+    let [x, y] = [-560_123_456.7, -1_210_987_654.3];
+    let mut entities = (0..5)
+        .map(|index| {
+            let at = x + f64::from(index) * 1000.0;
+            line("plan", [at, y], [at, y + 500.0])
+        })
+        .collect::<String>();
+    entities.push_str(&line("stray", [0.0, 0.0], [1000.0, 0.0]));
+    entities.push_str(&line("plan", [x + 5.0e6, y], [x + 5.0e6 + 100.0, y]));
+    let underlay = read(&entities);
+    // The median point, in whole metres: the stray lines do not move it.
+    assert_eq!(underlay.offset_mm, [-560_120_000.0, -1_210_987_000.0]);
+    assert_eq!(underlay.layers, ["plan", "stray"]);
+    assert_eq!(underlay.lines.segment_count(), 5);
+    let first = underlay.lines.layers()[0].polylines().next().unwrap();
+    assert!((first[0][0] - -3456.7).abs() < 1e-6 && (first[0][1] - -654.3).abs() < 1e-6);
+    let diagnostic = |code: &str| {
+        underlay
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code() == code)
+    };
+    assert_eq!(
+        diagnostic("dxf.wcs-origin-moved").unwrap().subject(),
+        Some("x -560120 m, y -1210987 m")
+    );
+    assert!(diagnostic("dxf.wcs-origin-preserved").is_none());
+    // Even moved, the stray line and the one 5 km off leave the ±1,000 m envelope.
+    assert_eq!(diagnostic("dxf.lines-outside-envelope").unwrap().count(), 2);
+
+    // A drawing near the origin stays where it is, and a profile import on the same
+    // thread still keeps to the envelope.
+    let near = read(&line("0", [0.0, 0.0], [10.0, 0.0]));
+    assert_eq!(near.offset_mm, [0.0, 0.0]);
+    assert!(
+        near.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code() == "dxf.wcs-origin-preserved")
+    );
+    assert_eq!(
+        ketchup_model::import::inspect_dxf(
+            &dxf(&line("0", [x, y], [x + 10.0, y])),
+            DxfImportOptions::new(None)
+        )
+        .map(|_| ()),
+        Err(DxfImportError::CoordinateOutOfRange)
+    );
+}
+
+#[test]
 fn lines_decode_as_they_were_encoded_and_damaged_bytes_are_refused() {
     let underlay = read(&line("0", [0.0, 0.0], [10.0, 0.0]));
     let bytes = underlay.lines.encode();
@@ -178,11 +231,14 @@ fn an_underlay_is_added_and_removed_with_its_tags_in_one_undo_step_each() {
     );
     let lines = sha256_bytes(&underlay.lines.encode());
     let mut document = DocumentStore::new();
-    let (batch, id) = plan_underlay(&document.current(), "Plan", &underlay.layers, lines).unwrap();
+    let offset = [-560_120_000.0, -1_210_987_000.0];
+    let (batch, id) =
+        plan_underlay(&document.current(), "Plan", &underlay.layers, lines, offset).unwrap();
     document.apply_batch(&batch).unwrap();
     let added = document.current();
     let stored = added.underlay(id).unwrap();
     assert_eq!(stored.layers.len(), 2);
+    assert_eq!(stored.offset_mm(), offset);
     let tags = stored.tags().collect::<Vec<TagId>>();
     assert_eq!(tags.len(), 3);
     assert!(tags.iter().all(|tag| added.tag(*tag).is_some()));

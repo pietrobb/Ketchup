@@ -52,15 +52,15 @@ const REVISION_DIGESTS_103: &[&str] = &[
 /// Canonical digest of every revision, oldest first, as format 104 wrote them: the
 /// revisions of format 103 and one that adds an underlay.
 const REVISION_DIGESTS: &[&str] = &[
-    "48cb24a587a5e1a4",
-    "47c446366c7309af",
-    "e3e22fe400ae01f6",
-    "d06a1acc853fae01",
-    "fe70edd3b0e829c4",
-    "a1ab9927b9ea3ca5",
-    "ba55554281ad83f6",
-    "9b4fe31a50c9b5d6",
-    "05ed4c9169d7b1ae",
+    "89a95b6fe7799446",
+    "342d2544304c6099",
+    "028b341f87955f20",
+    "305ab8bc58c935ab",
+    "d8929ea505205e6e",
+    "162ee92758ce9657",
+    "979ebbad6b0fa8e8",
+    "1eb2bf5c4932abe0",
+    "36c397ed20d2ec76",
 ];
 
 fn occurrence(id: u64, name: &str) -> CanonicalCommand {
@@ -205,6 +205,7 @@ fn written_104() -> (DocumentStore, ContainerData) {
         "Pôdorys",
         &layers,
         ketchup_model::graph::sha256_bytes(&bytes),
+        [-560_120_000.0, -1_210_987_000.0],
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();

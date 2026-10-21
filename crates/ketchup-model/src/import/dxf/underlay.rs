@@ -1,6 +1,8 @@
 //! A DXF drawing read as an underlay: every line, arc and curve it draws, by layer, as
 //! polylines, without making profiles of them. An entity it cannot read is left out and
-//! counted in the report.
+//! counted in the report. A drawing whose coordinates leave the canonical envelope, such
+//! as one in national grid coordinates, is moved near the origin by an offset the report
+//! names and the underlay keeps.
 //!
 //! The drawing is read line by line, never whole: a first pass finds its text encoding, a
 //! second checks its sections and keeps its header and blocks, and a third reads its
@@ -19,6 +21,9 @@ pub struct DxfUnderlay {
     /// The names of the layers of `lines`, in their order.
     pub layers: Vec<String>,
     pub lines: UnderlayLines,
+    /// What `lines` were moved by from the drawing's own coordinates
+    /// ([`UnderlayLines::move_near_origin`]).
+    pub offset_mm: [f64; 2],
     pub diagnostics: Vec<ImportDiagnostic>,
 }
 
@@ -37,6 +42,7 @@ pub fn read_dxf_underlay_from(
     mut source: impl BufRead + Seek,
     options: DxfImportOptions,
 ) -> Result<DxfUnderlay, DxfImportError> {
+    let _any_coordinate = AnyFiniteCoordinate::new();
     let encoding = text_encoding(&mut source)?;
     let mut diagnostics = DiagnosticCounts::new(UNDERLAY_READING);
     let sections = read_sections(PairReader::new(&mut source, encoding)?, &mut diagnostics)?;
@@ -107,15 +113,25 @@ pub fn read_dxf_underlay_from(
     if !entity.is_empty() {
         read_entity(&mut entity, &mut diagnostics)?;
     }
-    let (layer_names, lines) = builder.finish();
+    let (layer_names, mut lines) = builder.finish();
+    let (offset_mm, outside) = lines.move_near_origin();
+    if outside > 0 {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Warning,
+            "dxf.lines-outside-envelope",
+            None,
+            u32::try_from(outside).unwrap_or(u32::MAX),
+        )?;
+    }
     if lines.segment_count() == 0 {
         return Err(DxfImportError::NoSupportedGeometry);
     }
-    let diagnostics = finish_report(diagnostics, &layers, units)?;
+    let diagnostics = finish_report(diagnostics, &layers, units, offset_mm)?;
     Ok(DxfUnderlay {
         units,
         layers: layer_names,
         lines,
+        offset_mm,
         diagnostics,
     })
 }

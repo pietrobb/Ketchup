@@ -13,6 +13,7 @@ use std::fmt;
 use ketchup_geometry::typed_id;
 
 use crate::document::{CanonicalCommand, CommandBatch, ProfileSegment, Snapshot, TagId};
+use crate::tolerance::MAX_COORDINATE_MM;
 
 typed_id!(UnderlayId);
 
@@ -27,12 +28,21 @@ pub struct Underlay {
     pub layers: Vec<UnderlayLayer>,
     /// SHA-256 of [`UnderlayLines::encode`], a blob of the document's container.
     pub lines_sha256: [u8; 32],
+    /// The bits of the offset in millimetres its lines were moved by
+    /// ([`UnderlayLines::move_near_origin`]); added back it gives the drawing's own
+    /// coordinates.
+    pub offset_mm_bits: [u64; 2],
 }
 
 impl Underlay {
     /// Every tag the underlay holds: its own and its layers'.
     pub fn tags(&self) -> impl Iterator<Item = TagId> + '_ {
         std::iter::once(self.tag).chain(self.layers.iter().map(|layer| layer.tag))
+    }
+
+    #[must_use]
+    pub fn offset_mm(&self) -> [f64; 2] {
+        self.offset_mm_bits.map(f64::from_bits)
     }
 
     /// The hex name of the container blob that holds its lines.
@@ -146,6 +156,55 @@ impl UnderlayLines {
                 [high[0].max(point[0]), high[1].max(point[1])],
             ]
         }))
+    }
+
+    /// Moves lines that leave the canonical ±1,000 m envelope near the origin, so that a
+    /// drawing in national grid coordinates (S-JTSK: hundreds of kilometres) is kept
+    /// instead of left out. The lines move by the median of their points, rounded to whole
+    /// metres, so that a stray line far away does not decide where the drawing lands.
+    /// Returns that offset, which added back gives the drawing's own coordinates, and the
+    /// number of straight pieces left out because even moved they leave the envelope.
+    pub fn move_near_origin(&mut self) -> ([f64; 2], usize) {
+        let inside = |point: &[f64; 2]| point.iter().all(|value| value.abs() <= MAX_COORDINATE_MM);
+        if self
+            .layers
+            .iter()
+            .flat_map(|layer| &layer.points_mm)
+            .all(inside)
+        {
+            return ([0.0, 0.0], 0);
+        }
+        let offset_mm = [0, 1].map(|axis| {
+            let mut values = self
+                .layers
+                .iter()
+                .flat_map(|layer| layer.points_mm.iter().map(|point| point[axis]))
+                .collect::<Vec<_>>();
+            let middle = values.len() / 2;
+            let (_, median, _) = values.select_nth_unstable_by(middle, f64::total_cmp);
+            // `+ 0.0` makes a -0.0 of a median just below zero 0.0.
+            (*median / 1000.0).round() * 1000.0 + 0.0
+        });
+        let before = self.segment_count();
+        for layer in &mut self.layers {
+            let mut kept = LayerLines::default();
+            for polyline in layer.polylines() {
+                // A point outside ends the polyline; the pieces on both sides of it are
+                // left out.
+                let mut run = Vec::new();
+                for point in polyline {
+                    let moved = [point[0] - offset_mm[0], point[1] - offset_mm[1]];
+                    if inside(&moved) {
+                        run.push(moved);
+                    } else {
+                        push_run(&mut kept, &mut run);
+                    }
+                }
+                push_run(&mut kept, &mut run);
+            }
+            *layer = kept;
+        }
+        (offset_mm, before - self.segment_count())
     }
 
     /// The bytes of the container blob: little-endian counts, ends and coordinates.
@@ -323,6 +382,15 @@ fn push_polyline(lines: &mut LayerLines, segments: &[ProfileSegment]) {
     lines.ends.push(lines.points_mm.len());
 }
 
+/// Appends `run` to `lines` as one polyline if it has a piece, and empties it.
+fn push_run(lines: &mut LayerLines, run: &mut Vec<[f64; 2]>) {
+    if run.len() >= 2 {
+        lines.points_mm.append(run);
+        lines.ends.push(lines.points_mm.len());
+    }
+    run.clear();
+}
+
 /// Appends the polylines of `loose` to `lines`, each run of them that meets end to end at
 /// points no third one touches joined into one polyline. Points meet when they are equal.
 fn join_loose(loose: &LayerLines, lines: &mut LayerLines) {
@@ -477,12 +545,14 @@ impl fmt::Display for UnderlayPlanError {
 impl std::error::Error for UnderlayPlanError {}
 
 /// One batch, so one Undo step, that adds an underlay named `name` with a tag of its own
-/// and one per layer, its lines being the container blob `lines_sha256`.
+/// and one per layer, its lines being the container blob `lines_sha256`, moved by
+/// `offset_mm` from the drawing's own coordinates.
 pub fn plan_underlay(
     snapshot: &Snapshot,
     name: &str,
     layer_names: &[String],
     lines_sha256: [u8; 32],
+    offset_mm: [f64; 2],
 ) -> Result<(CommandBatch, UnderlayId), UnderlayPlanError> {
     let next = |ids: &mut dyn Iterator<Item = u64>| {
         ids.max()
@@ -523,6 +593,7 @@ pub fn plan_underlay(
         tag,
         layers,
         lines_sha256,
+        offset_mm_bits: offset_mm.map(f64::to_bits),
     }));
     Ok((CommandBatch::new(commands), id))
 }

@@ -356,6 +356,7 @@ impl ModelQuery {
                     .collect::<Vec<_>>();
                 json!({"id":underlay.id.0,"name":bounded_text(&underlay.name),
                     "tag":tag_name(underlay.tag),"layers":layers,
+                    "offset_mm":underlay.offset_mm(),
                     "layers_complete":underlay.layers.len() <= MAX_PAGE})
             })
             .collect::<Vec<_>>();
