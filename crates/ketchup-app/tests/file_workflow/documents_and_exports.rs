@@ -1622,8 +1622,8 @@ fn two_open_windows_detect_external_save_and_offer_safe_save_as() {
     );
 }
 
-/// Grows a document past the native file limit (about 140 s in debug), so it
-/// runs with the large-house tests.
+/// Grows a document to the largest earlier revision a history keeps (32 MiB), so
+/// it runs with the large-house tests.
 #[test]
 #[ignore = "large-house: runs in full suite"]
 fn large_house_save_as_requires_explicit_consent_before_preserving_current_revision_without_full_history()
@@ -1631,15 +1631,18 @@ fn large_house_save_as_requires_explicit_consent_before_preserving_current_revis
     let directory = tempfile::tempdir().unwrap();
     let boundary = directory.path().join("history-boundary.ketchup");
     let saved = directory.path().join("current-only.ketchup");
-    // Grow an Undo history of large revisions until one more no longer fits in a
-    // native file; the file keeps the last history that did.
+    // About 31 MiB of names; node 1's name then sets how large the document is.
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(
-            (1..=96_u64)
+            (1..=32_u64)
                 .map(|id| CanonicalCommand::CreateEvaluatorNode {
                     id: NodeId(id),
-                    name: format!("history counter {id:02} {}", "x".repeat(32 * 1024)),
+                    name: if id == 1 {
+                        "history counter".to_owned()
+                    } else {
+                        format!("{id:04}{}", "x".repeat(1024 * 1024 - 8))
+                    },
                     dimension: Dimension::new("0", 0.0).unwrap(),
                     dependencies: Vec::new(),
                 })
@@ -1651,65 +1654,66 @@ fn large_house_save_as_requires_explicit_consent_before_preserving_current_revis
         document, &container,
     ) {
         Ok(bytes) => Some(bytes),
-        Err(ketchup_model::persistence::PersistenceError::TooLarge { .. }) => None,
+        Err(ketchup_model::persistence::PersistenceError::ResourceLimit) => None,
         Err(error) => panic!("unexpected save error {error:?}"),
     };
-    // A history stores shared bytes once, so every revision brings a name
-    // nothing else has.
-    let rename = |document: &mut DocumentStore, seed: u64, len: usize| {
-        let mut state = seed;
-        let name = (0..len)
-            .map(|_| {
-                state = state
-                    .wrapping_mul(6_364_136_223_846_793_005)
-                    .wrapping_add(1_442_695_040_888_963_407);
-                char::from(b"0123456789abcdef"[(state >> 60) as usize])
-            })
-            .collect();
+    let rename = |document: &mut DocumentStore, len: usize| {
         document
             .apply_batch(&CommandBatch::new(vec![
                 CanonicalCommand::RenameEvaluatorNode {
                     id: NodeId(1),
-                    name,
+                    name: "n".repeat(len),
                 },
             ]))
             .unwrap();
     };
-    let mut fitting = None;
-    let mut last_seed = 0;
-    for seed in 1..=ketchup_model::tolerance::limits::UNDO_REVISIONS as u64 {
-        let Some(bytes) = save(&document) else {
-            break;
-        };
-        fitting = Some((bytes, document.visible_undo_steps()));
-        rename(&mut document, seed, 256 * 1024);
-        last_seed = seed;
-    }
+    // Whether the document renamed to `len` still fits once an edit makes it an
+    // earlier revision; the file written is the one without that edit.
+    let fits_as_earlier = |document: &mut DocumentStore, len: usize| {
+        rename(document, len);
+        let written = save(document).expect("the current revision has no size limit");
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(2),
+                    dimension: Dimension::new("1", 1.0).unwrap(),
+                },
+            ]))
+            .unwrap();
+        let fits = save(document).is_some();
+        assert!(document.undo().is_some());
+        let undo_steps = document.visible_undo_steps();
+        assert!(document.undo().is_some());
+        fits.then_some((written, undo_steps))
+    };
+    let (mut fits, mut outgrows) = (1, 1024 * 1024 - 8);
+    let mut fitting = fits_as_earlier(&mut document, fits);
     assert!(
-        save(&document).is_none(),
-        "the history must outgrow a native file within the Undo limit"
+        fitting.is_some(),
+        "about 31 MiB fits as an earlier revision"
     );
-    // The last revision takes up the room left to within 1 KiB, so any edit of
-    // the opened file outgrows it (a new revision lists all its chunks).
-    assert!(document.undo().is_some());
-    let (mut fits, mut outgrows) = (1, 256 * 1024);
+    assert!(
+        fits_as_earlier(&mut document, outgrows).is_none(),
+        "over 32 MiB does not"
+    );
+    // The current revision then comes to within 1 KiB of the limit, so any
+    // edit of the opened file makes it an earlier revision that still fits,
+    // and a few more one that does not.
     while outgrows - fits > 1024 {
         let len = usize::midpoint(fits, outgrows);
-        rename(&mut document, last_seed, len);
-        match save(&document) {
-            Some(bytes) => {
+        match fits_as_earlier(&mut document, len) {
+            Some(written) => {
                 fits = len;
-                fitting = Some((bytes, document.visible_undo_steps()));
+                fitting = Some(written);
             }
             None => outgrows = len,
         }
-        assert!(document.undo().is_some());
     }
     let (fitting, fitting_undo_steps) = fitting.unwrap();
     std::fs::write(&boundary, fitting).unwrap();
 
-    // An edit costs a few KiB of history; the room left is under 1 KiB of name
-    // plus one revision, so a few boxes outgrow it.
+    // A box adds some hundred bytes to the document; under 1 KiB is left, so a
+    // few boxes outgrow it.
     const BOXES: usize = 16;
     let mut script = ScriptedFileDialogs::new()
         .queue_open(&boundary)

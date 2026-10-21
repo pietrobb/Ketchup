@@ -1,7 +1,7 @@
 //! Large documents: a house keeps its Undo history through Save and Open, and a
 //! document that saves also opens.
 use ketchup_model::document::{CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId};
-use ketchup_model::persistence::{self, PersistenceError};
+use ketchup_model::persistence;
 
 fn container_entry_len(bytes: &[u8], wanted: &str) -> usize {
     let mut cursor = 16;
@@ -203,30 +203,19 @@ fn document_with_named_megabytes(megabytes: u64) -> DocumentStore {
 }
 
 #[test]
-fn a_document_that_saves_also_opens_and_a_refused_save_names_the_size() {
+fn a_document_over_32_mib_saves_and_opens() {
+    // document.bin has no size limit of its own: it is as large as the document.
     let container = persistence::ContainerData::default();
-    let fitting = document_with_named_megabytes(30);
-    let saved = persistence::save_document_store(&fitting, &container).unwrap();
-    assert!(persistence::load(&saved).is_ok());
-
-    // Saving used to allow document.bin up to the 64 MB file limit; opening refused
-    // anything over 32 MB, so the saved file could not be opened again.
-    let oversized = document_with_named_megabytes(34);
-    let error = persistence::save_document_store(&oversized, &container).unwrap_err();
-    let PersistenceError::TooLarge {
-        entry,
-        bytes,
-        limit,
-    } = &error
-    else {
-        panic!("unexpected error {error:?}")
-    };
-    assert_eq!(entry, "document.bin");
-    assert_eq!(*limit, 32 * 1024 * 1024);
-    assert!(*bytes > 34 * 1024 * 1024, "{bytes}");
-    assert!(error.to_string().contains("34.0 MB"), "{error}");
-    assert!(
-        persistence::save_container(&oversized.current(), &container).is_err(),
-        "a release or export of the same document is refused the same way"
+    let large = document_with_named_megabytes(34);
+    let saved = persistence::save_document_store(&large, &container).unwrap();
+    assert!(saved.len() > 34 * 1024 * 1024, "{}", saved.len());
+    assert_eq!(
+        persistence::load(&saved)
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        large.current().canonical_digest()
     );
+    let released = persistence::save_container(&large.current(), &container).unwrap();
+    assert!(persistence::load(&released).is_ok());
 }

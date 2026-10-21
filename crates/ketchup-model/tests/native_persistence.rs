@@ -854,10 +854,6 @@ fn schema_three_checks_checksum_before_payload_decode_and_rejects_envelopes() {
         load_error(&unsupported),
         PersistenceError::UnsupportedSchema(newer)
     );
-    assert_eq!(
-        load_error(&vec![0; 32 * 1024 * 1024 + 1]),
-        PersistenceError::ResourceLimit
-    );
 }
 
 /// PS-4: a newer Kečup writing a field this version does not know under the same format
@@ -1623,28 +1619,26 @@ fn a_program_edit_stores_only_the_chunks_around_the_change() {
 
 /// A document whose Undo history holds more bytes than a native file stores.
 fn oversized_history_document() -> DocumentStore {
-    let commands = (1..=256_u64)
+    // Each earlier revision a history assembles is at most 32 MiB; this one is
+    // about 34 MB, and one edit makes it an earlier revision.
+    let commands = (1..=33_u64)
         .map(|id| CanonicalCommand::CreateEvaluatorNode {
             id: NodeId(id),
-            name: format!("parameter-{id:03}-{}", "x".repeat(1_024)),
+            name: format!("{id:04}{}", "x".repeat(1024 * 1024 - 8)),
             dimension: Dimension::new(id.to_string(), id as f64).unwrap(),
             dependencies: vec![],
         })
         .collect();
     let mut store = DocumentStore::new();
     store.apply_batch(&CommandBatch::new(commands)).unwrap();
-    // A history stores the bytes revisions share once, so each revision brings
-    // 256 KiB nothing else has: 200 of them outgrow the 32 MiB history.
-    for index in 0..limits::UNDO_REVISIONS as u64 {
-        store
-            .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::RenameEvaluatorNode {
-                    id: NodeId(1),
-                    name: unique_text(index, 256 * 1024),
-                },
-            ]))
-            .unwrap();
-    }
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("10000", 10_000.0).unwrap(),
+            },
+        ]))
+        .unwrap();
     store
 }
 
@@ -1700,6 +1694,45 @@ fn manual_history_keeps_the_shared_undo_limit_and_saves_in_full() {
 }
 
 #[test]
+fn a_history_over_32_mib_saves_and_opens_whole() {
+    let commands = (1..=256_u64)
+        .map(|id| CanonicalCommand::CreateEvaluatorNode {
+            id: NodeId(id),
+            name: format!("parameter-{id:03}-{}", "x".repeat(1_024)),
+            dimension: Dimension::new(id.to_string(), id as f64).unwrap(),
+            dependencies: vec![],
+        })
+        .collect();
+    let mut store = DocumentStore::new();
+    store.apply_batch(&CommandBatch::new(commands)).unwrap();
+    // A history stores the bytes revisions share once, so each revision brings
+    // 256 KiB nothing else has: 200 of them make about 50 MB.
+    for index in 0..limits::UNDO_REVISIONS as u64 {
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::RenameEvaluatorNode {
+                    id: NodeId(1),
+                    name: unique_text(index, 256 * 1024),
+                },
+            ]))
+            .unwrap();
+    }
+    let bytes =
+        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
+    let (_, _, history_len) = container_entry_offsets(&bytes, "history.bin");
+    assert!(history_len > 32 * 1024 * 1024, "{history_len}");
+    let mut reopened = reopened(&bytes);
+    assert_eq!(reopened.revision_count(), store.revision_count());
+    while reopened.undo().is_some() {
+        store.undo().unwrap();
+        assert_eq!(
+            reopened.current().canonical_digest(),
+            store.current().canonical_digest()
+        );
+    }
+}
+
+#[test]
 fn work_recovery_of_a_history_beyond_the_file_limit_keeps_the_current_revision() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("large.ketchup");
@@ -1715,7 +1748,7 @@ fn work_recovery_of_a_history_beyond_the_file_limit_keeps_the_current_revision()
     let store = oversized_history_document();
     assert!(matches!(
         persistence::save_document_store(&store, &container_data),
-        Err(PersistenceError::TooLarge { .. })
+        Err(PersistenceError::ResourceLimit)
     ));
 
     // Every edit writes a checkpoint; one too large for its history must not
@@ -1738,10 +1771,11 @@ fn explicit_current_snapshot_save_preserves_work_beyond_history_byte_limit() {
     let current = store.current();
     let expected_next_revision_id = store.next_revision_id();
     let original_revision_count = store.revision_count();
-    assert_eq!(original_revision_count, limits::UNDO_REVISIONS + 1);
+    // The empty document, the large one and the edit.
+    assert_eq!(original_revision_count, 3);
     assert!(matches!(
         persistence::save_document_store(&store, &persistence::ContainerData::default()),
-        Err(PersistenceError::TooLarge { entry, .. }) if entry == "history.bin"
+        Err(PersistenceError::ResourceLimit)
     ));
 
     let first = persistence::save_document_store_current_snapshot(

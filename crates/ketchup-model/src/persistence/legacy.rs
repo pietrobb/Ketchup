@@ -481,7 +481,7 @@ impl ProductSchemaCapabilities {
     }
 }
 
-use super::{MAX_COLLECTION_ITEMS, MAX_SNAPSHOT_BYTES, MAX_STRING_BYTES};
+use super::{MAX_COLLECTION_ITEMS, MAX_STRING_BYTES};
 const HEADER_BYTES: usize = 16;
 const MANIFEST_BYTES: usize = 8
     + 32
@@ -492,7 +492,6 @@ const MANIFEST_BYTES: usize = 8
     + 4
     + crate::document::TOLERANCE_PROFILE_V1.len();
 const MAX_MANIFEST_BYTES: usize = MANIFEST_BYTES;
-const MAX_PAYLOAD_BYTES: usize = MAX_SNAPSHOT_BYTES - HEADER_BYTES - MANIFEST_BYTES;
 
 pub(super) struct Decoded {
     pub(super) old: OldRecords,
@@ -719,9 +718,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Decoded, PersistenceError> {
                 .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?,
         ))
         .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
-        if payload_length > MAX_PAYLOAD_BYTES
-            || bytes.len() != HEADER_BYTES + MANIFEST_BYTES + payload_length
-        {
+        // The payload is the rest of the file, checked above to hold the header and manifest.
+        if payload_length != bytes.len() - HEADER_BYTES - MANIFEST_BYTES {
             return Err(PersistenceError::Legacy(LegacyError::InvalidEnvelopeLength));
         }
         let checksum: [u8; 32] = manifest_bytes[8..40]

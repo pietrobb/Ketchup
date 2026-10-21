@@ -63,7 +63,7 @@ struct HistoryBudget {
     /// Distinct programs, which an opened history holds all at once, each once
     /// however many revisions keep it (PS-2).
     programs: u64,
-    /// Largest revision snapshot.
+    /// Largest revision snapshot, which opening allocates before assembling it.
     snapshot_bytes: usize,
     /// Counts and string lengths of `history.bin` together, which its reader
     /// counts like every reader (PS-9).
@@ -72,7 +72,7 @@ struct HistoryBudget {
 const HISTORY_BUDGET: HistoryBudget = HistoryBudget {
     snapshots: 2 * 1024 * 1024 * 1024,
     programs: 256 * 1024 * 1024,
-    snapshot_bytes: MAX_SNAPSHOT_BYTES,
+    snapshot_bytes: MAX_REVISION_SNAPSHOT_BYTES,
     items: MAX_COLLECTION_ITEMS,
 };
 /// The entries the budget is reported for.
@@ -80,17 +80,15 @@ const HISTORY_REVISIONS_ENTRY: &str = "the revisions of history.bin";
 const HISTORY_PROGRAMS_ENTRY: &str = "the programs of history.bin";
 pub const CURRENT_SCHEMA: u16 = snapshot_codec::SNAPSHOT_FORMAT;
 
-/// Largest serialized document snapshot: the current document or one revision in its
-/// history. A native file has no size limit of its own: it is a container whose every
-/// entry must fit in the rest of the file, and its blobs (an underlay's lines, an
-/// imported source) are as large as they are.
-const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
+/// Largest earlier revision a history assembles from its chunks. Its stored length is
+/// no bound of what it allocates: chunks are shared, so a few bytes can name a whole
+/// snapshot many times. A native file and its entries have no size limit of their
+/// own: every entry the container stores must fit in the rest of the file.
+const MAX_REVISION_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_STRING_BYTES: usize = 1024 * 1024;
 const MAX_COLLECTION_ITEMS: u32 = 500_000;
 const MAX_CONTAINER_ENTRIES: u32 = 4_096;
 const MAX_CONTAINER_PATH_BYTES: usize = 1_024;
-/// Largest `history.bin`, whose revisions also keep [`HISTORY_BUDGET`].
-const MAX_HISTORY_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtensionEntry {
@@ -838,7 +836,6 @@ fn encode_history<R: HistoryRevision>(
         items = count_items(items, chunks.len(), budget.items)?;
         push_u8(&mut records, HISTORY_SNAPSHOT_IN_CHUNKS);
         table.write(&mut records, &snapshot.bytes, &snapshot.sha256, chunks)?;
-        check_entry_size("history.bin", table.bytes.len() + records.len())?;
         count_items(items, table.numbers.len(), budget.items)?;
     }
     count_items(items, table.numbers.len(), budget.items)?;
@@ -851,7 +848,6 @@ fn encode_history<R: HistoryRevision>(
     push_u32(&mut bytes, u32_count(table.numbers.len())?);
     bytes.extend_from_slice(&table.bytes);
     bytes.extend_from_slice(&records);
-    check_entry_size("history.bin", bytes.len())?;
     Ok(bytes)
 }
 
@@ -910,29 +906,6 @@ fn count_items(items: u64, more: usize, budget: u32) -> Result<u64, PersistenceE
         return Err(PersistenceError::ResourceLimit);
     }
     Ok(total)
-}
-
-/// Largest entry a container holds under `path`, if any: blobs and extensions have
-/// none. Saving and opening check the same limit, so a file that saves also opens.
-fn container_entry_limit(path: &str) -> Option<usize> {
-    match path {
-        "document.bin" => Some(MAX_SNAPSHOT_BYTES),
-        "history.bin" => Some(MAX_HISTORY_BYTES),
-        _ => None,
-    }
-}
-
-fn check_entry_size(path: &str, bytes: usize) -> Result<(), PersistenceError> {
-    if let Some(limit) = container_entry_limit(path)
-        && bytes > limit
-    {
-        return Err(PersistenceError::TooLarge {
-            entry: path.to_owned(),
-            bytes: bytes as u64,
-            limit: limit as u64,
-        });
-    }
-    Ok(())
 }
 
 pub fn save_container(
@@ -1099,7 +1072,6 @@ fn encode_container(
     push_u32(&mut encoded, u32_count(entries.len())?);
     for (path, (required, bytes)) in entries {
         validate_container_path(&path)?;
-        check_entry_size(&path, bytes.len())?;
         push_string(&mut encoded, &path)?;
         push_u8(&mut encoded, u8::from(required));
         push_u64(&mut encoded, u64_len(bytes.len())?);
@@ -1711,7 +1683,6 @@ fn container_directory(bytes: &[u8]) -> Result<Vec<ContainerEntry<'_>>, Persiste
         let required = reader.boolean()?;
         let length = usize::try_from(reader.u64()?)
             .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
-        check_entry_size(&path, length)?;
         // Every stored length fits in the rest of the file, its checksum first.
         if length > (bytes.len() - reader.cursor).saturating_sub(32) {
             return Err(PersistenceError::Truncated);
@@ -1988,9 +1959,6 @@ fn read_history_records<'a>(
     document_bytes: &'a [u8],
     budget: HistoryBudget,
 ) -> Result<ParsedHistory<'a>, PersistenceError> {
-    if bytes.len() > MAX_HISTORY_BYTES {
-        return Err(PersistenceError::ResourceLimit);
-    }
     let mut reader = Reader::with_item_budget(bytes, budget.items);
     if reader.take(HISTORY_MAGIC.len())? != HISTORY_MAGIC {
         return Err(PersistenceError::InvalidHistoryMagic);
@@ -2585,9 +2553,6 @@ fn load_document(
 ) -> Result<LoadOutcome, PersistenceError> {
     #[cfg(feature = "testing")]
     SNAPSHOT_DECODES.set(SNAPSHOT_DECODES.get() + 1);
-    if bytes.len() > MAX_SNAPSHOT_BYTES {
-        return Err(PersistenceError::ResourceLimit);
-    }
     let body = bytes
         .strip_prefix(MAGIC.as_slice())
         .ok_or(PersistenceError::InvalidMagic)?;
