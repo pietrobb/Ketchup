@@ -985,6 +985,49 @@ fn comments_count_as_saved_only_for_the_file_the_host_kept() {
     assert!(!app.has_unsaved_comments());
 }
 
+/// VW-16: the shared link's download finishing after the customer opened a
+/// local package and commented on it leaves both, and so does its failure;
+/// a download nothing superseded opens.
+#[test]
+fn a_late_shared_download_never_replaces_the_package_opened_since() {
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let mut app = ViewerApp::new(None).with_host_files();
+    let late = app.begin_open();
+    let failed_late = app.begin_open();
+    app.open(bytes.as_slice()).expect("open");
+    let view = CommentView {
+        camera: app.model.as_ref().unwrap().manifest().scenes[0]
+            .camera
+            .clone(),
+        hidden: vec![],
+        style: DisplayStyle::Shaded,
+        section: None,
+        scene: None,
+        shown: None,
+    };
+    let review = app.review.as_mut().unwrap();
+    review.start(view, None);
+    review.draft.as_mut().unwrap().text = "Darker oak".to_owned();
+    assert!(review.commit());
+
+    assert_eq!(app.finish_open(late, bytes.as_slice()), Ok(false));
+    assert!(app.has_unsaved_comments());
+    assert_eq!(app.opened_counts().map(|[.., comments]| comments), Some(1));
+    app.fail_open(
+        failed_late,
+        Rejection::new("viewer.web.fetch", RejectionPhase::Io),
+    );
+    assert!(app.error().is_none());
+    assert!(!app.loading);
+
+    let mut fresh = ViewerApp::new(None).with_host_files();
+    let pending = fresh.begin_open();
+    assert!(fresh.loading);
+    assert_eq!(fresh.finish_open(pending, bytes.as_slice()), Ok(true));
+    assert!(!fresh.loading && fresh.opened_counts().is_some());
+}
+
 /// Keeps `app` in `keeper` as the phone does frame after frame, until the
 /// package written on its own thread is on disk and its comments follow it.
 fn keep_all(keeper: &mut SessionKeeper, app: &mut ViewerApp) -> Result<(), Rejection> {

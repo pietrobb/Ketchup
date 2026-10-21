@@ -75,7 +75,16 @@ pub struct ViewerApp {
     loading: bool,
     /// The host keeps earlier content the customer can save elsewhere.
     kept: bool,
+    /// Packages shown so far, so a [`PendingOpen`] knows it was superseded.
+    shown: u64,
 }
+
+/// An open the host started and finishes later, as the download of a shared
+/// link: a package opened in the meantime supersedes it, so a late result
+/// never replaces what the customer opened and commented on (review
+/// 2026-10-19 VW-16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingOpen(u64);
 
 impl ViewerApp {
     /// An empty Viewer in the system language; `render_state` is `None` in tests.
@@ -100,6 +109,36 @@ impl ViewerApp {
             host_sharing: false,
             loading: false,
             kept: false,
+            shown: 0,
+        }
+    }
+
+    /// Start an open the host finishes with [`Self::finish_open`] or
+    /// [`Self::fail_open`]; the empty view says it is loading meanwhile.
+    pub fn begin_open(&mut self) -> PendingOpen {
+        self.loading = true;
+        PendingOpen(self.shown)
+    }
+
+    /// Open what `pending` delivered, unless another package was opened
+    /// since: then nothing changes and `Ok(false)` says it came too late.
+    pub fn finish_open(
+        &mut self,
+        pending: PendingOpen,
+        reader: impl Read,
+    ) -> Result<bool, Rejection> {
+        self.loading = false;
+        if pending.0 != self.shown {
+            return Ok(false);
+        }
+        self.open(reader).map(|()| true)
+    }
+
+    /// `pending` failed; the failure shows unless another package was opened since.
+    pub fn fail_open(&mut self, pending: PendingOpen, error: Rejection) {
+        self.loading = false;
+        if pending.0 == self.shown {
+            self.report(error);
         }
     }
 
@@ -227,6 +266,7 @@ impl ViewerApp {
         self.scene = scene;
         self.selected = None;
         self.error = None;
+        self.shown += 1;
         Ok(())
     }
 

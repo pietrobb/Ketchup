@@ -215,6 +215,12 @@ impl Files {
             }
             return Ok(());
         }
+        // As a desktop double-click: a file another app hands over only warns
+        // over unsaved comments, and handing it over again replaces them; the
+        // picker's Open buttons ask before they start (review 2026-10-19 VW-16).
+        if code == OPENED_BY_ANOTHER_APP && !app.may_discard_comments() {
+            return Ok(());
+        }
         let name = self.display_name(uri);
         let target = if name.is_empty() { uri } else { &name };
         let read_error = |error: std::io::Error| {

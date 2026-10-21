@@ -8,7 +8,7 @@
 use eframe::egui;
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_viewer::{
-    app::{FileRequest, ViewerApp},
+    app::{FileRequest, PendingOpen, ViewerApp},
     share,
 };
 use std::{
@@ -20,7 +20,16 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 /// Files the browser delivered since the last frame.
 enum Incoming {
-    Package { name: String, bytes: Vec<u8> },
+    Package {
+        name: String,
+        bytes: Vec<u8>,
+    },
+    /// The shared link's download, which a package opened since supersedes.
+    Shared {
+        pending: PendingOpen,
+        address: String,
+        result: Result<Vec<u8>, Rejection>,
+    },
     Comments(Vec<u8>),
     Failed(Rejection),
 }
@@ -61,8 +70,8 @@ pub async fn start(
                 let mut model_name = None;
                 match shared {
                     Ok(Some(address)) => {
-                        app.set_loading(true);
-                        fetch_model(address.clone(), inbox.clone(), cc.egui_ctx.clone());
+                        let pending = app.begin_open();
+                        fetch_model(pending, address.clone(), inbox.clone(), cc.egui_ctx.clone());
                         model_name = Some(address);
                     }
                     Ok(None) => {}
@@ -112,6 +121,26 @@ impl eframe::App for WebViewer {
                     self.app
                         .open(bytes.as_slice())
                         .map(|()| self.model_name = Some(name))
+                }
+                Incoming::Shared {
+                    pending,
+                    address,
+                    result: Ok(bytes),
+                } => self
+                    .app
+                    .finish_open(pending, bytes.as_slice())
+                    .map(|shown| {
+                        if shown {
+                            self.model_name = Some(address);
+                        }
+                    }),
+                Incoming::Shared {
+                    pending,
+                    result: Err(error),
+                    ..
+                } => {
+                    self.app.fail_open(pending, error);
+                    Ok(())
                 }
                 Incoming::Comments(bytes) => self.app.open_comments(bytes.as_slice()),
                 Incoming::Failed(error) => {
@@ -227,16 +256,14 @@ fn browser_origin_allowed(
 }
 
 /// Download the shared model; same-origin or CORS-enabled hosts only.
-fn fetch_model(address: String, inbox: Inbox, ctx: egui::Context) {
+fn fetch_model(pending: PendingOpen, address: String, inbox: Inbox, ctx: egui::Context) {
     spawn_local(async move {
-        let item = match fetch_bytes(&address).await {
-            Ok(bytes) => Incoming::Package {
-                name: address,
-                bytes,
-            },
-            Err(error) => Incoming::Failed(error),
-        };
-        inbox.borrow_mut().push(item);
+        let result = fetch_bytes(&address).await;
+        inbox.borrow_mut().push(Incoming::Shared {
+            pending,
+            address,
+            result,
+        });
         ctx.request_repaint();
     });
 }
