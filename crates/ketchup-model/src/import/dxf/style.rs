@@ -155,7 +155,19 @@ impl DrawingStyles {
         let ltscale = variable("$LTSCALE", 40)
             .map(parse_number)
             .transpose()?
-            .filter(|scale| *scale > 0.0)
+            .map(|scale| {
+                if scale > 0.0 {
+                    return Ok(scale);
+                }
+                diagnostics.add(
+                    ImportDiagnosticSeverity::Warning,
+                    SCALE_INVALID,
+                    Some(scale.to_string()),
+                    1,
+                )?;
+                Ok::<_, DxfImportError>(1.0)
+            })
+            .transpose()?
             .unwrap_or(1.0);
         let default_weight = match variable("$LWDEFAULT", 370).map(parse_integer::<i64>) {
             None => None,
@@ -185,10 +197,21 @@ impl DrawingStyles {
                     .find(|pair| pair.code == 2)
                     .map(|pair| pair.value.to_ascii_uppercase())
             };
+            let mut unnamed = || {
+                diagnostics.add(
+                    ImportDiagnosticSeverity::Warning,
+                    "dxf.table-record-unnamed",
+                    Some(kind.to_ascii_uppercase()),
+                    1,
+                )
+            };
             if kind.eq_ignore_ascii_case("TABLE") {
                 table = name().unwrap_or_default();
             } else if table == "LAYER" && kind.eq_ignore_ascii_case("LAYER") {
-                let Some(name) = name() else { continue };
+                let Some(name) = name() else {
+                    unnamed()?;
+                    continue;
+                };
                 let color = match parse_optional_i64(record, 420)? {
                     Some(rgb) => Some(true_color(rgb)),
                     // A negative color is a layer turned off; its lines keep the color.
@@ -214,7 +237,10 @@ impl DrawingStyles {
                     },
                 );
             } else if table == "LTYPE" && kind.eq_ignore_ascii_case("LTYPE") {
-                let Some(name) = name() else { continue };
+                let Some(name) = name() else {
+                    unnamed()?;
+                    continue;
+                };
                 let pattern = record
                     .iter()
                     .filter(|pair| pair.code == 49)
@@ -265,7 +291,7 @@ impl DrawingStyles {
         if let Some(scale) = style.invalid_scale {
             diagnostics.add(
                 ImportDiagnosticSeverity::Warning,
-                "dxf.linetype-scale-invalid",
+                SCALE_INVALID,
                 Some(scale.to_string()),
                 1,
             )?;
@@ -311,6 +337,7 @@ impl DrawingStyles {
 
 const COLOR_UNKNOWN: &str = "dxf.color-unknown";
 const LINEWEIGHT_UNKNOWN: &str = "dxf.lineweight-unknown";
+const SCALE_INVALID: &str = "dxf.linetype-scale-invalid";
 
 /// Counts in `diagnostics`, under `code`, a value that names no color or lineweight.
 fn report(

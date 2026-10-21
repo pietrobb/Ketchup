@@ -28,8 +28,12 @@ const BLOCKS: &str = concat!(
 );
 
 fn read(entities: &str) -> DxfUnderlay {
+    read_with("2", TABLES, entities)
+}
+
+fn read_with(ltscale: &str, tables: &str, entities: &str) -> DxfUnderlay {
     let source = format!(
-        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n9\n$LTSCALE\n40\n2\n9\n$LWDEFAULT\n370\n18\n0\nENDSEC\n{TABLES}{BLOCKS}0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n9\n$LTSCALE\n40\n{ltscale}\n9\n$LWDEFAULT\n370\n18\n0\nENDSEC\n{tables}{BLOCKS}0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
     );
     read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap()
 }
@@ -163,6 +167,30 @@ fn what_a_style_cannot_draw_as_asked_is_reported() {
     );
     assert_eq!(
         counted(&underlay, "dxf.linetype-shapes-not-drawn", "FENCE"),
+        Some(1)
+    );
+
+    // A drawing scale that is none, and table records without a name.
+    let underlay = read_with(
+        "-2",
+        concat!(
+            "0\nSECTION\n2\nTABLES\n",
+            "0\nTABLE\n2\nLTYPE\n70\n1\n0\nLTYPE\n70\n0\n49\n1\n0\nENDTAB\n",
+            "0\nTABLE\n2\nLAYER\n70\n1\n0\nLAYER\n70\n0\n62\n1\n0\nENDTAB\n",
+            "0\nENDSEC\n",
+        ),
+        "0\nLINE\n8\nWalls\n10\n0\n20\n0\n11\n100\n21\n0\n",
+    );
+    assert_eq!(
+        counted(&underlay, "dxf.linetype-scale-invalid", "-2"),
+        Some(1)
+    );
+    assert_eq!(
+        counted(&underlay, "dxf.table-record-unnamed", "LAYER"),
+        Some(1)
+    );
+    assert_eq!(
+        counted(&underlay, "dxf.table-record-unnamed", "LTYPE"),
         Some(1)
     );
 }
