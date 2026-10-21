@@ -2329,9 +2329,10 @@ impl<'a> HistorySnapshot<'a> {
                         .copied()
                         .ok_or(PersistenceError::InvalidRevisionHistory)
                 });
-                // The chunks are summed before anything is allocated, so a length
-                // the file names but its chunks do not fill reserves nothing; the
-                // length itself counted against the budget when the history was read.
+                // The chunks are summed before anything is allocated and the buffer
+                // is sized from that sum, never from the length the file names; the
+                // sum stops as soon as it passes that length, which counted against
+                // the history budget when the history was read.
                 let mut total = 0usize;
                 for part in parts.clone() {
                     total = total
@@ -2342,7 +2343,7 @@ impl<'a> HistorySnapshot<'a> {
                 if total != length {
                     return Err(PersistenceError::HistoryChecksumMismatch);
                 }
-                let mut encoded = Vec::with_capacity(length);
+                let mut encoded = Vec::with_capacity(total);
                 for part in parts {
                     encoded.extend_from_slice(part?);
                 }
