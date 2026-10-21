@@ -153,6 +153,37 @@ fn an_entity_it_cannot_read_is_left_out_and_counted() {
 }
 
 #[test]
+fn an_xref_and_its_blocks_are_not_loaded_but_named_with_their_inserts() {
+    // SITE is a resolved xref (4 | 32, and 64, ignored on input); SITE|door a block of it (16).
+    let blocks = concat!(
+        "0\nSECTION\n2\nBLOCKS\n",
+        "0\nBLOCK\n8\n0\n2\nSITE\n70\n100\n10\n0\n20\n0\n1\nC:\\site.dwg\n0\nENDBLK\n",
+        "0\nBLOCK\n8\n0\n2\nSITE|door\n70\n48\n10\n0\n20\n0\n",
+        "0\nINSERT\n8\n0\n2\nSITE\n10\n0\n20\n0\n0\nENDBLK\n0\nENDSEC\n",
+    );
+    let insert = |name: &str| format!("0\nINSERT\n8\n0\n2\n{name}\n10\n5\n20\n5\n");
+    let entities = [
+        line("0", [0.0, 0.0], [10.0, 0.0]),
+        insert("SITE"),
+        insert("SITE"),
+        insert("SITE|door"),
+    ]
+    .concat();
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n{blocks}0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+    );
+    let underlay = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
+    assert_eq!(underlay.lines.segment_count(), 1);
+    let not_loaded = underlay
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code() == "dxf.xref-not-loaded")
+        .map(|diagnostic| (diagnostic.subject().unwrap(), diagnostic.count()))
+        .collect::<Vec<_>>();
+    assert_eq!(not_loaded, [("SITE", 2), ("SITE|door", 1)]);
+}
+
+#[test]
 fn a_drawing_in_national_grid_coordinates_is_moved_near_the_origin_by_its_median() {
     // Five lines in S-JTSK, hundreds of kilometres from the origin, a stray line at the
     // origin and one 5 km off.

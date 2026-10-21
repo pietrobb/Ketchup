@@ -2313,8 +2313,8 @@ fn translated_block_inserts_expand_exact_profiles_with_layer_inheritance_and_uni
 }
 
 #[test]
-fn xref_external_and_unknown_block_flags_fail_closed() {
-    for flags in [4, 8, 16, 32, 64, 128, -1] {
+fn unknown_block_flags_fail_closed() {
+    for flags in [128, -1] {
         let blocks = format!(
             "0\nBLOCK\n2\npart\n70\n{flags}\n10\n0\n20\n0\n0\nLINE\n10\n0\n20\n0\n11\n1\n21\n0\n0\nENDBLK\n"
         );
