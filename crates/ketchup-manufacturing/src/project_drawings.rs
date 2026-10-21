@@ -154,16 +154,28 @@ fn grid_key(point: Point) -> [i64; 3] {
     point.map(|value| (value * 100.0).round() as i64)
 }
 
-/// The lines a drawing shows: where two exact faces meet, however shallow the
-/// fold, and where the surface ends. Mesh lines inside one face are never
-/// drawn, so a curved face does not show its facets whatever the mesh step.
-fn feature_edges(solid: &DrawingSolid) -> Vec<[Point; 2]> {
-    // Per mesh edge (keyed by its grid ends): its ends and the faces it bounds.
-    let mut edges: BTreeMap<[[i64; 3]; 2], (Point, Point, Vec<u32>)> = BTreeMap::new();
+/// The lines of one solid a drawing shows.
+struct SolidEdges {
+    /// Where two exact faces meet, however shallow the fold, and where the
+    /// surface ends: drawn in every view.
+    features: Vec<[Point; 2]>,
+    /// Mesh lines inside one face, with the normals of the two facets they
+    /// join: drawn only where the face turns away from the view, its outline.
+    smooth: Vec<([Point; 2], [Point; 2])>,
+}
+
+/// The [`SolidEdges`] of `solid`. A mesh line inside one face is never drawn
+/// as an edge, so a curved face does not show its facets whatever the mesh
+/// step, but a round column still shows its sides (review 2026-10-19 MF-16).
+fn solid_edges(solid: &DrawingSolid) -> SolidEdges {
+    // Per mesh edge (keyed by its grid ends): its ends and the faces it
+    // bounds, each with the normal of its facet.
+    type FacetsOfEdge = (Point, Point, Vec<(u32, Point)>);
+    let mut edges: BTreeMap<[[i64; 3]; 2], FacetsOfEdge> = BTreeMap::new();
     for (triangle, face) in solid.triangles.iter().zip(&solid.faces) {
-        if unit_normal(triangle).is_none() {
+        let Some(normal) = unit_normal(triangle) else {
             continue;
-        }
+        };
         for index in 0..3 {
             let (a, b) = (triangle[index], triangle[(index + 1) % 3]);
             let (ka, kb) = (grid_key(a), grid_key(b));
@@ -172,14 +184,34 @@ fn feature_edges(solid: &DrawingSolid) -> Vec<[Point; 2]> {
                 .entry(key)
                 .or_insert_with(|| (a, b, Vec::new()))
                 .2
-                .push(*face);
+                .push((*face, normal));
         }
     }
+    let mut lines = SolidEdges {
+        features: Vec::new(),
+        smooth: Vec::new(),
+    };
+    for (a, b, faces) in edges.into_values() {
+        match faces.as_slice() {
+            [(first, first_normal), (second, second_normal)] if first == second => {
+                lines.smooth.push(([a, b], [*first_normal, *second_normal]));
+            }
+            _ => lines.features.push([a, b]),
+        }
+    }
+    lines
+}
+
+/// The smooth mesh lines of `edges` on the outline of their face seen along
+/// `depth`: one facet they join faces the viewer and the other does not.
+fn outline_edges(edges: &SolidEdges, depth: Point) -> impl Iterator<Item = [Point; 2]> + '_ {
     edges
-        .into_values()
-        .filter(|(_, _, faces)| !matches!(faces.as_slice(), [first, second] if first == second))
-        .map(|(a, b, _)| [a, b])
-        .collect()
+        .smooth
+        .iter()
+        .filter(move |(_, [first, second])| {
+            (dot(*first, depth) < 0.0) != (dot(*second, depth) < 0.0)
+        })
+        .map(|(ends, _)| *ends)
 }
 
 #[derive(Clone, Copy)]
@@ -406,7 +438,7 @@ fn draw_view(
     view: ProjectView,
     frame: ViewFrame,
     solids: &[DrawingSolid],
-    edges: &[Vec<[Point; 2]>],
+    edges: &[SolidEdges],
 ) -> DrawnView {
     let mut sorted: Vec<(f64, Item)> = Vec::new();
     let mut cuts = Vec::new();
@@ -459,8 +491,9 @@ fn draw_view(
                 ));
             }
         }
-        for edge in solid_edges {
-            let Some(edge) = clip_segment(&frame, *edge) else {
+        let outline = outline_edges(solid_edges, frame.depth);
+        for edge in solid_edges.features.iter().copied().chain(outline) {
+            let Some(edge) = clip_segment(&frame, edge) else {
                 continue;
             };
             let (pa, pb) = (frame.project(edge[0]), frame.project(edge[1]));
@@ -821,7 +854,7 @@ pub fn project_sheet(
         .plan_cut_z_mm
         .or_else(|| default_plan_cut_z(solids, f64::from(DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM)))
         .ok_or(ProjectDrawingError::Empty)?;
-    let edges = solids.iter().map(feature_edges).collect::<Vec<_>>();
+    let edges = solids.iter().map(solid_edges).collect::<Vec<_>>();
     let views = view_frames(min, max, plan_cut_z)
         .into_iter()
         .map(|(view, frame)| draw_view(view, frame, solids, &edges))
@@ -966,7 +999,7 @@ mod tests {
     /// facet of its side; only its two rims are edges.
     #[test]
     fn a_coarsely_meshed_cylinder_shows_only_its_rims() {
-        let edges = feature_edges(&cylinder(50.0, 100.0, 17));
+        let edges = solid_edges(&cylinder(50.0, 100.0, 17)).features;
         assert_eq!(edges.len(), 2 * 17, "{edges:?}");
         assert!(
             edges
@@ -974,6 +1007,34 @@ mod tests {
                 .all(|[a, b]| a[2] == b[2] && (a[2] == 0.0 || a[2] == 100.0)),
             "{edges:?}"
         );
+    }
+
+    /// MF-16: a round column seen from the side shows its two vertical
+    /// outlines, not only its rims, and seen from above no line of its side.
+    #[test]
+    fn a_cylinder_seen_from_the_side_shows_its_outline() {
+        let column = cylinder(50.0, 100.0, 17);
+        let edges = vec![solid_edges(&column)];
+        let frames = view_frames([-50.0, -50.0, 0.0], [50.0, 50.0, 100.0], 200.0);
+        let (view, front) = frames[3];
+        assert_eq!(view, ProjectView::Front);
+        let drawn = draw_view(view, front, std::slice::from_ref(&column), &edges);
+        let mut sides = drawn
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Edge([a, b]) if (a[0] - b[0]).abs() < 1e-9 => Some(a[0]),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        sides.sort_by(f64::total_cmp);
+        sides.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        assert_eq!(sides.len(), 2, "{sides:?}");
+        assert!(
+            sides[0] < -49.0 && (sides[1] - 50.0).abs() < 1e-9,
+            "{sides:?}"
+        );
+        assert_eq!(outline_edges(&edges[0], frames[0].1.depth).count(), 0);
     }
 
     /// P3-V: two faces of a shallow roof meeting at 10° still show their ridge,
@@ -996,7 +1057,7 @@ mod tests {
             faces: vec![0, 0, 1, 1],
             threads: Vec::new(),
         };
-        let edges = feature_edges(&roof);
+        let edges = solid_edges(&roof).features;
         assert!(
             edges.contains(&[ridge_west, ridge_east]) || edges.contains(&[ridge_east, ridge_west]),
             "{edges:?}"
