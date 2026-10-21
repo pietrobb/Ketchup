@@ -156,6 +156,32 @@ fn an_entity_it_cannot_read_is_left_out_and_counted() {
     assert!(unreadable.subject().unwrap().starts_with("LINE: "));
 }
 
+/// UL-1: a surveyed drawing carries a height on nearly every line. An underlay is a
+/// plan, so heights, elevations and thicknesses are read as 0 and counted once; only
+/// an extrusion that is not ±Z is still left out.
+#[test]
+fn heights_are_flattened_into_the_plan_and_reported_once() {
+    let entities = concat!(
+        "0\nLINE\n8\nsurvey\n10\n0\n20\n0\n30\n251.3\n11\n10\n21\n0\n31\n250.9\n",
+        "0\nLWPOLYLINE\n8\nsurvey\n90\n2\n70\n0\n38\n250\n39\n2\n10\n0\n20\n5\n10\n10\n20\n5\n",
+        "0\nCIRCLE\n8\nsurvey\n10\n5\n20\n5\n30\n249\n40\n1\n",
+    );
+    let tilted = "0\nLINE\n8\nsurvey\n10\n0\n20\n0\n11\n1\n21\n0\n210\n1\n220\n0\n230\n0\n";
+    let underlay = read(&format!("{entities}{tilted}"));
+    assert_eq!(underlay.layers, ["survey"]);
+    let polylines = underlay.lines.layers()[0].polylines().count();
+    // The line, the polyline and the circle; the tilted line is left out.
+    assert_eq!(polylines, 3);
+    let diagnostic = |code: &str| {
+        underlay
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code() == code)
+    };
+    assert_eq!(diagnostic("dxf.height-flattened").unwrap().count(), 3);
+    assert_eq!(diagnostic("dxf.entity-unreadable").unwrap().count(), 1);
+}
+
 #[test]
 fn an_xref_and_its_blocks_are_not_loaded_but_named_with_their_inserts() {
     // SITE is a resolved xref (4 | 32, and 64, ignored on input); SITE|door a block of it (16).

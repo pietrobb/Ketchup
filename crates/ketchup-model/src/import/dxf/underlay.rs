@@ -1,6 +1,7 @@
 //! A DXF drawing read as an underlay: every line, arc and curve it draws, by layer, as
 //! polylines, without making profiles of them, and its texts, each in the color, linetype
-//! and lineweight the drawing gives it ([`super::style`]). An entity it cannot read is
+//! and lineweight the drawing gives it ([`super::style`]), seen from above: heights,
+//! elevations and thicknesses are dropped and counted once. An entity it cannot read is
 //! left out and counted in the report. A drawing whose coordinates leave the canonical
 //! envelope, such as one in national grid coordinates, is moved near the origin by an
 //! offset the report names and the underlay keeps.
@@ -119,10 +120,19 @@ pub fn read_dxf_underlay_from(
             // would cut one.
             awaits_seqend |= value.parse::<i64>() == Ok(1);
         }
-        entity.push(code, &value);
+        entity.push_flat(code, &value);
     }
     if !entity.is_empty() {
         read_entity(&mut entity, &mut diagnostics)?;
+    }
+    let flattened = entity.flattened + sections.blocks.flattened;
+    if flattened > 0 {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Info,
+            "dxf.height-flattened",
+            None,
+            u32::try_from(flattened).unwrap_or(u32::MAX),
+        )?;
     }
     let (layer_names, mut lines) = builder.finish();
     let moved = lines.move_near_origin();
@@ -159,6 +169,10 @@ pub fn read_dxf_underlay_from(
 struct PairBuffer {
     text: String,
     pairs: Vec<(i16, Range<usize>)>,
+    /// Whether the entity being pushed had a height dropped.
+    flattening: bool,
+    /// How many entities had a Z, an elevation or a thickness dropped.
+    flattened: usize,
 }
 
 impl PairBuffer {
@@ -166,6 +180,33 @@ impl PairBuffer {
         let start = self.text.len();
         self.text.push_str(value);
         self.pairs.push((code, start..self.text.len()));
+    }
+
+    /// [`Self::push`] of an entity seen from above: an underlay is a plan, so a Z
+    /// coordinate (groups 30-37), an elevation (38) or a thickness (39) is read as 0,
+    /// as a surveyed drawing in national grid coordinates carries one on nearly every
+    /// line. An extrusion direction other than ±Z is still refused by the entity.
+    fn push_flat(&mut self, code: i16, value: &str) {
+        // The vertices and attributes that follow an entity are part of it.
+        let follows = ["VERTEX", "ATTRIB", "SEQEND"]
+            .iter()
+            .any(|kind| value.eq_ignore_ascii_case(kind));
+        if code == 0 && !follows {
+            self.flattening = false;
+        }
+        let height = (30..=39).contains(&code)
+            && value
+                .trim()
+                .parse::<f64>()
+                .is_ok_and(|height| height != 0.0);
+        if !height {
+            return self.push(code, value);
+        }
+        if !self.flattening {
+            self.flattening = true;
+            self.flattened += 1;
+        }
+        self.push(code, "0");
     }
 
     fn pairs(&self) -> Vec<DxfPair<'_>> {
@@ -192,6 +233,7 @@ impl PairBuffer {
     fn clear(&mut self) {
         self.text.clear();
         self.pairs.clear();
+        self.flattening = false;
     }
 }
 
@@ -246,8 +288,10 @@ fn read_sections(
             if code == 0 && value.eq_ignore_ascii_case("ENDSEC") {
                 break;
             }
-            if let Some(kept) = kept.as_mut() {
-                kept.push(code, &value);
+            match kept.as_mut() {
+                Some(blocks) if name == "BLOCKS" => blocks.push_flat(code, &value),
+                Some(kept) => kept.push(code, &value),
+                None => {}
             }
         }
         if !names.insert(name.clone()) {
