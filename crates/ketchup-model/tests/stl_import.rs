@@ -125,7 +125,7 @@ fn empty_binary_and_unbounded_ascii_records_are_typed_refusals_without_panics() 
     let too_many_blank_lines = format!("solid\n{}endsolid\n", "\n".repeat(1_600_001));
     assert_eq!(
         parse_stl(too_many_blank_lines.as_bytes(), millimetres()),
-        Err(StlImportError::SourceTooLarge)
+        Err(StlImportError::TooManyLines)
     );
 }
 

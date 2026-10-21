@@ -29,8 +29,7 @@ use ketchup_model::document::{
 };
 use ketchup_model::graph::sha256_bytes;
 use ketchup_model::import::{
-    DxfImportOptions, ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_DXF_SOURCE_BYTES,
-    MAX_STL_SOURCE_BYTES, inspect_dxf,
+    DxfImportOptions, ImportFormat, ImportLengthUnit, ImportUnitAuthority, inspect_dxf,
 };
 use ketchup_model::mesh_recognition::{MeshRecognition, recognize_mesh_body};
 use ketchup_scheduler::ExactWorkerSupervisor;

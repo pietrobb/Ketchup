@@ -1932,7 +1932,6 @@ fn file_import_dxf_refusals_preserve_exact_state_and_reachable_history() {
     let directory = tempfile::tempdir().unwrap();
     let malformed = directory.path().join("malformed.dxf");
     let ambiguous = directory.path().join("ambiguous.dxf");
-    let oversized = directory.path().join("oversized.dxf");
     std::fs::write(
         &malformed,
         b"0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n11\n1\n",
@@ -1948,15 +1947,10 @@ fn file_import_dxf_refusals_preserve_exact_state_and_reachable_history() {
 0\nENDSEC\n0\nEOF\n",
     )
     .unwrap();
-    std::fs::File::create(&oversized)
-        .unwrap()
-        .set_len(MAX_DXF_SOURCE_BYTES + 1)
-        .unwrap();
 
     let script = ScriptedFileDialogs::new()
         .queue_import(ImportFormat::Dxf, &malformed)
-        .queue_import(ImportFormat::Dxf, &ambiguous)
-        .queue_import(ImportFormat::Dxf, &oversized);
+        .queue_import(ImportFormat::Dxf, &ambiguous);
     let mut shell = Shell::with_dialogs(script);
     compose_two_shared_occurrences(&mut shell);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
@@ -1964,11 +1958,37 @@ fn file_import_dxf_refusals_preserve_exact_state_and_reachable_history() {
     let history = reachable_history_digests(&mut shell);
     assert!(before.redo_steps > 0);
 
-    for _ in 0..3 {
+    for _ in 0..2 {
         shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
         assert!(digest_starts_like(&shell, "error-import-dxf"));
         assert_state_and_history_unchanged(&mut shell, &before, &history);
     }
+}
+
+#[test]
+fn file_import_dxf_over_8_mib_is_not_refused_for_its_size() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("large.dxf");
+    // Comments (group 999) pad the drawing past the 8 MiB the reader once refused.
+    let comment = format!("999\n{}\n", "x".repeat(500));
+    let mut source = comment.repeat(17_000).into_bytes();
+    source.extend_from_slice(valid_dxf_subset());
+    assert!(source.len() > 8 * 1024 * 1024);
+    std::fs::write(&path, &source).unwrap();
+    let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &path);
+    let mut shell = Shell::with_dialogs(script);
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+
+    assert!(
+        shell.app().document_revision() == before.revision + 1,
+        "the large DXF did not import: {}",
+        shell.app().action_digest()
+    );
+    assert!(digest_starts_like(&shell, "digest-imported-dxf"));
+    assert_eq!(shell.app().import_receipt_count(), 1);
 }
 
 #[test]
@@ -2165,9 +2185,11 @@ fn file_import_stl_cancel_and_every_refusal_leave_canonical_state_unchanged() {
     let mut open_shell = valid_ascii_tetrahedron()[..last_facet].to_vec();
     open_shell.extend_from_slice(b"endsolid tetrahedron\n");
     std::fs::write(&non_manifold, open_shell).unwrap();
+    // One byte past the 208,000,260 bytes the reader once refused: read whole and judged by
+    // what it holds, not by its size.
     std::fs::File::create(&oversized)
         .unwrap()
-        .set_len(MAX_STL_SOURCE_BYTES + 1)
+        .set_len(208_000_261)
         .unwrap();
 
     let script = ScriptedFileDialogs::new()
@@ -2205,6 +2227,14 @@ fn file_import_stl_cancel_and_every_refusal_leave_canonical_state_unchanged() {
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
     assert!(digest_starts_like(&shell, "error-import-stl"));
+    assert!(
+        shell
+            .app()
+            .action_digest()
+            .contains("binary STL triangle count does not match its byte length"),
+        "{}",
+        shell.app().action_digest()
+    );
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 }
 

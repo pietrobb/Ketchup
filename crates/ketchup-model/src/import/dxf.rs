@@ -16,7 +16,6 @@ use super::{
 
 pub const DXF_PARSER_ID: &str = "ketchup-dxf";
 pub const DXF_PARSER_VERSION: &str = "27";
-pub const MAX_DXF_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_DXF_LINE_BYTES: usize = 512;
 const MAX_DXF_PAIRS: usize = 100_000;
 const MAX_DXF_ENTITIES: usize = 10_000;
@@ -30,7 +29,6 @@ const DXF_GEOMETRY_EPSILON_MM: f64 = ROUNDING;
 /// worker, whose memory and time limits bound it, and keeps every line it can read.
 #[derive(Clone, Copy)]
 struct DxfReading {
-    max_source_bytes: u64,
     max_pairs: usize,
     max_entities: usize,
     max_profiles: usize,
@@ -42,7 +40,6 @@ struct DxfReading {
 }
 
 const PROFILE_READING: DxfReading = DxfReading {
-    max_source_bytes: MAX_DXF_SOURCE_BYTES,
     max_pairs: MAX_DXF_PAIRS,
     max_entities: MAX_DXF_ENTITIES,
     max_profiles: MAX_DXF_PROFILES,
@@ -55,7 +52,6 @@ const PROFILE_READING: DxfReading = DxfReading {
 const UNBOUNDED: usize = usize::MAX / 2;
 
 const UNDERLAY_READING: DxfReading = DxfReading {
-    max_source_bytes: u64::MAX,
     max_pairs: UNBOUNDED,
     max_entities: UNBOUNDED,
     max_profiles: UNBOUNDED,
@@ -149,7 +145,6 @@ pub enum DxfImportError {
     Empty,
     /// The drawing could not be read on (an underlay is read from its file as it goes).
     Read(std::io::ErrorKind),
-    SourceTooLarge,
     NonAscii,
     LineTooLong,
     TooManyPairs,
@@ -215,7 +210,6 @@ impl fmt::Display for DxfImportError {
                 return write!(formatter, "the DXF could not be read on: {kind}");
             }
             Self::Empty => "DXF source is empty",
-            Self::SourceTooLarge => "DXF source exceeds the bounded 8 MiB envelope",
             Self::NonAscii => "DXF must be UTF-8 text, or older than DXF 2007 and in the Windows code page its $DWGCODEPAGE names; binary DXF is unsupported",
             Self::LineTooLong => "DXF contains a line longer than 512 bytes",
             Self::TooManyPairs => "DXF exceeds the 100,000 group-code pair limit",
@@ -478,9 +472,6 @@ fn read_dxf(
     options: DxfImportOptions,
     reading: DxfReading,
 ) -> Result<ReadDxf, DxfImportError> {
-    if source.len() as u64 > reading.max_source_bytes {
-        return Err(DxfImportError::SourceTooLarge);
-    }
     let text = dxf_source_text(source)?;
     let pairs = parse_pairs(&text, reading.max_pairs)?;
     let (sections, mut diagnostics) = parse_sections(&pairs, reading)?;
@@ -691,9 +682,18 @@ fn code_page_encoding(name: &[u8]) -> Option<&'static encoding_rs::Encoding> {
 }
 
 fn parse_pairs(text: &str, max_pairs: usize) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
-    let lines = text.lines().collect::<Vec<_>>();
-    if lines.iter().any(|line| line.len() > MAX_DXF_LINE_BYTES) {
-        return Err(DxfImportError::LineTooLong);
+    // Refused on the pair count as it is reached, so a large file holds no more lines than
+    // the count allows.
+    let max_lines = max_pairs.saturating_mul(2).saturating_add(1);
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        if line.len() > MAX_DXF_LINE_BYTES {
+            return Err(DxfImportError::LineTooLong);
+        }
+        if lines.len() > max_lines {
+            return Err(DxfImportError::TooManyPairs);
+        }
+        lines.push(line);
     }
     if lines.len() % 2 != 0 {
         return Err(DxfImportError::MalformedPairs);

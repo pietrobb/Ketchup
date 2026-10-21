@@ -29,21 +29,6 @@ pub enum ImportFormat {
     Glb,
 }
 
-impl ImportFormat {
-    /// The source envelope a reader of this format enforces before parsing, if any.
-    /// STEP, IGES, SketchUp scene and GLB sources have none: what a reader allocates is
-    /// bounded by the bytes the source holds and by the format's count limits (vertices,
-    /// triangles, definitions, instances), and OCCT reads STEP and IGES in the exact
-    /// worker, a process of its own.
-    pub const fn source_limit_bytes(self) -> Option<u64> {
-        match self {
-            Self::Stl => Some(MAX_STL_SOURCE_BYTES),
-            Self::Dxf => Some(dxf::MAX_DXF_SOURCE_BYTES),
-            Self::Step | Self::Iges | Self::SketchupScene | Self::Glb => None,
-        }
-    }
-}
-
 impl fmt::Display for ImportFormat {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -265,12 +250,7 @@ impl ImportReceipt {
         if self.schema != IMPORT_RECEIPT_SCHEMA_V1 || self.id.0 == 0 {
             return Err(ImportContractError::InvalidIdentity);
         }
-        if self.source_byte_len == 0
-            || self
-                .format
-                .source_limit_bytes()
-                .is_some_and(|limit| self.source_byte_len > limit)
-        {
+        if self.source_byte_len == 0 {
             return Err(ImportContractError::InvalidSource);
         }
         validate_text(&self.source_name)?;
@@ -1076,11 +1056,9 @@ pub const STL_PARSER_ID: &str = "ketchup-stl";
 pub const STL_PARSER_VERSION: &str = "1";
 const MAX_STL_ASCII_LINE_BYTES: usize = 128;
 const MAX_STL_ASCII_LINES_PER_TRIANGLE: usize = 8;
+// Each facet requires seven structural lines; the ASCII subset permits one
+// additional blank line per facet.
 const MAX_STL_ASCII_LINES: usize = (limits::MESH_TRIANGLES * MAX_STL_ASCII_LINES_PER_TRIANGLE) + 2;
-// Each facet requires seven structural lines. The bounded ASCII subset permits
-// one additional blank line per facet and CRLF endings without unbounded input.
-pub const MAX_STL_SOURCE_BYTES: u64 =
-    MAX_STL_ASCII_LINES as u64 * (MAX_STL_ASCII_LINE_BYTES as u64 + 2);
 const STL_AREA_EPSILON: f64 = ROUNDING * ROUNDING;
 const STL_VOLUME_EPSILON: f64 = APPROXIMATION;
 
@@ -1112,7 +1090,7 @@ impl ParsedStlMesh {
 pub enum StlImportError {
     Empty,
     NoTriangles,
-    SourceTooLarge,
+    TooManyLines,
     UnrecognizedEncoding,
     InvalidBinaryLength,
     InvalidAscii,
@@ -1135,7 +1113,7 @@ impl fmt::Display for StlImportError {
         formatter.write_str(match self {
             Self::Empty => "STL source is empty",
             Self::NoTriangles => "STL source contains no triangles",
-            Self::SourceTooLarge => "STL source exceeds the bounded 200,000-facet text envelope",
+            Self::TooManyLines => "ASCII STL exceeds 8 lines for each of its 200,000 facets",
             Self::UnrecognizedEncoding => "source is neither a bounded binary nor ASCII STL",
             Self::InvalidBinaryLength => "binary STL triangle count does not match its byte length",
             Self::InvalidAscii => "ASCII STL structure is malformed or contains unsupported text",
@@ -1188,9 +1166,6 @@ pub fn parse_stl(
 ) -> Result<ParsedStlMesh, StlImportError> {
     if source.is_empty() {
         return Err(StlImportError::Empty);
-    }
-    if source.len() as u64 > MAX_STL_SOURCE_BYTES {
-        return Err(StlImportError::SourceTooLarge);
     }
     if units.authority() != ImportUnitAuthority::UserDeclared {
         return Err(StlImportError::UnitsMustBeUserDeclared);
@@ -1373,7 +1348,7 @@ fn parse_ascii_stl(source: &[u8]) -> Result<Vec<StlFacet>, StlImportError> {
     for line in text.lines() {
         source_line_count += 1;
         if source_line_count > MAX_STL_ASCII_LINES {
-            return Err(StlImportError::SourceTooLarge);
+            return Err(StlImportError::TooManyLines);
         }
         if line.len() > MAX_STL_ASCII_LINE_BYTES {
             return Err(StlImportError::InvalidAscii);

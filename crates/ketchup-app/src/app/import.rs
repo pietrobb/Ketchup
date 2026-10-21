@@ -94,7 +94,7 @@ impl KetchupApp {
         })
     }
 
-    /// The bytes of a `.dxf` or `.dwg` drawing, bounded like a DXF file.
+    /// The bytes of a `.dxf` or `.dwg` drawing.
     pub(crate) fn read_dxf_source(path: &Path) -> Result<Vec<u8>, ImportError> {
         if !path
             .extension()

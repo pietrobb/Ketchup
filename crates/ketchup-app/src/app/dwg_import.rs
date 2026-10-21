@@ -1,5 +1,5 @@
 //! A `.dwg` drawing imports as the DXF that `ketchup-dwg` converts it to: the
-//! review, the plan and the bounded DXF limits are those of a DXF import. The
+//! review, the plan and the DXF count limits are those of a DXF import. The
 //! sealed source stays the DWG file's own bytes, so publication still checks
 //! that the file on disk is the one reviewed. What the DWG reader could not
 //! decode is listed in the review, never dropped silently.
@@ -37,10 +37,8 @@ pub(crate) fn read_dwg(
     if let Some((_, drawing)) = read().iter().find(|(kept, _)| *kept == digest) {
         return Ok(Arc::clone(drawing));
     }
-    let max_dxf_bytes =
-        usize::try_from(ketchup_model::import::MAX_DXF_SOURCE_BYTES).unwrap_or(usize::MAX);
     let drawing = Arc::new(
-        ketchup_application::program_isolation::convert_dwg(source, max_dxf_bytes, cancel)
+        ketchup_application::program_isolation::convert_dwg(source, cancel)
             .map_err(|error| ImportError::failed(ImportFormat::Dxf, error))?,
     );
     let mut kept = read();
@@ -153,8 +151,7 @@ pub(crate) fn is_dwg_path(path: &Path) -> bool {
 }
 
 /// The DXF a drawing import reads from `source`, the bytes of `path`: those
-/// bytes, or for a `.dwg` file the DXF they convert to, refused when it would
-/// be larger than a DXF file the import reads. The window has read the file on
+/// bytes, or for a `.dwg` file the DXF they convert to. The window has read the file on
 /// a thread before ([`KetchupApp::start_dwg_read`], the bridge's DWG import) and
 /// holds the conversion, so it is found here; only a caller that has not read it
 /// (the in-process harness) waits for the program worker.

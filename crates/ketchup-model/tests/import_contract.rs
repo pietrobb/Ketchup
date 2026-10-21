@@ -55,7 +55,7 @@ fn import_batch(id: u64, definition_id: u64, occurrence_id: u64, source: &[u8]) 
 }
 
 #[test]
-fn a_receipt_is_bounded_by_its_own_format_reader_limit() {
+fn a_receipt_of_any_format_takes_any_nonzero_source_length() {
     let receipt = |format, source_byte_len| {
         ImportReceipt::new(
             ImportId(1),
@@ -73,39 +73,17 @@ fn a_receipt_is_bounded_by_its_own_format_reader_limit() {
             vec![ImportOutputRef::Definition(DefinitionId(1))],
         )
     };
-    // STEP, IGES, SketchUp scenes and GLB have no source limit.
+    // No format has a source size limit.
     for format in [
+        ImportFormat::Stl,
+        ImportFormat::Dxf,
         ImportFormat::Step,
         ImportFormat::Iges,
         ImportFormat::SketchupScene,
         ImportFormat::Glb,
     ] {
-        assert_eq!(format.source_limit_bytes(), None);
         assert!(receipt(format, u64::MAX).is_ok(), "{format:?}");
         assert!(receipt(format, 0).is_err());
-    }
-    for format in [ImportFormat::Stl, ImportFormat::Dxf] {
-        let limit = format.source_limit_bytes().unwrap();
-        let receipt = |source_byte_len| {
-            ImportReceipt::new(
-                ImportId(1),
-                format,
-                [7; 32],
-                source_byte_len,
-                "part",
-                ImportUnitDecision::new(
-                    ImportLengthUnit::Millimetre,
-                    ImportUnitAuthority::UserDeclared,
-                ),
-                "reader",
-                "1",
-                Vec::new(),
-                vec![ImportOutputRef::Definition(DefinitionId(1))],
-            )
-        };
-        assert!(receipt(limit).is_ok(), "{format:?} at its limit");
-        assert!(receipt(limit + 1).is_err(), "{format:?} past its limit");
-        assert!(receipt(0).is_err());
     }
 }
 

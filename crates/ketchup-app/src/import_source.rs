@@ -1,4 +1,4 @@
-//! One sealed import source shared by every import format: the bounded read, the seal taken
+//! One sealed import source shared by every import format: the read, the seal taken
 //! when the user picks the file, and the checks that make an import publish exactly what the
 //! user reviewed. Every failure names its format and keeps its cause.
 
@@ -84,40 +84,13 @@ impl<U> ImportSourcePlan<U> {
     }
 }
 
-/// Reads at most the format's bounded envelope, refusing larger files before and after reading.
-/// STEP, IGES, SketchUp scene and GLB sources have none and are read whole. A `.dwg` drawing
-/// is read whole: the program worker converts it under its memory limit, and the DXF it
-/// converts to is bounded like a DXF file.
+/// Reads the whole file. No format has a size limit: each reader bounds what it allocates
+/// by the bytes the file holds and by its own count limits.
 pub(crate) fn read_import_source(
     format: ImportFormat,
     path: &Path,
 ) -> Result<Vec<u8>, ImportError> {
-    let limit_bytes = if format == ImportFormat::Dxf && super::dwg_import::is_dwg_path(path) {
-        u64::MAX
-    } else {
-        format.source_limit_bytes().unwrap_or(u64::MAX)
-    };
-    let failed = |cause: std::io::Error| ImportError {
-        format,
-        failure: ImportFailure::Failed(cause.into()),
-    };
-    let too_large = ImportError {
-        format,
-        failure: ImportFailure::SourceTooLarge { limit_bytes },
-    };
-    if std::fs::metadata(path).map_err(failed)?.len() > limit_bytes {
-        return Err(too_large);
-    }
-    let mut file = std::fs::File::open(path).map_err(failed)?;
-    let mut source = Vec::new();
-    std::io::Read::by_ref(&mut file)
-        .take(limit_bytes.saturating_add(1))
-        .read_to_end(&mut source)
-        .map_err(failed)?;
-    if source.len() as u64 > limit_bytes {
-        return Err(too_large);
-    }
-    Ok(source)
+    std::fs::read(path).map_err(|cause| ImportError::failed(format, cause))
 }
 
 pub(crate) type BoxedCause = Box<dyn std::error::Error + Send + Sync>;
@@ -140,9 +113,6 @@ impl ImportError {
 
 #[derive(Debug)]
 pub(crate) enum ImportFailure {
-    SourceTooLarge {
-        limit_bytes: u64,
-    },
     /// The document changed after the review was prepared, or the review was invalidated.
     ReviewStale,
     /// The review still reports an error or awaits a required confirmation.
@@ -162,10 +132,6 @@ impl std::fmt::Display for ImportError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let format = self.format;
         match &self.failure {
-            ImportFailure::SourceTooLarge { limit_bytes } => write!(
-                formatter,
-                "{format} source exceeds the bounded {limit_bytes}-byte envelope"
-            ),
             ImportFailure::ReviewStale => {
                 write!(
                     formatter,
@@ -285,22 +251,15 @@ mod tests {
             "GLB source changed after it was selected for review"
         );
 
+        // Past the 8 MiB the DXF reader once refused, read whole and not refused for its size.
         let large = directory.path().join("large.dxf");
+        let large_len = 8 * 1024 * 1024 + 1;
         std::fs::File::create(&large)
             .unwrap()
-            .set_len(ImportFormat::Dxf.source_limit_bytes().unwrap() + 1)
+            .set_len(large_len)
             .unwrap();
-        let error = read_import_source(ImportFormat::Dxf, &large).unwrap_err();
-        assert!(matches!(
-            error.failure,
-            ImportFailure::SourceTooLarge { limit_bytes }
-                if Some(limit_bytes) == ImportFormat::Dxf.source_limit_bytes()
-        ));
-        assert!(
-            error
-                .to_string()
-                .starts_with("DXF source exceeds the bounded")
-        );
+        let source = read_import_source(ImportFormat::Dxf, &large).unwrap();
+        assert_eq!(source.len() as u64, large_len);
 
         let error = read_import_source(ImportFormat::Step, &directory.path().join("missing.step"))
             .unwrap_err();
