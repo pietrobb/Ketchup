@@ -126,7 +126,7 @@ impl UnderlayText {
         let kinds = reader.take(3, 1)?;
         let length = reader.count()?;
         let text = std::str::from_utf8(reader.take(length, 1)?)
-            .map_err(|_: std::str::Utf8Error| UnderlayLinesError::InvalidText)?
+            .map_err(UnderlayLinesError::TextNotUtf8)?
             .to_owned();
         let numbers = [
             x,

@@ -129,8 +129,10 @@ pub enum UnderlayLinesError {
     InvalidPolyline,
     /// A coordinate that is not a finite number.
     NotFinite,
-    /// A text whose height, width, alignment or characters cannot be drawn.
+    /// A text whose height, width or alignment cannot be drawn.
     InvalidText,
+    /// A text whose bytes are not UTF-8.
+    TextNotUtf8(std::str::Utf8Error),
     /// The blob holds another number of layers than the underlay names.
     LayerCount { blob: usize, underlay: usize },
 }
@@ -145,10 +147,9 @@ impl fmt::Display for UnderlayLinesError {
                 formatter.write_str("an underlay polyline has fewer than two points")
             }
             Self::NotFinite => formatter.write_str("an underlay point is not a finite number"),
-            Self::InvalidText => formatter.write_str(
-                "an underlay text has no height or width, an unknown alignment, or bytes that \
-                 are not UTF-8",
-            ),
+            Self::InvalidText => formatter
+                .write_str("an underlay text has no height or width, or an unknown alignment"),
+            Self::TextNotUtf8(error) => write!(formatter, "an underlay text is not UTF-8: {error}"),
             Self::LayerCount { blob, underlay } => write!(
                 formatter,
                 "the underlay lines hold {blob} layers, the underlay names {underlay}"
@@ -157,7 +158,14 @@ impl fmt::Display for UnderlayLinesError {
     }
 }
 
-impl std::error::Error for UnderlayLinesError {}
+impl std::error::Error for UnderlayLinesError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::TextNotUtf8(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl UnderlayLines {
     pub fn layers(&self) -> &[LayerLines] {
