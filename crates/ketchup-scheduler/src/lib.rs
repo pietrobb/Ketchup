@@ -469,11 +469,9 @@ const MAX_CAM_SIMULATION_PAIR_CHECKS: usize = 16_384;
 const MAX_STEP_ASSEMBLY_NODES: usize = 1_024;
 /// Longest part or node name one STEP assembly export writes, in bytes.
 const MAX_STEP_ASSEMBLY_NAME_BYTES: usize = 4_096;
-/// Largest STEP or IGES file the exact worker writes for an export, read back whole.
-/// Imported sources have no size limit of their own.
-pub const MAX_EXACT_EXPORT_BYTES: u64 = 32 * 1024 * 1024;
+/// Neither the STEP or IGES file an export writes nor the imported sources one
+/// evaluation reads have a size limit: each is bounded by the bytes it holds.
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
-pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 // General graph operations may rebuild many sequential exact Boolean features.
 // Keep this finite and separate from handshake/simple-call latency limits.
@@ -574,6 +572,38 @@ fn read_bounded_regular_file(
     if bytes.len() as u64 > maximum_bytes {
         return Err(WorkerError::Transport(limit_message.to_owned()));
     }
+    Ok(bytes)
+}
+
+/// An empty buffer that already holds room for `len` bytes, or a message naming
+/// what could not be held when the memory is not there. A file or source of any
+/// size is taken whole; this turns a lack of memory into a refusal instead of
+/// the abort a growing `Vec` would raise.
+pub fn reserve_whole(len: u64, label: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    usize::try_from(len)
+        .ok()
+        .and_then(|len| bytes.try_reserve_exact(len).ok())
+        .ok_or_else(|| format!("not enough memory to hold the {label} ({len} bytes)"))?;
+    Ok(bytes)
+}
+
+/// Reads a regular file whole, with no size limit: the buffer holds what the
+/// file holds on disk.
+fn read_regular_file(path: &Path, label: &str) -> Result<Vec<u8>, WorkerError> {
+    let mut file =
+        fs::File::open(path).map_err(|error| WorkerError::Transport(error.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| WorkerError::Transport(error.to_string()))?;
+    if !metadata.is_file() {
+        return Err(WorkerError::Transport(format!(
+            "{label} is not a regular file"
+        )));
+    }
+    let mut bytes = reserve_whole(metadata.len(), label).map_err(WorkerError::Transport)?;
+    file.read_to_end(&mut bytes)
+        .map_err(|error| WorkerError::Transport(error.to_string()))?;
     Ok(bytes)
 }
 
@@ -1204,11 +1234,7 @@ impl ExactWorkerSupervisor {
         output_path: &Path,
         cancelled: &AtomicBool,
     ) -> Result<Vec<u8>, WorkerError> {
-        let source = read_bounded_regular_file(
-            source_path,
-            MAX_EXACT_EXPORT_BYTES,
-            "STEP staging source exceeds the bounded 32 MiB envelope",
-        )?;
+        let source = read_regular_file(source_path, "STEP staging source")?;
         let source_sha256 = sha256_hex(&source);
         self.client.ensure_not_cancelled(cancelled)?;
         match self.client.convert_step_to_iges_request_with_cancellation(
@@ -1641,20 +1667,11 @@ impl ExactWorkerSupervisor {
             ));
         }
         let mut supplied = BTreeMap::<String, &[u8]>::new();
-        let mut total_bytes = 0_u64;
         for source in sources {
             self.client.ensure_not_cancelled(cancelled)?;
-            let source_len = source.len() as u64;
-            total_bytes = total_bytes.checked_add(source_len).ok_or_else(|| {
-                WorkerError::Protocol(
-                    "imported exact sources exceed the bounded envelope".to_owned(),
-                )
-            })?;
-            if total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
-                || supplied.insert(sha256_hex(source), *source).is_some()
-            {
+            if supplied.insert(sha256_hex(source), *source).is_some() {
                 return Err(WorkerError::Protocol(
-                    "imported exact sources exceed or duplicate the bounded envelope".to_owned(),
+                    "imported exact sources duplicate one another".to_owned(),
                 ));
             }
         }
@@ -2160,11 +2177,9 @@ impl ExactWorkerSupervisor {
                     return Err(error.into());
                 }
             }
-            let source_bytes = self.client.read_bounded_output(
-                &source,
-                MAX_EXACT_EXPORT_BYTES,
-                "exact worker STEP output exceeds the bounded 32 MiB envelope",
-            )?;
+            let source_bytes = self
+                .client
+                .read_output(&source, "exact worker STEP output")?;
             let source_sha256 = sha256_hex(&source_bytes);
             let imported_result_fingerprint = self
                 .client
@@ -2709,17 +2724,10 @@ fn prepare_exact_brep_graph_sources(
         ));
     }
     let mut supplied = BTreeMap::<String, &[u8]>::new();
-    let mut total_bytes = 0_u64;
     for source in sources {
-        let source_len = source.len() as u64;
-        total_bytes = total_bytes.checked_add(source_len).ok_or_else(|| {
-            WorkerError::Protocol("imported exact sources exceed the bounded envelope".to_owned())
-        })?;
-        if total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
-            || supplied.insert(sha256_hex(source), *source).is_some()
-        {
+        if supplied.insert(sha256_hex(source), *source).is_some() {
             return Err(WorkerError::Protocol(
-                "imported exact sources exceed or duplicate the bounded envelope".to_owned(),
+                "imported exact sources duplicate one another".to_owned(),
             ));
         }
     }
@@ -2837,6 +2845,23 @@ mod tests {
             Err(WorkerError::Spawn(message))
                 if message == "exact worker executable is not a bounded file"
         ));
+    }
+
+    #[test]
+    fn a_whole_read_without_the_memory_for_it_is_refused_by_name() {
+        let bytes = reserve_whole(32 * 1024 * 1024 + 1, "STEP output").unwrap();
+        assert!(bytes.is_empty());
+        assert_eq!(bytes.capacity(), 32 * 1024 * 1024 + 1);
+        // 4 EiB fits a 64-bit length but no machine's memory; u64::MAX does not
+        // even fit an allocation. Both are refused, never an abort.
+        for len in [1_u64 << 62, u64::MAX] {
+            assert_eq!(
+                reserve_whole(len, "STEP output"),
+                Err(format!(
+                    "not enough memory to hold the STEP output ({len} bytes)"
+                ))
+            );
+        }
     }
 
     #[test]

@@ -6,8 +6,6 @@ use ketchup_geometry::contact_patch::ContactPatch;
 
 pub const MAX_EXACT_PAIR_GRAPHS: usize = 512;
 pub const MAX_EXACT_PAIR_CANDIDATES: usize = 10_000;
-/// Aggregate size of distinct imported sources staged for a whole batch.
-pub const MAX_EXACT_PAIR_SOURCE_BYTES: u64 = MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES;
 pub const EXACT_PAIR_IDENTITY: [f64; 16] = [
     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
 ];
@@ -33,8 +31,7 @@ impl ExactWorkerSupervisor {
     /// any other failure returns Err for the whole batch, never partial evidence.
     /// No restart/retry occurs within a batch. Native cache is released on success;
     /// on failure the worker is terminated and respawned before a subsequent batch.
-    /// Empty candidates return an empty vector. Sources are staged once per digest,
-    /// bounded by MAX_EXACT_PAIR_SOURCE_BYTES across the entire batch.
+    /// Empty candidates return an empty vector. Sources are staged once per digest.
     pub fn query_exact_brep_pairs(
         &mut self,
         graphs: &[ExactBRepGraph],
@@ -241,7 +238,6 @@ fn check_pair_cancelled(cancelled: &AtomicBool) -> Result<(), WorkerError> {
 #[derive(Default)]
 struct PairSources {
     files: BTreeMap<String, (u64, tempfile::NamedTempFile)>,
-    total_bytes: u64,
 }
 
 impl PairSources {
@@ -284,8 +280,7 @@ impl PairSources {
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
         check_pair_cancelled(cancelled)?;
-        let invalid =
-            || WorkerError::Protocol("invalid or oversized exact pair sources".to_owned());
+        let invalid = || WorkerError::Protocol("invalid exact pair sources".to_owned());
         if let Some((previous_len, _)) = self.files.get(hash) {
             return if *previous_len == expected_len {
                 Ok(())
@@ -294,11 +289,7 @@ impl PairSources {
             };
         }
         let source = blobs.get(hash).ok_or_else(invalid)?;
-        let total = self
-            .total_bytes
-            .checked_add(expected_len)
-            .ok_or_else(invalid)?;
-        if source.len() as u64 != expected_len || total > MAX_EXACT_PAIR_SOURCE_BYTES {
+        if source.len() as u64 != expected_len {
             return Err(invalid());
         }
         // Hash once per distinct source, with cancellation on both sides of the
@@ -314,7 +305,6 @@ impl PairSources {
             .map_err(|error| WorkerError::Transport(error.to_string()))?;
         write_pair_source(&mut file, source, cancelled)?;
         self.files.insert(hash.to_owned(), (expected_len, file));
-        self.total_bytes = total;
         Ok(())
     }
 }
@@ -398,7 +388,6 @@ mod tests {
             staged.stage(&hash, 6, &blobs, &NEVER_CANCELLED).unwrap();
         }
         assert_eq!(staged.files.len(), 1);
-        assert_eq!(staged.total_bytes, 6);
         assert_eq!(std::fs::read(&path).unwrap(), blobs[&hash]);
         assert!(staged.stage(&hash, 7, &blobs, &NEVER_CANCELLED).is_err());
         assert!(matches!(
@@ -408,27 +397,24 @@ mod tests {
         drop(staged);
         assert!(!path.exists());
 
-        let mut staged = PairSources {
-            total_bytes: MAX_EXACT_PAIR_SOURCE_BYTES - 6,
-            ..Default::default()
-        };
+        // A source past the 128 MiB the whole batch was once held to stages.
+        let large = vec![b'x'; 128 * 1024 * 1024 + 1];
+        let large_hash = sha256_hex(&large);
+        let large_len = large.len() as u64;
+        let large_blobs = BTreeMap::from([(large_hash.clone(), large)]);
+        let mut staged = PairSources::default();
         staged.stage(&hash, 6, &blobs, &NEVER_CANCELLED).unwrap();
-        assert_eq!(staged.total_bytes, MAX_EXACT_PAIR_SOURCE_BYTES);
-        let extra = b"x".to_vec();
-        let extra_hash = sha256_hex(&extra);
-        let extra_blobs = BTreeMap::from([(extra_hash.clone(), extra)]);
-        assert!(
-            staged
-                .stage(&extra_hash, 1, &extra_blobs, &NEVER_CANCELLED)
-                .is_err()
+        staged
+            .stage(&large_hash, large_len, &large_blobs, &NEVER_CANCELLED)
+            .unwrap();
+        assert_eq!(staged.files.len(), 2);
+        assert_eq!(
+            std::fs::metadata(staged.files[&large_hash].1.path())
+                .unwrap()
+                .len(),
+            large_len
         );
-        assert_eq!(staged.files.len(), 1);
-        staged.total_bytes = u64::MAX;
-        assert!(
-            staged
-                .stage(&extra_hash, 1, &extra_blobs, &NEVER_CANCELLED)
-                .is_err()
-        );
+        drop(staged);
         let mut staged = PairSources::default();
         let corrupt = BTreeMap::from([(hash.clone(), b"broken".to_vec())]);
         assert!(staged.stage(&hash, 6, &corrupt, &NEVER_CANCELLED).is_err());
@@ -439,16 +425,10 @@ mod tests {
         );
         assert!(
             staged
-                .stage(
-                    &hash,
-                    MAX_EXACT_PAIR_SOURCE_BYTES + 1,
-                    &blobs,
-                    &NEVER_CANCELLED
-                )
+                .stage(&hash, u64::MAX, &blobs, &NEVER_CANCELLED)
                 .is_err()
         );
         assert!(staged.files.is_empty());
-        assert_eq!(staged.total_bytes, 0);
     }
 
     #[test]

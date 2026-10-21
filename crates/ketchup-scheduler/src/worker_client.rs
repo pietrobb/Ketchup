@@ -35,6 +35,14 @@ impl ExactWorkerClient {
         }
     }
 
+    /// Reads an output the worker wrote, whole and with no size limit.
+    pub(crate) fn read_output(&mut self, path: &Path, label: &str) -> Result<Vec<u8>, WorkerError> {
+        match read_regular_file(path, label) {
+            Ok(bytes) => Ok(bytes),
+            Err(error) => self.fail(error),
+        }
+    }
+
     pub fn spawn(executable: impl AsRef<Path>) -> Result<Self, WorkerError> {
         let executable = guarded_exact_worker_identity(executable.as_ref())?;
         Self::spawn_guarded(executable)
@@ -581,11 +589,7 @@ impl ExactWorkerClient {
             }) if ketchup_geometry::reference::is_fnv1a64_fingerprint(&result_fingerprint) => {}
             reply => return self.unexpected(reply),
         }
-        self.read_bounded_output(
-            output_path,
-            MAX_EXACT_EXPORT_BYTES,
-            "exact worker IGES output exceeds the bounded 32 MiB envelope",
-        )
+        self.read_output(output_path, "exact worker IGES output")
     }
 
     pub(crate) fn export_step_xde_part_request_with_cancellation(
@@ -614,11 +618,7 @@ impl ExactWorkerClient {
             }
             reply => return self.unexpected(reply),
         };
-        let bytes = self.read_bounded_output(
-            output_path,
-            MAX_EXACT_EXPORT_BYTES,
-            "exact worker STEP output exceeds the bounded 32 MiB envelope",
-        )?;
+        let bytes = self.read_output(output_path, "exact worker STEP output")?;
         if sha256_hex(&bytes) != sha256 {
             return self.fail_protocol("worker STEP XDE part output hash mismatch".to_owned());
         }
@@ -653,11 +653,7 @@ impl ExactWorkerClient {
             }
             reply => return self.unexpected(reply),
         };
-        let bytes = self.read_bounded_output(
-            path,
-            MAX_EXACT_EXPORT_BYTES,
-            "exact worker STEP output exceeds the bounded 32 MiB envelope",
-        )?;
+        let bytes = self.read_output(path, "exact worker STEP output")?;
         if sha256_hex(&bytes) != sha256 {
             return self.fail_protocol("worker STEP output hash mismatch".to_owned());
         }

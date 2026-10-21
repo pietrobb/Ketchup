@@ -1267,7 +1267,6 @@ impl ExactBRepGraph {
         }
         let mut source_features = BTreeSet::new();
         let mut imported_source_nodes = 0_usize;
-        let mut imported_source_bytes = 0_u64;
         for (index, node) in self.nodes.iter().enumerate() {
             let id = ExactBRepNodeId(index as u32);
             let spatial_segment_count = match &node.operation {
@@ -1286,15 +1285,9 @@ impl ExactBRepGraph {
             if segment_count > MAX_EXACT_BREP_GRAPH_SEGMENTS {
                 return Err(ExactBRepGraphError::ResourceLimit);
             }
-            if let ExactBRepOperation::ImportedExact {
-                source_byte_len, ..
-            } = node.operation
-            {
+            if let ExactBRepOperation::ImportedExact { .. } = node.operation {
                 imported_source_nodes += 1;
-                imported_source_bytes = imported_source_bytes
-                    .checked_add(source_byte_len)
-                    .ok_or(ExactBRepGraphError::ResourceLimit)?;
-                if imported_source_nodes > 64 || imported_source_bytes > 128 * 1024 * 1024 {
+                if imported_source_nodes > 64 {
                     return Err(ExactBRepGraphError::ResourceLimit);
                 }
             }

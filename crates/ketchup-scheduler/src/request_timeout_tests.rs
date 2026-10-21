@@ -301,18 +301,16 @@ fn assert_child_dies_with_its_killed_parent(parent_test: &str) {
 }
 
 #[test]
-fn oversized_step_xde_worker_output_is_rejected_before_hashing() {
+fn step_xde_worker_output_past_32_mib_is_read_whole() {
     let (mut worker, writes, responses) = controlled_worker();
     let output = tempfile::NamedTempFile::new().unwrap();
-    output
-        .as_file()
-        .set_len(MAX_EXACT_EXPORT_BYTES + 1)
-        .unwrap();
+    let large = vec![0_u8; 32 * 1024 * 1024 + 1];
+    std::fs::write(output.path(), &large).unwrap();
     let source_sha256 = "b".repeat(64);
     let result_fingerprint = "fnv1a64:0123456789abcdef";
     let receipt = WorkerReply::Exported(ExportReceipt {
         result_fingerprint: result_fingerprint.to_owned(),
-        sha256: Some("a".repeat(64)),
+        sha256: Some(sha256_hex(&large)),
     });
     let responder = std::thread::spawn(move || {
         let request = writes.recv().unwrap();
@@ -322,19 +320,16 @@ fn oversized_step_xde_worker_output_is_rejected_before_hashing() {
             .unwrap();
     });
 
-    assert!(matches!(
-        worker.export_step_xde_part_request_with_cancellation(
+    worker
+        .export_step_xde_part_request_with_cancellation(
             Path::new("source.step"),
             &source_sha256,
             0,
             result_fingerprint,
             output.path(),
             &NEVER_CANCELLED,
-        ),
-        Err(WorkerError::Transport(message))
-            if message == "exact worker STEP output exceeds the bounded 32 MiB envelope"
-    ));
-    assert!(worker.child.inner_mut().wait().is_ok());
+        )
+        .unwrap();
     responder.join().unwrap();
 }
 
@@ -371,13 +366,11 @@ fn converted_iges_returns_bounded_snapshot_not_later_path_contents() {
 }
 
 #[test]
-fn oversized_converted_iges_is_rejected_before_returning_bytes() {
+fn converted_iges_past_32_mib_is_returned_whole() {
     let (mut worker, writes, responses) = controlled_worker();
     let output = tempfile::NamedTempFile::new().unwrap();
-    output
-        .as_file()
-        .set_len(MAX_EXACT_EXPORT_BYTES + 1)
-        .unwrap();
+    let length = 32 * 1024 * 1024 + 1;
+    output.as_file().set_len(length).unwrap();
     let source_sha256 = "b".repeat(64);
     let receipt = WorkerReply::Exported(ExportReceipt {
         result_fingerprint: "fnv1a64:0123456789abcdef".to_owned(),
@@ -391,17 +384,15 @@ fn oversized_converted_iges_is_rejected_before_returning_bytes() {
             .unwrap();
     });
 
-    assert!(matches!(
-        worker.convert_step_to_iges_request_with_cancellation(
+    let bytes = worker
+        .convert_step_to_iges_request_with_cancellation(
             Path::new("source.step"),
             &source_sha256,
             output.path(),
             &NEVER_CANCELLED,
-        ),
-        Err(WorkerError::Transport(message))
-            if message == "exact worker IGES output exceeds the bounded 32 MiB envelope"
-    ));
-    assert!(worker.child.inner_mut().wait().is_ok());
+        )
+        .unwrap();
+    assert_eq!(bytes.len() as u64, length);
     responder.join().unwrap();
 }
 

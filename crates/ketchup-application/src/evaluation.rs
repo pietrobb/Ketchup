@@ -15,9 +15,7 @@ use ketchup_model::import::{
     StepImportEvidence,
 };
 use ketchup_model::persistence::ContainerData;
-use ketchup_scheduler::{
-    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES, WorkerError,
-};
+use ketchup_scheduler::{MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES, WorkerError, reserve_whole};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -44,7 +42,7 @@ enum ExactEvaluationRequest {
 #[derive(Debug)]
 enum ExactProducerError {
     Compilation(ExactBRepGraphError),
-    /// The graph's imported sources exceed the worker's count or byte envelope.
+    /// The graph names more imported sources than the worker takes.
     ImportedSourceEnvelope,
     ImportedSourceMissing {
         sha256: String,
@@ -52,6 +50,8 @@ enum ExactProducerError {
     ImportedSourceMismatch {
         sha256: String,
     },
+    /// The memory for the worker's copy of the imported sources is not there.
+    OutOfMemory(String),
     DefinitionUnavailable(DefinitionId),
     DefinitionNotSingular(DefinitionId),
     FeatureUnavailable(FeatureId),
@@ -85,6 +85,7 @@ impl std::fmt::Display for ExactProducerError {
                 f,
                 "imported exact source blob {sha256} does not match its canonical identity"
             ),
+            Self::OutOfMemory(message) => f.write_str(message),
             Self::DefinitionUnavailable(id) => {
                 write!(f, "imported exact definition {} is unavailable", id.0)
             }
@@ -578,7 +579,6 @@ fn prepare_requests(
                     ExactProducerPlan::Graph(graph) => {
                         let mut imported_sources = Vec::new();
                         let mut imported_hashes = Vec::new();
-                        let mut imported_source_bytes = 0_u64;
                         for node in &graph.nodes {
                             let ExactBRepOperation::ImportedExact {
                                 source_sha256,
@@ -591,30 +591,29 @@ fn prepare_requests(
                             if imported_hashes.contains(source_sha256) {
                                 continue;
                             }
-                            let next_source_bytes = imported_source_bytes
-                                .checked_add(*source_byte_len)
-                                .filter(|bytes| {
-                                    imported_hashes.len() < MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
-                                        && *bytes <= MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
-                                })
-                                .ok_or(ExactProducerError::ImportedSourceEnvelope)?;
-                            imported_source_bytes = next_source_bytes;
+                            if imported_hashes.len() >= MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES {
+                                return Err(ExactProducerError::ImportedSourceEnvelope);
+                            }
                             let hash = source_sha256
                                 .iter()
                                 .map(|byte| format!("{byte:02x}"))
                                 .collect::<String>();
-                            let Some(source) = container_data.blobs().get(&hash).cloned() else {
+                            let Some(blob) = container_data.blobs().get(&hash) else {
                                 return Err(ExactProducerError::ImportedSourceMissing {
                                     sha256: hash,
                                 });
                             };
-                            if source.len() as u64 != *source_byte_len
-                                || sha256_bytes(&source) != *source_sha256
+                            if blob.len() as u64 != *source_byte_len
+                                || sha256_bytes(blob) != *source_sha256
                             {
                                 return Err(ExactProducerError::ImportedSourceMismatch {
                                     sha256: hash,
                                 });
                             }
+                            let mut source =
+                                reserve_whole(*source_byte_len, "imported exact source")
+                                    .map_err(ExactProducerError::OutOfMemory)?;
+                            source.extend_from_slice(blob);
                             imported_hashes.push(*source_sha256);
                             imported_sources.push(source);
                         }
@@ -632,16 +631,20 @@ fn prepare_requests(
                             .iter()
                             .map(|byte| format!("{byte:02x}"))
                             .collect::<String>();
-                        let Some(source) = container_data.blobs().get(&hash).cloned() else {
+                        let Some(blob) = container_data.blobs().get(&hash) else {
                             return Err(ExactProducerError::ImportedSourceMissing { sha256: hash });
                         };
-                        if source.len() as u64 != spec.source_byte_len
-                            || sha256_bytes(&source) != spec.source_sha256
+                        if blob.len() as u64 != spec.source_byte_len
+                            || sha256_bytes(blob) != spec.source_sha256
                         {
                             return Err(ExactProducerError::ImportedSourceMismatch {
                                 sha256: hash,
                             });
                         }
+                        let mut source =
+                            reserve_whole(spec.source_byte_len, "imported exact source")
+                                .map_err(ExactProducerError::OutOfMemory)?;
+                        source.extend_from_slice(blob);
                         Ok(Some((
                             definition_id,
                             ExactEvaluationRequest::Imported(definition_id, source),

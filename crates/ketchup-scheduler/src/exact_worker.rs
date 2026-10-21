@@ -8,9 +8,9 @@ use crate::protocol::{
 use crate::{
     CamSimulationWireCollision, CamSimulationWireEvidence, CamSimulationWireRequest,
     EXACT_VOLUME_MESH_WIRE_SCHEMA_V1, ExactVolumeMeshWireOptions,
-    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
-    StepAssemblyManifest, StepXdeWorkerEvidence, StepXdeWorkerNode, StepXdeWorkerPart,
-    WorkerExactBRepGraphEdgeEvidence, WorkerExactBRepGraphFaceEvidence, WorkerExactBRepGraphResult,
+    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES, StepAssemblyManifest, StepXdeWorkerEvidence,
+    StepXdeWorkerNode, StepXdeWorkerPart, WorkerExactBRepGraphEdgeEvidence,
+    WorkerExactBRepGraphFaceEvidence, WorkerExactBRepGraphResult,
     WorkerExactVolumeBoundaryTriangle, WorkerExactVolumeMesh,
 };
 use ketchup_exact::naming::{NamedBoolean, NamedSegment, valid_name};
@@ -246,19 +246,12 @@ fn verified_exact_brep_graph_sources(
     {
         return Err(WorkerFailure::invalid_request());
     }
-    let mut total_bytes = 0_u64;
     let mut sources = Vec::with_capacity(source_order.len());
     for (expected_sha256, source) in source_order.iter().zip(supplied) {
         if source.sha256 != *expected_sha256 {
             return Err(WorkerFailure::invalid_request());
         }
         let expected_byte_len = expected[expected_sha256];
-        total_bytes = total_bytes
-            .checked_add(expected_byte_len)
-            .ok_or_else(WorkerFailure::invalid_request)?;
-        if total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES {
-            return Err(WorkerFailure::invalid_request());
-        }
         let copy = verified_step_copy(source, "evaluate_exact_brep_graph")?;
         if copy
             .as_file()
@@ -2983,7 +2976,12 @@ fn verified_copy(
     let failure = |diagnostic: &str| backend_failure(operation, diagnostic);
     let mut file =
         std::fs::File::open(&source.path).map_err(|error| failure(&error.to_string()))?;
-    let mut source_bytes = Vec::new();
+    let len = file
+        .metadata()
+        .map_err(|error| failure(&error.to_string()))?
+        .len();
+    let mut source_bytes = crate::reserve_whole(len, &format!("{label} source"))
+        .map_err(|message| failure(&message))?;
     file.read_to_end(&mut source_bytes)
         .map_err(|error| failure(&error.to_string()))?;
     if !is_sha256_hex(&source.sha256) || sha256_hex(&source_bytes) != source.sha256 {
@@ -3463,23 +3461,17 @@ fn read_step_output(path: &str, operation: &str) -> Result<Vec<u8>, WorkerFailur
     let metadata = file
         .metadata()
         .map_err(|error| backend_failure(operation, &error.to_string()))?;
-    if !metadata.is_file() || metadata.len() > crate::MAX_EXACT_EXPORT_BYTES {
+    if !metadata.is_file() {
         return Err(backend_failure(
             operation,
-            "STEP output is not a bounded regular file",
+            "STEP output is not a regular file",
         ));
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut bytes = crate::reserve_whole(metadata.len(), "STEP output")
+        .map_err(|message| backend_failure(operation, &message))?;
     (&file)
-        .take(crate::MAX_EXACT_EXPORT_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| backend_failure(operation, &error.to_string()))?;
-    if bytes.len() as u64 > crate::MAX_EXACT_EXPORT_BYTES {
-        return Err(backend_failure(
-            operation,
-            "STEP output exceeds the bounded 32 MiB envelope",
-        ));
-    }
     Ok(bytes)
 }
 
@@ -3707,14 +3699,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn step_output_reader_rejects_oversized_file_before_hashing() {
+    fn step_output_reader_reads_a_file_past_32_mib_whole() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("oversized.step");
+        let path = directory.path().join("large.step");
         let file = std::fs::File::create(&path).unwrap();
-        file.set_len(crate::MAX_EXACT_EXPORT_BYTES + 1).unwrap();
+        let length = 32 * 1024 * 1024 + 1;
+        file.set_len(length).unwrap();
 
-        let failure = read_step_output(path.to_str().unwrap(), "test_step_output").unwrap_err();
-        assert_eq!(failure.code, "backend_exception");
+        let bytes = read_step_output(path.to_str().unwrap(), "test_step_output").unwrap();
+        assert_eq!(bytes.len() as u64, length);
     }
 
     #[test]
