@@ -218,10 +218,7 @@ fn texts_travel_with_the_lines_and_are_no_snap_points() {
     let decoded = UnderlayLines::decode(&bytes).unwrap();
     assert_eq!(decoded, underlay.lines);
     assert_eq!(decoded.text_count(), 2);
-    // A drawing without texts keeps the blob it had before texts were read.
-    let lines_only = read("", "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n1\n21\n0\n");
-    assert!(lines_only.lines.encode().starts_with(b"KUNDRLY1"));
-    assert!(bytes.starts_with(b"KUNDRLY2"));
+    assert!(bytes.starts_with(b"KUNDRLY3"));
     assert!(UnderlayLines::decode(&bytes[..bytes.len() - 1]).is_err());
 
     // Snapping meets the wall, never a text: nothing near either text's anchor or

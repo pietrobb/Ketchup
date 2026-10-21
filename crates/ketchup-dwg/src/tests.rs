@@ -114,7 +114,7 @@ fn sections(dxf: &str) -> Vec<(String, usize)> {
 }
 
 #[test]
-fn the_dxf_of_a_dwg_keeps_header_blocks_and_entities_and_writes_the_rest_empty() {
+fn the_dxf_of_a_dwg_keeps_what_the_import_reads_and_writes_the_rest_empty() {
     let dwg = dxf_to_dwg(&drawing_dxf()).expect("the drawing is written as DWG");
     let mut whole = SectionWriter::new(usize::MAX);
     let document =
@@ -139,7 +139,12 @@ fn the_dxf_of_a_dwg_keeps_header_blocks_and_entities_and_writes_the_rest_empty()
         "every section is still there"
     );
     for ((name, pairs), (_, all_pairs)) in written.iter().zip(&all) {
-        if DXF_SECTIONS_KEPT.contains(&name.as_str()) {
+        if name == "TABLES" {
+            assert!(
+                0 < *pairs && pairs < all_pairs,
+                "{name} keeps layers and linetypes"
+            );
+        } else if DXF_SECTIONS_KEPT.contains(&name.as_str()) {
             assert_eq!(pairs, all_pairs, "{name} is kept whole");
         } else {
             assert_eq!(*pairs, 0, "{name} is written empty");
@@ -159,15 +164,15 @@ fn the_dxf_of_a_dwg_keeps_header_blocks_and_entities_and_writes_the_rest_empty()
 }
 
 /// Review DR-4: tables and objects that the import does not read no longer count
-/// against the DXF limit, so a drawing of one line in a file with many layers reads.
+/// against the DXF limit, so a drawing of one line in a file with many text styles reads.
 #[test]
-fn layers_and_objects_the_import_does_not_read_do_not_count_against_the_limit() {
+fn tables_and_objects_the_import_does_not_read_do_not_count_against_the_limit() {
     let mut document = CadDocument::new();
     for index in 0..500 {
         document
-            .layers
-            .add(acadrust::tables::Layer::new(format!("layer-{index}")))
-            .expect("the layer is added");
+            .text_styles
+            .add(acadrust::tables::TextStyle::new(format!("style-{index}")))
+            .expect("the text style is added");
     }
     document
         .add_entity(EntityType::Line(Line::from_coords(

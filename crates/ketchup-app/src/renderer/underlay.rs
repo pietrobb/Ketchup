@@ -1,10 +1,10 @@
-//! Underlays on the GPU, uploaded once: the segments of an underlay in a vertex buffer
-//! drawn as one line list per visible layer, and the letters of its texts as instances of
-//! the outlines of the glyphs they use (see [`letters`]). A buffer larger than the device
-//! allows is split in pieces. They are painted over the ground grid and under the model.
-//! A camera frame rewrites the camera and chooses how each cell of letters is drawn;
-//! showing or hiding a layer only changes which line ranges are drawn and which layers'
-//! letters the GPU keeps.
+//! Underlays on the GPU, uploaded once: the segments of an underlay as instances of a quad,
+//! drawn per visible layer as wide as its lineweight in its color and dash pattern, and the
+//! letters of its texts as instances of the outlines of the glyphs they use (see
+//! [`letters`]) in their color. A buffer larger than the device allows is split in pieces.
+//! They are painted over the ground grid and under the model. A camera frame rewrites the
+//! camera and chooses how each cell of letters is drawn; showing or hiding a layer only
+//! changes which segment ranges are drawn and which layers' letters the GPU keeps.
 
 mod letters;
 mod text;
@@ -12,21 +12,73 @@ mod text;
 use super::{linear_rgba, single_precision};
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use ketchup_model::underlay::UnderlayLines;
+use ketchup_model::underlay::style::LineStyle;
 use letters::{CellView, INSTANCE_STRIDE, LetterInstance, Letters};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
 use wgpu::util::DeviceExt as _;
 
+/// Pixels a line of a lineweight of one millimetre is wide: as a 96 dpi screen shows it.
+const PX_PER_WEIGHT_MM: f32 = 96.0 / 25.4;
+
+/// Bytes of one [`Segment`] on the GPU.
+const SEGMENT_STRIDE: u64 = 24;
+/// Bytes of one [`GpuStyle`] on the GPU.
+const STYLE_STRIDE: usize = 32;
+
+/// A straight piece of a polyline: its ends, how far along its polyline it starts, in
+/// millimetres, where its dash pattern starts, and the index of its style.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Segment {
+    start: [f32; 2],
+    end: [f32; 2],
+    from_mm: f32,
+    style: u32,
+}
+
+impl Segment {
+    fn write(&self, bytes: &mut Vec<u8>) {
+        for value in self.start.iter().chain(&self.end).chain([&self.from_mm]) {
+            bytes.extend(value.to_ne_bytes());
+        }
+        bytes.extend(self.style.to_ne_bytes());
+    }
+}
+
+/// A style as the shader reads it: linear RGBA, alpha 0 for the underlay's own color; its
+/// width in pixels; its pattern's lengths in [`UnderlayGeometry::patterns`] and how long
+/// it repeats, in millimetres.
+#[derive(Clone, Debug, PartialEq)]
+struct GpuStyle {
+    color: [f32; 4],
+    width_px: f32,
+    pattern: Range<u32>,
+    period_mm: f32,
+}
+
+impl GpuStyle {
+    fn write(&self, bytes: &mut Vec<u8>) {
+        for value in self.color.iter().chain([&self.width_px]) {
+            bytes.extend(value.to_ne_bytes());
+        }
+        bytes.extend(self.pattern.start.to_ne_bytes());
+        bytes.extend(vertex_index(self.pattern.len()).to_ne_bytes());
+        bytes.extend(self.period_mm.to_ne_bytes());
+    }
+}
+
 /// The segments and letters of one underlay as GPU data, in millimetres in the XY plane.
 #[derive(Debug, PartialEq)]
 pub struct UnderlayGeometry {
     /// SHA-256 of the lines' blob: the same lines upload once.
     key: [u8; 32],
-    /// Two points per segment.
-    points: Vec<[f32; 2]>,
-    /// The vertex range of each layer's segments, in the order of the underlay's layers.
+    segments: Vec<Segment>,
+    /// The range of each layer's segments, in the order of the underlay's layers.
     layers: Vec<Range<u32>>,
+    styles: Vec<GpuStyle>,
+    /// The dash, gap and dot lengths of every style's pattern, in millimetres.
+    patterns: Vec<f32>,
     letters: Letters,
     /// Per layer, the vertices its segments and letters draw.
     layer_vertices: Vec<u64>,
@@ -35,27 +87,47 @@ pub struct UnderlayGeometry {
 impl UnderlayGeometry {
     #[must_use]
     pub fn new(key: [u8; 32], lines: &UnderlayLines) -> Self {
-        let mut points = Vec::with_capacity(lines.segment_count() * 2);
+        let gpu = |value: f64| single_precision([value, 0.0, 0.0])[0];
+        let mut segments = Vec::with_capacity(lines.segment_count());
         let mut layers = Vec::with_capacity(lines.layers().len());
         for layer in lines.layers() {
-            let first = vertex_index(points.len());
-            for segment in layer.segments() {
-                points.extend(segment.map(|[x, y]| {
-                    let [x, y, _] = single_precision([x, y, 0.0]);
-                    [x, y]
-                }));
+            let first = vertex_index(segments.len());
+            for (style, polyline) in layer.styled_polylines() {
+                let mut from_mm = 0.0;
+                for pair in polyline.windows(2) {
+                    let [start, end] = [pair[0], pair[1]].map(|point| point.map(gpu));
+                    segments.push(Segment {
+                        start,
+                        end,
+                        from_mm: gpu(from_mm),
+                        style,
+                    });
+                    from_mm += (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]);
+                }
             }
-            layers.push(first..vertex_index(points.len()));
+            layers.push(first..vertex_index(segments.len()));
+        }
+        let mut patterns = Vec::new();
+        let mut styles = Vec::new();
+        // An underlay saved before styles names style 0, which it does not hold.
+        for style in lines
+            .styles()
+            .iter()
+            .chain(lines.styles().is_empty().then(|| lines.style(0)))
+        {
+            styles.push(gpu_style(style, &mut patterns, gpu));
         }
         let mut layer_vertices = layers
             .iter()
-            .map(|range| u64::from(range.end - range.start))
+            .map(|range| u64::from(range.end - range.start) * 6)
             .collect::<Vec<_>>();
         let letters = Letters::new(lines, &mut layer_vertices);
         Self {
             key,
-            points,
+            segments,
             layers,
+            styles,
+            patterns,
             letters,
             layer_vertices,
         }
@@ -74,7 +146,7 @@ impl UnderlayGeometry {
 
     #[must_use]
     pub fn segment_count(&self) -> usize {
-        self.points.len() / 2
+        self.segments.len()
     }
 
     /// The letters of its texts that draw something (no spaces).
@@ -84,7 +156,21 @@ impl UnderlayGeometry {
     }
 
     fn is_empty(&self) -> bool {
-        self.points.is_empty() && self.letters.instances.is_empty()
+        self.segments.is_empty() && self.letters.instances.is_empty()
+    }
+}
+
+/// `style` for the shader, its pattern appended to `patterns`.
+fn gpu_style(style: &LineStyle, patterns: &mut Vec<f32>, gpu: impl Fn(f64) -> f32) -> GpuStyle {
+    let first = vertex_index(patterns.len());
+    patterns.extend(style.pattern_mm.iter().map(|length| gpu(*length)));
+    GpuStyle {
+        color: style.color.map_or([0.0; 4], linear_rgba),
+        width_px: (f32::from(style.weight_hmm) / 100.0 * PX_PER_WEIGHT_MM)
+            .round()
+            .max(1.0),
+        pattern: first..vertex_index(patterns.len()),
+        period_mm: gpu(style.pattern_mm.iter().map(|length| length.abs()).sum()),
     }
 }
 
@@ -116,41 +202,36 @@ fn local_range(range: &Range<u32>, first: u32, count: u32) -> Option<Range<u32>>
     (start < end).then(|| start - first..end - first)
 }
 
-/// `items` in buffers no larger than the device allows, `stride` bytes each; a buffer
-/// holds a multiple of `multiple` items, so no segment is split.
+/// `items` in vertex buffers no larger than the device allows, `stride` bytes each.
 fn upload_chunked<T>(
     device: &wgpu::Device,
     label: &str,
     items: &[T],
     stride: u64,
-    multiple: usize,
     write: impl Fn(&T, &mut Vec<u8>),
 ) -> Vec<Chunk> {
-    let fit = usize::try_from(device.limits().max_buffer_size / stride).unwrap_or(usize::MAX);
-    let per_chunk = (fit / multiple * multiple).max(multiple);
+    let per_chunk = usize::try_from(device.limits().max_buffer_size / stride).unwrap_or(usize::MAX);
     items
-        .chunks(per_chunk)
+        .chunks(per_chunk.max(1))
         .enumerate()
-        .map(|(index, chunk)| {
-            let mut bytes = Vec::with_capacity(
-                chunk
-                    .len()
-                    .saturating_mul(usize::try_from(stride).unwrap_or(0)),
-            );
-            for item in chunk {
-                write(item, &mut bytes);
-            }
-            Chunk {
-                buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(label),
-                    contents: &bytes,
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-                first: vertex_index(index * per_chunk),
-                count: vertex_index(chunk.len()),
-            }
+        .map(|(index, chunk)| Chunk {
+            buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: &bytes_of(chunk, &write),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            first: vertex_index(index * per_chunk),
+            count: vertex_index(chunk.len()),
         })
         .collect()
+}
+
+fn bytes_of<T>(items: &[T], write: impl Fn(&T, &mut Vec<u8>)) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for item in items {
+        write(item, &mut bytes);
+    }
+    bytes
 }
 
 fn write_point(point: &[f32; 2], bytes: &mut Vec<u8>) {
@@ -173,12 +254,13 @@ fn cells_drawn<'a>(
 
 /// One underlay on the GPU.
 struct Uploaded {
-    lines: Vec<Chunk>,
+    segments: Vec<Chunk>,
     outlines: Option<wgpu::Buffer>,
     instances: Vec<Chunk>,
     /// One `u32` per layer, nonzero while its letters are shown.
     shown: wgpu::Buffer,
-    shown_group: wgpu::BindGroup,
+    /// The shown layers, the styles and their patterns.
+    group: wgpu::BindGroup,
     shown_layers: Vec<u32>,
     /// How this frame draws each cell of letters.
     cell_views: Vec<CellView>,
@@ -191,7 +273,7 @@ pub struct GpuUnderlayRenderer {
     strokes_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    shown_layout: wgpu::BindGroupLayout,
+    underlay_layout: wgpu::BindGroupLayout,
     uploaded: BTreeMap<[u8; 32], Uploaded>,
     draws: Vec<UnderlayDraw>,
     /// How many underlays were uploaded: once per underlay, not per frame.
@@ -206,36 +288,29 @@ impl GpuUnderlayRenderer {
             source: wgpu::ShaderSource::Wgsl(UNDERLAY_SHADER.into()),
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Ketchup underlay camera and color"),
-            size: 80,
+            label: Some("Ketchup underlay camera, color and viewport"),
+            size: 96,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Ketchup underlay bind group layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+            entries: &[entry(0, wgpu::BufferBindingType::Uniform)],
         });
-        let shown_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Ketchup underlay shown layers layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+        let storage = wgpu::BufferBindingType::Storage { read_only: true };
+        let underlay_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Ketchup underlay layers and styles layout"),
+            entries: &[entry(0, storage), entry(1, storage), entry(2, storage)],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Ketchup underlay bind group"),
@@ -245,27 +320,27 @@ impl GpuUnderlayRenderer {
                 resource: uniform.as_entire_binding(),
             }],
         });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Ketchup underlay pipeline layout"),
+            bind_group_layouts: &[&layout, &underlay_layout],
+            push_constant_ranges: &[],
+        });
         let pipeline = |label: &str,
-                        layouts: &[&wgpu::BindGroupLayout],
-                        entry_point: &str,
+                        (vertex, fragment): (&str, &str),
+                        topology: wgpu::PrimitiveTopology,
                         buffers: &[wgpu::VertexBufferLayout<'_>]| {
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(label),
-                bind_group_layouts: layouts,
-                push_constant_ranges: &[],
-            });
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: Some(entry_point),
+                    entry_point: Some(vertex),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some("fs_underlay"),
+                    entry_point: Some(fragment),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: target_format,
@@ -274,7 +349,7 @@ impl GpuUnderlayRenderer {
                     })],
                 }),
                 primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::LineList,
+                    topology,
                     ..wgpu::PrimitiveState::default()
                 },
                 depth_stencil: None,
@@ -283,9 +358,12 @@ impl GpuUnderlayRenderer {
                 cache: None,
             })
         };
+        let segment = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32x2, 2 => Float32, 3 => Uint32
+        ];
         let point = wgpu::vertex_attr_array![0 => Float32x2];
         let instance = wgpu::vertex_attr_array![
-            1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Uint32, 5 => Float32
+            1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Uint32, 5 => Float32, 6 => Uint32
         ];
         let point_buffer = wgpu::VertexBufferLayout {
             array_stride: 8,
@@ -299,20 +377,24 @@ impl GpuUnderlayRenderer {
         };
         let lines_pipeline = pipeline(
             "Ketchup underlay lines pipeline",
-            &[&layout],
-            "vs_underlay",
-            std::slice::from_ref(&point_buffer),
+            ("vs_line", "fs_line"),
+            wgpu::PrimitiveTopology::TriangleList,
+            &[wgpu::VertexBufferLayout {
+                array_stride: SEGMENT_STRIDE,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &segment,
+            }],
         );
         let letters_pipeline = pipeline(
             "Ketchup underlay letters pipeline",
-            &[&layout, &shown_layout],
-            "vs_letter",
+            ("vs_letter", "fs_letter"),
+            wgpu::PrimitiveTopology::LineList,
             &[point_buffer, instance_buffer.clone()],
         );
         let strokes_pipeline = pipeline(
             "Ketchup underlay letter strokes pipeline",
-            &[&layout, &shown_layout],
-            "vs_stroke",
+            ("vs_stroke", "fs_letter"),
+            wgpu::PrimitiveTopology::LineList,
             &[instance_buffer],
         );
         Self {
@@ -321,15 +403,15 @@ impl GpuUnderlayRenderer {
             strokes_pipeline,
             uniform,
             bind_group,
-            shown_layout,
+            underlay_layout,
             uploaded: BTreeMap::new(),
             draws: Vec::new(),
             uploads: 0,
         }
     }
 
-    /// Writes the camera and color, uploads underlays not on the GPU yet, which of their
-    /// layers' letters show and how each cell of letters is drawn on a viewport
+    /// Writes the camera, color and viewport, uploads underlays not on the GPU yet, which
+    /// of their layers' letters show and how each cell of letters is drawn on a viewport
     /// `viewport_px` pixels wide and high; underlays no longer drawn are released.
     pub fn prepare(
         &mut self,
@@ -343,6 +425,8 @@ impl GpuUnderlayRenderer {
         let uniform = world_to_clip
             .into_iter()
             .chain(color)
+            .chain(viewport_px)
+            .chain([0.0; 2])
             .flat_map(f32::to_ne_bytes)
             .collect::<Vec<_>>();
         queue.write_buffer(&self.uniform, 0, &uniform);
@@ -393,39 +477,49 @@ impl GpuUnderlayRenderer {
     fn upload(&self, device: &wgpu::Device, geometry: &UnderlayGeometry) -> Uploaded {
         let letters = &geometry.letters;
         let outlines = (!letters.outlines.is_empty()).then(|| {
-            let mut bytes = Vec::with_capacity(letters.outlines.len() * 8);
-            for point in &letters.outlines {
-                write_point(point, &mut bytes);
-            }
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Ketchup underlay glyph outlines"),
-                contents: &bytes,
+                contents: &bytes_of(&letters.outlines, write_point),
                 usage: wgpu::BufferUsages::VERTEX,
             })
         });
-        // At least one slot: a binding is never empty. Every layer starts hidden.
+        let storage = |label: &str, contents: &[u8]| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            })
+        };
+        // At least one slot each: a binding is never empty. Every layer starts hidden.
         let layers = geometry.layer_count().max(1);
-        let shown = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Ketchup underlay shown layers"),
-            contents: &vec![0u8; layers * 4],
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        let shown = storage("Ketchup underlay shown layers", &vec![0u8; layers * 4]);
+        let mut styles = bytes_of(&geometry.styles, GpuStyle::write);
+        styles.resize(styles.len().max(STYLE_STRIDE), 0);
+        let styles = storage("Ketchup underlay styles", &styles);
+        let mut patterns = bytes_of(&geometry.patterns, |length, bytes| {
+            bytes.extend(length.to_ne_bytes());
         });
-        let shown_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Ketchup underlay shown layers"),
-            layout: &self.shown_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: shown.as_entire_binding(),
-            }],
+        patterns.resize(patterns.len().max(4), 0);
+        let patterns = storage("Ketchup underlay dash patterns", &patterns);
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Ketchup underlay layers and styles"),
+            layout: &self.underlay_layout,
+            entries: &[&shown, &styles, &patterns]
+                .into_iter()
+                .zip(0..)
+                .map(|(buffer, binding)| wgpu::BindGroupEntry {
+                    binding,
+                    resource: buffer.as_entire_binding(),
+                })
+                .collect::<Vec<_>>(),
         });
         Uploaded {
-            lines: upload_chunked(
+            segments: upload_chunked(
                 device,
-                "Ketchup underlay lines",
-                &geometry.points,
-                8,
-                2,
-                write_point,
+                "Ketchup underlay segments",
+                &geometry.segments,
+                SEGMENT_STRIDE,
+                Segment::write,
             ),
             outlines,
             instances: upload_chunked(
@@ -433,11 +527,10 @@ impl GpuUnderlayRenderer {
                 "Ketchup underlay letters",
                 &letters.instances,
                 INSTANCE_STRIDE,
-                1,
                 LetterInstance::write,
             ),
             shown,
-            shown_group,
+            group,
             shown_layers: vec![0; layers],
             cell_views: Vec::new(),
         }
@@ -454,7 +547,8 @@ impl GpuUnderlayRenderer {
         pass.set_pipeline(&self.lines_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         for (draw, uploaded) in drawn() {
-            for chunk in &uploaded.lines {
+            pass.set_bind_group(1, &uploaded.group, &[]);
+            for chunk in &uploaded.segments {
                 pass.set_vertex_buffer(0, chunk.buffer.slice(..));
                 for range in draw
                     .visible
@@ -462,19 +556,18 @@ impl GpuUnderlayRenderer {
                     .filter_map(|&layer| draw.geometry.layers.get(layer))
                 {
                     if let Some(local) = local_range(range, chunk.first, chunk.count) {
-                        pass.draw(local, 0..1);
+                        pass.draw(0..6, local);
                     }
                 }
             }
         }
         // The cells of letters drawn whole, glyph by glyph.
         pass.set_pipeline(&self.letters_pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
         for (draw, uploaded) in drawn() {
             let Some(outlines) = &uploaded.outlines else {
                 continue;
             };
-            pass.set_bind_group(1, &uploaded.shown_group, &[]);
+            pass.set_bind_group(1, &uploaded.group, &[]);
             pass.set_vertex_buffer(0, outlines.slice(..));
             let letters = &draw.geometry.letters;
             for chunk in &uploaded.instances {
@@ -492,7 +585,7 @@ impl GpuUnderlayRenderer {
         pass.set_pipeline(&self.strokes_pipeline);
         for (draw, uploaded) in drawn() {
             let letters = &draw.geometry.letters;
-            pass.set_bind_group(1, &uploaded.shown_group, &[]);
+            pass.set_bind_group(1, &uploaded.group, &[]);
             for chunk in &uploaded.instances {
                 pass.set_vertex_buffer(0, chunk.buffer.slice(..));
                 for cell in cells_drawn(uploaded, letters, CellView::Strokes) {
@@ -521,7 +614,8 @@ pub struct UnderlayPaintCallback {
 
 impl UnderlayPaintCallback {
     /// `world_to_clip` column-major, as the scene's, onto a viewport `viewport_px` pixels
-    /// wide and high; `color` opaque sRGB.
+    /// wide and high; `color` opaque sRGB, of what the drawing draws in its foreground
+    /// color.
     #[must_use]
     pub fn new(
         draws: Vec<UnderlayDraw>,
@@ -576,6 +670,17 @@ const UNDERLAY_SHADER: &str = r"
 struct Underlay {
     world_to_clip: mat4x4<f32>,
     color: vec4<f32>,
+    viewport_px: vec2<f32>,
+};
+
+// Linear RGBA, alpha 0 for the underlay's own color; `count` pattern lengths from
+// `first`, repeated every `period_mm`.
+struct Style {
+    color: vec4<f32>,
+    width_px: f32,
+    first: u32,
+    count: u32,
+    period_mm: f32,
 };
 
 @group(0) @binding(0)
@@ -584,17 +689,105 @@ var<uniform> underlay: Underlay;
 @group(1) @binding(0)
 var<storage, read> layer_shown: array<u32>;
 
+@group(1) @binding(1)
+var<storage, read> styles: array<Style>;
+
+@group(1) @binding(2)
+var<storage, read> pattern_mm: array<f32>;
+
+struct Drawn {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) style: u32,
+    // How far along its polyline, in millimetres.
+    @location(1) along_mm: f32,
+};
+
+// Outside the clip volume, where nothing of it is drawn.
+const NOWHERE = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+
+// A segment as a quad as wide on screen as its style: two triangles of corners 0, 1, 2
+// and 3, 4, 5; 1, 4 and 5 at its end, 2, 3 and 5 on its left.
 @vertex
-fn vs_underlay(@location(0) position: vec2<f32>) -> @builtin(position) vec4<f32> {
-    return underlay.world_to_clip * vec4<f32>(position, 0.0, 1.0);
+fn vs_line(
+    @builtin(vertex_index) corner: u32,
+    @location(0) start: vec2<f32>,
+    @location(1) end: vec2<f32>,
+    @location(2) from_mm: f32,
+    @location(3) style: u32,
+) -> Drawn {
+    var drawn: Drawn;
+    drawn.style = style;
+    drawn.along_mm = 0.0;
+    let a = underlay.world_to_clip * vec4<f32>(start, 0.0, 1.0);
+    let b = underlay.world_to_clip * vec4<f32>(end, 0.0, 1.0);
+    // What lies behind the camera is cut off before the segment is widened on screen.
+    // not a tolerance: the clip-space w where a segment is cut, kept off 0 to divide by.
+    let near = 1e-5;
+    if (a.w < near && b.w < near) {
+        drawn.position = NOWHERE;
+        return drawn;
+    }
+    var cut = vec2<f32>(0.0, 1.0);
+    if (a.w < near) {
+        cut.x = (near - a.w) / (b.w - a.w);
+    }
+    if (b.w < near) {
+        cut.y = (near - a.w) / (b.w - a.w);
+    }
+    let first = mix(a, b, cut.x);
+    let last = mix(a, b, cut.y);
+    let at_end = corner == 1u || corner >= 4u;
+    let left = corner == 2u || corner == 3u || corner == 5u;
+    let on_screen = (last.xy / last.w - first.xy / first.w) * underlay.viewport_px;
+    var normal = vec2<f32>(0.0, 1.0);
+    if (length(on_screen) > 0.0) {
+        normal = vec2<f32>(-on_screen.y, on_screen.x) / length(on_screen);
+    }
+    let point = select(first, last, at_end);
+    let offset = normal * styles[style].width_px / underlay.viewport_px;
+    drawn.position = point + vec4<f32>(offset * select(-1.0, 1.0, left) * point.w, 0.0, 0.0);
+    drawn.along_mm = from_mm + distance(start, end) * select(cut.x, cut.y, at_end);
+    return drawn;
 }
 
-// A letter of a hidden layer goes outside the clip volume, where nothing of it is drawn.
-fn letter_point(position: vec2<f32>, layer: u32) -> vec4<f32> {
-    if (layer_shown[layer] == 0u) {
-        return vec4<f32>(2.0, 2.0, 2.0, 1.0);
+fn color_of(style: Style) -> vec4<f32> {
+    return select(style.color, underlay.color, style.color.a == 0.0);
+}
+
+@fragment
+fn fs_line(drawn: Drawn) -> @location(0) vec4<f32> {
+    // Millimetres along the line per pixel, taken before any branch.
+    let per_px = fwidth(drawn.along_mm);
+    let style = styles[drawn.style];
+    // A pattern too fine to tell apart on screen is drawn as a continuous line.
+    if (style.count > 0u && style.period_mm > 4.0 * per_px) {
+        var at = drawn.along_mm - floor(drawn.along_mm / style.period_mm) * style.period_mm;
+        for (var index = 0u; index < style.count; index += 1u) {
+            let length = pattern_mm[style.first + index];
+            if (length < 0.0 && at < -length) {
+                discard;
+            }
+            // A dot is drawn a pixel long.
+            if (length >= 0.0 && at < max(length, per_px)) {
+                break;
+            }
+            at -= abs(length);
+        }
     }
-    return underlay.world_to_clip * vec4<f32>(position, 0.0, 1.0);
+    return color_of(style);
+}
+
+// A letter of a hidden layer goes outside the clip volume.
+fn letter_point(position: vec2<f32>, layer: u32, style: u32) -> Drawn {
+    var drawn: Drawn;
+    drawn.style = style;
+    drawn.along_mm = 0.0;
+    drawn.position = select(
+        underlay.world_to_clip * vec4<f32>(position, 0.0, 1.0),
+        NOWHERE,
+        layer_shown[layer] == 0u,
+    );
+    return drawn;
 }
 
 @vertex
@@ -604,8 +797,9 @@ fn vs_letter(
     @location(2) x_axis: vec2<f32>,
     @location(3) y_axis: vec2<f32>,
     @location(4) layer: u32,
-) -> @builtin(position) vec4<f32> {
-    return letter_point(origin + x_axis * outline.x + y_axis * outline.y, layer);
+    @location(6) style: u32,
+) -> Drawn {
+    return letter_point(origin + x_axis * outline.x + y_axis * outline.y, layer, style);
 }
 
 // A letter too small to read: a stroke along its baseline, as long as it advances.
@@ -616,13 +810,15 @@ fn vs_stroke(
     @location(2) x_axis: vec2<f32>,
     @location(4) layer: u32,
     @location(5) advance: f32,
-) -> @builtin(position) vec4<f32> {
-    return letter_point(origin + x_axis * advance * f32(end), layer);
+    @location(6) style: u32,
+) -> Drawn {
+    return letter_point(origin + x_axis * advance * f32(end), layer, style);
 }
 
+// A text takes the color of its style, never its pattern.
 @fragment
-fn fs_underlay() -> @location(0) vec4<f32> {
-    return underlay.color;
+fn fs_letter(drawn: Drawn) -> @location(0) vec4<f32> {
+    return color_of(styles[drawn.style]);
 }
 ";
 
@@ -633,7 +829,7 @@ mod tests {
     use ketchup_model::underlay::UnderlayLinesBuilder;
 
     #[test]
-    fn each_layer_gets_the_vertex_range_of_its_segments() {
+    fn each_layer_gets_the_range_of_its_segments() {
         let mut builder = UnderlayLinesBuilder::default();
         let line = |from: [f64; 2], to: [f64; 2]| ProfileSegment::Line {
             start_mm: from,
@@ -650,8 +846,57 @@ mod tests {
             .zip(&geometry.layers)
             .map(|(name, range)| (name.as_str(), range.end - range.start))
             .collect::<BTreeMap<_, _>>();
-        assert_eq!(ranges, BTreeMap::from([("axes", 2), ("walls", 4)]));
-        assert_eq!(geometry.layer_vertices(1), 2);
+        assert_eq!(ranges, BTreeMap::from([("axes", 1), ("walls", 2)]));
+        // A segment is a quad of two triangles.
+        assert_eq!(geometry.layer_vertices(1), 6);
+    }
+
+    #[test]
+    fn a_segment_carries_its_style_and_how_far_along_its_polyline_it_starts() {
+        let mut builder = UnderlayLinesBuilder::default();
+        let line = |from: [f64; 2], to: [f64; 2]| ProfileSegment::Line {
+            start_mm: from,
+            end_mm: to,
+        };
+        builder.add(
+            "walls",
+            &[
+                line([0.0, 0.0], [300.0, 0.0]),
+                line([300.0, 0.0], [300.0, 400.0]),
+            ],
+        );
+        builder.set_style(&LineStyle {
+            color: Some([255, 0, 0]),
+            weight_hmm: 50,
+            pattern_mm: vec![20.0, -10.0, 0.0, -10.0],
+        });
+        builder.add("walls", &[line([0.0, 100.0], [100.0, 100.0])]);
+        let (_, lines) = builder.finish();
+        let geometry = UnderlayGeometry::new([9; 32], &lines);
+        let along = geometry
+            .segments
+            .iter()
+            .map(|segment| (segment.from_mm, segment.style))
+            .collect::<Vec<_>>();
+        assert_eq!(along, [(0.0, 0), (300.0, 0), (0.0, 1)]);
+        assert_eq!(
+            geometry.styles,
+            [
+                GpuStyle {
+                    color: [0.0; 4],
+                    width_px: 1.0,
+                    pattern: 0..0,
+                    period_mm: 0.0,
+                },
+                GpuStyle {
+                    color: linear_rgba([255, 0, 0]),
+                    width_px: 2.0,
+                    pattern: 0..4,
+                    period_mm: 40.0,
+                },
+            ]
+        );
+        assert_eq!(geometry.patterns, [20.0, -10.0, 0.0, -10.0]);
     }
 
     #[test]
@@ -683,7 +928,7 @@ mod tests {
         let [walls, labels] = &geometry.layers[..] else {
             panic!("two layers")
         };
-        assert_eq!((walls.len(), labels.len()), (2, 0));
+        assert_eq!((walls.len(), labels.len()), (1, 0));
         // Eight letters (not the space) of three glyphs: H, a and l, each outline once.
         let letters = &geometry.letters;
         assert_eq!(geometry.letter_count(), 8);
@@ -701,7 +946,7 @@ mod tests {
             .map(|run| (run.vertices.len() * run.instances.len()) as u64)
             .sum::<u64>();
         assert_eq!(geometry.layer_vertices(1), outline_vertices);
-        assert_eq!(geometry.layer_vertices(0), 2);
+        assert_eq!(geometry.layer_vertices(0), 6);
         // Every letter's outline lies in the text's box: 100 mm capitals on y = 500, the
         // l a little taller, the a a little below the baseline.
         for run in &letters.runs {

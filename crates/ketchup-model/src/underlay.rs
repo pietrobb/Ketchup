@@ -5,9 +5,11 @@
 //! exports and validators never meet it. The document keeps its name, its layers and the
 //! tags that show them; its lines are one blob of the document's container
 //! ([`UnderlayLines::encode`]), shared by every revision, so an Undo history does not copy
-//! them. The texts of a layer travel with its lines; snapping only meets the lines.
+//! them. The texts of a layer travel with its lines; snapping only meets the lines. Each
+//! polyline and text names the style it is drawn in ([`style::LineStyle`]).
 
 pub mod snap;
+pub mod style;
 pub mod text;
 
 use std::collections::BTreeSet;
@@ -17,6 +19,7 @@ use ketchup_geometry::typed_id;
 
 use crate::document::{CanonicalCommand, CommandBatch, ProfileSegment, Snapshot, TagId};
 use crate::tolerance::{MAX_COORDINATE_MM, UNDERLAY_ARC_CHORD_MM};
+use style::LineStyle;
 use text::UnderlayText;
 
 typed_id!(UnderlayId);
@@ -66,25 +69,34 @@ pub struct UnderlayLayer {
     pub tag: TagId,
 }
 
-/// The lines of an underlay: per layer, polylines in the XY plane in millimetres.
+/// The lines of an underlay: per layer, polylines in the XY plane in millimetres; and the
+/// styles they are drawn in.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UnderlayLines {
     layers: Vec<LayerLines>,
+    styles: Vec<LineStyle>,
 }
 
-/// The polylines of one layer: their points one after another, and where each ends; and
-/// the layer's texts.
+/// The polylines of one layer: their points one after another, where each ends and its
+/// style; and the layer's texts.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayerLines {
     points_mm: Vec<[f64; 2]>,
     /// The index in `points_mm` one past the last point of each polyline.
     ends: Vec<usize>,
+    /// The index of each polyline's style in [`UnderlayLines::style`].
+    styles: Vec<u32>,
     texts: Vec<UnderlayText>,
 }
 
 impl LayerLines {
     pub fn texts(&self) -> &[UnderlayText] {
         &self.texts
+    }
+
+    /// Every polyline with the index of its style.
+    pub fn styled_polylines(&self) -> impl Iterator<Item = (u32, &[[f64; 2]])> {
+        self.styles.iter().copied().zip(self.polylines())
     }
 
     fn points_and_anchors(&self) -> impl Iterator<Item = [f64; 2]> + '_ {
@@ -111,10 +123,9 @@ impl LayerLines {
     }
 }
 
-/// Lines only: a drawing without texts is encoded so, as before texts were kept.
-const MAGIC: &[u8; 8] = b"KUNDRLY1";
-/// Lines, then each layer's texts after its points.
-const MAGIC_WITH_TEXTS: &[u8; 8] = b"KUNDRLY2";
+/// The versions of the blob, read all: lines only (1); each layer's texts after its points
+/// (2); the styles first, and the style of each polyline and text (3, written).
+const MAGICS: [&[u8; 8]; 3] = [b"KUNDRLY1", b"KUNDRLY2", b"KUNDRLY3"];
 
 /// Why the bytes of a container blob are not underlay lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,6 +144,8 @@ pub enum UnderlayLinesError {
     InvalidText,
     /// A text whose bytes are not UTF-8.
     TextNotUtf8(std::str::Utf8Error),
+    /// A style with no dash to draw, or a polyline or text naming no style.
+    InvalidStyle,
     /// The blob holds another number of layers than the underlay names.
     LayerCount { blob: usize, underlay: usize },
 }
@@ -150,6 +163,9 @@ impl fmt::Display for UnderlayLinesError {
             Self::InvalidText => formatter
                 .write_str("an underlay text has no height or width, or an unknown alignment"),
             Self::TextNotUtf8(error) => write!(formatter, "an underlay text is not UTF-8: {error}"),
+            Self::InvalidStyle => {
+                formatter.write_str("an underlay line style is invalid or names no style")
+            }
             Self::LayerCount { blob, underlay } => write!(
                 formatter,
                 "the underlay lines hold {blob} layers, the underlay names {underlay}"
@@ -170,6 +186,20 @@ impl std::error::Error for UnderlayLinesError {
 impl UnderlayLines {
     pub fn layers(&self) -> &[LayerLines] {
         &self.layers
+    }
+
+    /// The styles its polylines and texts name; an underlay saved before styles has none,
+    /// and every index names [`Self::style`] continuous in its own color.
+    pub fn styles(&self) -> &[LineStyle] {
+        &self.styles
+    }
+
+    #[must_use]
+    pub fn style(&self, index: u32) -> &LineStyle {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.styles.get(index))
+            .unwrap_or(&style::CONTINUOUS)
     }
 
     #[must_use]
@@ -234,7 +264,7 @@ impl UnderlayLines {
                 text.anchor_mm = [0, 1].map(|axis| text.anchor_mm[axis] - offset_mm[axis]);
                 inside(&text.anchor_mm)
             });
-            for polyline in layer.polylines() {
+            for (style, polyline) in layer.styled_polylines() {
                 // A point outside ends the polyline; the pieces on both sides of it are
                 // left out.
                 let mut run = Vec::new();
@@ -243,10 +273,10 @@ impl UnderlayLines {
                     if inside(&moved) {
                         run.push(moved);
                     } else {
-                        push_run(&mut kept, &mut run);
+                        push_run(&mut kept, &mut run, style);
                     }
                 }
-                push_run(&mut kept, &mut run);
+                push_run(&mut kept, &mut run, style);
             }
             *layer = kept;
         }
@@ -257,19 +287,23 @@ impl UnderlayLines {
         }
     }
 
-    /// The bytes of the container blob: little-endian counts, ends and coordinates.
+    /// The bytes of the container blob: little-endian counts, ends, coordinates and
+    /// style indices; the styles before the layers.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let capacity = MAGIC.len()
-            + 4
+        let capacity = MAGICS[2].len()
+            + 8
             + self
                 .layers
                 .iter()
-                .map(|layer| 8 + layer.ends.len() * 4 + layer.points_mm.len() * 16)
+                .map(|layer| 12 + layer.ends.len() * 8 + layer.points_mm.len() * 16)
                 .sum::<usize>();
         let mut bytes = Vec::with_capacity(capacity);
-        let texts = self.text_count() > 0;
-        bytes.extend_from_slice(if texts { MAGIC_WITH_TEXTS } else { MAGIC });
+        bytes.extend_from_slice(MAGICS[2]);
+        push_count(&mut bytes, self.styles.len());
+        for style in &self.styles {
+            style.encode(&mut bytes);
+        }
         push_count(&mut bytes, self.layers.len());
         for layer in &self.layers {
             push_count(&mut bytes, layer.ends.len());
@@ -281,28 +315,37 @@ impl UnderlayLines {
                 bytes.extend_from_slice(&point[0].to_le_bytes());
                 bytes.extend_from_slice(&point[1].to_le_bytes());
             }
-            if texts {
-                push_count(&mut bytes, layer.texts.len());
-                for text in &layer.texts {
-                    text.encode(&mut bytes);
-                }
+            for style in &layer.styles {
+                bytes.extend_from_slice(&style.to_le_bytes());
+            }
+            push_count(&mut bytes, layer.texts.len());
+            for text in &layer.texts {
+                text.encode(&mut bytes);
             }
         }
         bytes
     }
 
-    /// Reads what [`Self::encode`] wrote; every count is checked against the bytes
-    /// before anything is allocated for it.
+    /// Reads what [`Self::encode`] wrote, or an older version of it; every count is
+    /// checked against the bytes before anything is allocated for it.
     pub fn decode(bytes: &[u8]) -> Result<Self, UnderlayLinesError> {
-        let (rest, texts) = if let Some(rest) = bytes.strip_prefix(MAGIC.as_slice()) {
-            (rest, false)
-        } else {
-            let rest = bytes
-                .strip_prefix(MAGIC_WITH_TEXTS.as_slice())
-                .ok_or(UnderlayLinesError::NotUnderlayLines)?;
-            (rest, true)
-        };
+        let (version, rest) = MAGICS
+            .iter()
+            .enumerate()
+            .find_map(|(index, magic)| Some((index + 1, bytes.strip_prefix(magic.as_slice())?)))
+            .ok_or(UnderlayLinesError::NotUnderlayLines)?;
         let mut reader = Reader(rest);
+        let mut styles = Vec::new();
+        if version >= 3 {
+            // Pushed one by one: each style checks its own bytes before it is kept.
+            for _ in 0..reader.count()? {
+                styles.push(LineStyle::decode(&mut reader)?);
+            }
+        }
+        let named = |style: u32| {
+            usize::try_from(style).is_ok_and(|style| style < styles.len())
+                || (version < 3 && style == 0)
+        };
         let layer_count = reader.count()?;
         let mut layers = Vec::new();
         for _ in 0..layer_count {
@@ -329,23 +372,39 @@ impl UnderlayLines {
             if points_mm.iter().flatten().any(|value| !value.is_finite()) {
                 return Err(UnderlayLinesError::NotFinite);
             }
-            let mut layer_texts = Vec::new();
-            if texts {
+            let polyline_styles = if version >= 3 {
+                reader
+                    .take(ends.len(), 4)?
+                    .chunks_exact(4)
+                    .map(|style| u32::from_le_bytes([style[0], style[1], style[2], style[3]]))
+                    .collect()
+            } else {
+                vec![0; ends.len()]
+            };
+            let mut texts = Vec::new();
+            if version >= 2 {
                 // Pushed one by one: each text checks its own bytes before it is kept.
                 for _ in 0..reader.count()? {
-                    layer_texts.push(UnderlayText::decode(&mut reader)?);
+                    texts.push(UnderlayText::decode(&mut reader, version >= 3)?);
                 }
+            }
+            let mut indices = polyline_styles
+                .iter()
+                .chain(texts.iter().map(|text| &text.style));
+            if !indices.all(|style| named(*style)) {
+                return Err(UnderlayLinesError::InvalidStyle);
             }
             layers.push(LayerLines {
                 points_mm,
                 ends,
-                texts: layer_texts,
+                styles: polyline_styles,
+                texts,
             });
         }
         if !reader.0.is_empty() {
             return Err(UnderlayLinesError::TrailingBytes);
         }
-        Ok(Self { layers })
+        Ok(Self { layers, styles })
     }
 }
 
@@ -390,13 +449,17 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Collects drawing segments into the polylines of named layers.
+/// Collects drawing segments into the polylines of named layers, each in the style set
+/// last.
 #[derive(Default)]
 pub struct UnderlayLinesBuilder {
     names: Vec<String>,
     layers: Vec<LayerLines>,
     /// Per layer, the loose lines and arcs [`Self::finish`] joins into polylines.
     loose: Vec<LayerLines>,
+    styles: Vec<LineStyle>,
+    /// The index in `styles` of what is added next.
+    style: u32,
 }
 
 /// Chords of a whole circle at most, however large it is.
@@ -405,21 +468,68 @@ const MAX_CIRCLE_CHORDS: f64 = 1024.0;
 const BEZIER_CHORDS: u32 = 16;
 
 impl UnderlayLinesBuilder {
-    /// Adds one connected run of `segments` to `layer` as one polyline.
-    pub fn add(&mut self, layer: &str, segments: &[ProfileSegment]) {
-        let index = self.layer_index(layer);
-        push_polyline(&mut self.layers[index], segments);
+    /// The style of the lines and texts added after; until set, a continuous line in the
+    /// underlay's own color.
+    pub fn set_style(&mut self, style: &LineStyle) {
+        // Index 0 stays what was added before a style was set.
+        if self.styles.is_empty() {
+            self.styles.push(LineStyle::default());
+        }
+        if self.styles.get(index(self.style)) == Some(style) {
+            return;
+        }
+        let at = match self.styles.iter().position(|kept| kept == style) {
+            Some(at) => at,
+            None => {
+                self.styles.push(style.clone());
+                self.styles.len() - 1
+            }
+        };
+        self.style = u32::try_from(at).expect("an underlay count fits the blob's u32");
     }
 
-    /// Adds a loose line or arc of `layer`, joined with the others it shares an end with.
-    pub fn add_loose(&mut self, layer: &str, segment: &ProfileSegment) {
+    fn dashed(&self) -> bool {
+        self.styles
+            .get(index(self.style))
+            .is_some_and(LineStyle::is_dashed)
+    }
+
+    /// Adds one connected run of `segments` to `layer` as one polyline; dashed, as one
+    /// polyline per segment, since a drawing starts the pattern anew at each.
+    pub fn add(&mut self, layer: &str, segments: &[ProfileSegment]) {
         let index = self.layer_index(layer);
-        push_polyline(&mut self.loose[index], std::slice::from_ref(segment));
+        if self.dashed() {
+            for segment in segments {
+                push_polyline(
+                    &mut self.layers[index],
+                    std::slice::from_ref(segment),
+                    self.style,
+                );
+            }
+        } else {
+            push_polyline(&mut self.layers[index], segments, self.style);
+        }
+    }
+
+    /// Adds a loose line or arc of `layer`, joined with the others of its style it shares
+    /// an end with unless dashed.
+    pub fn add_loose(&mut self, layer: &str, segment: &ProfileSegment) {
+        if self.dashed() {
+            self.add(layer, std::slice::from_ref(segment));
+        } else {
+            let index = self.layer_index(layer);
+            push_polyline(
+                &mut self.loose[index],
+                std::slice::from_ref(segment),
+                self.style,
+            );
+        }
     }
 
     /// Adds a text of `layer`.
-    pub fn add_text(&mut self, layer: &str, text: UnderlayText) {
+    pub fn add_text(&mut self, layer: &str, mut text: UnderlayText) {
         let index = self.layer_index(layer);
+        text.style = self.style;
         self.layers[index].texts.push(text);
     }
 
@@ -439,17 +549,26 @@ impl UnderlayLinesBuilder {
         for (lines, loose) in self.layers.iter_mut().zip(&self.loose) {
             join_loose(loose, lines);
         }
+        if self.styles.is_empty() {
+            self.styles.push(LineStyle::default());
+        }
         (
             self.names,
             UnderlayLines {
                 layers: self.layers,
+                styles: self.styles,
             },
         )
     }
 }
 
-/// Appends `segments`, one connected run, to `lines` as one polyline.
-fn push_polyline(lines: &mut LayerLines, segments: &[ProfileSegment]) {
+/// A style index as an index into the styles.
+fn index(style: u32) -> usize {
+    usize::try_from(style).unwrap_or(usize::MAX)
+}
+
+/// Appends `segments`, one connected run, to `lines` as one polyline of `style`.
+fn push_polyline(lines: &mut LayerLines, segments: &[ProfileSegment], style: u32) {
     let Some(first) = segments.first() else {
         return;
     };
@@ -466,28 +585,39 @@ fn push_polyline(lines: &mut LayerLines, segments: &[ProfileSegment]) {
         return;
     }
     lines.ends.push(lines.points_mm.len());
+    lines.styles.push(style);
 }
 
-/// Appends `run` to `lines` as one polyline if it has a piece, and empties it.
-fn push_run(lines: &mut LayerLines, run: &mut Vec<[f64; 2]>) {
+/// Appends `run` to `lines` as one polyline of `style` if it has a piece, and empties it.
+fn push_run(lines: &mut LayerLines, run: &mut Vec<[f64; 2]>, style: u32) {
     if run.len() >= 2 {
         lines.points_mm.append(run);
         lines.ends.push(lines.points_mm.len());
+        lines.styles.push(style);
     }
     run.clear();
 }
 
-/// Appends the polylines of `loose` to `lines`, each run of them that meets end to end at
-/// points no third one touches joined into one polyline. Points meet when they are equal.
+/// Appends the polylines of `loose` to `lines`, each run of them of one style that meets
+/// end to end at points no third one of it touches joined into one polyline. Points meet
+/// when they are equal.
 fn join_loose(loose: &LayerLines, lines: &mut LayerLines) {
     let pieces = loose.polylines().collect::<Vec<_>>();
-    let key = |point: [f64; 2]| [point[0].to_bits(), point[1].to_bits()];
+    let key = |piece: usize, point: [f64; 2]| {
+        (
+            loose.styles[piece],
+            [point[0].to_bits(), point[1].to_bits()],
+        )
+    };
     // At each point, the pieces that end there: 2 × piece, + 1 for its last point.
-    let mut ends_at = std::collections::HashMap::<[u64; 2], Vec<usize>>::new();
+    let mut ends_at = std::collections::HashMap::<(u32, [u64; 2]), Vec<usize>>::new();
     for (index, piece) in pieces.iter().enumerate() {
-        ends_at.entry(key(piece[0])).or_default().push(2 * index);
         ends_at
-            .entry(key(piece[piece.len() - 1]))
+            .entry(key(index, piece[0]))
+            .or_default()
+            .push(2 * index);
+        ends_at
+            .entry(key(index, piece[piece.len() - 1]))
             .or_default()
             .push(2 * index + 1);
     }
@@ -502,7 +632,7 @@ fn join_loose(loose: &LayerLines, lines: &mut LayerLines) {
             } else {
                 0
             }];
-            let meeting = &ends_at[&key(tail)];
+            let meeting = &ends_at[&key(end / 2, tail)];
             if meeting.len() != 2 {
                 break;
             }
@@ -514,6 +644,7 @@ fn join_loose(loose: &LayerLines, lines: &mut LayerLines) {
             end = next;
         }
         lines.ends.push(lines.points_mm.len());
+        lines.styles.push(loose.styles[first / 2]);
     };
     // Runs start where no two pieces meet alone; what is left are closed rings.
     for index in 0..pieces.len() {
@@ -523,7 +654,7 @@ fn join_loose(loose: &LayerLines, lines: &mut LayerLines) {
             } else {
                 pieces[index].len() - 1
             }];
-            if !used[index] && ends_at[&key(point)].len() != 2 {
+            if !used[index] && ends_at[&key(index, point)].len() != 2 {
                 walk(end, &mut used, lines);
             }
         }

@@ -54,6 +54,8 @@ pub struct UnderlayText {
     pub wrap_width_mm: f64,
     /// From one baseline to the next.
     pub line_pitch_mm: f64,
+    /// The index of the style whose color it is drawn in ([`super::UnderlayLines::style`]).
+    pub style: u32,
 }
 
 impl UnderlayText {
@@ -71,6 +73,7 @@ impl UnderlayText {
             fit: TextFit::None,
             wrap_width_mm: 0.0,
             line_pitch_mm: height_mm * LINE_PITCH_PER_HEIGHT,
+            style: 0,
         }
     }
 
@@ -108,10 +111,15 @@ impl UnderlayText {
         ]);
         super::push_count(bytes, self.text.len());
         bytes.extend_from_slice(self.text.as_bytes());
+        bytes.extend_from_slice(&self.style.to_le_bytes());
     }
 
-    /// Reads what [`Self::encode`] wrote, its length checked against the bytes first.
-    pub(super) fn decode(reader: &mut super::Reader<'_>) -> Result<Self, UnderlayLinesError> {
+    /// Reads what [`Self::encode`] wrote, its length checked against the bytes first; a
+    /// text saved before styles is not `styled`.
+    pub(super) fn decode(
+        reader: &mut super::Reader<'_>,
+        styled: bool,
+    ) -> Result<Self, UnderlayLinesError> {
         let numbers = reader.take(8, 8)?;
         let [
             x,
@@ -128,6 +136,12 @@ impl UnderlayText {
         let text = std::str::from_utf8(reader.take(length, 1)?)
             .map_err(UnderlayLinesError::TextNotUtf8)?
             .to_owned();
+        let style = if styled {
+            let bytes = reader.take(4, 1)?;
+            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+        } else {
+            0
+        };
         let numbers = [
             x,
             y,
@@ -179,6 +193,7 @@ impl UnderlayText {
             fit,
             wrap_width_mm,
             line_pitch_mm,
+            style,
         })
     }
 }

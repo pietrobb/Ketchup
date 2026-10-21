@@ -9,10 +9,11 @@ use crate::underlay::text::{
     LINE_PITCH_PER_HEIGHT, TextFit, TextHorizontal, TextVertical, UnderlayText,
 };
 
-/// A text and the layer it is drawn on.
+/// A text, the layer it is drawn on and the style its record names.
 #[derive(Clone)]
 pub(super) struct OrderedText {
     pub(super) layer: String,
+    pub(super) style: EntityStyle,
     pub(super) text: UnderlayText,
 }
 
@@ -101,7 +102,11 @@ pub(super) fn parse_text(
             1,
         )?;
     }
-    Ok(Some(OrderedText { layer, text }))
+    Ok(Some(OrderedText {
+        layer,
+        style: EntityStyle::default(),
+        text,
+    }))
 }
 
 fn parse_mtext(
@@ -174,7 +179,11 @@ fn parse_mtext(
         unsupported_justification(format!("MTEXT 72={direction}"), diagnostics)?;
     }
     report_style("MTEXT", record, &fonts, diagnostics)?;
-    Ok(OrderedText { layer, text })
+    Ok(OrderedText {
+        layer,
+        style: EntityStyle::default(),
+        text,
+    })
 }
 
 /// Places a TEXT or attribute by its groups 72 and 73 (74 for an attribute): left on the
@@ -427,6 +436,7 @@ pub(super) fn place_texts(
                 } else {
                     ordered.layer.clone()
                 },
+                style: ordered.style.clone(),
                 text: UnderlayText {
                     anchor_mm: place_point(
                         text.anchor_mm,

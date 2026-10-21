@@ -39,6 +39,9 @@ struct DxfReading {
     skip_unreadable: bool,
     /// Reads texts and attributes instead of reporting them unsupported or dropped.
     texts: bool,
+    /// Reads the colors, linetypes and lineweights of entities and layers instead of
+    /// reporting them ignored.
+    styles: bool,
 }
 
 const PROFILE_READING: DxfReading = DxfReading {
@@ -49,6 +52,7 @@ const PROFILE_READING: DxfReading = DxfReading {
     chain: true,
     skip_unreadable: false,
     texts: false,
+    styles: false,
 };
 
 /// No limit, yet small enough that the `+ 1` of a check cannot overflow.
@@ -62,10 +66,13 @@ const UNDERLAY_READING: DxfReading = DxfReading {
     chain: false,
     skip_unreadable: true,
     texts: true,
+    styles: true,
 };
 
+mod style;
 mod text;
 mod underlay;
+use style::EntityStyle;
 use text::OrderedText;
 pub use underlay::{DxfUnderlay, read_dxf_underlay, read_dxf_underlay_from};
 
@@ -355,6 +362,8 @@ impl DiagnosticCounts {
 struct LooseSegment {
     layer: String,
     ordinal: usize,
+    /// Read for an underlay only.
+    style: EntityStyle,
     segment: ProfileSegment,
 }
 
@@ -362,6 +371,8 @@ struct LooseSegment {
 struct OrderedProfile {
     layer: String,
     ordinal: usize,
+    /// Read for an underlay only.
+    style: EntityStyle,
     segments: Vec<ProfileSegment>,
     closed: bool,
 }
@@ -371,6 +382,7 @@ impl From<LooseSegment> for OrderedProfile {
         Self {
             layer: loose.layer,
             ordinal: loose.ordinal,
+            style: loose.style,
             segments: vec![loose.segment],
             closed: false,
         }
@@ -417,6 +429,42 @@ impl ParsedEntities {
             self.layers.insert(text.layer.clone());
             self.texts.push(text);
         }
+    }
+
+    /// How many lines, profiles and texts it holds.
+    fn counts(&self) -> [usize; 3] {
+        [
+            self.loose.len(),
+            self.explicit_profiles.len(),
+            self.texts.len(),
+        ]
+    }
+
+    /// Gives what was added since `counts` the style of the entity `record` that drew it;
+    /// what an insert placed from its block at `scale` takes the insert's style ByBlock.
+    fn restyle(
+        &mut self,
+        counts: [usize; 3],
+        record: &[DxfPair<'_>],
+        placed_at: Option<f64>,
+    ) -> Result<(), DxfImportError> {
+        let style = EntityStyle::read(record)?;
+        let restyle = |own: &mut EntityStyle| {
+            *own = match placed_at {
+                Some(scale) => own.within(&style, scale),
+                None => style.clone(),
+            };
+        };
+        self.loose[counts[0]..]
+            .iter_mut()
+            .for_each(|loose| restyle(&mut loose.style));
+        self.explicit_profiles[counts[1]..]
+            .iter_mut()
+            .for_each(|profile| restyle(&mut profile.style));
+        self.texts[counts[2]..]
+            .iter_mut()
+            .for_each(|text| restyle(&mut text.style));
+        Ok(())
     }
 }
 
@@ -857,7 +905,10 @@ fn parse_header(
         })
         .transpose()?;
     for name in variables.keys().copied() {
-        if name != "$INSUNITS" && name != "$INSBASE" {
+        if name != "$INSUNITS"
+            && name != "$INSBASE"
+            && !(diagnostics.reading.styles && style::STYLE_VARIABLES.contains(&name))
+        {
             diagnostics.add(
                 ImportDiagnosticSeverity::Info,
                 "dxf.header-variable-ignored",
@@ -1105,24 +1156,16 @@ fn parse_entities(
                 diagnostics.add(severity, code, Some(kind.clone()), 1)?;
                 return Ok(());
             }
+            let counts = output.counts();
             match kind.as_str() {
-                "LINE" => {
-                    let segment = parse_line(record, units, diagnostics)?;
+                "LINE" | "ARC" => {
+                    let segment = if kind == "LINE" {
+                        parse_line(record, units, diagnostics)?
+                    } else {
+                        parse_arc(record, units, diagnostics)?
+                    };
                     output.layers.insert(segment.layer.clone());
-                    output.loose.push(LooseSegment {
-                        layer: segment.layer,
-                        ordinal,
-                        segment: segment.segment,
-                    });
-                }
-                "ARC" => {
-                    let segment = parse_arc(record, units, diagnostics)?;
-                    output.layers.insert(segment.layer.clone());
-                    output.loose.push(LooseSegment {
-                        layer: segment.layer,
-                        ordinal,
-                        segment: segment.segment,
-                    });
+                    output.loose.push(LooseSegment { ordinal, ..segment });
                 }
                 "CIRCLE" => {
                     let profile = parse_circle(record, units, ordinal, diagnostics)?;
@@ -1241,6 +1284,14 @@ fn parse_entities(
                     1,
                 )?,
             }
+            if diagnostics.reading.styles {
+                let placed_at = match kind.as_str() {
+                    "INSERT" => Some(parse_optional_number(record, 41)?.unwrap_or(1.0).abs()),
+                    "DIMENSION" => Some(1.0),
+                    _ => None,
+                };
+                output.restyle(counts, record, placed_at)?;
+            }
             Ok(())
         })();
         if let Err(error) = read {
@@ -1336,6 +1387,7 @@ fn parse_line(
     Ok(LooseSegment {
         layer,
         ordinal: 0,
+        style: EntityStyle::default(),
         segment: ProfileSegment::Line {
             start_mm: start,
             end_mm: end,
@@ -1385,6 +1437,7 @@ fn parse_circle(
     Ok(OrderedProfile {
         layer,
         ordinal,
+        style: EntityStyle::default(),
         segments: if mirrored {
             segments.into_iter().map(mirror_ocs).collect()
         } else {
@@ -1496,6 +1549,7 @@ fn parse_ellipse(
     Ok(Some(OrderedProfile {
         layer,
         ordinal,
+        style: EntityStyle::default(),
         segments,
         closed,
     }))
@@ -2345,6 +2399,7 @@ fn parse_hatch_edge_path(
             loose.push(LooseSegment {
                 layer: layer.to_owned(),
                 ordinal: loose.len(),
+                style: EntityStyle::default(),
                 segment,
             });
         }
@@ -2698,6 +2753,7 @@ fn build_mesh_boundary_profiles(
         .map(|(start, end, edge_ordinal)| LooseSegment {
             layer: layer.clone(),
             ordinal: edge_ordinal,
+            style: EntityStyle::default(),
             segment: ProfileSegment::Line {
                 start_mm: vertices[start],
                 end_mm: vertices[end],
@@ -2807,6 +2863,7 @@ fn parse_trace(
     Ok(OrderedProfile {
         layer,
         ordinal,
+        style: EntityStyle::default(),
         segments,
         closed: true,
     })
@@ -2933,6 +2990,7 @@ fn parse_leader(
     Ok(Some(OrderedProfile {
         layer,
         ordinal,
+        style: EntityStyle::default(),
         segments,
         closed: false,
     }))
@@ -2978,6 +3036,7 @@ fn parse_3dface(
     Ok(OrderedProfile {
         layer,
         ordinal,
+        style: EntityStyle::default(),
         segments,
         closed: true,
     })
@@ -3029,6 +3088,7 @@ fn parse_arc(
     Ok(LooseSegment {
         layer,
         ordinal: 0,
+        style: EntityStyle::default(),
         segment: if mirrored {
             mirror_ocs(segment)
         } else {
@@ -3089,6 +3149,7 @@ fn parse_dimension(
                     profile.layer.clone()
                 },
                 ordinal,
+                style: profile.style.clone(),
                 segments: profile
                     .segments
                     .iter()
@@ -3238,6 +3299,7 @@ fn parse_insert(
                         profile.layer.clone()
                     },
                     ordinal,
+                    style: profile.style.clone(),
                     segments: profile
                         .segments
                         .iter()
@@ -3315,11 +3377,14 @@ fn parse_insert_attributes(
                     .ok_or(DxfImportError::TooManyEntities)?;
                 if diagnostics.reading.texts {
                     // An attribute it cannot read is counted; the insert's lines stay.
-                    match text::parse_text("ATTRIB", record, units, diagnostics) {
-                        Ok(text) => texts.extend(text.map(|mut text| {
+                    let read = text::parse_text("ATTRIB", record, units, diagnostics)
+                        .and_then(|text| Ok((text, EntityStyle::read(record)?)));
+                    match read {
+                        Ok((text, style)) => texts.extend(text.map(|mut text| {
                             if text.layer == "0" {
                                 text.layer.clone_from(&insert_layer);
                             }
+                            text.style = style;
                             text
                         })),
                         Err(error) => diagnostics.add(
@@ -4047,6 +4112,7 @@ fn build_polyline_profile(
     Ok(OrderedProfile {
         layer,
         ordinal,
+        style: EntityStyle::default(),
         segments,
         closed,
     })
@@ -4255,7 +4321,8 @@ fn report_ignored_groups(
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<(), DxfImportError> {
     for pair in record {
-        if !accepted.contains(&pair.code) {
+        let style = diagnostics.reading.styles && style::STYLE_GROUPS.contains(&pair.code);
+        if !accepted.contains(&pair.code) && !style {
             diagnostics.add(
                 ImportDiagnosticSeverity::Warning,
                 "dxf.entity-group-ignored",
@@ -4755,6 +4822,7 @@ fn assemble_loose_segments(
                     .map(|index| segments[*index].ordinal)
                     .min()
                     .expect("non-empty component"),
+                style: EntityStyle::default(),
                 segments: ordered,
                 closed,
             });

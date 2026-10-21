@@ -16,7 +16,7 @@ const LETTERS_PER_CELL: usize = 4096;
 const READABLE_PX: f32 = 3.0;
 
 /// Bytes of one [`LetterInstance`] on the GPU.
-pub(super) const INSTANCE_STRIDE: u64 = 32;
+pub(super) const INSTANCE_STRIDE: u64 = 36;
 
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Letters {
@@ -37,7 +37,8 @@ pub(super) struct LetterRun {
 }
 
 /// A letter: its glyph's outline drawn from `origin` along `x_axis` and `y_axis`
-/// (millimetres per font unit), on a layer; `advance` font units long as a stroke.
+/// (millimetres per font unit), on a layer, in the color of a style; `advance` font units
+/// long as a stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct LetterInstance {
     pub origin: [f32; 2],
@@ -45,6 +46,7 @@ pub(super) struct LetterInstance {
     pub y_axis: [f32; 2],
     pub layer: u32,
     pub advance: f32,
+    pub style: u32,
 }
 
 impl LetterInstance {
@@ -54,6 +56,7 @@ impl LetterInstance {
         }
         bytes.extend(self.layer.to_ne_bytes());
         bytes.extend(self.advance.to_ne_bytes());
+        bytes.extend(self.style.to_ne_bytes());
     }
 }
 
@@ -122,6 +125,7 @@ impl Letters {
                             y_axis: letter.y_axis.map(gpu_float),
                             layer: vertex_index(index),
                             advance: gpu_float(letter.advance),
+                            style: text.style,
                         },
                         bounds: bounds_of(corners.into_iter()),
                         letter_mm: letter.y_axis[0].hypot(letter.y_axis[1]) * cap_units,

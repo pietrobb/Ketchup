@@ -1,11 +1,12 @@
 //! A DXF drawing read as an underlay: every line, arc and curve it draws, by layer, as
-//! polylines, without making profiles of them, and its texts. An entity it cannot read is
+//! polylines, without making profiles of them, and its texts, each in the color, linetype
+//! and lineweight the drawing gives it ([`super::style`]). An entity it cannot read is
 //! left out and counted in the report. A drawing whose coordinates leave the canonical
 //! envelope, such as one in national grid coordinates, is moved near the origin by an
 //! offset the report names and the underlay keeps.
 //!
 //! The drawing is read line by line, never whole: a first pass finds its text encoding, a
-//! second checks its sections and keeps its header and blocks, and a third reads its
+//! second checks its sections and keeps its header, tables and blocks, and a third reads its
 //! entities one at a time (with the vertices or attributes that follow one) straight into
 //! the lines. Memory grows with the lines kept, not with the size of the file.
 
@@ -46,7 +47,10 @@ pub fn read_dxf_underlay_from(
     let encoding = text_encoding(&mut source)?;
     let mut diagnostics = DiagnosticCounts::new(UNDERLAY_READING);
     let sections = read_sections(PairReader::new(&mut source, encoding)?, &mut diagnostics)?;
-    let (units, _) = parse_header(&sections.header.pairs(), options, &mut diagnostics)?;
+    let header = sections.header.pairs();
+    let (units, _) = parse_header(&header, options, &mut diagnostics)?;
+    let styles =
+        style::DrawingStyles::read(&sections.tables.pairs(), &header, units, &mut diagnostics)?;
     let mut entity_count = 0;
     let blocks = parse_blocks(
         &sections.blocks.pairs(),
@@ -72,12 +76,15 @@ pub fn read_dxf_underlay_from(
             diagnostics,
         )?;
         for loose in &parsed.loose {
+            builder.set_style(&styles.line_style(&loose.style, &loose.layer, diagnostics)?);
             builder.add_loose(&loose.layer, &loose.segment);
         }
         for profile in &parsed.explicit_profiles {
+            builder.set_style(&styles.line_style(&profile.style, &profile.layer, diagnostics)?);
             builder.add(&profile.layer, &profile.segments);
         }
         for text in parsed.texts.drain(..) {
+            builder.set_style(&styles.line_style(&text.style, &text.layer, diagnostics)?);
             builder.add_text(&text.layer, text.text);
         }
         layers.append(&mut parsed.layers);
@@ -191,18 +198,21 @@ impl PairBuffer {
 /// What the sections of a drawing hold that its entities need.
 struct Sections {
     header: PairBuffer,
+    /// The layers and linetypes their styles name.
+    tables: PairBuffer,
     blocks: PairBuffer,
     entities: bool,
 }
 
-/// Checks the SECTION/ENDSEC/EOF structure as a profile import does, keeping the header
-/// and the blocks.
+/// Checks the SECTION/ENDSEC/EOF structure as a profile import does, keeping the header,
+/// the tables and the blocks.
 fn read_sections(
     mut reader: PairReader<'_, impl BufRead>,
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<Sections, DxfImportError> {
     let mut sections = Sections {
         header: PairBuffer::default(),
+        tables: PairBuffer::default(),
         blocks: PairBuffer::default(),
         entities: false,
     };
@@ -225,6 +235,7 @@ fn read_sections(
         reader.in_drawing = name != "HEADER";
         let mut kept = match name.as_str() {
             "HEADER" => Some(&mut sections.header),
+            "TABLES" => Some(&mut sections.tables),
             "BLOCKS" => Some(&mut sections.blocks),
             _ => None,
         };
@@ -244,7 +255,7 @@ fn read_sections(
         }
         match name.as_str() {
             "ENTITIES" => sections.entities = true,
-            "HEADER" | "BLOCKS" => {}
+            "HEADER" | "TABLES" | "BLOCKS" => {}
             _ => diagnostics.add(
                 ImportDiagnosticSeverity::Warning,
                 "dxf.section-ignored",

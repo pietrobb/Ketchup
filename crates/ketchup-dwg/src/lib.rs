@@ -25,9 +25,12 @@ mod tests;
 pub const WRITTEN_VERSION: &str = "AC1032";
 
 /// The DXF sections whose content [`dwg_to_dxf`] writes: the ones a drawing import reads.
-/// The others (classes, tables, objects) are written empty; the objects section alone is
-/// commonly most of a drawing's DXF text.
-pub const DXF_SECTIONS_KEPT: [&str; 3] = ["HEADER", "BLOCKS", "ENTITIES"];
+/// The others (classes, objects) are written empty; the objects section alone is commonly
+/// most of a drawing's DXF text.
+pub const DXF_SECTIONS_KEPT: [&str; 4] = ["HEADER", "TABLES", "BLOCKS", "ENTITIES"];
+/// The tables of the TABLES section whose content is written: the layers and linetypes an
+/// underlay draws its lines with. The others are left out.
+pub const DXF_TABLES_KEPT: [&str; 2] = ["LAYER", "LTYPE"];
 
 /// The step of a conversion that failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,7 +115,7 @@ pub struct DwgDrawing {
 }
 
 /// Reads a DWG file and writes its drawing as DXF text with the content of
-/// [`DXF_SECTIONS_KEPT`] only. The DXF size is checked while writing, so a runaway conversion
+/// [`DXF_SECTIONS_KEPT`] and [`DXF_TABLES_KEPT`] only. The DXF size is checked while writing, so a runaway conversion
 /// stops at the limit. Object records the reader cannot
 /// decode are left out and listed in [`DwgDrawing::skipped`]; a file whose object stream cannot
 /// be read at all is refused.
@@ -217,10 +220,18 @@ enum Place {
     InSection {
         kept: bool,
     },
+    /// In the TABLES section, between its tables.
+    InTables,
+    /// After `0 TABLE`, before the `2 <name>` pair; the first pair is held.
+    TableStart(Vec<u8>),
+    InTable {
+        kept: bool,
+    },
 }
 
-/// Collects DXF text pair by pair, keeping only the content of [`DXF_SECTIONS_KEPT`], and fails
-/// every write once the kept text would grow past `limit`.
+/// Collects DXF text pair by pair, keeping only the content of [`DXF_SECTIONS_KEPT`] and of
+/// its tables [`DXF_TABLES_KEPT`], and fails every write once the kept text would grow past
+/// `limit`.
 struct SectionWriter {
     out: Vec<u8>,
     limit: usize,
@@ -257,9 +268,41 @@ impl SectionWriter {
                 let kept = !is(code, "2") || DXF_SECTIONS_KEPT.iter().any(|name| is(value, name));
                 self.emit(&start);
                 self.emit(&pair);
-                self.place = Place::InSection { kept };
+                self.place = if is(code, "2") && is(value, "TABLES") {
+                    Place::InTables
+                } else {
+                    Place::InSection { kept }
+                };
             }
-            Place::InSection { .. } if is(code, "0") && is(value, "ENDSEC") => self.emit(&pair),
+            Place::InSection { .. } | Place::InTables if is(code, "0") && is(value, "ENDSEC") => {
+                self.emit(&pair);
+            }
+            Place::InTables => {
+                self.place = if is(code, "0") && is(value, "TABLE") {
+                    Place::TableStart(pair)
+                } else {
+                    Place::InTables
+                };
+            }
+            Place::TableStart(start) => {
+                let kept = !is(code, "2") || DXF_TABLES_KEPT.iter().any(|name| is(value, name));
+                if kept {
+                    self.emit(&start);
+                    self.emit(&pair);
+                }
+                self.place = Place::InTable { kept };
+            }
+            Place::InTable { kept } => {
+                if kept {
+                    self.emit(&pair);
+                }
+                let ended = is(code, "0") && is(value, "ENDTAB");
+                self.place = if ended {
+                    Place::InTables
+                } else {
+                    Place::InTable { kept }
+                };
+            }
             Place::InSection { kept } => {
                 if kept {
                     self.emit(&pair);
@@ -279,7 +322,7 @@ impl SectionWriter {
 
     /// The kept text, with any unfinished pair as it was written; `None` past the limit.
     fn finish(mut self) -> Option<Vec<u8>> {
-        if let Place::SectionStart(start) =
+        if let Place::SectionStart(start) | Place::TableStart(start) =
             std::mem::replace(&mut self.place, Place::BetweenSections)
         {
             self.emit(&start);

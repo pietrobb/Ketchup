@@ -97,12 +97,12 @@ fn an_underlay_draws_its_texts_on_their_layer_which_hides_them() {
         app.action_digest()
     );
 
-    // The wall is two vertices; the letters of "Kitchen" are many more.
+    // The wall is one quad of six vertices; the letters of "Kitchen" are many more.
     let all = drawn(&mut app);
     assert!(all[0] > 100, "{all:?}");
     let labels = underlay.layers.iter().find(|layer| layer.name == "labels");
     assert!(app.set_tag_visibility(labels.unwrap().tag, false));
-    assert_eq!(drawn(&mut app), vec![2]);
+    assert_eq!(drawn(&mut app), vec![6]);
 }
 
 #[test]
