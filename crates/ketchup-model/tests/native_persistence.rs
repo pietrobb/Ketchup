@@ -1730,6 +1730,22 @@ fn a_history_over_32_mib_saves_and_opens_whole() {
             store.current().canonical_digest()
         );
     }
+
+    // Neither entry has a size limit of its own, but its stored length must fit
+    // in the rest of the file.
+    for entry in ["document.bin", "history.bin"] {
+        let (checksum_offset, _, _) = container_entry_offsets(&bytes, entry);
+        let rest = (bytes.len() - checksum_offset - 32) as u64;
+        for length in [rest + 1, u64::MAX] {
+            let mut damaged = bytes.clone();
+            damaged[checksum_offset - 8..checksum_offset].copy_from_slice(&length.to_le_bytes());
+            assert_eq!(
+                load_error(&damaged),
+                PersistenceError::Truncated,
+                "{entry} with a stored length of {length}"
+            );
+        }
+    }
 }
 
 #[test]
