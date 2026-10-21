@@ -104,7 +104,8 @@ fn a_long_dwg_read_shows_its_estimated_progress_and_cancel_stops_it() {
             Err(ImportError::failed(ImportFormat::Dxf, "cancelled"))
         });
     let reader_token = reader_token.recv_timeout(Duration::from_secs(10)).unwrap();
-    let shown = |harness: &mut egui_kittest::Harness<'_, KetchupApp>, ago: u64| {
+    // The read's clock is fixed, so slow frames under load change nothing shown.
+    let shown = |harness: &mut egui_kittest::Harness<'_, KetchupApp>, elapsed: u64| {
         let task = harness
             .state_mut()
             .file
@@ -112,7 +113,7 @@ fn a_long_dwg_read_shows_its_estimated_progress_and_cancel_stops_it() {
             .dwg_reading
             .as_mut()
             .unwrap();
-        task.progress.started = Instant::now() - Duration::from_secs(ago);
+        task.progress.fixed_elapsed = Some(Duration::from_secs(elapsed));
         harness.step();
         let (fraction, text) = harness.state().drawing_read_estimate().unwrap();
         assert!(
@@ -125,8 +126,12 @@ fn a_long_dwg_read_shows_its_estimated_progress_and_cancel_stops_it() {
         (fraction, text)
     };
     let (fraction, text) = shown(&mut harness, 1);
-    assert!((0.5..0.6).contains(&fraction), "{fraction}");
-    assert!(text.contains("50") && text.contains('1'), "{text}");
+    assert_eq!(fraction, 0.5);
+    let estimate = harness.state().catalog.format(
+        "file-activity-read-estimate",
+        &BTreeMap::from([("percent", "50".to_owned()), ("seconds", "1".to_owned())]),
+    );
+    assert_eq!(text, estimate);
     let (fraction, text) = shown(&mut harness, 3);
     assert_eq!(fraction, 0.99);
     let overdue = harness.state().catalog.format(

@@ -22,8 +22,11 @@ const DRAWING_READ_BYTES_PER_MILLISECOND: u64 = 8_000;
 
 /// When a drawing read started and how large its file is, for its estimated progress.
 pub(crate) struct ReadProgress {
-    pub(crate) started: Instant,
+    started: Instant,
     pub(crate) source_bytes: u64,
+    /// A test's clock: the read has taken exactly this long, however long frames take.
+    #[cfg(test)]
+    pub(crate) fixed_elapsed: Option<Duration>,
 }
 
 impl ReadProgress {
@@ -31,7 +34,17 @@ impl ReadProgress {
         Self {
             started: Instant::now(),
             source_bytes: std::fs::metadata(path).map_or(0, |metadata| metadata.len()),
+            #[cfg(test)]
+            fixed_elapsed: None,
         }
+    }
+
+    fn elapsed(&self) -> Duration {
+        #[cfg(test)]
+        if let Some(elapsed) = self.fixed_elapsed {
+            return elapsed;
+        }
+        self.started.elapsed()
     }
 
     /// The estimated share done, below 1 until the read ends, and the time estimated to be
@@ -40,7 +53,7 @@ impl ReadProgress {
         let expected =
             Duration::from_millis(self.source_bytes / DRAWING_READ_BYTES_PER_MILLISECOND)
                 .max(Duration::from_millis(500));
-        let elapsed = self.started.elapsed();
+        let elapsed = self.elapsed();
         let fraction = (elapsed.as_secs_f32() / expected.as_secs_f32()).min(0.99);
         (
             fraction,
@@ -237,7 +250,7 @@ impl KetchupApp {
             ),
             None => self.catalog.format(
                 "file-activity-read-overdue",
-                &BTreeMap::from([("seconds", progress.started.elapsed().as_secs().to_string())]),
+                &BTreeMap::from([("seconds", progress.elapsed().as_secs().to_string())]),
             ),
         };
         Some((fraction, text))
