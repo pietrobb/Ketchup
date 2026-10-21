@@ -229,7 +229,7 @@ impl KetchupApp {
         self.render
             .underlays
             .insert(key, Arc::new(UnderlayGeometry::new(key, &read.lines)));
-        self.keep_underlay_snap_index(key, &read.lines);
+        self.build_underlay_snap_index(key, read.lines);
         self.digest = self.catalog.format(
             "digest-imported-underlay",
             &BTreeMap::from([
@@ -351,7 +351,7 @@ impl KetchupApp {
                 });
                 let geometry = Arc::new(UnderlayGeometry::new(key, &lines));
                 self.render.underlays.insert(key, Arc::clone(&geometry));
-                self.keep_underlay_snap_index(key, &lines);
+                self.build_underlay_snap_index(key, lines);
                 geometry
             };
             let visible = if shown(underlay.tag) {

@@ -7,6 +7,7 @@ use ketchup_model::underlay::snap::{
     UnderlayPiece, UnderlaySnap, UnderlaySnapIndex, UnderlaySnapKind,
 };
 use ketchup_model::underlay::{Underlay, UnderlayId, UnderlayLines};
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// What a snap on an underlay line references: no definition and no occurrence.
 pub(crate) fn underlay_reference(underlay: UnderlayId, segment: usize) -> SelectionId {
@@ -30,36 +31,74 @@ pub(crate) fn snap_kind(kind: UnderlaySnapKind) -> SnapKind {
     }
 }
 
+/// The snap index of one blob of underlay lines: built off the window thread, since a
+/// large drawing takes about 100 ms, and giving no snaps until it is there.
+pub(crate) enum UnderlaySnapSlot {
+    Building(Receiver<UnderlaySnapIndex>),
+    Ready(Arc<UnderlaySnapIndex>),
+}
+
 impl KetchupApp {
-    /// The snap index of `underlay`'s lines, built once per blob of lines. Lines that do
-    /// not decode give no snaps; drawing them reports why.
-    pub(crate) fn underlay_snap_index(&self, underlay: &Underlay) -> Arc<UnderlaySnapIndex> {
+    /// The snap index of `underlay`'s lines, or `None` while it is still being built; the
+    /// first ask starts building it. Lines that do not decode give no snaps; drawing them
+    /// reports why.
+    pub(crate) fn underlay_snap_index(
+        &self,
+        underlay: &Underlay,
+    ) -> Option<Arc<UnderlaySnapIndex>> {
         let key = underlay.lines_sha256;
-        if let Some(index) = self.render.underlay_snaps.borrow().get(&key) {
-            return Arc::clone(index);
-        }
-        let lines = self
-            .file
-            .container_data
-            .blobs()
-            .get(&underlay.lines_blob())
-            .and_then(|bytes| UnderlayLines::decode(bytes).ok())
-            .unwrap_or_default();
-        self.keep_underlay_snap_index(key, &lines)
+        let mut slots = self.render.underlay_snaps.borrow_mut();
+        let built = match slots.get(&key) {
+            Some(UnderlaySnapSlot::Ready(index)) => return Some(Arc::clone(index)),
+            Some(UnderlaySnapSlot::Building(receiver)) => match receiver.try_recv() {
+                Ok(index) => index,
+                Err(TryRecvError::Empty) => return None,
+                // The build panicked: no snaps rather than another try every frame.
+                Err(TryRecvError::Disconnected) => {
+                    UnderlaySnapIndex::new(&UnderlayLines::default())
+                }
+            },
+            None => {
+                drop(slots);
+                let lines = self
+                    .file
+                    .container_data
+                    .blobs()
+                    .get(&underlay.lines_blob())
+                    .and_then(|bytes| UnderlayLines::decode(bytes).ok())
+                    .unwrap_or_default();
+                self.build_underlay_snap_index(key, lines);
+                return None;
+            }
+        };
+        let index = Arc::new(built);
+        slots.insert(key, UnderlaySnapSlot::Ready(Arc::clone(&index)));
+        Some(index)
     }
 
-    /// Builds and keeps the snap index of the lines of blob `key`.
-    pub(crate) fn keep_underlay_snap_index(
-        &self,
-        key: [u8; 32],
-        lines: &UnderlayLines,
-    ) -> Arc<UnderlaySnapIndex> {
-        let index = Arc::new(UnderlaySnapIndex::new(lines));
+    /// Starts building the snap index of the lines of blob `key` on a thread of its own.
+    pub(crate) fn build_underlay_snap_index(&self, key: [u8; 32], lines: UnderlayLines) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(UnderlaySnapIndex::new(&lines));
+        });
         self.render
             .underlay_snaps
             .borrow_mut()
-            .insert(key, Arc::clone(&index));
-        index
+            .insert(key, UnderlaySnapSlot::Building(receiver));
+    }
+
+    /// Waits until every snap index being built is there.
+    #[cfg(test)]
+    pub(crate) fn wait_for_underlay_snaps(&self) {
+        for slot in self.render.underlay_snaps.borrow_mut().values_mut() {
+            if let UnderlaySnapSlot::Building(receiver) = slot {
+                let index = receiver
+                    .recv()
+                    .unwrap_or_else(|_| UnderlaySnapIndex::new(&UnderlayLines::default()));
+                *slot = UnderlaySnapSlot::Ready(Arc::new(index));
+            }
+        }
     }
 
     /// Whether `underlay` and its layer `layer` are shown.
@@ -72,33 +111,37 @@ impl KetchupApp {
                 .is_some_and(|layer| shown(layer.tag))
     }
 
-    /// The best endpoint, midpoint and nearest point of each underlay's shown lines within
-    /// `radius_mm` of `point_mm`, in the document's XY plane.
+    /// The best endpoint, intersection, midpoint and nearest point of each underlay's shown
+    /// lines within `radius_mm` of `point_mm`, in the document's XY plane, and whether the
+    /// snap index of every shown underlay was there to ask.
     pub(crate) fn underlay_snaps_near(
         &self,
         snapshot: &Snapshot,
         point_mm: [f64; 2],
         radius_mm: f64,
-    ) -> Vec<(UnderlayId, UnderlaySnap)> {
+    ) -> (Vec<(UnderlayId, UnderlaySnap)>, bool) {
         let mut found = Vec::new();
+        let mut ready = true;
         for underlay in snapshot.underlays() {
             if !snapshot.tag(underlay.tag).is_some_and(|tag| tag.visible()) {
                 continue;
             }
-            let snaps = self
-                .underlay_snap_index(underlay)
-                .snaps(point_mm, radius_mm, |layer| {
-                    Self::underlay_layer_shown(snapshot, underlay, layer)
-                });
+            let Some(index) = self.underlay_snap_index(underlay) else {
+                ready = false;
+                continue;
+            };
+            let snaps = index.snaps(point_mm, radius_mm, |layer| {
+                Self::underlay_layer_shown(snapshot, underlay, layer)
+            });
             found.extend(snaps.iter().map(|snap| (underlay.id, *snap)));
         }
-        found
+        (found, ready)
     }
 
     /// The line or arc of underlay `id` its straight piece `segment` belongs to.
     pub(crate) fn underlay_piece(&self, id: UnderlayId, segment: usize) -> Option<UnderlayPiece> {
         let snapshot = self.document.current();
-        self.underlay_snap_index(snapshot.underlay(id)?)
+        self.underlay_snap_index(snapshot.underlay(id)?)?
             .piece(segment)
     }
 
@@ -141,6 +184,7 @@ impl KetchupApp {
             return Vec::new();
         };
         self.underlay_snaps_near(&snapshot, point, radius)
+            .0
             .into_iter()
             .map(|(id, snap)| {
                 (

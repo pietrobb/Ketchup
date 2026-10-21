@@ -31,7 +31,44 @@ fn imported() -> KetchupApp {
         "{}",
         app.action_digest()
     );
+    app.wait_for_underlay_snaps();
     app
+}
+
+/// While the snap index is still being built off the window thread, the underlay gives no
+/// snap and says so; once it is there, the same point snaps.
+#[test]
+fn an_underlay_gives_no_snap_until_its_snap_index_is_built() {
+    use crate::app::underlay_snapping::UnderlaySnapSlot;
+    use ketchup_model::underlay::UnderlayLines;
+    use ketchup_model::underlay::snap::UnderlaySnapIndex;
+
+    let app = imported();
+    let snapshot = app.document.current();
+    let underlay = snapshot.underlays().next().unwrap();
+    let lines = UnderlayLines::decode(
+        app.file
+            .container_data
+            .blobs()
+            .get(&underlay.lines_blob())
+            .unwrap(),
+    )
+    .unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    app.render
+        .underlay_snaps
+        .borrow_mut()
+        .insert(underlay.lines_sha256, UnderlaySnapSlot::Building(receiver));
+
+    let end = Vec3::new(240.0, 20.0, 0.0);
+    assert_eq!(snap_near(&app, end, Vec2::new(2.0, 1.0)), None);
+    let (found, ready) = app.underlay_snaps_near(&snapshot, [240.0, 20.0], 5.0);
+    assert!(found.is_empty() && !ready);
+
+    sender.send(UnderlaySnapIndex::new(&lines)).unwrap();
+    let snap = snap_near(&app, end, Vec2::new(2.0, 1.0)).unwrap();
+    assert_eq!((snap.kind, snap.position_mm), (SnapKind::Endpoint, end));
+    assert!(app.underlay_snaps_near(&snapshot, [240.0, 20.0], 5.0).1);
 }
 
 fn snap_near(app: &KetchupApp, point: Vec3, offset: Vec2) -> Option<SnapResult> {

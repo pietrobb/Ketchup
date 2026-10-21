@@ -52,8 +52,11 @@ impl LiveBridge {
         if only.is_some_and(|id| snapshot.underlay(id).is_none()) {
             return Err("entity_not_found");
         }
+        let ready = std::cell::Cell::new(true);
         let near = |point: [f64; 2]| -> Found {
-            app.underlay_snaps_near(&snapshot, point, radius_mm)
+            let (found, all_ready) = app.underlay_snaps_near(&snapshot, point, radius_mm);
+            ready.set(ready.get() && all_ready);
+            found
                 .into_iter()
                 .filter(|(id, _)| only.is_none_or(|only| only == *id))
                 .collect()
@@ -105,6 +108,8 @@ impl LiveBridge {
             "nearest": described(nearest),
             "line": line,
             "measure": measure,
+            // False while a shown underlay's snap index is still being built: ask again.
+            "snaps_ready": ready.get(),
         }))
     }
 }

@@ -374,6 +374,7 @@ fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() 
         .execute(&mut app, import_underlay(&path), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     let offset: [f64; 2] = serde_json::from_value(answer["underlay"]["offset_mm"].clone()).unwrap();
+    app.wait_for_underlay_snaps();
     // After the move the 10 m line starts here.
     let start = [-500_000_000.0 - offset[0], -1_200_000_000.0 - offset[1]];
     let snap = |point_mm: [f64; 2], radius_mm: Option<f64>| Request::UnderlaySnap {
@@ -399,6 +400,7 @@ fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() 
         json!([-499_995_000.0, -1_200_000_000.0])
     );
     assert_eq!(found["midpoint"]["layer"], "parcel");
+    assert_eq!(found["snaps_ready"], true);
     assert_eq!(found["nearest"]["distance_mm"], 3.0);
     assert_eq!(found["endpoint"], Value::Null, "the ends are 5 m away");
     assert_eq!(found["line"]["length_mm"], 10_000.0);

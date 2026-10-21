@@ -296,7 +296,7 @@ pub(crate) struct RenderState {
     pub(crate) underlays: BTreeMap<[u8; 32], Arc<crate::renderer::underlay::UnderlayGeometry>>,
     /// The snap indexes of the underlays' lines, by the SHA-256 of their blob.
     pub(crate) underlay_snaps:
-        RefCell<BTreeMap<[u8; 32], Arc<ketchup_model::underlay::snap::UnderlaySnapIndex>>>,
+        RefCell<BTreeMap<[u8; 32], crate::app::underlay_snapping::UnderlaySnapSlot>>,
     /// What the viewport paints of them this frame.
     pub(crate) underlay_frame: Vec<crate::renderer::underlay::UnderlayDraw>,
     pub(crate) wgpu_target_format: Option<eframe::wgpu::TextureFormat>,
