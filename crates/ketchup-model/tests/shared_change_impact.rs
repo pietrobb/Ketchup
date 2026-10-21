@@ -7,9 +7,9 @@ use ketchup_model::document::{
     GroupId, OccurrenceId, ParameterValueType, ProposalCommitError, ProposalPrincipal, Transform,
 };
 use ketchup_model::drawing::{
-    DrawingMargins, DrawingPageOrientation, DrawingPageSize, DrawingPageTemplate, DrawingScale,
-    DrawingSheet, DrawingSheetId, DrawingSource, DrawingTitleBlock, OrthographicDrawing,
-    OrthographicViewKind, project_orthographic_drawing,
+    DrawingError, DrawingMargins, DrawingPageOrientation, DrawingPageSize, DrawingPageTemplate,
+    DrawingScale, DrawingSheet, DrawingSheetId, DrawingSource, DrawingTitleBlock,
+    OrthographicDrawing, OrthographicViewKind, project_orthographic_drawing,
 };
 use ketchup_model::exact_product::{
     ExactBodyPackage, ExactFaceRole, ExactResultRegistry, ExactStlExport, body_exact_graph,
@@ -2357,13 +2357,12 @@ fn dependent_rebind_verifier_covers_planar_mates_drawing_exports_undo_and_save_o
 
 #[test]
 fn dependent_rebind_failures_preserve_last_valid_transforms_views_and_exports() {
-    let under_constrained = seed_rigid_dependencies();
+    // Ungrounding a part of the drawn assembly with the change is an ordinary
+    // edit: the sheet stays, and drawing it names the sheet that is no longer
+    // rigid (review 2026-10-19 M-14).
+    let mut under_constrained = seed_rigid_dependencies();
     let under_source = under_constrained.current();
     let under_results = registry(&under_source);
-    let under_before = stamp(&under_constrained);
-    let under_outputs = derived_output_stamp(&under_source, &under_results);
-    let under_transforms =
-        [FIRST, SECOND].map(|id| under_source.occurrence(id).unwrap().transform());
     let under_impact = project_shared_change_impact(
         &under_constrained,
         &under_results,
@@ -2376,20 +2375,19 @@ fn dependent_rebind_failures_preserve_last_valid_transforms_views_and_exports() 
         id: SECOND,
         grounded: false,
     });
-    let under_failed = under_constrained.prepare_proposal(CommandBatch::new(under_commands));
-    assert!(under_failed.is_err(), "{under_failed:?}");
-    assert_eq!(stamp(&under_constrained), under_before);
+    under_constrained
+        .apply_batch(&CommandBatch::new(under_commands))
+        .unwrap();
+    let ungrounded = under_constrained.current();
+    assert!(!ungrounded.occurrence_is_grounded(SECOND));
     assert_eq!(
-        [FIRST, SECOND].map(|id| under_constrained
-            .current()
-            .occurrence(id)
-            .unwrap()
-            .transform()),
-        under_transforms
-    );
-    assert_eq!(
-        derived_output_stamp(&under_constrained.current(), &under_results),
-        under_outputs
+        project_orthographic_drawing(
+            &ungrounded,
+            &registry(&ungrounded),
+            ungrounded.drawing_sheet(SHEET).unwrap(),
+        )
+        .unwrap_err(),
+        DrawingError::SourceNotRigid(SHEET)
     );
 
     let mut hidden = seed(false);
