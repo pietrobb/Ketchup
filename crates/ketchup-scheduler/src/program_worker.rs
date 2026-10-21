@@ -12,13 +12,14 @@
 //! the DWG reader.
 pub use crate::protocol::DwgRefusal;
 use crate::protocol::{
-    ANY_FRAME_BYTES, DwgInput, Frame, MAX_REPLY_FRAME_BYTES, ProgramInput, RefineInput,
+    ANY_FRAME_BYTES, DwgInput, DwgOutcome, Frame, MAX_REPLY_FRAME_BYTES, ProgramInput, RefineInput,
     RefineOutcome, ReportOutcome, UnderlayInput, UnderlayOutcome, UnderlayRead, WorkerFailure,
     WorkerReply, WorkerRequest, protocol_identity, read_frame, write_frame,
 };
 use crate::underlay_reading::{UnderlayReadError, read_underlay};
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
 use ketchup_dwg::DwgDrawing;
+use ketchup_model::graph::sha256_hex;
 use ketchup_program::{
     CancelToken, EVALUATION_HEAP_BYTES, EVALUATION_TIME, Evaluated, ExactShapes, ProgramError,
     ProgramModel, Refined, Report,
@@ -97,9 +98,6 @@ impl CheckDeadline {
 /// How long reading one DWG file, or one drawing as an underlay, may take.
 const DWG_DEADLINE: Duration = Duration::from_secs(60);
 
-/// The DXF text of a DWG drawing comes back in one reply.
-const MAX_DWG_DXF_BYTES: usize = MAX_REPLY_FRAME_BYTES - 1024 * 1024;
-
 /// How long a dead worker's standard error may take to arrive.
 const STDERR_WAIT: Duration = Duration::from_secs(3);
 
@@ -130,6 +128,8 @@ pub enum DwgConversionError {
     MemoryLimit,
     /// The worker could not be started or stopped otherwise.
     WorkerFailed(WorkerError),
+    /// The DXF text the worker wrote could not be read back, for example for lack of memory.
+    Output(String),
 }
 
 impl fmt::Display for DwgConversionError {
@@ -152,6 +152,12 @@ impl fmt::Display for DwgConversionError {
                 write!(
                     formatter,
                     "the process that reads DWG files stopped: {error}"
+                )
+            }
+            Self::Output(error) => {
+                write!(
+                    formatter,
+                    "the DXF of the DWG drawing could not be read back: {error}"
                 )
             }
         }
@@ -327,26 +333,52 @@ impl ProgramWorker {
         }
     }
 
-    /// [`ketchup_dwg::dwg_to_dxf`] in the worker, for DXF text of at most `max_dxf_bytes`.
+    /// [`ketchup_dwg::dwg_to_dxf`] in the worker, for DXF text of any size: the worker
+    /// writes it to a file of its own, read back whole here.
     ///
     /// # Errors
-    /// The reader refused the file, or the worker was stopped or died.
+    /// The reader refused the file, the worker was stopped or died, or its DXF
+    /// text could not be read back.
     pub fn convert_dwg(
         &mut self,
         dwg: &[u8],
-        max_dxf_bytes: usize,
         cancel: &CancelToken,
     ) -> Result<DwgDrawing, DwgConversionError> {
+        let directory =
+            tempfile::tempdir().map_err(|error| DwgConversionError::Output(error.to_string()))?;
+        let output = directory.path().join("drawing.dxf");
         let input = DwgInput {
             dwg: dwg.to_vec(),
-            max_dxf_bytes: max_dxf_bytes.min(MAX_DWG_DXF_BYTES),
+            output: output.clone(),
         };
         let outcome = self
             .call(cancel, |client| {
                 client.convert_dwg(input, cancel.flag(), DWG_DEADLINE)
             })
             .map_err(Stopped::dwg_error)?;
-        Result::from(outcome).map_err(DwgConversionError::Refused)
+        let (dxf_sha256, version, skipped) = match outcome {
+            DwgOutcome::Converted {
+                dxf_sha256,
+                version,
+                skipped,
+            } => (dxf_sha256, version, skipped),
+            DwgOutcome::Refused(refusal) => return Err(DwgConversionError::Refused(refusal)),
+        };
+        let dxf = crate::read_regular_file(&output, "DXF of the DWG drawing")
+            .map_err(|error| DwgConversionError::Output(error.to_string()))?;
+        if sha256_hex(&dxf) != dxf_sha256 {
+            return Err(DwgConversionError::Output(
+                "the DXF file does not match the worker's digest".to_owned(),
+            ));
+        }
+        Ok(DwgDrawing {
+            dxf,
+            version,
+            skipped: skipped
+                .into_iter()
+                .map(|(record_type, count)| ketchup_dwg::SkippedRecords { record_type, count })
+                .collect(),
+        })
     }
 
     /// Reads the drawing `input` names as an underlay in the worker, which writes its
@@ -453,10 +485,9 @@ pub fn run_stdio() {
                 let refined = ketchup_program::refine(&input.model, &input.exact);
                 WorkerReply::Refined(Box::new(RefineOutcome::Refined(Box::new(refined))))
             }
-            Frame::Message(WorkerRequest::ConvertDwg(input)) => WorkerReply::Dwg(Box::new(
-                ketchup_dwg::dwg_to_dxf(&input.dwg, input.max_dxf_bytes.min(MAX_DWG_DXF_BYTES))
-                    .into(),
-            )),
+            Frame::Message(WorkerRequest::ConvertDwg(input)) => {
+                WorkerReply::Dwg(Box::new(DwgOutcome::convert(&input)))
+            }
             Frame::Message(WorkerRequest::ReadUnderlay(input)) => {
                 WorkerReply::Underlay(Box::new(read_underlay(&input)))
             }

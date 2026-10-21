@@ -211,15 +211,16 @@ impl WorkerReply {
 pub struct DwgInput {
     #[serde(with = "cbor_bytes")]
     pub dwg: Vec<u8>,
-    pub max_dxf_bytes: usize,
+    /// The DXF text goes to this file, not into the reply: a large drawing's DXF
+    /// is more than one reply frame holds.
+    pub output: PathBuf,
 }
 
-/// [`ketchup_dwg::dwg_to_dxf`] on the wire.
+/// [`ketchup_dwg::dwg_to_dxf`] on the wire, its DXF text being in the request's `output`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum DwgOutcome {
     Converted {
-        #[serde(with = "cbor_bytes")]
-        dxf: Vec<u8>,
+        dxf_sha256: String,
         version: String,
         /// Record type and count of every kind of record the read left out.
         skipped: Vec<(String, usize)>,
@@ -274,39 +275,26 @@ impl std::fmt::Display for DwgRefusal {
 
 impl std::error::Error for DwgRefusal {}
 
-impl From<Result<ketchup_dwg::DwgDrawing, ketchup_dwg::DwgError>> for DwgOutcome {
-    fn from(result: Result<ketchup_dwg::DwgDrawing, ketchup_dwg::DwgError>) -> Self {
-        match result {
-            Ok(drawing) => Self::Converted {
-                dxf: drawing.dxf,
-                version: drawing.version,
-                skipped: drawing
-                    .skipped
-                    .into_iter()
-                    .map(|records| (records.record_type, records.count))
-                    .collect(),
-            },
-            Err(error) => Self::Refused(error.into()),
+impl DwgOutcome {
+    /// Converts `input.dwg` and writes its DXF text to `input.output`.
+    pub(crate) fn convert(input: &DwgInput) -> Self {
+        let drawing = match ketchup_dwg::dwg_to_dxf(&input.dwg, usize::MAX) {
+            Ok(drawing) => drawing,
+            Err(error) => return Self::Refused(error.into()),
+        };
+        if let Err(error) = std::fs::write(&input.output, &drawing.dxf) {
+            return Self::Refused(DwgRefusal::Reader {
+                report: format!("writing {}: {error}", input.output.display()),
+            });
         }
-    }
-}
-
-impl From<DwgOutcome> for Result<ketchup_dwg::DwgDrawing, DwgRefusal> {
-    fn from(outcome: DwgOutcome) -> Self {
-        match outcome {
-            DwgOutcome::Converted {
-                dxf,
-                version,
-                skipped,
-            } => Ok(ketchup_dwg::DwgDrawing {
-                dxf,
-                version,
-                skipped: skipped
-                    .into_iter()
-                    .map(|(record_type, count)| ketchup_dwg::SkippedRecords { record_type, count })
-                    .collect(),
-            }),
-            DwgOutcome::Refused(refusal) => Err(refusal),
+        Self::Converted {
+            dxf_sha256: sha256_hex(&drawing.dxf),
+            version: drawing.version,
+            skipped: drawing
+                .skipped
+                .into_iter()
+                .map(|records| (records.record_type, records.count))
+                .collect(),
         }
     }
 }
