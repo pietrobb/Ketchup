@@ -1,6 +1,7 @@
 //! Writes a rigid move or turn of a program part, made in the editor, into the
 //! program that owns it, so the program keeps owning the document. A part
-//! whose creating call has a literal `at=` is moved there; otherwise the
+//! whose creating call has a literal `at=` is moved there when the program
+//! then makes what a `move()` line makes, tools included; otherwise the
 //! program gets a `move()` / `rotate()` line for the part, as Push/Pull gets
 //! `push_pull()`.
 use crate::RuleProgramApplyError;
@@ -112,8 +113,8 @@ pub(crate) fn refused(code: &str, message: impl Into<String>) -> RuleProgramAppl
 
 impl Edit<'_> {
     /// The part's literal `at=` shifted, when its creating call has one
-    /// outside any loop and the program then places only this part there;
-    /// otherwise a `rotate()` / `move()` line for the part.
+    /// outside any loop and the program then makes what the `move()` line
+    /// makes; otherwise a `rotate()` / `move()` line for the part.
     pub(crate) fn transform(
         &self,
         world_edit: Transform,
@@ -127,16 +128,30 @@ impl Edit<'_> {
             at,
             rotation,
         };
+        let lines = self.motion_lines(&motion);
+        let appended = self.appended(&lines);
+        // The literal is written only when the program then makes exactly
+        // what the move() line makes: a move() carries the tools of the
+        // part's booleans along, a literal `at=` does not, so a hole would
+        // stay behind in the world while the part moves.
         if motion.turn.is_none()
             && let Some(call) = self.found_call().filter(|call| call.loop_line.is_none())
             && let Some(literal) = call.at
+            && let Ok(moved_by_line) = evaluate(&appended)
         {
             let moved = written_point(std::array::from_fn(|i| literal.value[i] + motion.shift[i]));
             let rewritten = self.with(vec![(literal.bytes, point_literal(moved))]);
-            if evaluate(&rewritten).is_ok_and(|after| expected.holds(model, &after.model)) {
+            if evaluate(&rewritten).is_ok_and(|after| {
+                expected.holds(model, &after.model) && after.model == moved_by_line.model
+            }) {
                 return Ok((rewritten, expected));
             }
         }
+        Ok((appended, expected))
+    }
+
+    /// The `rotate()` / `move()` lines that make `motion` of the part.
+    fn motion_lines(&self, motion: &Motion) -> String {
         let mut lines = String::new();
         if let Some(turn) = motion.turn {
             lines.push_str(&format!(
@@ -151,6 +166,6 @@ impl Edit<'_> {
             let by = point_literal(motion.shift);
             lines.push_str(&format!("move({}, by={by})\n", quote(self.name)));
         }
-        Ok((self.appended(&lines), expected))
+        lines
     }
 }

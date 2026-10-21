@@ -376,6 +376,36 @@ fn a_part_of_a_loop_is_moved_after_the_loop_alone() {
     assert_eq!(after.part("s2").unwrap().at_mm, [0.0, 0.0, 40.0]);
 }
 
+/// WB-9: a literal `at=` alone would leave the tool of the part's hole
+/// behind in the world; the move is a move() line that carries it along.
+#[test]
+fn a_moved_part_keeps_its_holes_where_they_are_on_the_part() {
+    let source = "a = box(\"a\", (100, 100, 18), at=(0, 0, 0))\n\
+                  subtract(a, box(\"h\", (10, 10, 30), at=(45, 45, -5), tool=True))\n";
+    let by = Transform::from_translation(20.0, 0.0, 0.0).unwrap();
+    let moved = change(source, "a", PartChange::Transform(by));
+    assert_eq!(
+        moved.source,
+        format!("{source}move(\"a\", by=(20, 0, 0))\n")
+    );
+    let after = model(&moved);
+    let part = after.part("a").unwrap();
+    assert_eq!(part.at_mm, [20.0, 0.0, 0.0]);
+    let tools = part
+        .booleans()
+        .map(|boolean| boolean.tool.at_mm)
+        .collect::<Vec<_>>();
+    assert_eq!(tools, [[65.0, 45.0, -5.0]]);
+    // Without booleans the literal is still the one written.
+    let plain = change(PADDED, "a", PartChange::Transform(by));
+    assert!(
+        plain
+            .source
+            .starts_with("box(\"a\", (10, 20, 18), at=(20, 0, 0))\n")
+    );
+    assert!(!plain.source.contains("move("), "{}", plain.source);
+}
+
 #[test]
 fn nothing_is_written_for_what_the_program_does_not_make_as_a_part() {
     let source = program(TWO);
@@ -468,4 +498,39 @@ fn a_length_of_zero_or_less_is_refused_and_the_program_stays() {
     ));
     let refusal = set_length(&pulled, 10.0).expect_err("refused");
     assert!(refusal.to_string().contains("-5 mm long"), "{refusal}");
+}
+
+/// WB-8: once a param() drives the length alone again, the length line is
+/// written again instead of the parameter, so 10 then 12 is 12, not 4.
+#[test]
+fn a_length_typed_after_its_param_became_its_own_rewrites_the_length_line() {
+    let shared = "H = param(\"h\", 18)\n\
+                  box(\"a\", (10, 20, H), at=(0, 0, 0))\n\
+                  box(\"b\", (10, 20, H), at=(0, 50, 0))\n";
+    let first = set_length(&program(shared), 10.0).unwrap().unwrap();
+    assert_eq!(length(&first), 10.0);
+    let alone = rewrite_rule_program_parts(&first, &[("b".to_owned(), PartChange::Delete)])
+        .unwrap()
+        .unwrap();
+    let second = set_length(&alone, 12.0).unwrap().unwrap();
+    assert_eq!(length(&second), 12.0);
+    assert!(second.overrides.is_empty(), "{:?}", second.overrides);
+    assert_eq!(second.source.matches("name=\"Length\"").count(), 1);
+}
+
+/// WB-8: a param() that drives the length alone is checked with the
+/// Push/Pulls of other lines, so a pull that leaves -5 is refused.
+#[test]
+fn a_param_driven_length_is_refused_when_other_pulls_leave_zero_or_less() {
+    let source = program(
+        "H = param(\"h\", 30)\n\
+         box(\"a\", (10, 20, H), at=(0, 0, 0))\n\
+         push_pull(\"a\", face=\"z+\", distance=-15, name=\"Shorter\")\n",
+    );
+    let refusal = set_length(&source, 10.0).expect_err("refused");
+    assert!(refusal.to_string().contains("-5 mm long"), "{refusal}");
+    // Typed 25, the parameter is 25 and the part 10 long with the pull.
+    let typed = set_length(&source, 25.0).unwrap().unwrap();
+    assert_eq!(typed.overrides["h"], 25.0);
+    assert_eq!(length(&typed), 10.0);
 }

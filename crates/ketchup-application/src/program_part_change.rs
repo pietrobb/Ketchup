@@ -823,8 +823,8 @@ impl Edit<'_> {
     }
 
     /// The one `param()` that drives the value is overridden; an
-    /// extrusion's length no parameter drives is a Push/Pull of its end.
-    /// Any other value is refused with the line that writes it.
+    /// extrusion's length is set as [`Self::length`] does. Any other value is
+    /// refused with the line that writes it.
     fn parameter(
         &self,
         feature: &str,
@@ -852,17 +852,12 @@ impl Edit<'_> {
                 _ => None,
             }
         });
-        if end.is_some() && (!value.is_finite() || value <= DEFAULT_LINEAR_TOLERANCE_MM) {
-            return Err(self.too_short(feature, value));
+        if let Some(end) = end {
+            return self.length(feature, &end, current, value);
         }
         let driven = self.driven(&reading, value);
         if let Some(Driven::Alone(rewritten)) = driven {
             return Ok((rewritten, self.reads(reading, value)));
-        }
-        // An extrusion's length is this part's own push_pull() when the
-        // param() that drives it changes other parts too.
-        if let Some(end) = end {
-            return self.length(feature, &end, current, value);
         }
         let line = self
             .found_call()
@@ -894,9 +889,11 @@ impl Edit<'_> {
     }
 
     /// The extrusion `feature`, `pad` long as the program writes it, made
-    /// `value` long by one `push_pull()` of its `end` named [`LENGTH`]. A
-    /// value typed again writes that line again, so it replaces the first
-    /// value instead of adding to it; the Push/Pulls of other lines stay.
+    /// `value` long: by the one `param()` that alone makes its length, else
+    /// by one `push_pull()` of its `end` named [`LENGTH`]. A value typed
+    /// again writes that line again, so it replaces the first value instead
+    /// of adding to it; the Push/Pulls of other lines stay, and the whole
+    /// length with them must stay above 0.
     fn length(
         &self,
         feature: &str,
@@ -918,8 +915,17 @@ impl Edit<'_> {
         let others = length.map_or(0.0, |length| {
             length - pad - written_before.unwrap_or_default()
         });
-        if value + others <= DEFAULT_LINEAR_TOLERANCE_MM {
-            return Err(self.too_short(feature, value + others));
+        let total = value + others;
+        if !total.is_finite() || total <= DEFAULT_LINEAR_TOLERANCE_MM {
+            return Err(self.too_short(feature, total));
+        }
+        // With no line of its own yet, the one param() that makes the whole
+        // length alone is overridden; once the line is there, it is written
+        // again, so a parameter never adds to it.
+        if written_before.is_none()
+            && let Some(Driven::Alone(rewritten)) = self.driven(&Reading::Length, total)
+        {
+            return Ok((rewritten, self.reads(Reading::Length, total)));
         }
         let distance = written(value - pad);
         let line = (distance.abs() > DEFAULT_LINEAR_TOLERANCE_MM).then(|| {
@@ -952,7 +958,7 @@ impl Edit<'_> {
             (None, Some(line)) => self.appended(&line),
             (None, None) => self.source.clone(),
         };
-        Ok((rewritten, self.reads(Reading::Length, value + others)))
+        Ok((rewritten, self.reads(Reading::Length, total)))
     }
 
     fn too_short(&self, feature: &str, length: f64) -> RuleProgramApplyError {
