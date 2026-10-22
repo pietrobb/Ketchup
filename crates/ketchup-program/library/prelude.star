@@ -255,8 +255,9 @@ def member(name, start, end, section, across = None, material = "timber", grain 
 #   move(part, by=(x, y, z))  -> part: shift by a world vector
 #   face_normal(part, face)  -> world outward normal of a face
 #   reach(part, direction)  -> how far the part reaches along a world direction
-#   material_along(part, point, direction)  -> mm of material from a point
-#     along a world direction, cuts and pockets taken out; None if unknown
+#   material_along(part, point, direction, radius=0)  -> mm of material from a point
+#     along a world direction, cuts and pockets taken out; with radius, the least
+#     on the axis and rim of a drill that wide; None if unknown
 #   distance(a, b)  -> struct(distance, overlap, touching, direction)
 #     direction points from a to b; overlap is how deep they intersect
 #   nearest(part, among=None)  -> struct(name, distance, overlap, touching,
@@ -1003,22 +1004,23 @@ def fmt_mm(value, decimals = 1):
     text = digits if decimals == 0 else (digits[:-decimals] + "." + digits[-decimals:]).rstrip("0").rstrip(".")
     return ("-" if value < 0 and rounded != 0 else "") + text
 
-def _drill_room(part, face, rest, points):
+def _drill_room(part, face, rest, points, radius):
     """(thickness behind `face`, deepest hole leaving `rest` of it) of a part:
-    the least material behind the hole centres `points`, cuts and pockets
-    taken out (review PG-4), else how far the part reaches across the face."""
+    the least material behind holes of `radius` at the centres `points`, cuts
+    and pockets taken out (reviews PG-4, PG-11), else how far the part reaches
+    across the face."""
     n = face_normal(part, face)
     thickness = reach(part, n) + reach(part, vec_scale(n, -1))
-    behind = [material_along(part, p, vec_scale(n, -1)) for p in points]
+    behind = [material_along(part, p, vec_scale(n, -1), radius = radius) for p in points]
     if behind and None not in behind:
         thickness = min(behind)
     return (thickness, thickness - max(rest, thickness / 3.0))
 
-def _dowel_depths(a, b, face_a, face_b, dowel, length, clearance, rest, points):
+def _dowel_depths(a, b, face_a, face_b, dowel, length, clearance, rest, points, radius):
     """Hole depths (in a, in b): an even split when both parts have room,
     else the thinner side as deep as its rest allows and the rest of the
     dowel in the other; each hole `clearance` longer than its dowel end."""
-    room_a, room_b = _drill_room(a, face_a, rest, points), _drill_room(b, face_b, rest, points)
+    room_a, room_b = _drill_room(a, face_a, rest, points, radius), _drill_room(b, face_b, rest, points, radius)
     grip = [int((room[1] - clearance) * 2) / 2.0 for room in (room_a, room_b)]
     if min(grip) >= length / 2.0:
         return (length / 2.0 + clearance, length / 2.0 + clearance)
@@ -1072,7 +1074,7 @@ def dowels(a, b, dowel = "8x35", count = None, margin = 50, spacing = 250, clear
                  parts = [a, b], hint = "Place the parts face to face. No joint or holes were generated."):
         return []
     points = _contact_row(c, count, margin, spacing, diameter, offset)
-    depths = _dowel_depths(a, b, c.face_a, c.face_b, dowel, length, clearance, rest, points or [])
+    depths = _dowel_depths(a, b, c.face_a, c.face_b, dowel, length, clearance, rest, points or [], diameter / 2.0)
     if depths == None:
         return []
     depth_a, depth_b = depths

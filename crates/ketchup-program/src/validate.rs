@@ -525,14 +525,6 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
             let entry = part.to_world(local_entry);
             let inward = frame::apply(&part.rotation, local_inward);
             let span = part.reach(inward) - dot(entry, inward);
-            // A blind hole ends in the material on its line, which a cut or
-            // pocket behind it can cut short (review PG-4).
-            let thickness = if hole.through {
-                span
-            } else {
-                part.material_along(local_entry, local_inward, span)
-                    .unwrap_or(span)
-            };
             // The hole's circle, in face coordinates, must lie on the face.
             let fit = faces
                 .as_ref()
@@ -551,6 +543,20 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                     });
                     (inside, at, face)
                 });
+            let off_face = matches!(fit, Some((false, ..)));
+            // A blind hole ends in the material on its axis and rim, which a
+            // cut or pocket behind it can cut short (reviews PG-4, PG-11).
+            // Only up to a wall past the hole's end matters to the checks
+            // below. A rim already off the face is reported as such, not
+            // again as missing material.
+            let thickness = if hole.through {
+                span
+            } else {
+                let limit = span.min(hole.depth_mm + THIN_WALL_MM + 1.0);
+                let rim = if off_face { 0.0 } else { radius };
+                part.material_along(local_entry, local_inward, rim, limit)
+                    .unwrap_or(span)
+            };
             if let Some((false, at, face)) = fit {
                 issues.push(Issue {
                     source_lines: Vec::new(),

@@ -504,8 +504,11 @@ on(post, w, face = \"back\")
 c = contact(w, post)
 if (c.face_a, c.face_b) != (\"back\", \"x-\"):
     fail(\"faces %s %s\" % (c.face_a, c.face_b))
-dowels(w, post, dowel = \"6x30\", margin = 10)
+dowels(w, post, dowel = \"6x30\", margin = 15)
 ";
+    // At margin = 10 the upper dowel's rim, nearer the slope, had only
+    // 14.1 mm of w's material: too little for its share of a 6x30 dowel
+    // (review PG-11). margin = 15 moves it down to thicker material.
     let (evaluated, report) = run("faces.star", source, &Default::default()).expect("evaluates");
     assert!(report.ok, "{:#?}", report.issues);
     let (w, post) = (

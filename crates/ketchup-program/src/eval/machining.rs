@@ -160,14 +160,24 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
     /// How many mm of the part's material lie along a world `direction` from
     /// world `point` on it, its cuts and pockets taken out; None where only
     /// `reach` can tell (not an extrusion; a shell, boolean or push_pull).
+    /// With `radius`, the least of that on the axis and the rim of a drill
+    /// of that radius.
     fn material_along<'v>(
         #[starlark(require = pos)] part: Value<'v>,
         #[starlark(require = pos)] point: Value<'v>,
         #[starlark(require = pos)] direction: Value<'v>,
+        #[starlark(require = named)] radius: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
         let name = part_name(part, heap)?;
+        let radius = given(radius)
+            .map(|radius| number(radius, "radius"))
+            .transpose()?
+            .unwrap_or(0.0);
+        if !(radius.is_finite() && radius >= 0.0) {
+            anyhow::bail!("material_along({name:?}): radius must be 0 or more, got {radius}");
+        }
         let point = numbers::<3>(point, heap, "point")?;
         let direction = numbers::<3>(direction, heap, "direction")?;
         let direction = frame::normalized(direction).ok_or_else(|| {
@@ -181,7 +191,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let span = part.reach(direction) - ketchup_geometry::linalg::dot(point, direction);
         let local = frame::apply_transposed(&part.rotation, direction);
         Ok(part
-            .material_along(part.to_local(point), local, span)
+            .material_along(part.to_local(point), local, radius, span)
             .map_or_else(Value::new_none, |mm| heap.alloc(mm)))
     }
 }
