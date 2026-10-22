@@ -245,6 +245,8 @@ pub(crate) struct TakeoffState {
 pub(crate) struct DrawingsState {
     pub(crate) open: bool,
     pub(crate) editing: ketchup_manufacturing::title_block::SheetSettings,
+    /// The defaults the title block fields showed in the last frame.
+    pub(crate) shown_defaults: BTreeMap<ketchup_manufacturing::title_block::TitleField, String>,
     /// The document's sheet settings changed since it was opened or saved.
     pub(crate) unsaved: bool,
 }

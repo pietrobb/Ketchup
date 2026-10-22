@@ -519,3 +519,66 @@ fn modelled_threads_are_made_cosmetic_only_when_a_sheet_is_drawn() {
     app.exact.worker_path = worker;
     assert!(app.project_drawings().is_ok());
 }
+
+/// Review 2026-10-18 UI-12: editing one field of the title block in the
+/// window kept the project name, the sheet title in the window's language and
+/// today's date in the document too, so every later sheet carried them; and
+/// a default that changed (another language, Save As, midnight) was kept as
+/// an edit. Only what the user wrote is kept; defaults are filled in when a
+/// sheet is drawn, and a field still showing one follows it.
+#[test]
+fn the_title_block_keeps_only_what_the_user_wrote_and_defaults_follow_the_document() {
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1600.0, 1200.0))
+        .build_state(
+            |context, app: &mut KetchupApp| app.ui(context),
+            KetchupApp::new(),
+        );
+    harness.state_mut().open_project_drawings_window();
+    harness.step();
+    assert!(!harness.state().drawings.unsaved, "opening changes nothing");
+
+    harness
+        .state_mut()
+        .drawings
+        .editing
+        .title_block
+        .insert(TitleField::Author, "Peter".to_owned());
+    harness.step();
+    let stored = |app: &KetchupApp| app.stored_sheet_settings().unwrap().title_block;
+    assert_eq!(
+        stored(harness.state()),
+        BTreeMap::from([(TitleField::Author, "Peter".to_owned())])
+    );
+    assert!(harness.state().drawings.unsaved);
+
+    harness
+        .state_mut()
+        .set_ui_language(crate::language::UiLanguage::Slovak);
+    harness.state_mut().file.path = Some(PathBuf::from("Rodinný dom.ketchup"));
+    harness.step();
+    let app = harness.state();
+    assert_eq!(
+        stored(app),
+        BTreeMap::from([(TitleField::Author, "Peter".to_owned())])
+    );
+    let shown = &app.drawings.editing.title_block;
+    assert_eq!(shown[&TitleField::Project], "Rodinný dom");
+    assert_eq!(
+        shown[&TitleField::Drawing],
+        app.catalog.text("drawings-default-sheet")
+    );
+    let drawn = app.sheet_settings().title_block;
+    assert_eq!(drawn[&TitleField::Project], "Rodinný dom");
+    assert_eq!(drawn[&TitleField::Author], "Peter");
+
+    // A field the user wrote over its default is kept.
+    harness
+        .state_mut()
+        .drawings
+        .editing
+        .title_block
+        .insert(TitleField::Project, "Dom Novák".to_owned());
+    harness.step();
+    assert_eq!(stored(harness.state())[&TitleField::Project], "Dom Novák");
+}

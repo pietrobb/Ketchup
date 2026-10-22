@@ -293,15 +293,7 @@ impl KetchupApp {
     /// defaults (the export refuses them, see `project_drawings`).
     pub(crate) fn sheet_settings(&self) -> SheetSettings {
         let mut settings = self.stored_sheet_settings().unwrap_or_default();
-        let defaults = [
-            (TitleField::Project, self.drawing_document_name()),
-            (
-                TitleField::Drawing,
-                self.catalog.text("drawings-default-sheet"),
-            ),
-            (TitleField::Date, today()),
-        ];
-        for (field, value) in defaults {
+        for (field, value) in self.title_defaults() {
             let entry = settings.title_block.entry(field).or_default();
             if entry.trim().is_empty() {
                 *entry = value;
@@ -310,11 +302,38 @@ impl KetchupApp {
         settings
     }
 
-    /// Keeps `settings` in the document; empty fields are dropped.
-    pub(crate) fn store_sheet_settings(&mut self, mut settings: SheetSettings) {
+    /// What the title block shows where the user wrote nothing: the document
+    /// name, the sheet title in the language of the window, today's date.
+    fn title_defaults(&self) -> BTreeMap<TitleField, String> {
+        BTreeMap::from([
+            (TitleField::Project, self.drawing_document_name()),
+            (
+                TitleField::Drawing,
+                self.catalog.text("drawings-default-sheet"),
+            ),
+            (TitleField::Date, today()),
+        ])
+    }
+
+    /// `settings` as the document keeps them: empty fields and fields that
+    /// only show their default are left out, so the default is filled in
+    /// when a sheet is drawn and never frozen in the document (review
+    /// 2026-10-18 UI-12).
+    fn without_title_defaults(&self, mut settings: SheetSettings) -> SheetSettings {
+        let defaults = self.title_defaults();
         settings.title_block.retain(|field, value| {
-            !value.trim().is_empty() && TitleField::EDITABLE.contains(field)
+            !value.trim().is_empty()
+                && TitleField::EDITABLE.contains(field)
+                && defaults
+                    .get(field)
+                    .is_none_or(|default| default.as_str() != value.trim())
         });
+        settings
+    }
+
+    /// Keeps `settings` in the document, without empty or default fields.
+    pub(crate) fn store_sheet_settings(&mut self, settings: SheetSettings) {
+        let settings = self.without_title_defaults(settings);
         if self.stored_sheet_settings().ok().as_ref() == Some(&settings) {
             return;
         }
@@ -481,6 +500,7 @@ impl KetchupApp {
 
     pub(crate) fn open_project_drawings_window(&mut self) {
         self.drawings.editing = self.sheet_settings();
+        self.drawings.shown_defaults = self.title_defaults();
         self.drawings.open = true;
     }
 
@@ -492,6 +512,18 @@ impl KetchupApp {
         let mut export = false;
         let mut export_sheet = None;
         let mut editing = std::mem::take(&mut self.drawings.editing);
+        // A field still showing its default follows it when the default
+        // changes: past midnight, after Save As, in another language.
+        let defaults = self.title_defaults();
+        for (field, shown) in &self.drawings.shown_defaults {
+            if let Some(value) = editing.title_block.get_mut(field)
+                && value == shown
+                && let Some(default) = defaults.get(field)
+            {
+                value.clone_from(default);
+            }
+        }
+        self.drawings.shown_defaults = defaults;
         egui::Window::new(self.catalog.text("window-project-drawings"))
             .open(&mut open)
             .default_width(460.0)
@@ -601,8 +633,12 @@ impl KetchupApp {
                     });
                 }
             });
-        // Merely opening the window with the filled-in defaults changes nothing.
-        if editing != self.sheet_settings() {
+        // Merely opening the window with the filled-in defaults changes
+        // nothing, nor does a default that changes; unreadable stored
+        // settings are replaced only by an edit.
+        if self.without_title_defaults(editing.clone())
+            != self.stored_sheet_settings().unwrap_or_default()
+        {
             self.store_sheet_settings(editing.clone());
         }
         self.drawings.editing = editing;
