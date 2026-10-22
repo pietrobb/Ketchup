@@ -44,8 +44,10 @@ pub fn model_dae_export(
     }
     validate_instances(snapshot, instances)?;
 
-    let mut geometry_indices = BTreeMap::<GeometryKey, usize>::new();
-    let mut geometries = Vec::<(MeshExportSource<'_>, &str)>::new();
+    // A mirrored instance gets a geometry of its own, wound the other way: COLLADA, unlike
+    // glTF, does not turn the winding of a mesh under a mirroring matrix.
+    let mut geometry_indices = BTreeMap::<(GeometryKey, bool), usize>::new();
+    let mut geometries = Vec::<(MeshExportSource<'_>, &str, bool)>::new();
     let mut material_indices = BTreeMap::<[u8; 3], usize>::new();
     let mut materials = Vec::<[u8; 3]>::new();
     let mut component_indices = BTreeMap::<(usize, Option<usize>), usize>::new();
@@ -56,7 +58,11 @@ pub fn model_dae_export(
     for instance in instances {
         let source = instance.source;
         let name = instance.occurrence.definition_name.as_str();
-        let key = geometry_key(source);
+        // `validate_instances` has refused a path that does not resolve.
+        let mirrored = snapshot
+            .resolve_instance_path(&instance.occurrence.instance_path)
+            .is_ok_and(|resolved| resolved.mirrored());
+        let key = (geometry_key(source), mirrored);
         let geometry = if let Some(index) = geometry_indices.get(&key) {
             *index
         } else {
@@ -70,7 +76,7 @@ pub fn model_dae_export(
                 source.triangle_count(),
                 limits::EXPORT_TRIANGLES,
             )?;
-            geometries.push((source, name));
+            geometries.push((source, name, mirrored));
             geometry_indices.insert(key, geometries.len() - 1);
             geometries.len() - 1
         };
@@ -133,8 +139,8 @@ pub fn model_dae_export(
     }
     xml.write_str("  <library_geometries>\n")
         .map_err(over_limit)?;
-    for (index, (source, name)) in geometries.iter().enumerate() {
-        write_geometry(&mut xml, index, *source, name, colored[index])?;
+    for (index, (source, name, mirrored)) in geometries.iter().enumerate() {
+        write_geometry(&mut xml, index, *source, name, colored[index], *mirrored)?;
     }
     xml.write_str("  </library_geometries>\n  <library_nodes>\n")
         .map_err(over_limit)?;
@@ -202,7 +208,7 @@ pub fn model_dae_export(
         .filter(|instance| instance.source.is_canonical())
         .count();
     let loss_report = format!(
-        "authority=validated exact tessellations and canonical mesh bodies\nformat=COLLADA 1.4.1 (DAE)\nconversion=current-visible-model-to-instanced-mesh-scene\nunit=millimetres (no conversion)\ncoordinates=vertices rounded to 0.000001 mm\naxis=Ketchup Z-up (no conversion)\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences as nodes\nnames=COLLADA 1.4.1 NCName: characters an XML name does not allow (spaces, ², ½ among them) become _\ncomponents=equal bodies of one color share one geometry and one library node\nmaterials=resolved occurrence sRGB colors as diffuse lambert effects\nnormals=not written; faces follow the triangle winding\nedges=not written; SketchUp shows triangle edges unless its import merges coplanar faces\ntextures=not written\nsketchup_import_verified=false\neditability_loss=canonical features, parameters, rules, dimensions, constraints, joints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_body_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nunique_geometry_count={}\ncomponent_count={}\ntriangle_count={triangle_count}\nresource_vertex_limit={}\nresource_triangle_limit={}\n",
+        "authority=validated exact tessellations and canonical mesh bodies\nformat=COLLADA 1.4.1 (DAE)\nconversion=current-visible-model-to-instanced-mesh-scene\nunit=millimetres (no conversion)\ncoordinates=vertices rounded to 0.000001 mm\naxis=Ketchup Z-up (no conversion)\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences as nodes\nnames=COLLADA 1.4.1 NCName: characters an XML name does not allow (spaces, ², ½ among them) become _\ncomponents=equal bodies of one color share one geometry and one library node\nmaterials=resolved occurrence sRGB colors as diffuse lambert effects\nnormals=not written; faces follow the triangle winding\nmirrored=a part placed mirrored has its own geometry wound the other way, so its faces still face outward\nedges=not written; SketchUp shows triangle edges unless its import merges coplanar faces\ntextures=not written\nsketchup_import_verified=false\neditability_loss=canonical features, parameters, rules, dimensions, constraints, joints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_body_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nunique_geometry_count={}\ncomponent_count={}\ntriangle_count={triangle_count}\nresource_vertex_limit={}\nresource_triangle_limit={}\n",
         snapshot.canonical_digest(),
         instances.len(),
         geometries.len(),
@@ -222,6 +228,7 @@ fn write_geometry(
     source: MeshExportSource<'_>,
     name: &str,
     colored: bool,
+    reversed: bool,
 ) -> Result<(), ExactProductError> {
     let vertices = source.vertex_count();
     let triangles = source.triangle_count();
@@ -268,6 +275,7 @@ fn write_geometry(
             return Err(ExactProductError::InvalidMeshExport);
         }
         let separator = if triangle == 0 { "" } else { " " };
+        let (b, c) = if reversed { (c, b) } else { (b, c) };
         write!(xml, "{separator}{a} {b} {c}").map_err(over_limit)?;
     }
     xml.write_str("</p></triangles>\n    </mesh></geometry>\n")

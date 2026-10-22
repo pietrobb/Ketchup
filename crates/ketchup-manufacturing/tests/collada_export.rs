@@ -3,6 +3,7 @@ use ketchup_geometry::linalg::{cross, dot};
 use ketchup_manufacturing::blender_export::{
     ExactGlbInstance, MeshGlbInstance, exact_model_glb_export, model_dae_export,
 };
+use ketchup_model::document::{CanonicalCommand, CommandBatch, OccurrenceId, Transform};
 use ketchup_model::exact_product::MeshExportSource;
 
 fn exports(
@@ -145,4 +146,86 @@ fn triangles_wind_outward_so_the_box_encloses_positive_volume() {
         .sum::<f64>();
     // The 10 x 10 x 10 mm box, in millimetres, with every face turned outward.
     assert!((volume - 1000.0).abs() < 1.0e-6, "signed volume {volume}");
+}
+
+/// The volume each placed part of `dae` encloses in the world: the triangles of its
+/// component's geometry through its node's matrix (a flat scene, no nested nodes).
+fn placed_volumes(dae: &str) -> Vec<f64> {
+    let numbers = |text: &str| {
+        text.split(' ')
+            .map(|value| value.parse::<f64>().unwrap())
+            .collect::<Vec<_>>()
+    };
+    let geometry = |id: &str| {
+        let block = between(dae, &format!("<geometry id=\"{id}\""), "</geometry>");
+        let positions = between(block, "-positions-array\" count=\"", "</float_array>");
+        let positions = numbers(&positions[positions.find('>').unwrap() + 1..]);
+        let indices = numbers(between(block, "<p>", "</p>"));
+        (positions, indices)
+    };
+    dae.split("<matrix sid=\"transform\">")
+        .skip(1)
+        .filter(|node| node.contains("<instance_node url=\"#"))
+        .map(|node| {
+            let matrix = numbers(&node[..node.find("</matrix>").unwrap()]);
+            let component = between(node, "<instance_node url=\"#", "\"");
+            let geometry_id = between(dae, &format!("<node id=\"{component}\""), "</node>");
+            let (positions, indices) = geometry(between(geometry_id, "url=\"#", "\""));
+            let point = |index: f64| {
+                let index = index as usize * 3;
+                let local = [positions[index], positions[index + 1], positions[index + 2]];
+                [0, 1, 2].map(|row| {
+                    (0..3)
+                        .map(|column| matrix[row * 4 + column] * local[column])
+                        .sum::<f64>()
+                        + matrix[row * 4 + 3]
+                })
+            };
+            indices
+                .chunks(3)
+                .map(|triangle| {
+                    let [a, b, c] = [point(triangle[0]), point(triangle[1]), point(triangle[2])];
+                    dot(a, cross(b, c)) / 6.0
+                })
+                .sum::<f64>()
+        })
+        .collect()
+}
+
+/// A part placed mirrored keeps its faces turned outward: COLLADA has no rule that a
+/// mirroring matrix turns the winding, so the mirrored part gets its own geometry with
+/// the triangles wound the other way, and both parts enclose +1000 mm³.
+#[test]
+fn a_mirrored_part_keeps_its_faces_turned_outward() {
+    let mut document = seeded_document(None, None);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(11),
+                transform: Transform::from_matrix([
+                    -1.0, 0.0, 0.0, 20.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+                    1.0,
+                ])
+                .unwrap(),
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let package = current_package(&snapshot);
+    let occurrences = snapshot.scene_query();
+    let instances = occurrences
+        .iter()
+        .map(|occurrence| MeshGlbInstance {
+            source: MeshExportSource::Exact(&package),
+            occurrence,
+        })
+        .collect::<Vec<_>>();
+    let export = model_dae_export(&snapshot, &instances).unwrap();
+    let volumes = placed_volumes(&export.dae);
+    assert_eq!(volumes.len(), 2);
+    for volume in volumes {
+        assert!((volume - 1000.0).abs() < 1.0e-6, "signed volume {volume}");
+    }
+    assert_eq!(export.dae.matches("<geometry ").count(), 2);
+    assert!(export.loss_report.contains("mirrored="));
 }
