@@ -68,6 +68,7 @@ impl ExchangeExportJob {
                     .convert_step_to_iges_with_cancellation(
                         &prepared_step,
                         &prepared_iges,
+                        self.model.len(),
                         cancelled,
                     )
                     .map_err(ExportError::failed)?;
@@ -113,6 +114,12 @@ fn canonical_step_header(verified_step: Vec<u8>) -> Result<Vec<u8>, ExportError>
         })?;
     step.replace_range(timestamp_start..timestamp_end, "1970-01-01T00:00:00");
     Ok(step.into_bytes())
+}
+
+/// What the thread of a client's export sends back: the job and its file.
+pub(crate) struct ClientExchangeExport {
+    job: ExchangeExportJob,
+    bytes: Result<Vec<u8>, ExportError>,
 }
 
 /// A STEP or IGES export whose worker runs on its own thread.
@@ -187,20 +194,71 @@ impl KetchupApp {
         self.side_effect_receipts.clear();
         let cancelled = self.live.client_export.clone().unwrap_or_default();
         let result = self.exchange_export_job(format, path).and_then(|job| {
-            let bytes = run(&job, &cancelled)?;
-            if cancelled.load(Ordering::Acquire) {
-                return Err(Rejection::new(
-                        "side_effect.client_gone",
-                        RejectionPhase::Validation,
-                    )
+            let bytes = run(&job, &cancelled);
+            self.publish_unless_client_gone(&job, bytes, &cancelled)
+        });
+        self.report_export_outcome(format.key(), path, result)
+    }
+
+    fn publish_unless_client_gone(
+        &mut self,
+        job: &ExchangeExportJob,
+        bytes: Result<Vec<u8>, ExportError>,
+        cancelled: &AtomicBool,
+    ) -> Result<Written, ExportError> {
+        let bytes = bytes?;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(
+                Rejection::new("side_effect.client_gone", RejectionPhase::Validation)
                     .reason(
                         "the client that asked for this export disconnected before it was written",
                     )
-                    .into());
-            }
-            self.publish_exchange_export(format, path, &job.snapshot, &job.model, bytes)
-        });
-        self.report_export_outcome(format.key(), path, result)
+                    .into(),
+            );
+        }
+        self.publish_exchange_export(job.format, &job.path, &job.snapshot, &job.model, bytes)
+    }
+
+    /// Starts the export a client asked for on a thread, so the window keeps
+    /// drawing while the worker runs (review 2026-10-18 EX-10); the client's
+    /// cancel flag stops the worker. [`Self::finish_client_exchange_export`]
+    /// publishes what the thread sends.
+    pub(crate) fn start_client_exchange_export(
+        &mut self,
+        format: ExchangeFormat,
+        path: &Path,
+        cancelled: Arc<AtomicBool>,
+        context: &egui::Context,
+    ) -> Result<Receiver<ClientExchangeExport>, ExportError> {
+        self.side_effect_receipts.clear();
+        let job = self.exchange_export_job(format, path)?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let repaint = context.clone();
+        std::thread::Builder::new()
+            .name("ketchup-exchange-export".into())
+            .spawn(move || {
+                let bytes = job.run(&cancelled);
+                if sender.send(ClientExchangeExport { job, bytes }).is_ok() {
+                    repaint.request_repaint();
+                }
+            })
+            .map_err(ExportError::failed)?;
+        Ok(receiver)
+    }
+
+    /// Publishes a client's export the thread finished, as a client's: its
+    /// loss report goes back instead of a prompt, and a client that left gets
+    /// nothing written.
+    pub(crate) fn finish_client_exchange_export(
+        &mut self,
+        export: ClientExchangeExport,
+        cancelled: &Arc<AtomicBool>,
+    ) -> Result<Written, ExportError> {
+        let ClientExchangeExport { job, bytes } = export;
+        self.live.client_export = Some(Arc::clone(cancelled));
+        let result = self.publish_unless_client_gone(&job, bytes, cancelled);
+        self.live.client_export = None;
+        self.report_export_outcome(job.format.key(), &job.path, result)
     }
 
     /// Starts the export on a thread; [`Self::poll_exchange_export`] finishes it.

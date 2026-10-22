@@ -69,6 +69,7 @@ mod busy;
 pub mod consent;
 mod drawings;
 mod dwg_import;
+mod exchange_export;
 mod image;
 mod interchange;
 mod program_access;
@@ -1419,6 +1420,15 @@ impl KetchupApp {
                         cancelled,
                     };
                     bridge.start_dwg_import(self, context, queued, request, ui_busy);
+                    continue;
+                }
+                request if exchange_export::exchange_format(&request).is_some() => {
+                    let queued = program_dry_run::QueuedReply {
+                        id,
+                        reply,
+                        cancelled,
+                    };
+                    bridge.start_exchange_export(self, context, queued, request, ui_busy);
                     continue;
                 }
                 request => request,

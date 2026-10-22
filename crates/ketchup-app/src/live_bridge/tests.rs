@@ -50,6 +50,8 @@ mod drawing_sheet;
 mod drill_holes;
 #[path = "dwg_import_tests.rs"]
 mod dwg_import;
+#[path = "exchange_export_tests.rs"]
+mod exchange_export;
 #[path = "product_integration_tests.rs"]
 mod product_integration;
 #[path = "program_access_tests.rs"]

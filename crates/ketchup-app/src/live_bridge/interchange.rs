@@ -172,6 +172,20 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Value, &'static str> {
+        let (path, export_format, exporter) = Self::export_target(app, request, ui_busy)?;
+        Self::require_request_authority(cancelled)?;
+        app.live.client_export = Some(Arc::clone(cancelled));
+        let exported = exporter(app, Path::new(&path));
+        app.live.client_export = None;
+        Self::exported(&path, &export_format, exported)
+    }
+
+    /// The path and format of an export request the window takes now.
+    pub(super) fn export_target(
+        app: &mut KetchupApp,
+        request: Request,
+        ui_busy: bool,
+    ) -> Result<(String, String, Exporter), &'static str> {
         let Request::Export {
             expected,
             path,
@@ -210,17 +224,29 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
-        Self::require_request_authority(cancelled)?;
-        app.live.client_export = Some(Arc::clone(cancelled));
-        let exported = exporter(app, target);
-        app.live.client_export = None;
-        let written = exported.map_err(|error| {
-            record_rejection(
-                &rejected("export_failed").caused_by(error),
-                json!({"path": path, "export_format": export_format}),
-            );
-            "export_failed"
-        })?;
+        Ok((path, export_format, *exporter))
+    }
+
+    /// Records why the export of `path` failed for the answer.
+    pub(super) fn export_failed(
+        path: &str,
+        export_format: &str,
+        error: ExportError,
+    ) -> &'static str {
+        record_rejection(
+            &rejected("export_failed").caused_by(error),
+            json!({"path": path, "export_format": export_format}),
+        );
+        "export_failed"
+    }
+
+    /// The answer to an export of `path` as `export_format`.
+    pub(super) fn exported(
+        path: &str,
+        export_format: &str,
+        exported: Result<Written, ExportError>,
+    ) -> Result<Value, &'static str> {
+        let written = exported.map_err(|error| Self::export_failed(path, export_format, error))?;
         // The files the exporter wrote, not names guessed from the path
         // (review 2026-10-17 MCP-1).
         let shown = |path: &Path| path.display().to_string();

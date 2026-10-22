@@ -171,7 +171,7 @@ fn assert_surface_interchange_roundtrip(
 
     let iges_path = directory.path().join(format!("{stem}.iges"));
     supervisor
-        .convert_step_to_iges_with_cancellation(&step_path, &iges_path, &cancelled)
+        .convert_step_to_iges_with_cancellation(&step_path, &iges_path, 1, &cancelled)
         .unwrap();
     let iges = std::fs::read(&iges_path).unwrap();
     let iges_sha256 = sha256_hex(&iges);

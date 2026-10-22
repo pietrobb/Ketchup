@@ -1790,7 +1790,12 @@ fn step_iges_sketchup_scene_and_glb_sources_over_32_mib_import_save_and_open() {
     let small_iges = directory.path().join("small.iges");
     ExactWorkerSupervisor::spawn(exact_worker_path())
         .unwrap()
-        .convert_step_to_iges_with_cancellation(&step_fixture, &small_iges, &AtomicBool::new(false))
+        .convert_step_to_iges_with_cancellation(
+            &step_fixture,
+            &small_iges,
+            1,
+            &AtomicBool::new(false),
+        )
         .unwrap();
     let glb_fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../artifacts/blender/garden-studio-colored.glb");

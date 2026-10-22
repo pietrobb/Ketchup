@@ -104,7 +104,7 @@ fn worker_evaluates_a_step_and_an_iges_xde_part_inside_a_graph() {
     let directory = tempfile::tempdir().unwrap();
     let iges_path = directory.path().join("assembly.iges");
     supervisor
-        .convert_step_to_iges_with_cancellation(&step_path, &iges_path, &cancelled)
+        .convert_step_to_iges_with_cancellation(&step_path, &iges_path, 1, &cancelled)
         .unwrap();
     let iges = std::fs::read(&iges_path).unwrap();
     let iges_evidence = supervisor

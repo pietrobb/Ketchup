@@ -152,7 +152,7 @@ fn handle_request(
             &result_fingerprint,
             &output,
         ),
-        WorkerRequest::ConvertStepXdeToIges { source, output } => {
+        WorkerRequest::ConvertStepXdeToIges { source, output, .. } => {
             m21_step_xde_to_iges_response(backend, read, &source, &output)
         }
         WorkerRequest::InspectIgesXde(source) => {
@@ -3343,25 +3343,23 @@ fn m21_iges_part_mesh_response(
     )
 }
 
-fn m21_step_xde_to_iges_response(
-    backend: &ExactBackend,
-    read: &mut SourceDocument,
-    source: &SourceFile,
-    output_path: &Path,
-) -> WorkerResult {
-    const OPERATION: &str = "convert_step_xde_to_iges";
-    let output_path = utf8_path(output_path)?;
-    let (document, _) = read.get(backend, source, XdeFormat::Step, OPERATION)?;
-    let manifest = document
-        .manifest()
-        .map_err(|error| backend_failure(OPERATION, &error.to_string()))?;
-    let directory = tempfile::Builder::new()
-        .prefix("ketchup-iges-flat-roots-")
-        .tempdir()
-        .map_err(|error| backend_failure(OPERATION, &error.to_string()))?;
+/// A part of the source to write: its index in the manifest and its name.
+type SourcePart = (u32, String);
+
+/// The flat IGES roots of a STEP XDE `manifest`: one per occurrence of a part,
+/// placed in the world, and the source parts (index and name) they place in
+/// the order their files are written. Each part is written once, however many occurrences
+/// place it: an assembly of 750 copies of a few parts wrote 750 STEP files
+/// (review 2026-10-18 EX-9).
+fn flat_iges_roots(
+    manifest: &ketchup_exact::StepXdeManifest,
+    operation: &'static str,
+) -> Result<(Vec<SourcePart>, Vec<StepXdeExportNode>), WorkerFailure> {
     let mut world_transforms: Vec<Transform> = Vec::with_capacity(manifest.nodes.len());
     let mut inherited_colors: Vec<Option<[u8; 3]>> = Vec::with_capacity(manifest.nodes.len());
-    let mut parts = Vec::new();
+    let mut source_parts = Vec::new();
+    let mut written = BTreeMap::<u32, u32>::new();
+    let mut next_part = 0_u32;
     let mut nodes = Vec::new();
     for (index, node) in manifest.nodes.iter().enumerate() {
         if node.id as usize != index
@@ -3370,7 +3368,7 @@ fn m21_step_xde_to_iges_response(
                 .is_some_and(|parent| parent as usize >= index)
         {
             return Err(backend_failure(
-                OPERATION,
+                operation,
                 "STEP XDE hierarchy is not canonical parent-before order",
             ));
         }
@@ -3379,7 +3377,7 @@ fn m21_step_xde_to_iges_response(
             .filter(|transform| transform.rigid_inverse().is_some())
         else {
             return Err(backend_failure(
-                OPERATION,
+                operation,
                 "STEP XDE hierarchy contains a non-rigid transform",
             ));
         };
@@ -3397,21 +3395,14 @@ fn m21_step_xde_to_iges_response(
         };
         let Some(source_part) = manifest.parts.get(source_part_index as usize) else {
             return Err(backend_failure(
-                OPERATION,
+                operation,
                 "STEP XDE occurrence references a missing part",
             ));
         };
-        let imported = document
-            .part(source_part_index)
-            .map_err(|error| geometry_failure(&error))?;
-        let part_path = directory.path().join(format!("root-{}.step", nodes.len()));
-        backend
-            .export_step(&imported.body, &part_path.to_string_lossy())
-            .map_err(|error| geometry_failure(&error))?;
-        let part_index = parts.len() as u32;
-        parts.push(StepXdeExportPart {
-            path: part_path.to_string_lossy().into_owned(),
-            name: source_part.name.clone(),
+        let part_index = *written.entry(source_part_index).or_insert_with(|| {
+            source_parts.push((source_part_index, source_part.name.clone()));
+            next_part += 1;
+            next_part - 1
         });
         nodes.push(StepXdeExportNode {
             parent_id: None,
@@ -3423,9 +3414,43 @@ fn m21_step_xde_to_iges_response(
     }
     if nodes.is_empty() || nodes.len() > crate::MAX_STEP_ASSEMBLY_NODES {
         return Err(backend_failure(
-            OPERATION,
+            operation,
             "STEP XDE source has no bounded leaf occurrences",
         ));
+    }
+    Ok((source_parts, nodes))
+}
+
+fn m21_step_xde_to_iges_response(
+    backend: &ExactBackend,
+    read: &mut SourceDocument,
+    source: &SourceFile,
+    output_path: &Path,
+) -> WorkerResult {
+    const OPERATION: &str = "convert_step_xde_to_iges";
+    let output_path = utf8_path(output_path)?;
+    let (document, _) = read.get(backend, source, XdeFormat::Step, OPERATION)?;
+    let manifest = document
+        .manifest()
+        .map_err(|error| backend_failure(OPERATION, &error.to_string()))?;
+    let (source_parts, nodes) = flat_iges_roots(&manifest, OPERATION)?;
+    let directory = tempfile::Builder::new()
+        .prefix("ketchup-iges-flat-roots-")
+        .tempdir()
+        .map_err(|error| backend_failure(OPERATION, &error.to_string()))?;
+    let mut parts = Vec::with_capacity(source_parts.len());
+    for (source_part_index, name) in source_parts {
+        let imported = document
+            .part(source_part_index)
+            .map_err(|error| geometry_failure(&error))?;
+        let part_path = directory.path().join(format!("part-{}.step", parts.len()));
+        backend
+            .export_step(&imported.body, &part_path.to_string_lossy())
+            .map_err(|error| geometry_failure(&error))?;
+        parts.push(StepXdeExportPart {
+            path: part_path.to_string_lossy().into_owned(),
+            name,
+        });
     }
     backend
         .export_iges_xde_assembly(&parts, &nodes, output_path)
@@ -3436,7 +3461,8 @@ fn m21_step_xde_to_iges_response(
     let reread = written
         .manifest()
         .map_err(|error| backend_failure("reread_iges_xde_output", &error.to_string()))?;
-    if reread.parts.len() != parts.len()
+    // IGES has no shared definitions: each occurrence is a root of its own.
+    if reread.parts.len() != nodes.len()
         || reread.nodes.len() != nodes.len()
         || reread.nodes.iter().any(|node| node.parent_id.is_some())
         || reread.nodes.iter().zip(&nodes).any(|(actual, expected)| {
@@ -3833,6 +3859,47 @@ mod tests {
             )
         });
         assert_eq!((inspection, conversion), (1, 1));
+    }
+
+    // Review 2026-10-18 EX-9: converting to IGES wrote a STEP file of a part
+    // for every occurrence that places it. The corpus places one of its two
+    // parts twice: two part files are written for three IGES roots.
+    #[test]
+    fn iges_conversion_writes_each_part_once_for_all_its_occurrences() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/independent-xde-assembly.step");
+        let manifest = ExactBackend::new()
+            .open_step_xde(path.to_str().unwrap())
+            .unwrap()
+            .manifest()
+            .unwrap();
+        let (source_parts, nodes) = flat_iges_roots(&manifest, "test").unwrap();
+        assert_eq!(source_parts.len(), 2);
+        assert_eq!(nodes.len(), 3);
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.part_index.is_some_and(|index| index < 2))
+        );
+
+        let output = tempfile::tempdir().unwrap();
+        let iges = output.path().join("flat.igs");
+        m21_step_xde_to_iges_response(
+            &ExactBackend::new(),
+            &mut SourceDocument::default(),
+            &SourceFile {
+                sha256: sha256_hex(&std::fs::read(&path).unwrap()),
+                path,
+            },
+            &iges,
+        )
+        .unwrap();
+        let written = ExactBackend::new()
+            .open_iges_xde(iges.to_str().unwrap())
+            .unwrap()
+            .manifest()
+            .unwrap();
+        assert_eq!((written.parts.len(), written.nodes.len()), (3, 3));
     }
 
     // Review 2026-10-18 EX-8: evaluating an imported part asked the worker to

@@ -562,11 +562,13 @@ impl ExactWorkerClient {
         source_path: &Path,
         source_sha256: &str,
         output_path: &Path,
+        occurrences: usize,
         cancelled: &AtomicBool,
     ) -> Result<Vec<u8>, WorkerError> {
         let request = WorkerRequest::ConvertStepXdeToIges {
             source: source_file(source_sha256, source_path),
             output: output_path.to_owned(),
+            occurrences,
         };
         match self.call_exchange(&request, cancelled)? {
             WorkerReply::Exported(ExportReceipt {

@@ -50,8 +50,12 @@ impl WorkerRequest {
             | Self::InspectIgesPart { source, .. }
             | Self::TessellateStepPart { source, .. }
             | Self::TessellateIgesPart { source, .. }
-            | Self::ExportStepXdePart { source, .. }
-            | Self::ConvertStepXdeToIges { source, .. } => (bytes_of([source.path.as_path()]), 1),
+            | Self::ExportStepXdePart { source, .. } => (bytes_of([source.path.as_path()]), 1),
+            Self::ConvertStepXdeToIges {
+                source,
+                occurrences,
+                ..
+            } => (bytes_of([source.path.as_path()]), *occurrences),
             Self::AssembleStep {
                 manifest, sources, ..
             } => (
@@ -78,5 +82,26 @@ mod tests {
         );
         assert!(exchange_budget(1, 1) > exchange_budget(0, 1));
         assert_eq!(exchange_budget(u64::MAX, usize::MAX), EXCHANGE_MOST);
+    }
+
+    /// Review 2026-10-18 EX-9: converting an assembly of 750 occurrences (10 MiB
+    /// STEP) to IGES was given 57 s, as for one part, and timed out.
+    #[test]
+    fn an_iges_conversion_is_given_time_for_every_occurrence() {
+        let source = tempfile::NamedTempFile::new().unwrap();
+        source.as_file().set_len(10 << 20).unwrap();
+        let request = WorkerRequest::ConvertStepXdeToIges {
+            source: crate::protocol::SourceFile {
+                sha256: "a".repeat(64),
+                path: source.path().to_owned(),
+            },
+            output: PathBuf::from("model.iges"),
+            occurrences: 750,
+        };
+        assert_eq!(
+            request.exchange_budget(),
+            Some(exchange_budget(10 << 20, 750))
+        );
+        assert_eq!(request.exchange_budget(), Some(EXCHANGE_MOST));
     }
 }

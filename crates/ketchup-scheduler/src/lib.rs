@@ -1253,10 +1253,13 @@ impl ExactWorkerSupervisor {
         }
     }
 
+    /// Converts the STEP at `source_path`, which places `occurrences` parts,
+    /// to IGES; the request is given time for every occurrence.
     pub fn convert_step_to_iges_with_cancellation(
         &mut self,
         source_path: &Path,
         output_path: &Path,
+        occurrences: usize,
         cancelled: &AtomicBool,
     ) -> Result<Vec<u8>, WorkerError> {
         let source = read_regular_file(source_path, "STEP staging source")?;
@@ -1266,6 +1269,7 @@ impl ExactWorkerSupervisor {
             source_path,
             &source_sha256,
             output_path,
+            occurrences,
             cancelled,
         ) {
             Ok(bytes) => Ok(bytes),
@@ -1279,6 +1283,7 @@ impl ExactWorkerSupervisor {
                     source_path,
                     &source_sha256,
                     output_path,
+                    occurrences,
                     cancelled,
                 )
             }

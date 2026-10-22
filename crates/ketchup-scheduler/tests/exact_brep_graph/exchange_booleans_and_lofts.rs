@@ -12,7 +12,7 @@ fn exact_worker_converts_verified_step_to_iges_and_reinspects_exact_evidence() {
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
 
     supervisor
-        .convert_step_to_iges_with_cancellation(&source, &iges, &cancelled)
+        .convert_step_to_iges_with_cancellation(&source, &iges, 1, &cancelled)
         .unwrap();
     let bytes = std::fs::read(&iges).unwrap();
     let evidence = supervisor

@@ -362,6 +362,7 @@ fn converted_iges_returns_bounded_snapshot_not_later_path_contents() {
             Path::new("source.step"),
             &source_sha256,
             output.path(),
+            1,
             &NEVER_CANCELLED,
         )
         .unwrap();
@@ -395,6 +396,7 @@ fn converted_iges_past_32_mib_is_returned_whole() {
             Path::new("source.step"),
             &source_sha256,
             output.path(),
+            1,
             &NEVER_CANCELLED,
         )
         .unwrap();
@@ -442,6 +444,7 @@ fn graph_and_exchange_requests_outlast_the_simple_call_budget() {
             Path::new("source.step"),
             &"c".repeat(64),
             output.path(),
+            1,
             &NEVER_CANCELLED,
         );
         assert_eq!(converted, Ok(b"converted IGES".to_vec()));

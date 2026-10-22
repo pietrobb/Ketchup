@@ -2225,7 +2225,7 @@ fn file_menu_iges_export_and_localized_import_are_bound_atomic_and_renderable() 
     let cancelled = AtomicBool::new(false);
     let mut inspector = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
     inspector
-        .convert_step_to_iges_with_cancellation(&step_source, &import_source, &cancelled)
+        .convert_step_to_iges_with_cancellation(&step_source, &import_source, 1, &cancelled)
         .unwrap();
     let source_bytes = std::fs::read(&import_source).unwrap();
     let source_evidence = inspector

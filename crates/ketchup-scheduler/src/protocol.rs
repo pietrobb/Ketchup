@@ -100,6 +100,9 @@ pub enum WorkerRequest {
     ConvertStepXdeToIges {
         source: SourceFile,
         output: PathBuf,
+        /// The occurrences the source places, which the IGES writes one root
+        /// each: the request is given time for them (review 2026-10-18 EX-9).
+        occurrences: usize,
     },
     InspectIgesXde(SourceFile),
     InspectIgesPart {
