@@ -102,7 +102,7 @@ pub struct UnderlaySnapIndex {
     corners: Vec<u8>,
     piece_of: Vec<usize>,
     pieces: Vec<Piece>,
-    grid: Grid,
+    grids: Grids,
 }
 
 const START_CORNER: u8 = 1;
@@ -133,15 +133,22 @@ impl UnderlaySnapIndex {
             }
             layer_ends.push(segments.len());
         }
-        let grid = Grid::new(&segments);
+        let grids = Grids::new(&segments);
         Self {
             segments,
             layer_ends,
             corners,
             piece_of,
             pieces,
-            grid,
+            grids,
         }
+    }
+
+    /// How many times the index lists a segment in all: a few per segment, however long
+    /// the segments are.
+    #[must_use]
+    pub fn listed(&self) -> usize {
+        self.grids.0.iter().map(|grid| grid.entries.len()).sum()
     }
 
     #[must_use]
@@ -175,7 +182,7 @@ impl UnderlaySnapIndex {
             }
         };
         let mut near = Vec::new();
-        self.grid.near(point_mm, radius_mm, |segment| {
+        self.grids.near(point_mm, radius_mm, |segment| {
             let layer = self.layer_of(segment);
             if !shown(layer) {
                 return;
@@ -410,7 +417,7 @@ fn factor(count: usize) -> f64 {
 }
 
 /// Square cells over the segments' bounds, each listing the segments that cross it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Grid {
     /// The low edge of each column and of each row.
     columns: Vec<f64>,
@@ -440,7 +447,17 @@ fn cell_of(edges: &[f64], value: f64) -> usize {
         .saturating_sub(1)
 }
 
-impl Grid {
+/// The most cells of a grid one segment is listed in. A longer segment, a line of a
+/// hatch or a survey axis across the drawing, is listed in a grid of coarser cells, so
+/// that the index grows with the segments, not with their length.
+const MAX_CELLS_PER_SEGMENT: f64 = 16.0;
+
+/// Grids over the same bounds, each of cells twice as large as the one before; a segment
+/// is in the finest one it crosses at most [`MAX_CELLS_PER_SEGMENT`] cells of.
+#[derive(Debug, Default)]
+struct Grids(Vec<Grid>);
+
+impl Grids {
     fn new(segments: &[[[f64; 2]; 2]]) -> Self {
         let Some(first) = segments.first() else {
             return Self::default();
@@ -460,6 +477,48 @@ impl Grid {
         while cells(cell) > 4.0 * count + 16.0 {
             cell *= 2.0;
         }
+        let mut levels: Vec<Vec<usize>> = Vec::new();
+        for (index, [start, end]) in segments.iter().enumerate() {
+            let along = difference(*end, *start).map(f64::abs);
+            let (mut level, mut size) = (0, cell);
+            // A segment crosses at most this many cells of `size`.
+            while along[0] / size + along[1] / size + 3.0 > MAX_CELLS_PER_SEGMENT {
+                level += 1;
+                size *= 2.0;
+            }
+            if levels.len() <= level {
+                levels.resize_with(level + 1, Vec::new);
+            }
+            levels[level].push(index);
+        }
+        let mut size = cell;
+        let mut grids = Vec::new();
+        for members in levels {
+            if !members.is_empty() {
+                grids.push(Grid::new(segments, &members, [low, high], size));
+            }
+            size *= 2.0;
+        }
+        Self(grids)
+    }
+
+    /// Calls `found` with every segment in a cell within `radius` of `point`; a segment
+    /// may come more than once.
+    fn near(&self, point: [f64; 2], radius: f64, mut found: impl FnMut(usize)) {
+        for grid in &self.0 {
+            grid.near(point, radius, &mut found);
+        }
+    }
+}
+
+impl Grid {
+    /// The grid of cells `cell` wide over `bounds` listing the `members` of `segments`.
+    fn new(
+        segments: &[[[f64; 2]; 2]],
+        members: &[usize],
+        [low, high]: [[f64; 2]; 2],
+        cell: f64,
+    ) -> Self {
         let mut grid = Self {
             columns: edges(low[0], high[0], cell),
             rows: edges(low[1], high[1], cell),
@@ -468,17 +527,17 @@ impl Grid {
             entries: Vec::new(),
         };
         let mut counts = vec![0_usize; grid.columns.len() * grid.rows.len() + 1];
-        for segment in segments {
-            grid.cells_of(*segment, |cell| counts[cell + 1] += 1);
+        for member in members {
+            grid.cells_of(segments[*member], |cell| counts[cell + 1] += 1);
         }
         for index in 1..counts.len() {
             counts[index] += counts[index - 1];
         }
         let mut fill = counts.clone();
         let mut entries = vec![0; counts[counts.len() - 1]];
-        for (index, segment) in segments.iter().enumerate() {
-            grid.cells_of(*segment, |cell| {
-                entries[fill[cell]] = index;
+        for member in members {
+            grid.cells_of(segments[*member], |cell| {
+                entries[fill[cell]] = *member;
                 fill[cell] += 1;
             });
         }

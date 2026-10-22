@@ -220,3 +220,52 @@ fn the_grid_finds_what_looking_at_every_line_finds() {
         }
     }
 }
+
+#[test]
+fn long_hatch_lines_are_listed_a_few_times_each_not_once_per_cell_they_cross() {
+    // 20,000 hatch lines 5 mm apart, each 100 m long across the whole drawing, and a
+    // few short lines: one grid of cells for this many lines lists each of the long ones
+    // in some 180 cells, 3.7 million entries, which grow as N·√N.
+    let mut builder = UnderlayLinesBuilder::default();
+    let mut segments = Vec::new();
+    for index in 0..20_000 {
+        let offset = f64::from(index) * 5.0;
+        let [start, end] = [[offset, 0.0], [offset - 70_000.0, 70_000.0]];
+        builder.add("hatch", &[line(start, end)]);
+        segments.push([start, end]);
+    }
+    for index in 0..1_000 {
+        let start = [
+            f64::from(index) * 97.0,
+            50_000.0 + f64::from(index % 7) * 3.0,
+        ];
+        let end = [start[0] + 40.0, start[1]];
+        builder.add("walls", &[line(start, end)]);
+        segments.push([start, end]);
+    }
+    let index = UnderlaySnapIndex::new(&builder.finish().1);
+    assert_eq!(index.segment_count(), segments.len());
+    assert!(
+        index.listed() <= 16 * segments.len(),
+        "{} entries for {} lines",
+        index.listed(),
+        segments.len()
+    );
+    // It still finds the nearest line, whichever grid it is in.
+    for step in 0..400 {
+        let point = [
+            f64::from(step) * 241.3 % 99_000.0,
+            f64::from(step) * 173.9 % 70_000.0,
+        ];
+        let expected = segments
+            .iter()
+            .map(|[start, end]| point_segment_distance2(point, *start, *end))
+            .fold(f64::INFINITY, f64::min);
+        let found = index.snaps(point, 10.0, |_| true).nearest;
+        if expected <= 9.0 {
+            assert!((found.unwrap().distance_mm - expected).abs() < 1e-6);
+        } else if expected > 11.0 {
+            assert_eq!(found, None);
+        }
+    }
+}
