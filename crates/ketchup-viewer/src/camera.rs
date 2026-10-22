@@ -1,7 +1,7 @@
 //! The Viewer camera: scene cameras, fit, standard views, orbit, pan, zoom,
 //! projection and ray picking against the display geometry.
 
-use crate::model::{Model, source_point};
+use crate::model::{Model, indexed_point, source_point};
 use ketchup_geometry::linalg::{Affine3, Vec3};
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_view_format::{Projection, Section};
@@ -34,6 +34,16 @@ impl StandardView {
 const ORBIT_RADIANS_PER_PX: f32 = 0.006;
 /// Just short of straight up or down, where the turntable would flip.
 const MAX_PITCH: f32 = 1.55;
+
+/// Where the pointer ray first meets a face: the body, which of its mesh's
+/// triangle primitives and which triangle in it, and the world point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Hit {
+    pub body: usize,
+    pub primitive: usize,
+    pub triangle: usize,
+    pub point: [f64; 3],
+}
 
 /// An orbit camera around `center`; `scale` is the half span of the shorter
 /// viewport side in millimetres.
@@ -340,6 +350,27 @@ impl Camera {
         visible: &[bool],
         section: Option<&Section>,
     ) -> (Option<(usize, [f64; 3])>, usize) {
+        let (hit, tested) = self.hit_counted(model, ndc, aspect, visible, section);
+        (
+            hit.map(|hit| (model.bodies[hit.body].occurrence, hit.point)),
+            tested,
+        )
+    }
+
+    /// The first triangle the ray through `ndc` meets, as [`Camera::pick_point`].
+    pub(crate) fn pick_hit(
+        &self,
+        model: &Model,
+        ndc: [f32; 2],
+        aspect: f32,
+        visible: &[bool],
+        section: Option<&Section>,
+    ) -> Option<Hit> {
+        self.hit_counted(model, ndc, aspect, visible, section).0
+    }
+
+    /// The pointer ray through `ndc`: its origin and direction, towards the scene.
+    pub(crate) fn ray(&self, ndc: [f32; 2], aspect: f32) -> (Vec3, Vec3) {
         let (direction, right, up) = self.basis();
         let direction = Vec3::from(direction.map(f64::from));
         let right = Vec3::from(right.map(f64::from));
@@ -347,7 +378,7 @@ impl Camera {
         let center = Vec3::from(self.center.map(f64::from));
         let sx = f64::from(aspect.max(1.0));
         let sy = f64::from((1.0 / aspect).max(1.0));
-        let (origin, ray) = if let Some(fov) = self.short_fov {
+        if let Some(fov) = self.short_fov {
             let tangent = f64::from((fov * 0.5).tan());
             (
                 center + direction * f64::from(self.scale) / tangent,
@@ -364,29 +395,32 @@ impl Camera {
                     + direction * f64::from(self.radius * 4.0),
                 -direction,
             )
-        };
-        let mut nearest: Option<(usize, f32, [f64; 3])> = None;
+        }
+    }
+
+    /// [`Camera::pick_hit`] and how many triangles it tested: only bodies
+    /// whose bounds the ray crosses.
+    fn hit_counted(
+        &self,
+        model: &Model,
+        ndc: [f32; 2],
+        aspect: f32,
+        visible: &[bool],
+        section: Option<&Section>,
+    ) -> (Option<Hit>, usize) {
+        let (origin, ray) = self.ray(ndc, aspect);
+        let mut nearest: Option<(Hit, f32)> = None;
         let mut tested = 0;
-        for body in &model.bodies {
+        for (body_index, body) in model.bodies.iter().enumerate() {
             if !visible[body.occurrence] || !ray_crosses(origin, ray, body.bounds_mm) {
                 continue;
             }
             let placement = Affine3::from_column_major(body.world_matrix_mm.map(f64::from));
-            for (positions, indices) in model.triangle_buffers(body.mesh) {
-                for triangle in indices.chunks_exact(12) {
+            for (primitive, (positions, indices)) in model.triangle_buffers(body.mesh).enumerate() {
+                for triangle in 0..indices.len() / 12 {
                     tested += 1;
                     let points: [[f32; 3]; 3] = std::array::from_fn(|i| {
-                        let index = u32::from_le_bytes(
-                            triangle[i * 4..i * 4 + 4].try_into().expect("index"),
-                        );
-                        let offset = usize::try_from(index).expect("bounded index") * 12;
-                        let point = std::array::from_fn(|k| {
-                            f32::from_le_bytes(
-                                positions[offset + k * 4..offset + k * 4 + 4]
-                                    .try_into()
-                                    .expect("point"),
-                            )
-                        });
+                        let point = indexed_point(positions, indices, triangle * 3 + i);
                         let world: [f64; 3] = placement
                             .transform_point(Vec3::from(source_point(point)))
                             .into();
@@ -404,14 +438,20 @@ impl Camera {
                         if section.is_some_and(|s| Vec3::from(s.normal).dot(hit) > s.offset_mm) {
                             continue;
                         }
-                        if nearest.is_none_or(|(_, z, _)| depth < z) {
-                            nearest = Some((body.occurrence, depth, coordinates));
+                        if nearest.is_none_or(|(_, z)| depth < z) {
+                            let hit = Hit {
+                                body: body_index,
+                                primitive,
+                                triangle,
+                                point: coordinates,
+                            };
+                            nearest = Some((hit, depth));
                         }
                     }
                 }
             }
         }
-        (nearest.map(|(index, _, point)| (index, point)), tested)
+        (nearest.map(|(hit, _)| hit), tested)
     }
 
     /// The point on the plane through the orbit center facing the viewer

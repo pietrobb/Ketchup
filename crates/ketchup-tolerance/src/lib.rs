@@ -81,6 +81,11 @@ pub const UNDERLAY_ARC_CHORD_MM: f64 = 0.1;
 pub const MIN_DIMENSION_MM: f64 = 0.001;
 /// Smallest angular sampling step for a material boundary, in radians.
 pub const BOUNDARY_MIN_ANGLE_RAD: f64 = 0.001;
+/// Angle between the normals of two display triangles sharing a non-edge side, in
+/// radians, above which their face is curved: a point measured on it is only as exact as
+/// the triangles. Far above the `f32` rounding of a display mesh and below the facet
+/// angle of any curved face's tessellation.
+pub const MESH_FACET_ANGLE_RAD: f64 = 0.001;
 /// Fraction of an edge interval used to sample either side of a Boolean boundary.
 pub const BOUNDARY_PROBE_FRACTION: f64 = 1.0e-4;
 

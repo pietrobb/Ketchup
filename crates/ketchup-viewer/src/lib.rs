@@ -8,6 +8,7 @@ pub mod desktop;
 pub mod dimensions;
 pub mod gpu;
 pub mod guides;
+pub mod measure;
 pub mod model;
 pub mod review;
 pub mod share;
@@ -15,3 +16,5 @@ pub mod text;
 
 #[cfg(test)]
 mod gpu_tests;
+#[cfg(test)]
+mod measure_tests;

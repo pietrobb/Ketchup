@@ -22,6 +22,8 @@ pub struct Model {
     /// Per mesh: where each triangle primitive's positions and indices lie in
     /// the validated GLB, so picking reads them without validating it again.
     triangles: Vec<Vec<(Range<usize>, Range<usize>)>>,
+    /// The same for each mesh's presentation edges (line primitives).
+    lines: Vec<Vec<(Range<usize>, Range<usize>)>>,
 }
 
 /// One mesh placed in the scene, with the component it belongs to.
@@ -118,29 +120,45 @@ impl Model {
                     .ok_or_else(|| invalid("occurrence", "A component has no geometry node."))
             })
             .collect::<Result<_, _>>()?;
-        let triangles = geometry
-            .meshes
-            .iter()
-            .map(|primitives| {
-                primitives
-                    .iter()
-                    .filter(|p| p.topology == PrimitiveTopology::Triangles)
-                    .map(|p| (p.position_range.clone(), p.index_range.clone()))
-                    .collect()
-            })
-            .collect();
+        let ranges = |topology: PrimitiveTopology| -> Vec<Vec<_>> {
+            geometry
+                .meshes
+                .iter()
+                .map(|primitives| {
+                    primitives
+                        .iter()
+                        .filter(|p| p.topology == topology)
+                        .map(|p| (p.position_range.clone(), p.index_range.clone()))
+                        .collect()
+                })
+                .collect()
+        };
+        let triangles = ranges(PrimitiveTopology::Triangles);
+        let lines = ranges(PrimitiveTopology::Lines);
         Ok(Self {
             package: Arc::new(identified),
             bodies,
             bounds_mm: total_bounds,
             occurrence_matrices_mm,
             triangles,
+            lines,
         })
     }
 
     /// The position and index bytes of each triangle primitive of `mesh`.
     pub fn triangle_buffers(&self, mesh: usize) -> impl Iterator<Item = (&[u8], &[u8])> {
         self.triangles[mesh].iter().map(|(positions, indices)| {
+            (
+                &self.package.package().glb[positions.clone()],
+                &self.package.package().glb[indices.clone()],
+            )
+        })
+    }
+
+    /// The position and index bytes of each line primitive (presentation
+    /// edges) of `mesh`, two indices per segment.
+    pub fn line_buffers(&self, mesh: usize) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.lines[mesh].iter().map(|(positions, indices)| {
             (
                 &self.package.package().glb[positions.clone()],
                 &self.package.package().glb[indices.clone()],
@@ -181,6 +199,21 @@ pub fn source_point(point: [f32; 3]) -> [f64; 3] {
         -f64::from(point[2]) * 1000.0,
         f64::from(point[1]) * 1000.0,
     ]
+}
+
+/// The GLB position (Y-up metres) that the `index`-th index of a primitive's
+/// validated buffers names.
+pub fn indexed_point(positions: &[u8], indices: &[u8], index: usize) -> [f32; 3] {
+    let at = index * 4;
+    let vertex = u32::from_le_bytes(indices[at..at + 4].try_into().expect("validated index"));
+    let offset = usize::try_from(vertex).expect("bounded index") * 12;
+    std::array::from_fn(|k| {
+        f32::from_le_bytes(
+            positions[offset + k * 4..offset + k * 4 + 4]
+                .try_into()
+                .expect("validated point"),
+        )
+    })
 }
 
 /// A GLB Y-up/metre matrix in source Z-up/millimetre axes.

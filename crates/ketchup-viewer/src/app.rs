@@ -5,6 +5,7 @@ use crate::{
     camera::{Camera, StandardView},
     dimensions,
     gpu::{MeshRenderer, RenderTarget, RenderView},
+    measure::{Measure, Pointer},
     model::Model,
     review::{Review, Written},
     text::Language,
@@ -21,6 +22,7 @@ use std::{
 };
 
 mod comments_section;
+mod measure_section;
 mod session;
 mod startup;
 pub use session::{SessionKeeper, SessionMark};
@@ -62,6 +64,8 @@ pub struct ViewerApp {
     dimensions: bool,
     /// Comments on the opened package.
     review: Option<Review>,
+    /// `Some` while the Measure tool is on; never saved anywhere.
+    measure: Option<Measure>,
     error: Option<Rejection>,
     render_state: Option<eframe::egui_wgpu::RenderState>,
     renderer: Option<MeshRenderer>,
@@ -105,6 +109,7 @@ impl ViewerApp {
             guides: true,
             dimensions: true,
             review: None,
+            measure: None,
             error: None,
             render_state,
             renderer: None,
@@ -270,6 +275,7 @@ impl ViewerApp {
         self.camera = Some(camera);
         self.scene = scene;
         self.selected = None;
+        self.measure = None;
         // Held unsaved comments stay announced over whatever opens next.
         self.error = self.unopened_session.map(|_| unopened_session_error());
         self.shown += 1;
@@ -366,6 +372,9 @@ impl ViewerApp {
     /// narrow phone screens) and the 3D view in the middle.
     pub fn show(&mut self, ctx: &egui::Context) {
         let narrow = ctx.screen_rect().width() < NARROW_WIDTH;
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.measure = None;
+        }
         egui::TopBottomPanel::top("viewer_toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if !narrow {
@@ -384,6 +393,7 @@ impl ViewerApp {
                 {
                     self.camera = Some(Camera::fit(model));
                 }
+                self.measure_switch(ui);
                 // On a phone the views and switches fold into one menu, so the
                 // toolbar stays one row and the model keeps the screen.
                 if narrow {
@@ -434,6 +444,7 @@ impl ViewerApp {
                 .max_height(160.0)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.measure_info(ui);
                         self.information(ui);
                         self.comments(ui);
                     })
@@ -445,6 +456,7 @@ impl ViewerApp {
                 .min_width(220.0)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.measure_info(ui);
                         self.information(ui);
                         self.comments(ui);
                     })
@@ -548,7 +560,8 @@ impl ViewerApp {
             );
             return;
         };
-        if response.double_clicked() {
+        // Two quick clicks while measuring are two points, not a fit.
+        if response.double_clicked() && self.measure.is_none() {
             *camera = Camera::fit(model);
         }
         let aspect = rect.width().max(1.0) / rect.height().max(1.0);
@@ -591,7 +604,25 @@ impl ViewerApp {
                 }
             }
         }
-        if response.clicked()
+        if let Some(measure) = &mut self.measure {
+            let pointer = |at: egui::Pos2| Pointer {
+                ndc: ndc(rect, at),
+                size: [rect.width(), rect.height()],
+                visible: &self.visible,
+                section: self.section.as_ref(),
+            };
+            // Not while the view turns: snapping reads the whole mesh near the pointer.
+            measure.hover = response
+                .hover_pos()
+                .filter(|_| !response.dragged())
+                .and_then(|at| measure.snap(model, camera, &pointer(at)));
+            if response.clicked()
+                && let Some(at) = response.interact_pointer_pos()
+                && let Some(snap) = measure.snap(model, camera, &pointer(at))
+            {
+                measure.place(snap);
+            }
+        } else if response.clicked()
             && let Some(point) = response.interact_pointer_pos()
         {
             let at = ndc(rect, point);
@@ -676,6 +707,15 @@ impl ViewerApp {
                 })
                 .collect::<Vec<_>>();
             paint_arrows(&ui.painter_at(rect), rect, camera, &arrows);
+        }
+        if let Some(measure) = &self.measure {
+            measure_section::paint_measure(
+                &ui.painter_at(rect),
+                rect,
+                camera,
+                measure,
+                self.language,
+            );
         }
     }
 
