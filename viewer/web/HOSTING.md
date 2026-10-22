@@ -45,10 +45,14 @@ https://example.com https://partner.example`.
 ## Comments
 
 The customer's comments stay in the page until they press *Save comments for
-the author*, which downloads `<model>.ketchup-comments` (or *Save model copy
+the author*, which saves `<model>.ketchup-comments` (or *Save model copy
 with comments*, a `.ketchup-view`). They send that file to the author, who
 opens it in Kečup (*File → Open Viewer Comments…*). Leaving the page with
-unsaved comments asks for confirmation.
+unsaved comments asks for confirmation. Chrome and Edge save through their
+save dialog and count the comments as saved once the file is written, not
+when the dialog is cancelled. Firefox and Safari only download, which does
+not tell the page whether the file was kept, so they keep asking before the
+page is left.
 
 ## A public link is not protection
 

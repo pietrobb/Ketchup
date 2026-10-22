@@ -9,6 +9,7 @@ use eframe::egui;
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_viewer::{
     app::{FileRequest, PendingOpen, ViewerApp},
+    review::Written,
     share,
 };
 use std::{
@@ -31,6 +32,8 @@ enum Incoming {
         result: Result<Vec<u8>, Rejection>,
     },
     Comments(Vec<u8>),
+    /// The browser's save dialog wrote these comments to a file.
+    Saved(Option<Written>),
     Failed(Rejection),
 }
 
@@ -143,6 +146,10 @@ impl eframe::App for WebViewer {
                     Ok(())
                 }
                 Incoming::Comments(bytes) => self.app.open_comments(bytes.as_slice()),
+                Incoming::Saved(written) => {
+                    self.app.comments_written(written);
+                    Ok(())
+                }
                 Incoming::Failed(error) => {
                     self.app.set_loading(false);
                     Err(error)
@@ -215,11 +222,22 @@ impl WebViewer {
         if bytes.is_empty() {
             return Ok(());
         }
-        // Saved once the browser has taken the download; a failed one keeps
-        // the comments unsaved and the page's leave warning on.
-        download(&file_name, &bytes)?;
-        self.app.comments_written(written);
-        Ok(())
+        // Saved only once the browser says the file was written; a cancelled
+        // save dialog keeps the comments unsaved and the leave warning on.
+        if let Some(picker) = save_file_picker() {
+            save_through_picker(
+                picker,
+                file_name,
+                bytes,
+                written,
+                self.inbox.clone(),
+                ctx.clone(),
+            );
+            return Ok(());
+        }
+        // A plain download (Firefox, Safari) never says whether the customer
+        // kept the file or cancelled its dialog, so the comments stay unsaved.
+        download(&file_name, &bytes)
     }
 }
 
@@ -374,6 +392,86 @@ fn pick_file(
     Ok(())
 }
 
+/// The browser's save dialog that reports where the file went
+/// (`showSaveFilePicker`: Chrome, Edge), if it has one.
+fn save_file_picker() -> Option<js_sys::Function> {
+    let window = web_sys::window()?;
+    js_sys::Reflect::get(&window, &"showSaveFilePicker".into())
+        .ok()?
+        .dyn_into()
+        .ok()
+}
+
+/// Let the customer save `bytes` through the save dialog; once written, the
+/// comments `written` describes are saved. Cancelling the dialog keeps them
+/// unsaved without an error.
+fn save_through_picker(
+    picker: js_sys::Function,
+    file_name: String,
+    bytes: Vec<u8>,
+    written: Option<Written>,
+    inbox: Inbox,
+    ctx: egui::Context,
+) {
+    spawn_local(async move {
+        let item = match write_through_picker(&picker, &file_name, &bytes).await {
+            Ok(()) => Incoming::Saved(written),
+            Err(detail) if browser_error_name(&detail).as_deref() == Some("AbortError") => return,
+            Err(detail) => Incoming::Failed(
+                browser_error("viewer.web.save", &file_name, detail)
+                    .reason("The browser did not save the file.")
+                    .fix_hint("Save again and choose a folder the browser may write to."),
+            ),
+        };
+        inbox.borrow_mut().push(item);
+        ctx.request_repaint();
+    });
+}
+
+async fn write_through_picker(
+    picker: &js_sys::Function,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<(), JsValue> {
+    let options = js_sys::Object::new();
+    js_sys::Reflect::set(&options, &"suggestedName".into(), &file_name.into())?;
+    let window: JsValue = web_sys::window().map_or(JsValue::UNDEFINED, Into::into);
+    let handle = JsFuture::from(
+        picker
+            .call1(&window, &options)?
+            .dyn_into::<js_sys::Promise>()?,
+    )
+    .await?;
+    let writable = call_async(&handle, "createWritable", &js_sys::Array::new()).await?;
+    let data = js_sys::Uint8Array::from(bytes);
+    call_async(&writable, "write", &js_sys::Array::of1(&data)).await?;
+    call_async(&writable, "close", &js_sys::Array::new())
+        .await
+        .map(drop)
+}
+
+/// Await `target.method(...arguments)`, a method returning a promise.
+async fn call_async(
+    target: &JsValue,
+    method: &str,
+    arguments: &js_sys::Array,
+) -> Result<JsValue, JsValue> {
+    let function: js_sys::Function = js_sys::Reflect::get(target, &method.into())?.dyn_into()?;
+    JsFuture::from(
+        function
+            .apply(target, arguments)?
+            .dyn_into::<js_sys::Promise>()?,
+    )
+    .await
+}
+
+/// The `name` of a browser error (`AbortError`, `NotAllowedError`, …).
+fn browser_error_name(detail: &JsValue) -> Option<String> {
+    js_sys::Reflect::get(detail, &"name".into())
+        .ok()?
+        .as_string()
+}
+
 /// Save `bytes` through the browser's download, under `file_name`.
 fn download(file_name: &str, bytes: &[u8]) -> Result<(), Rejection> {
     let failed = |detail| {
@@ -406,7 +504,7 @@ fn download(file_name: &str, bytes: &[u8]) -> Result<(), Rejection> {
     Ok(())
 }
 
-/// Warn before the page closes while comments are not downloaded.
+/// Warn before the page closes while comments are not saved.
 fn guard_unsaved_comments(window: &web_sys::Window, unsaved: Rc<Cell<bool>>) {
     let on_leave = Closure::<dyn FnMut(web_sys::BeforeUnloadEvent)>::new(
         move |event: web_sys::BeforeUnloadEvent| {

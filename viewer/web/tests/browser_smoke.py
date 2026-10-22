@@ -102,8 +102,66 @@ def select_component(page, check):
     check("clicked component is selected", after > before + 0.001, f"{before:.4f} -> {after:.4f}")
 
 
+# Chrome's save dialog as a stand-in the test controls: it either is cancelled
+# or keeps what the page writes. Playwright cannot answer the real dialog.
+SAVE_PICKER = """
+window.__picker = {cancel: true, name: null, saved: null};
+window.showSaveFilePicker = async (options) => {
+  if (window.__picker.cancel) throw new DOMException('The user aborted a request.', 'AbortError');
+  window.__picker.name = options.suggestedName;
+  const parts = [];
+  return {createWritable: async () => ({
+    write: async (data) => { parts.push(...new Uint8Array(data)); },
+    close: async () => { window.__picker.saved = parts; },
+  })};
+};
+"""
+
+
+def leave_warned(page):
+    """Whether leaving the page now asks first (comments are unsaved)."""
+    return page.evaluate(
+        "() => { const e = new Event('beforeunload', {cancelable: true});"
+        " window.dispatchEvent(e); return e.defaultPrevented; }"
+    )
+
+
+def save_comments(page, folder, name, check):
+    """Save the comments for the author; return the saved file. They count as
+    saved only when the browser says the file was written: never after a
+    cancelled save dialog, and never after a plain download, which does not say."""
+    path = f"{folder}/{name}.ketchup-comments"
+    if page.evaluate("() => 'showSaveFilePicker' in window"):
+        click(page, 96, 251)  # Save comments for the author, dialog cancelled
+        check("comments stay unsaved when the save dialog is cancelled", leave_warned(page))
+        page.evaluate("() => { window.__picker.cancel = false; }")
+        click(page, 96, 251)  # Save comments for the author
+        page.wait_for_function("() => window.__picker.saved !== null", timeout=TIMEOUT_MS)
+        saved = page.evaluate("() => window.__picker")
+        with open(path, "wb") as file:
+            file.write(bytes(saved["saved"]))
+        check(
+            "comments saved",
+            saved["name"] == "model.ketchup-comments" and saved["saved"],
+            saved["name"],
+        )
+        check("saved comments no longer warn on leaving", not leave_warned(page))
+        return path
+    with page.expect_download() as download:
+        click(page, 96, 251)  # Save comments for the author
+    saved = download.value
+    saved.save_as(path)
+    check(
+        "comments downloaded",
+        saved.suggested_filename == "model.ketchup-comments" and saved.path().stat().st_size > 0,
+        saved.suggested_filename,
+    )
+    check("downloaded comments still warn on leaving", leave_warned(page))
+    return path
+
+
 def comment_round_trip(page, base, folder, name, check):
-    """Write a comment, download it as .ketchup-comments, import it in a fresh page.
+    """Write a comment, save it as .ketchup-comments, import it in a fresh page.
     Starts from a freshly opened link: a selection adds information above the
     comment buttons and would move them."""
     page.goto(f"{base}/index.html?model=model.ketchup-view")
@@ -116,24 +174,15 @@ def comment_round_trip(page, base, folder, name, check):
     page.keyboard.type("Darker oak, please")
     click(page, 118, 253)  # Save comment
     check("comment written in the browser", status(page, "ready").count("comments=1") == 1)
-    with page.expect_download() as download:
-        click(page, 96, 251)  # Save comments for the author
-    saved = download.value
-    path = saved.path()
-    saved.save_as(f"{folder}/{name}.ketchup-comments")
-    check(
-        "comments downloaded",
-        saved.suggested_filename == "model.ketchup-comments" and path.stat().st_size > 0,
-        saved.suggested_filename,
-    )
+    path = save_comments(page, folder, name, check)
     page.goto(f"{base}/index.html?model=model.ketchup-view")
     status(page, "ready")
     page.wait_for_timeout(800)
     with page.expect_file_chooser() as chooser:
         click(page, 50, 165)  # Open comments, with no comments listed yet
-    chooser.value.set_files(str(path))
+    chooser.value.set_files(path)
     imported = status(page, "ready components=20 scenes=1 comments=1")
-    check("downloaded comments imported in a new page", "comments=1" in imported, imported)
+    check("saved comments imported in a new page", "comments=1" in imported, imported)
 
 
 BROWSERS = {
@@ -180,6 +229,10 @@ def run(base, folder, name, playwright, results):
         return
     browser = launch(playwright, name)
     page = browser.new_page(viewport={"width": 1100, "height": 760})
+    # Leaving a page with unsaved comments asks; the test leaves.
+    page.on("dialog", lambda dialog: dialog.accept())
+    if BROWSERS[name][0] == "chromium":
+        page.add_init_script(SAVE_PICKER)
     if name == "chrome-webgl":
         page.add_init_script("delete Navigator.prototype.gpu")
     errors = []
