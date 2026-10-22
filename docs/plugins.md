@@ -113,3 +113,9 @@ with `PYTHONDONTWRITEBYTECODE=1`. Files outside the folder (the interpreter, a
 script named on the command line) are hashed through a handle kept open until
 the plugin has ended; on Windows nobody can write, rename or delete them
 meanwhile. On other systems only the folder copy protects the run.
+
+A run reads at most 1000 files and 256 MiB in the plugin folder, and as much
+again outside it (the interpreter and the files its command line names); a
+command line has at most 1000 arguments. Past a limit the run is refused before
+anything starts. The files are read off the window's thread, and a cancelled
+request stops reading at the next file.

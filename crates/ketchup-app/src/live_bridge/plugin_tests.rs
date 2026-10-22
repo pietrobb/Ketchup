@@ -931,6 +931,7 @@ fn a_plugin_argument_through_dot_dot_runs_the_staged_file_it_names() {
         let launch = crate::live_bridge::plugin_manifest::load(
             &folder.to_string_lossy(),
             inputs.as_object(),
+            &Default::default(),
         )
         .unwrap();
         let stage = launch.command.working_directory.clone().unwrap();
@@ -971,6 +972,7 @@ fn a_dot_dot_joined_to_a_plugin_option_is_refused() {
         let launch = crate::live_bridge::plugin_manifest::load(
             &folder.to_string_lossy(),
             inputs.as_object(),
+            &Default::default(),
         );
         assert_eq!(
             launch.err(),
@@ -985,6 +987,7 @@ fn a_dot_dot_joined_to_a_plugin_option_is_refused() {
         let launch = crate::live_bridge::plugin_manifest::load(
             &folder.to_string_lossy(),
             inputs.as_object(),
+            &Default::default(),
         );
         assert!(launch.is_ok(), "{argument:?}");
     }
@@ -1031,7 +1034,7 @@ fn a_command_lines_relative_arguments_resolve_in_an_empty_private_directory() {
     let script = example_script();
     let relative = pathdiff_relative(&script, &here);
     let request = plugin_request(vec![relative.display().to_string(), "later.py".to_owned()]);
-    let launch = crate::live_bridge::plugin::launch(&request).unwrap();
+    let launch = crate::live_bridge::plugin::launch(&request, &Default::default()).unwrap();
     let directory = launch
         .command
         .working_directory
@@ -1075,16 +1078,38 @@ fn a_dot_dot_joined_to_an_option_of_a_command_line_is_refused() {
     ] {
         let request = plugin_request(vec![script.clone(), argument.to_owned()]);
         assert_eq!(
-            crate::live_bridge::plugin::launch(&request).err(),
+            crate::live_bridge::plugin::launch(&request, &Default::default()).err(),
             Some("invalid_path"),
             "{argument:?}"
         );
     }
     for argument in ["--range=1..5", "--script=plugin.py"] {
         let request = plugin_request(vec![script.clone(), argument.to_owned()]);
-        let launch = crate::live_bridge::plugin::launch(&request);
+        let launch = crate::live_bridge::plugin::launch(&request, &Default::default());
         assert!(launch.is_ok(), "{argument:?}");
     }
+}
+
+/// Review 2026-10-18 MCP-5: reading a command line had no limit on its
+/// arguments and did not stop when the request was cancelled.
+#[test]
+fn a_command_line_is_read_within_limits_and_not_after_a_cancel() {
+    let _turn = file_turn();
+    let script = example_script().to_string_lossy().into_owned();
+    let mut arguments = vec![script.clone()];
+    arguments.extend((0..plugin_manifest::MAX_ARGUMENTS).map(|index| index.to_string()));
+    let request = plugin_request(arguments);
+    assert_eq!(
+        crate::live_bridge::plugin::launch(&request, &Default::default()).err(),
+        Some("invalid_params")
+    );
+    let request = plugin_request(vec![script, "2".into(), "35".into()]);
+    let cancelled = Arc::new(AtomicBool::new(true));
+    assert_eq!(
+        crate::live_bridge::plugin::launch(&request, &cancelled).err(),
+        Some("request_cancelled")
+    );
+    assert!(crate::live_bridge::plugin::launch(&request, &Default::default()).is_ok());
 }
 
 /// Review 2026-10-16 R-2: an absolute path joined to an option
@@ -1125,6 +1150,7 @@ fn an_absolute_path_joined_to_a_plugin_option_is_refused() {
         let launch = crate::live_bridge::plugin_manifest::load(
             &folder.to_string_lossy(),
             inputs.as_object(),
+            &Default::default(),
         );
         assert_eq!(
             launch.err(),
@@ -1133,7 +1159,7 @@ fn an_absolute_path_joined_to_a_plugin_option_is_refused() {
         );
         let request = plugin_request(vec![script.clone(), argument.clone()]);
         assert_eq!(
-            crate::live_bridge::plugin::launch(&request).err(),
+            crate::live_bridge::plugin::launch(&request, &Default::default()).err(),
             Some("invalid_path"),
             "{argument:?}"
         );
@@ -1150,11 +1176,12 @@ fn an_absolute_path_joined_to_a_plugin_option_is_refused() {
         let launch = crate::live_bridge::plugin_manifest::load(
             &folder.to_string_lossy(),
             inputs.as_object(),
+            &Default::default(),
         );
         assert!(launch.is_ok(), "{argument:?}");
         let request = plugin_request(vec![script.clone(), argument.to_owned()]);
         assert!(
-            crate::live_bridge::plugin::launch(&request).is_ok(),
+            crate::live_bridge::plugin::launch(&request, &Default::default()).is_ok(),
             "{argument:?}"
         );
     }
@@ -1175,7 +1202,11 @@ fn only_white_listed_argument_shapes_reach_a_plugin() {
     let load = |manifest: &Value| {
         std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
         let inputs = json!({"height_mm": 35});
-        crate::live_bridge::plugin_manifest::load(&folder.to_string_lossy(), inputs.as_object())
+        crate::live_bridge::plugin_manifest::load(
+            &folder.to_string_lossy(),
+            inputs.as_object(),
+            &Default::default(),
+        )
     };
     for argument in [
         "--import=file:///tmp/x.mjs",
@@ -1196,7 +1227,7 @@ fn only_white_listed_argument_shapes_reach_a_plugin() {
         );
         let request = plugin_request(vec![script.clone(), argument.to_owned()]);
         assert_eq!(
-            crate::live_bridge::plugin::launch(&request).err(),
+            crate::live_bridge::plugin::launch(&request, &Default::default()).err(),
             Some("invalid_path"),
             "{argument:?}"
         );
@@ -1206,7 +1237,7 @@ fn only_white_listed_argument_shapes_reach_a_plugin() {
         assert!(load(&manifest).is_ok(), "{argument:?}");
         let request = plugin_request(vec![script.clone(), argument.to_owned()]);
         assert!(
-            crate::live_bridge::plugin::launch(&request).is_ok(),
+            crate::live_bridge::plugin::launch(&request, &Default::default()).is_ok(),
             "{argument:?}"
         );
     }
@@ -1264,6 +1295,7 @@ fn a_file_added_to_a_plugin_stage_after_hashing_stops_the_run() {
         let launch = crate::live_bridge::plugin_manifest::load(
             &folder.to_string_lossy(),
             inputs.as_object(),
+            &Default::default(),
         )
         .unwrap();
         launch.held.unchanged().unwrap();
@@ -1302,7 +1334,11 @@ fn a_plugin_command_line_runs_only_hashed_code() {
     let load = |manifest: &Value| {
         std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
         let inputs = json!({"height_mm": 35});
-        crate::live_bridge::plugin_manifest::load(&folder.to_string_lossy(), inputs.as_object())
+        crate::live_bridge::plugin_manifest::load(
+            &folder.to_string_lossy(),
+            inputs.as_object(),
+            &Default::default(),
+        )
     };
     let refused: Vec<Vec<String>> = vec![
         vec!["-c".into(), open_unhashed.clone()],
@@ -1338,7 +1374,7 @@ fn a_plugin_command_line_runs_only_hashed_code() {
         };
         let request = plugin_request(command.clone());
         assert_eq!(
-            crate::live_bridge::plugin::launch(&request).err(),
+            crate::live_bridge::plugin::launch(&request, &Default::default()).err(),
             Some("invalid_path"),
             "{command:?}"
         );
@@ -1353,7 +1389,7 @@ fn a_plugin_command_line_runs_only_hashed_code() {
         stage.display()
     );
     let request = plugin_request(vec![script, "-v".into(), "later".into()]);
-    let launch = crate::live_bridge::plugin::launch(&request).unwrap();
+    let launch = crate::live_bridge::plugin::launch(&request, &Default::default()).unwrap();
     let directory = launch.command.working_directory.clone().unwrap();
     assert!(!directory.starts_with(std::env::temp_dir()));
 }
@@ -1421,7 +1457,11 @@ fn an_interpreter_gets_only_listed_options_before_its_hashed_script() {
     let load = |manifest: &Value| {
         std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
         let inputs = json!({"height_mm": 35});
-        crate::live_bridge::plugin_manifest::load(&folder.to_string_lossy(), inputs.as_object())
+        crate::live_bridge::plugin_manifest::load(
+            &folder.to_string_lossy(),
+            inputs.as_object(),
+            &Default::default(),
+        )
     };
     let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
     // An option off the list before the script, which the old list let pass.
@@ -1429,14 +1469,14 @@ fn an_interpreter_gets_only_listed_options_before_its_hashed_script() {
     assert_eq!(load(&manifest).err(), Some("plugin_manifest_invalid"));
     let request = plugin_request(vec!["-W".into(), "error".into(), script.clone()]);
     assert_eq!(
-        crate::live_bridge::plugin::launch(&request).err(),
+        crate::live_bridge::plugin::launch(&request, &Default::default()).err(),
         Some("invalid_path")
     );
     // The listed options before the script, and any word after it, pass.
     manifest["arguments"] = json!(["-B", "-u", "plugin.py", "-c", "-"]);
     assert!(load(&manifest).is_ok());
     let request = plugin_request(vec!["-u".into(), script.clone(), "-c".into()]);
-    assert!(crate::live_bridge::plugin::launch(&request).is_ok());
+    assert!(crate::live_bridge::plugin::launch(&request, &Default::default()).is_ok());
 
     // An executable starting with #!, from a folder and a command line.
     let shebang = directory.path().join("interpreter.exe");
@@ -1447,7 +1487,7 @@ fn an_interpreter_gets_only_listed_options_before_its_hashed_script() {
     let mut request = plugin_request(vec![script]);
     request.executable = Some(shebang.display().to_string());
     assert_eq!(
-        crate::live_bridge::plugin::launch(&request).err(),
+        crate::live_bridge::plugin::launch(&request, &Default::default()).err(),
         Some("invalid_path")
     );
 }

@@ -101,11 +101,18 @@ impl PluginConsent {
         }
         let refused =
             |reason: String| failure("invalid_path", reason, json!({"canonical_mutation": false}));
+        if let Some(reason) = super::plugin_manifest::too_many_arguments(arguments) {
+            return Err(failure(
+                "invalid_params",
+                reason,
+                json!({"canonical_mutation": false}),
+            ));
+        }
         let executable = started_executable(Path::new(executable), Path::is_file)?;
         super::plugin_manifest::not_a_shebang(&executable, refused)?;
         let sha256 = held
             .hash(&executable)
-            .map_err(|error| failed_because("plugin_failed", error))?;
+            .map_err(|error| super::plugin_manifest::unhashed(error, "invalid_path"))?;
         let mut command = vec![executable.display().to_string()];
         let mut files = vec![(executable, sha256)];
         let here =
@@ -118,6 +125,7 @@ impl PluginConsent {
                 None,
                 Some(held),
                 refused,
+                "invalid_path",
             )?;
             names_file.push(file.is_some());
             command.push(given);

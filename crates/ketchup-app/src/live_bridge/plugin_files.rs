@@ -10,6 +10,23 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// The most files a plugin run hashes in its folder, and as many again outside
+/// it: the interpreter and the files its command line names (review
+/// 2026-10-18 MCP-5).
+pub(super) const MAX_PLUGIN_FILES: usize = 1_000;
+/// The most bytes those files hold, in the folder and again outside it.
+pub(super) const MAX_PLUGIN_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Why a run reads no more files: `what` ("the plugin folder holds") is more.
+pub(super) fn past_limits(what: &str) -> String {
+    format!(
+        "{what} more than {MAX_PLUGIN_FILES} files or {} MiB",
+        MAX_PLUGIN_BYTES / (1024 * 1024)
+    )
+}
 
 /// Opens `path` for reading; on Windows nobody may write, rename or delete
 /// it while the handle is open. Only a regular file opens (`open_regular`).
@@ -60,6 +77,11 @@ pub(super) struct HeldFiles {
     /// The files outside the stage (interpreter, scripts on the command line)
     /// by absolute path, with their SHA-256.
     outside: BTreeMap<PathBuf, String>,
+    /// The bytes hashed in the stage and outside it, each within `MAX_PLUGIN_BYTES`.
+    staged_bytes: u64,
+    outside_bytes: u64,
+    /// Set when the request that reads the files is cancelled.
+    cancelled: Arc<AtomicBool>,
     stage: Option<tempfile::TempDir>,
 }
 
@@ -67,8 +89,9 @@ impl HeldFiles {
     /// A new private stage for a plugin folder's copy, in the user's own
     /// directory: from the shared temporary directory an interpreter could
     /// load a module another user planted beside or above the stage (Node's
-    /// `node_modules`, review 2026-10-17 SEC-7).
-    pub(super) fn staged() -> io::Result<Self> {
+    /// `node_modules`, review 2026-10-17 SEC-7). Reading stops at the next
+    /// file once `cancelled` is set.
+    pub(super) fn staged(cancelled: Arc<AtomicBool>) -> io::Result<Self> {
         let root = stage_root()?;
         fs::create_dir_all(&root)?;
         Ok(Self {
@@ -77,6 +100,7 @@ impl HeldFiles {
                     .prefix("ketchup-plugin-")
                     .tempdir_in(root)?,
             ),
+            cancelled,
             ..Self::default()
         })
     }
@@ -85,15 +109,60 @@ impl HeldFiles {
         self.stage.as_ref().map(tempfile::TempDir::path)
     }
 
+    /// Fails with `Interrupted` once the request reading the files is cancelled.
+    pub(super) fn check_cancelled(&self) -> io::Result<()> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "the request was cancelled while the plugin's files were read",
+            ));
+        }
+        Ok(())
+    }
+
     /// Opens `path` held and returns its SHA-256, read through that handle.
+    /// Past `MAX_PLUGIN_FILES` or `MAX_PLUGIN_BYTES` in the stage, or outside
+    /// it, the file is refused with `FileTooLarge` and nothing more is read.
     pub(super) fn hash(&mut self, path: &Path) -> io::Result<String> {
+        self.check_cancelled()?;
+        let relative = self
+            .stage()
+            .and_then(|stage| path.strip_prefix(stage).ok())
+            .map(Path::to_owned);
+        let (files, bytes, what) = match relative {
+            Some(_) => (
+                self.staged.len(),
+                self.staged_bytes,
+                "the plugin folder holds",
+            ),
+            None => (
+                self.outside.len(),
+                self.outside_bytes,
+                "the plugin's command line names, outside the plugin folder,",
+            ),
+        };
+        let too_much = || io::Error::new(io::ErrorKind::FileTooLarge, past_limits(what));
+        if files >= MAX_PLUGIN_FILES {
+            return Err(too_much());
+        }
+        let remaining = MAX_PLUGIN_BYTES.saturating_sub(bytes);
         let file = open_held(path)?;
-        let sha256 = ketchup_model::graph::sha256_reader_hex(&file)?;
+        let mut limited = io::Read::take(&file, remaining + 1);
+        let sha256 = ketchup_model::graph::sha256_reader_hex(&mut limited)?;
+        let read = remaining + 1 - limited.limit();
+        if read > remaining {
+            return Err(too_much());
+        }
         self.files.push(file);
-        if let Some(relative) = self.stage().and_then(|stage| path.strip_prefix(stage).ok()) {
-            self.staged.insert(relative.to_owned(), sha256.clone());
-        } else {
-            self.outside.insert(path.to_owned(), sha256.clone());
+        match relative {
+            Some(relative) => {
+                self.staged_bytes += read;
+                self.staged.insert(relative, sha256.clone());
+            }
+            None => {
+                self.outside_bytes += read;
+                self.outside.insert(path.to_owned(), sha256.clone());
+            }
         }
         Ok(sha256)
     }
@@ -214,7 +283,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("plugin.py");
         fs::write(&script, "x = 1\n").unwrap();
-        let mut held = HeldFiles::staged().unwrap();
+        let mut held = HeldFiles::staged(Arc::default()).unwrap();
         held.hash(&script).unwrap();
         held.unchanged().unwrap();
         held.files.clear();
@@ -228,11 +297,44 @@ mod tests {
 
     #[test]
     fn a_stage_is_removed_with_its_files_after_the_run() {
-        let mut held = HeldFiles::staged().unwrap();
+        let mut held = HeldFiles::staged(Arc::default()).unwrap();
         let stage = held.stage().unwrap().to_owned();
         fs::write(stage.join("plugin.py"), "x = 1\n").unwrap();
         held.hash(&stage.join("plugin.py")).unwrap();
         drop(held);
         assert!(!stage.exists());
+    }
+
+    /// Review 2026-10-18 MCP-5: the files a command line names are counted
+    /// with their bytes, the one past `MAX_PLUGIN_FILES` is refused unread, and
+    /// a cancelled request reads no further file.
+    #[test]
+    fn hashing_stops_past_the_file_limit_and_once_cancelled() {
+        let directory = tempfile::tempdir().unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut held = HeldFiles::staged(Arc::clone(&cancelled)).unwrap();
+        for index in 0..MAX_PLUGIN_FILES {
+            let file = directory.path().join(format!("{index}.py"));
+            fs::write(&file, "x = 1\n").unwrap();
+            held.hash(&file).unwrap();
+        }
+        assert_eq!(held.outside_bytes, 6 * MAX_PLUGIN_FILES as u64);
+        let last = directory.path().join("last.py");
+        fs::write(&last, "x = 1\n").unwrap();
+        let error = held.hash(&last).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+        assert!(
+            error
+                .to_string()
+                .contains("more than 1000 files or 256 MiB"),
+            "{error}"
+        );
+        assert!(!held.outside.contains_key(&last));
+
+        let mut held = HeldFiles::staged(Arc::clone(&cancelled)).unwrap();
+        cancelled.store(true, Ordering::Release);
+        let error = held.hash(&directory.path().join("0.py")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(held.outside.is_empty());
     }
 }

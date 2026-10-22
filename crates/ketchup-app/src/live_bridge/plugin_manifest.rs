@@ -7,7 +7,9 @@
 //! is what the user allowed.
 use super::drawings::local_absolute_path;
 use super::plugin_consent::{ConsentFolder, PluginConsent, started_executable};
-use super::plugin_files::{HeldFiles, open_regular};
+use super::plugin_files::{
+    HeldFiles, MAX_PLUGIN_BYTES, MAX_PLUGIN_FILES, open_regular, past_limits,
+};
 use super::*;
 use ketchup_model::graph::sha256_hex;
 use ketchup_scheduler::plugin::PluginCommand;
@@ -17,8 +19,30 @@ use std::path::Component;
 
 pub(super) const MANIFEST: &str = "plugin.json";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-const MAX_FOLDER_FILES: usize = 1_000;
-const MAX_FOLDER_BYTES: u64 = 256 * 1024 * 1024;
+/// The most arguments a plugin's command line has (review 2026-10-18 MCP-5).
+pub(super) const MAX_ARGUMENTS: usize = 1_000;
+
+/// A file a run could not hash: past the limits of `plugin_files` it is
+/// refused with `limit`, a cancelled request stops, anything else fails the
+/// run; each keeps the error as its cause.
+pub(super) fn unhashed(error: std::io::Error, limit: &'static str) -> &'static str {
+    let code = match error.kind() {
+        std::io::ErrorKind::FileTooLarge => limit,
+        std::io::ErrorKind::Interrupted => "request_cancelled",
+        _ => "plugin_failed",
+    };
+    failed_because(code, error)
+}
+
+/// The refusal of a command line with more than `MAX_ARGUMENTS` arguments.
+pub(super) fn too_many_arguments(arguments: &[String]) -> Option<String> {
+    (arguments.len() > MAX_ARGUMENTS).then(|| {
+        format!(
+            "the command line has {} arguments; a plugin's has at most {MAX_ARGUMENTS}",
+            arguments.len()
+        )
+    })
+}
 
 /// An absolute file path and its SHA-256.
 type HashedFile = (PathBuf, String);
@@ -142,11 +166,8 @@ fn walk(folder: &Path) -> Result<Vec<PathBuf>, &'static str> {
                 )));
             }
             bytes = bytes.saturating_add(metadata.len());
-            if files.len() >= MAX_FOLDER_FILES || bytes > MAX_FOLDER_BYTES {
-                return Err(invalid(format!(
-                    "the plugin folder holds more than {MAX_FOLDER_FILES} files or {} MiB",
-                    MAX_FOLDER_BYTES / (1024 * 1024)
-                )));
+            if files.len() >= MAX_PLUGIN_FILES || bytes > MAX_PLUGIN_BYTES {
+                return Err(invalid(past_limits("the plugin folder holds")));
             }
             files.push(relative);
         }
@@ -178,8 +199,9 @@ fn folder_files(
 /// than a plugin folder may hold, however the files grew after the walk.
 fn stage_folder(folder: &Path, held: &HeldFiles) -> Result<(), &'static str> {
     let stage = held.stage().expect("a staged run has a stage");
-    let mut remaining = MAX_FOLDER_BYTES;
+    let mut remaining = MAX_PLUGIN_BYTES;
     for relative in walk(folder)? {
+        held.check_cancelled().map_err(unreadable)?;
         let target = stage.join(&relative);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(unreadable)?;
@@ -188,12 +210,9 @@ fn stage_folder(folder: &Path, held: &HeldFiles) -> Result<(), &'static str> {
         let mut copy = fs::File::create_new(target).map_err(unreadable)?;
         let copied = std::io::copy(&mut std::io::Read::take(source, remaining + 1), &mut copy)
             .map_err(unreadable)?;
-        remaining = remaining.checked_sub(copied).ok_or_else(|| {
-            invalid(format!(
-                "the plugin folder holds more than {} MiB",
-                MAX_FOLDER_BYTES / (1024 * 1024)
-            ))
-        })?;
+        remaining = remaining
+            .checked_sub(copied)
+            .ok_or_else(|| invalid(past_limits("the plugin folder holds")))?;
     }
     Ok(())
 }
@@ -412,13 +431,15 @@ pub(super) fn plain_value(value: &str) -> bool {
 /// file outside is given by its absolute path; an argument naming no file
 /// reaches the process as given only when it cannot leave the run's private
 /// directory. `refuse` gives the caller's refusal for an argument that joins
-/// `..` or an absolute path to an option.
+/// `..` or an absolute path to an option, `limit` its code for files past the
+/// limits of `plugin_files`.
 pub(super) fn resolve_argument(
     argument: &str,
     base: &Path,
     folder: Option<&Path>,
     held: Option<&mut HeldFiles>,
     refuse: impl FnOnce(String) -> &'static str,
+    limit: &'static str,
 ) -> Result<(String, Option<HashedFile>), &'static str> {
     if let Some(reason) = refused_shape(argument) {
         return Err(refuse(format!("argument {argument:?} {reason}")));
@@ -451,7 +472,7 @@ pub(super) fn resolve_argument(
         let sha256 = match held {
             Some(held) => held
                 .hash(&candidate)
-                .map_err(|error| failed_because("plugin_failed", error))?,
+                .map_err(|error| unhashed(error, limit))?,
             None => String::new(),
         };
         return Ok((candidate.display().to_string(), Some((candidate, sha256))));
@@ -519,7 +540,7 @@ fn outside_files(
         let sha256 = match held.as_deref_mut() {
             Some(held) => held
                 .hash(&executable)
-                .map_err(|error| failed_because("plugin_failed", error))?,
+                .map_err(|error| unhashed(error, "plugin_manifest_invalid"))?,
             None => String::new(),
         };
         outside.push((executable.clone(), sha256));
@@ -529,11 +550,20 @@ fn outside_files(
             .is_ok_and(|relative| files.iter().any(|(file, _)| *file == slashed(relative)))
     };
     not_a_shebang(&executable, invalid)?;
+    if let Some(reason) = too_many_arguments(&manifest.arguments) {
+        return Err(invalid(reason));
+    }
     let mut arguments = Vec::new();
     let mut names_file = Vec::new();
     for argument in &manifest.arguments {
-        let (given, file) =
-            resolve_argument(argument, folder, Some(folder), held.as_deref_mut(), invalid)?;
+        let (given, file) = resolve_argument(
+            argument,
+            folder,
+            Some(folder),
+            held.as_deref_mut(),
+            invalid,
+            "plugin_manifest_invalid",
+        )?;
         names_file.push(file.is_some() || in_folder(&lexical(&folder.join(&given))));
         arguments.push(given);
         outside.extend(file);
@@ -625,9 +655,9 @@ struct ReadFolder {
     held: Option<HeldFiles>,
 }
 
-/// Reads `plugin`; `staged` (a run) copies it into a stage first and hashes
-/// the copy, held until the run ends.
-fn read_folder(plugin: &str, staged: bool) -> Result<ReadFolder, &'static str> {
+/// Reads `plugin`; a run (`staged`, with its request's cancellation) copies it
+/// into a stage first and hashes the copy, held until the run ends.
+fn read_folder(plugin: &str, staged: Option<&Arc<AtomicBool>>) -> Result<ReadFolder, &'static str> {
     let folder = plugin_folder(plugin)?;
     if fs::symlink_metadata(&folder)
         .map_err(unreadable)?
@@ -641,12 +671,13 @@ fn read_folder(plugin: &str, staged: bool) -> Result<ReadFolder, &'static str> {
     // A folder without a valid manifest is no plugin: refused before any of
     // its files is walked, copied or hashed.
     let (manifest, _) = read_manifest(&folder, None)?;
-    let mut held = if staged {
-        let held = HeldFiles::staged().map_err(unreadable)?;
-        stage_folder(&folder, &held)?;
-        Some(held)
-    } else {
-        None
+    let mut held = match staged {
+        Some(cancelled) => {
+            let held = HeldFiles::staged(Arc::clone(cancelled)).map_err(unreadable)?;
+            stage_folder(&folder, &held)?;
+            Some(held)
+        }
+        None => None,
     };
     let root = held
         .as_ref()
@@ -695,7 +726,7 @@ pub(super) struct Description {
 /// refused here with the same code and reason; on the UI thread, so only its
 /// manifest is read and its other files are named, not read or hashed.
 pub(super) fn describe(folder: &Path) -> Result<Description, &'static str> {
-    let read = read_folder(&folder.to_string_lossy(), false)?;
+    let read = read_folder(&folder.to_string_lossy(), None)?;
     Ok(Description {
         name: read.manifest.name,
         inputs: read
@@ -713,10 +744,11 @@ pub(super) fn describe(folder: &Path) -> Result<Description, &'static str> {
 
 /// Copies the plugin folder into a stage and hashes the copy, which is what
 /// runs; `given` inputs are checked against the declared ones and are not
-/// part of the consent.
+/// part of the consent. Reading stops at the next file once `cancelled` is set.
 pub(super) fn load(
     plugin: &str,
     given: Option<&serde_json::Map<String, Value>>,
+    cancelled: &Arc<AtomicBool>,
 ) -> Result<FolderLaunch, &'static str> {
     let ReadFolder {
         folder,
@@ -726,7 +758,7 @@ pub(super) fn load(
         arguments,
         outside,
         held,
-    } = read_folder(plugin, true)?;
+    } = read_folder(plugin, Some(cancelled))?;
     let held = held.expect("a run reads a staged folder");
     let stage = held.stage().expect("a staged run has a stage").to_owned();
     let inputs = inputs(&manifest, given)?;

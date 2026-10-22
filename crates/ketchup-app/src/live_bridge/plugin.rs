@@ -112,8 +112,12 @@ fn invalid_params(reason: &str) -> &'static str {
     )
 }
 
-/// Reads the plugin folder or the command line; nothing starts yet.
-pub(super) fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'static str> {
+/// Reads the plugin folder or the command line; nothing starts yet. Reading
+/// stops at the next file once `cancelled` is set.
+pub(super) fn launch(
+    request: &RunPluginRequest,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<PluginLaunch, &'static str> {
     #[cfg(test)]
     if let Some((_, gate)) = LAUNCH_GATE
         .lock()
@@ -133,7 +137,7 @@ pub(super) fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'stati
                     "plugin.json decides the command line, principal and permissions; send only plugin and inputs",
                 ));
             }
-            let folder = plugin_manifest::load(plugin, request.inputs.as_ref())?;
+            let folder = plugin_manifest::load(plugin, request.inputs.as_ref(), cancelled)?;
             Ok(PluginLaunch {
                 grant: grant(
                     folder.principal_id,
@@ -161,8 +165,8 @@ pub(super) fn launch(request: &RunPluginRequest) -> Result<PluginLaunch, &'stati
             )?;
             // An empty private directory to run in: a relative argument
             // naming no file resolves there, and nothing may appear in it.
-            let mut held =
-                HeldFiles::staged().map_err(|error| failed_because("plugin_failed", error))?;
+            let mut held = HeldFiles::staged(Arc::clone(cancelled))
+                .map_err(|error| failed_because("plugin_failed", error))?;
             let consent = PluginConsent::of_command(
                 executable,
                 &request.arguments,
@@ -268,11 +272,13 @@ impl LiveBridge {
         let (sender, receiver) = mpsc::sync_channel(1);
         let repaint = context.clone();
         let worker_request = request.clone();
+        let cancelled = Arc::clone(&answer.cancelled);
         let spawn = std::thread::Builder::new()
             .name("ketchup-plugin-read".into())
             .spawn(move || {
                 take_error_details();
-                let prepared = launch(&worker_request).map_err(|code| (code, take_error_details()));
+                let prepared = launch(&worker_request, &cancelled)
+                    .map_err(|code| (code, take_error_details()));
                 let _ = sender.try_send(prepared);
                 repaint.request_repaint();
             });
