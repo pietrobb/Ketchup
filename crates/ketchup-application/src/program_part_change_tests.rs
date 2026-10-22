@@ -126,6 +126,47 @@ fn rename_changes_the_name_in_the_source_and_keeps_the_part() {
     );
 }
 
+/// Review 2026-10-21 P3: a rename to the name of a group, a component, a
+/// tool or a name another part continues was refused with the raw
+/// evaluation error of the rewritten program.
+#[test]
+fn a_rename_to_a_name_the_program_uses_is_refused_with_that_use() {
+    let parts = "box(\"a\", (10, 20, 30))\nbox(\"b\", (5, 5, 5), at=(50, 0, 0))\n";
+    for (source, new, used) in [
+        (format!("{parts}group(\"g\", [\"b\"])\n"), "g", "a group"),
+        (
+            format!("{parts}component(\"c\", [\"b\"])\n"),
+            "c",
+            "a component",
+        ),
+        (
+            format!("{parts}subtract(\"b\", box(\"h\", (1, 1, 9), at=(51, 1, -2), tool=True))\n"),
+            "h",
+            "a tool",
+        ),
+        (
+            "box(\"a\", (10, 20, 30))\nbox(\"side\", (5, 5, 5), at=(50, 0, 0))\n\
+             continue_part(\"side\", was=\"b\")\n"
+                .to_owned(),
+            "b",
+            "the earlier name of part \"side\"",
+        ),
+    ] {
+        model(&program(&source));
+        let message = refusal(&source, "a", PartChange::Rename(new.to_owned()));
+        assert!(
+            message.contains(&format!(
+                "already uses {new:?} as {used}; choose another name"
+            )),
+            "{new}: {message}"
+        );
+    }
+    // A part renamed back to its own earlier name is no other use of it.
+    let side = change(TWO, "a", PartChange::Rename("side".to_owned()));
+    let back = change(&side.source, "side", PartChange::Rename("a".to_owned()));
+    assert!(model(&back).part("a").is_some(), "{}", back.source);
+}
+
 /// Review 2026-10-19 WB-3: renaming part "oak" also renamed the material
 /// "oak" of another part, the parameter "oak" and a text reading "oak".
 #[test]

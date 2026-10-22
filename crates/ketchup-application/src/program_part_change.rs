@@ -466,6 +466,32 @@ fn names(model: &ProgramModel) -> BTreeSet<String> {
         .collect()
 }
 
+/// What else than a part of the program `name` already names: a component,
+/// a group, an instance, a tool or the earlier name another part than
+/// `part` continues.
+fn name_use(model: &ProgramModel, part: &str, name: &str) -> Option<String> {
+    let named = |found: bool, what: &str| found.then(|| what.to_owned());
+    named(
+        model.components.iter().any(|item| item.name == name),
+        "a component",
+    )
+    .or_else(|| named(model.groups.iter().any(|item| item.name == name), "a group"))
+    .or_else(|| {
+        named(
+            model.instances.iter().any(|item| item.name == name),
+            "an instance",
+        )
+    })
+    .or_else(|| named(model.tools.iter().any(|item| item.name == name), "a tool"))
+    .or_else(|| {
+        model
+            .continuations
+            .iter()
+            .find(|(other, was)| *was == name && *other != part)
+            .map(|(other, _)| format!("the earlier name of part {}", quote(other)))
+    })
+}
+
 /// `value` with the part name `from` read as `to`, also where it starts a
 /// name the program derives from it ("a transform", "a/notch"), but not in
 /// the names `kept` or the names derived from them.
@@ -709,6 +735,15 @@ impl Edit<'_> {
                 "program_part_name_taken",
                 format!(
                     "the program already makes a part named {}; choose another name",
+                    quote(new)
+                ),
+            ));
+        }
+        if let Some(used) = name_use(&self.evaluated.model, self.name, new) {
+            return Err(refused(
+                "program_part_name_taken",
+                format!(
+                    "the program already uses {} as {used}; choose another name",
                     quote(new)
                 ),
             ));
