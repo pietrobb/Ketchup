@@ -96,6 +96,13 @@ pub fn rewrite_rule_program_parts(
     {
         return Ok(None);
     }
+    // Many parts moved alike are written and checked in one evaluation, not
+    // two or three for each part (review 2026-10-19 WB-6).
+    if let Some(moved) =
+        crate::program_part_edit::transformed_at_once(&source, &evaluated, changes)?
+    {
+        return Ok(Some(moved));
+    }
     for (name, change) in changes {
         let edit = Edit {
             source: &source,
@@ -494,7 +501,7 @@ fn renamed(value: &mut serde_json::Value, from: &str, to: &str, kept: &[String])
 }
 
 pub(crate) struct Edit<'a> {
-    source: &'a RuleProgramSource,
+    pub(crate) source: &'a RuleProgramSource,
     pub(crate) evaluated: &'a Evaluated,
     pub(crate) name: &'a str,
 }

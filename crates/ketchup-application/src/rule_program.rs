@@ -498,7 +498,15 @@ fn replacement_batch(
 pub(crate) fn evaluate(
     source: &RuleProgramSource,
 ) -> Result<ketchup_program::Evaluated, RuleProgramApplyError> {
+    #[cfg(test)]
+    EVALUATIONS.set(EVALUATIONS.get() + 1);
     evaluate_by(source, crate::program_isolation::CheckDeadline::start())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`evaluate`] ran on this thread, for tests of its cost.
+    pub(crate) static EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn evaluate_by(

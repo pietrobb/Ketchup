@@ -5,12 +5,17 @@
 //! program gets a `move()` / `rotate()` line for the part, as Push/Pull gets
 //! `push_pull()`.
 use crate::RuleProgramApplyError;
-use crate::program_part_change::{Edit, Expected};
+use crate::program_part_change::{Edit, Expected, PartChange};
 use crate::rule_program::evaluate;
 use ketchup_geometry::linalg::{cross, dot, length};
 use ketchup_model::document::{RuleProgramSource, Transform};
+use ketchup_model::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 use ketchup_program::frame::{self, Mat3};
-use ketchup_program::source_edit::{number_literal, point_literal, quote, written, written_point};
+use ketchup_program::source_edit::{
+    self, CreatingCall, number_literal, point_literal, quote, written, written_point,
+};
+use ketchup_program::{Evaluated, ProgramModel};
+use std::collections::BTreeMap;
 
 /// A world rigid motion as the program writes it: a turn about a pivot, then a shift.
 #[derive(Clone, Copy, Debug)]
@@ -186,4 +191,102 @@ impl Edit<'_> {
         }
         lines
     }
+}
+
+/// `source` with every part of `changes` moved by its transform, written and
+/// checked at once: the parts' literal `at=` shifted where the program then
+/// makes what `move()` lines make, else a `rotate()` / `move()` line each.
+/// `None` when `changes` are not several transforms, or what the program
+/// makes is not each part placed as asked and everything else as before: the
+/// caller then writes the parts one by one, which says which part failed.
+pub(crate) fn transformed_at_once(
+    source: &RuleProgramSource,
+    evaluated: &Evaluated,
+    changes: &[(String, PartChange)],
+) -> Result<Option<RuleProgramSource>, RuleProgramApplyError> {
+    if changes.len() < 2 {
+        return Ok(None);
+    }
+    let model = &evaluated.model;
+    let mut placed = BTreeMap::new();
+    let mut lines = String::new();
+    let mut literals = Vec::new();
+    let mut every_literal = true;
+    for (name, change) in changes {
+        let PartChange::Transform(world_edit) = change else {
+            return Ok(None);
+        };
+        let Some(part) = model.part(name) else {
+            return Ok(None);
+        };
+        let edit = Edit {
+            source,
+            evaluated,
+            name,
+        };
+        let motion = Motion::of(*world_edit, part.at_mm)?;
+        if placed
+            .insert(
+                name.as_str(),
+                motion.frame_after(part.at_mm, &part.rotation),
+            )
+            .is_some()
+        {
+            return Ok(None);
+        }
+        lines.push_str(&edit.motion_lines(&motion));
+        match edit.found_call().filter(|call| call.loop_line.is_none()) {
+            Some(CreatingCall {
+                at: Some(literal), ..
+            }) if motion.turn.is_none() => {
+                let moved =
+                    written_point(std::array::from_fn(|i| literal.value[i] + motion.shift[i]));
+                literals.push((literal.bytes, point_literal(moved)));
+            }
+            _ => every_literal = false,
+        }
+    }
+    let appended = {
+        let mut appended = source.clone();
+        source_edit::append_lines(&mut appended.source, &lines);
+        appended
+    };
+    let Ok(by_lines) = evaluate(&appended) else {
+        return Ok(None);
+    };
+    if !placed_as_asked(model, &by_lines.model, &placed) {
+        return Ok(None);
+    }
+    // As for one part: the literals only when the program then makes exactly
+    // what the lines make, tools of the parts' booleans included.
+    if every_literal {
+        let mut rewritten = source.clone();
+        literals.sort_by_key(|(bytes, _)| std::cmp::Reverse(bytes.start));
+        for (bytes, text) in literals {
+            rewritten.source.replace_range(bytes, &text);
+        }
+        if evaluate(&rewritten).is_ok_and(|after| after.model == by_lines.model) {
+            return Ok(Some(rewritten));
+        }
+    }
+    Ok(Some(appended))
+}
+
+/// Every part of `placed` stands at its frame in `after`, its size kept, and
+/// every other part is made as in `before`.
+fn placed_as_asked(
+    before: &ProgramModel,
+    after: &ProgramModel,
+    placed: &BTreeMap<&str, ([f64; 3], Mat3)>,
+) -> bool {
+    before.parts.len() == after.parts.len()
+        && before.parts.iter().zip(&after.parts).all(|(old, new)| {
+            let Some((at, rotation)) = placed.get(old.name.as_str()) else {
+                return old == new;
+            };
+            new.name == old.name
+                && new.size_mm == old.size_mm
+                && (0..3).all(|i| (new.at_mm[i] - at[i]).abs() <= DEFAULT_LINEAR_TOLERANCE_MM)
+                && frame::same_orientation(&new.rotation, rotation)
+        })
 }

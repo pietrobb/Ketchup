@@ -747,3 +747,54 @@ fn a_mismatch_says_what_the_program_made_otherwise() {
     let same = Expected::Same(Box::new(before.clone()));
     assert_eq!(same.difference(&before, &after), "\"b\" changed too");
 }
+
+/// Review 2026-10-19 WB-6: moving many parts alike evaluated the whole
+/// program two or three times for each part, so selecting all and moving
+/// froze the window for seconds.
+#[test]
+fn many_parts_moved_alike_are_written_and_checked_at_once() {
+    let boxes = (0..12)
+        .map(|i| format!("box(\"p{i}\", (10, 10, 10), at=({}, 0, 0))\n", 20 * i))
+        .collect::<String>();
+    let moved_by = |names: &[String]| {
+        names
+            .iter()
+            .map(|name| {
+                let shift = Transform::from_translation(5.0, 0.0, 0.0).unwrap();
+                (name.clone(), PartChange::Transform(shift))
+            })
+            .collect::<Vec<_>>()
+    };
+    let names = (0..12).map(|i| format!("p{i}")).collect::<Vec<_>>();
+    let before = crate::rule_program::EVALUATIONS.get();
+    let moved = rewrite_rule_program_parts(&program(&boxes), &moved_by(&names))
+        .unwrap()
+        .unwrap();
+    let used = crate::rule_program::EVALUATIONS.get() - before;
+    assert!(used <= 3, "{used} evaluations for 12 parts");
+    // Each literal at= moves, as for one part.
+    assert!(
+        moved
+            .source
+            .contains("box(\"p3\", (10, 10, 10), at=(65, 0, 0))"),
+        "{}",
+        moved.source
+    );
+    let after = model(&moved);
+    for (i, name) in names.iter().enumerate() {
+        let x = 20.0 * f64::from(u8::try_from(i).unwrap()) + 5.0;
+        assert_eq!(after.part(name).unwrap().at_mm, [x, 0.0, 0.0]);
+    }
+    // A part placed without a literal: every part gets its move() line.
+    let mixed = format!("{boxes}box(\"q\", (10, 10, 10))\n");
+    let mut all = names.clone();
+    all.push("q".to_owned());
+    let moved = rewrite_rule_program_parts(&program(&mixed), &moved_by(&all))
+        .unwrap()
+        .unwrap();
+    assert!(moved.source.starts_with(&mixed), "{}", moved.source);
+    assert_eq!(moved.source.matches("move(").count(), 13);
+    let after = model(&moved);
+    assert_eq!(after.part("q").unwrap().at_mm, [5.0, 0.0, 0.0]);
+    assert_eq!(after.part("p11").unwrap().at_mm, [225.0, 0.0, 0.0]);
+}
