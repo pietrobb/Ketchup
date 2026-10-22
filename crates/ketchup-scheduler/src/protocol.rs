@@ -322,6 +322,8 @@ pub struct UnderlayInput {
 pub struct UnderlayRead {
     /// The names of the layers of the lines, in their order.
     pub layers: Vec<String>,
+    /// The layers the drawing turned off or froze.
+    pub hidden_layers: Vec<String>,
     pub units: ImportUnitDecision,
     pub segments: usize,
     pub texts: usize,

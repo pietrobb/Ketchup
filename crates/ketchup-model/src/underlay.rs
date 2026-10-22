@@ -788,11 +788,13 @@ impl std::error::Error for UnderlayPlanError {}
 
 /// One batch, so one Undo step, that adds an underlay named `name` with a tag of its own
 /// and one per layer, its lines being the container blob `lines_sha256`, moved by
-/// `offset_mm` from the drawing's own coordinates.
+/// `offset_mm` from the drawing's own coordinates. The tags of `hidden_layers`, the layers
+/// the drawing turned off or froze, start hidden.
 pub fn plan_underlay(
     snapshot: &Snapshot,
     name: &str,
     layer_names: &[String],
+    hidden_layers: &[String],
     lines_sha256: [u8; 32],
     offset_mm: [f64; 2],
 ) -> Result<(CommandBatch, UnderlayId), UnderlayPlanError> {
@@ -806,26 +808,23 @@ pub fn plan_underlay(
         &mut snapshot.underlays().map(|underlay| underlay.id.0),
     )?);
     let mut next_tag = next(&mut snapshot.tags().map(|tag| tag.id().0))?;
-    let mut new_tag = |commands: &mut Vec<CanonicalCommand>, name: String| {
+    let mut new_tag = |commands: &mut Vec<CanonicalCommand>, name: String, visible: bool| {
         let id = TagId(next_tag);
         next_tag = next_tag
             .checked_add(1)
             .ok_or(UnderlayPlanError::IdSpaceExhausted)?;
-        commands.push(CanonicalCommand::CreateTag {
-            id,
-            name,
-            visible: true,
-        });
+        commands.push(CanonicalCommand::CreateTag { id, name, visible });
         Ok(id)
     };
     let mut commands = Vec::with_capacity(layer_names.len() + 2);
-    let tag = new_tag(&mut commands, name.to_owned())?;
+    let tag = new_tag(&mut commands, name.to_owned(), true)?;
     let layers = layer_names
         .iter()
         .map(|layer| {
+            let visible = !hidden_layers.contains(layer);
             Ok(UnderlayLayer {
                 name: layer.clone(),
-                tag: new_tag(&mut commands, format!("{name} · {layer}"))?,
+                tag: new_tag(&mut commands, format!("{name} · {layer}"), visible)?,
             })
         })
         .collect::<Result<Vec<_>, UnderlayPlanError>>()?;

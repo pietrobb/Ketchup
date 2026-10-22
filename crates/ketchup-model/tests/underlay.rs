@@ -423,8 +423,15 @@ fn an_underlay_is_added_and_removed_with_its_tags_in_one_undo_step_each() {
     let lines = sha256_bytes(&underlay.lines.encode());
     let mut document = DocumentStore::new();
     let offset = [-560_120_000.0, -1_210_987_000.0];
-    let (batch, id) =
-        plan_underlay(&document.current(), "Plan", &underlay.layers, lines, offset).unwrap();
+    let (batch, id) = plan_underlay(
+        &document.current(),
+        "Plan",
+        &underlay.layers,
+        &underlay.hidden_layers,
+        lines,
+        offset,
+    )
+    .unwrap();
     document.apply_batch(&batch).unwrap();
     let added = document.current();
     let stored = added.underlay(id).unwrap();
@@ -462,6 +469,7 @@ fn a_two_point_fit_places_the_underlay_on_the_model_in_one_undo_step() {
         &document.current(),
         "Plan",
         &underlay.layers,
+        &underlay.hidden_layers,
         sha256_bytes(&bytes),
         [0.0; 2],
     )

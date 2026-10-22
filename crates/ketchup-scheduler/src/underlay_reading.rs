@@ -54,6 +54,7 @@ fn read(input: &UnderlayInput) -> Result<UnderlayOutcome, UnderlayRefusal> {
         segments: underlay.lines.segment_count(),
         texts: underlay.lines.text_count(),
         layers: underlay.layers,
+        hidden_layers: underlay.hidden_layers,
         units: underlay.units,
         offset_mm: underlay.offset_mm,
         diagnostics: underlay.diagnostics,

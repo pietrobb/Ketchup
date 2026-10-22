@@ -66,6 +66,59 @@ fn an_underlay_imports_in_one_undo_step_and_its_tags_hide_the_drawing_or_one_lay
     assert!(drawn(&mut app).is_empty());
 }
 
+/// Review 2026-10-21 P3: the layers the drawing turned off (negative color) or froze
+/// (flag 1) showed, and gave snaps, in the underlay. They come in with their tags hidden,
+/// so they are kept and can be shown.
+#[test]
+fn layers_the_drawing_turned_off_or_froze_come_in_hidden() {
+    let line =
+        |layer: &str, y: u32| format!("0\nLINE\n8\n{layer}\n10\n0\n20\n{y}\n11\n100\n21\n{y}\n");
+    let layer = |name: &str, color: i32, flags: u32| {
+        format!("0\nLAYER\n2\n{name}\n70\n{flags}\n62\n{color}\n6\nCONTINUOUS\n")
+    };
+    let dxf = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n{}{}{}0\nENDTAB\n0\nENDSEC\n\
+         0\nSECTION\n2\nENTITIES\n{}{}{}0\nENDSEC\n0\nEOF\n",
+        layer("shown", 1, 0),
+        layer("off", -3, 0),
+        layer("frozen", 5, 1),
+        line("shown", 0),
+        line("off", 50),
+        line("frozen", 100),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("plan.dxf");
+    std::fs::write(&path, dxf).unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &path);
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    let snapshot = app.document.current();
+    let underlay = snapshot
+        .underlays()
+        .next()
+        .unwrap_or_else(|| panic!("no underlay: {}", app.action_digest()))
+        .clone();
+    let visible = underlay
+        .layers
+        .iter()
+        .map(|layer| {
+            let tag = snapshot.tag(layer.tag).unwrap();
+            (layer.name.as_str(), tag.visible())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        visible,
+        [("shown", true), ("off", false), ("frozen", false)],
+        "{}",
+        app.action_digest()
+    );
+    let shown_only = drawn(&mut app);
+    let frozen = underlay.layers.iter().find(|layer| layer.name == "frozen");
+    assert!(app.set_tag_visibility(frozen.unwrap().tag, true));
+    assert!(drawn(&mut app)[0] > shown_only[0]);
+}
+
 #[test]
 fn an_underlay_draws_its_texts_on_their_layer_which_hides_them() {
     let directory = tempfile::tempdir().unwrap();

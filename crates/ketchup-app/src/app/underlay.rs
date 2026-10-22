@@ -232,6 +232,7 @@ impl KetchupApp {
             &self.document.current(),
             &name,
             &read.read.layers,
+            &read.read.hidden_layers,
             key,
             read.read.offset_mm,
         )

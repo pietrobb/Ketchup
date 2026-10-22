@@ -22,6 +22,9 @@ pub struct DxfUnderlay {
     pub units: ImportUnitDecision,
     /// The names of the layers of `lines`, in their order.
     pub layers: Vec<String>,
+    /// The layers of `layers` the drawing turned off or froze: kept, but shown only when
+    /// asked to.
+    pub hidden_layers: Vec<String>,
     pub lines: UnderlayLines,
     /// What `lines` were moved by from the drawing's own coordinates
     /// ([`UnderlayLines::move_near_origin`]).
@@ -154,8 +157,15 @@ pub fn read_dxf_underlay_from(
         return Err(DxfImportError::NoSupportedGeometry);
     }
     let diagnostics = finish_report(diagnostics, &layers, units, offset_mm)?;
+    let hidden = hidden_layers(&sections.tables.pairs());
+    let hidden_layers = layer_names
+        .iter()
+        .filter(|layer| hidden.contains(&layer.to_ascii_uppercase()))
+        .cloned()
+        .collect();
     Ok(DxfUnderlay {
         units,
+        hidden_layers,
         layers: layer_names,
         lines,
         offset_mm,
