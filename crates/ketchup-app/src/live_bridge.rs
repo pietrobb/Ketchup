@@ -681,6 +681,18 @@ const fn save_rejection(failure: SaveFailure) -> &'static str {
     }
 }
 
+/// The code of a failed save with the reason the window shows for it, so a
+/// refused save never reaches the client without its cause.
+fn save_failed(app: &KetchupApp, save_failure: SaveFailure) -> &'static str {
+    let code = save_rejection(save_failure);
+    match save_failure {
+        SaveFailure::Cancelled => code,
+        SaveFailure::Declined | SaveFailure::Failed => {
+            failure(code, app.action_digest(), json!({}))
+        }
+    }
+}
+
 fn program_owned(app: &KetchupApp) -> bool {
     app.document.current_rule_program().is_some()
 }
@@ -2436,6 +2448,8 @@ impl LiveBridge {
             "save_state": save_state,
             "save_path": save_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
             "save_error": save_error,
+            "save_reason": matches!(save_error, Some("save_rejected" | "save_declined"))
+                .then(|| app.action_digest()),
             "undo_steps": app.undo_step_count(),
         });
         add_detach_warning(&mut value, owned_before, app);
@@ -2977,7 +2991,7 @@ impl LiveBridge {
                 Self::available(app, ui_busy)?;
                 let path = app.file.path.clone().ok_or("save_path_required")?;
                 app.save_document_to_while(&path, || !cancelled.load(Ordering::Acquire))
-                    .map_err(save_rejection)?;
+                    .map_err(|save_failure| save_failed(app, save_failure))?;
                 Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
             }
             Request::SaveAs { expected, path } => {
@@ -2987,7 +3001,7 @@ impl LiveBridge {
                     return Err("invalid_path");
                 }
                 app.save_document_to_while(Path::new(&path), || !cancelled.load(Ordering::Acquire))
-                    .map_err(save_rejection)?;
+                    .map_err(|save_failure| save_failed(app, save_failure))?;
                 Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
             }
             request @ Request::ExportDrawings { .. } => {

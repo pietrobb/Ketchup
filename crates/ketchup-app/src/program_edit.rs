@@ -106,7 +106,7 @@ impl KetchupApp {
                     if self.is_dirty() {
                         return Err(RuleProgramApplyError::UnsavedChanges);
                     }
-                    self.new_document();
+                    self.new_document_for_the_same_file();
                 }
                 let batch = ketchup_application::plan_rule_model_batch(
                     &self.document,

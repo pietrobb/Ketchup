@@ -1881,3 +1881,79 @@ fn a_rectangle_or_an_ellipse_drawn_beside_program_parts_becomes_a_program_part()
         std::f64::consts::PI * 1220.0 * 820.0 * 300.0,
     );
 }
+
+/// Bug report 2026-10-22 (#2586): a program that replaced the saved document
+/// of a window left the window without its file, so Save answered
+/// save_path_required and Save As back to that file was refused.
+#[test]
+fn a_program_that_replaces_a_saved_document_saves_back_to_its_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("kotvenie_35x35.ketchup");
+    let dialogs = ScriptedFileDialogs::new();
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.selection.clear();
+    assert!(app.create_box());
+    assert!(app.save_document_to(&path));
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let source = "box(\"kotva\", (35, 35, 200))\n";
+
+    bridge
+        .execute(&mut app, apply(source, true), false)
+        .unwrap();
+    assert_eq!(app.document_path(), Some(path.as_path()), "{}", app.digest);
+    assert!(app.is_dirty());
+    // A zero-byte lock file left from earlier saves is no lock: the OS lock on it is.
+    let leftover_lock = path.with_extension("ketchup.save-lock");
+    std::fs::write(&leftover_lock, b"").unwrap();
+    let saved = bridge
+        .execute(&mut app, Request::Save { expected: None }, false)
+        .unwrap();
+    assert_eq!(saved["saved"], true, "{saved}");
+    let saved_as = bridge
+        .execute(
+            &mut app,
+            Request::SaveAs {
+                expected: None,
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(saved_as["saved"], true, "{saved_as}");
+    assert!(probe.high_risk_prompts().is_empty());
+
+    let mut reopened = KetchupApp::new();
+    assert!(reopened.open_document_path(&path));
+    assert_eq!(
+        reopened.document.current_rule_program().unwrap().source,
+        source
+    );
+}
+
+/// Bug report 2026-10-22 (#2586): a refused save answered save_rejected with
+/// no reason, though the window had one.
+#[test]
+fn a_refused_save_tells_the_client_why() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut app, mut bridge) = setup();
+    take_error_details();
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::SaveAs {
+                expected: None,
+                path: directory.path().to_string_lossy().into_owned(),
+            },
+            false,
+        ),
+        Err("save_rejected")
+    );
+    let rejection = take_error_details().expect("the refusal is recorded");
+    assert_eq!(rejection["code"], "save_rejected", "{rejection}");
+    let reason = rejection["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("the target path is a directory"),
+        "{rejection}"
+    );
+}

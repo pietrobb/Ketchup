@@ -162,6 +162,27 @@ impl KetchupApp {
         self.digest = self.catalog.text("digest-new-document");
     }
 
+    /// [`Self::new_document`] for a program that replaces the model of the
+    /// window's file: the window keeps the file, and the program's model is
+    /// unsaved work on it that Save writes back (bug report 2026-10-22).
+    pub(crate) fn new_document_for_the_same_file(&mut self) {
+        let path = self.file.path.take();
+        let identity = self.file.identity.take();
+        let lock = self.file.work_recovery_lock.take();
+        let work_recovery_off = self.file.work_recovery_off;
+        let work_recovery_identity = self.file.work_recovery_identity.take();
+        let cleanup = self.file.pending_work_recovery_cleanup.take();
+        let saved_digest = std::mem::take(&mut self.file.saved_digest);
+        self.new_document();
+        self.file.path = path;
+        self.file.identity = identity;
+        self.file.work_recovery_lock = lock;
+        self.file.work_recovery_off = work_recovery_off;
+        self.file.work_recovery_identity = work_recovery_identity;
+        self.file.pending_work_recovery_cleanup = cleanup;
+        self.file.saved_digest = saved_digest;
+    }
+
     pub(crate) fn open_document_from(&mut self, path: &Path) -> bool {
         self.open_document_with_discard(path, false)
     }
