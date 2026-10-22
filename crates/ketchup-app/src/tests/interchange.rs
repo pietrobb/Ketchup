@@ -137,6 +137,10 @@ fn sketchup_dae_file_command_exports_current_scene_with_loss_report() {
         digest
     );
     assert_eq!(script.export_requests()[0].extension, "dae");
+    let prompts = script.high_risk_prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].contains("SketchUp DAE"), "{prompts:?}");
+    assert!(!prompts[0].contains("STL"), "{prompts:?}");
     let dae = std::fs::read_to_string(&path).unwrap();
     assert!(dae.contains("<COLLADA xmlns=\"http://www.collada.org/2005/11/COLLADASchema\""));
     assert!(dae.contains("<triangles "), "{dae}");

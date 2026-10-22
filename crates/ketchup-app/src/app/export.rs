@@ -322,9 +322,9 @@ impl KetchupApp {
                     ExportConsent {
                         class: HighRiskClass::LossyConversion,
                         operation: "export-current-model-dae-with-loss-report",
-                        title_key: "dialog-export-lossy-title",
-                        risk_key: "dialog-export-lossy-risk",
-                        overwrite_title_key: "dialog-export-overwrite-title",
+                        title_key: "dialog-export-sketchup-title",
+                        risk_key: "dialog-export-sketchup-risk",
+                        overwrite_title_key: "dialog-export-sketchup-overwrite-title",
                         overwrite_operations: [
                             "overwrite-current-model-dae-export",
                             "overwrite-current-model-dae-loss-report",
