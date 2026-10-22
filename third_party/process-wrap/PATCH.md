@@ -2,7 +2,7 @@
 
 Unmodified copy of `process-wrap` 10.0.0 from crates.io (Apache-2.0 OR MIT, see the license
 files) except seven changes (the fourth: `JobMemoryLimit` on Unix; the fifth: `KillOnDrop` on Linux;
-the sixth: killing a reaped process group; the seventh: `physical_memory_bytes`, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
+the sixth: a `try_wait` that does not reap the process group; the seventh: `physical_memory_bytes`, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
 has, a `JobMemoryLimit` wrapper, and its job object starts the child without suspending it (below). The upstream `tests/` directory is left out, and
 with it the `[[test]]` targets and dev-dependencies of `Cargo.toml`. The unit tests in `src/` run in
 CI on Linux and macOS with this directory's own `Cargo.lock` (`.github/workflows/ci.yml`).
@@ -66,14 +66,17 @@ themselves instead (`ketchup-scheduler`, `child_process::exit_with_parent`).
 
 ## Killing a reaped process group
 
-- `src/std/process_group.rs` (`ProcessGroupChild::start_kill`): `ESRCH` from `killpg` is success.
-  A unit test in the same file.
+- `src/std/process_group.rs` (`ProcessGroupChild`): `try_wait` observes the leader's exit with
+  `waitid(WNOWAIT)` and leaves it a zombie; only `wait` reaps the leader and the rest of the group.
+  After `wait` has reaped the leader, `start_kill` and `signal` do nothing. Two unit tests in the
+  same file. Upstream `try_wait` reaped every process of the group (`waitpid(-pgid)` until `ECHILD`).
 
-Why: `try_wait` reaps every process of the group (`waitpid(-pgid)` until `ECHILD`), so the kill
-that follows finds no process and `killpg` fails with `ESRCH`. Ketchup's plugin host waits for the
-plugin and then kills its group so no descendant outlives it; every successful plugin run on Unix
-ended in a transport error (review 2026-10-17 EX-3). `std::process::Child::kill` on a child that
-has exited returns `Ok` as well.
+Why: Ketchup's plugin host waits for the plugin and then kills its group so no descendant outlives
+it. With upstream's reaping `try_wait` that kill failed with `ESRCH`, so every successful plugin run
+on Unix ended in a transport error (review 2026-10-17 EX-3); and once the whole group is reaped its
+ID is free, so the kill could reach another group that reused it (review 2026-10-19 P3). A zombie
+leader keeps the ID reserved until `wait`. `std::process::Child::kill` on a child that has been
+reaped returns `Ok` as well.
 
 ## No suspended start
 
