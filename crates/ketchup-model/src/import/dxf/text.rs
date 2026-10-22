@@ -60,7 +60,7 @@ pub(super) fn parse_text(
     report_field(kind, raw, diagnostics)?;
     let height_mm = positive(scale_coordinate(parse_required_number(record, 40)?, scale)?)?;
     let mut text = UnderlayText::new(
-        special_characters(raw),
+        special_characters(raw, diagnostics.code_page),
         parse_xy(record, 10, 20, scale)?,
         height_mm,
     );
@@ -135,7 +135,7 @@ fn parse_mtext(
         .collect::<String>();
     report_field("MTEXT", &raw, diagnostics)?;
     let mut fonts = Vec::new();
-    let plain = special_characters(&mtext_plain(&raw, &mut fonts));
+    let plain = special_characters(&mtext_plain(&raw, &mut fonts), diagnostics.code_page);
     let scale = units.millimetres_per_unit();
     let height_mm = positive(scale_coordinate(parse_required_number(record, 40)?, scale)?)?;
     let mut text = UnderlayText::new(plain, parse_xy(record, 10, 20, scale)?, height_mm);
@@ -369,9 +369,10 @@ fn mtext_plain(raw: &str, fonts: &mut Vec<String>) -> String {
 }
 
 /// The special characters of a text: `%%c` ⌀, `%%d` °, `%%p` ±, `%%%` %, `%%nnn` the
-/// character of that number; the underline and overline switches `%%u` and `%%o` are
-/// taken out.
-fn special_characters(raw: &str) -> String {
+/// character nnn of the drawing's `code_page` (a number it has no single character for,
+/// the Unicode character of that number); the underline and overline switches `%%u` and
+/// `%%o` are taken out.
+fn special_characters(raw: &str, code_page: &'static encoding_rs::Encoding) -> String {
     if !raw.contains("%%") {
         return raw.to_owned();
     }
@@ -387,7 +388,13 @@ fn special_characters(raw: &str) -> String {
             Some('p' | 'P') => (Some('±'), 1),
             Some('%') => (Some('%'), 1),
             Some('u' | 'U' | 'o' | 'O') => (None, 1),
-            _ if digits == 3 => (code[..3].parse::<u32>().ok().and_then(char::from_u32), 3),
+            _ if digits == 3 => (
+                code[..3]
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(|number| numbered_character(number, code_page)),
+                3,
+            ),
             _ => (Some('%'), 0),
         };
         text.extend(replacement);
@@ -398,6 +405,20 @@ fn special_characters(raw: &str) -> String {
     }
     text.push_str(rest);
     text
+}
+
+/// The character `number` of `code_page`, or, for a number it has no single character
+/// for, the Unicode character of that number.
+fn numbered_character(number: u32, code_page: &'static encoding_rs::Encoding) -> Option<char> {
+    u8::try_from(number)
+        .ok()
+        .and_then(|byte| {
+            let bytes = [byte];
+            let decoded = code_page.decode_without_bom_handling_and_without_replacement(&bytes)?;
+            let mut chars = decoded.chars();
+            chars.next().filter(|_| chars.next().is_none())
+        })
+        .or_else(|| char::from_u32(number))
 }
 
 /// The texts of a block placed by an INSERT or a DIMENSION: moved, turned and scaled as

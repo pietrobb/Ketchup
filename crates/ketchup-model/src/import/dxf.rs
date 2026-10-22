@@ -314,8 +314,11 @@ struct DiagnosticCounts {
     reading: DxfReading,
     /// The layers, upper case, that the drawing's author turned off or froze;
     /// a profile import leaves their entities out (review 2026-10-18 MF-13).
-    /// An underlay draws them, as it draws every layer.
+    /// An underlay keeps them, with their tags hidden.
     hidden_layers: BTreeSet<String>,
+    /// The code page its `$DWGCODEPAGE` names, ANSI_1252 when it names none: a text's
+    /// `%%nnn` is the character nnn of it.
+    code_page: &'static encoding_rs::Encoding,
 }
 
 impl DiagnosticCounts {
@@ -324,6 +327,7 @@ impl DiagnosticCounts {
             entries: BTreeMap::new(),
             reading,
             hidden_layers: BTreeSet::new(),
+            code_page: encoding_rs::WINDOWS_1252,
         }
     }
 
@@ -843,6 +847,13 @@ fn parse_header(
         if variables.insert(name, &pairs[start..index]).is_some() {
             return Err(DxfImportError::InvalidHeader);
         }
+    }
+    if let Some(code_page) = variables
+        .get("$DWGCODEPAGE")
+        .and_then(|values| values.iter().find(|pair| pair.code == 3))
+        .and_then(|pair| code_page_encoding(pair.value.trim().as_bytes()))
+    {
+        diagnostics.code_page = code_page;
     }
     let declared = match variables.get("$INSUNITS") {
         Some(values) => {

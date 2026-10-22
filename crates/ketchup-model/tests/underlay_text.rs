@@ -35,6 +35,25 @@ fn close(left: [f64; 2], right: [f64; 2]) -> bool {
     (left[0] - right[0]).abs() < 1e-9 && (left[1] - right[1]).abs() < 1e-9
 }
 
+/// Review 2026-10-21 P3: `%%nnn` is the character nnn of the drawing's code page, not the
+/// Unicode code point nnn; a drawing that names none is in ANSI_1252, as AutoCAD reads it.
+#[test]
+fn a_numbered_special_character_is_read_in_the_drawings_code_page() {
+    let text = |header: &str, value: &str| {
+        let source = format!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n{header}0\nENDSEC\n\
+             0\nSECTION\n2\nENTITIES\n0\nTEXT\n8\nlabels\n10\n0\n20\n0\n40\n250\n1\n{value}\n\
+             0\nENDSEC\n0\nEOF\n"
+        );
+        let underlay = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
+        texts(&underlay, "labels")[0].text.clone()
+    };
+    let central_european = "9\n$DWGCODEPAGE\n3\nANSI_1250\n";
+    assert_eq!(text(central_european, "%%142ilina 20%%176"), "Žilina 20°");
+    assert_eq!(text(central_european, "%%%%%%200 %%065"), "%%200 A");
+    assert_eq!(text("", "%%128 5"), "€ 5");
+}
+
 const BLOCKS: &str = concat!(
     // A door: its leaf and its number, on layer 0, so on the layer of its insert.
     "0\nBLOCK\n8\n0\n2\ndoor\n70\n0\n10\n0\n20\n0\n",
