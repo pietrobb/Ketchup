@@ -1,6 +1,7 @@
 //! A DXF or DWG drawing imported as an underlay: read in the program worker on a thread
-//! while the window shows that it is reading (its Cancel kills the worker, as does the
-//! worker's DWG deadline), then added as one Undo step with its lines as a blob of the document. The
+//! while the window shows that it is reading (its Cancel kills the worker; a DWG read has no
+//! deadline and otherwise stops only at the worker's memory limit), then added as one Undo
+//! step with its lines as a blob of the document. The
 //! viewport draws the lines of every visible layer under the model.
 
 use super::underlay_snapping::UnderlaySnapSlot;

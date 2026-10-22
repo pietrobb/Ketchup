@@ -1,6 +1,7 @@
 //! `file action=import` of a `.dwg` file, or of a drawing `as_underlay`, as a job
-//! (review DR-3): the program worker reads it for up to its deadline, and the window
-//! does not wait for it. A thread reads the file while the window keeps drawing and
+//! (review DR-3): the program worker reads it until it ends, is cancelled or reaches the
+//! worker's memory limit, with no deadline, and the window does not wait for it. A
+//! thread reads the file while the window keeps drawing and
 //! names the import as the job it is busy with; a cancelled request kills the worker.
 //! The import itself then runs on the window's thread from what that thread read,
 //! while the job holds a DWG's conversion.
