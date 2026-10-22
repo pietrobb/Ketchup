@@ -2813,7 +2813,8 @@ fn prepare_exact_brep_graph_sources(
     Ok(PreparedExactBRepGraphSources { files })
 }
 
-fn exact_brep_graph_sources_from_blobs<'a>(
+/// The imported sources `graph` names, in its order, from blobs keyed by SHA-256 hex.
+pub fn exact_brep_graph_sources_from_blobs<'a>(
     graph: &ExactBRepGraph,
     blobs: &'a BTreeMap<String, Vec<u8>>,
 ) -> Result<Vec<&'a [u8]>, WorkerError> {

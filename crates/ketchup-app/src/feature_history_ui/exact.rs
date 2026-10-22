@@ -5,8 +5,8 @@
 
 use super::*;
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
-use ketchup_scheduler::WorkerError;
 use ketchup_scheduler::background::{BackgroundTask, TaskEvent, TaskStop};
+use ketchup_scheduler::{WorkerError, exact_brep_graph_sources_from_blobs};
 use std::fmt;
 use std::sync::mpsc::TryRecvError;
 
@@ -69,6 +69,22 @@ impl KetchupApp {
                 return false;
             }
         };
+        // An imported body is rebuilt from the source the document keeps; only the
+        // sources these graphs name go to the worker thread.
+        let sources = match graphs
+            .iter()
+            .map(|graph| {
+                exact_brep_graph_sources_from_blobs(graph, self.file.container_data.blobs())
+                    .map(|sources| sources.into_iter().map(<[u8]>::to_vec).collect::<Vec<_>>())
+            })
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(sources) => sources,
+            Err(error) => {
+                self.feature_history_error(error);
+                return false;
+            }
+        };
         if let Some(task) = self.exact.task.take() {
             task.cancelled.store(true, Ordering::Release);
         }
@@ -83,12 +99,12 @@ impl KetchupApp {
                     ExactWorkerSupervisor::spawn_with_cancellation(executable, cancelled)?;
                 graphs
                     .iter()
-                    .map(|graph| {
+                    .zip(&sources)
+                    .map(|(graph, sources)| {
+                        let sources = sources.iter().map(Vec::as_slice).collect::<Vec<_>>();
                         worker
                             .evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
-                                graph,
-                                &[],
-                                cancelled,
+                                graph, &sources, cancelled,
                             )
                             .map(|package| {
                                 (
@@ -198,6 +214,74 @@ impl KetchupApp {
             FeatureHistoryExactPurpose::Confirm => {
                 self.confirm_feature_history_preview_with(Some(&bodies));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::exact_worker_executable;
+    use ketchup_model::exact_product::terminal_body_exact_graphs;
+
+    /// Review 10-21: the feature history evaluates an imported body from the source
+    /// the document keeps, not from none.
+    #[test]
+    fn an_imported_body_is_evaluated_from_its_source() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/self-authored-box.step");
+        let source = std::fs::read(&path).unwrap();
+        let mut app = KetchupApp::new();
+        app.connect_exact_worker(exact_worker_executable()).unwrap();
+        let snapshot = app.document.current();
+        let source_plan = ImportSourcePlan::seal(ImportFormat::Step, path, source, (), &snapshot);
+        let pending = PendingStepImport {
+            plan: app.prepare_step_import_preview_plan(source_plan).unwrap(),
+            invalidated: false,
+        };
+        app.import_step_from(&pending).unwrap();
+        let snapshot = app.document.current();
+        let definition_id = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.definition_id())
+            .find(|definition_id| {
+                snapshot
+                    .definition(*definition_id)
+                    .is_some_and(|definition| {
+                        definition.feature_ids().iter().any(|feature_id| {
+                            snapshot.feature(*feature_id).is_some_and(|feature| {
+                                matches!(feature.kind(), FeatureKind::ImportedExactBody(_))
+                            })
+                        })
+                    })
+            })
+            .expect("the STEP import made an imported body");
+        let graphs = terminal_body_exact_graphs(&snapshot, definition_id).unwrap();
+        let graphs = graphs.into_values().collect::<Vec<_>>();
+        assert_eq!(graphs.len(), 1);
+        let operations = graphs[0]
+            .nodes
+            .iter()
+            .map(|node| {
+                format!("{:?}", node.operation)
+                    .chars()
+                    .take(40)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            graphs[0].nodes.iter().any(|node| matches!(
+                node.operation,
+                ketchup_model::exact_brep_graph::ExactBRepOperation::ImportedExact { .. }
+            )),
+            "no imported node in {operations:?}"
+        );
+
+        assert!(app.start_feature_history_exact(graphs, FeatureHistoryExactPurpose::Confirm));
+        let task = app.feature_history.exact_task.take().unwrap().task;
+        match task.wait(EXACT_BODY_DEADLINE).unwrap() {
+            Ok(bodies) => assert_eq!(bodies.len(), 1),
+            Err(error) => panic!("{error}"),
         }
     }
 }
