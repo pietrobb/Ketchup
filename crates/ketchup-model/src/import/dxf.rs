@@ -15,7 +15,7 @@ use super::{
 };
 
 pub const DXF_PARSER_ID: &str = "ketchup-dxf";
-pub const DXF_PARSER_VERSION: &str = "28";
+pub const DXF_PARSER_VERSION: &str = "29";
 const MAX_DXF_LINE_BYTES: usize = 512;
 /// The most group-code pairs a drawing import reads; a DWG conversion with more is
 /// refused in the worker, before the window reads its DXF.
@@ -253,7 +253,7 @@ impl fmt::Display for DxfImportError {
             Self::DegenerateGeometry => "DXF contains degenerate zero-length geometry",
             Self::InvalidBulge => "DXF contains an invalid or full-circle polyline bulge",
             Self::InvalidBlock => {
-                "DXF contains an invalid, duplicate, cyclic, empty, or undefined block"
+                "DXF contains an invalid, duplicate, cyclic, or undefined block"
             }
             Self::UnsupportedInsertTransform => {
                 "DXF INSERT uses unsupported zero, non-uniform curved, or Z scaling"
@@ -1437,7 +1437,11 @@ fn parse_ellipse(
     }
     let start_parameter = parse_optional_number(record, 41)?.unwrap_or(0.0);
     let end_parameter = parse_optional_number(record, 42)?.unwrap_or(std::f64::consts::TAU);
-    let sweep = end_parameter - start_parameter;
+    // An end below the start runs on through parameter 0, as DXF defines it.
+    let mut sweep = end_parameter - start_parameter;
+    if sweep < 0.0 {
+        sweep += std::f64::consts::TAU;
+    }
     if start_parameter < 0.0 || end_parameter > std::f64::consts::TAU || sweep <= f64::EPSILON {
         return Err(DxfImportError::AmbiguousGeometry);
     }
@@ -3197,12 +3201,9 @@ fn parse_insert(
             .map(|(name, count)| (name.as_str(), *count)),
     );
     if block.is_empty() {
-        // A block holding only xrefs places nothing, its xrefs being counted.
-        return if block.xrefs.is_empty() {
-            Err(DxfImportError::InvalidBlock)
-        } else {
-            Ok((Vec::new(), Vec::new()))
-        };
+        // An empty block, or one holding only counted xrefs, places nothing;
+        // it does not refuse the rest of the drawing.
+        return Ok((Vec::new(), Vec::new()));
     }
     let scale_x = parse_optional_number(record, 41)?.unwrap_or(1.0);
     let scale_y = parse_optional_number(record, 42)?.unwrap_or(1.0);

@@ -185,7 +185,7 @@ fn circular_ellipses_become_exact_full_and_partial_arc_profiles() {
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["full".to_owned(), "partial".to_owned()]);
     assert_eq!(parsed.profiles().len(), 2);
     let full = &parsed.profiles()[0];
@@ -225,6 +225,44 @@ fn circular_ellipses_become_exact_full_and_partial_arc_profiles() {
         diagnostic.code() == "dxf.entity-group-ignored"
             && diagnostic.subject() == Some("ELLIPSE:62")
     }));
+}
+
+/// Review 2026-10-21 P3 (manufacturing): an INSERT of an empty block, or an
+/// ELLIPSE whose end parameter lies below its start (it runs on through 0, as
+/// DXF defines it), refused the whole geometry import.
+#[test]
+fn an_empty_insert_and_an_ellipse_through_parameter_zero_do_not_refuse_the_drawing() {
+    let source = dxf_with_blocks(
+        4,
+        "0\nBLOCK\n2\nempty\n70\n0\n10\n0\n20\n0\n0\nENDBLK\n",
+        concat!(
+            "0\nINSERT\n8\n0\n2\nempty\n10\n0\n20\n0\n",
+            "0\nELLIPSE\n8\narc\n10\n0\n20\n0\n11\n10\n21\n0\n40\n1\n",
+            "41\n4.71238898038469\n42\n0.7853981633974483\n"
+        ),
+    );
+    let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
+
+    let [profile] = parsed.profiles() else {
+        panic!("the wrapped ELLIPSE must be the one profile")
+    };
+    let [
+        ProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        },
+    ] = profile.segments()
+    else {
+        panic!("the wrapped ELLIPSE must be one counter-clockwise arc")
+    };
+    let close = |actual: [f64; 2], expected: [f64; 2]| {
+        (actual[0] - expected[0]).abs() < 1e-9 && (actual[1] - expected[1]).abs() < 1e-9
+    };
+    assert!(close(*start_mm, [0.0, -10.0]), "{start_mm:?}");
+    let diagonal = 10.0 * std::f64::consts::FRAC_1_SQRT_2;
+    assert!(close(*end_mm, [diagonal, diagonal]), "{end_mm:?}");
 }
 
 #[test]
@@ -274,10 +312,6 @@ fn malformed_non_planar_degenerate_and_out_of_envelope_circular_ellipses_fail_cl
             DxfImportError::NonPlanarGeometry,
         ),
         (
-            "0\nELLIPSE\n10\n0\n20\n0\n11\n1\n21\n0\n40\n1\n41\n2\n42\n1\n",
-            DxfImportError::AmbiguousGeometry,
-        ),
-        (
             "0\nELLIPSE\n10\n999999\n20\n0\n11\n2\n21\n0\n40\n1\n",
             DxfImportError::CoordinateOutOfRange,
         ),
@@ -309,7 +343,7 @@ fn linear_splines_become_exact_open_and_closed_line_profiles_without_approximati
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(
         parsed.layers(),
         &["closed-spline".to_owned(), "open-spline".to_owned()]
@@ -443,7 +477,7 @@ fn mpolygon_boundaries_become_exact_closed_profiles_with_explicit_semantic_losse
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["mpolygon".to_owned()]);
     let [polyline, edge] = parsed.profiles() else {
         panic!("two MPOLYGON boundaries must become two exact profiles")
@@ -552,7 +586,7 @@ fn planar_mesh_exterior_becomes_one_exact_closed_profile_with_explicit_topology_
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["mesh".to_owned()]);
     let [profile] = parsed.profiles() else {
         panic!("two coplanar MESH faces must produce one exterior profile")
@@ -695,7 +729,7 @@ fn legacy_polygon_mesh_exteriors_become_exact_closed_profiles_with_explicit_surf
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(
         parsed.layers(),
         &["closed-grid".to_owned(), "open-grid".to_owned()]
@@ -923,7 +957,7 @@ fn legacy_polyface_mesh_exterior_becomes_one_exact_closed_profile_with_explicit_
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["polyface".to_owned()]);
     let [profile] = parsed.profiles() else {
         panic!("two coplanar polyface faces must produce one exterior profile")
@@ -1087,7 +1121,7 @@ fn single_polyline_boundary_hatches_become_exact_closed_profiles_without_fill_ap
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(
         parsed.layers(),
         &[
@@ -1196,7 +1230,7 @@ fn line_arc_edge_path_hatches_become_exact_closed_profiles_without_curve_approxi
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(
         parsed.layers(),
         &["edge-loop".to_owned(), "full-circle".to_owned()]
@@ -1261,7 +1295,7 @@ fn circular_elliptic_edge_path_hatches_preserve_rotated_direction_and_full_circl
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(
         parsed.layers(),
         &["ccw".to_owned(), "cw".to_owned(), "full".to_owned()]
@@ -1327,7 +1361,7 @@ fn linear_spline_edge_path_hatches_become_exact_lines_without_curve_approximatio
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["linear-spline".to_owned()]);
     let [profile] = parsed.profiles() else {
         panic!("linear spline-edge HATCH must produce one exact profile")
@@ -1703,7 +1737,7 @@ fn planar_3d_polylines_become_scaled_open_and_closed_line_profiles() {
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(
         parsed.layers(),
         &["closed-3d".to_owned(), "open-3d".to_owned()]
@@ -1908,7 +1942,7 @@ fn straight_leader_becomes_scaled_open_profile_with_explicit_semantic_losses() {
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["leaders".to_owned()]);
     let [profile] = parsed.profiles() else {
         panic!("straight LEADER must become one profile")
@@ -2138,7 +2172,7 @@ fn nested_dimension_graphics_blocks_preserve_exact_profiles_clone_offsets_and_la
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(
         parsed.layers(),
         &["detail".to_owned(), "dimensions".to_owned()]
@@ -2407,7 +2441,7 @@ fn attributed_top_level_and_nested_inserts_keep_exact_geometry_and_report_losses
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["instances".to_owned()]);
     let [profile] = parsed.profiles() else {
         panic!("attributed nested INSERT must retain one exact profile")
@@ -2572,7 +2606,7 @@ fn rotated_non_uniform_line_only_inserts_and_arrays_remain_exact() {
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["instances".to_owned()]);
     assert_eq!(parsed.profiles().len(), 2);
     let boundaries = parsed
@@ -2619,7 +2653,7 @@ fn reflected_non_uniform_line_only_inserts_and_arrays_remain_exact() {
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["instances".to_owned()]);
     let boundaries = parsed
         .profiles()
@@ -2747,7 +2781,7 @@ fn minsert_arrays_expand_row_major_with_rotated_unscaled_spacing() {
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["instances".to_owned()]);
     assert_eq!(parsed.profiles().len(), 6);
     let endpoints = parsed
@@ -2796,7 +2830,7 @@ fn forward_referenced_nested_inserts_compose_exact_transforms_arrays_and_layer_i
     );
     let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
 
-    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "28");
+    assert_eq!(ketchup_model::import::DXF_PARSER_VERSION, "29");
     assert_eq!(parsed.layers(), &["instances".to_owned()]);
     assert_eq!(parsed.profiles().len(), 2);
     let endpoints = parsed
@@ -2897,11 +2931,6 @@ fn invalid_or_unsupported_block_inserts_fail_closed() {
         (
             "",
             "0\nINSERT\n2\nmissing\n10\n0\n20\n0\n",
-            DxfImportError::InvalidBlock,
-        ),
-        (
-            "0\nBLOCK\n2\nempty\n70\n0\n10\n0\n20\n0\n0\nENDBLK\n",
-            "0\nINSERT\n2\nempty\n10\n0\n20\n0\n",
             DxfImportError::InvalidBlock,
         ),
         (
