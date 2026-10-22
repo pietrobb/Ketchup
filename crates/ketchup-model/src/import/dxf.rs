@@ -15,7 +15,7 @@ use super::{
 };
 
 pub const DXF_PARSER_ID: &str = "ketchup-dxf";
-pub const DXF_PARSER_VERSION: &str = "27";
+pub const DXF_PARSER_VERSION: &str = "28";
 const MAX_DXF_LINE_BYTES: usize = 512;
 const MAX_DXF_PAIRS: usize = 100_000;
 const MAX_DXF_ENTITIES: usize = 10_000;
@@ -312,6 +312,10 @@ struct DxfPair<'a> {
 struct DiagnosticCounts {
     entries: BTreeMap<(ImportDiagnosticSeverity, String, Option<String>), u32>,
     reading: DxfReading,
+    /// The layers, upper case, that the drawing's author turned off or froze;
+    /// a profile import leaves their entities out (review 2026-10-18 MF-13).
+    /// An underlay draws them, as it draws every layer.
+    hidden_layers: BTreeSet<String>,
 }
 
 impl DiagnosticCounts {
@@ -319,6 +323,7 @@ impl DiagnosticCounts {
         Self {
             entries: BTreeMap::new(),
             reading,
+            hidden_layers: BTreeSet::new(),
         }
     }
 
@@ -525,6 +530,8 @@ fn read_dxf(
     let (sections, mut diagnostics) = parse_sections(&pairs, reading)?;
     let header = sections.get("HEADER").map(Vec::as_slice).unwrap_or(&[]);
     let (units, insbase_mm) = parse_header(header, options, &mut diagnostics)?;
+    diagnostics.hidden_layers =
+        hidden_layers(sections.get("TABLES").map(Vec::as_slice).unwrap_or(&[]));
     let mut entity_count = 0;
     let blocks = parse_blocks(
         sections.get("BLOCKS").map(Vec::as_slice).unwrap_or(&[]),
@@ -944,7 +951,7 @@ fn parse_entities(
         // instead of refusing the whole drawing.
         let read = (|| -> Result<(), DxfImportError> {
             if !matches!(kind.as_str(), "ATTRIB" | "SEQEND")
-                && let Some((severity, code)) = left_out(record)?
+                && let Some((severity, code)) = left_out(record, &diagnostics.hidden_layers)?
             {
                 skip_sub_entities(
                     &kind,
@@ -1118,18 +1125,60 @@ fn parse_entities(
 
 /// Why an entity is no part of the model, if it is not: it belongs to a
 /// layout (paper space, group 67 = 1), such as a frame or a title block, or
-/// its author hid it (group 60 = 1). Either is left out and counted, never
-/// made a profile (review 2026-10-17 F-2).
+/// its author hid it (group 60 = 1, review 2026-10-17 F-2) or the layer it is
+/// on (turned off or frozen, review 2026-10-18 MF-13). Each is left out and
+/// counted, never made a profile.
 fn left_out(
     record: &[DxfPair<'_>],
+    hidden_layers: &BTreeSet<String>,
 ) -> Result<Option<(ImportDiagnosticSeverity, &'static str)>, DxfImportError> {
     Ok(if parse_optional_i64(record, 67)? == Some(1) {
         Some((ImportDiagnosticSeverity::Info, "dxf.entity-paper-space"))
     } else if parse_optional_i64(record, 60)? == Some(1) {
         Some((ImportDiagnosticSeverity::Warning, "dxf.entity-invisible"))
+    } else if parse_optional_text(record, 8)?
+        .is_some_and(|layer| hidden_layers.contains(&layer.to_ascii_uppercase()))
+    {
+        Some((ImportDiagnosticSeverity::Warning, "dxf.entity-layer-hidden"))
     } else {
         None
     })
+}
+
+/// The layers, upper case, of the TABLES section `tables` that are turned off
+/// (a negative color, group 62) or frozen (group 70 bit 1); the author sees
+/// none of their entities (review 2026-10-18 MF-13).
+fn hidden_layers(tables: &[DxfPair<'_>]) -> BTreeSet<String> {
+    let mut hidden = BTreeSet::new();
+    let mut table = String::new();
+    let mut index = 0;
+    while index < tables.len() {
+        let kind = tables[index].value;
+        let start = index + 1;
+        index = start;
+        while index < tables.len() && tables[index].code != 0 {
+            index += 1;
+        }
+        let record = &tables[start..index];
+        let group = |code| {
+            record
+                .iter()
+                .find(|pair| pair.code == code)
+                .map(|pair| pair.value.trim())
+        };
+        let integer = |code| group(code).and_then(|value| value.parse::<i64>().ok());
+        if kind.eq_ignore_ascii_case("TABLE") {
+            table = group(2).unwrap_or_default().to_ascii_uppercase();
+        } else if table == "LAYER"
+            && kind.eq_ignore_ascii_case("LAYER")
+            && (integer(62).is_some_and(|color| color < 0)
+                || integer(70).is_some_and(|flags| flags & 1 != 0))
+            && let Some(name) = group(2)
+        {
+            hidden.insert(name.to_ascii_uppercase());
+        }
+    }
+    hidden
 }
 
 /// Steps over what follows an entity left out up to its SEQEND: the
@@ -2926,10 +2975,20 @@ fn parse_dimension(
     if !key.starts_with("*D") {
         return Err(DxfImportError::InvalidBlock);
     }
-    let block = blocks
-        .get(&key)
-        .filter(|block| !block.is_empty() && block.base_mm == [0.0, 0.0])
-        .ok_or(DxfImportError::InvalidBlock)?;
+    // A dimension whose drawn block is missing or empty is left out and
+    // counted; it no longer refuses the whole drawing (review 2026-10-18 MF-13).
+    let Some(block) = blocks.get(&key).filter(|block| !block.is_empty()) else {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Warning,
+            "dxf.dimension-block-missing",
+            Some(name.to_owned()),
+            1,
+        )?;
+        return Ok((Vec::new(), Vec::new()));
+    };
+    if block.base_mm != [0.0, 0.0] {
+        return Err(DxfImportError::InvalidBlock);
+    }
     let clone_x = parse_optional_number(record, 12)?;
     let clone_y = parse_optional_number(record, 22)?;
     let clone_offset_mm = match (clone_x, clone_y) {
