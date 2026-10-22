@@ -116,6 +116,47 @@ fn an_assembly_drawing_lists_a_mirrored_copy_as_a_position_of_its_own() {
     let svg = std::str::from_utf8(svg.svg()).unwrap();
     assert!(!svg.contains("QTY 2"), "{svg}");
 
+    // Review 2026-10-18 MF-11: a sheet saved before MF-6, or made before the
+    // copy was mirrored, has both hands at position 1. It failed with a bare
+    // InvalidAnnotation; it is drawn with the hands numbered again.
+    let stale = sheet
+        .with_bom_balloons(
+            sheet
+                .bom_balloons()
+                .iter()
+                .map(|balloon| {
+                    ketchup_model::drawing::DrawingBomBalloon::new(
+                        balloon.id(),
+                        ketchup_model::drawing::OrthographicViewKind::Front,
+                        balloon.instance_path().clone(),
+                        1,
+                        balloon.offset_page_mm(),
+                    )
+                    .unwrap()
+                })
+                .collect(),
+        )
+        .unwrap();
+    let renumbered = project_orthographic_drawing(&completed, &exact, &stale).unwrap();
+    assert_eq!(
+        renumbered
+            .layout
+            .bom_rows
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        ["1 | Side | QTY 1", "2 | Side (mirrored) | QTY 1"]
+    );
+    assert_eq!(
+        renumbered
+            .layout
+            .bom_balloons
+            .iter()
+            .map(|balloon| (balloon.instance_path.clone(), balloon.label.as_str()))
+            .collect::<Vec<_>>(),
+        [(paths[0].clone(), "1"), (paths[1].clone(), "2")]
+    );
+
     // Review 2026-10-21 MF-21: the mirrored copy drawn alone is still the
     // opposite hand; only a part in its own hand is drawn as its definition.
     for (path, expected) in [

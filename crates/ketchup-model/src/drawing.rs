@@ -4181,6 +4181,39 @@ fn layout_feature_control_frames(
         .collect()
 }
 
+/// The position of each item of the sheet's balloons: the stored ones when they
+/// give every item one position of its own, numbered from 1. Positions stored
+/// before a mirrored copy was a part of its own (review 2026-10-17 MF-6), or
+/// before a copy was mirrored, give its two hands one position; the items are
+/// then numbered again in the order of their stored positions (review
+/// 2026-10-18 MF-11).
+fn bom_item_positions<Item: Copy + Ord>(
+    stored: impl Iterator<Item = (Item, u32)>,
+) -> BTreeMap<Item, u32> {
+    let mut by_item = BTreeMap::<Item, u32>::new();
+    let mut by_position = BTreeMap::<u32, Item>::new();
+    let mut order = Vec::new();
+    let mut consistent = true;
+    for (item, position) in stored {
+        match by_item.entry(item) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(position);
+                order.push(item);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                consistent &= *entry.get() == position;
+                *entry.get_mut() = (*entry.get()).min(position);
+            }
+        }
+        consistent &= *by_position.entry(position).or_insert(item) == item;
+    }
+    if consistent && by_position.keys().copied().eq(1..=by_position.len() as u32) {
+        return by_item;
+    }
+    order.sort_by_key(|item| by_item[item]);
+    order.into_iter().zip(1..).collect()
+}
+
 fn layout_bom_annotations(
     snapshot: &Snapshot,
     sheet: &DrawingSheet,
@@ -4204,38 +4237,33 @@ fn layout_bom_annotations(
 
     // A mirrored copy is the opposite hand of its definition, a part of its
     // own as in the fabrication bill of materials (review 2026-10-17 MF-6).
-    let mut item_positions = BTreeMap::<(DefinitionId, bool), u32>::new();
+    let items = sheet
+        .bom_balloons()
+        .iter()
+        .map(|balloon| {
+            let resolved = snapshot
+                .resolve_instance_path(balloon.instance_path())
+                .map_err(|error| unresolved_instance(balloon.instance_path(), error))?;
+            Ok((resolved.definition_id, resolved.mirrored()))
+        })
+        .collect::<Result<Vec<_>, DrawingError>>()?;
+    let item_positions = bom_item_positions(
+        items
+            .iter()
+            .zip(sheet.bom_balloons())
+            .map(|(item, balloon)| (*item, balloon.position())),
+    );
     let mut positions = BTreeMap::<u32, ((DefinitionId, bool), String, u32)>::new();
     let mut balloons = Vec::with_capacity(sheet.bom_balloons().len());
-    for balloon in sheet.bom_balloons() {
-        let resolved = snapshot
-            .resolve_instance_path(balloon.instance_path())
-            .map_err(|error| unresolved_instance(balloon.instance_path(), error))?;
-        let item = (resolved.definition_id, resolved.mirrored());
-        if item_positions
-            .insert(item, balloon.position())
-            .is_some_and(|position| position != balloon.position())
-        {
-            return Err(DrawingError::InvalidAnnotation);
-        }
+    for (balloon, item) in sheet.bom_balloons().iter().zip(items) {
+        let position = item_positions[&item];
         let definition = snapshot
-            .definition(resolved.definition_id)
+            .definition(item.0)
             .ok_or(DrawingError::AnnotationSourceLost)?;
-        match positions.entry(balloon.position()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert((item, definition.name().to_owned(), 1));
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                if entry.get().0 != item {
-                    return Err(DrawingError::InvalidAnnotation);
-                }
-                entry.get_mut().2 = entry
-                    .get()
-                    .2
-                    .checked_add(1)
-                    .ok_or(DrawingError::ResourceLimit)?;
-            }
-        }
+        let entry = positions
+            .entry(position)
+            .or_insert_with(|| (item, definition.name().to_owned(), 0));
+        entry.2 = entry.2.checked_add(1).ok_or(DrawingError::ResourceLimit)?;
 
         let view_index = views
             .iter()
@@ -4314,16 +4342,13 @@ fn layout_bom_annotations(
         balloons.push(DrawingBomBalloonLayout {
             stable_balloon_id: format!("sheet-{}/balloon-{}", sheet.id().0, balloon.id().0),
             instance_path: balloon.instance_path().clone(),
-            position: balloon.position(),
-            label: balloon.position().to_string(),
+            position,
+            label: position.to_string(),
             leader_line_mm,
             circle_center_mm,
             circle_radius_mm,
             text_position_mm,
         });
-    }
-    if positions.keys().copied().ne(1..=positions.len() as u32) {
-        return Err(DrawingError::InvalidAnnotation);
     }
 
     // A label longer than an R12 string continues on the lines below it (one
