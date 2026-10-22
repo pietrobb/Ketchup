@@ -1285,6 +1285,25 @@ impl KetchupApp {
             if queued.cancelled.load(Ordering::Acquire) {
                 continue;
             }
+            if !matches!(
+                queued.request,
+                Request::Status {}
+                    | Request::Summary {}
+                    | Request::ListValidators {}
+                    | Request::Operations { .. }
+                    | Request::EditContext { .. }
+                    | Request::Query { .. }
+                    | Request::Detail { .. }
+                    | Request::Mass { .. }
+                    | Request::WorksetStatus { .. }
+                    | Request::BatchJobStatus { .. }
+                    | Request::Program { .. }
+                    | Request::ProgramContext { .. }
+                    | Request::ProgramPiece { .. }
+                    | Request::ProgramReport { .. }
+            ) {
+                bridge.supersede_answered_check();
+            }
             if bridge.session != queued.session
                 && (bridge.image.is_pending()
                     || bridge.apply_and_verify_job.is_some()

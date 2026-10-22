@@ -111,7 +111,29 @@ fn unfinished(reason: &str) -> Value {
     json!({"state": "incomplete", "not_evaluated": [{"reason": reason}]})
 }
 
+/// How a client gets the verdict of a check its apply answered before.
+const EXACT_CHECK_RUNNING_NEXT: &str = "program action=report with this stamp answers busy \
+    while the check runs, then pages its exact_collisions; the next request that edits or \
+    starts a job ends the check, and the report then names exact_check_superseded.";
+
 impl LiveBridge {
+    /// Ends a check whose apply already answered, so the request that needs the
+    /// window gets it instead of busy.
+    pub(super) fn supersede_answered_check(&mut self) {
+        match self.program_check_job.take() {
+            Some(ProgramCheckJob::Checking(job)) if job.reply.is_none() => {
+                job.worker_cancelled.store(true, Ordering::Release);
+                self.program_report = Some((
+                    job.applied.stamp,
+                    job.applied.report,
+                    "apply_report",
+                    Some(unfinished("exact_check_superseded")),
+                ));
+            }
+            job => self.program_check_job = job,
+        }
+    }
+
     pub(super) fn program_source(
         app: &KetchupApp,
         request: Request,
@@ -483,7 +505,9 @@ impl LiveBridge {
             if job.started.elapsed() >= PROGRAM_EXACT_RUNNING_AFTER
                 && let Some(reply) = job.reply.take()
             {
-                let result = job.applied.result(Some(unfinished("exact_check_running")));
+                let mut running = unfinished("exact_check_running");
+                running["not_evaluated"][0]["next"] = json!(EXACT_CHECK_RUNNING_NEXT);
+                let result = job.applied.result(Some(running));
                 Self::reply(app, job.id, &reply, Ok(result));
             }
             self.program_check_job = Some(ProgramCheckJob::Checking(job));
