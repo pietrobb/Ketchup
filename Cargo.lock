@@ -2507,6 +2507,7 @@ dependencies = [
  "ketchup-model",
  "ketchup-test-env",
  "ketchup-tolerance",
+ "miniz_oxide",
  "resvg",
  "serde",
  "serde_json",

@@ -133,14 +133,21 @@ impl LayerLines {
 }
 
 /// The versions of the blob, read all: lines only (1); each layer's texts after its points
-/// (2); the styles first, and the style of each polyline and text (3, written).
-const MAGICS: [&[u8; 8]; 3] = [b"KUNDRLY1", b"KUNDRLY2", b"KUNDRLY3"];
+/// (2); the styles first, and the style of each polyline and text (3); the bytes of 3
+/// deflated after their length (4, written).
+const MAGICS: [&[u8; 8]; 4] = [b"KUNDRLY1", b"KUNDRLY2", b"KUNDRLY3", b"KUNDRLY4"];
+
+/// The deflate level of a written blob: the default, which keeps a 12 MB drawing to a
+/// third of its bytes in about a third of a second.
+const DEFLATE_LEVEL: u8 = 6;
 
 /// Why the bytes of a container blob are not underlay lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UnderlayLinesError {
     /// The bytes do not start as underlay lines do.
     NotUnderlayLines,
+    /// The deflated bytes cannot be inflated, or inflate past the length they declare.
+    Inflate(miniz_oxide::inflate::TINFLStatus),
     /// The bytes end before the counts they declare.
     Truncated,
     /// Bytes are left over after the last layer.
@@ -163,6 +170,12 @@ impl fmt::Display for UnderlayLinesError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotUnderlayLines => formatter.write_str("the blob is not underlay lines"),
+            Self::Inflate(status) => {
+                write!(
+                    formatter,
+                    "the compressed underlay lines are damaged ({status:?})"
+                )
+            }
             Self::Truncated => formatter.write_str("the underlay lines end too early"),
             Self::TrailingBytes => formatter.write_str("bytes follow the last underlay layer"),
             Self::InvalidPolyline => {
@@ -297,19 +310,29 @@ impl UnderlayLines {
         }
     }
 
-    /// The bytes of the container blob: little-endian counts, ends, coordinates and
-    /// style indices; the styles before the layers.
+    /// The bytes of the container blob: the length of the body, then the body deflated
+    /// (zlib) — little-endian counts, ends, coordinates and style indices, the styles
+    /// before the layers.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let capacity = MAGICS[2].len()
-            + 8
-            + self
-                .layers
-                .iter()
-                .map(|layer| 12 + layer.ends.len() * 8 + layer.points_mm.len() * 16)
-                .sum::<usize>();
+        let body = self.encode_body();
+        let deflated = miniz_oxide::deflate::compress_to_vec_zlib(&body, DEFLATE_LEVEL);
+        let mut bytes = Vec::with_capacity(MAGICS[3].len() + 8 + deflated.len());
+        bytes.extend_from_slice(MAGICS[3]);
+        let length = u64::try_from(body.len()).expect("a blob's length fits u64");
+        bytes.extend_from_slice(&length.to_le_bytes());
+        bytes.extend_from_slice(&deflated);
+        bytes
+    }
+
+    /// The bytes version 3 wrote after its magic.
+    fn encode_body(&self) -> Vec<u8> {
+        let capacity = 8 + self
+            .layers
+            .iter()
+            .map(|layer| 12 + layer.ends.len() * 8 + layer.points_mm.len() * 16)
+            .sum::<usize>();
         let mut bytes = Vec::with_capacity(capacity);
-        bytes.extend_from_slice(MAGICS[2]);
         push_count(&mut bytes, self.styles.len());
         for style in &self.styles {
             style.encode(&mut bytes);
@@ -344,6 +367,31 @@ impl UnderlayLines {
             .enumerate()
             .find_map(|(index, magic)| Some((index + 1, bytes.strip_prefix(magic.as_slice())?)))
             .ok_or(UnderlayLinesError::NotUnderlayLines)?;
+        if version < 4 {
+            return Self::decode_body(version, rest);
+        }
+        let (length, deflated) = rest
+            .split_first_chunk::<8>()
+            .ok_or(UnderlayLinesError::Truncated)?;
+        let length = usize::try_from(u64::from_le_bytes(*length))
+            .map_err(|_: std::num::TryFromIntError| UnderlayLinesError::Truncated)?;
+        // Inflated no further than the length declared, so a damaged or hostile blob
+        // allocates no more than it says it holds.
+        let body = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(deflated, length)
+            .map_err(|error| match error.status {
+                miniz_oxide::inflate::TINFLStatus::FailedCannotMakeProgress => {
+                    UnderlayLinesError::Truncated
+                }
+                status => UnderlayLinesError::Inflate(status),
+            })?;
+        if body.len() != length {
+            return Err(UnderlayLinesError::Truncated);
+        }
+        Self::decode_body(3, &body)
+    }
+
+    /// The bytes after the magic of `version`, uncompressed.
+    fn decode_body(version: usize, rest: &[u8]) -> Result<Self, UnderlayLinesError> {
         let mut reader = Reader(rest);
         let mut styles = Vec::new();
         if version >= 3 {

@@ -20,6 +20,7 @@ ed25519-dalek = "2.2.0"
 encoding_rs = "0.8.42"
 ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-tolerance = { path = "../ketchup-tolerance" }
+miniz_oxide = "0.8.9"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 sha2 = "0.10.9"
