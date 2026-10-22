@@ -3474,11 +3474,32 @@ fn m21_step_xde_to_iges_response(
             "IGES output lost a flat root, name, or color",
         ));
     }
-    let first = written.part(0).map_err(|error| geometry_failure(&error))?;
     Ok(WorkerReply::Exported(ExportReceipt {
-        result_fingerprint: step_import_result_fingerprint(&source.sha256, &first),
+        result_fingerprint: iges_output_fingerprint(&written, &reread, &source.sha256)?,
         sha256: None,
     }))
+}
+
+/// The fingerprint of a written IGES file: of every root's body as it reads back, in
+/// order, so a root other than the first that changes changes it too.
+fn iges_output_fingerprint(
+    written: &ketchup_exact::StepXdeDocument,
+    manifest: &ketchup_exact::StepXdeManifest,
+    source_sha256: &str,
+) -> Result<String, WorkerFailure> {
+    let signature = manifest
+        .parts
+        .iter()
+        .map(|part| {
+            let body = written
+                .part(part.index)
+                .map_err(|error| geometry_failure(&error))?;
+            Ok(step_import_result_fingerprint(source_sha256, &body))
+        })
+        .collect::<Result<Vec<_>, WorkerFailure>>()?;
+    Ok(ketchup_geometry::reference::fnv1a64_fingerprint(
+        &signature.join(":"),
+    ))
 }
 
 fn m21_step_xde_inspection_response(
@@ -3900,6 +3921,38 @@ mod tests {
             .manifest()
             .unwrap();
         assert_eq!((written.parts.len(), written.nodes.len()), (3, 3));
+    }
+
+    // Review 2026-10-21 P3: the receipt of an IGES conversion was the fingerprint of the
+    // first root alone, so it said nothing of the others. It now covers every root.
+    #[test]
+    fn an_iges_conversion_receipt_covers_every_root_it_wrote() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/independent-xde-assembly.step");
+        let source = SourceFile {
+            sha256: sha256_hex(&std::fs::read(&path).unwrap()),
+            path,
+        };
+        let output = tempfile::tempdir().unwrap();
+        let iges = output.path().join("flat.igs");
+        let backend = ExactBackend::new();
+        let reply =
+            m21_step_xde_to_iges_response(&backend, &mut SourceDocument::default(), &source, &iges)
+                .unwrap();
+        let WorkerReply::Exported(receipt) = reply else {
+            panic!("the conversion answered {reply:?}");
+        };
+        let written = backend.open_iges_xde(iges.to_str().unwrap()).unwrap();
+        let roots = (0..3)
+            .map(|index| {
+                step_import_result_fingerprint(&source.sha256, &written.part(index).unwrap())
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(receipt.result_fingerprint, roots[0]);
+        assert_eq!(
+            receipt.result_fingerprint,
+            ketchup_geometry::reference::fnv1a64_fingerprint(&roots.join(":"))
+        );
     }
 
     // Review 2026-10-18 EX-8: evaluating an imported part asked the worker to
