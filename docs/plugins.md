@@ -40,7 +40,9 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
     `-S`, `-u`;
   - `node`: `--no-deprecation`, `--no-warnings`;
   - `pwsh`, `powershell`: `-File`, `-NoLogo`, `-NonInteractive`,
-    `-NoProfile`, in any letter case;
+    `-NoProfile`, in any letter case; the script follows `-File` right away,
+    since Windows PowerShell runs a bare script and every word after it as one
+    command;
   - `ruby`, `perl`: `-w`;
   - any other executable: none, the script comes first.
 

@@ -1420,6 +1420,26 @@ fn an_interpreter_gets_only_listed_options_before_its_hashed_script() {
             vec![false, false, true, false],
             true,
         ),
+        // Review 2026-10-19 SEC-9: Windows PowerShell reads a bare first word
+        // as -Command and joins the words after it into that command.
+        (
+            Path::new("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+            words(&["x.ps1", ";", "Remove-Item", "C:/data"]),
+            vec![true, false, false, false],
+            false,
+        ),
+        (
+            pwsh,
+            words(&["-File", "-NoProfile", "x.ps1"]),
+            vec![false, false, true],
+            false,
+        ),
+        (
+            Path::new("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+            words(&["-NoLogo", "-FILE", "x.ps1", ";", "Remove-Item"]),
+            vec![false, false, true, false, false],
+            true,
+        ),
         (
             python,
             words(&["-B", "-u", "x.py", "-c", "pass"]),

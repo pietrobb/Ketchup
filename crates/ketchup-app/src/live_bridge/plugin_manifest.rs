@@ -323,16 +323,28 @@ pub(super) const SCRIPT_OPTIONS: [(&[&str], &[&str], bool); 4] = [
     (&["ruby", "perl"], &["-w"], true),
 ];
 
-/// Whether `option` may stand before the script of `executable`.
-fn script_option(executable: &Path, option: &str) -> bool {
+/// The option that must stand right before the script, by interpreter name.
+/// Windows PowerShell reads a bare first word as `-Command` and joins every
+/// word after it into that command, so `powershell hashed.ps1 ; Remove-Item …`
+/// ran the words after the hashed file (review 2026-10-19 SEC-9).
+const SCRIPT_FLAGS: [(&[&str], &str); 1] = [(&["pwsh", "powershell"], "-File")];
+
+/// The interpreter name of `executable`: `python3.12.exe` is `python`.
+fn interpreter(executable: &Path) -> String {
     let stem = executable
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    let family = stem.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    stem.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
+        .to_owned()
+}
+
+/// Whether `option` may stand before the script of `executable`.
+fn script_option(executable: &Path, option: &str) -> bool {
+    let family = interpreter(executable);
     SCRIPT_OPTIONS
         .iter()
-        .find(|(names, _, _)| names.contains(&family))
+        .find(|(names, _, _)| names.contains(&family.as_str()))
         .is_some_and(|(_, options, case)| {
             options.iter().any(|allowed| {
                 if *case {
@@ -349,7 +361,8 @@ fn script_option(executable: &Path, option: &str) -> bool {
 /// (`names_file`), the script the interpreter runs. A word after it reaches
 /// the script, not the interpreter. A list of refused options was never
 /// complete: `pwsh -C cmdlet hashed.txt` ran a cmdlet, and any hashed file
-/// anywhere on the line counted as the script (review 2026-10-18 SEC-8).
+/// anywhere on the line counted as the script (review 2026-10-18 SEC-8). An
+/// interpreter of [`SCRIPT_FLAGS`] gets its script right after that option.
 /// `refuse` gives the caller's refusal for the reason.
 pub(super) fn script_first(
     executable: &Path,
@@ -357,8 +370,24 @@ pub(super) fn script_first(
     names_file: &[bool],
     refuse: impl FnOnce(String) -> &'static str,
 ) -> Result<(), &'static str> {
-    for (argument, file) in arguments.iter().zip(names_file) {
+    let family = interpreter(executable);
+    let flag = SCRIPT_FLAGS
+        .iter()
+        .find(|(names, _)| names.contains(&family.as_str()))
+        .map(|(_, flag)| *flag);
+    for (index, (argument, file)) in arguments.iter().zip(names_file).enumerate() {
         if *file {
+            if let Some(flag) = flag {
+                let flagged = index
+                    .checked_sub(1)
+                    .is_some_and(|before| arguments[before].eq_ignore_ascii_case(flag));
+                if !flagged {
+                    return Err(refuse(format!(
+                        "{} runs a script only after {flag}; give {flag} right before {argument:?}",
+                        executable.display()
+                    )));
+                }
+            }
             return Ok(());
         }
         if !script_option(executable, argument) {
