@@ -15,7 +15,7 @@ use ketchup_program::CancelToken;
 /// What the job's thread read.
 enum JobRead {
     Dwg(DwgRead),
-    Underlay(UnderlayReadResult),
+    Underlay(Box<UnderlayReadResult>),
 }
 
 pub(super) struct DwgImportJob {
@@ -79,7 +79,7 @@ impl LiveBridge {
             .name("ketchup-dwg-import".into())
             .spawn(move || {
                 let read = if as_underlay {
-                    JobRead::Underlay(read_underlay_file(&path, unit, &worker_cancel))
+                    JobRead::Underlay(Box::new(read_underlay_file(&path, unit, &worker_cancel)))
                 } else {
                     JobRead::Dwg(read_dwg_file(&path, &worker_cancel))
                 };
@@ -140,12 +140,13 @@ impl LiveBridge {
                 &job.cancelled,
                 Some(source),
             ),
-            JobRead::Underlay(Ok(read)) => {
-                Self::add_underlay(app, &job.request, ui_busy(context), &job.cancelled, read)
-            }
-            JobRead::Dwg(Err(error)) | JobRead::Underlay(Err(error)) => {
-                Err(interchange::import_failed(path, error))
-            }
+            JobRead::Dwg(Err(error)) => Err(interchange::import_failed(path, error)),
+            JobRead::Underlay(read) => match *read {
+                Ok(read) => {
+                    Self::add_underlay(app, &job.request, ui_busy(context), &job.cancelled, read)
+                }
+                Err(error) => Err(interchange::import_failed(path, error)),
+            },
         };
         Self::reply(app, job.id, &job.reply, result);
         context.request_repaint();
