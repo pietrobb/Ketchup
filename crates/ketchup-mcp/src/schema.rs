@@ -262,7 +262,7 @@ pub fn tools() -> Value {
                 "plugin": {"type": "string", "description": "Absolute path of a plugin folder or of its plugin.json."},
                 "inputs": {"type": "object", "description": "With plugin: values of the inputs its plugin.json declares, e.g. {\"height_mm\": 35}."},
                 "executable": {"type": "string", "description": "Without plugin: absolute path of the plugin executable, e.g. a Python interpreter."},
-                "arguments": {"type": "array", "items": {"type": "string"}, "description": "Arguments: at least the absolute path of the plugin script, then plain words (letters, digits and -_.,+/\\). Options that run code given as text, from stdin or by name (e.g. -c, -e, -m, -r, -, --eval, --require, --import), @file arguments and URLs are refused."},
+                "arguments": {"type": "array", "items": {"type": "string"}, "description": "Arguments: the absolute path of the plugin script first (only harmless interpreter options such as python -B or -u may precede it), then plain words (letters, digits and -_.,+/\\) for the script. Other options before the script, @file arguments, URLs and an executable starting with #! are refused."},
                 "principal_id": {"type": "integer", "minimum": 0, "description": "Must equal the principal the plugin declares."},
                 "capabilities": {"type": "array", "items": {"type": "string", "enum": ["query.agent-state.v1", "edit.cad-program.v1"]}, "description": "Capabilities granted to the plugin."},
                 "allowed_operations": {"type": "array", "items": {"type": "string"}, "description": "Typed operations its program may use, by name (inspect action=operations)."},

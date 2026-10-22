@@ -99,7 +99,10 @@ impl PluginConsent {
                 json!({"canonical_mutation": false}),
             ));
         }
+        let refused =
+            |reason: String| failure("invalid_path", reason, json!({"canonical_mutation": false}));
         let executable = started_executable(Path::new(executable), Path::is_file)?;
+        super::plugin_manifest::not_a_shebang(&executable).map_err(refused)?;
         let sha256 = held
             .hash(&executable)
             .map_err(|error| failed_because("plugin_failed", error))?;
@@ -107,25 +110,21 @@ impl PluginConsent {
         let mut files = vec![(executable, sha256)];
         let here =
             std::env::current_dir().map_err(|error| failed_because("invalid_path", error))?;
+        let mut names_file = Vec::new();
         for argument in arguments {
             let (given, file) = super::plugin_manifest::resolve_argument(
                 argument,
                 &here,
                 None,
                 Some(held),
-                |reason| failure("invalid_path", reason, json!({"canonical_mutation": false})),
+                refused,
             )?;
+            names_file.push(file.is_some());
             command.push(given);
             files.extend(file);
         }
-        // The first file is the executable; an argument names the script.
-        if files.len() < 2 {
-            return Err(failure(
-                "invalid_path",
-                super::plugin_manifest::NO_SCRIPT,
-                json!({"canonical_mutation": false}),
-            ));
-        }
+        super::plugin_manifest::script_first(&files[0].0, &command[1..], &names_file)
+            .map_err(refused)?;
         Ok(Self {
             folder: None,
             files,

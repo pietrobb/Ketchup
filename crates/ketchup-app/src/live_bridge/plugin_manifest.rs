@@ -263,12 +263,6 @@ pub(super) fn refused_shape(argument: &str) -> Option<&'static str> {
     if argument.starts_with('@') {
         return Some("reads further arguments from a file; give the arguments themselves");
     }
-    if runs_unhashed_code(argument) {
-        return Some(
-            "runs code given as text, read from standard input or found by name, which nobody \
-             hashed; name a script file instead (review 2026-10-17 SEC-7)",
-        );
-    }
     let (name, value) = if let Some(long) = argument.strip_prefix("--") {
         long.split_once('=')
             .map_or((long, None), |(name, value)| (name, Some(value)))
@@ -291,46 +285,89 @@ pub(super) fn refused_shape(argument: &str) -> Option<&'static str> {
     (!name_ok || value.is_some_and(|value| !plain_value(value))).then_some(JOINED)
 }
 
-/// Whether an interpreter option runs code that is no hashed file: `-` (standard
-/// input), a long option such as `--eval` or `--require`, or a short option
-/// such as `-c`, `-e`, `-m`, `-r` alone, with its value joined (`-mevil`) or
-/// at the end of a cluster of flags (`-Bm`). A short option's value with other
-/// than letters (`-Dkey=value`) is no cluster.
-fn runs_unhashed_code(argument: &str) -> bool {
-    if argument == "-" {
-        return true;
-    }
-    if let Some(long) = argument.strip_prefix("--") {
-        let name = long.split_once('=').map_or(long, |(name, _)| name);
-        return CODE_LONG_OPTIONS
-            .iter()
-            .any(|code| name.eq_ignore_ascii_case(code));
-    }
-    let Some(short) = argument.strip_prefix('-') else {
-        return false;
-    };
-    // In any letter case: PowerShell reads `-C` as `-Command`.
-    let code = |c: char| CODE_SHORT_OPTIONS.contains(c.to_ascii_lowercase());
-    short.starts_with(code)
-        || (short.chars().all(|c| c.is_ascii_alphabetic()) && short.chars().any(code))
+/// The options an interpreter may get before its script, by the name of the
+/// file that starts (`python3.12.exe` is `python`), and whether their letter
+/// case matters; any other executable gets none. None of them runs code nobody
+/// hashed; docs/plugins.md lists them all (review 2026-10-18 SEC-8).
+pub(super) const SCRIPT_OPTIONS: [(&[&str], &[&str], bool); 4] = [
+    (
+        &["python", "pythonw", "py"],
+        &["-B", "-E", "-I", "-O", "-OO", "-q", "-s", "-S", "-u"],
+        true,
+    ),
+    (&["node"], &["--no-deprecation", "--no-warnings"], true),
+    (
+        &["pwsh", "powershell"],
+        &["-File", "-NoLogo", "-NonInteractive", "-NoProfile"],
+        false,
+    ),
+    (&["ruby", "perl"], &["-w"], true),
+];
+
+/// Whether `option` may stand before the script of `executable`.
+fn script_option(executable: &Path, option: &str) -> bool {
+    let stem = executable
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let family = stem.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    SCRIPT_OPTIONS
+        .iter()
+        .find(|(names, _, _)| names.contains(&family))
+        .is_some_and(|(_, options, case)| {
+            options.iter().any(|allowed| {
+                if *case {
+                    *allowed == option
+                } else {
+                    allowed.eq_ignore_ascii_case(option)
+                }
+            })
+        })
 }
 
-/// The interpreter options [`runs_unhashed_code`] refuses; docs/plugins.md
-/// lists them all.
-pub(super) const CODE_LONG_OPTIONS: [&str; 11] = [
-    "eval",
-    "print",
-    "require",
-    "import",
-    "loader",
-    "experimental-loader",
-    "module",
-    "command",
-    "encodedcommand",
-    "interactive",
-    "include",
-];
-pub(super) const CODE_SHORT_OPTIONS: &str = "cempri";
+/// An interpreter's command line is `[option]* script [word]*`: the first
+/// argument that is no option of [`SCRIPT_OPTIONS`] must name a hashed file
+/// (`names_file`), the script the interpreter runs. A word after it reaches
+/// the script, not the interpreter. A list of refused options was never
+/// complete: `pwsh -C cmdlet hashed.txt` ran a cmdlet, and any hashed file
+/// anywhere on the line counted as the script (review 2026-10-18 SEC-8).
+pub(super) fn script_first(
+    executable: &Path,
+    arguments: &[String],
+    names_file: &[bool],
+) -> Result<(), String> {
+    for (argument, file) in arguments.iter().zip(names_file) {
+        if *file {
+            return Ok(());
+        }
+        if !script_option(executable, argument) {
+            return Err(format!(
+                "argument {argument:?} stands before the script and is no option {} may \
+                 take there; name the script first (docs/plugins.md lists the options)",
+                executable.display()
+            ));
+        }
+    }
+    Err(NO_SCRIPT.to_owned())
+}
+
+/// Refuses an executable that starts with `#!`: it starts the interpreter its
+/// first line names, which nobody hashed (review 2026-10-18 SEC-8).
+pub(super) fn not_a_shebang(executable: &Path) -> Result<(), String> {
+    use std::io::Read;
+    let mut start = Vec::with_capacity(2);
+    open_regular(executable)
+        .and_then(|file| file.take(2).read_to_end(&mut start))
+        .map_err(|error| format!("{}: {error}", executable.display()))?;
+    if start == b"#!" {
+        return Err(format!(
+            "{} starts with #! and so runs the interpreter its first line names, which is \
+             not hashed; give that interpreter as the executable and this file as its script",
+            executable.display()
+        ));
+    }
+    Ok(())
+}
 
 /// Whether the text starts with a URL scheme (`file:`, `data:`, `https:`): two
 /// or more letters, digits or `+.-` from a letter up to a colon. A drive
@@ -484,17 +521,19 @@ fn outside_files(
         path.strip_prefix(folder)
             .is_ok_and(|relative| files.iter().any(|(file, _)| *file == slashed(relative)))
     };
-    let mut names_script = in_folder(&executable);
+    not_a_shebang(&executable).map_err(invalid)?;
     let mut arguments = Vec::new();
+    let mut names_file = Vec::new();
     for argument in &manifest.arguments {
         let (given, file) =
             resolve_argument(argument, folder, Some(folder), held.as_deref_mut(), invalid)?;
-        names_script |= file.is_some() || in_folder(&lexical(&folder.join(&given)));
+        names_file.push(file.is_some() || in_folder(&lexical(&folder.join(&given))));
         arguments.push(given);
         outside.extend(file);
     }
-    if !names_script {
-        return Err(invalid(NO_SCRIPT.to_owned()));
+    // An executable in the folder is the plugin's hashed code itself.
+    if !in_folder(&executable) {
+        script_first(&executable, &arguments, &names_file).map_err(invalid)?;
     }
     Ok((executable, arguments, outside))
 }

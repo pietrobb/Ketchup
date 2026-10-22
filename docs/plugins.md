@@ -28,21 +28,30 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
 - `executable` is an absolute path (an interpreter) or a file inside the folder;
   the process runs in a copy of the folder (see Consent) with `arguments` and
   an empty environment. A relative argument naming a file outside the folder
-  is passed as its absolute path. The command line names a script (or the
-  executable is in the folder), so everything that runs is hashed. An
-  argument is a file or plain words (letters, digits and `-_.,+/\`, no part
-  that starts at a root or ends in `..`), or an option `-x`, `-xVALUE`,
-  `--name`, `--name=VALUE` or `name=VALUE` with a name of letters, digits,
-  `-` and `_` and a value of plain words, checked again after every `=`.
-  Refused are an argument starting with `@` (arguments read from a file), a
-  URL, network share, device or stream, and the options that run code given
-  as text, from standard input or found by name: `-`, the short options `-c`,
-  `-e`, `-m`, `-p`, `-r` and `-i` in any letter case, so also `-C`, which
-  PowerShell reads as `-Command` (alone, with a joined value or anywhere in a
-  cluster of letters such as `-Bm`) and the long options
-  `--eval`, `--print`, `--require`, `--import`, `--loader`,
-  `--experimental-loader`, `--module`, `--command`, `--encodedcommand`,
-  `--interactive` and `--include`, in any letter case.
+  is passed as its absolute path. An executable in the folder is the plugin's
+  code itself and takes any arguments below. An executable outside the folder
+  is an interpreter, and its command line is `[option]* script [word]*`: the
+  first argument that is no option listed for that interpreter must name a
+  file (in the folder or a hashed file outside it), the script it runs; the
+  words after it reach the script. So everything that runs is hashed. The
+  options allowed before the script, by the name of the file that starts
+  (`python3.12.exe` counts as `python`):
+  - `python`, `pythonw`, `py`: `-B`, `-E`, `-I`, `-O`, `-OO`, `-q`, `-s`,
+    `-S`, `-u`;
+  - `node`: `--no-deprecation`, `--no-warnings`;
+  - `pwsh`, `powershell`: `-File`, `-NoLogo`, `-NonInteractive`,
+    `-NoProfile`, in any letter case;
+  - `ruby`, `perl`: `-w`;
+  - any other executable: none, the script comes first.
+
+  An executable starting with `#!` is refused: it would start the interpreter
+  its first line names, which nobody hashed; give that interpreter as the
+  executable instead. An argument is a file or plain words (letters, digits
+  and `-_.,+/\`, no part that starts at a root or ends in `..`), or an option
+  `-x`, `-xVALUE`, `--name`, `--name=VALUE` or `name=VALUE` with a name of
+  letters, digits, `-` and `_` and a value of plain words, checked again
+  after every `=`. Refused are an argument starting with `@` (arguments read
+  from a file) and a URL, network share, device or stream.
 - Inputs are `number`, `integer`, `boolean` or `string`. The plugin reads them
   with `Client.inputs()` (`QUERY\tINPUTS`), never from its arguments. An
   undeclared, missing or mistyped input is refused before the user is asked,
@@ -63,8 +72,9 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
   the executable (on Windows the `.exe` file that starts), `arguments`,
   `principal_id` (the principal the plugin declares), `capabilities` and
   `allowed_operations`. The arguments follow the rules of `plugin.json` above:
-  at least one names a script file, every file they name is hashed for the
-  consent, and a word naming no file must be plain words. Give the script as
+  the script comes after the options listed for the interpreter, every file
+  they name is hashed for the consent, and a word naming no file must be
+  plain words. Give the script as
   an absolute path; a relative one is resolved against the window's working
   folder. The process runs in an empty private folder with an empty
   environment. `inputs` need a plugin folder and are refused here.

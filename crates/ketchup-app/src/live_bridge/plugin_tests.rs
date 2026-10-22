@@ -621,24 +621,20 @@ fn inputs_too_large_for_the_protocol_line_are_refused_by_name_before_the_prompt(
     assert_eq!(probe.high_risk_prompts().len(), 1);
 }
 
-/// Review 2026-10-17 P3: docs/plugins.md names every option a plugin's
-/// command line may not carry, as the window refuses them.
+/// docs/plugins.md names every interpreter and every option it may get before
+/// its script, as the window lets them pass (review 2026-10-18 SEC-8).
 #[test]
-fn plugins_doc_lists_every_refused_code_option() {
-    use crate::live_bridge::plugin_manifest::{CODE_LONG_OPTIONS, CODE_SHORT_OPTIONS};
+fn plugins_doc_lists_every_option_allowed_before_a_script() {
+    use crate::live_bridge::plugin_manifest::SCRIPT_OPTIONS;
     let doc = std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/plugins.md"),
     )
     .unwrap();
-    let options = CODE_SHORT_OPTIONS
-        .chars()
-        .map(|letter| format!("`-{letter}`"))
-        .chain(CODE_LONG_OPTIONS.iter().map(|name| format!("`--{name}`")));
-    for option in options.chain(["`-`".to_owned()]) {
-        assert!(
-            doc.contains(&option),
-            "docs/plugins.md does not list {option}"
-        );
+    for (names, options, _) in SCRIPT_OPTIONS {
+        for word in names.iter().chain(options) {
+            let word = format!("`{word}`");
+            assert!(doc.contains(&word), "docs/plugins.md does not list {word}");
+        }
     }
 }
 
@@ -658,9 +654,7 @@ fn plugins_doc_gives_the_argument_shapes_the_window_passes() {
         ("`--name`", "--verbose", true),
         ("`--name=VALUE`", "--level=2", true),
         ("`name=VALUE`", "mode=fast", true),
-        ("`-Bm`", "-BmX", false),
         ("`@`", "@args.txt", false),
-        ("in any letter case", "--EVAL=1", false),
         ("a root", "--out=/etc", false),
         ("`..`", "--out=x/..", false),
     ];
@@ -1036,7 +1030,7 @@ fn a_command_lines_relative_arguments_resolve_in_an_empty_private_directory() {
     let here = std::env::current_dir().unwrap();
     let script = example_script();
     let relative = pathdiff_relative(&script, &here);
-    let request = plugin_request(vec!["later.py".to_owned(), relative.display().to_string()]);
+    let request = plugin_request(vec![relative.display().to_string(), "later.py".to_owned()]);
     let launch = crate::live_bridge::plugin::launch(&request).unwrap();
     let directory = launch
         .command
@@ -1045,8 +1039,8 @@ fn a_command_lines_relative_arguments_resolve_in_an_empty_private_directory() {
         .expect("the process runs in its own directory");
     assert_ne!(directory, here);
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
-    assert_eq!(launch.command.arguments[0], "later.py");
-    let given = Path::new(&launch.command.arguments[1]);
+    assert_eq!(launch.command.arguments[1], "later.py");
+    let given = Path::new(&launch.command.arguments[0]);
     assert!(given.is_absolute());
     assert!(
         given
@@ -1362,4 +1356,98 @@ fn a_plugin_command_line_runs_only_hashed_code() {
     let launch = crate::live_bridge::plugin::launch(&request).unwrap();
     let directory = launch.command.working_directory.clone().unwrap();
     assert!(!directory.starts_with(std::env::temp_dir()));
+}
+
+/// Review 2026-10-18 SEC-8: the window refused a list of code options, which
+/// was never complete (`pwsh -C cmdlet hashed.txt` ran the cmdlet), took any
+/// hashed file anywhere on the line for the script, and did not hash the
+/// interpreter a `#!` executable starts. An interpreter now gets only the
+/// options listed for it, then its hashed script, then words for the script;
+/// an executable starting with `#!` is refused.
+#[test]
+fn an_interpreter_gets_only_listed_options_before_its_hashed_script() {
+    use crate::live_bridge::plugin_manifest::script_first;
+    let words = |words: &[&str]| words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+    let pwsh = Path::new("C:/Program Files/PowerShell/7/pwsh.exe");
+    let python = Path::new("/usr/bin/python3.12");
+    let other = Path::new("/usr/bin/deno");
+    for (executable, arguments, names_file, passes) in [
+        (
+            pwsh,
+            words(&["-C", "Get-Date", "x.txt"]),
+            vec![false, false, true],
+            false,
+        ),
+        (
+            pwsh,
+            words(&["-NoProfile", "-file", "x.ps1", "-C"]),
+            vec![false, false, true, false],
+            true,
+        ),
+        (
+            python,
+            words(&["-B", "-u", "x.py", "-c", "pass"]),
+            vec![false, false, true, false, false],
+            true,
+        ),
+        (python, words(&["-b", "x.py"]), vec![false, true], false),
+        (
+            python,
+            words(&["-W", "error", "x.py"]),
+            vec![false, false, true],
+            false,
+        ),
+        (python, words(&["evil", "x.py"]), vec![false, true], false),
+        (python, words(&["-B"]), vec![false], false),
+        (other, words(&["run", "x.ts"]), vec![false, true], false),
+        (
+            other,
+            words(&["x.ts", "--allow-all"]),
+            vec![true, false],
+            true,
+        ),
+    ] {
+        assert_eq!(
+            script_first(executable, &arguments, &names_file).is_ok(),
+            passes,
+            "{executable:?} {arguments:?}"
+        );
+    }
+
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let script = example_script().to_string_lossy().into_owned();
+    let load = |manifest: &Value| {
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        let inputs = json!({"height_mm": 35});
+        crate::live_bridge::plugin_manifest::load(&folder.to_string_lossy(), inputs.as_object())
+    };
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    // An option off the list before the script, which the old list let pass.
+    manifest["arguments"] = json!(["-W", "error", "plugin.py"]);
+    assert_eq!(load(&manifest).err(), Some("plugin_manifest_invalid"));
+    let request = plugin_request(vec!["-W".into(), "error".into(), script.clone()]);
+    assert_eq!(
+        crate::live_bridge::plugin::launch(&request).err(),
+        Some("invalid_path")
+    );
+    // The listed options before the script, and any word after it, pass.
+    manifest["arguments"] = json!(["-B", "-u", "plugin.py", "-c", "-"]);
+    assert!(load(&manifest).is_ok());
+    let request = plugin_request(vec!["-u".into(), script.clone(), "-c".into()]);
+    assert!(crate::live_bridge::plugin::launch(&request).is_ok());
+
+    // An executable starting with #!, from a folder and a command line.
+    let shebang = directory.path().join("interpreter.exe");
+    std::fs::write(&shebang, "#!/bin/sh\nexec python3 \"$@\"\n").unwrap();
+    manifest["executable"] = json!(shebang.display().to_string());
+    manifest["arguments"] = json!(["plugin.py"]);
+    assert_eq!(load(&manifest).err(), Some("plugin_manifest_invalid"));
+    let mut request = plugin_request(vec![script]);
+    request.executable = Some(shebang.display().to_string());
+    assert_eq!(
+        crate::live_bridge::plugin::launch(&request).err(),
+        Some("invalid_path")
+    );
 }
