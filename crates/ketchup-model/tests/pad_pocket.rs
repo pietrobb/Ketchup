@@ -9,6 +9,7 @@ use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
     EdgeFinishKind, EdgeRef, FaceRef, FeatureEvaluationState, FeatureId, FeatureKind, HoleThread,
     OccurrenceId, ProposalCommitError, ProposalContext, TagId, Transform,
+    headless_count_anchor_visits,
 };
 use ketchup_model::exact_brep_graph::{
     ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
@@ -1742,6 +1743,83 @@ fn a_cut_up_to_a_face_keeps_its_face_evidence_through_later_edits() {
         );
         producer_exact_graph(&edited, DEFINITION, CUT)
             .unwrap_or_else(|error| panic!("cut graph after a {depth} mm edit: {error:?}"));
+    }
+}
+
+/// Review 2026-10-19 P3: registering a batch looked at every feature for its
+/// anchored faces once or twice per reference, references x features (~4.5k x
+/// 2k on a house). The features no reference is anchored to are now looked at
+/// once per batch, whether the evidence is new or already held.
+#[test]
+fn registering_references_looks_at_each_feature_once_per_batch() {
+    const PARTS: u32 = 12;
+    let mut commands = Vec::new();
+    for k in 0..PARTS {
+        let definition = DefinitionId(u64::from(100 + k));
+        let [plane, sketch, pad] = [0, 1, 2].map(|i| FeatureId(u64::from(1000 + 3 * k + i)));
+        let base_sketch = rectangle_sketch(plane, [0.0, 0.0], [50.0, 40.0]);
+        let region = base_sketch.solved_regions().unwrap()[0].id;
+        commands.extend([
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: format!("Part {k}"),
+            },
+            CanonicalCommand::CreateFeature {
+                id: plane,
+                definition_id: definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sketch,
+                definition_id: definition,
+                name: "Rectangle".into(),
+                kind: FeatureKind::Sketch(base_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pad,
+                definition_id: definition,
+                name: "Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion { sketch, region },
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(Dimension::from_decimal("18").unwrap()),
+                    operation: PadOperation::NewBody,
+                }),
+            },
+        ]);
+    }
+    let mut document = DocumentStore::new();
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    let features = document.current().features().count() as u64;
+    let references: Vec<_> = (0..PARTS)
+        .flat_map(|k| {
+            box_package(
+                &document.current(),
+                DefinitionId(u64::from(100 + k)),
+                FeatureId(u64::from(1002 + 3 * k)),
+                &format!("part-{k}"),
+                &[
+                    ExactFaceRole::Top,
+                    ExactFaceRole::Bottom,
+                    ExactFaceRole::LinearSide,
+                ],
+            )
+            .unwrap()
+            .references()
+            .to_vec()
+        })
+        .collect();
+    assert!(references.len() as u64 >= features, "{}", references.len());
+    for registration in ["new", "held"] {
+        let (result, visits) =
+            headless_count_anchor_visits(|| document.register_exact_references(&references));
+        result.unwrap();
+        assert!(
+            visits <= features,
+            "{registration}: {visits} visits for {features} features and {} references",
+            references.len()
+        );
     }
 }
 

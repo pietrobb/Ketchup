@@ -108,6 +108,7 @@ pub(super) fn set_planar_face_reference_health(
 /// and the faces a pad's extent reaches and its cut starts from. Anchoring,
 /// staleness, conflict checks and rebinding all go through this one visitor.
 pub(super) fn anchored_references(kind: &FeatureKind) -> Vec<&BodySubshapeRef> {
+    super::store::note_anchor_visit();
     match kind {
         FeatureKind::Workplane(WorkplaneSpec {
             support: WorkplaneSupport::PlanarFace { reference, .. },

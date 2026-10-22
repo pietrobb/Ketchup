@@ -32,6 +32,26 @@ fn create_evaluator_input(
     Ok(())
 }
 
+#[cfg(feature = "testing")]
+thread_local! {
+    static ANCHOR_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// One feature looked at for the face references it is anchored to.
+pub(super) fn note_anchor_visit() {
+    #[cfg(feature = "testing")]
+    ANCHOR_VISITS.set(ANCHOR_VISITS.get() + 1);
+}
+
+/// `operation` and how many features it looked at for their anchored face
+/// references on this thread.
+#[cfg(feature = "testing")]
+pub fn headless_count_anchor_visits<T>(operation: impl FnOnce() -> T) -> (T, u64) {
+    let before = ANCHOR_VISITS.get();
+    let result = operation();
+    (result, ANCHOR_VISITS.get() - before)
+}
+
 /// The lineages of every face reference some feature of `product` is anchored to.
 fn anchored_lineages(product: &ProductModel) -> BTreeSet<&str> {
     product
@@ -585,6 +605,13 @@ impl DocumentStore {
             )
             .is_ok_and(|producer| producer.matches_reference(reference))
         };
+        // Rebinding points an anchored reference at another of the same lineage, so
+        // the anchored lineages stay these through the batch; a reference of no
+        // anchored lineage conflicts with no feature and rebinds none.
+        let anchored: BTreeSet<String> = anchored_lineages(snapshot.product.as_ref())
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
         let mut product: Option<ProductModel> = None;
         for reference in references {
             if !reference.has_valid_lineage() {
@@ -607,22 +634,25 @@ impl DocumentStore {
             }
             // Evidence already held, with no feature anchored to it, would change nothing:
             // a carried-forward result must not copy the product and drop its caches.
+            let is_anchored = anchored.contains(&reference.lineage_digest);
             let held = product.as_ref().unwrap_or(snapshot.product.as_ref());
             if held
                 .exact_reference_evidence
                 .get(&reference.lineage_digest)
                 .is_some_and(|evidence| evidence.as_ref() == reference)
-                && !anchored_lineages(held).contains(reference.lineage_digest.as_str())
+                && !is_anchored
             {
                 continue;
             }
             let product = product.get_or_insert_with(|| snapshot.product.as_ref().clone());
-            let kinds = product.features.values().map(|feature| &feature.kind);
-            if conflicts_with_anchor(kinds, reference, is_current) {
-                return Err((reference, ReferenceEvidenceError::WrongDocument));
+            if is_anchored {
+                let kinds = product.features.values().map(|feature| &feature.kind);
+                if conflicts_with_anchor(kinds, reference, is_current) {
+                    return Err((reference, ReferenceEvidenceError::WrongDocument));
+                }
             }
             hold_reference_evidence(product, reference);
-            if rebind_planar_face_reference(product, reference).is_err() {
+            if is_anchored && rebind_planar_face_reference(product, reference).is_err() {
                 return Err((reference, ReferenceEvidenceError::WrongDocument));
             }
         }
