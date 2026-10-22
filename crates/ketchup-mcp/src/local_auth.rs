@@ -29,6 +29,14 @@ pub fn window_attach_proof(bootstrap: &str, answer: &[&str; 5]) -> String {
     attach_proof(bootstrap, "window", answer)
 }
 
+/// The window's proof with its list answer, over the instance id, nonce,
+/// status and document name it answers, so a program that took the address of
+/// a closed window cannot name a document for it.
+#[must_use]
+pub fn window_list_proof(bootstrap: &str, answer: &[&str; 4]) -> String {
+    attach_proof(bootstrap, "window-list", answer)
+}
+
 /// HMAC-SHA256 (RFC 2104) keyed with `bootstrap` over `role` and the
 /// newline-separated `fields`, in lower hex.
 fn attach_proof(bootstrap: &str, role: &str, fields: &[&str]) -> String {

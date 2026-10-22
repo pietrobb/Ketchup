@@ -3,11 +3,12 @@
 //! Every window publishes `<instance_id>.json` with its loopback attach address
 //! in the per-user discovery directory. One line of JSON asks the window to
 //! `list` itself (document name, whether a client is attached) or to `attach`,
-//! which returns the live bridge address and a fresh credential. Both carry a
-//! proof of the window's private bootstrap, so no other program learns the
-//! document name.
+//! which returns the live bridge address and a fresh credential. Request and
+//! answer each carry a proof of the window's private bootstrap, so no other
+//! program learns the document name, and none on a closed window's address can
+//! name one.
 use crate::local_auth::{
-    client_attach_proof, client_list_proof, proofs_match, window_attach_proof,
+    client_attach_proof, client_list_proof, proofs_match, window_attach_proof, window_list_proof,
 };
 use serde_json::{Value, json};
 use std::{
@@ -19,7 +20,9 @@ use std::{
 };
 
 const DISCOVERY_DIRECTORY: &str = "Ketchup/live-instances";
-const MAX_LINE_BYTES: u64 = 512;
+/// A list answer carries a document file name (up to 255 UTF-16 units, so at
+/// most 765 bytes of UTF-8) beside its fixed fields and proof.
+const MAX_LINE_BYTES: u64 = 2048;
 const MAX_REGISTRY_ENTRIES: usize = 4096;
 const MAX_WINDOWS: usize = 64;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -32,8 +35,8 @@ pub struct Window {
     pub document: String,
     /// Another client is attached; attaching replaces it.
     pub in_use: bool,
-    attach_address: SocketAddr,
-    registry_path: PathBuf,
+    pub(crate) attach_address: SocketAddr,
+    pub(crate) registry_path: PathBuf,
 }
 
 pub struct Grant {
@@ -252,10 +255,14 @@ fn exchange(
             "attach endpoint answered for another request or window",
         ));
     }
-    if attaching
-        && !reply["proof"]
-            .as_str()
-            .is_some_and(|proof| proofs_match(proof, &window_proof(bootstrap, &reply)))
+    let expected = if attaching {
+        window_proof(bootstrap, &reply)
+    } else {
+        window_list_proof_of(bootstrap, &reply)
+    };
+    if !reply["proof"]
+        .as_str()
+        .is_some_and(|proof| proofs_match(proof, &expected))
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -276,6 +283,22 @@ pub(crate) fn window_proof(bootstrap: &str, reply: &Value) -> String {
             field("status"),
             field("live_bridge_address"),
             field("token"),
+        ],
+    )
+}
+
+/// The proof a window gives with its list `reply`
+/// (`local_auth::window_list_proof`); review 2026-10-19 P3-C: an unproven
+/// list answer let a program on a closed window's address name its document.
+pub(crate) fn window_list_proof_of(bootstrap: &str, reply: &Value) -> String {
+    let field = |name: &str| reply[name].as_str().unwrap_or("");
+    window_list_proof(
+        bootstrap,
+        &[
+            field("instance_id"),
+            field("nonce"),
+            field("status"),
+            field("document"),
         ],
     )
 }

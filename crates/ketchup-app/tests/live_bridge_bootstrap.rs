@@ -707,12 +707,19 @@ fn per_user_registry_lists_only_nonce_verified_live_window_metadata() {
 
         let nonce = "3".repeat(64);
         let listed = request_list(address, &bootstrap, &nonce);
-        assert_eq!(listed.as_object().unwrap().len(), 5);
+        assert_eq!(listed.as_object().unwrap().len(), 6);
         assert_eq!(listed["version"], 1);
         assert_eq!(listed["nonce"], nonce);
         assert_eq!(listed["status"], "available");
         assert_eq!(listed["instance_id"], instance_id);
         assert_eq!(listed["document"], "Untitled");
+        assert_eq!(
+            listed["proof"],
+            ketchup_mcp::local_auth::window_list_proof(
+                &bootstrap.secret,
+                &[&instance_id, &nonce, "available", "Untitled"],
+            )
+        );
         assert!(shell.app().live_bridge_credentials().is_none());
     }
     assert!(!registry_path.exists());

@@ -113,6 +113,7 @@ struct ListResponse<'a> {
     status: &'static str,
     instance_id: &'a str,
     document: &'a str,
+    proof: &'a str,
 }
 
 #[derive(Serialize)]
@@ -574,7 +575,7 @@ fn serve(
                     io::Error::other("discovery state unavailable")
                 })?
                 .clone();
-            return write_list_response(&mut stream, &nonce, instance_id, &state, stop);
+            return write_list_response(&mut stream, &nonce, instance_id, bootstrap, &state, stop);
         }
         let expected = ketchup_mcp::local_auth::client_attach_proof(bootstrap, instance_id, &nonce);
         if !ketchup_mcp::local_auth::proofs_match(&request.proof, &expected) {
@@ -747,17 +748,24 @@ fn write_list_response(
     stream: &mut TcpStream,
     nonce: &str,
     instance_id: &str,
+    bootstrap: &str,
     state: &DiscoveryState,
     stop: &AtomicBool,
 ) -> io::Result<()> {
+    let status = if state.available { "available" } else { "busy" };
+    let proof = ketchup_mcp::local_auth::window_list_proof(
+        bootstrap,
+        &[instance_id, nonce, status, &state.document],
+    );
     write_json_line(
         stream,
         &ListResponse {
             version: 1,
             nonce,
-            status: if state.available { "available" } else { "busy" },
+            status,
             instance_id,
             document: &state.document,
+            proof: &proof,
         },
         stop,
     )
@@ -973,6 +981,20 @@ mod tests {
             .expect("a pending consent decision must not block discovery");
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(response["status"], "available");
+        // Review 2026-10-19 P3-C: the list answer proves the window knows the
+        // bootstrap, over everything it answers, the document name included.
+        assert_eq!(
+            response["proof"],
+            ketchup_mcp::local_auth::window_list_proof(
+                registry["bootstrap"].as_str().unwrap(),
+                &[
+                    registry["instance_id"].as_str().unwrap(),
+                    &nonce,
+                    "available",
+                    "Untitled"
+                ],
+            )
+        );
         drop(pending);
     }
 

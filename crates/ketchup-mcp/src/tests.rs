@@ -520,6 +520,7 @@ fn stand_in_window(root: &Path) -> mpsc::Receiver<Value> {
                 );
                 reply["status"] = "available".into();
                 reply["document"] = "stolik.ketchup".into();
+                reply["proof"] = crate::discovery::window_list_proof_of(TOKEN, &reply).into();
             } else {
                 let nonce = request["nonce"].as_str().unwrap();
                 assert_eq!(
@@ -601,6 +602,7 @@ fn stand_in_window(root: &Path) -> mpsc::Receiver<Value> {
 fn a_program_holding_a_closed_windows_address_cannot_pass_for_it() {
     let root = tempfile::tempdir().unwrap();
     let impostor = TcpListener::bind("127.0.0.1:0").unwrap();
+    let impostor_address = impostor.local_addr().unwrap();
     let mut registry =
         crate::local_auth::create(&root.path().join(format!("{INSTANCE}.json"))).unwrap();
     write!(
@@ -627,9 +629,17 @@ fn a_program_holding_a_closed_windows_address_cannot_pass_for_it() {
         }
     });
 
-    let windows = crate::discovery::list_windows(root.path());
-    assert_eq!(windows.len(), 1);
-    let error = crate::discovery::attach(&windows[0])
+    // Review 2026-10-19 P3-C: the impostor's list answer has no window proof,
+    // so it names no document and no window is listed.
+    assert!(crate::discovery::list_windows(root.path()).is_empty());
+    let window = crate::discovery::Window {
+        registry_path: root.path().join(format!("{INSTANCE}.json")),
+        instance_id: INSTANCE.to_owned(),
+        document: String::new(),
+        in_use: false,
+        attach_address: impostor_address,
+    };
+    let error = crate::discovery::attach(&window)
         .err()
         .expect("the impostor's grant is refused");
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
@@ -682,6 +692,8 @@ fn scripted_window(
                 reply["token"] = TOKEN.into();
                 reply["proof"] = crate::discovery::window_proof(TOKEN, &reply).into();
                 let _ = attached.send("attach");
+            } else {
+                reply["proof"] = crate::discovery::window_list_proof_of(TOKEN, &reply).into();
             }
             stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
         }
