@@ -79,6 +79,7 @@ pub fn read_dxf_underlay_from(
             &mut parsed,
             diagnostics,
         )?;
+        parsed.report_xrefs(diagnostics)?;
         for loose in &parsed.loose {
             builder.set_style(&styles.line_style(&loose.style, &loose.layer, diagnostics)?);
             builder.add_loose(&loose.layer, &loose.segment);

@@ -10,6 +10,9 @@ pub(super) struct BlockDefinition {
     pub(super) texts: Vec<OrderedText>,
     /// An xref or a block of one, not loaded: its inserts are named in the report.
     pub(super) xref: bool,
+    /// The xrefs it places, its own blocks' among them, by name with how often: each
+    /// insert of it counts them once more.
+    pub(super) xrefs: BTreeMap<String, u32>,
 }
 
 impl BlockDefinition {
@@ -194,6 +197,7 @@ fn resolve_block<'a>(
                 profiles: Vec::new(),
                 texts: Vec::new(),
                 xref: true,
+                xrefs: BTreeMap::new(),
             },
         );
         resolution.resolving.remove(key);
@@ -242,6 +246,7 @@ fn resolve_block<'a>(
             profiles,
             texts: parsed_entities.texts,
             xref: false,
+            xrefs: parsed_entities.xrefs,
         },
     );
     resolution.resolving.remove(key);

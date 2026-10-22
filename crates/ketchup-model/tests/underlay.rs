@@ -279,6 +279,47 @@ fn an_xref_and_its_blocks_are_not_loaded_but_named_with_their_inserts() {
     assert_eq!(not_loaded, [("SITE", 2), ("SITE|door", 1)]);
 }
 
+/// Review 2026-10-21 P3: an xref inserted in a block was counted once, when the block was
+/// read, however often the block was placed, and even when it never was. It is counted
+/// per place it would be drawn, and a block holding only an xref is placed as one.
+#[test]
+fn an_xref_in_a_block_is_counted_once_per_insert_of_the_block() {
+    let blocks = concat!(
+        "0\nSECTION\n2\nBLOCKS\n",
+        "0\nBLOCK\n8\n0\n2\nSITE\n70\n4\n10\n0\n20\n0\n1\nC:\\site.dwg\n0\nENDBLK\n",
+        "0\nBLOCK\n8\n0\n2\nplot\n70\n0\n10\n0\n20\n0\n",
+        "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n10\n21\n0\n",
+        "0\nINSERT\n8\n0\n2\nSITE\n10\n0\n20\n0\n0\nENDBLK\n",
+        "0\nBLOCK\n8\n0\n2\nonly_site\n70\n0\n10\n0\n20\n0\n",
+        "0\nINSERT\n8\n0\n2\nSITE\n10\n0\n20\n0\n0\nENDBLK\n",
+        "0\nBLOCK\n8\n0\n2\nunused\n70\n0\n10\n0\n20\n0\n",
+        "0\nINSERT\n8\n0\n2\nSITE\n10\n0\n20\n0\n0\nENDBLK\n0\nENDSEC\n",
+    );
+    let insert = |name: &str| format!("0\nINSERT\n8\n0\n2\n{name}\n10\n5\n20\n5\n");
+    let entities = [
+        insert("plot"),
+        insert("plot"),
+        insert("plot"),
+        insert("only_site"),
+    ]
+    .concat();
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n{blocks}0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+    );
+    let underlay = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
+    assert_eq!(underlay.lines.segment_count(), 3);
+    let counted = |code: &str| {
+        underlay
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code() == code)
+            .map(|diagnostic| (diagnostic.subject().unwrap_or(""), diagnostic.count()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(counted("dxf.xref-not-loaded"), [("SITE", 4)]);
+    assert!(counted("dxf.entity-unreadable").is_empty());
+}
+
 #[test]
 fn a_drawing_in_national_grid_coordinates_is_moved_near_the_origin_by_its_median() {
     // Five lines in S-JTSK, hundreds of kilometres from the origin, a stray line at the

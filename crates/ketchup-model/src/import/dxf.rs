@@ -406,9 +406,25 @@ struct ParsedEntities {
     explicit_profiles: Vec<OrderedProfile>,
     layers: BTreeSet<String>,
     texts: Vec<OrderedText>,
+    /// The xrefs it would place, by name, with how often: counted in the report only where
+    /// the drawing itself places them, so an xref in a block counts once per insert of it.
+    xrefs: BTreeMap<String, u32>,
 }
 
 impl ParsedEntities {
+    /// Names the xrefs it would place in the report, as not loaded.
+    fn report_xrefs(&mut self, diagnostics: &mut DiagnosticCounts) -> Result<(), DxfImportError> {
+        for (name, count) in std::mem::take(&mut self.xrefs) {
+            diagnostics.add(
+                ImportDiagnosticSeverity::Warning,
+                "dxf.xref-not-loaded",
+                Some(name),
+                count,
+            )?;
+        }
+        Ok(())
+    }
+
     fn push_texts(&mut self, texts: impl IntoIterator<Item = OrderedText>) {
         for text in texts {
             self.layers.insert(text.layer.clone());
@@ -555,6 +571,7 @@ fn read_dxf(
         &mut parsed_entities,
         &mut diagnostics,
     )?;
+    parsed_entities.report_xrefs(&mut diagnostics)?;
     Ok((units, insbase_mm, parsed_entities, diagnostics))
 }
 
@@ -1056,6 +1073,7 @@ fn parse_entities(
                         profile_ordinal,
                         block_definitions,
                         entity_count,
+                        &mut output.xrefs,
                         diagnostics,
                     )?;
                     for profile in profiles {
@@ -3064,12 +3082,23 @@ fn parse_dimension(
     Ok((profiles, texts))
 }
 
+fn add_xrefs<'a>(
+    xrefs: &mut BTreeMap<String, u32>,
+    placed: impl IntoIterator<Item = (&'a str, u32)>,
+) {
+    for (name, count) in placed {
+        let total = xrefs.entry(name.to_owned()).or_default();
+        *total = total.saturating_add(count);
+    }
+}
+
 fn parse_insert(
     record: &[DxfPair<'_>],
     units: ImportUnitDecision,
     ordinal: usize,
     blocks: &BTreeMap<String, BlockDefinition>,
     entity_count: &mut usize,
+    xrefs: &mut BTreeMap<String, u32>,
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<(Vec<OrderedProfile>, Vec<OrderedText>), DxfImportError> {
     let layer = parse_layer(record)?;
@@ -3087,16 +3116,23 @@ fn parse_insert(
         .get(&block_name_key(name)?)
         .ok_or(DxfImportError::InvalidBlock)?;
     if block.xref {
-        diagnostics.add(
-            ImportDiagnosticSeverity::Warning,
-            "dxf.xref-not-loaded",
-            Some(name.to_owned()),
-            1,
-        )?;
+        add_xrefs(xrefs, [(name, 1)]);
         return Ok((Vec::new(), Vec::new()));
     }
+    add_xrefs(
+        xrefs,
+        block
+            .xrefs
+            .iter()
+            .map(|(name, count)| (name.as_str(), *count)),
+    );
     if block.is_empty() {
-        return Err(DxfImportError::InvalidBlock);
+        // A block holding only xrefs places nothing, its xrefs being counted.
+        return if block.xrefs.is_empty() {
+            Err(DxfImportError::InvalidBlock)
+        } else {
+            Ok((Vec::new(), Vec::new()))
+        };
     }
     let scale_x = parse_optional_number(record, 41)?.unwrap_or(1.0);
     let scale_y = parse_optional_number(record, 42)?.unwrap_or(1.0);
