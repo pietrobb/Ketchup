@@ -487,6 +487,8 @@ impl DocumentSession {
     /// without evaluating it again, as the program's `source`. The session
     /// keeps its file, the file's other container entries and its recovery
     /// checkpoint, which now holds the replacement (review 2026-10-17 M-3).
+    /// The replacement is one Undo step: Undo brings back the document as it
+    /// was, not an empty one (review 2026-10-18 M-3).
     ///
     /// # Errors
     /// The model cannot be published as a document.
@@ -500,8 +502,10 @@ impl DocumentSession {
         replacement.apply_rule_commands_with_source(batch, source)?;
         let before = self.snapshot();
         self.mutate_with_work_recovery(|document| {
-            *document = replacement.document;
-            Ok(())
+            document
+                .publish_replacement(&replacement.document)
+                .map(drop)
+                .map_err(SessionError::Canonical)
         })?;
         self.update_incremental_exact_plan(&before);
         self.rebind();

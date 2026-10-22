@@ -2049,9 +2049,19 @@ fn a_program_replacing_the_open_document_keeps_its_file_extensions_and_recovery(
         overrides: Default::default(),
         variants: Default::default(),
     };
+    let edited = session.snapshot();
     let applied = session.apply_rule_program(program.clone(), true).unwrap();
     assert!(applied.replaced_document);
     assert!(persistence::work_recovery_path(&path).exists());
+    // Review 2026-10-18 M-3: the replacement is one Undo step on top of the
+    // open document, so Undo brings that document back, not an empty one.
+    let replaced = session.snapshot();
+    let undone = session.undo().unwrap();
+    assert_eq!(undone.canonical_digest(), edited.canonical_digest());
+    assert_eq!(session.rule_program(), None);
+    let redone = session.redo().unwrap();
+    assert_eq!(redone.canonical_digest(), replaced.canonical_digest());
+    assert_eq!(session.rule_program(), Some(&program));
     assert_eq!(session.path(), Some(path.as_path()));
     assert_eq!(
         session.container_data().extensions().count(),

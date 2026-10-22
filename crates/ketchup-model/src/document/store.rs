@@ -1037,6 +1037,45 @@ impl DocumentStore {
         Ok(revision)
     }
 
+    /// Publishes the current revision of `replacement`, a document built apart
+    /// to take this one's place (a program replacing it), as one new revision
+    /// of this document, so Undo steps back to what this document held before
+    /// instead of to the empty document the replacement started from (review
+    /// 2026-10-18 M-3). A replacement that committed nothing is refused.
+    pub fn publish_replacement(
+        &mut self,
+        replacement: &Self,
+    ) -> Result<Arc<Revision>, CanonicalError> {
+        let tip = &replacement.revisions[replacement.cursor];
+        if tip.origin == RevisionOrigin::Initial {
+            return Err(CanonicalError::EmptyCommandBatch);
+        }
+        let revision_id = self.next_revision_id;
+        let following_revision_id = revision_id
+            .checked_add(1)
+            .ok_or(CanonicalError::RevisionExhausted)?;
+        let revision = Arc::new(Revision {
+            id: revision_id,
+            snapshot: Snapshot {
+                revision_id,
+                product: Arc::clone(&tip.snapshot.product),
+            },
+            batch_digest: tip.batch_digest.clone(),
+            origin: tip.origin,
+            checkpoint: None,
+            rule_program: tip.rule_program.clone(),
+            recomputed_nodes: BTreeSet::new(),
+            dirty_features: tip.snapshot.product.features.keys().copied().collect(),
+            feature_states: tip.feature_states.clone(),
+            evaluation: None,
+        });
+        self.push_revision(Arc::clone(&revision));
+        self.next_revision_id = following_revision_id;
+        self.mutation_epoch = Self::fresh_mutation_epoch();
+        self.evaluation_registry.clear();
+        Ok(revision)
+    }
+
     #[must_use]
     pub const fn visible_undo_steps(&self) -> usize {
         self.cursor
