@@ -135,11 +135,16 @@ impl ExtensionEntry {
     }
 }
 
+/// A container's blobs by the SHA-256 hex of their bytes. Each blob is shared,
+/// so a copy of the map made to add one does not copy the others.
+pub type Blobs = BTreeMap<String, Arc<Vec<u8>>>;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ContainerData {
     /// Shared, not copied, by every copy: opening a history makes one per
-    /// revision (review 2026-10-17 M-5).
-    blobs: Arc<BTreeMap<String, Vec<u8>>>,
+    /// revision (review 2026-10-17 M-5), and an import adds its source to a
+    /// copy the previous revision still holds (review 2026-10-19 P3).
+    blobs: Arc<Blobs>,
     imported_source_blobs: Arc<BTreeSet<String>>,
     extensions: BTreeMap<(String, String), ExtensionEntry>,
 }
@@ -149,7 +154,7 @@ impl ContainerData {
         let hash = crate::graph::sha256_hex(&bytes);
         Arc::make_mut(&mut self.blobs)
             .entry(hash.clone())
-            .or_insert(bytes);
+            .or_insert_with(|| Arc::new(bytes));
         Ok(hash)
     }
 
@@ -178,7 +183,7 @@ impl ContainerData {
     }
 
     #[must_use]
-    pub fn blobs(&self) -> &BTreeMap<String, Vec<u8>> {
+    pub fn blobs(&self) -> &Blobs {
         &self.blobs
     }
 
@@ -1741,7 +1746,7 @@ fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, Pe
                 return Err(PersistenceError::InvalidBlobHash);
             }
             if Arc::make_mut(&mut container_data.blobs)
-                .insert(hash.to_owned(), content)
+                .insert(hash.to_owned(), Arc::new(content))
                 .is_some()
             {
                 return Err(PersistenceError::DuplicateContainerEntry);

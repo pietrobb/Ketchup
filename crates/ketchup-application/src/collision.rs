@@ -348,7 +348,6 @@ impl std::error::Error for FabricationCollisionError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CollisionSourceError {
     MissingBlob,
-    OutOfMemory(ketchup_scheduler::OutOfMemory),
     InvalidBlob,
 }
 
@@ -356,7 +355,6 @@ impl CollisionSourceError {
     fn code(&self) -> &'static str {
         match self {
             Self::MissingBlob => "missing_imported_source_blob",
-            Self::OutOfMemory(_) => "imported_source_out_of_memory",
             Self::InvalidBlob => "invalid_imported_source_blob",
         }
     }
@@ -547,7 +545,7 @@ fn start_pair_batches(
     path: Option<PathBuf>,
     pairs: Vec<(usize, usize, ExactPairCandidate)>,
     graphs: Vec<ExactBRepGraph>,
-    sources: BTreeMap<String, Vec<u8>>,
+    sources: ketchup_model::persistence::Blobs,
     contact_tolerance_mm: f64,
     cancelled: Arc<AtomicBool>,
 ) -> mpsc::Receiver<ExactPairBatch> {
@@ -604,7 +602,7 @@ fn send_exact_pair_batches(
     path: Option<&Path>,
     pairs: &[(usize, usize, ExactPairCandidate)],
     graphs: &[ExactBRepGraph],
-    sources: &BTreeMap<String, Vec<u8>>,
+    sources: &ketchup_model::persistence::Blobs,
     contact_tolerance_mm: f64,
     cancelled: &AtomicBool,
     tx: &mpsc::Sender<ExactPairBatch>,
@@ -705,7 +703,7 @@ fn send_serial_pair_batches(
     path: Option<&Path>,
     pairs: &[(usize, usize, ExactPairCandidate)],
     graphs: &[ExactBRepGraph],
-    sources: &BTreeMap<String, Vec<u8>>,
+    sources: &ketchup_model::persistence::Blobs,
     contact_tolerance_mm: f64,
     cancelled: &AtomicBool,
     tx: &mpsc::Sender<ExactPairBatch>,
@@ -741,7 +739,7 @@ fn send_pair_range(
     supervisor: &mut crate::worker_pool::PooledExactWorker,
     pairs: &[(usize, usize, ExactPairCandidate)],
     graphs: &[ExactBRepGraph],
-    sources: &BTreeMap<String, Vec<u8>>,
+    sources: &ketchup_model::persistence::Blobs,
     contact_tolerance_mm: f64,
     cancelled: &AtomicBool,
     tx: &mpsc::Sender<ExactPairBatch>,
@@ -1382,7 +1380,7 @@ fn collision_report(
         ) {
             return not_evaluated(report, reason);
         }
-        let sources = (|| -> Result<BTreeMap<String, Vec<u8>>, CollisionSourceError> {
+        let sources = (|| -> Result<ketchup_model::persistence::Blobs, CollisionSourceError> {
             let mut sources = BTreeMap::new();
             for graph in &graphs {
                 for node in &graph.nodes {
@@ -1408,13 +1406,7 @@ fn collision_report(
                         {
                             return Err(CollisionSourceError::InvalidBlob);
                         }
-                        let mut copy = ketchup_scheduler::reserve_whole(
-                            *source_byte_len,
-                            "imported exact source",
-                        )
-                        .map_err(CollisionSourceError::OutOfMemory)?;
-                        copy.extend_from_slice(source);
-                        sources.insert(hash, copy);
+                        sources.insert(hash, std::sync::Arc::clone(source));
                     }
                 }
             }

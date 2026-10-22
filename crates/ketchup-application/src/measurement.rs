@@ -13,7 +13,6 @@ use ketchup_rejection::Rejection;
 use ketchup_scheduler::{ExactPairCandidate, ExactWorkerSupervisor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -162,7 +161,7 @@ impl SelectedFaceMeasurement {
         &self,
         snapshot: &Snapshot,
         path: Option<&std::path::Path>,
-        sources: &BTreeMap<String, Vec<u8>>,
+        sources: &ketchup_model::persistence::Blobs,
         cancelled: &AtomicBool,
     ) -> Result<Value, Rejection> {
         let mut worker = crate::worker_pool::checkout(path, cancelled).map_err(|error| {
@@ -178,7 +177,7 @@ impl SelectedFaceMeasurement {
         &self,
         snapshot: &Snapshot,
         worker: &mut ExactWorkerSupervisor,
-        sources: &BTreeMap<String, Vec<u8>>,
+        sources: &ketchup_model::persistence::Blobs,
         cancelled: &AtomicBool,
     ) -> Result<Value, Rejection> {
         self.require_current(snapshot)?;

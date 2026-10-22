@@ -105,7 +105,7 @@ impl ExactMotionPair {
 /// tolerance. Unsupported bounds, cancellation and exhausted work remain incomplete.
 pub fn exact_motion_pair_with_worker(
     pair: &ExactMotionPair,
-    sources: &BTreeMap<String, Vec<u8>>,
+    sources: &ketchup_model::persistence::Blobs,
     worker_path: Option<PathBuf>,
     timeout: Duration,
     cancelled: Arc<AtomicBool>,

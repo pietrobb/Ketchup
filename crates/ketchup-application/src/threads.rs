@@ -66,7 +66,7 @@ impl std::error::Error for CosmeticThreadBodyError {
 pub fn cosmetic_thread_body(
     executable: Option<&Path>,
     package: &ExactBRepGraphPackage,
-    blobs: &BTreeMap<String, Vec<u8>>,
+    blobs: &ketchup_model::persistence::Blobs,
 ) -> Result<Option<ExactBRepGraphPackage>, CosmeticThreadBodyError> {
     let Some(graph) = package
         .graph
@@ -92,7 +92,7 @@ pub fn cosmetic_thread_body(
         .map(|hash| {
             blobs
                 .get(&hash)
-                .map(Vec::as_slice)
+                .map(|bytes| bytes.as_slice())
                 .ok_or(CosmeticThreadBodyError::ImportedSourceMissing(hash))
         })
         .collect::<Result<Vec<_>, _>>()?;

@@ -207,7 +207,7 @@ fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
             .container_data()
             .blobs()
             .get(&source_hash)
-            .map(Vec::as_slice),
+            .map(|bytes| bytes.as_slice()),
         Some(source.as_slice())
     );
     assert_eq!(

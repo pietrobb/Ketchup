@@ -36,7 +36,7 @@ impl ExactWorkerSupervisor {
         &mut self,
         graphs: &[ExactBRepGraph],
         candidates: &[ExactPairCandidate],
-        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        imported_source_blobs: &ketchup_model::persistence::Blobs,
         contact_tolerance_mm: f64,
     ) -> Result<Vec<ExactPairAnswer>, WorkerError> {
         self.query_exact_brep_pairs_with_cancellation(
@@ -52,7 +52,7 @@ impl ExactWorkerSupervisor {
         &mut self,
         graphs: &[ExactBRepGraph],
         candidates: &[ExactPairCandidate],
-        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        imported_source_blobs: &ketchup_model::persistence::Blobs,
         contact_tolerance_mm: f64,
         cancelled: &AtomicBool,
     ) -> Result<Vec<ExactPairAnswer>, WorkerError> {
@@ -72,7 +72,7 @@ impl ExactWorkerSupervisor {
         graphs: &[ExactBRepGraph],
         candidate: &ExactPairCandidate,
         faces: [u32; 2],
-        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        imported_source_blobs: &ketchup_model::persistence::Blobs,
         cancelled: &AtomicBool,
     ) -> Result<f64, WorkerError> {
         let results = self.query_pairs(
@@ -94,7 +94,7 @@ impl ExactWorkerSupervisor {
         &mut self,
         graphs: &[ExactBRepGraph],
         candidates: &[ExactPairCandidate],
-        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        imported_source_blobs: &ketchup_model::persistence::Blobs,
         contact_tolerance_mm: f64,
         cancelled: &AtomicBool,
         faces: Option<[u32; 2]>,
@@ -244,7 +244,7 @@ impl PairSources {
     fn prepare_graph(
         &mut self,
         graph: &ExactBRepGraph,
-        blobs: &BTreeMap<String, Vec<u8>>,
+        blobs: &ketchup_model::persistence::Blobs,
         cancelled: &AtomicBool,
     ) -> Result<Vec<String>, WorkerError> {
         let mut sources = Vec::new();
@@ -276,7 +276,7 @@ impl PairSources {
         &mut self,
         hash: &str,
         expected_len: u64,
-        blobs: &BTreeMap<String, Vec<u8>>,
+        blobs: &ketchup_model::persistence::Blobs,
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
         check_pair_cancelled(cancelled)?;
@@ -375,12 +375,13 @@ fn pair_result(measure: PairMeasure, tolerance: f64) -> Result<ExactPairQueryRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn pair_sources_deduplicate_bound_verify_and_clean_up() {
         let source = b"source".to_vec();
         let hash = sha256_hex(&source);
-        let blobs = BTreeMap::from([(hash.clone(), source)]);
+        let blobs = BTreeMap::from([(hash.clone(), Arc::new(source))]);
         let mut staged = PairSources::default();
         staged.stage(&hash, 6, &blobs, &NEVER_CANCELLED).unwrap();
         let path = staged.files[&hash].1.path().to_owned();
@@ -388,7 +389,7 @@ mod tests {
             staged.stage(&hash, 6, &blobs, &NEVER_CANCELLED).unwrap();
         }
         assert_eq!(staged.files.len(), 1);
-        assert_eq!(std::fs::read(&path).unwrap(), blobs[&hash]);
+        assert_eq!(std::fs::read(&path).unwrap(), *blobs[&hash]);
         assert!(staged.stage(&hash, 7, &blobs, &NEVER_CANCELLED).is_err());
         assert!(matches!(
             staged.stage(&hash, 6, &blobs, &AtomicBool::new(true)),
@@ -401,7 +402,7 @@ mod tests {
         let large = vec![b'x'; 128 * 1024 * 1024 + 1];
         let large_hash = sha256_hex(&large);
         let large_len = large.len() as u64;
-        let large_blobs = BTreeMap::from([(large_hash.clone(), large)]);
+        let large_blobs = BTreeMap::from([(large_hash.clone(), Arc::new(large))]);
         let mut staged = PairSources::default();
         staged.stage(&hash, 6, &blobs, &NEVER_CANCELLED).unwrap();
         staged
@@ -416,7 +417,7 @@ mod tests {
         );
         drop(staged);
         let mut staged = PairSources::default();
-        let corrupt = BTreeMap::from([(hash.clone(), b"broken".to_vec())]);
+        let corrupt = BTreeMap::from([(hash.clone(), Arc::new(b"broken".to_vec()))]);
         assert!(staged.stage(&hash, 6, &corrupt, &NEVER_CANCELLED).is_err());
         assert!(
             staged

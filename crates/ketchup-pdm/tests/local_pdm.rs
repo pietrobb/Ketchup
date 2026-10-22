@@ -202,7 +202,7 @@ fn release_with_imported_exact_geometry_reopens_with_its_source_blob() {
             .container_data
             .blobs()
             .get(&source_hash)
-            .map(Vec::as_slice),
+            .map(|bytes| bytes.as_slice()),
         Some(source.as_slice())
     );
 
@@ -224,7 +224,7 @@ fn release_with_imported_exact_geometry_reopens_with_its_source_blob() {
             .container_data
             .blobs()
             .get(&source_hash)
-            .map(Vec::as_slice),
+            .map(|bytes| bytes.as_slice()),
         Some(source.as_slice())
     );
 

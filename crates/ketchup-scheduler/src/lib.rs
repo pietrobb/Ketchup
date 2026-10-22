@@ -2024,7 +2024,7 @@ impl ExactWorkerSupervisor {
         graph: &ExactBRepGraph,
         result_fingerprint: &str,
         path: &Path,
-        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        imported_source_blobs: &ketchup_model::persistence::Blobs,
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
         let sources = exact_brep_graph_sources_from_blobs(graph, imported_source_blobs)?;
@@ -2058,7 +2058,7 @@ impl ExactWorkerSupervisor {
         snapshot: &Snapshot,
         occurrences: &[(ExactBodyPackage, Transform)],
         path: &Path,
-        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        imported_source_blobs: &ketchup_model::persistence::Blobs,
     ) -> Result<Vec<u8>, M6EvaluationError> {
         let scene = snapshot.scene_query();
         let mut matched = Vec::with_capacity(occurrences.len());
@@ -2089,7 +2089,7 @@ impl ExactWorkerSupervisor {
         snapshot: &Snapshot,
         occurrences: &[(ExactBodyPackage, SceneOccurrence)],
         path: &Path,
-        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        imported_source_blobs: &ketchup_model::persistence::Blobs,
         cancelled: &AtomicBool,
     ) -> Result<Vec<u8>, M6EvaluationError> {
         if occurrences.is_empty() {
@@ -2816,7 +2816,7 @@ fn prepare_exact_brep_graph_sources(
 /// The imported sources `graph` names, in its order, from blobs keyed by SHA-256 hex.
 pub fn exact_brep_graph_sources_from_blobs<'a>(
     graph: &ExactBRepGraph,
-    blobs: &'a BTreeMap<String, Vec<u8>>,
+    blobs: &'a ketchup_model::persistence::Blobs,
 ) -> Result<Vec<&'a [u8]>, WorkerError> {
     let mut sources = Vec::new();
     let mut seen = BTreeMap::new();

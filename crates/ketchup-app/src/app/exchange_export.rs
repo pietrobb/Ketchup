@@ -36,7 +36,7 @@ struct ExchangeExportJob {
     snapshot: Snapshot,
     model: Arc<Vec<(ExactBodyPackage, SceneOccurrence)>>,
     executable: PathBuf,
-    blobs: BTreeMap<String, Vec<u8>>,
+    blobs: ketchup_model::persistence::Blobs,
 }
 
 impl ExchangeExportJob {

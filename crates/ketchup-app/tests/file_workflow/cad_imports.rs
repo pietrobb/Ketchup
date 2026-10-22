@@ -808,7 +808,10 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
     assert_eq!(spec.source_byte_len, source.len() as u64);
     assert_eq!(spec.source_part_index, Some(0));
     let hash = ketchup_model::graph::sha256_hex(&source);
-    assert_eq!(loaded.container_data().blobs().get(&hash), Some(&source));
+    assert_eq!(
+        **loaded.container_data().blobs().get(&hash).unwrap(),
+        source
+    );
     assert_eq!(std::fs::read(&source_path).unwrap(), source);
 }
 
@@ -1003,8 +1006,8 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
             .any(|diagnostic| diagnostic.code() == "step_parametric_reconstruction_unavailable")
     );
     assert_eq!(
-        loaded.container_data().blobs().get(&source_hash),
-        Some(&source)
+        **loaded.container_data().blobs().get(&source_hash).unwrap(),
+        source
     );
 
     let before_export = canonical_state(&shell);

@@ -827,7 +827,7 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
     assert_ne!(target_definition, result_definition);
     let pair_sources = sources
         .iter()
-        .map(|source| (sha256_hex(source), source.clone()))
+        .map(|source| (sha256_hex(source), Arc::new(source.clone())))
         .collect::<BTreeMap<_, _>>();
     let pair = ketchup_scheduler::ExactPairCandidate {
         left_graph: 0,
@@ -848,7 +848,7 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
         ketchup_scheduler::ExactPairRelation::Penetrating
     );
     let mut corrupt_sources = pair_sources.clone();
-    corrupt_sources.values_mut().next().unwrap()[0] ^= 1;
+    Arc::make_mut(corrupt_sources.values_mut().next().unwrap())[0] ^= 1;
     assert!(
         supervisor
             .query_exact_brep_pairs(
@@ -982,8 +982,8 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
             .any(|window| window == b"ISO-10303")
     );
     let source_blobs = BTreeMap::from([
-        (sha256_hex(&sources[0]), sources[0].clone()),
-        (sha256_hex(&sources[1]), sources[1].clone()),
+        (sha256_hex(&sources[0]), Arc::new(sources[0].clone())),
+        (sha256_hex(&sources[1]), Arc::new(sources[1].clone())),
     ]);
     let model_step = directory.path().join("imported-union-model.step");
     supervisor

@@ -1126,7 +1126,11 @@ fn exact_step_preview_plan_rejects_tamper_stale_and_replay_atomically() {
     assert_eq!(app.document_revision(), baseline_revision + 1);
     assert_eq!(app.undo_step_count(), baseline_undo + 1);
     assert_eq!(
-        app.file.container_data.blobs().get(&pending.plan.blob_hash),
+        app.file
+            .container_data
+            .blobs()
+            .get(&pending.plan.blob_hash)
+            .map(|blob| &**blob),
         Some(&pending.plan.source.source)
     );
     let committed_revision = app.document_revision();

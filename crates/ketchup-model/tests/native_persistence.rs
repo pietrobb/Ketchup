@@ -1072,7 +1072,7 @@ fn native_container_preserves_optional_extensions_and_content_addressed_blobs() 
         loaded.snapshot().canonical_digest(),
         store.current().canonical_digest()
     );
-    assert_eq!(loaded.container_data().blobs()[&blob_hash], blob);
+    assert_eq!(*loaded.container_data().blobs()[&blob_hash], blob);
     let extension = loaded.container_data().extensions().next().unwrap();
     assert_eq!(extension.namespace(), "org.example.audit");
     assert_eq!(extension.path(), "opaque/payload.bin");
@@ -1187,6 +1187,28 @@ fn revision_history_round_trips_with_cursor_and_monotonic_branching() {
         .unwrap();
     assert_eq!(reopened.current().revision_id(), expected_next_revision_id);
     assert_eq!(reopened.visible_redo_steps(), 0);
+}
+
+/// Review 2026-10-19 P3: an import adds its source to a copy of the container
+/// data the previous revision still holds, and adding copied every blob the two
+/// shared: three 30 MB STEP imports copied 30 and then 60 MB, and the history
+/// kept each copy. The new copy shares the blobs it already had.
+#[test]
+fn adding_a_blob_to_a_shared_copy_shares_the_blobs_it_had() {
+    const BLOB: usize = 1024 * 1024;
+    let mut previous = persistence::ContainerData::default();
+    let first = previous.insert_import_blob(vec![7; BLOB]).unwrap();
+    let mut next = previous.clone();
+    let second = next.insert_import_blob(vec![8; BLOB]).unwrap();
+    assert_eq!(next.blobs()[&second].len(), BLOB);
+    assert!(!previous.blobs().contains_key(&second));
+    assert!(
+        std::ptr::eq(
+            previous.blobs()[&first].as_ptr(),
+            next.blobs()[&first].as_ptr()
+        ),
+        "adding a blob copied the {BLOB}-byte blob the copies shared"
+    );
 }
 
 /// Review 2026-10-17 M-5: opening a history copies the container data once per
