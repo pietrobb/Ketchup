@@ -10,10 +10,11 @@ fn main() {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum UsageError {
     StdioRequired,
     WorkerPathMissing,
+    WorkerPathInvalid(OsString, io::Error),
     UnknownOrRepeated(OsString),
 }
 
@@ -22,6 +23,9 @@ impl std::fmt::Display for UsageError {
         match self {
             Self::StdioRequired => formatter.write_str("--stdio is required (use --help)"),
             Self::WorkerPathMissing => formatter.write_str("--worker requires PATH"),
+            Self::WorkerPathInvalid(path, error) => {
+                write!(formatter, "--worker {}: {error}", path.to_string_lossy())
+            }
             Self::UnknownOrRepeated(arg) => {
                 write!(
                     formatter,
@@ -33,7 +37,14 @@ impl std::fmt::Display for UsageError {
     }
 }
 
-impl std::error::Error for UsageError {}
+impl std::error::Error for UsageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::WorkerPathInvalid(_, error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// The worker path the arguments name, `Ok(None)` when they ask for help.
 fn parse_args(
@@ -47,9 +58,12 @@ fn parse_args(
         } else if arg == "--stdio" && !stdio {
             stdio = true;
         } else if arg == "--worker" && worker.is_none() {
-            worker = Some(PathBuf::from(
-                args.next().ok_or(UsageError::WorkerPathMissing)?,
-            ));
+            let path = args.next().ok_or(UsageError::WorkerPathMissing)?;
+            // The scheduler runs only a worker named by an absolute path.
+            worker = Some(
+                std::path::absolute(&path)
+                    .map_err(|error| UsageError::WorkerPathInvalid(path, error))?,
+            );
         } else {
             return Err(UsageError::UnknownOrRepeated(arg));
         }
@@ -97,19 +111,24 @@ mod tests {
 
     #[test]
     fn usage_errors_name_the_offending_argument() {
-        assert_eq!(parse(&[]), Err(UsageError::StdioRequired));
-        assert_eq!(
+        assert!(matches!(parse(&[]), Err(UsageError::StdioRequired)));
+        assert!(matches!(
             parse(&["--stdio", "--worker"]),
             Err(UsageError::WorkerPathMissing)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             parse(&["--stdio", "--stdio"]),
-            Err(UsageError::UnknownOrRepeated("--stdio".into()))
-        );
+            Err(UsageError::UnknownOrRepeated(arg)) if arg == "--stdio"
+        ));
+        // The scheduler runs only a worker named by an absolute path.
         assert_eq!(
-            parse(&["--stdio", "--worker", "w"]),
-            Ok(Some(Some(PathBuf::from("w"))))
+            parse(&["--stdio", "--worker", "w"]).unwrap(),
+            Some(Some(std::env::current_dir().unwrap().join("w")))
         );
-        assert_eq!(parse(&["--stdio", "--help"]), Ok(None));
+        assert!(matches!(
+            parse(&["--stdio", "--worker", ""]),
+            Err(UsageError::WorkerPathInvalid(..))
+        ));
+        assert!(matches!(parse(&["--stdio", "--help"]), Ok(None)));
     }
 }
