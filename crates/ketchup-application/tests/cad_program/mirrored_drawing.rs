@@ -115,4 +115,50 @@ fn an_assembly_drawing_lists_a_mirrored_copy_as_a_position_of_its_own() {
     let svg = export_drawing(&completed, &drawing).unwrap();
     let svg = std::str::from_utf8(svg.svg()).unwrap();
     assert!(!svg.contains("QTY 2"), "{svg}");
+
+    // Review 2026-10-21 MF-21: the mirrored copy drawn alone is still the
+    // opposite hand; only a part in its own hand is drawn as its definition.
+    for (path, expected) in [
+        (&paths[0], DrawingSource::Definition(DEFINITION)),
+        (
+            &paths[1],
+            DrawingSource::RigidAssemblyInstances {
+                instance_paths: vec![paths[1].clone()],
+            },
+        ),
+    ] {
+        let single = program(vec![AssistantCadEditOperation::CreateDrawing {
+            name: "Side".into(),
+            instance_paths: vec![assistant_instance_path(&completed, path)],
+        }]);
+        let current = document.current();
+        let exact = ExactResultRegistry::accept(
+            &current,
+            [exact_box_package(&current, DEFINITION, EXTRUSION)],
+        )
+        .unwrap();
+        drop(current);
+        let batch = plan(&document, &BTreeSet::new(), &exact, &single).unwrap();
+        document.apply_batch(&batch).unwrap();
+        let drawn = document.current();
+        let sheet = drawn.drawing_sheets().last().unwrap();
+        assert_eq!(sheet.source(), &expected);
+        if path == &paths[1] {
+            let exact = ExactResultRegistry::accept(
+                &drawn,
+                [exact_box_package(&drawn, DEFINITION, EXTRUSION)],
+            )
+            .unwrap();
+            let drawing = project_orthographic_drawing(&drawn, &exact, sheet).unwrap();
+            assert_eq!(
+                drawing
+                    .layout
+                    .bom_rows
+                    .iter()
+                    .map(|row| (row.mirrored, row.label.as_str()))
+                    .collect::<Vec<_>>(),
+                [(true, "1 | Side (mirrored) | QTY 1")]
+            );
+        }
+    }
 }
