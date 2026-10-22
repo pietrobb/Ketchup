@@ -563,19 +563,10 @@ impl KetchupApp {
             });
         PushPullTool.cancel(self);
         self.push_pull.distance_input = self.value_box.input.clone();
-        let mut applied =
-            self.start_preview_for(planning.clone()) && self.confirm_push_pull_preview();
-        // A shape on a part whose exact solid is still being evaluated waits
-        // for it here, so Enter applies or refuses the value in this frame, as
-        // on an exact face; left to a later frame, the value was dropped when
-        // the user picked another tool or selection first.
-        if !applied
-            && self.status_key == "status-exact-pending"
-            && self.finish_exact_evaluation_now()
-        {
-            applied = self.start_preview_for(planning) && self.confirm_push_pull_preview();
-        }
-        if applied {
+        // A shape on a part whose exact solid is still being evaluated parks
+        // the value below for the frame that publishes the solid, as a drag
+        // does: waiting here froze the window for the whole evaluation.
+        if self.start_preview_for(planning) && self.confirm_push_pull_preview() {
             self.digest = self.catalog.format(
                 "digest-exact-value-applied",
                 &BTreeMap::from([(

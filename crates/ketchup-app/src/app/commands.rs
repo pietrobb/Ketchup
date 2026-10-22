@@ -581,6 +581,31 @@ impl KetchupApp {
         }
     }
 
+    /// Applies a parked value once the program and the exact solid it waits
+    /// for are ready; true when it was applied. Another tool, value, selection
+    /// or revision (Undo) means the user moved on: the value is not applied to
+    /// what they did since, and the status says so, as nothing waited for it.
+    pub(crate) fn apply_awaited_value(&mut self) -> bool {
+        if self.value_input_awaits_program.is_none()
+            || self.program_is_planning()
+            || (self.status_key == "status-exact-pending" && self.exact.task.is_some())
+        {
+            return false;
+        }
+        let Some(awaited) = self.value_input_awaits_program.take() else {
+            return false;
+        };
+        if awaited == self.awaited_value() {
+            self.apply_value_input();
+            return true;
+        }
+        self.digest = self.catalog.format(
+            "digest-awaited-value-dropped",
+            &BTreeMap::from([("value", awaited.input)]),
+        );
+        false
+    }
+
     /// A typed or dragged value is waiting for the program or an exact solid,
     /// to be applied by the frame that finds them ready.
     #[must_use]

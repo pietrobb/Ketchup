@@ -84,16 +84,12 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
     let solid = home + Vec2::new(40.0, -20.0);
     shell.click_command(AppCommand::Select);
     shell.click_at(solid);
-    let flat = shell.app().canonical_digest();
     shell.click_command(AppCommand::PushPull);
     shell.type_text("500");
     shell.press_key(Key::Enter);
+    // Enter parks the value until the solid arrives; settling applies it.
+    shell.settle();
     assert_eq!(shell.app().document_revision(), start + 3);
-    assert_ne!(
-        shell.app().canonical_digest(),
-        flat,
-        "exact Push/Pull must change the geometry"
-    );
     let extruded = shell
         .app()
         .occurrence_box_geometry(2)

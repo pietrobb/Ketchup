@@ -98,7 +98,7 @@ LONG_TESTS = {
     "crates/ketchup-app/src/tests/exact_modeling.rs::contained_slanted_polygon_solid_tools_round_trip_atomically": 398,
     "crates/ketchup-app/src/tests/exact_modeling.rs::mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools": 321,
     "crates/ketchup-app/tests/capstone_chain.rs::empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence": 305,
-    "crates/ketchup-app/tests/capstone_chain.rs::the_manual_capstone_runs_end_to_end_through_the_designed_shell": 346,
+    "crates/ketchup-app/tests/capstone_chain.rs::the_manual_capstone_runs_end_to_end_through_the_designed_shell": 342,
     "crates/ketchup-app/tests/face_workflow_ui.rs::line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical": 419,
     "crates/ketchup-app/tests/file_workflow/cad_imports.rs::file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscreen": 471,
     "crates/ketchup-app/tests/file_workflow/cad_imports.rs::file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscreen": 344,

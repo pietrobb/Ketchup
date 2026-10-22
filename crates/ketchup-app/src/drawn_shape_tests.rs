@@ -348,12 +348,12 @@ fn a_shape_around_a_whole_part_pulled_through_it_becomes_a_part_of_its_own() {
 }
 
 /// Enter on a shape drawn on a part whose exact solid is still being
-/// evaluated waits for the solid and mills the pocket in that same call, one
-/// revision. Earlier the missing solid made the shape a part of its own, and
-/// then the value was parked for a later frame ("Computing exact result…"),
-/// where picking another tool or selection first dropped it with no revision.
+/// evaluated returns at once with the value parked, so the window keeps
+/// painting; the frame that publishes the solid mills the pocket, one
+/// revision. Before, Enter waited for the whole evaluation (~30 s on a house
+/// part) with the window frozen, and cancelled it after 60 s.
 #[test]
-fn enter_before_the_parts_exact_solid_arrives_mills_the_pocket_at_once() {
+fn enter_before_the_parts_exact_solid_arrives_parks_the_value_without_waiting() {
     let mut app = KetchupApp::new();
     let [block] = place_blocks(&mut app, &[placement(0.0, [0.0; 3])])[..] else {
         unreachable!()
@@ -370,10 +370,9 @@ fn enter_before_the_parts_exact_solid_arrives_mills_the_pocket_at_once() {
         .find(|path| path.is_file())
         .expect("build ketchup-exact-worker alongside the app tests");
     app.headless_force_exact_worker_path(&worker);
-    // The evaluation is still held by the window when Enter is pressed,
-    // however fast the worker answers: no frame has polled it yet.
+    let snapshot = app.document.current();
     app.exact.task = Some(ketchup_application::evaluation::start_exact_evaluation(
-        app.document.current(),
+        snapshot.clone(),
         &app.file.container_data,
         &app.exact.results,
         &app.exact.topology_results,
@@ -383,13 +382,66 @@ fn enter_before_the_parts_exact_solid_arrives_mills_the_pocket_at_once() {
     let revision = app.document_revision();
     app.active_tool = ActiveTool::PushPull;
     app.value_box.input = "-5".into();
-    assert!(app.apply_value_input(), "{}", app.digest);
-    assert_eq!(app.document_revision(), revision + 1);
+    assert!(!app.apply_value_input(), "{}", app.digest);
+    // Enter left the evaluation to the frames: it neither took the task to
+    // wait for it nor changed the document.
+    assert!(app.exact.task.is_some());
+    assert_eq!(app.status_key, "status-exact-pending");
+    assert_eq!(app.document_revision(), revision);
+    assert_eq!(app.value_input_awaits_program, Some(app.awaited_value()));
+
+    let task = app.exact.task.take().unwrap();
+    let products = task.wait(Duration::from_secs(60)).unwrap();
+    ketchup_application::evaluation::publish_exact_products(
+        &mut app.document,
+        &mut app.exact.results,
+        &mut app.exact.topology_results,
+        &task,
+        products,
+    )
+    .unwrap();
+    app.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+    // What the frame that publishes the solid does next.
+    assert!(app.apply_awaited_value(), "{}", app.digest);
     assert!(!app.value_awaits_evaluation());
-    assert!(app.exact.task.is_none());
-    assert_eq!(app.document.current().occurrences().count(), 1);
+    assert_eq!(app.document_revision(), revision + 1, "{}", app.digest);
     evaluate_exact(&mut app);
     assert_volume(volume(&app, block), VOLUME - 20.0 * 20.0 * 5.0);
+}
+
+/// A parked value the user moved on from (here: another tool) is not applied
+/// when the solid arrives, and the status line says it was not, since Enter
+/// no longer waits for it.
+#[test]
+fn a_parked_value_dropped_by_another_tool_is_announced() {
+    let mut app = KetchupApp::new();
+    let [block] = place_blocks(&mut app, &[placement(0.0, [0.0; 3])])[..] else {
+        unreachable!()
+    };
+    draw(
+        &mut app,
+        [0.0, 0.0, 40.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        rectangle([10.0, 10.0], [30.0, 30.0]),
+    );
+    app.active_tool = ActiveTool::PushPull;
+    app.value_box.input = "-5".into();
+    app.value_input_awaits_program = Some(app.awaited_value());
+    let revision = app.document_revision();
+    app.active_tool = ActiveTool::Move;
+    evaluate_exact(&mut app);
+    assert!(!app.apply_awaited_value());
+    assert!(!app.value_awaits_evaluation());
+    assert_eq!(app.document_revision(), revision);
+    assert_eq!(
+        app.digest,
+        app.catalog.format(
+            "digest-awaited-value-dropped",
+            &BTreeMap::from([("value", "-5".to_owned())]),
+        )
+    );
+    assert_volume(volume(&app, block), VOLUME);
 }
 
 /// A Push/Pull drag released while a part's exact solid is still being

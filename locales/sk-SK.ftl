@@ -1397,6 +1397,7 @@ digest-push-pull-profile-live = Inteligentné Tlačiť/ťahať { $distance } —
 digest-push-pull-committed-height = Potvrdené — Tlačiť/ťahať { $distance }; výška { $height } mm · 1 krok späť
 digest-push-pull-committed-profile = Potvrdené — hrana profilu { $distance } · 1 krok späť
 digest-exact-value-applied = Presné Tlačiť/ťahať použité — { $value }
+digest-awaited-value-dropped = { $value } sa nepoužilo: kým sa počítal presný výsledok, zmenil sa nástroj, výber alebo model
 digest-push-pull-invalid-distance = Napíšte vzdialenosť inú ako nula, napríklad 25 na vytiahnutie, -10 na zatlačenie alebo 2,5 cm
 digest-push-pull-not-possible = Tlačiť/ťahať { $distance } nie je možné: plocha sa nemôže posunúť tak ďaleko, napríklad cez celý diel; nič sa nezmenilo
 digest-move-live = Posun { $distance } mm · { $vector }
