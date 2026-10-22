@@ -198,6 +198,8 @@ The Rust workspace also builds on Linux against an OCCT 8.0.1 install in the Uni
 
 No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo lives in memory for the session and reaches back 30 edits: Save writes only the current revision, and reopening a file starts a new Undo history. A named checkpoint in the revision catalog lasts as long: it is not saved, and 30 newer edits drop it. While you work, a work-recovery copy beside the file keeps your edits and their Undo steps, so a crash loses neither.
 
+A newer Kečup opens the files of an older one, but not the other way round. Kečup 0.2.0 and later refuse a file a newer version saved and change nothing. **Do not go back to 0.1.0 with files a later version has saved:** 0.1.0 takes such a file for a damaged one and opens, without saying so, the `.recovery` copy beside it, which holds the content before that save, and saving there can overwrite the newer file.
+
 ## Architecture
 
 Ketchup has one canonical, revisioned document and one validated mutation gateway. Geometry workers, rendering, picking, drawings, validation, imports, exports, UI, plugins, and AI are projections or clients of that authority rather than parallel model stores.

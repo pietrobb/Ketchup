@@ -34,6 +34,13 @@ const SAVED_104: &str = concat!(
     "/tests/fixtures/persistence/format104.bin"
 );
 
+/// Format 103 as Save in the released Kečup 0.2.0 wrote it, for a document a program
+/// owns (`width` overridden to 800, variant `1000`). Written by 0.2.0's own code.
+const RELEASE_0_2_0: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/release-0.2.0.bin"
+);
+
 /// The current format as Save writes it: the current revision alone.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -74,6 +81,19 @@ fn format_102_to_104_files_open_at_their_current_revision() {
         assert_eq!(document.current().underlays().count(), 1);
         assert!(document.current().annotations().is_empty());
     }
+}
+
+#[test]
+fn a_file_saved_by_the_previous_release_opens_with_its_program_and_variants() {
+    let (document, _) = opened(RELEASE_0_2_0, 103, DIGEST_103);
+    let program = document
+        .current_rule_program()
+        .expect("the program owns it");
+    assert_eq!(program.file_name, "cabinet.star");
+    assert_eq!(program.source, "w = param('width', 600)\n");
+    assert_eq!(program.overrides.get("width"), Some(&800.0));
+    assert_eq!(program.variants.len(), 1);
+    assert_eq!(program.variants["1000"].get("width"), Some(&1000.0));
 }
 
 /// One annotation of each kind, shown by the tag [`ANNOTATION_TAG`].

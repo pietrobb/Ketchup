@@ -39,6 +39,9 @@ pub use payload_error::{PayloadError, PayloadLocation, PayloadSection};
 
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
 const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
+/// Raise it with every new kind of entry (REL-1): an older Kečup then names the
+/// file as newer instead of meeting an entry it does not know. 0.2.0 refuses either
+/// cleanly; 0.1.0 takes either for damage and opens the `.recovery` beside the file.
 const CONTAINER_SCHEMA: u16 = 1;
 /// Container entry holding the JSON of the program that owns the current revision.
 const PROGRAM_ENTRY: &str = "program.json";
