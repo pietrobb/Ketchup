@@ -284,7 +284,7 @@ impl Expected {
             Self::Same(expected) => **expected == *after,
             Self::Renamed { from, to, .. } => {
                 // A part, tool or group whose name starts with the old one
-                // ("shelf 2", "a mirrored") keeps its name, unless the
+                // ("p 2", "a mirrored") keeps its name, unless the
                 // program makes it from the part's name and now names it
                 // after the new one.
                 let now = names(after);
