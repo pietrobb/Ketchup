@@ -9,6 +9,11 @@ use ketchup_model::underlay::snap::{
 use ketchup_model::underlay::{Underlay, UnderlayId, UnderlayLines};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
+/// How many times longer than wide the snap window on an underlay may be: a plane seen at
+/// a slant stretches the pointer's tolerance up and down the screen, without end as it is
+/// seen edge-on (review 2026-10-21 P3).
+const MAX_SNAP_WINDOW_STRETCH: f64 = 8.0;
+
 /// What a snap on an underlay line references: no definition and no occurrence.
 pub(crate) fn underlay_reference(underlay: UnderlayId, segment: usize) -> SelectionId {
     SelectionId {
@@ -175,7 +180,10 @@ impl KetchupApp {
     }
 
     /// Where the pointer meets the underlays' plane, z = 0, and how far from there a point
-    /// of that plane may lie to be within `tolerance_px` of the pointer.
+    /// of that plane may lie to be within `tolerance_px` of the pointer: up and down the
+    /// screen as far as that reaches, but at most [`MAX_SNAP_WINDOW_STRETCH`] times its
+    /// reach across the screen, so that a plane seen almost edge-on is not searched to
+    /// its horizon.
     pub(crate) fn underlay_snap_window(
         &self,
         pointer: Pos2,
@@ -184,16 +192,20 @@ impl KetchupApp {
     ) -> Option<([f64; 2], f64)> {
         let at = |offset: Vec2| self.screen_to_plane(pointer + offset, rect, 0.0);
         let center = at(Vec2::ZERO)?;
-        let radius = [
-            Vec2::new(tolerance_px, 0.0),
-            Vec2::new(-tolerance_px, 0.0),
-            Vec2::new(0.0, tolerance_px),
-            Vec2::new(0.0, -tolerance_px),
-        ]
-        .into_iter()
-        .filter_map(at)
-        .map(|point| point.distance(center))
-        .fold(0.0, f64::max);
+        let reach = |offsets: [Vec2; 2]| {
+            offsets
+                .into_iter()
+                .filter_map(at)
+                .map(|point| point.distance(center))
+                .fold(0.0, f64::max)
+        };
+        let across = reach([Vec2::new(tolerance_px, 0.0), Vec2::new(-tolerance_px, 0.0)]);
+        let along = reach([Vec2::new(0.0, tolerance_px), Vec2::new(0.0, -tolerance_px)]);
+        let radius = if across > 0.0 {
+            along.min(MAX_SNAP_WINDOW_STRETCH * across).max(across)
+        } else {
+            along
+        };
         Some(([center.x, center.y], radius))
     }
 

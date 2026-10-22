@@ -72,6 +72,42 @@ fn an_underlay_gives_no_snap_until_its_snap_index_is_built() {
     assert!(app.underlay_snaps_near(&snapshot, [240.0, 20.0], 5.0).1);
 }
 
+/// Review 2026-10-21 P3: looked at almost along the ground, a few pixels up the screen
+/// reach far along the plane, and the snap window took that whole reach as its radius, so
+/// each pointer move searched most of a large drawing. Its radius stays within a few times
+/// its reach across the view.
+#[test]
+fn the_snap_window_stays_narrow_when_the_ground_is_seen_almost_edge_on() {
+    let mut app = imported();
+    let rect = viewport();
+    app.camera.viewport_rect = Some(rect);
+    let tolerance = 8.0;
+    let mut checked = 0;
+    let views = [ProjectionMode::Parallel, ProjectionMode::Perspective]
+        .into_iter()
+        .flat_map(|mode| [0.6_f32, 1.4, 1.55, 1.565].map(|pitch| (mode, pitch)));
+    for (mode, pitch) in views {
+        app.camera.projection_mode = mode;
+        app.camera.pitch = pitch;
+        let pointer = app.project(Vec3::new(140.0, 70.0, 0.0), rect);
+        let Some((center, radius)) = app.underlay_snap_window(pointer, rect, tolerance) else {
+            continue;
+        };
+        let across = [-tolerance, tolerance]
+            .into_iter()
+            .filter_map(|dx| app.screen_to_plane(pointer + Vec2::new(dx, 0.0), rect, 0.0))
+            .map(|point| point.distance(Vec3::new(center[0], center[1], 0.0)))
+            .fold(0.0, f64::max);
+        assert!(across > 0.0, "{mode:?} pitch {pitch}");
+        assert!(
+            radius <= 8.0 * across + 1e-9,
+            "{mode:?} pitch {pitch}: radius {radius} mm, across {across} mm"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 4, "only {checked} pitches saw the ground");
+}
+
 fn snap_near(app: &KetchupApp, point: Vec3, offset: Vec2) -> Option<SnapResult> {
     let rect = viewport();
     app.scene_snap_at_screen(app.project(point, rect) + offset, rect, 8.0, None)
