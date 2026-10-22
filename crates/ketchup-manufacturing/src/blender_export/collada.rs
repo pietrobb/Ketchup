@@ -202,7 +202,7 @@ pub fn model_dae_export(
         .filter(|instance| instance.source.is_canonical())
         .count();
     let loss_report = format!(
-        "authority=validated exact tessellations and canonical mesh bodies\nformat=COLLADA 1.4.1 (DAE)\nconversion=current-visible-model-to-instanced-mesh-scene\nunit=millimetres (no conversion)\naxis=Ketchup Z-up (no conversion)\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences as nodes\nnames=COLLADA 1.4.1 NCName: characters other than letters, digits, _, - and . become _\ncomponents=equal bodies of one color share one geometry and one library node\nmaterials=resolved occurrence sRGB colors as diffuse lambert effects\nnormals=not written; faces follow the triangle winding\nedges=not written; SketchUp shows triangle edges unless its import merges coplanar faces\ntextures=not written\nsketchup_import_verified=false\neditability_loss=canonical features, parameters, rules, dimensions, constraints, joints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_body_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nunique_geometry_count={}\ncomponent_count={}\ntriangle_count={triangle_count}\nresource_vertex_limit={}\nresource_triangle_limit={}\n",
+        "authority=validated exact tessellations and canonical mesh bodies\nformat=COLLADA 1.4.1 (DAE)\nconversion=current-visible-model-to-instanced-mesh-scene\nunit=millimetres (no conversion)\naxis=Ketchup Z-up (no conversion)\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences as nodes\nnames=COLLADA 1.4.1 NCName: characters an XML name does not allow (spaces, ², ½ among them) become _\ncomponents=equal bodies of one color share one geometry and one library node\nmaterials=resolved occurrence sRGB colors as diffuse lambert effects\nnormals=not written; faces follow the triangle winding\nedges=not written; SketchUp shows triangle edges unless its import merges coplanar faces\ntextures=not written\nsketchup_import_verified=false\neditability_loss=canonical features, parameters, rules, dimensions, constraints, joints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_body_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nunique_geometry_count={}\ncomponent_count={}\ntriangle_count={triangle_count}\nresource_vertex_limit={}\nresource_triangle_limit={}\n",
         snapshot.canonical_digest(),
         instances.len(),
         geometries.len(),
@@ -286,18 +286,36 @@ fn dae_matrix(transform: Transform) -> Result<String, ExactProductError> {
         .join(" "))
 }
 
-/// COLLADA 1.4.1 names are `xs:NCName`: letters (with diacritics), digits,
-/// `_`, `-` and `.`, not starting with a digit, `-` or `.`. Every other
-/// character becomes `_`, so `Noha 1` is written `Noha_1`.
+/// Whether `character` may start an XML 1.0 name without a colon (`NameStartChar`).
+fn name_start_char(character: char) -> bool {
+    matches!(character,
+        'A'..='Z' | '_' | 'a'..='z' | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}'
+        | '\u{F8}'..='\u{2FF}' | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}'
+        | '\u{200C}'..='\u{200D}' | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}'
+        | '\u{3001}'..='\u{D7FF}' | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}'
+        | '\u{10000}'..='\u{EFFFF}')
+}
+
+/// Whether `character` may follow in an XML 1.0 name (`NameChar`): combining accents
+/// and `·` among them, `²` and `½` not.
+fn name_char(character: char) -> bool {
+    name_start_char(character)
+        || matches!(character,
+            '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}')
+}
+
+/// COLLADA 1.4.1 names are `xs:NCName`: the characters of an XML name without a colon,
+/// not starting with a digit, `-`, `.` or a combining accent. Every other character
+/// becomes `_`, so `Noha 1` is written `Noha_1` and `1. noha` `_1._noha`.
 fn write_name(xml: &mut BoundedString, name: &str) -> Result<(), ExactProductError> {
     let mut written = String::with_capacity(name.len() + 1);
     for character in name.chars() {
         let allowed = if written.is_empty() {
-            character.is_alphabetic() || character == '_'
+            name_start_char(character)
         } else {
-            character.is_alphanumeric() || matches!(character, '_' | '-' | '.')
+            name_char(character)
         };
-        if !allowed && written.is_empty() && character.is_alphanumeric() {
+        if !allowed && written.is_empty() && name_char(character) {
             written.push('_');
             written.push(character);
         } else {
@@ -312,4 +330,27 @@ fn write_name(xml: &mut BoundedString, name: &str) -> Result<(), ExactProductErr
 
 fn over_limit(_: std::fmt::Error) -> ExactProductError {
     ExactProductError::ExportResourceLimit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn written(name: &str) -> String {
+        let mut xml = BoundedString::new(1024);
+        write_name(&mut xml, name).unwrap();
+        xml.into_inner()
+    }
+
+    // Review 2026-10-21 P3: `²` and `½` are numeric to Rust but no XML name character, and a
+    // combining accent of a decomposed letter is one.
+    #[test]
+    fn a_name_keeps_exactly_the_characters_an_xml_name_allows() {
+        assert_eq!(written("Plocha m²"), "Plocha_m_");
+        assert_eq!(written("½ dosky"), "__dosky");
+        assert_eq!(written("Dosk\u{61}\u{301}"), "Dosk\u{61}\u{301}");
+        assert_eq!(written("Noha 1"), "Noha_1");
+        assert_eq!(written("1. noha"), "_1._noha");
+        assert_eq!(written("Čelo·ľavé"), "Čelo·ľavé");
+    }
 }
