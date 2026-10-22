@@ -202,7 +202,7 @@ pub fn model_dae_export(
         .filter(|instance| instance.source.is_canonical())
         .count();
     let loss_report = format!(
-        "authority=validated exact tessellations and canonical mesh bodies\nformat=COLLADA 1.4.1 (DAE)\nconversion=current-visible-model-to-instanced-mesh-scene\nunit=millimetres (no conversion)\naxis=Ketchup Z-up (no conversion)\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences as nodes\nnames=COLLADA 1.4.1 NCName: characters an XML name does not allow (spaces, ², ½ among them) become _\ncomponents=equal bodies of one color share one geometry and one library node\nmaterials=resolved occurrence sRGB colors as diffuse lambert effects\nnormals=not written; faces follow the triangle winding\nedges=not written; SketchUp shows triangle edges unless its import merges coplanar faces\ntextures=not written\nsketchup_import_verified=false\neditability_loss=canonical features, parameters, rules, dimensions, constraints, joints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_body_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nunique_geometry_count={}\ncomponent_count={}\ntriangle_count={triangle_count}\nresource_vertex_limit={}\nresource_triangle_limit={}\n",
+        "authority=validated exact tessellations and canonical mesh bodies\nformat=COLLADA 1.4.1 (DAE)\nconversion=current-visible-model-to-instanced-mesh-scene\nunit=millimetres (no conversion)\ncoordinates=vertices rounded to 0.000001 mm\naxis=Ketchup Z-up (no conversion)\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences as nodes\nnames=COLLADA 1.4.1 NCName: characters an XML name does not allow (spaces, ², ½ among them) become _\ncomponents=equal bodies of one color share one geometry and one library node\nmaterials=resolved occurrence sRGB colors as diffuse lambert effects\nnormals=not written; faces follow the triangle winding\nedges=not written; SketchUp shows triangle edges unless its import merges coplanar faces\ntextures=not written\nsketchup_import_verified=false\neditability_loss=canonical features, parameters, rules, dimensions, constraints, joints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_body_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nunique_geometry_count={}\ncomponent_count={}\ntriangle_count={triangle_count}\nresource_vertex_limit={}\nresource_triangle_limit={}\n",
         snapshot.canonical_digest(),
         instances.len(),
         geometries.len(),
@@ -241,7 +241,8 @@ fn write_geometry(
             return Err(ExactProductError::InvalidMeshExport);
         }
         let separator = if vertex == 0 { "" } else { " " };
-        write!(xml, "{separator}{} {} {}", point[0], point[1], point[2]).map_err(over_limit)?;
+        let [x, y, z] = point.map(dae_coordinate);
+        write!(xml, "{separator}{x} {y} {z}").map_err(over_limit)?;
     }
     write!(
         xml,
@@ -271,6 +272,15 @@ fn write_geometry(
     }
     xml.write_str("</p></triangles>\n    </mesh></geometry>\n")
         .map_err(over_limit)
+}
+
+/// A vertex coordinate in millimetres to the nanometre, without trailing zeros: the
+/// tessellation is far coarser, and full f64 digits (`0.30000000000000004`) only make the
+/// file longer.
+fn dae_coordinate(value_mm: f64) -> String {
+    let text = format!("{value_mm:.6}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" { "0" } else { text }.to_owned()
 }
 
 /// The row-major matrix COLLADA `<matrix>` takes, in Ketchup's millimetres.
@@ -352,5 +362,15 @@ mod tests {
         assert_eq!(written("Noha 1"), "Noha_1");
         assert_eq!(written("1. noha"), "_1._noha");
         assert_eq!(written("Čelo·ľavé"), "Čelo·ľavé");
+    }
+
+    // Review 2026-10-21 P3: coordinates were written with every f64 digit.
+    #[test]
+    fn a_coordinate_is_written_to_the_nanometre_without_trailing_zeros() {
+        assert_eq!(dae_coordinate(0.1 + 0.2), "0.3");
+        assert_eq!(dae_coordinate(1.0 / 3.0), "0.333333");
+        assert_eq!(dae_coordinate(-20.0), "-20");
+        assert_eq!(dae_coordinate(-1.0e-9), "0");
+        assert_eq!(dae_coordinate(123_456.000_000_4), "123456");
     }
 }
