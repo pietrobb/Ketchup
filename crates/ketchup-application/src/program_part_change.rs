@@ -178,9 +178,11 @@ pub fn rewrite_rule_program_parts(
         source = rewritten;
         evaluated = after;
     }
-    // Every line deleted: a program cannot be empty, and nothing of it is left
-    // to keep, so the edit is committed as it is.
-    Ok((!source.source.trim().is_empty()).then_some(source))
+    // Every part deleted: a program cannot be empty, and what is left of it (a
+    // comment, a param()) makes nothing, so the edit is committed as it is and
+    // the window says no part is left.
+    let makes_nothing = evaluated.model.parts.is_empty() && evaluated.model.instances.is_empty();
+    Ok((!makes_nothing).then_some(source))
 }
 
 /// What the program must make after a change, from what it made before.

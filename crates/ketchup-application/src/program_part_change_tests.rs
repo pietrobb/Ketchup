@@ -40,6 +40,17 @@ fn delete_removes_the_creating_line_and_the_lines_that_only_change_the_part() {
 }
 
 #[test]
+fn deleting_the_last_part_detaches_even_with_a_comment_or_param_left() {
+    // Review 2026-10-19 P3: a comment or param() left behind kept the program
+    // owning an empty document, so the window never said every part was gone.
+    let kept = "# the only part\nW = param(\"w\", 10)\nbox(\"a\", (W, 20, 30))\n";
+    let rewritten =
+        rewrite_rule_program_parts(&program(kept), &[("a".to_owned(), PartChange::Delete)])
+            .expect("changed");
+    assert_eq!(rewritten, None);
+}
+
+#[test]
 fn delete_of_a_part_another_line_uses_is_refused_with_that_line() {
     let used = "a = box(\"a\", (10, 20, 30))\nbox(\"b\", (5, 5, 5), at=(50, 0, 0))\nprint(a)\n";
     let message = refusal(used, "a", PartChange::Delete);
@@ -599,11 +610,6 @@ fn deleting_every_part_writes_no_empty_program() {
             .unwrap()
             .is_none()
     );
-    // A program with a line left keeps owning the parts it still makes.
-    let kept = program(&format!("size = param(\"size\", 5)\n{TWO}"));
-    let rewritten = rewrite_rule_program_parts(&kept, &every).unwrap().unwrap();
-    assert_eq!(rewritten.source, "size = param(\"size\", 5)\n");
-    assert!(model(&rewritten).parts.is_empty());
 }
 
 const PADDED: &str =
