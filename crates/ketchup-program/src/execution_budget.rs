@@ -82,11 +82,28 @@ struct MemoryLimit;
 
 impl std::fmt::Display for MemoryLimit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("program memory limit exceeded; build smaller strings or lists")
+        f.write_str(
+            "program memory limit exceeded by its values together with its printed lines and \
+             the text of its parts; build smaller strings or lists, or print less",
+        )
     }
 }
 
 impl std::error::Error for MemoryLimit {}
+
+/// Counts `bytes` the evaluation keeps outside its values, such as a printed line
+/// or the text of a part, against the heap bound of the evaluation on this thread.
+/// Without that, 250 prints of 8 MB took 6.2 GB under the 1 GiB bound (review
+/// 2026-10-19 PG-17).
+pub(crate) fn hold_outside(bytes: usize, what: &str) -> anyhow::Result<()> {
+    if starlark::values::Heap::hold_outside(bytes) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "program memory limit exceeded: with {what}, the printed lines and the text of the \
+         parts alone pass the bound; print less, or keep long text out of attributes"
+    )
+}
 
 impl<'a, 'e: 'a> BeforeStmtFuncDyn<'a, 'e> for ExecutionBudget {
     fn call<'v>(

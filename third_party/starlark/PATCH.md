@@ -37,6 +37,12 @@ after allocation (`DictMut`, `SetMut`, `d[k] = v`, a dict comprehension) has no 
 hand; it adds to a thread-local count that the heap last limited on the thread includes
 until its next collection, like the `repr` bound.
 
+The embedder keeps memory of its own for an evaluation: printed lines and the text of the
+parts it builds. 250 prints of 8 MB took 6.2 GB under the bound (review 2026-10-19 PG-17).
+`Heap::hold_outside(bytes)` adds such bytes to a thread-local count that the heap last limited
+on the thread includes in `bounded_bytes` until its next `set_allocation_limit`; a collection
+does not free them. It answers false when they alone pass the bound.
+
 `Heap::memory_limit_reached` tells whether the bound refused an operation or the heap holds
 more than it. The refusal's error loses its type when a method returns it as
 `anyhow::Error`, and `ketchup-program` must report it with the code `memory_limit` like the

@@ -166,6 +166,9 @@ thread_local! {
     /// since the last count, for mutation, which has no heap at hand. They count
     /// against the heap last limited on this thread, like `REPR_LIMIT`.
     static MAP_GROWTH: Cell<usize> = const { Cell::new(0) };
+    /// Ketchup patch: bytes the embedder keeps outside any value for the evaluation
+    /// on this thread, see [`Heap::hold_outside`]. A collection does not free them.
+    static HELD_OUTSIDE: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Ketchup patch: the bytes a dict or set with room for `capacity` entries of
@@ -694,19 +697,37 @@ impl Heap {
         self.allocation_limit.set(bytes);
         REPR_LIMIT.with(|limit| limit.set(bytes));
         MAP_GROWTH.with(|grown| grown.set(0));
+        HELD_OUTSIDE.with(|held| held.set(0));
+    }
+
+    /// Ketchup patch: the embedder keeps `bytes` more outside any value for the
+    /// evaluation on this thread, such as printed lines or text copied into its own
+    /// model. They count against the heap last limited on this thread until its next
+    /// [`Heap::set_allocation_limit`]; a collection does not free them. False when
+    /// they alone pass that bound; the sum with the heap is checked by
+    /// [`Heap::bounded_bytes`] like any other allocation.
+    pub fn hold_outside(bytes: usize) -> bool {
+        let held = HELD_OUTSIDE.with(|held| {
+            let total = held.get().saturating_add(bytes);
+            held.set(total);
+            total
+        });
+        REPR_LIMIT.with(|limit| limit.get().is_none_or(|limit| held <= limit))
     }
 
     /// Bytes the bound counts: [`Heap::allocated_bytes`] plus what values on this
     /// heap hold outside it (the digits of big integers, the entries of dicts and
-    /// sets, and on a limited heap what they grew by since the last collection).
+    /// sets, and on a limited heap what they grew by since the last collection),
+    /// plus on a limited heap what the embedder holds ([`Heap::hold_outside`]).
     pub fn bounded_bytes(&self) -> usize {
-        let grown = match self.allocation_limit.get() {
-            Some(_) => MAP_GROWTH.with(Cell::get),
-            None => 0,
+        let (grown, held) = match self.allocation_limit.get() {
+            Some(_) => (MAP_GROWTH.with(Cell::get), HELD_OUTSIDE.with(Cell::get)),
+            None => (0, 0),
         };
         self.allocated_bytes()
             .saturating_add(self.external_bytes.get())
             .saturating_add(grown)
+            .saturating_add(held)
     }
 
     pub(crate) fn note_external_bytes(&self, bytes: usize) {

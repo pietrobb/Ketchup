@@ -149,7 +149,12 @@ hodnota parametra).
   - kh sa berie zo zrezanej výšky (+8 % pri záreze, EC5 3.2(3) chce výšku prvku).
   - Kontrola 6.5.2 sa pri uložení dlhšom ako 400 mm vynechá.
   - Limit 1 GiB nepočíta pamäť na strane Rustu: 250× `print` po 8 MB dá 6,2 GB, atribúty
-    dielov 3,5 GB. Worker to zastaví, CLI nie, a hláška smeruje inam.
+    dielov 3,5 GB. Worker to zastaví, CLI nie, a hláška smeruje inam. **PG-17: opravené
+    okrem kópie v `face_cache`.** `print()` riadky a text dielov (meno, materiál, atribúty,
+    tagy, aj pri `copy()`) sa počítajú do limitu cez `Heap::hold_outside`, chyba je
+    `memory_limit` s nápovedou a zastaví aj CLI. **Otvorený zvyšok:** diel, na ktorého plochy
+    sa program pýta, má v `eval/face_cache.rs` ešte jednu kópiu vrátane atribútov, ktorá sa
+    nepočíta. Najhoršie tak tento text zaberie ~2× limit (nie neobmedzene).
   - Pri 96a6222 hrebenáč dostane sneh len z plôch nad krytinou.
 - **Model:**
   - `register_exact_references` stojí odkazy × prvky (~4,5k × 2k na dome).

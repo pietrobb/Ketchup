@@ -213,6 +213,11 @@ fn record_source(eval: &Evaluator, state: &State, parts: &[&str]) {
 
 impl starlark::PrintHandler for State {
     fn println(&self, text: &str) -> starlark::Result<()> {
+        crate::execution_budget::hold_outside(
+            text.len() + std::mem::size_of::<String>(),
+            "this print()",
+        )
+        .map_err(starlark::Error::from)?;
         self.log.borrow_mut().push(text.to_owned());
         Ok(())
     }
@@ -256,7 +261,21 @@ fn given(value: Option<Value>) -> Option<Value> {
     value.filter(|value| !value.is_none())
 }
 
+/// A text argument the model keeps, counted against the heap bound like a
+/// printed line (review 2026-10-19 PG-17).
 fn text(value: Option<Value>, what: &str) -> anyhow::Result<Option<String>> {
+    let text = owned_text(value, what)?;
+    if let Some(text) = &text {
+        crate::execution_budget::hold_outside(
+            text.len() + std::mem::size_of::<String>(),
+            &format!("the {what}"),
+        )?;
+    }
+    Ok(text)
+}
+
+/// [`text`] not counted yet: part text counts when the part is added.
+fn owned_text(value: Option<Value>, what: &str) -> anyhow::Result<Option<String>> {
     given(value)
         .map(|value| {
             value
@@ -915,6 +934,9 @@ fn insert_part(state: &State, mut part: Part, tool: bool) -> anyhow::Result<Part
         anyhow::bail!("more than {MAX_PARTS} parts; check the program for a runaway loop");
     }
     state.add_bodies(boolean_bodies(&part), &format!("part {name:?}"))?;
+    // Every part, copies too, keeps its own text: one 8 MB attribute on 450 parts
+    // took 3.5 GB under the 1 GiB bound (review 2026-10-19 PG-17).
+    crate::execution_budget::hold_outside(part_text_bytes(&part), &format!("part {name:?}"))?;
     if tool {
         model.tools.push(part.clone());
     } else {
@@ -922,6 +944,24 @@ fn insert_part(state: &State, mut part: Part, tool: bool) -> anyhow::Result<Part
     }
     state.take_name(&part.name, if tool { Named::Tool } else { Named::Part });
     Ok(part)
+}
+
+/// Bytes of the text a part keeps: its name, material, attributes and tags.
+fn part_text_bytes(part: &Part) -> usize {
+    let text = |text: &str| text.len() + std::mem::size_of::<String>();
+    text(&part.name)
+        + part.material.as_deref().map_or(0, text)
+        + part
+            .attributes
+            .iter()
+            .map(|(key, value)| text(key) + text(value))
+            .sum::<usize>()
+        + part
+            .tags
+            .iter()
+            .map(String::as_str)
+            .map(text)
+            .sum::<usize>()
 }
 
 /// Document tag (layer) names: one name or a list of names.
@@ -995,7 +1035,7 @@ impl Look {
                             )
                         })?;
                         // An attribute given as None is left out.
-                        let value = text(Some(value), &format!("attribute {key:?}"))?;
+                        let value = owned_text(Some(value), &format!("attribute {key:?}"))?;
                         Ok(value.map(|value| (key, value)))
                     })
                     .filter_map(Result::transpose)
@@ -1005,7 +1045,7 @@ impl Look {
             .unwrap_or_default();
         Ok(Self {
             grounded,
-            material: text(material, "material")?,
+            material: owned_text(material, "material")?,
             color,
             attributes,
             tags: given(tags)
@@ -2583,6 +2623,23 @@ pub fn evaluate_cancellable(
     overrides: &BTreeMap<String, f64>,
     cancel: &CancelToken,
 ) -> Result<Evaluated, ProgramError> {
+    evaluate_bounded(
+        file_name,
+        source,
+        overrides,
+        cancel,
+        crate::execution_budget::MAX_HEAP_BYTES,
+    )
+}
+
+/// [`evaluate_cancellable`] with a heap bound of `heap_bytes`, so tests reach it cheaply.
+fn evaluate_bounded(
+    file_name: &str,
+    source: &str,
+    overrides: &BTreeMap<String, f64>,
+    cancel: &CancelToken,
+    heap_bytes: usize,
+) -> Result<Evaluated, ProgramError> {
     let (globals, prelude) = library()?;
     let ast = AstModule::parse(file_name, source.to_owned(), &dialect())
         .map_err(|error| {
@@ -2606,6 +2663,7 @@ pub fn evaluate_cancellable(
     let result = {
         let mut eval = Evaluator::new(&module);
         crate::execution_budget::install(&mut eval, cancel);
+        eval.heap().set_allocation_limit(Some(heap_bytes));
         eval.set_print_handler(state.as_ref());
         let result = eval.eval_module(ast, &globals);
         // The heap, not the error: a refused allocation's error loses its type
@@ -2735,6 +2793,45 @@ mod tests {
         .map(|_| ())
         .unwrap_err();
         assert_eq!(error.code, "evaluation_error", "{error}");
+    }
+
+    /// Review 2026-10-19 PG-17: printed lines and the text of parts are kept outside
+    /// the heap, and the bound did not count them: 250 prints of 8 MB took 6.2 GB
+    /// and one 8 MB attribute on 450 parts 3.5 GB under 1 GiB. Here each case keeps
+    /// 6 MB of such text on a 1 MiB bound; the same text a few times stays allowed.
+    #[test]
+    fn printed_lines_and_part_text_count_against_the_heap_bound() {
+        let bound = 1 << 20;
+        let run = |source: &str| {
+            evaluate_bounded(
+                "kept.star",
+                source,
+                &BTreeMap::new(),
+                &CancelToken::default(),
+                bound,
+            )
+        };
+        let note = "s = \"a\" * 60000\n";
+        let huge = [
+            format!("{note}for i in range(100):\n    print(s)\n"),
+            format!(
+                "{note}for i in range(100):\n    box(\"p%d\" % i, (10, 10, 10), attributes = {{\"note\": s}})\n"
+            ),
+            format!(
+                "{note}box(\"p\", (10, 10, 10), material = s)\nfor i in range(100):\n    copy(\"p\", \"c%d\" % i)\n"
+            ),
+        ];
+        for source in &huge {
+            let error = run(source).map(|_| ()).unwrap_err();
+            assert_eq!(error.code, "memory_limit", "{source}: {error}");
+            assert!(error.message.contains("print less"), "{source}: {error}");
+        }
+        let few = format!(
+            "{note}for i in range(3):\n    print(s)\n    box(\"p%d\" % i, (10, 10, 10), attributes = {{\"note\": s}})\n"
+        );
+        let evaluated = run(&few).unwrap();
+        assert_eq!(evaluated.log.len(), 3);
+        assert_eq!(evaluated.model.parts.len(), 3);
     }
 
     fn builtin_names() -> Vec<String> {
