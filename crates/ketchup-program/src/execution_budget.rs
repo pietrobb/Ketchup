@@ -6,8 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAX_STATEMENTS: u64 = 5_000_000;
-/// Wall time one evaluation may take.
-pub const MAX_TIME: Duration = Duration::from_secs(20);
+/// Wall time one evaluation may take. A debug build evaluates about 13 to 16
+/// times slower, so it gets the same margin in proportion: with 20 s, the
+/// largest example program (5.8 s in debug, 11 s under load) ended on the
+/// time bound in a loaded full test run (review 2026-10-21 TST-7).
+pub const MAX_TIME: Duration =
+    Duration::from_secs(if cfg!(debug_assertions) { 20 * 16 } else { 20 });
 /// Bytes the program heap may hold. Evaluation runs inside the window process,
 /// so a program that builds a huge string or list must fail instead of taking
 /// the memory of the whole computer.
