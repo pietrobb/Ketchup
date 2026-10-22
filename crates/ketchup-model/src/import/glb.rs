@@ -16,6 +16,8 @@ use crate::document::{
     MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot, Transform,
 };
 
+mod json;
+
 pub const GLB_PARSER_ID: &str = "ketchup-glb";
 pub const GLB_PARSER_VERSION: &str = "1";
 
@@ -168,6 +170,8 @@ pub enum GlbImportError {
     InvalidText,
     InvalidSourceIdentity(ImportContractError),
     MalformedJson(String),
+    /// The JSON holds more values the import reads than an importable GLB can.
+    JsonTooLarge,
     InvalidReport(ImportContractError),
     RejectedByDocument(crate::document::CanonicalError),
     IdSpaceExhausted,
@@ -202,6 +206,14 @@ impl fmt::Display for GlbImportError {
             Self::MalformedJson(reason) => {
                 return write!(formatter, "GLB JSON document is malformed: {reason}");
             }
+            Self::JsonTooLarge => {
+                return write!(
+                    formatter,
+                    "GLB JSON holds more than {} values the import reads; a GLB of at most \
+                     {MAX_NODES} nodes and {MAX_MESHES} meshes holds far fewer",
+                    json::MAX_JSON_VALUES
+                );
+            }
             Self::InvalidReport(error) => {
                 return write!(formatter, "GLB import report is invalid: {error}");
             }
@@ -220,9 +232,12 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
         return Err(GlbImportError::Empty);
     }
     let (json_bytes, binary) = parse_container(source)?;
-    let root: Value = serde_json::from_slice(json_bytes)
-        .map_err(|error| GlbImportError::MalformedJson(error.to_string()))?;
-    let root = object(&root)?;
+    let json::GlbJson { root, counts } = json::read(json_bytes).map_err(|error| match error {
+        json::ReadError::TooLarge => GlbImportError::JsonTooLarge,
+        json::ReadError::NotObject => GlbImportError::InvalidJson,
+        json::ReadError::Malformed(error) => GlbImportError::MalformedJson(error.to_string()),
+    })?;
+    let root = &root;
     validate_asset(root)?;
     reject_required_extensions(root)?;
 
@@ -251,7 +266,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
     let selection = select_scene(root)?;
     let materials = optional_array(root, "materials")?;
     let mut diagnostic_counts = BTreeMap::<&'static str, u32>::new();
-    record_document_losses(root, &mut diagnostic_counts)?;
+    record_document_losses(&counts, &mut diagnostic_counts)?;
     let material_colors = parse_materials(materials, &mut diagnostic_counts)?;
     let (primitives, mesh_primitives, total_triangles) = parse_meshes(
         root,
@@ -1318,8 +1333,10 @@ fn reject_required_extensions(root: &Map<String, Value>) -> Result<(), GlbImport
     }
 }
 
+/// Names what the import leaves out, from the length of each root array it only counts
+/// ([`json::COUNTED_KEYS`]).
 fn record_document_losses(
-    root: &Map<String, Value>,
+    counts: &BTreeMap<&'static str, usize>,
     diagnostics: &mut BTreeMap<&'static str, u32>,
 ) -> Result<(), GlbImportError> {
     for (name, code) in [
@@ -1328,25 +1345,17 @@ fn record_document_losses(
         ("images", "glb_images_ignored"),
         ("textures", "glb_textures_ignored"),
         ("samplers", "glb_samplers_ignored"),
+        ("extensionsUsed", "glb_optional_extensions_ignored"),
     ] {
-        let values = optional_array(root, name)?;
-        if !values.is_empty() {
+        let count = counts.get(name).copied().unwrap_or(0);
+        if count > 0 {
             bump(
                 diagnostics,
                 code,
-                u32::try_from(values.len())
+                u32::try_from(count)
                     .map_err(|_: std::num::TryFromIntError| GlbImportError::UnsupportedFeature)?,
             )?;
         }
-    }
-    let used = optional_array(root, "extensionsUsed")?;
-    if !used.is_empty() {
-        bump(
-            diagnostics,
-            "glb_optional_extensions_ignored",
-            u32::try_from(used.len())
-                .map_err(|_: std::num::TryFromIntError| GlbImportError::UnsupportedFeature)?,
-        )?;
     }
     Ok(())
 }
@@ -1611,6 +1620,75 @@ fn read_f32(source: &[u8], offset: usize) -> Result<f32, GlbImportError> {
     Ok(f32::from_le_bytes(
         bytes.try_into().expect("four-byte checked slice"),
     ))
+}
+
+#[cfg(test)]
+mod json_tests {
+    use super::*;
+
+    /// The JSON and the binary chunk of the committed Blender GLB.
+    fn sample() -> (Value, Vec<u8>) {
+        let seed = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../artifacts/blender/garden-studio-colored.glb"
+        ))
+        .unwrap();
+        let length = usize::try_from(u32::from_le_bytes(seed[12..16].try_into().unwrap())).unwrap();
+        let json = serde_json::from_slice(&seed[20..20 + length]).unwrap();
+        (json, seed[20 + length..].to_vec())
+    }
+
+    fn packed(json: &Value, binary: &[u8]) -> Vec<u8> {
+        let mut json = serde_json::to_vec(json).unwrap();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let total = 12 + 8 + json.len() + binary.len();
+        let mut glb = Vec::with_capacity(total);
+        glb.extend_from_slice(b"glTF");
+        glb.extend_from_slice(&2_u32.to_le_bytes());
+        glb.extend_from_slice(&u32::try_from(total).unwrap().to_le_bytes());
+        glb.extend_from_slice(&u32::try_from(json.len()).unwrap().to_le_bytes());
+        glb.extend_from_slice(b"JSON");
+        glb.extend_from_slice(&json);
+        glb.extend_from_slice(binary);
+        glb
+    }
+
+    /// Review 2026-10-21 P3: the JSON of a GLB was kept whole as `serde_json::Value`, 14
+    /// to 27 times its size. Data the import never reads, `extras` however large, and
+    /// arrays it only counts now read as without it; what it reads is bounded, so a file
+    /// holding more than an importable GLB can is refused by name, not read whole.
+    #[test]
+    fn unread_json_costs_nothing_and_read_json_is_bounded() {
+        let (json, binary) = sample();
+        let scene = inspect_glb(&packed(&json, &binary)).unwrap();
+        let many = |value: Value| Value::Array(vec![value; 300_000]);
+
+        let mut unread = json.clone();
+        unread["extras"] = many(Value::from(0));
+        unread["nodes"][0]["extras"] = many(Value::from("x"));
+        unread["meshes"][0]["primitives"][0]["extras"] = many(Value::from(0.5));
+        assert_eq!(inspect_glb(&packed(&unread, &binary)), Ok(scene.clone()));
+
+        let mut counted = json.clone();
+        counted["animations"] = many(serde_json::json!({"channels": [], "samplers": []}));
+        let counted = inspect_glb(&packed(&counted, &binary)).unwrap();
+        assert_eq!(counted.instance_count, scene.instance_count);
+        assert!(counted.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code() == "glb_animations_ignored" && diagnostic.count() == 300_000
+        }));
+
+        let mut read = json;
+        read["materials"]
+            .as_array_mut()
+            .unwrap()
+            .extend(vec![serde_json::json!({}); 300_000]);
+        assert_eq!(
+            inspect_glb(&packed(&read, &binary)),
+            Err(GlbImportError::JsonTooLarge)
+        );
+    }
 }
 
 #[cfg(test)]
