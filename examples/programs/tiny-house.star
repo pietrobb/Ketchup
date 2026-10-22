@@ -374,6 +374,9 @@ for side, ground, upper, (x, y), along, length, start, reverse in SIDES:
         buildup("konštrukcia/" + upper, (x, y, attic), along, (0, 0, 1), length, INNER, top = gable_top(attic),
                 openings = attic_openings + [ridge_pocket(FACADE, attic)] + plate_pockets(FACADE, attic, length),
                 tags = T)
+# Sadrokartón nad východným oknom nesiaha na stĺpiky: je priskrutkovaný cez OSB, ktoré
+# ho nesie. Bez spoja by sa dotyk s OSB nerátal ako uloženie.
+joint("konštrukcia/prízemie/stena východ/sadrokartón 3", "konštrukcia/prízemie/stena východ/OSB 3", kind = "vrut")
 
 FACADE_LAYERS = WALL_LAYERS[-1:]
 eave_line = roof_z(0, G) - SLAB

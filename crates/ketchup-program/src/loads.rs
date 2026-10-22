@@ -810,10 +810,30 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     // What each part rests on, and what else it touches from below or the side.
     let mut rests: Vec<Vec<Support>> = parts.iter().map(|_| Vec::new()).collect();
     let mut leans: Vec<Vec<Support>> = parts.iter().map(|_| Vec::new()).collect();
-    // Failing both, a part that carries nothing is fixed to the carriers it touches
-    // (a gypsum board over an opening screwed through the OSB to the header). A
-    // carrier never leans on such a part, so the weight still runs one way down.
+    // Parts some joint ties together (a rafter tie, a screw): it holds them
+    // against lifting off, whatever else it does.
+    let joined_pairs: BTreeSet<(&str, &str)> = model
+        .joints
+        .iter()
+        .flat_map(|joint| {
+            let [a, b] = [joint.parts[0].as_str(), joint.parts[1].as_str()];
+            [(a, b), (b, a)]
+        })
+        .collect();
+    let joined = |a: &str, b: &str| joined_pairs.contains(&(a, b));
+    // Failing both, a part that carries nothing is fixed to the carriers a joint ties
+    // it to from the side or below (a gypsum board over an opening screwed through
+    // the OSB to the header). A carrier never leans on such a part, so the weight
+    // still runs one way down. Touching a carrier without a joint holds nothing.
     let mut fixed_to: Vec<Vec<Support>> = parts.iter().map(|_| Vec::new()).collect();
+    let mut touches: Vec<BTreeSet<usize>> = parts.iter().map(|_| BTreeSet::new()).collect();
+    let mut fix_to = |item: usize, carrier: usize, support: Support| {
+        if joined(&parts[item].name, &parts[carrier].name) {
+            fixed_to[item].push(support);
+        } else {
+            touches[item].insert(carrier);
+        }
+    };
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
     let mut order: Vec<usize> = (0..parts.len()).collect();
     order.sort_by(|a, b| bounds[*a].0[0].total_cmp(&bounds[*b].0[0]));
@@ -847,7 +867,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                         if leans_on[other] {
                             leans[item].push(support(other));
                         } else if may_carry[other] && !may_carry[item] {
-                            fixed_to[item].push(support(other));
+                            fix_to(item, other, support(other));
                         }
                     }
                     continue;
@@ -858,23 +878,12 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                     // Hangs from it (a ceiling board under a joist), unless it carries it.
                     leans[lower].push(support(upper));
                 } else if may_carry[upper] {
-                    fixed_to[lower].push(support(upper));
+                    fix_to(lower, upper, support(upper));
                 }
             }
         }
     }
     let index = |name: &str| parts.iter().position(|part| part.name == name);
-    // Parts some joint ties together (a rafter tie, a screw): it holds them
-    // against lifting off, whatever else it does.
-    let joined_pairs: BTreeSet<(&str, &str)> = model
-        .joints
-        .iter()
-        .flat_map(|joint| {
-            let [a, b] = [joint.parts[0].as_str(), joint.parts[1].as_str()];
-            [(a, b), (b, a)]
-        })
-        .collect();
-    let joined = |a: &str, b: &str| joined_pairs.contains(&(a, b));
     for joint in model.joints.iter().filter(|joint| joint.bearing) {
         let (Some(a), Some(b)) = (index(&joint.parts[0]), index(&joint.parts[1])) else {
             continue;
@@ -980,7 +989,17 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                     .iter()
                     .any(|p| p.loads_n.values().any(|v| *v > 0.0))
             {
-                let reason = format!("{} rests on nothing that carries it", parts[item].name);
+                let mut reason = format!("{} rests on nothing that carries it", parts[item].name);
+                if !touches[item].is_empty() {
+                    let names: Vec<&str> = touches[item]
+                        .iter()
+                        .map(|other| parts[*other].name.as_str())
+                        .collect();
+                    reason.push_str(&format!(
+                        "; it only touches {} from the side or below, which holds nothing without a joint",
+                        names.join(", ")
+                    ));
+                }
                 if !member[item] {
                     report
                         .unassigned

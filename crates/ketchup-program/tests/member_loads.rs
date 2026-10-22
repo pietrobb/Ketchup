@@ -116,14 +116,15 @@ box(\"weight\", (100, 80, 100), at = (200, 0, 1220), material = \"steel\", tags 
 #[test]
 fn a_board_fixed_to_the_side_of_a_carrier_passes_its_weight_through_it() {
     // A 100 x 100 x 2000 mm post; from z = 500 a 1000 mm high 15 mm board on its
-    // side and a 12.5 mm gypsum board on the board, neither on the floor.
+    // side and a 12.5 mm gypsum board screwed to the board, neither on the floor.
     let wall = |board_tags: &str| {
         format!(
             "load_path(only = [\"frame\"], carriers = [\"deck\"])
 self_weight([\"construction\"])
 box(\"post\", (100, 100, 2000), material = \"C24\", tags = [\"frame\", \"construction\"])
 box(\"board\", (100, 15, 1000), at = (0, 100, 500), material = \"C24\", tags = [{board_tags}])
-box(\"gypsum\", (100, 12.5, 1000), at = (0, 115, 500), material = \"C24\", tags = [\"construction\"])\n"
+box(\"gypsum\", (100, 12.5, 1000), at = (0, 115, 500), material = \"C24\", tags = [\"construction\"])
+joint(\"gypsum\", \"board\", kind = \"screw\")\n"
         )
     };
     let weight = |volume_m3: f64| volume_m3 * 420.0 * 9.81;
@@ -144,6 +145,50 @@ box(\"gypsum\", (100, 12.5, 1000), at = (0, 115, 500), material = \"C24\", tags 
     close(
         member(&plain, "post").loads_n["permanent"],
         weight(0.02) + weight(0.0015),
+    );
+}
+
+/// PG-14 (review 2026-10-19): a 52 kg block beside the 20 mm edge of an OSB
+/// carrier, with no joint and nothing under it, put 605.7 N on the post instead
+/// of its own 90.6 N and was not reported as resting on nothing.
+#[test]
+fn a_part_touching_a_carrier_without_a_joint_keeps_its_weight() {
+    // The 100 x 100 x 2000 mm post with a 20 mm OSB carrier on its side from z = 500;
+    // a 100 x 100 x 662.4 mm steel block (52 kg) against the board's 20 mm edge,
+    // 5 mm clear of the post.
+    let wall = |fixing: &str| {
+        format!(
+            "load_path(only = [\"frame\"], carriers = [\"deck\"])
+material_weight(\"steel\", kg_m3 = 7850, source = \"test\")
+self_weight([\"construction\"])
+box(\"post\", (100, 100, 2000), material = \"C24\", tags = [\"frame\", \"construction\"])
+box(\"osb\", (100, 20, 1000), at = (0, 100, 500), material = \"C24\", tags = [\"deck\", \"construction\"])
+box(\"block\", (100, 100, 662.4), at = (100, 105, 500), material = \"steel\", tags = [\"construction\"])
+{fixing}"
+        )
+    };
+    let wood = |volume_m3: f64| volume_m3 * 420.0 * 9.81;
+    let block = 0.006624 * 7850.0 * 9.81;
+
+    let loose = report(&wall(""), &[]);
+    close(
+        member(&loose, "post").loads_n["permanent"],
+        wood(0.02) + wood(0.002),
+    );
+    let reason = loose
+        .loads
+        .unassigned
+        .get("block")
+        .unwrap_or_else(|| panic!("the block keeps its weight: {:?}", loose.loads.unassigned));
+    assert!(reason.contains("rests on nothing"), "{reason}");
+    assert!(reason.contains("only touches osb"), "{reason}");
+
+    // Screwed to the board, it hangs on it and so on the post.
+    let screwed = report(&wall("joint(\"block\", \"osb\", kind = \"screw\")\n"), &[]);
+    assert_eq!(screwed.loads.unassigned, BTreeMap::new());
+    close(
+        member(&screwed, "post").loads_n["permanent"],
+        wood(0.02) + wood(0.002) + block,
     );
 }
 
