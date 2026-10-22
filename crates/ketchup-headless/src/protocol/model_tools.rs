@@ -86,7 +86,7 @@ fn batch_error(error: OccurrenceBatchError) -> Error {
         }
         OccurrenceBatchError::Session(error) => error.into(),
         error @ OccurrenceBatchError::HostTransaction(_) => {
-            Error::new("batch_transaction_failed", error.to_string())
+            Error::caused_by("batch_transaction_failed", &error)
         }
         OccurrenceBatchError::Cancelled => Error::new("batch_cancelled", "batch job cancelled"),
         OccurrenceBatchError::StaleTask { expected, actual } => {
@@ -105,6 +105,8 @@ fn batch_error(error: OccurrenceBatchError) -> Error {
 /// to the short limit used for names in query results.
 const MAX_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
 const MAX_ERROR_DETAILS_BYTES: usize = 16 * 1024;
+/// Deepest cause chain sent to a client; each cause is cut like the message.
+const MAX_ERROR_CAUSES: usize = 8;
 
 fn truncate(text: &mut String, limit: usize) -> bool {
     if text.len() <= limit {
@@ -130,6 +132,20 @@ pub(super) fn bounded_error(mut error: Error) -> Error {
     });
     if oversized {
         error.details = Some(json!({"details_omitted":true}));
+    }
+    let causes = error.causes.len();
+    error.causes.truncate(MAX_ERROR_CAUSES);
+    for cause in &mut error.causes {
+        truncate(cause, MAX_ERROR_MESSAGE_BYTES);
+    }
+    if causes > MAX_ERROR_CAUSES {
+        let details = error.details.get_or_insert_with(|| json!({}));
+        if let Some(object) = details.as_object_mut() {
+            object.insert(
+                "causes_omitted".to_owned(),
+                json!(causes - MAX_ERROR_CAUSES),
+            );
+        }
     }
     if message_truncated {
         let details = error.details.get_or_insert_with(|| json!({}));
@@ -169,7 +185,7 @@ impl Server {
             let result = match method {
                 "verify_job_start" => {
                     let request: VerifyJobStart = serde_json::from_value(Value::Object(p.clone()))
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                        .map_err(|e| Error::invalid_because(&e))?;
                     if !(1..=300_000).contains(&request.timeout_ms) {
                         return Err(Error::invalid("timeout_ms must be in [1, 300000]"));
                     }
@@ -206,7 +222,7 @@ impl Server {
                 }
                 "verify_job_status" => {
                     let request: VerifyJobHandle = serde_json::from_value(Value::Object(p.clone()))
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                        .map_err(|e| Error::invalid_because(&e))?;
                     let index = self
                         .verify_jobs
                         .iter()
@@ -219,7 +235,7 @@ impl Server {
                 }
                 "verify_job_cancel" => {
                     let request: VerifyJobHandle = serde_json::from_value(Value::Object(p.clone()))
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                        .map_err(|e| Error::invalid_because(&e))?;
                     let index = self
                         .verify_jobs
                         .iter()
@@ -257,7 +273,7 @@ impl Server {
             let result = match method {
                 "batch_job_start" => {
                     let request: BatchJobStart = serde_json::from_value(Value::Object(p.clone()))
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                        .map_err(|e| Error::invalid_because(&e))?;
                     let task = self
                         .model_queries
                         .create_occurrence_batch_task(
@@ -302,7 +318,7 @@ impl Server {
                 }
                 "batch_job_status" => {
                     let request: BatchJobHandle = serde_json::from_value(Value::Object(p.clone()))
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                        .map_err(|e| Error::invalid_because(&e))?;
                     let job = self
                         .batch_jobs
                         .iter()
@@ -312,7 +328,7 @@ impl Server {
                 }
                 "batch_job_cancel" => {
                     let request: BatchJobHandle = serde_json::from_value(Value::Object(p.clone()))
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                        .map_err(|e| Error::invalid_because(&e))?;
                     let job = self
                         .batch_jobs
                         .iter_mut()
@@ -323,7 +339,7 @@ impl Server {
                 }
                 "batch_job_step" => {
                     let request: BatchJobStep = serde_json::from_value(Value::Object(p.clone()))
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                        .map_err(|e| Error::invalid_because(&e))?;
                     let index = self
                         .batch_jobs
                         .iter()
@@ -354,8 +370,8 @@ impl Server {
                     return Ok(self.compact_state_result());
                 }
                 "edit_context" => {
-                    let request: GuardedEditContext = serde_json::from_value(params)
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    let request: GuardedEditContext =
+                        serde_json::from_value(params).map_err(|e| Error::invalid_because(&e))?;
                     let actual_epoch = self.session.mutation_epoch();
                     if request
                         .expected_document_id
@@ -378,6 +394,7 @@ impl Server {
                                 "revision": snapshot.revision_id(),
                                 "canonical_digest": snapshot.canonical_digest(),
                                 "mutation_epoch": actual_epoch})),
+                            causes: Vec::new(),
                         });
                     }
                     let query = EditContextRequest {
@@ -415,8 +432,8 @@ impl Server {
                     }
                 }
                 "query" => {
-                    let request: PageRequest = serde_json::from_value(params)
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    let request: PageRequest =
+                        serde_json::from_value(params).map_err(|e| Error::invalid_because(&e))?;
                     self.model_queries.page_with_topology(
                         &snapshot,
                         self.session.topology_results(),
@@ -430,8 +447,8 @@ impl Server {
                         kind: EntityKind,
                         id: u64,
                     }
-                    let request: Detail = serde_json::from_value(params)
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    let request: Detail =
+                        serde_json::from_value(params).map_err(|e| Error::invalid_because(&e))?;
                     self.model_queries.detail_with_topology(
                         &snapshot,
                         self.session.topology_results(),
@@ -440,8 +457,8 @@ impl Server {
                     )
                 }
                 "workset_create" => {
-                    let request: PageRequest = serde_json::from_value(params)
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    let request: PageRequest =
+                        serde_json::from_value(params).map_err(|e| Error::invalid_because(&e))?;
                     self.model_queries.create_workset(&snapshot, &request)
                 }
                 "workset_status" => {
@@ -450,8 +467,8 @@ impl Server {
                     struct WorksetStatus {
                         handle: String,
                     }
-                    let request: WorksetStatus = serde_json::from_value(params)
-                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    let request: WorksetStatus =
+                        serde_json::from_value(params).map_err(|e| Error::invalid_because(&e))?;
                     self.model_queries
                         .workset_status(&snapshot, &request.handle)
                 }

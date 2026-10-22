@@ -1002,9 +1002,11 @@ impl Response {
     }
 
     /// Non-fatal answer to a request body that does not match the protocol;
-    /// `reason` is the parser's schema message so the caller can fix it.
-    fn invalid_params(id: u64, reason: &str) -> Self {
-        let reason: String = reason
+    /// the reason is the parser's schema message (serde_json keeps all of it in
+    /// its text, with line and column) so the caller can fix it.
+    fn invalid_params(id: u64, error: &serde_json::Error) -> Self {
+        let reason: String = error
+            .to_string()
             .chars()
             .take(MAX_INVALID_PARAMS_REASON_CHARS)
             .collect();

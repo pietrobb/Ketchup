@@ -1886,10 +1886,11 @@ fn every_bridge_error_response_is_a_rejection_with_target_and_fix() {
     failure("stale_document", "changed", json!({}));
     let response = Response::error(4, "busy");
     assert_eq!(response.result.unwrap()["code"], "busy");
-    let invalid = Response::invalid_params(5, "unknown field `x`");
+    let error = serde_json::from_str::<Request>(r#"{"x":1}"#).unwrap_err();
+    let invalid = Response::invalid_params(5, &error);
     let invalid = invalid.result.unwrap();
     assert_eq!(invalid["code"], "invalid_params");
-    assert_eq!(invalid["reason"], "unknown field `x`");
+    assert_eq!(invalid["reason"], error.to_string());
     assert_eq!(invalid["target"], "params");
 }
 

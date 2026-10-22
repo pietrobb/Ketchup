@@ -363,7 +363,7 @@ fn prepare_discovery_root(root: &Path) -> io::Result<()> {
 
 fn random_instance_id() -> io::Result<String> {
     let mut random = [0_u8; INSTANCE_ID_BYTES];
-    getrandom::fill(&mut random).map_err(|error| io::Error::other(error.to_string()))?;
+    getrandom::fill(&mut random).map_err(io::Error::other)?;
     Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 

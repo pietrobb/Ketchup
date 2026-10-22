@@ -125,6 +125,9 @@ struct Error {
     code: String,
     message: String,
     details: Option<Value>,
+    /// The messages of the errors under `message`, outermost first; answered as
+    /// `causes` so a client sees why, not only the top-level text (AGENTS.md §2).
+    causes: Vec<String>,
 }
 impl Error {
     fn new(code: &str, message: impl Into<String>) -> Self {
@@ -132,10 +135,30 @@ impl Error {
             code: code.into(),
             message: message.into(),
             details: None,
+            causes: Vec::new(),
         }
     }
     fn invalid(message: impl Into<String>) -> Self {
         Self::new("invalid_params", message)
+    }
+    /// `error` refused the request: its text is the message and every error
+    /// under it is kept as a cause.
+    fn caused_by(code: &str, error: &(dyn std::error::Error + 'static)) -> Self {
+        let mut causes = Vec::new();
+        let mut next = error.source();
+        while let Some(cause) = next {
+            causes.push(cause.to_string());
+            next = cause.source();
+        }
+        let message = error.to_string();
+        Self {
+            causes,
+            ..Self::new(code, message)
+        }
+    }
+    /// The parameters could not be read; `error` says which and why.
+    fn invalid_because(error: &(dyn std::error::Error + 'static)) -> Self {
+        Self::caused_by("invalid_params", error)
     }
 }
 impl From<CamReviewError> for Error {
@@ -155,7 +178,7 @@ impl From<CamReviewError> for Error {
             CamReviewError::FileExists => "file_exists",
             CamReviewError::Write(_) => "io_error",
         };
-        Self::new(code, error.to_string())
+        Self::caused_by(code, &error)
     }
 }
 
@@ -170,7 +193,7 @@ impl From<FeaReviewError> for Error {
             FeaReviewError::Setup(_) => "fea_setup_rejected",
             FeaReviewError::MeshNotRefined | FeaReviewError::Solve(_) => "fea_solve_rejected",
         };
-        Self::new(code, error.to_string())
+        Self::caused_by(code, &error)
     }
 }
 
@@ -209,7 +232,7 @@ impl From<PdmWorkflowError> for Error {
                 | LocalPdmError::DocumentIdentityMismatch => "pdm_verification_failed",
             },
         };
-        Self::new(code, error.to_string())
+        Self::caused_by(code, &error)
     }
 }
 
@@ -221,9 +244,8 @@ impl From<RuleProgramApplyError> for Error {
                 message,
                 location,
             } => Self {
-                code: format!("program.{code}"),
-                message,
                 details: location.and_then(|location| serde_json::to_value(location).ok()),
+                ..Self::new(&format!("program.{code}"), message)
             },
             RuleProgramApplyError::IncrementalUnsupported => Self::new(
                 "program_incremental_unsupported",
@@ -247,9 +269,8 @@ impl From<SessionError> for Error {
         let code = match &error {
             SessionError::Planning(diagnostic) => {
                 return Self {
-                    code: diagnostic.code.clone(),
-                    message: diagnostic.failed_invariant.clone(),
                     details: Some(json!(diagnostic)),
+                    ..Self::new(&diagnostic.code, diagnostic.failed_invariant.clone())
                 };
             }
             SessionError::Canonical(e) => e.code(),
@@ -262,9 +283,8 @@ impl From<SessionError> for Error {
             SessionError::Evaluation(_) => "evaluation_error",
         };
         Self {
-            code: code.into(),
-            message: error.to_string(),
             details: Some(json!({"diagnostic":format!("{error:?}")})),
+            ..Self::caused_by(code, &error)
         }
     }
 }
@@ -877,6 +897,7 @@ impl Server {
                 details: Some(
                     json!({"revision":s.revision_id(),"canonical_digest":s.canonical_digest(),"mutation_epoch":self.session.mutation_epoch(),"repair_hint":"Read state and explicitly re-plan; do not blindly retry a mutation."}),
                 ),
+                causes: Vec::new(),
             });
         }
         Ok(())
@@ -1020,7 +1041,7 @@ impl Server {
                         .cloned()
                         .ok_or_else(|| Error::invalid("missing program"))?,
                 )
-                .map_err(|e| Error::invalid(e.to_string()))?;
+                .map_err(|e| Error::invalid_because(&e))?;
                 let selection = ids(p, "selection", true)?
                     .into_iter()
                     .map(OccurrenceId)
@@ -1256,7 +1277,7 @@ impl Server {
     pub fn handle(&mut self, line: &[u8]) -> Value {
         let value: Value = match crate::json_input::parse(line) {
             Ok(v) => v,
-            Err(e) => return failure(Value::Null, Error::new("invalid_json", e.to_string())),
+            Err(e) => return failure(Value::Null, Error::caused_by("invalid_json", &e)),
         };
         let id = value
             .get("id")
@@ -1265,7 +1286,7 @@ impl Server {
             .unwrap_or(Value::Null);
         let request: Request = match serde_json::from_value(value) {
             Ok(r) => r,
-            Err(e) => return failure(id, Error::new("invalid_request", e.to_string())),
+            Err(e) => return failure(id, Error::caused_by("invalid_request", &e)),
         };
         if !valid_id(&request.id) {
             return failure(
@@ -1296,6 +1317,9 @@ fn failure(id: Value, error: Error) -> Value {
     let mut detail = json!({"code":error.code,"message":error.message});
     if let Some(details) = error.details {
         detail["details"] = details;
+    }
+    if !error.causes.is_empty() {
+        detail["causes"] = json!(error.causes);
     }
     json!({"protocol":PROTOCOL,"id":id,"error":detail})
 }
@@ -1355,6 +1379,7 @@ fn evaluate_program_source(
         code: format!("program.{}", error.code),
         message: error.message,
         details: None,
+        causes: Vec::new(),
     })
 }
 fn boolean(p: &Map<String, Value>, key: &str, default: bool) -> Result<bool> {
@@ -1391,13 +1416,13 @@ fn cam_review_request(p: &Map<String, Value>) -> Result<CamReviewRequest> {
             .cloned()
             .ok_or_else(|| Error::invalid("missing operations"))?,
     )
-    .map_err(|error| Error::invalid(error.to_string()))?;
+    .map_err(|error| Error::invalid_because(&error))?;
     let fixtures: Vec<CamFixtureInput> = serde_json::from_value(
         p.get("fixtures")
             .cloned()
             .unwrap_or_else(|| Value::Array(Vec::new())),
     )
-    .map_err(|error| Error::invalid(error.to_string()))?;
+    .map_err(|error| Error::invalid_because(&error))?;
     let dialect = match string(p, "dialect")? {
         "iso_metric_gcode" => CamPostprocessorDialect::IsoMetricGCode,
         "controller_neutral_json" => CamPostprocessorDialect::ControllerNeutralJson,
@@ -1440,7 +1465,7 @@ fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequest, bool)>
         );
     }
     let input: FeaReviewInput = serde_json::from_value(Value::Object(payload))
-        .map_err(|error| Error::invalid(error.to_string()))?;
+        .map_err(|error| Error::invalid_because(&error))?;
     if input.definition_id == 0
         || input.feature_id == 0
         || input.occurrence_id == 0
@@ -1528,13 +1553,13 @@ fn pdm_create_request(p: &Map<String, Value>) -> Result<PdmCreateReleaseRequest>
             .cloned()
             .unwrap_or_else(|| Value::Array(Vec::new())),
     )
-    .map_err(|error| Error::invalid(error.to_string()))?;
+    .map_err(|error| Error::invalid_because(&error))?;
     let audit: PdmAuditInput = serde_json::from_value(
         p.get("audit")
             .cloned()
             .ok_or_else(|| Error::invalid("missing audit"))?,
     )
-    .map_err(|error| Error::invalid(error.to_string()))?;
+    .map_err(|error| Error::invalid_because(&error))?;
     let parent_release_id = match p.get("parent_release_id") {
         None | Some(Value::Null) => None,
         Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
@@ -2010,6 +2035,44 @@ mod tests {
     fn invalid_pdm_repository_path_has_a_stable_protocol_code() {
         let error = Error::from(PdmWorkflowError::Core(LocalPdmError::InvalidRepositoryPath));
         assert_eq!(error.code, "pdm_repository_invalid");
+    }
+
+    /// Review 2026-10-18 MCP-4: an error answers the errors under it as
+    /// `causes`, outermost first and bounded, instead of only its own text.
+    #[test]
+    fn an_error_answers_its_whole_cause_chain_bounded() {
+        #[derive(Debug)]
+        struct Layer(usize, Option<Box<Layer>>);
+        impl std::fmt::Display for Layer {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "layer {}", self.0)
+            }
+        }
+        impl std::error::Error for Layer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_deref().map(|layer| layer as _)
+            }
+        }
+        let chain = |depth: usize| {
+            (1..depth).rev().fold(Layer(depth, None), |inner, index| {
+                Layer(index, Some(Box::new(inner)))
+            })
+        };
+        let answered = failure(json!(1), Error::caused_by("pdm_io_error", &chain(3)));
+        assert_eq!(answered["error"]["code"], "pdm_io_error");
+        assert_eq!(answered["error"]["message"], "layer 1");
+        assert_eq!(answered["error"]["causes"], json!(["layer 2", "layer 3"]));
+        assert!(answered["error"].get("details").is_none(), "{answered}");
+
+        let answered = failure(json!(2), Error::invalid_because(&chain(12)));
+        assert_eq!(answered["error"]["code"], "invalid_params");
+        let causes = answered["error"]["causes"].as_array().unwrap();
+        assert_eq!(causes.len(), 8);
+        assert_eq!(causes[0], "layer 2");
+        assert_eq!(answered["error"]["details"]["causes_omitted"], 3);
+
+        let plain = failure(json!(3), Error::invalid("missing program"));
+        assert!(plain["error"].get("causes").is_none(), "{plain}");
     }
 
     #[test]

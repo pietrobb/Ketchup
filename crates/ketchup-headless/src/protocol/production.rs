@@ -50,7 +50,7 @@ impl Server {
                 .cloned()
                 .ok_or_else(|| Error::invalid("missing assignments"))?,
         )
-        .map_err(|error| Error::invalid(error.to_string()))?;
+        .map_err(|error| Error::invalid_because(&error))?;
         if assignments.is_empty() || assignments.len() > 512 {
             return Err(Error::invalid(
                 "assignments must contain 1..512 physical part codes",
@@ -97,7 +97,7 @@ impl Server {
             serde_json::from_value(p.get("adapters").cloned().ok_or_else(|| {
                 Error::invalid("adapters must be an array; empty selects no machine")
             })?)
-            .map_err(|error| Error::invalid(error.to_string()))?;
+            .map_err(|error| Error::invalid_because(&error))?;
         if adapter_ids.len() > 1 || adapter_ids.iter().any(|id| id != "homag-woodwop4") {
             return Err(Error::invalid(
                 "unknown or duplicate built-in production adapter",
@@ -184,7 +184,7 @@ impl Server {
                 self.settings.exact_worker_path.clone(),
                 remaining,
             )
-            .map_err(|error| Error::new("production_blocked", error.to_string()))?;
+            .map_err(|error| Error::caused_by("production_blocked", &error))?;
         let projection = project_general_fabrication(
             &snapshot,
             self.session.exact_results(),
@@ -193,7 +193,7 @@ impl Server {
             tolerance,
             &made,
         )
-        .map_err(|error| Error::new("production_blocked", error.to_string()))?;
+        .map_err(|error| Error::caused_by("production_blocked", &error))?;
         let homag = HomagWoodwopAdapter {
             options: WoodwopMprOptions {
                 vertical_pocket_tool_number: pocket_tool,

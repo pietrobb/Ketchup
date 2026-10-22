@@ -15,7 +15,7 @@ const MAX_CONNECTIONS: usize = 4;
 
 pub(super) fn start(context: egui::Context) -> io::Result<LiveBridge> {
     let mut random = [0_u8; 32];
-    getrandom::fill(&mut random).map_err(|error| io::Error::other(error.to_string()))?;
+    getrandom::fill(&mut random).map_err(io::Error::other)?;
     let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
     start_with_token(context, token)
 }
@@ -544,7 +544,7 @@ fn serve(
             Err(error) => {
                 write_response(
                     &mut stream,
-                    Response::invalid_params(envelope.id, &error.to_string()),
+                    Response::invalid_params(envelope.id, &error),
                     false,
                 )?;
                 continue;

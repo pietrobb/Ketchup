@@ -21,7 +21,8 @@ Two forms are counted in production source (crates/*/src, test modules and
 - debug_formatted: `format!("{error:?}")` or `format!("{:?}", error)` turns an
   error into its Debug text, which neither the caller nor the user can act on.
 - stringified_variant: `Variant(error.to_string())` does the same inside an
-  error variant; carry the source error as a field instead.
+  error variant, and `Error::new(code, error.to_string())` inside a constructor
+  function; carry the source error as a field instead.
 - formatted_variant: `Variant(format!(...))` puts the facts of an error into a
   sentence instead of fields (`Some`, `Ok` and `Err` are not error variants;
   `Err(format!)` is already a string_result).
@@ -80,9 +81,12 @@ ERROR_NAME = r"(?:e|err|error|\w+_err(?:or)?|source|cause)"
 DEBUG_FORMATTED = re.compile(
     r'format!\(\s*"(?:[^"\\]|\\.)*?(?:\{' + ERROR_NAME + r':#?\?\}'
     r'|\{:#?\?\}(?:[^"\\]|\\.)*"\s*,\s*&?' + ERROR_NAME + r'\b)')
+# Also a constructor function of a type, `Error::new(code, error.to_string())` or
+# `Error::invalid(e.to_string())`: the same text in place of the source error.
 STRINGIFIED_VARIANT = re.compile(
-    r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*(?:e|err|error|\w+_err(?:or)?|source|cause)"
-    r"\s*\.\s*to_string\(\)\s*\)")
+    r"\b(?!(?:Some|Ok|Err)\()(?:[A-Z]\w*|[A-Z]\w*::[a-z_]\w*)\(\s*"
+    r"(?:(?:\"(?:[^\"\\]|\\.)*\"|[\w.]+(?:\(\))?)\s*,\s*)?&?\b" + ERROR_NAME
+    + r"\s*\.\s*to_string\(\)\s*\)")
 FORMATTED_VARIANT = re.compile(r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*format!\(")
 UNWRAP = re.compile(r"\.unwrap\(\)")
 # A variant of an error type (`...Error::Name(_)`) matched to a bare string.
