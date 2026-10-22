@@ -42,6 +42,21 @@ fn anchored_lineages(product: &ProductModel) -> BTreeSet<&str> {
         .collect()
 }
 
+/// Holds `reference` as the evidence for its lineage, keeping evidence already
+/// equal to it, so an unchanged registration changes no entry.
+fn hold_reference_evidence(product: &mut ProductModel, reference: &BodySubshapeRef) {
+    if product
+        .exact_reference_evidence
+        .get(&reference.lineage_digest)
+        .is_none_or(|held| held.as_ref() != reference)
+    {
+        product.exact_reference_evidence.insert(
+            reference.lineage_digest.clone(),
+            Arc::new(reference.clone()),
+        );
+    }
+}
+
 /// Marks stale the face references whose producer changed and drops evidence no
 /// feature is anchored to any more. Tag visibility and saved views leave every
 /// exact input as it was, so their evidence stays current.
@@ -599,43 +614,54 @@ impl DocumentStore {
             if conflicts_with_anchor(kinds, reference, is_current) {
                 return Err((reference, ReferenceEvidenceError::WrongDocument));
             }
-            product.exact_reference_evidence.insert(
-                reference.lineage_digest.clone(),
-                Arc::new(reference.clone()),
-            );
+            hold_reference_evidence(product, reference);
             if rebind_planar_face_reference(product, reference).is_err() {
                 return Err((reference, ReferenceEvidenceError::WrongDocument));
             }
         }
-        if let Some(mut product) = product {
-            // Evidence feeds neither the exact graphs nor the dependency graph; while
-            // no anchored feature was rebound they stay valid for the new product.
-            let features_kept = product.features.len() == snapshot.product.features.len()
-                && product.features.iter().zip(&snapshot.product.features).all(
-                    |((id, after), (before_id, before))| {
-                        id == before_id && Arc::ptr_eq(after, before)
-                    },
-                );
-            if features_kept {
-                product.exact_graphs = snapshot.product.exact_graphs.carried_over();
-            }
-            self.revisions[self.cursor] = Arc::new(Revision {
-                id: current.id,
-                snapshot: Snapshot {
-                    revision_id: current.snapshot.revision_id,
-                    product: Arc::new(product),
-                },
-                batch_digest: current.batch_digest.clone(),
-                origin: current.origin,
-                checkpoint: current.checkpoint.clone(),
-                rule_program: current.rule_program.clone(),
-                recomputed_nodes: current.recomputed_nodes.clone(),
-                dirty_features: current.dirty_features.clone(),
-                feature_states: current.feature_states.clone(),
-                evaluation: current.evaluation.clone(),
-            });
+        if let Some(product) = product {
+            self.replace_current_evidence(product);
         }
         Ok(())
+    }
+
+    /// Puts `product`, the current product with only its reference evidence and the
+    /// features anchored to it changed, in place of the current one. A product that
+    /// changed nothing leaves the revision and its cached digest, encoding and graphs
+    /// as they are (review 2026-10-19 M-15).
+    fn replace_current_evidence(&mut self, mut product: ProductModel) {
+        let current = Arc::clone(&self.revisions[self.cursor]);
+        let before = current.snapshot.product.as_ref();
+        let features_kept =
+            super::product_validation::same_entries(&before.features, &product.features);
+        if features_kept
+            && super::product_validation::same_entries(
+                &before.exact_reference_evidence,
+                &product.exact_reference_evidence,
+            )
+        {
+            return;
+        }
+        // Evidence feeds neither the exact graphs nor the dependency graph; while
+        // no anchored feature was rebound they stay valid for the new product.
+        if features_kept {
+            product.exact_graphs = before.exact_graphs.carried_over();
+        }
+        self.revisions[self.cursor] = Arc::new(Revision {
+            id: current.id,
+            snapshot: Snapshot {
+                revision_id: current.snapshot.revision_id,
+                product: Arc::new(product),
+            },
+            batch_digest: current.batch_digest.clone(),
+            origin: current.origin,
+            checkpoint: current.checkpoint.clone(),
+            rule_program: current.rule_program.clone(),
+            recomputed_nodes: current.recomputed_nodes.clone(),
+            dirty_features: current.dirty_features.clone(),
+            feature_states: current.feature_states.clone(),
+            evaluation: current.evaluation.clone(),
+        });
     }
 
     pub(super) fn register_derived_result(&mut self, event: DerivedResultEvent) -> bool {
@@ -683,28 +709,11 @@ impl DocumentStore {
                     return false;
                 }
                 let mut product = current.snapshot.product.as_ref().clone();
-                product.exact_reference_evidence.insert(
-                    reference.lineage_digest.clone(),
-                    Arc::new(reference.clone()),
-                );
+                hold_reference_evidence(&mut product, reference);
                 if rebind_planar_face_reference(&mut product, reference).is_err() {
                     return false;
                 }
-                self.revisions[self.cursor] = Arc::new(Revision {
-                    id: current.id,
-                    snapshot: Snapshot {
-                        revision_id: current.snapshot.revision_id,
-                        product: Arc::new(product),
-                    },
-                    batch_digest: current.batch_digest.clone(),
-                    origin: current.origin,
-                    checkpoint: current.checkpoint.clone(),
-                    rule_program: current.rule_program.clone(),
-                    recomputed_nodes: current.recomputed_nodes.clone(),
-                    dirty_features: current.dirty_features.clone(),
-                    feature_states: current.feature_states.clone(),
-                    evaluation: current.evaluation.clone(),
-                });
+                self.replace_current_evidence(product);
             }
             DerivedResultPayload::ExactReferenceRebinds(rebinds) => {
                 let mut product = current.snapshot.product.as_ref().clone();
@@ -716,10 +725,7 @@ impl DocumentStore {
                             {
                                 return false;
                             }
-                            product.exact_reference_evidence.insert(
-                                rebind.lineage_digest.clone(),
-                                Arc::new(reference.as_ref().clone()),
-                            );
+                            hold_reference_evidence(&mut product, reference);
                             if rebind_planar_face_reference(&mut product, reference).is_err() {
                                 return false;
                             }
@@ -756,24 +762,12 @@ impl DocumentStore {
                         }
                     }
                 }
-                if validate_product(&product).is_err() {
+                if validate_product_change(Some(current.snapshot.product.as_ref()), &product, true)
+                    .is_err()
+                {
                     return false;
                 }
-                self.revisions[self.cursor] = Arc::new(Revision {
-                    id: current.id,
-                    snapshot: Snapshot {
-                        revision_id: current.snapshot.revision_id,
-                        product: Arc::new(product),
-                    },
-                    batch_digest: current.batch_digest.clone(),
-                    origin: current.origin,
-                    checkpoint: current.checkpoint.clone(),
-                    rule_program: current.rule_program.clone(),
-                    recomputed_nodes: current.recomputed_nodes.clone(),
-                    dirty_features: current.dirty_features.clone(),
-                    feature_states: current.feature_states.clone(),
-                    evaluation: current.evaluation.clone(),
-                });
+                self.replace_current_evidence(product);
             }
         }
         true

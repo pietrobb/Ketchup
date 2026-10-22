@@ -83,7 +83,12 @@ pub(super) fn set_planar_face_reference_health(
                     support: WorkplaneSupport::PlanarFace { reference, .. },
                     ..
                 },
-            ) if reference.lineage_digest == lineage_digest => {
+            ) if reference.lineage_digest == lineage_digest
+                && !matches!(
+                    &spec.support,
+                    WorkplaneSupport::PlanarFace { health: held, .. } if *held == health
+                ) =>
+            {
                 let mut spec = spec.clone();
                 spec.support = WorkplaneSupport::PlanarFace {
                     reference: reference.clone(),
@@ -147,7 +152,9 @@ pub(super) fn conflicts_with_anchor<'k>(
         })
 }
 
-/// Points every reference anchored to the lineage of `reference` at it.
+/// Points every reference anchored to the lineage of `reference` at it. A
+/// feature already pointing at it keeps its allocation, so caches keyed on
+/// unchanged features stay valid (review 2026-10-19 M-15).
 pub(super) fn rebind_planar_face_reference(
     product: &mut ProductModel,
     reference: &BodySubshapeRef,
@@ -160,7 +167,7 @@ pub(super) fn rebind_planar_face_reference(
                 .iter()
                 .any(|anchored| anchored.lineage_digest == reference.lineage_digest)
         })
-        .map(|feature| {
+        .filter_map(|feature| {
             let mut kind = feature.kind.clone();
             for anchored in anchored_references_mut(&mut kind) {
                 if anchored.lineage_digest == reference.lineage_digest {
@@ -174,7 +181,7 @@ pub(super) fn rebind_planar_face_reference(
             {
                 *health = WorkplaneSupportHealth::Resolved;
             }
-            with_kind(feature, kind)
+            (kind != feature.kind).then(|| with_kind(feature, kind))
         })
         .collect::<Vec<_>>();
     for feature in updated {
@@ -217,17 +224,18 @@ pub(super) fn refresh_supported_planar_face_frames(
                     return None;
                 }
             }
-            Some(
-                supported_planar_face_frame(product, reference)
-                    .ok_or(CanonicalError::Sketch(
-                        SketchError::InvalidPlanarFaceSupport,
-                    ))
-                    .map(|frame| {
-                        let mut spec = spec.clone();
-                        spec.frame = frame_on_planar_face(spec.frame, frame, tolerance_mm);
-                        with_kind(feature, FeatureKind::Workplane(spec))
-                    }),
-            )
+            let frame = supported_planar_face_frame(product, reference);
+            let Some(frame) = frame else {
+                return Some(Err(CanonicalError::Sketch(
+                    SketchError::InvalidPlanarFaceSupport,
+                )));
+            };
+            let frame = frame_on_planar_face(spec.frame, frame, tolerance_mm);
+            (frame != spec.frame).then(|| {
+                let mut spec = spec.clone();
+                spec.frame = frame;
+                Ok(with_kind(feature, FeatureKind::Workplane(spec)))
+            })
         })
         .collect::<Vec<_>>();
     for feature in updates {

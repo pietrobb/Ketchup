@@ -1744,3 +1744,122 @@ fn a_cut_up_to_a_face_keeps_its_face_evidence_through_later_edits() {
             .unwrap_or_else(|error| panic!("cut graph after a {depth} mm edit: {error:?}"));
     }
 }
+
+/// Review 2026-10-19 M-15: each exact evaluation registers again the evidence a
+/// face-anchored workplane already holds. That changes nothing, so the revision
+/// keeps its product and with it the compiled graphs and the digest.
+#[test]
+fn registering_evidence_a_face_workplane_already_holds_keeps_the_revision_caches() {
+    const BASE_PLANE: FeatureId = FeatureId(20);
+    const BASE_SKETCH: FeatureId = FeatureId(21);
+    const BASE_PAD: FeatureId = FeatureId(22);
+    const FACE_PLANE: FeatureId = FeatureId(23);
+
+    let base_sketch = rectangle_sketch(BASE_PLANE, [10.0, 20.0], [110.0, 80.0]);
+    let base_region = base_sketch.solved_regions().unwrap()[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Face part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BASE_PLANE,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BASE_SKETCH,
+                definition_id: DEFINITION,
+                name: "Base rectangle".into(),
+                kind: FeatureKind::Sketch(base_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BASE_PAD,
+                definition_id: DEFINITION,
+                name: "Base Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: BASE_SKETCH,
+                        region: base_region,
+                    },
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(Dimension::from_decimal("18").unwrap()),
+                    operation: PadOperation::NewBody,
+                }),
+            },
+        ]))
+        .unwrap();
+    let package = box_package(
+        &document.current(),
+        DEFINITION,
+        BASE_PAD,
+        "base-result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::LinearSide,
+        ],
+    )
+    .unwrap();
+    let top = package.reference(ExactFaceRole::Top).unwrap().clone();
+    document
+        .register_exact_reference_evidence(top.clone())
+        .unwrap();
+    let frame = document
+        .current()
+        .resolved_planar_face_workplane_frame(&top)
+        .expect("base Pad top frame");
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: FACE_PLANE,
+            definition_id: DEFINITION,
+            name: "Base top face".into(),
+            kind: FeatureKind::Workplane(WorkplaneSpec {
+                support: WorkplaneSupport::PlanarFace {
+                    reference: Box::new(top.clone()),
+                    health: WorkplaneSupportHealth::Resolved,
+                },
+                frame,
+            }),
+        }]))
+        .unwrap();
+    let anchored = document.current();
+    let graph = anchored.exact_brep_graph(DEFINITION, BASE_PAD).unwrap();
+    let dependencies = anchored.feature_dependency_graph().unwrap();
+
+    document
+        .register_exact_reference_evidence(top.clone())
+        .unwrap();
+    document.register_exact_references([&top]).unwrap();
+    let current_package = box_package(
+        &document.current(),
+        DEFINITION,
+        BASE_PAD,
+        "base-result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::LinearSide,
+        ],
+    )
+    .unwrap();
+    let results =
+        ExactResultRegistry::accept(&document.current(), [Arc::new(current_package)]).unwrap();
+    document
+        .register_exact_reference_evidence(&results)
+        .unwrap();
+
+    let evaluated = document.current();
+    assert_eq!(evaluated.canonical_digest(), anchored.canonical_digest());
+    assert!(Arc::ptr_eq(
+        &graph,
+        &evaluated.exact_brep_graph(DEFINITION, BASE_PAD).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &dependencies,
+        &evaluated.feature_dependency_graph().unwrap()
+    ));
+}
