@@ -55,7 +55,7 @@ fn planar_surface_body_round_trips_rebuilds_and_remains_distinct_from_a_solid() 
 
     let loaded = persistence::load(&persistence::save(&snapshot)).unwrap();
     assert!(loaded.is_editable());
-    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(loaded.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(
         loaded.snapshot().canonical_digest(),
         snapshot.canonical_digest()
@@ -339,7 +339,7 @@ fn surface_trim_and_extend_round_trip_through_the_real_worker() {
     ));
 
     let loaded = persistence::load(&persistence::save(&snapshot)).unwrap();
-    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(loaded.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(
         loaded.snapshot().canonical_digest(),
         snapshot.canonical_digest()
@@ -600,7 +600,7 @@ fn surface_knit_round_trips_and_real_worker_requires_connected_watertight_inputs
     ));
 
     let loaded = persistence::load(&persistence::save(&snapshot)).unwrap();
-    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(loaded.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(
         loaded.snapshot().canonical_digest(),
         snapshot.canonical_digest()
@@ -773,7 +773,7 @@ fn surface_thicken_round_trips_and_real_worker_preserves_associative_identity() 
     );
 
     let loaded = persistence::load(&persistence::save(&snapshot)).unwrap();
-    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(loaded.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(
         loaded.snapshot().canonical_digest(),
         snapshot.canonical_digest()

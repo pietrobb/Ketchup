@@ -78,6 +78,9 @@ const HISTORY_BUDGET: HistoryBudget = HistoryBudget {
 const HISTORY_REVISIONS_ENTRY: &str = "the revisions of history.bin";
 const HISTORY_PROGRAMS_ENTRY: &str = "the programs of history.bin";
 pub const CURRENT_SCHEMA: u16 = snapshot_codec::SNAPSHOT_FORMAT;
+/// The oldest schema this version writes; a document is saved in the oldest one that
+/// holds it, and a file of any schema from this one on is no migration.
+pub const OLDEST_WRITTEN_SCHEMA: u16 = snapshot_codec::OLDEST_WRITTEN_FORMAT;
 
 const MAX_STRING_BYTES: usize = 1024 * 1024;
 const MAX_COLLECTION_ITEMS: u32 = 500_000;
@@ -2300,7 +2303,7 @@ fn decode_history_revisions(
         || current_source_digest.as_deref()
             != Some(expected_current.audit().source_canonical_digest.as_str())
         || (schema < 4
-            && expected_current.source_schema() == CURRENT_SCHEMA
+            && expected_current.source_schema() >= OLDEST_WRITTEN_SCHEMA
             && save(current) != save(&expected_snapshot))
     {
         return Err(PersistenceError::InvalidRevisionHistory);
@@ -2431,8 +2434,8 @@ impl<'a> HistorySnapshot<'a> {
 }
 
 /// One history revision as an editable snapshot with the source digest it was
-/// loaded with. A current-format revision keeps the bytes it was read from as its
-/// encoding, so the next save does not encode it again.
+/// loaded with. A revision in a format this version writes keeps the bytes it was read
+/// from as its encoding, so the next save does not encode it again.
 fn load_history_snapshot(
     encoded: &[u8],
     container_data: &ContainerData,
@@ -2446,7 +2449,7 @@ fn load_history_snapshot(
         return Err(PersistenceError::InvalidRevisionHistory);
     };
     let snapshot = store.current();
-    if source_schema == CURRENT_SCHEMA {
+    if source_schema >= OLDEST_WRITTEN_SCHEMA {
         match snapshot_encoding::compare(&snapshot, encoded)? {
             snapshot_encoding::Encoding::Canonical(canonical) => {
                 if let Ok(mut cache) = snapshot.product().exact_graphs.encoded.lock() {

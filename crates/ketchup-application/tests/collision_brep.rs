@@ -598,7 +598,7 @@ fn full_140_house_has_no_silent_collision_cap() {
     assert_eq!(legacy.source_schema(), 53);
     let legacy_digest = legacy.snapshot().canonical_digest();
     let current = persistence::load(&persistence::save(&legacy.snapshot())).unwrap();
-    assert_eq!(current.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(current.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(current.snapshot().canonical_digest(), legacy_digest);
 
     let session = DocumentSession::open(

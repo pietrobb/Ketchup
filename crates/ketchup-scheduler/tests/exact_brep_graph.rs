@@ -158,7 +158,7 @@ fn assert_surface_interchange_roundtrip(
     step_container.insert_import_blob(step).unwrap();
     let encoded = persistence::save_container(&step_committed, &step_container).unwrap();
     let reopened = persistence::load(&encoded).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(
         reopened.snapshot().canonical_digest(),
         step_committed.canonical_digest()
@@ -257,7 +257,7 @@ fn assert_surface_interchange_roundtrip(
     iges_container.insert_import_blob(iges).unwrap();
     let encoded = persistence::save_container(&iges_committed, &iges_container).unwrap();
     let reopened = persistence::load(&encoded).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(
         reopened.snapshot().canonical_digest(),
         iges_committed.canonical_digest()

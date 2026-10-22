@@ -103,7 +103,7 @@ fn sketchup_scene_preserves_shared_instances_and_is_one_persistent_undo_step() {
     let encoded = persistence::save(&committed);
     assert_eq!(
         u16::from_le_bytes([encoded[10], encoded[11]]),
-        persistence::CURRENT_SCHEMA
+        persistence::OLDEST_WRITTEN_SCHEMA
     );
     let reopened = persistence::load(&encoded).unwrap();
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);

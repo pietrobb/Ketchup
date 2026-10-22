@@ -108,7 +108,7 @@ fn principal_offset_and_fully_constrained_sketch_are_one_undoable_lossless_batch
     let committed_digest = committed.canonical_digest();
     let bytes = persistence::save(&committed);
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
@@ -4279,7 +4279,7 @@ fn cubic_control_points_solve_and_round_trip_with_undo_redo_and_digest() {
     let digest = document.current().canonical_digest();
     let bytes = persistence::save(&document.current());
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), digest);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
     assert_eq!(document.undo().unwrap().canonical_digest(), before);

@@ -120,7 +120,7 @@ fn separate_occurrence_intersect_is_canonical_exact_unique_and_persistent() {
 
     let unique_digest = unique.canonical_digest();
     let reopened = persistence::load(&persistence::save(&unique)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
     assert!(reopened.snapshot().occurrence(OccurrenceId(302)).is_none());
     assert!(matches!(
@@ -226,7 +226,7 @@ fn separate_occurrence_split_is_stable_unique_persistent_and_exact_ready() {
 
     let unique_digest = unique.canonical_digest();
     let reopened = persistence::load(&persistence::save(&unique)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
     assert!(reopened.snapshot().occurrence(OccurrenceId(302)).is_some());
     assert!(matches!(
@@ -420,7 +420,7 @@ fn bounded_planar_offset_is_dimensioned_validated_undoable_and_persistent() {
 
     let unique_digest = unique.canonical_digest();
     let reopened = persistence::load(&persistence::save(&unique)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
     assert!(reopened.migration_losses().is_empty());
     assert!(matches!(
@@ -524,7 +524,7 @@ fn circular_planar_offset_is_persistent_undoable_and_fail_closed() {
 
     let bytes = persistence::save(&document.current());
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), inward);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
@@ -658,7 +658,7 @@ fn cubic_planar_offset_request_is_persistent_undoable_and_forgery_resistant() {
 
     let bytes = persistence::save(&document.current());
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), inward);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
@@ -807,7 +807,7 @@ fn compound_planar_offset_request_is_persistent_undoable_and_forgery_resistant()
 
     let bytes = persistence::save(&document.current());
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), inward);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
@@ -1019,7 +1019,7 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
 
     let unique_digest = unique.canonical_digest();
     let reopened = persistence::load(&persistence::save(&unique)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
     assert!(reopened.migration_losses().is_empty());
     assert!(matches!(
@@ -1271,7 +1271,7 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
 
     let unique_digest = unique.canonical_digest();
     let reopened = persistence::load(&persistence::save(&unique)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
     assert!(reopened.migration_losses().is_empty());
     assert!(matches!(
@@ -1417,7 +1417,7 @@ fn segment_profile_is_canonical_undoable_persistent_and_exact_for_circle() {
     );
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), applied);
     assert!(matches!(
         reopened.snapshot().feature(FeatureId(502)).unwrap().kind(),
@@ -1611,10 +1611,10 @@ fn v11_cubic_sweep_is_canonical_visible_persistent_and_fail_closed() {
     let bytes = persistence::save(&document.current());
     assert_eq!(
         u16::from_le_bytes([bytes[10], bytes[11]]),
-        persistence::CURRENT_SCHEMA
+        persistence::OLDEST_WRITTEN_SCHEMA
     );
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), swept_digest);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
     assert!(matches!(
@@ -1698,10 +1698,10 @@ fn spatial_sweep_path_is_canonical_visible_persistent_and_bounded() {
     let bytes = persistence::save(&document.current());
     assert_eq!(
         u16::from_le_bytes([bytes[10], bytes[11]]),
-        persistence::CURRENT_SCHEMA
+        persistence::OLDEST_WRITTEN_SCHEMA
     );
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), digest);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
     assert!(matches!(
@@ -1866,7 +1866,7 @@ fn occurrence_color_is_persisted_atomic_and_geometry_independent() {
     let bytes = persistence::save(&colored);
     assert_eq!(
         u16::from_le_bytes(bytes[10..12].try_into().unwrap()),
-        persistence::CURRENT_SCHEMA
+        persistence::OLDEST_WRITTEN_SCHEMA
     );
     let loaded = persistence::load(&bytes).unwrap();
     assert_eq!(

@@ -914,7 +914,7 @@ fn document_without_recipe_round_trips_without_inventing_one() {
         reopened.snapshot().canonical_digest(),
         snapshot.canonical_digest()
     );
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(ASSEMBLY_RECIPE_SCHEMA_V1, "ketchup.assembly-recipe.v1");
 }
 

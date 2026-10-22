@@ -11,8 +11,9 @@
 //! default. Format 103 shipped in Kečup 0.1.0, which ignores fields it does not know,
 //! so a new field under 103 would be dropped by 0.1.0 and lost at its next Save (PS-4).
 //! Format 104 adds underlays, 105 annotations; an older file has none, so it reads
-//! without a conversion. The optional fields of the current format are listed in
-//! `tests/format_golden.rs`, which also fails on any other change. The reader refuses a
+//! without a conversion, and a document without them is still written as 103. The
+//! optional fields of the current format are listed in `tests/format_golden.rs`, which
+//! also fails on any other change. The reader refuses a
 //! current-format snapshot with fields it does not know (`PersistenceError::UnknownFields`). The encoder writes the serde
 //! form directly, so every map in it must state its length: `#[serde(flatten)]` would
 //! write an indefinite-length map.
@@ -22,8 +23,25 @@ use super::{MAGIC, PayloadError, PayloadSection, PersistenceError};
 use crate::document::{FeatureId, ProductModel, Snapshot};
 use std::collections::BTreeMap;
 
-/// Format number written after the magic.
+/// The newest format number written after the magic.
 pub(super) const SNAPSHOT_FORMAT: u16 = 105;
+
+/// The oldest format this version writes. A snapshot is written in the oldest format
+/// that holds it ([`format_of`]), so Kečup 0.1.0 and 0.2.0, which read 103, open a
+/// document without underlays and annotations; any format from this one on reads as
+/// written by this version.
+pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
+
+/// 105 with annotations, else 104 with underlays, else 103.
+fn format_of(product: &ProductModel) -> u16 {
+    if !product.annotations.is_empty() {
+        SNAPSHOT_FORMAT
+    } else if !product.underlays.is_empty() {
+        104
+    } else {
+        OLDEST_WRITTEN_FORMAT
+    }
+}
 
 /// First format this codec wrote. Numbers below it belong to the retired hand-written
 /// codec.
@@ -55,7 +73,7 @@ pub(super) fn encode(snapshot: &Snapshot) -> Vec<u8> {
     .expect("the product model serializes into memory");
     let mut bytes = Vec::with_capacity(MAGIC.len() + 2 + CHECKSUM_BYTES + payload.len());
     bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&SNAPSHOT_FORMAT.to_le_bytes());
+    bytes.extend_from_slice(&format_of(snapshot.product()).to_le_bytes());
     bytes.extend_from_slice(&crate::graph::sha256_bytes(&payload));
     bytes.extend_from_slice(&payload);
     bytes
@@ -91,7 +109,7 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
     if crate::graph::sha256_bytes(payload) != checksum {
         return Err(PersistenceError::ChecksumMismatch);
     }
-    if format == SNAPSHOT_FORMAT {
+    if format >= OLDEST_WRITTEN_FORMAT {
         let decoded: DecodedSnapshot = ciborium::from_reader(payload).map_err(invalid_snapshot)?;
         refuse_unknown_fields(payload, &decoded)?;
         return Ok(Decoded {

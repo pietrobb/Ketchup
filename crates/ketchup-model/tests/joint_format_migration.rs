@@ -68,7 +68,7 @@ fn format_102_rule_joints_open_unchanged_and_save_as_format_103() {
 
     let saved = persistence::save_document_store(&document, &ContainerData::default()).unwrap();
     let (reopened, audit) = editable(&saved);
-    assert_eq!(audit.source_schema, persistence::CURRENT_SCHEMA);
+    assert_eq!(audit.source_schema, persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(audit.history_discarded(), None);
     assert_eq!(joints(&reopened), written_joints());
 }

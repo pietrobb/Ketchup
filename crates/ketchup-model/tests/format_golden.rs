@@ -123,6 +123,30 @@ fn a_file_saved_by_the_previous_release_opens_with_its_program_and_variants() {
     assert_eq!(program.variants["1000"].get("width"), Some(&1000.0));
 }
 
+/// Review 2026-10-21 P3: Save wrote the newest format for every document, so Kečup 0.1.0
+/// and 0.2.0, which read format 103, refused every file saved since. A document is saved
+/// in the oldest format that holds it: without underlays and annotations as format 103,
+/// the very snapshot bytes 0.2.0 itself saved, with an underlay as format 104; with
+/// annotations 105 (the golden).
+#[test]
+fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
+    for (path, schema, digest) in [
+        (RELEASE_0_2_0, 103, DIGEST_103),
+        (FIXTURE_103, 103, DIGEST_103),
+        (SAVED_104, 104, DIGEST_104),
+    ] {
+        let (document, _) = opened(path, schema, digest);
+        let snapshot = persistence::save(&document.current());
+        assert_eq!(snapshot[10..12], schema.to_le_bytes(), "{path}");
+        let file = std::fs::read(path).unwrap();
+        assert!(
+            file.windows(snapshot.len())
+                .any(|stored| stored == snapshot),
+            "{path} does not hold the snapshot saved now"
+        );
+    }
+}
+
 /// One annotation of each kind, shown by the tag [`ANNOTATION_TAG`].
 fn annotations() -> Vec<Annotation> {
     let tags = BTreeSet::from([TagId(ANNOTATION_TAG)]);

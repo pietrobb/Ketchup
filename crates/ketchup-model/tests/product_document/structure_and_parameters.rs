@@ -265,7 +265,7 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let expected = document.current();
     let loaded = persistence::load(&persistence::save(&expected)).unwrap();
 
-    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(loaded.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert!(loaded.migration_losses().is_empty());
     let actual = loaded.snapshot();
     assert_eq!(actual.document_id(), expected.document_id());
@@ -530,7 +530,7 @@ fn general_revolve_is_canonical_atomic_cloneable_and_losslessly_persistent() {
 
     let unique_digest = unique.canonical_digest();
     let loaded = persistence::load(&persistence::save(&unique)).unwrap();
-    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(loaded.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert!(loaded.migration_losses().is_empty());
     assert_eq!(loaded.snapshot().canonical_digest(), unique_digest);
     assert!(matches!(
@@ -1572,7 +1572,7 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
     assert_eq!(document.redo().unwrap().canonical_digest(), unique_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     let snapshot = reopened.snapshot();
     assert_eq!(snapshot.canonical_digest(), unique_digest);
     assert_eq!(snapshot.evaluator_node_count(), 1);
@@ -1883,7 +1883,7 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     let saved_revision = document.current().revision_id();
     let saved_undo = document.visible_undo_steps();
     let loaded = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(loaded.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(loaded.snapshot().revision_id(), saved_revision);
     assert_eq!(loaded.snapshot().canonical_digest(), bound_digest);
     assert_eq!(
@@ -2319,7 +2319,7 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
     );
 
     let reopened = persistence::load(&persistence::save(revision.snapshot())).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), resized_digest);
     assert_eq!(reopened.snapshot().feature_parameter_bindings().count(), 2);
     assert!(matches!(
@@ -2496,7 +2496,7 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
     assert_eq!(document.current().canonical_digest(), before_invalid);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), before_invalid);
     assert_eq!(reopened.snapshot().persistent_dimensions().count(), 3);
     assert_eq!(
@@ -2941,7 +2941,7 @@ fn canonical_collections_persist_query_and_roll_back_atomically() {
     );
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), collected);
     assert_eq!(
         reopened
@@ -3148,7 +3148,7 @@ fn separate_occurrence_subtract_is_one_canonical_undo_step_and_persists_stable_i
     assert_eq!(document.redo().unwrap().canonical_digest(), applied);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), applied);
     assert_eq!(
         reopened

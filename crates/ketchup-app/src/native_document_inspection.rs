@@ -3,7 +3,8 @@ use std::{collections::BTreeSet, path::Path};
 use ketchup_geometry::sketch::{PadOperation, PadProfile, PadSpec};
 use ketchup_model::document::FeatureKind;
 use ketchup_model::persistence::{
-    CURRENT_SCHEMA, FilePersistenceError, LoadAudit, LoadDisposition, load_file_with_source,
+    CURRENT_SCHEMA, FilePersistenceError, LoadAudit, LoadDisposition, OLDEST_WRITTEN_SCHEMA,
+    load_file_with_source,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,7 +80,7 @@ pub fn inspect_native_document(
     let loaded_file = load_file_with_source(path).map_err(NativeDocumentInspectionError::Load)?;
     let container_sha256 = ketchup_model::graph::sha256_hex(loaded_file.source_bytes());
     let loaded = loaded_file.outcome();
-    if loaded.source_schema() != CURRENT_SCHEMA
+    if loaded.source_schema() < OLDEST_WRITTEN_SCHEMA
         || loaded.disposition() != LoadDisposition::EditableLossless
     {
         return Err(NativeDocumentInspectionError::NotCurrentLossless(Box::new(

@@ -1046,7 +1046,7 @@ fn grounded_repeated_nested_instances_create_associative_drawing_with_roundtrip_
     let reopened = ketchup_model::persistence::load(&bytes).unwrap();
     assert_eq!(
         reopened.source_schema(),
-        ketchup_model::persistence::CURRENT_SCHEMA
+        ketchup_model::persistence::OLDEST_WRITTEN_SCHEMA
     );
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(

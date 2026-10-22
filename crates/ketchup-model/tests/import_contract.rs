@@ -115,7 +115,7 @@ fn reviewed_import_is_one_undoable_persistent_deterministic_batch() {
 
     let encoded = persistence::save(&first.current());
     let reopened = persistence::load(&encoded).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(
         reopened.snapshot().import_receipt(ImportId(1)).unwrap(),
@@ -574,7 +574,7 @@ fn step_xde_import_preserves_nested_repeated_instances_names_colors_and_round_tr
     container.insert_import_blob(source.to_vec()).unwrap();
     let encoded = persistence::save_container(&committed, &container).unwrap();
     let reopened = persistence::load(&encoded).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(
         reopened.snapshot().canonical_digest(),
         committed.canonical_digest()

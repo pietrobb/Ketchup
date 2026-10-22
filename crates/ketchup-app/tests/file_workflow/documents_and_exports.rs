@@ -707,7 +707,7 @@ fn save_as_then_new_then_open_restores_the_same_canonical_document() {
     let inspection = ketchup_app::inspect_native_document(&path).unwrap();
     assert_eq!(
         inspection.schema_version,
-        ketchup_model::persistence::CURRENT_SCHEMA
+        ketchup_model::persistence::OLDEST_WRITTEN_SCHEMA
     );
     assert_eq!(inspection.definitions, 1);
     assert_eq!(inspection.root_occurrences, 2);

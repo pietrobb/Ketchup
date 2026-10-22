@@ -524,7 +524,7 @@ fn exported_glb_imports_as_one_persistent_undoable_mesh_scene() {
     let committed_digest = committed.canonical_digest();
     let encoded = persistence::save(&committed);
     let reopened = persistence::load(&encoded).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(imported.undo().unwrap().canonical_digest(), before);
     assert_eq!(

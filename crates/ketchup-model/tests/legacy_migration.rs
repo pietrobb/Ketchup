@@ -105,7 +105,13 @@ fn every_committed_document_migrates_to_the_current_schema_without_change() {
         });
         assert_eq!(
             reopened.source_schema(),
-            persistence::CURRENT_SCHEMA,
+            if !snapshot.annotations().is_empty() {
+                persistence::CURRENT_SCHEMA
+            } else if snapshot.underlays().next().is_some() {
+                104
+            } else {
+                persistence::OLDEST_WRITTEN_SCHEMA
+            },
             "{}",
             path.display()
         );

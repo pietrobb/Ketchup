@@ -138,7 +138,10 @@ fn format_99_validator_roles_load_under_their_function_names() {
     // outside the checksummed payload.
     let mut bytes = persistence::save(&written);
     assert!(bytes.starts_with(b"KETCHUPDOC"));
-    assert_eq!(bytes[10..12], persistence::CURRENT_SCHEMA.to_le_bytes());
+    assert_eq!(
+        bytes[10..12],
+        persistence::OLDEST_WRITTEN_SCHEMA.to_le_bytes()
+    );
     let mut as_101 = bytes.clone();
     as_101[10..12].copy_from_slice(&101_u16.to_le_bytes());
     bytes[10..12].copy_from_slice(&99_u16.to_le_bytes());
@@ -176,7 +179,7 @@ fn format_99_validator_roles_load_under_their_function_names() {
     let current = persistence::load(&persistence::save(&written)).unwrap();
     assert_eq!(names(&current.snapshot()), names(&written));
     let resaved = persistence::load(&persistence::save(&migrated)).unwrap();
-    assert_eq!(resaved.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(resaved.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(names(&resaved.snapshot()), names(&migrated));
 }
 
@@ -3014,7 +3017,7 @@ fn canonical_space_and_rule_clearance_round_trip_and_fail_closed_when_slot_is_lo
 
     let saved_digest = snapshot.canonical_digest();
     let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), saved_digest);
     assert_eq!(
         reopened.snapshot().space(SPACE_LEFT).unwrap().purpose(),

@@ -117,6 +117,35 @@ mod tests {
         assert_eq!(load(&saved).unwrap().snapshot().floor_z_mm(), Some(250.));
     }
 
+    /// A revision in format 103, which this version writes for a document without
+    /// underlays and annotations, reads as written by this version: no digest of an older
+    /// writer, no migrated digests, and it keeps its bytes as a current-format one does.
+    #[test]
+    fn a_revision_in_a_format_this_version_writes_is_no_migration() {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetFloorHeight {
+                z_mm: Some(250.),
+            }]))
+            .unwrap();
+        let mut bytes = save(&document.current());
+        bytes[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&103u16.to_le_bytes());
+        let decoded = snapshot_codec::decode(103, &bytes[MAGIC.len() + 2..]).unwrap();
+        assert_eq!(decoded.writer_digest, None);
+        let mut migrated = BTreeMap::new();
+        let (validated, digest) =
+            load_history_snapshot(&bytes, &ContainerData::default(), &mut migrated).unwrap();
+        assert!(migrated.is_empty());
+        let snapshot = validated.snapshot();
+        assert_eq!(digest, snapshot.canonical_digest());
+        let kept = snapshot.product().exact_graphs.encoded.lock().unwrap();
+        assert_eq!(
+            kept.get(&snapshot.revision_id())
+                .map(|encoded| &encoded.bytes),
+            Some(&bytes)
+        );
+    }
+
     /// A checkpoint opens with only its current revision and names why.
     fn opens_without_history(bytes: &[u8], reason: &str) {
         let LoadOutcome::Editable {

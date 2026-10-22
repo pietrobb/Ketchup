@@ -372,7 +372,7 @@ fn typed_planar_face_endpoints_are_bit_exact_schema_50_state_and_history() {
     }
 
     let reopened = persistence::load(&persistence::save(&committed)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(
         encode_semantic_state(&reopened.snapshot()).complete(),
@@ -462,7 +462,7 @@ fn typed_axial_endpoints_are_bit_exact_ignore_labels_transform_origins_and_round
         assert_near(world_b_direction[axis], -direction_a[axis]);
     }
     let reopened = persistence::load(&persistence::save(&committed)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), digest);
     assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
     assert_eq!(
@@ -697,7 +697,7 @@ fn repeated_component_mate_endpoints_keep_full_instance_paths_through_solve_and_
     );
 
     let reopened = persistence::load(&persistence::save(&published)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), published_digest);
     assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
     assert_eq!(
@@ -1058,7 +1058,7 @@ fn assembly_contract_is_reviewed_atomic_undoable_and_losslessly_persistent() {
     }
 
     let reopened = persistence::load(&persistence::save(&committed)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(
         encode_semantic_state(&reopened.snapshot()).complete(),

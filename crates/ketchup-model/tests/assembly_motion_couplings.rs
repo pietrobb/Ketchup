@@ -217,7 +217,7 @@ fn one_driver_propagates_through_gears_belt_chain_rack_and_screw_and_round_trips
     }
 
     let reopened = persistence::load(&persistence::save(&committed)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(
         reopened.snapshot().canonical_digest(),
         committed.canonical_digest()

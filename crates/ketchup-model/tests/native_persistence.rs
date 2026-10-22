@@ -1000,7 +1000,7 @@ fn lossy_legacy_migration_requires_one_explicit_canonical_batch() {
         persistence::load(&persistence::save_container(&document.current(), &sidecars).unwrap())
             .unwrap();
     assert_eq!(current.disposition(), LoadDisposition::EditableLossless);
-    assert_eq!(current.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(current.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(current.snapshot().revision_id(), 8);
 }
 
@@ -1304,7 +1304,7 @@ fn multi_version_history_golden_migrates_losslessly_and_drops_corrupt_history() 
     for offset in envelopes {
         assert_eq!(
             u16::from_le_bytes(history[offset + 10..offset + 12].try_into().unwrap()),
-            persistence::CURRENT_SCHEMA
+            persistence::OLDEST_WRITTEN_SCHEMA
         );
     }
     let round_trip = ketchup_model::testing::load_with_history(&upgraded)
@@ -2810,7 +2810,7 @@ fn sheet_metal_schema_81_remains_readable_and_current_schema_is_byte_stable() {
     let bytes = persistence::save(&store.current());
     assert_eq!(
         u16::from_le_bytes(bytes[10..12].try_into().unwrap()),
-        persistence::CURRENT_SCHEMA
+        persistence::OLDEST_WRITTEN_SCHEMA
     );
     let loaded = persistence::load(&bytes).unwrap();
     assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);

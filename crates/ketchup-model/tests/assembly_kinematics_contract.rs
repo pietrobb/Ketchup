@@ -196,7 +196,7 @@ fn canonical_joint_kinds_commit_undo_redo_and_persist_losslessly() {
     // Save/load through the persistence API preserves the canonical digest,
     // the semantic state, and the joint payloads bit-for-bit.
     let reopened = persistence::load(&persistence::save(&committed)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(
         encode_semantic_state(&reopened.snapshot()).complete(),
@@ -1979,7 +1979,7 @@ fn repeated_component_joint_targets_only_one_full_instance_path_and_persists() {
     );
 
     let reopened = persistence::load(&persistence::save(&published)).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), published_digest);
     let reopened_snapshot = reopened.snapshot();
     let reopened_joint = reopened_snapshot.assembly_joint(NESTED_JOINT).unwrap();
@@ -3088,7 +3088,7 @@ fn helical_joint_solves_samples_publishes_and_persists_losslessly() {
         "current helical data mislabeled as schema 63 must fail closed"
     );
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.source_schema(), persistence::OLDEST_WRITTEN_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), committed.digest);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
     assert_eq!(
