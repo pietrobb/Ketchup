@@ -1296,6 +1296,7 @@ dialog-unsaved-description = Zahodiť neuložené zmeny v aktívnom modeli?
 dialog-close-description = Uložiť zmeny modelu a konverzácie pred zatvorením?
 dialog-close-discard = Zahodiť zmeny
 error-open-document = „{ $path }“ sa nepodarilo otvoriť: { $reason }. Aktívny model sa nezmenil.
+reason-open-model-changed = model sa zmenil, kým sa súbor čítal, a táto zmena ostala; súbor otvorte znova, ak ju má nahradiť
 error-startup-arguments = Kečup otvára jeden dokument naraz a bol spustený s { $count }; ostatné otvorte cez Súbor > Otvoriť.
 error-startup-switch = Kečup bol spustený s „{ $path }“, čo nie je dokument; spustite ho s cestou k súboru .ketchup.
 error-startup-folder = „{ $path }“ je priečinok; dokument v ňom otvorte cez Súbor > Otvoriť.

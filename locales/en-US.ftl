@@ -1296,6 +1296,7 @@ dialog-unsaved-description = Discard the unsaved changes in the active model?
 dialog-close-description = Save changes to the model and conversation before closing?
 dialog-close-discard = Discard changes
 error-open-document = Could not open “{ $path }”: { $reason }. The active model was not changed.
+reason-open-model-changed = the model was changed while the file was read, and that change is kept; open the file again to replace it
 error-startup-arguments = Kečup opens one document at a time and was started with { $count }; open the others with File > Open.
 error-startup-switch = Kečup was started with “{ $path }”, which is not a document; start it with the path of a .ketchup file.
 error-startup-folder = “{ $path }” is a folder; open a document in it with File > Open.

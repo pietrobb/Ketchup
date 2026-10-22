@@ -167,6 +167,17 @@ impl KetchupApp {
         let snapshot = self.document.current();
         if task.document == snapshot.document_id() && task.revision == snapshot.revision_id() {
             self.install_loaded_document(&task.path, result.1, result.0);
+        } else {
+            // An edit (by MCP, say) came while the file was read; it is kept,
+            // and the user is told the file was not opened (review
+            // 2026-10-19 UI-15).
+            self.digest = self.catalog.format(
+                "error-open-document",
+                &BTreeMap::from([
+                    ("path", task.path.display().to_string()),
+                    ("reason", self.catalog.text("reason-open-model-changed")),
+                ]),
+            );
         }
         context.request_repaint();
     }
@@ -601,7 +612,7 @@ mod tests {
         let path = directory.path().join("old.ketchup");
         assert!(KetchupApp::new().save_document_to(&path));
         let mut harness = shell(ScriptedFileDialogs::new());
-        let (release, finished) = gated_read(&mut harness, path);
+        let (release, finished) = gated_read(&mut harness, path.clone());
         assert!(harness.state_mut().create_box());
         let before = harness.state().document.history_digest();
         release.send(()).unwrap();
@@ -610,6 +621,16 @@ mod tests {
         assert_eq!(harness.state().document.history_digest(), before);
         assert!(harness.state().is_dirty());
         assert!(harness.state().file.path.is_none());
+        // Review 2026-10-19 UI-15: the dropped read is not silent.
+        let app = harness.state();
+        let told = app.catalog.format(
+            "error-open-document",
+            &BTreeMap::from([
+                ("path", path.display().to_string()),
+                ("reason", app.catalog.text("reason-open-model-changed")),
+            ]),
+        );
+        assert_eq!(app.digest, told);
     }
 
     fn start_save(harness: &mut Harness<'_, KetchupApp>) {
