@@ -127,6 +127,7 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -187,25 +188,45 @@ struct NativeOperationResult::Impl {
 
 std::uint32_t count_subshapes(const TopoDS_Shape& shape, TopAbs_ShapeEnum kind);
 
-TopoDS_Face face_at_ordinal(const TopoDS_Shape& shape, std::uint32_t target);
+// The faces and edges of one finished shape by ordinal (TopExp::MapShapes
+// order), each mapped once, when first asked. An operation makes one index of
+// its result and of each input and asks it for every history record, so a
+// shell or fillet of a body with thousands of faces maps them once instead of
+// once per record (review 2026-10-18 EX-11). Make it only after the shape is
+// complete: a map, once made, does not see faces added later.
+class ShapeIndex {
+ public:
+  explicit ShapeIndex(const TopoDS_Shape& shape) : shape_(shape) {}
+  ShapeIndex(const ShapeIndex&) = delete;
+  ShapeIndex& operator=(const ShapeIndex&) = delete;
 
-TopoDS_Edge edge_at_ordinal(const TopoDS_Shape& shape, std::uint32_t target);
+  const TopoDS_Shape& shape() const { return shape_; }
+  TopoDS_Face face(std::uint32_t ordinal) const;
+  TopoDS_Edge edge(std::uint32_t ordinal) const;
+  std::pair<std::uint32_t, bool> face_ordinal(const TopoDS_Shape& candidate) const;
+  std::pair<std::uint32_t, bool> edge_ordinal(const TopoDS_Shape& candidate) const;
 
-std::pair<std::uint32_t, bool> face_ordinal(
-    const TopoDS_Shape& result, const TopoDS_Shape& candidate);
+ private:
+  const TopTools_IndexedMapOfShape& map(
+      std::optional<TopTools_IndexedMapOfShape>& slot, TopAbs_ShapeEnum kind) const;
+
+  TopoDS_Shape shape_;
+  mutable std::optional<TopTools_IndexedMapOfShape> faces_;
+  mutable std::optional<TopTools_IndexedMapOfShape> edges_;
+};
 
 HistoryRecord history_record(
     std::string role,
     std::string relation,
     std::string source,
-    const TopoDS_Shape& result,
+    const ShapeIndex& result,
     const TopoDS_Shape& output);
 
 EdgeHistoryRecord edge_history_record(
     std::string role,
     std::string relation,
     std::string source,
-    const TopoDS_Shape& result,
+    const ShapeIndex& result,
     const TopoDS_Shape& output);
 
 std::string standard_failure_message(const Standard_Failure& failure);
@@ -276,14 +297,14 @@ template <typename Operation>
 void append_propagated_history(
     std::vector<HistoryRecord>& history,
     Operation& operation,
-    const TopoDS_Shape& result,
+    const ShapeIndex& result,
     const NativeOperationResult::Impl& source) {
+  const ShapeIndex source_index(source.shape);
   for (const HistoryRecord& source_history : source.history) {
     if (!source_history.output_present) {
       continue;
     }
-    const TopoDS_Face source_face =
-        face_at_ordinal(source.shape, source_history.output_ordinal);
+    const TopoDS_Face source_face = source_index.face(source_history.output_ordinal);
     if (source_face.IsNull()) {
       continue;
     }
@@ -330,14 +351,14 @@ template <typename Operation>
 void append_propagated_edge_history(
     std::vector<EdgeHistoryRecord>& history,
     Operation& operation,
-    const TopoDS_Shape& result,
+    const ShapeIndex& result,
     const NativeOperationResult::Impl& source) {
+  const ShapeIndex source_index(source.shape);
   for (const EdgeHistoryRecord& source_history : source.edge_history) {
     if (!source_history.output_present) {
       continue;
     }
-    const TopoDS_Edge source_edge =
-        edge_at_ordinal(source.shape, source_history.output_ordinal);
+    const TopoDS_Edge source_edge = source_index.edge(source_history.output_ordinal);
     if (source_edge.IsNull()) {
       continue;
     }

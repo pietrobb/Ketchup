@@ -47,37 +47,61 @@ std::uint32_t count_subshapes(const TopoDS_Shape& shape, TopAbs_ShapeEnum kind) 
   return count;
 }
 
-TopoDS_Face face_at_ordinal(const TopoDS_Shape& shape, std::uint32_t target) {
-  TopTools_IndexedMapOfShape faces;
-  TopExp::MapShapes(shape, TopAbs_FACE, faces);
-  const Standard_Integer index = static_cast<Standard_Integer>(target) + 1;
-  return index <= faces.Extent() ? TopoDS::Face(faces(index)) : TopoDS_Face();
-}
+namespace {
 
-TopoDS_Edge edge_at_ordinal(const TopoDS_Shape& shape, std::uint32_t target) {
-  TopTools_IndexedMapOfShape edges;
-  TopExp::MapShapes(shape, TopAbs_EDGE, edges);
-  const Standard_Integer index = static_cast<Standard_Integer>(target) + 1;
-  return index <= edges.Extent() ? TopoDS::Edge(edges(index)) : TopoDS_Edge();
-}
+thread_local std::uint64_t shape_maps_built = 0;
 
-std::pair<std::uint32_t, bool> face_ordinal(
-    const TopoDS_Shape& result, const TopoDS_Shape& candidate) {
-  TopTools_IndexedMapOfShape faces;
-  TopExp::MapShapes(result, TopAbs_FACE, faces);
-  const Standard_Integer index = faces.FindIndex(candidate);
+std::pair<std::uint32_t, bool> ordinal_in(
+    const TopTools_IndexedMapOfShape& map, const TopoDS_Shape& candidate) {
+  const Standard_Integer index = map.FindIndex(candidate);
   return index > 0
              ? std::pair<std::uint32_t, bool>{static_cast<std::uint32_t>(index - 1), true}
              : std::pair<std::uint32_t, bool>{0, false};
+}
+
+}  // namespace
+
+std::uint64_t shape_maps_built_native() noexcept {
+  return shape_maps_built;
+}
+
+const TopTools_IndexedMapOfShape& ShapeIndex::map(
+    std::optional<TopTools_IndexedMapOfShape>& slot, TopAbs_ShapeEnum kind) const {
+  if (!slot) {
+    slot.emplace();
+    TopExp::MapShapes(shape_, kind, *slot);
+    ++shape_maps_built;
+  }
+  return *slot;
+}
+
+TopoDS_Face ShapeIndex::face(std::uint32_t ordinal) const {
+  const TopTools_IndexedMapOfShape& faces = map(faces_, TopAbs_FACE);
+  const Standard_Integer index = static_cast<Standard_Integer>(ordinal) + 1;
+  return index <= faces.Extent() ? TopoDS::Face(faces(index)) : TopoDS_Face();
+}
+
+TopoDS_Edge ShapeIndex::edge(std::uint32_t ordinal) const {
+  const TopTools_IndexedMapOfShape& edges = map(edges_, TopAbs_EDGE);
+  const Standard_Integer index = static_cast<Standard_Integer>(ordinal) + 1;
+  return index <= edges.Extent() ? TopoDS::Edge(edges(index)) : TopoDS_Edge();
+}
+
+std::pair<std::uint32_t, bool> ShapeIndex::face_ordinal(const TopoDS_Shape& candidate) const {
+  return ordinal_in(map(faces_, TopAbs_FACE), candidate);
+}
+
+std::pair<std::uint32_t, bool> ShapeIndex::edge_ordinal(const TopoDS_Shape& candidate) const {
+  return ordinal_in(map(edges_, TopAbs_EDGE), candidate);
 }
 
 HistoryRecord history_record(
     std::string role,
     std::string relation,
     std::string source,
-    const TopoDS_Shape& result,
+    const ShapeIndex& result,
     const TopoDS_Shape& output) {
-  const auto [ordinal, present] = face_ordinal(result, output);
+  const auto [ordinal, present] = result.face_ordinal(output);
   return HistoryRecord{
       std::move(role), std::move(relation), std::move(source), ordinal, present};
 }
@@ -86,18 +110,11 @@ EdgeHistoryRecord edge_history_record(
     std::string role,
     std::string relation,
     std::string source,
-    const TopoDS_Shape& result,
+    const ShapeIndex& result,
     const TopoDS_Shape& output) {
-  TopTools_IndexedMapOfShape edges;
-  TopExp::MapShapes(result, TopAbs_EDGE, edges);
-  const Standard_Integer index = edges.FindIndex(output);
-  if (index > 0) {
-    return EdgeHistoryRecord{
-        std::move(role), std::move(relation), std::move(source),
-        static_cast<std::uint32_t>(index - 1), true};
-  }
+  const auto [ordinal, present] = result.edge_ordinal(output);
   return EdgeHistoryRecord{
-      std::move(role), std::move(relation), std::move(source), 0, false};
+      std::move(role), std::move(relation), std::move(source), ordinal, present};
 }
 
 std::string standard_failure_message(const Standard_Failure& failure) {

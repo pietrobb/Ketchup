@@ -1,4 +1,5 @@
 use super::*;
+use crate::naming::NamedSegment;
 
 fn assert_close(actual: f64, expected: f64) {
     assert!(
@@ -97,6 +98,50 @@ fn planar_rectangle(min: [f64; 2], max: [f64; 2]) -> PlanarProfileLoop {
             end_mm: min,
         },
     ])
+}
+
+#[test]
+fn a_shell_maps_the_faces_of_its_body_and_result_once_however_many_faces_it_records() {
+    // The most segments one profile takes.
+    const SIDES: usize = 64;
+    let corner = |index: usize| {
+        let angle = std::f64::consts::TAU * index as f64 / SIDES as f64;
+        [50.0 * angle.cos(), 50.0 * angle.sin()]
+    };
+    let polygon: Vec<NamedSegment> = (0..SIDES)
+        .map(|index| {
+            NamedSegment::new(
+                format!("wall{index}"),
+                PlanarProfileSegment::Line {
+                    start_mm: corner(index),
+                    end_mm: corner((index + 1) % SIDES),
+                },
+            )
+        })
+        .collect();
+    let backend = ExactBackend::new();
+    let prism = backend.named_extrude(&polygon, 0.0, 40.0).unwrap();
+    // Every face of the prism carries a history record, its name.
+    assert_eq!(prism.output.topology_history.len(), SIDES + 2);
+    let top = prism.face("end").unwrap();
+
+    let before = ExactBackend::shape_maps_on_this_thread();
+    let shell = backend.shell_body(&prism.output.body, &[top], 2.0).unwrap();
+    let maps = ExactBackend::shape_maps_on_this_thread() - before;
+
+    let walls: std::collections::BTreeSet<&str> = shell
+        .topology_history
+        .iter()
+        .filter(|record| record.output_face_ordinal.is_some())
+        .filter_map(|record| record.semantic_role.as_deref())
+        .filter(|role| !role.is_empty() && *role != "start" && *role != "end")
+        .collect();
+    assert_eq!(walls.len(), SIDES, "every outer wall keeps its name: {walls:?}");
+    assert!(
+        maps <= 3,
+        "{maps} face maps for {} history records; each record mapped the result again",
+        shell.topology_history.len()
+    );
 }
 
 #[test]

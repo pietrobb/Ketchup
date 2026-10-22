@@ -8,6 +8,7 @@ std::unique_ptr<NativeOperationResult> make_box_native(
   return guarded([&] {
     BRepPrimAPI_MakeBox operation(gp_Pnt(origin_x, origin_y, origin_z), size_x, size_y, size_z);
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     if (!operation.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT box builder did not complete");
     }
@@ -20,7 +21,7 @@ std::unique_ptr<NativeOperationResult> make_box_native(
              std::pair{"box.face.front", operation.FrontFace()},
              std::pair{"box.face.back", operation.BackFace()},
          }) {
-      history.push_back(history_record(role, "generated", role, result, face));
+      history.push_back(history_record(role, "generated", role, result_index, face));
     }
     return success_result(result, std::move(history));
   });
@@ -63,9 +64,10 @@ std::unique_ptr<NativeOperationResult> offset_rectangle_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT offset face builder did not complete");
     }
     const TopoDS_Face result = face_builder.Face();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "planar_offset.face", "offset_generated", "profile.face", result, result));
+        "planar_offset.face", "offset_generated", "profile.face", result_index, result));
     return success_result(result, std::move(history), false, true);
   });
 }
@@ -167,9 +169,10 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
     }
     if (distance == 0.0) {
       const TopoDS_Face result = source_face_builder.Face();
+      const ShapeIndex result_index(result);
       std::vector<HistoryRecord> history;
       history.push_back(history_record(
-          "planar_surface.face", "generated", "profile.face", result, result));
+          "planar_surface.face", "generated", "profile.face", result_index, result));
       return success_result(result, std::move(history), false, true);
     }
 
@@ -193,9 +196,10 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset face is invalid");
     }
     const TopoDS_Face result = face_builder.Face();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "planar_offset.face", "offset_generated", "profile.face", result, result));
+        "planar_offset.face", "offset_generated", "profile.face", result_index, result));
     return success_result(result, std::move(history), false, true);
   });
 }
@@ -223,6 +227,7 @@ std::unique_ptr<NativeOperationResult> trim_surface_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT surface trim did not produce an unambiguous intersection");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     if (!BRepCheck_Analyzer(result, true).IsValid()
         || count_subshapes(result, TopAbs_SOLID) != 0
         || count_subshapes(result, TopAbs_FACE) != 1
@@ -241,9 +246,9 @@ std::unique_ptr<NativeOperationResult> trim_surface_native(
       return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Surface trim requires a finite proper subset of the target");
     }
     std::vector<HistoryRecord> history;
-    append_propagated_history(history, operation, result, target.impl());
+    append_propagated_history(history, operation, result_index, target.impl());
     history.push_back(history_record(
-        "surface_trim.face", "trimmed", "surface.target", result, result));
+        "surface_trim.face", "trimmed", "surface.target", result_index, result));
     return success_result(result, std::move(history), false, true);
   });
 }
@@ -258,7 +263,7 @@ std::unique_ptr<NativeOperationResult> extend_planar_surface_native(
         || !std::isfinite(distance) || distance < 0.01 || distance > 100000.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar surface extend payload is outside the bounded envelope");
     }
-    const TopoDS_Face source = face_at_ordinal(target.impl().shape, 0);
+    const TopoDS_Face source = ShapeIndex(target.impl().shape).face(0);
     if (source.IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "Planar surface extend source face is absent");
     }
@@ -287,6 +292,7 @@ std::unique_ptr<NativeOperationResult> extend_planar_surface_native(
       return error_result(STATUS_INVALID_SHAPE, "Surface extend produced an invalid planar face");
     }
     const TopoDS_Face result = face_builder.Face();
+    const ShapeIndex result_index(result);
     GProp_GProps source_properties;
     GProp_GProps result_properties;
     BRepGProp::SurfaceProperties(source, source_properties);
@@ -300,7 +306,7 @@ std::unique_ptr<NativeOperationResult> extend_planar_surface_native(
     }
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "surface_extend.face", "extended", "surface.target", result, result));
+        "surface_extend.face", "extended", "surface.target", result_index, result));
     return success_result(result, std::move(history), false, true);
   });
 }
@@ -405,10 +411,11 @@ std::unique_ptr<NativeOperationResult> knit_surface_compound_native(
       result = solid;
     }
 
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
     for (TopExp_Explorer faces(result, TopAbs_FACE); faces.More(); faces.Next()) {
       history.push_back(history_record(
-          "surface_knit.face", "sewn", "surface.input.face", result, faces.Current()));
+          "surface_knit.face", "sewn", "surface.input.face", result_index, faces.Current()));
     }
     return success_result(result, std::move(history), false, false, {}, !make_solid);
   });
@@ -455,10 +462,11 @@ std::unique_ptr<NativeOperationResult> thicken_surface_native(
       return solid;
     };
     const auto result_history = [&](const TopoDS_Shape& result) {
+      const ShapeIndex result_index(result);
       std::vector<HistoryRecord> history;
       for (TopExp_Explorer faces(result, TopAbs_FACE); faces.More(); faces.Next()) {
         history.push_back(history_record(
-            "surface_thicken.face", "thickened", "surface.target", result, faces.Current()));
+            "surface_thicken.face", "thickened", "surface.target", result_index, faces.Current()));
       }
       return history;
     };
@@ -738,6 +746,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset face is invalid");
     }
     const TopoDS_Face result = result_builder.Face();
+    const ShapeIndex result_index(result);
     TopTools_IndexedMapOfShape result_wires;
     TopExp::MapShapes(result, TopAbs_WIRE, result_wires);
     if (result_wires.Extent() != static_cast<Standard_Integer>(source_wires.size())) {
@@ -758,7 +767,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
     }
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "planar_offset.face", "offset_generated", "profile.face", result, result));
+        "planar_offset.face", "offset_generated", "profile.face", result_index, result));
     return success_result(result, std::move(history), false, true);
   });
 }
@@ -813,9 +822,10 @@ std::unique_ptr<NativeOperationResult> offset_planar_circle_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar circle offset face is invalid");
     }
     const TopoDS_Face result = face_builder.Face();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "planar_offset.face", "offset_generated", "profile.face", result, result));
+        "planar_offset.face", "offset_generated", "profile.face", result_index, result));
     return success_result(result, std::move(history), false, true);
   });
 }

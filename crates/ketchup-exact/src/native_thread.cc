@@ -250,11 +250,12 @@ std::unique_ptr<NativeOperationResult> thread_groove_native(
     if (auto error = make_groove(helix, left_handed, profile, approximation, groove)) {
       return error;
     }
+    const ShapeIndex groove_index(groove.solid);
     std::vector<HistoryRecord> history;
     for (std::size_t index = 0; index < groove.sides.size(); ++index) {
       for (const TopoDS_Shape& face : groove.sides[index]) {
         history.push_back(
-            history_record(side_role(index), "generated", side_role(index), groove.solid, face));
+            history_record(side_role(index), "generated", side_role(index), groove_index, face));
       }
     }
     return success_result(groove.solid, std::move(history));
@@ -336,7 +337,7 @@ std::unique_ptr<NativeOperationResult> thread_cut_native(
         }
         crest = kept_faces(turn, crest_faces);
         turned.shape = turn.Shape();
-        append_propagated_history(turned.history, turn, turned.shape, target.impl());
+        append_propagated_history(turned.history, turn, ShapeIndex(turned.shape), target.impl());
         source = &turned;
       }
       if (auto error = trim_groove(helix, from, to, reach, groove, ends)) {
@@ -354,15 +355,16 @@ std::unique_ptr<NativeOperationResult> thread_cut_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT thread cut did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     if (result.IsNull() || count_subshapes(result, TopAbs_SOLID) != 1) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT thread cut is not one solid");
     }
     std::vector<HistoryRecord> history;
-    append_propagated_history(history, operation, result, *source);
+    append_propagated_history(history, operation, result_index, *source);
     // A face wholly inside the body is kept as it is.
     const auto name = [&](const std::string& role, const std::vector<TopoDS_Shape>& faces) {
       for (const TopoDS_Shape& face : kept_faces(operation, faces)) {
-        HistoryRecord record = history_record(role, "generated", role, result, face);
+        HistoryRecord record = history_record(role, "generated", role, result_index, face);
         if (record.output_present) history.push_back(std::move(record));
       }
     };

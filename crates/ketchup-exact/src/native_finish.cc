@@ -22,6 +22,7 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
         || !std::isfinite(thickness) || thickness <= 0.0 || direction > 2) {
       return error_result(STATUS_INVALID_PARAMETER, "Body shell payload is outside the bounded envelope");
     }
+    const ShapeIndex body_index(body.impl().shape);
     NCollection_List<TopoDS_Shape> closing_faces;
     std::uint32_t previous = 0;
     bool first = true;
@@ -30,7 +31,7 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
           || ordinal >= body.impl().summary.face_count) {
         return error_result(STATUS_INVALID_PARAMETER, "Body shell face ordinals are invalid or non-canonical");
       }
-      const TopoDS_Face face = face_at_ordinal(body.impl().shape, ordinal);
+      const TopoDS_Face face = body_index.face(ordinal);
       if (face.IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "Body shell selected face is absent");
       }
@@ -55,22 +56,22 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
     const auto append_selected_history = [&](
         std::vector<HistoryRecord>& history,
         BRepOffsetAPI_MakeThickSolid& operation,
-        const TopoDS_Shape& result,
+        const ShapeIndex& result_index,
         const std::string& relation_prefix) {
       for (const std::uint32_t ordinal : face_ordinals) {
-        const TopoDS_Face source = face_at_ordinal(body.impl().shape, ordinal);
+        const TopoDS_Face source = body_index.face(ordinal);
         const std::string source_id = "generated-result/face/" + std::to_string(ordinal);
         const NCollection_List<TopoDS_Shape>& modified = operation.Modified(source);
         const NCollection_List<TopoDS_Shape>& generated = operation.Generated(source);
         for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
              iterator.More(); iterator.Next()) {
           history.push_back(history_record(
-              "", relation_prefix + "_selected_modified", source_id, result, iterator.Value()));
+              "", relation_prefix + "_selected_modified", source_id, result_index, iterator.Value()));
         }
         for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
              iterator.More(); iterator.Next()) {
           history.push_back(history_record(
-              "", relation_prefix + "_selected_generated", source_id, result, iterator.Value()));
+              "", relation_prefix + "_selected_generated", source_id, result_index, iterator.Value()));
         }
         if (operation.IsDeleted(source) || (modified.IsEmpty() && generated.IsEmpty())) {
           history.push_back(HistoryRecord{
@@ -121,8 +122,9 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
         return error_result(STATUS_INVALID_SHAPE, "OCCT closed Shell boolean cut did not complete");
       }
       const TopoDS_Shape result = cut.Shape();
+      const ShapeIndex result_index(result);
       std::vector<HistoryRecord> history;
-      const auto map_intermediate = [&cut, &result](
+      const auto map_intermediate = [&cut, &result_index](
           std::vector<HistoryRecord>& records,
           const HistoryRecord& source,
           const TopoDS_Shape& intermediate,
@@ -138,7 +140,7 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
               semantic_role,
               relation_prefix + "_modified",
               source.source_element_id,
-              result,
+              result_index,
               iterator.Value()));
         }
         for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
@@ -147,7 +149,7 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
               semantic_role,
               relation_prefix + "_generated",
               source.source_element_id,
-              result,
+              result_index,
               iterator.Value()));
         }
         if (!cut.IsDeleted(intermediate) && modified.IsEmpty() && generated.IsEmpty()) {
@@ -155,7 +157,7 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
               semantic_role,
               relation_prefix + "_unchanged",
               source.source_element_id,
-              result,
+              result_index,
               intermediate);
           if (unchanged.output_present) records.push_back(unchanged);
         }
@@ -163,8 +165,7 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
       const auto append_direct = [&](const std::string& relation_prefix) {
         for (const HistoryRecord& source : body.impl().history) {
           if (!source.output_present) continue;
-          const TopoDS_Face source_face =
-              face_at_ordinal(body.impl().shape, source.output_ordinal);
+          const TopoDS_Face source_face = body_index.face(source.output_ordinal);
           if (!source_face.IsNull()) map_intermediate(history, source, source_face, relation_prefix);
         }
       };
@@ -173,8 +174,7 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
           const std::string& relation_prefix) {
         for (const HistoryRecord& source : body.impl().history) {
           if (!source.output_present) continue;
-          const TopoDS_Face source_face =
-              face_at_ordinal(body.impl().shape, source.output_ordinal);
+          const TopoDS_Face source_face = body_index.face(source.output_ordinal);
           if (source_face.IsNull()) continue;
           const NCollection_List<TopoDS_Shape>& modified = offset.Modified(source_face);
           const NCollection_List<TopoDS_Shape>& generated = offset.Generated(source_face);
@@ -208,10 +208,11 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
         return error_result(STATUS_INVALID_SHAPE, "OCCT body shell did not complete");
       }
       const TopoDS_Shape result = operation.Shape();
+      const ShapeIndex result_index(result);
       std::vector<HistoryRecord> history;
-      append_propagated_history(history, operation, result, body.impl());
+      append_propagated_history(history, operation, result_index, body.impl());
       append_selected_history(
-          history, operation, result, direction == 0 ? "shell_inward" : "shell_outward");
+          history, operation, result_index, direction == 0 ? "shell_inward" : "shell_outward");
       return success_result(result, std::move(history));
     }
 
@@ -229,13 +230,15 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
     }
     fusion.SimplifyResult(true, true);
     const TopoDS_Shape result = fusion.Shape();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
     const auto append_half_history = [&](
         BRepOffsetAPI_MakeThickSolid& half,
         const std::string& relation_prefix) {
       std::vector<HistoryRecord> half_history;
-      append_propagated_history(half_history, half, half.Shape(), body.impl());
-      append_selected_history(half_history, half, half.Shape(), relation_prefix);
+      const ShapeIndex half_index(half.Shape());
+      append_propagated_history(half_history, half, half_index, body.impl());
+      append_selected_history(half_history, half, half_index, relation_prefix);
       for (const HistoryRecord& source : half_history) {
         const std::string semantic_role = source.semantic_role.empty()
             ? ""
@@ -244,14 +247,14 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
           history.push_back(source);
           continue;
         }
-        const TopoDS_Face intermediate = face_at_ordinal(half.Shape(), source.output_ordinal);
+        const TopoDS_Face intermediate = half_index.face(source.output_ordinal);
         const NCollection_List<TopoDS_Shape>& modified = fusion.Modified(intermediate);
         if (modified.IsEmpty()) {
           HistoryRecord mapped = history_record(
               semantic_role,
               source.relation,
               source.source_element_id,
-              result,
+              result_index,
               intermediate);
           if (mapped.output_present) {
             history.push_back(std::move(mapped));
@@ -263,7 +266,7 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
                 semantic_role,
                 source.relation,
                 source.source_element_id,
-                result,
+                result_index,
                 iterator.Value()));
           }
         }
@@ -420,7 +423,7 @@ std::unique_ptr<NativeOperationResult> offset_body_face_native(
         || !std::isfinite(distance) || std::abs(distance) < tolerances().rounding) {
       return error_result(STATUS_INVALID_PARAMETER, "Body face offset payload is outside the bounded envelope");
     }
-    const TopoDS_Face face = face_at_ordinal(body.impl().shape, face_ordinal);
+    const TopoDS_Face face = ShapeIndex(body.impl().shape).face(face_ordinal);
     if (face.IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "Body face offset selected face is absent");
     }
@@ -445,13 +448,14 @@ std::unique_ptr<NativeOperationResult> offset_body_face_native(
       }
       operation.SimplifyResult(true, true);
       const TopoDS_Shape result = operation.Shape();
+      const ShapeIndex result_index(result);
       std::vector<HistoryRecord> history;
-      append_propagated_history(history, operation, result, body.impl());
+      append_propagated_history(history, operation, result_index, body.impl());
       const NCollection_List<TopoDS_Shape>& modified = operation.Modified(face);
       for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
            iterator.More(); iterator.Next()) {
         history.push_back(history_record(
-            "", "face_offset_selected_modified", source_id, result, iterator.Value()));
+            "", "face_offset_selected_modified", source_id, result_index, iterator.Value()));
       }
       return success_result(result, std::move(history));
     }
@@ -463,13 +467,14 @@ std::unique_ptr<NativeOperationResult> offset_body_face_native(
     }
     operation.SimplifyResult(true, true);
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
-    append_propagated_history(history, operation, result, body.impl());
+    append_propagated_history(history, operation, result_index, body.impl());
     const NCollection_List<TopoDS_Shape>& modified = operation.Modified(face);
     for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
          iterator.More(); iterator.Next()) {
       history.push_back(history_record(
-          "", "face_offset_selected_modified", source_id, result, iterator.Value()));
+          "", "face_offset_selected_modified", source_id, result_index, iterator.Value()));
     }
     return success_result(result, std::move(history));
   });
@@ -511,6 +516,7 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
     if (!fillet_radius_stations.empty() && previous_position != 1.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Variable fillet stations must end at normalized position one");
     }
+    const ShapeIndex body_index(body.impl().shape);
     std::vector<TopoDS_Edge> selected;
     selected.reserve(edge_ordinals.size());
     std::uint32_t previous = 0;
@@ -520,7 +526,7 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
           || ordinal >= body.impl().summary.edge_count) {
         return error_result(STATUS_INVALID_PARAMETER, "Body edge finish ordinals are invalid or non-canonical");
       }
-      const TopoDS_Edge edge = edge_at_ordinal(body.impl().shape, ordinal);
+      const TopoDS_Edge edge = body_index.edge(ordinal);
       if (edge.IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "Body edge finish selected edge is absent");
       }
@@ -534,7 +540,7 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
       if (ordinal >= body.impl().summary.face_count) {
         return error_result(STATUS_INVALID_PARAMETER, "Advanced chamfer face ordinal is out of range");
       }
-      const TopoDS_Face face = face_at_ordinal(body.impl().shape, ordinal);
+      const TopoDS_Face face = body_index.face(ordinal);
       if (face.IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "Advanced chamfer side face is absent");
       }
@@ -547,10 +553,11 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
         return error_result(STATUS_INVALID_SHAPE, "OCCT body edge finish did not complete");
       }
       const TopoDS_Shape result = operation.Shape();
+      const ShapeIndex result_index(result);
       std::vector<HistoryRecord> history;
       std::vector<EdgeHistoryRecord> edge_history;
-      append_propagated_history(history, operation, result, body.impl());
-      append_propagated_edge_history(edge_history, operation, result, body.impl());
+      append_propagated_history(history, operation, result_index, body.impl());
+      append_propagated_edge_history(edge_history, operation, result_index, body.impl());
       for (std::size_t index = 0; index < selected.size(); ++index) {
         const TopoDS_Edge& source = selected[index];
         const std::string source_id =
@@ -561,13 +568,13 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
              iterator.More(); iterator.Next()) {
           edge_history.push_back(edge_history_record(
               "", fillet ? "fillet_selected_modified" : "chamfer_selected_modified",
-              source_id, result, iterator.Value()));
+              source_id, result_index, iterator.Value()));
         }
         for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
              iterator.More(); iterator.Next()) {
           edge_history.push_back(edge_history_record(
               "", fillet ? "fillet_selected_generated" : "chamfer_selected_generated",
-              source_id, result, iterator.Value()));
+              source_id, result_index, iterator.Value()));
         }
         if (operation.IsDeleted(source) || (modified.IsEmpty() && generated.IsEmpty())) {
           edge_history.push_back(EdgeHistoryRecord{
@@ -632,7 +639,8 @@ std::unique_ptr<NativeOperationResult> draft_body_native(
         || std::abs(angle_degrees) >= 90.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Body draft payload is outside the bounded envelope");
     }
-    const TopoDS_Face neutral = face_at_ordinal(body.impl().shape, neutral_ordinal);
+    const ShapeIndex body_index(body.impl().shape);
+    const TopoDS_Face neutral = body_index.face(neutral_ordinal);
     gp_Dir neutral_normal;
     if (neutral.IsNull() || !oriented_planar_face_normal(neutral, neutral_normal)) {
       return error_result(STATUS_INVALID_PARAMETER,
@@ -653,7 +661,7 @@ std::unique_ptr<NativeOperationResult> draft_body_native(
       }
       previous = ordinal;
       first = false;
-      const TopoDS_Face face = face_at_ordinal(body.impl().shape, ordinal);
+      const TopoDS_Face face = body_index.face(ordinal);
       if (face.IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "Draft selected face is absent");
       }
@@ -710,15 +718,16 @@ std::unique_ptr<NativeOperationResult> draft_body_native(
           "or the body");
     }
     const TopoDS_Shape result = draft.Shape();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
-    append_propagated_history(history, draft, result, body.impl());
+    append_propagated_history(history, draft, result_index, body.impl());
     for (std::size_t index = 0; index < selected.size(); ++index) {
       const std::string source_id = "generated-result/face/" + std::to_string(face_ordinals[index]);
       const NCollection_List<TopoDS_Shape>& modified = draft.Modified(selected[index]);
       for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
            iterator.More(); iterator.Next()) {
         history.push_back(history_record(
-            "", "draft_selected_modified", source_id, result, iterator.Value()));
+            "", "draft_selected_modified", source_id, result_index, iterator.Value()));
       }
     }
     return success_result(result, std::move(history));

@@ -62,7 +62,7 @@ TopoDS_Face named_profile_face(
 void record_name(
     std::vector<HistoryRecord>& history,
     const std::string& name,
-    const TopoDS_Shape& result,
+    const ShapeIndex& result,
     const TopoDS_Shape& face) {
   HistoryRecord record = history_record(name, "named", name, result, face);
   if (record.output_present) history.push_back(std::move(record));
@@ -74,7 +74,7 @@ void record_generated_names(
     Operation& operation,
     const TopoDS_Shape& source,
     const std::string& name,
-    const TopoDS_Shape& result) {
+    const ShapeIndex& result) {
   const NCollection_List<TopoDS_Shape>& generated = operation.Generated(source);
   for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
        iterator.More(); iterator.Next()) {
@@ -95,7 +95,7 @@ template <typename Operation>
 void propagate_names(
     std::vector<HistoryRecord>& history,
     Operation& operation,
-    const TopoDS_Shape& result,
+    const ShapeIndex& result,
     const TopoDS_Shape& source,
     rust::Slice<const rust::String> labels) {
   TopTools_IndexedMapOfShape faces;
@@ -146,20 +146,20 @@ bool lies_over(const gp_Pnt& point, const TopoDS_Face& face, double reach) {
 // face at that vertex. Faces matching nothing stay unnamed and are reported.
 void name_finish_faces(
     std::vector<HistoryRecord>& history,
-    const TopoDS_Shape& result,
+    const ShapeIndex& result,
     const TopoDS_Shape& source,
     rust::Slice<const rust::String> labels,
     const std::string& kind,
     double amount) {
   TopTools_IndexedMapOfShape result_faces;
-  TopExp::MapShapes(result, TopAbs_FACE, result_faces);
+  TopExp::MapShapes(result.shape(), TopAbs_FACE, result_faces);
   std::vector<std::set<std::string>> result_names(
       static_cast<std::size_t>(result_faces.Extent()));
   for (const HistoryRecord& record : history) {
     if (record.output_present) result_names[record.output_ordinal].insert(record.source_element_id);
   }
   TopTools_IndexedDataMapOfShapeListOfShape result_edge_faces;
-  TopExp::MapShapesAndAncestors(result, TopAbs_EDGE, TopAbs_FACE, result_edge_faces);
+  TopExp::MapShapesAndAncestors(result.shape(), TopAbs_EDGE, TopAbs_FACE, result_edge_faces);
 
   TopTools_IndexedMapOfShape source_faces;
   TopExp::MapShapes(source, TopAbs_FACE, source_faces);
@@ -252,12 +252,13 @@ std::unique_ptr<NativeOperationResult> named_prism_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT named prism did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
-    record_name(history, "start", result, operation.FirstShape());
-    record_name(history, "end", result, operation.LastShape());
+    record_name(history, "start", result_index, operation.FirstShape());
+    record_name(history, "end", result_index, operation.LastShape());
     for (std::size_t index = 0; index < wire_edges.size(); ++index) {
       record_generated_names(
-          history, operation, wire_edges[index], "seg:" + std::to_string(index), result);
+          history, operation, wire_edges[index], "seg:" + std::to_string(index), result_index);
     }
     return success_result(result, std::move(history));
   });
@@ -289,14 +290,15 @@ std::unique_ptr<NativeOperationResult> named_revol_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT named revolve did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
     if (angle_degrees < 360.0) {
-      record_name(history, "start", result, operation.FirstShape());
-      record_name(history, "end", result, operation.LastShape());
+      record_name(history, "start", result_index, operation.FirstShape());
+      record_name(history, "end", result_index, operation.LastShape());
     }
     for (std::size_t index = 0; index < wire_edges.size(); ++index) {
       record_generated_names(
-          history, operation, wire_edges[index], "seg:" + std::to_string(index), result);
+          history, operation, wire_edges[index], "seg:" + std::to_string(index), result_index);
     }
     return success_result(result, std::move(history));
   });
@@ -313,9 +315,10 @@ std::unique_ptr<NativeOperationResult> named_finish_native(
         || edge_ordinals.size() > 64 || !std::isfinite(amount) || amount <= 0.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Named finish payload is malformed");
     }
+    const ShapeIndex body_index(body.impl().shape);
     std::vector<TopoDS_Edge> selected;
     for (const std::uint32_t ordinal : edge_ordinals) {
-      const TopoDS_Edge edge = edge_at_ordinal(body.impl().shape, ordinal);
+      const TopoDS_Edge edge = body_index.edge(ordinal);
       if (edge.IsNull()) {
         return error_result(STATUS_INVALID_PARAMETER, "Named finish edge is absent");
       }
@@ -331,10 +334,11 @@ std::unique_ptr<NativeOperationResult> named_finish_native(
         return error_result(STATUS_INVALID_SHAPE, message.str());
       }
       const TopoDS_Shape result = operation.Shape();
+      const ShapeIndex result_index(result);
       std::vector<HistoryRecord> history;
-      propagate_names(history, operation, result, body.impl().shape, labels);
+      propagate_names(history, operation, result_index, body.impl().shape, labels);
       name_finish_faces(
-          history, result, body.impl().shape, labels, fillet ? "fillet" : "chamfer", amount);
+          history, result_index, body.impl().shape, labels, fillet ? "fillet" : "chamfer", amount);
       return success_result(result, std::move(history));
     };
     if (fillet) {
@@ -367,9 +371,10 @@ std::unique_ptr<NativeOperationResult> named_boolean_native(
       }
       operation.SimplifyResult(true, true);
       const TopoDS_Shape result = operation.Shape();
+      const ShapeIndex result_index(result);
       std::vector<HistoryRecord> history;
-      propagate_names(history, operation, result, target.impl().shape, target_labels);
-      propagate_names(history, operation, result, tool.impl().shape, tool_labels);
+      propagate_names(history, operation, result_index, target.impl().shape, target_labels);
+      propagate_names(history, operation, result_index, tool.impl().shape, tool_labels);
       return success_result(result, std::move(history));
     };
     if (operation_kind == 0) {
@@ -399,7 +404,7 @@ std::unique_ptr<NativeOperationResult> named_offset_face_native(
         || std::abs(distance) < tolerances().rounding) {
       return error_result(STATUS_INVALID_PARAMETER, "Named face offset payload is malformed");
     }
-    const TopoDS_Face face = face_at_ordinal(body.impl().shape, face_ordinal);
+    const TopoDS_Face face = ShapeIndex(body.impl().shape).face(face_ordinal);
     gp_Dir normal;
     if (face.IsNull() || !oriented_planar_face_normal(face, normal)) {
       return error_result(STATUS_INVALID_PARAMETER, "Named face offset requires a planar face");
@@ -419,16 +424,17 @@ std::unique_ptr<NativeOperationResult> named_offset_face_native(
       }
       operation.SimplifyResult(true, true);
       const TopoDS_Shape result = operation.Shape();
+      const ShapeIndex result_index(result);
       std::vector<HistoryRecord> history;
-      propagate_names(history, operation, result, body.impl().shape, labels);
+      propagate_names(history, operation, result_index, body.impl().shape, labels);
       // The far cap of the offset prism is where the pushed or pulled face now lies.
       const TopoDS_Shape moved = prism.LastShape();
       const NCollection_List<TopoDS_Shape>& modified = operation.Modified(moved);
       for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
            iterator.More(); iterator.Next()) {
-        record_name(history, moved_name, result, iterator.Value());
+        record_name(history, moved_name, result_index, iterator.Value());
       }
-      if (modified.IsEmpty()) record_name(history, moved_name, result, moved);
+      if (modified.IsEmpty()) record_name(history, moved_name, result_index, moved);
       // Each side of the prism continues the wall across its generating edge;
       // where the fuse could not merge the two, the side keeps that wall's name.
       TopTools_IndexedMapOfShape body_faces;
@@ -449,9 +455,9 @@ std::unique_ptr<NativeOperationResult> named_offset_face_native(
             if (side.Value().ShapeType() != TopAbs_FACE) continue;
             const NCollection_List<TopoDS_Shape>& fused = operation.Modified(side.Value());
             for (NCollection_List<TopoDS_Shape>::Iterator piece(fused); piece.More(); piece.Next()) {
-              record_name(history, wall_name, result, piece.Value());
+              record_name(history, wall_name, result_index, piece.Value());
             }
-            if (fused.IsEmpty()) record_name(history, wall_name, result, side.Value());
+            if (fused.IsEmpty()) record_name(history, wall_name, result_index, side.Value());
           }
         }
       }
@@ -503,9 +509,10 @@ std::unique_ptr<NativeOperationResult> named_shell_native(
       return error_result(STATUS_INVALID_PARAMETER, "Named shell payload is malformed");
     }
     const TopoDS_Shape& source = body.impl().shape;
+    const ShapeIndex source_index(source);
     NCollection_List<TopoDS_Shape> closing;
     for (const std::uint32_t ordinal : open_ordinals) {
-      const TopoDS_Face face = face_at_ordinal(source, ordinal);
+      const TopoDS_Face face = source_index.face(ordinal);
       if (face.IsNull()) {
         return error_result(STATUS_INVALID_PARAMETER, "Named shell open face is absent");
       }
@@ -523,6 +530,7 @@ std::unique_ptr<NativeOperationResult> named_shell_native(
       return error_result(STATUS_INVALID_SHAPE, too_thick.str());
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     if (!BRepCheck_Analyzer(result).IsValid() || count_subshapes(result, TopAbs_SOLID) != 1) {
       return error_result(STATUS_INVALID_SHAPE, too_thick.str());
     }
@@ -554,9 +562,9 @@ std::unique_ptr<NativeOperationResult> named_shell_native(
       if (owner == 0) continue;
       const std::string label(labels[static_cast<std::size_t>(owner - 1)]);
       if (nearest <= tolerance) {
-        record_name(history, label, result, face);
+        record_name(history, label, result_index, face);
       } else if (std::abs(nearest - thickness) <= tolerance) {
-        record_name(history, inner_prefix + label, result, face);
+        record_name(history, inner_prefix + label, result_index, face);
       }
     }
     return success_result(result, std::move(history));

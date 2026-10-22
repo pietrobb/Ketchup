@@ -14,6 +14,7 @@ std::unique_ptr<NativeOperationResult> extrude_circle_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder builder did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     TopoDS_Face bottom;
     TopoDS_Face top;
     TopoDS_Face side;
@@ -44,14 +45,14 @@ std::unique_ptr<NativeOperationResult> extrude_circle_native(
     }
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "extrusion.bottom", "analytic_cap", "profile.face", result, bottom));
+        "extrusion.bottom", "analytic_cap", "profile.face", result_index, bottom));
     history.push_back(history_record(
-        "extrusion.top", "analytic_cap", "profile.face", result, top));
+        "extrusion.top", "analytic_cap", "profile.face", result_index, top));
     history.push_back(history_record(
         "extrusion.side(profile_edge=circle)",
         "analytic_generated",
         "profile.edge.circle",
-        result,
+        result_index,
         side));
     return success_result(result, std::move(history));
   });
@@ -311,11 +312,12 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile prism builder did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "extrusion.bottom", "first_shape", "profile.face", result, operation.FirstShape()));
+        "extrusion.bottom", "first_shape", "profile.face", result_index, operation.FirstShape()));
     history.push_back(history_record(
-        "extrusion.top", "last_shape", "profile.face", result, operation.LastShape()));
+        "extrusion.top", "last_shape", "profile.face", result_index, operation.LastShape()));
     const std::string side_role = reference_is_arc
         ? "extrusion.side(profile_edge=arc.0)"
         : (reference_is_line
@@ -331,7 +333,7 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
           side_role,
           "generated",
           side_source,
-          result,
+          result_index,
           iterator.Value());
       if (candidate.output_present) {
         side_history = candidate;
@@ -465,14 +467,15 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar region prism builder did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar region prism is invalid");
     }
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "extrusion.bottom", "first_shape", "profile.face", result, operation.FirstShape()));
+        "extrusion.bottom", "first_shape", "profile.face", result_index, operation.FirstShape()));
     history.push_back(history_record(
-        "extrusion.top", "last_shape", "profile.face", result, operation.LastShape()));
+        "extrusion.top", "last_shape", "profile.face", result_index, operation.LastShape()));
     return success_result(result, std::move(history));
   });
 }
@@ -614,15 +617,16 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar region revolve builder did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar region revolve is invalid");
     }
     std::vector<HistoryRecord> history;
     if (angle_degrees < 360.0) {
       history.push_back(history_record(
-          "revolve.start", "first_shape", "profile.face", result, operation.FirstShape()));
+          "revolve.start", "first_shape", "profile.face", result_index, operation.FirstShape()));
       history.push_back(history_record(
-          "revolve.end", "last_shape", "profile.face", result, operation.LastShape()));
+          "revolve.end", "last_shape", "profile.face", result_index, operation.LastShape()));
     }
     return success_result(result, std::move(history));
   });
@@ -712,6 +716,7 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve builder did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
     const char* side_roles[] = {"revolve.side.0", "revolve.side.1"};
     for (std::size_t index = 0; index < 2; ++index) {
@@ -720,7 +725,7 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
       const NCollection_List<TopoDS_Shape>& generated = operation.Generated(profile_edges[index]);
       for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated); iterator.More(); iterator.Next()) {
         const HistoryRecord candidate = history_record(
-            side_roles[index], "generated", source, result, iterator.Value());
+            side_roles[index], "generated", source, result_index, iterator.Value());
         if (candidate.output_present) {
           record = candidate;
           break;
@@ -730,9 +735,9 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
     }
     if (angle_degrees < 360.0) {
       history.push_back(history_record(
-          "revolve.start", "first_shape", "profile.face", result, operation.FirstShape()));
+          "revolve.start", "first_shape", "profile.face", result_index, operation.FirstShape()));
       history.push_back(history_record(
-          "revolve.end", "last_shape", "profile.face", result, operation.LastShape()));
+          "revolve.end", "last_shape", "profile.face", result_index, operation.LastShape()));
     }
     return success_result(result, std::move(history));
   });

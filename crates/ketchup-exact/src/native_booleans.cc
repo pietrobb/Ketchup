@@ -143,7 +143,7 @@ std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
       return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Plane trim must remove a bounded positive volume");
     }
     std::vector<HistoryRecord> history;
-    append_propagated_history(history, operation, result, body.impl());
+    append_propagated_history(history, operation, ShapeIndex(result), body.impl());
     return success_result(result, std::move(history));
   });
 }
@@ -174,7 +174,7 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
       }
       const TopoDS_Shape result = operation.Shape();
       std::vector<HistoryRecord> history;
-      append_propagated_history(history, operation, result, target.impl());
+      append_propagated_history(history, operation, ShapeIndex(result), target.impl());
       return finish(result, std::move(history));
     }
     if (operation_kind == 1) {
@@ -189,8 +189,9 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
       }
       const TopoDS_Shape result = operation.Shape();
       std::vector<HistoryRecord> history;
-      append_propagated_history(history, operation, result, target.impl());
-      append_propagated_history(history, operation, result, tool.impl());
+      const ShapeIndex result_index(result);
+      append_propagated_history(history, operation, result_index, target.impl());
+      append_propagated_history(history, operation, result_index, tool.impl());
       return finish(result, std::move(history));
     }
     if (operation_kind == 2) {
@@ -202,8 +203,9 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
       }
       const TopoDS_Shape result = operation.Shape();
       std::vector<HistoryRecord> history;
-      append_propagated_history(history, operation, result, target.impl());
-      append_propagated_history(history, operation, result, tool.impl());
+      const ShapeIndex result_index(result);
+      append_propagated_history(history, operation, result_index, target.impl());
+      append_propagated_history(history, operation, result_index, tool.impl());
       return finish(result, std::move(history));
     }
     if (operation_kind == 3) {
@@ -219,7 +221,7 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
         return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Body split did not produce multiple target fragments");
       }
       std::vector<HistoryRecord> history;
-      append_propagated_history(history, operation, result, target.impl());
+      append_propagated_history(history, operation, ShapeIndex(result), target.impl());
       return finish(result, std::move(history));
     }
     return error_result(STATUS_INVALID_PARAMETER, "Exact body Boolean operation is unsupported");
@@ -253,7 +255,7 @@ NativePairQuery query_face_pair_native(
           if (std::abs(dot - (a == b ? 1.0 : 0.0)) > tolerances().rounding) return {};
         }
       }
-      const TopoDS_Face face = face_at_ordinal(body.impl().shape, ordinal);
+      const TopoDS_Face face = ShapeIndex(body.impl().shape).face(ordinal);
       if (face.IsNull()) return {};
       gp_Trsf transform;
       transform.SetValues(matrix[0], matrix[1], matrix[2], matrix[3],

@@ -294,15 +294,16 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep pipe did not produce a solid");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
         || count_subshapes(result, TopAbs_SOLID) != 1) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep result is not one valid solid");
     }
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "sweep.start", "first_shape", "profile.wire", result, operation.FirstShape()));
+        "sweep.start", "first_shape", "profile.wire", result_index, operation.FirstShape()));
     history.push_back(history_record(
-        "sweep.end", "last_shape", "profile.wire", result, operation.LastShape()));
+        "sweep.end", "last_shape", "profile.wire", result_index, operation.LastShape()));
     return success_result(result, std::move(history));
   });
 }
@@ -647,15 +648,16 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT spatial Sweep pipe did not produce a solid");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
         || count_subshapes(result, TopAbs_SOLID) != 1) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT spatial Sweep result is not one valid solid");
     }
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "sweep.start", "first_shape", "profile.wire", result, operation.FirstShape()));
+        "sweep.start", "first_shape", "profile.wire", result_index, operation.FirstShape()));
     history.push_back(history_record(
-        "sweep.end", "last_shape", "profile.wire", result, operation.LastShape()));
+        "sweep.end", "last_shape", "profile.wire", result_index, operation.LastShape()));
     return success_result(result, std::move(history));
   });
 }

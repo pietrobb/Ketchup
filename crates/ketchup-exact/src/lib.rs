@@ -282,6 +282,7 @@ mod ffi {
         fn route_kernel_messages_to_stderr_native() -> bool;
         fn step_source_parses_on_this_thread_native() -> u64;
         fn iges_source_parses_on_this_thread_native() -> u64;
+        fn shape_maps_built_native() -> u64;
         fn open_step_xde_document_native(path: &str) -> UniquePtr<NativeXdeDocument>;
         fn open_iges_xde_document_native(path: &str) -> UniquePtr<NativeXdeDocument>;
         fn xde_document_manifest_native(document: &NativeXdeDocument) -> String;
@@ -614,6 +615,15 @@ impl ExactBackend {
     #[must_use]
     pub fn iges_source_parses_on_this_thread() -> u64 {
         ffi::iges_source_parses_on_this_thread_native()
+    }
+
+    /// How many times this thread has mapped every face or every edge of a
+    /// shape to give history records their ordinals. An operation maps each
+    /// shape it reads or makes at most once per kind, however many faces it
+    /// records.
+    #[must_use]
+    pub fn shape_maps_on_this_thread() -> u64 {
+        ffi::shape_maps_built_native()
     }
 }
 

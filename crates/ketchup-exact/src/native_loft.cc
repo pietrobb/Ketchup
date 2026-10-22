@@ -273,6 +273,7 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
                 : "OCCT guided Loft pipe did not produce a surface");
       }
       const TopoDS_Shape result = operation.Shape();
+      const ShapeIndex result_index(result);
       const std::uint32_t solid_count = count_subshapes(result, TopAbs_SOLID);
       if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
           || (make_solid ? solid_count != 1 : solid_count != 0)) {
@@ -284,9 +285,9 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
       }
       std::vector<HistoryRecord> history;
       history.push_back(history_record(
-          "loft.start", "first_shape", "profile.wire", result, operation.FirstShape()));
+          "loft.start", "first_shape", "profile.wire", result_index, operation.FirstShape()));
       history.push_back(history_record(
-          "loft.end", "last_shape", "profile.wire", result, operation.LastShape()));
+          "loft.end", "last_shape", "profile.wire", result_index, operation.LastShape()));
       return success_result(
           result, std::move(history), false, false, {}, !make_solid);
     }
@@ -301,6 +302,7 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft builder did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     const std::uint32_t solid_count = count_subshapes(result, TopAbs_SOLID);
     if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
         || (make_solid ? solid_count != 1 : solid_count != 0)) {
@@ -312,11 +314,11 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
     }
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "loft.start", "first_shape", "profile.wire", result, operation.FirstShape()));
+        "loft.start", "first_shape", "profile.wire", result_index, operation.FirstShape()));
     history.push_back(history_record(
-        "loft.end", "last_shape", "profile.wire", result, operation.LastShape()));
+        "loft.end", "last_shape", "profile.wire", result_index, operation.LastShape()));
     history.push_back(history_record(
-        "loft.side", "generated_face", "profile.edge", result,
+        "loft.side", "generated_face", "profile.edge", result_index,
         operation.GeneratedFace(section_edges.front())));
     return success_result(
         result, std::move(history), false, false, {}, !make_solid);
@@ -395,13 +397,14 @@ std::unique_ptr<NativeOperationResult> loft_spline_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT Loft builder did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "loft.start", "first_shape", "profile.face", result, operation.FirstShape()));
+        "loft.start", "first_shape", "profile.face", result_index, operation.FirstShape()));
     history.push_back(history_record(
-        "loft.end", "last_shape", "profile.face", result, operation.LastShape()));
+        "loft.end", "last_shape", "profile.face", result_index, operation.LastShape()));
     history.push_back(history_record(
-        "loft.side", "generated_face", "profile.edge.spline", result,
+        "loft.side", "generated_face", "profile.edge.spline", result_index,
         operation.GeneratedFace(section_edges.front())));
     return success_result(result, std::move(history));
   });
@@ -535,17 +538,18 @@ std::unique_ptr<NativeOperationResult> loft_planar_profiles_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar Loft builder did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const ShapeIndex result_index(result);
     if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
         || count_subshapes(result, TopAbs_SOLID) != 1) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar Loft did not produce one valid solid");
     }
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
-        "loft.start", "first_shape", "profile.wire", result, operation.FirstShape()));
+        "loft.start", "first_shape", "profile.wire", result_index, operation.FirstShape()));
     history.push_back(history_record(
-        "loft.end", "last_shape", "profile.wire", result, operation.LastShape()));
+        "loft.end", "last_shape", "profile.wire", result_index, operation.LastShape()));
     history.push_back(history_record(
-        "loft.side", "generated_face", "profile.edge", result,
+        "loft.side", "generated_face", "profile.edge", result_index,
         operation.GeneratedFace(section_edges.front())));
     return success_result(result, std::move(history));
   });
