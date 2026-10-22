@@ -229,7 +229,12 @@ fn butt_and_miter_joints_are_exact_associative_and_lossless() {
         edited.canonical_digest()
     );
 
-    let bytes = persistence::save_document_store(&document, &ContainerData::default()).unwrap();
+    // Saved as the user saves (review 2026-10-21 P3: it was saved with the Undo history,
+    // which no file holds), reopened, and saved again byte for byte.
+    let bytes = persistence::prepare_document(&document, &ContainerData::default())
+        .unwrap()
+        .bytes()
+        .to_vec();
     let reopened = persistence::load(&bytes)
         .unwrap()
         .into_editable()
@@ -239,12 +244,11 @@ fn butt_and_miter_joints_are_exact_associative_and_lossless() {
         reopened.current().canonical_digest(),
         document.current().canonical_digest()
     );
-    // An opened file is its current revision alone, and that revision saves byte for byte.
     assert_eq!(
-        persistence::save_document_store_current_snapshot(&reopened, &ContainerData::default())
-            .unwrap(),
-        persistence::save_document_store_current_snapshot(&document, &ContainerData::default())
+        persistence::prepare_document(&reopened, &ContainerData::default())
             .unwrap()
+            .bytes(),
+        bytes
     );
     let reopened_graph =
         ExactBRepGraph::from_snapshot(&reopened.current(), DefinitionId(1), FeatureId(6)).unwrap();
