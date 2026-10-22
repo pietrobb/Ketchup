@@ -706,15 +706,13 @@ impl Edit<'_> {
                 let start = before.strip_suffix(',').map_or(argument.start, str::len);
                 (start..argument.end, String::new())
             }
-            (None, Some(written)) => {
-                let inside = self.text()[..call.bytes.end - 1].trim_end();
-                let separator = if inside.ends_with([',', '(']) {
-                    " "
-                } else {
-                    ", "
-                };
-                (inside.len()..inside.len(), format!("{separator}{written}"))
-            }
+            (None, Some(written)) => match call.arguments_end {
+                Some(end) => (end..end, format!(", {written}")),
+                None => {
+                    let inside = self.text()[..call.bytes.end - 1].trim_end().len();
+                    (inside..inside, written)
+                }
+            },
             (None, None) => (0..0, String::new()),
         };
         let rewritten = self.with(vec![edit]);

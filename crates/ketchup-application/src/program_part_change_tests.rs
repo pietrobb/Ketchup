@@ -94,6 +94,22 @@ fn colour_is_added_changed_and_removed_in_the_creating_call() {
 }
 
 #[test]
+fn colour_goes_before_a_comment_after_the_last_argument() {
+    let commented = "box(\"a\", (10, 20, 30),\n    at=(0, 0, 0)  # base\n)\n";
+    let coloured = change(commented, "a", PartChange::Color(Some([200, 10, 0])));
+    assert_eq!(
+        coloured.source,
+        "box(\"a\", (10, 20, 30),\n    at=(0, 0, 0), color=(200, 10, 0)  # base\n)\n"
+    );
+    let trailing = "box(\"a\", (10, 20, 30),  # size\n)\n";
+    let coloured = change(trailing, "a", PartChange::Color(Some([1, 2, 3])));
+    assert_eq!(
+        coloured.source,
+        "box(\"a\", (10, 20, 30), color=(1, 2, 3),  # size\n)\n"
+    );
+}
+
+#[test]
 fn rename_changes_the_name_in_the_source_and_keeps_the_part() {
     let renamed = change(TWO, "a", PartChange::Rename("side".to_owned()));
     assert_eq!(

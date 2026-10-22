@@ -30,6 +30,9 @@ pub struct CreatingCall {
     pub name: Option<Range<usize>>,
     /// The `color=` argument: bytes of the whole argument and of its value.
     pub color: Option<(Range<usize>, Range<usize>)>,
+    /// The byte after the last argument, before any comma or comment after
+    /// it; `None` without arguments.
+    pub arguments_end: Option<usize>,
     /// Whole lines of the top-level statement that is only this call,
     /// `box(...)` or `x = box(...)`.
     pub statement: Option<Range<usize>>,
@@ -370,6 +373,17 @@ impl Search<'_> {
                                     }
                                     _ => None,
                                 }
+                            }),
+                            arguments_end: arguments.args.last().map(|last| {
+                                let (ArgumentP::Positional(value)
+                                | ArgumentP::Named(_, value)
+                                | ArgumentP::Args(value)
+                                | ArgumentP::KwArgs(value)) = &last.node;
+                                let closing = span_bytes(expression.span).end - 1;
+                                widened(self.source, span_bytes(value.span))
+                                    .end
+                                    .max(span_bytes(last.span).end)
+                                    .min(closing)
                             }),
                             statement: None,
                         };
