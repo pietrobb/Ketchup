@@ -2047,7 +2047,13 @@ impl KetchupApp {
             }) {
                 Ok(()) => {
                     self.feature_history.checkpoint_input.clear();
-                    self.digest = self.catalog.text("revision-history-checkpoint-created");
+                    self.digest = self.catalog.format(
+                        "revision-history-checkpoint-created",
+                        &BTreeMap::from([(
+                            "limit",
+                            ketchup_model::tolerance::limits::UNDO_REVISIONS.to_string(),
+                        )]),
+                    );
                 }
                 Err(error) => {
                     self.digest = self.catalog.format(

@@ -196,7 +196,7 @@ Filter a run after `--` (for example `-- member_design::`). The last command run
 
 The Rust workspace also builds on Linux against an OCCT 8.0.1 install in the Unix layout (`include/opencascade`, `lib`). Point `KETCHUP_OCCT_ROOT` at it and make the libraries loadable, for example with `RUSTFLAGS="-C link-arg=-Wl,-rpath,$KETCHUP_OCCT_ROOT/lib"`.
 
-No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo lives in memory for the session: Save writes only the current revision, and reopening a file starts a new Undo history. While you work, a work-recovery copy beside the file keeps your edits and their Undo steps, so a crash loses neither.
+No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo lives in memory for the session and reaches back 30 edits: Save writes only the current revision, and reopening a file starts a new Undo history. A named checkpoint in the revision catalog lasts as long: it is not saved, and 30 newer edits drop it. While you work, a work-recovery copy beside the file keeps your edits and their Undo steps, so a crash loses neither.
 
 ## Architecture
 

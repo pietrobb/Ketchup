@@ -21,6 +21,7 @@ use ketchup_model::document::{
 use ketchup_model::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
 use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
 use ketchup_model::persistence;
+use ketchup_model::tolerance::limits;
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -502,6 +503,15 @@ fn revision_catalog_checkpoint_diff_rollback_and_save_open_work_through_accesski
             .and_then(|entry| entry.checkpoint.as_deref()),
         Some("Reviewed option")
     );
+    // The notice promises no saving: the checkpoint lives with the session's Undo
+    // and its limit, as the save and reopen below show (review 2026-10-21 UNDO-1).
+    let notice = shell.app().action_digest();
+    assert!(notice.contains("for this session"), "{notice}");
+    assert!(
+        notice.contains(&format!("{} newer edits", limits::UNDO_REVISIONS)),
+        "{notice}"
+    );
+    assert!(!notice.contains("persist"), "{notice}");
     assert!(shell.has_visible_label(&shell.catalog().format(
         "revision-history-diff",
         &BTreeMap::from([(
