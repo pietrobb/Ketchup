@@ -240,15 +240,16 @@ impl UnderlayLines {
     /// metres, so that a stray line far away does not decide where the drawing lands.
     /// Texts move with the lines, by their anchors, and count in the median too.
     /// Returns that offset, which added back gives the drawing's own coordinates, and what
-    /// was left out because even moved it leaves the envelope.
+    /// was left out because even moved it is more than [`UNDERLAY_EXTENT_MM`] away.
     pub fn move_near_origin(&mut self) -> MovedNearOrigin {
-        let inside = |point: &[f64; 2]| point.iter().all(|value| value.abs() <= MAX_COORDINATE_MM);
+        let near = |point: &[f64; 2], extent: f64| point.iter().all(|value| value.abs() <= extent);
+        let inside = |point: &[f64; 2]| near(point, UNDERLAY_EXTENT_MM);
         let points = LayerLines::points_and_anchors;
         if self
             .layers
             .iter()
             .flat_map(points)
-            .all(|point| inside(&point))
+            .all(|point| near(&point, MAX_COORDINATE_MM))
         {
             return MovedNearOrigin::default();
         }
@@ -471,8 +472,15 @@ pub struct UnderlayLinesBuilder {
     style: u32,
 }
 
-/// Chords of a whole circle at most, however large it is.
-const MAX_CIRCLE_CHORDS: f64 = 1024.0;
+/// How far from the middle a drawing moved near the origin keeps its lines and texts:
+/// ±10 km, the cadastral map of a whole municipality. Its points are f64 and need no
+/// model envelope; the window draws them in f32, to about 1 mm out there.
+pub const UNDERLAY_EXTENT_MM: f64 = 10_000_000.0;
+
+/// Chords of a whole circle at most, however large it is: enough for the chords of an
+/// arc of up to 87 km radius to stay within [`UNDERLAY_ARC_CHORD_MM`] of it, far past
+/// the [`UNDERLAY_EXTENT_MM`] an underlay keeps around its middle.
+const MAX_CIRCLE_CHORDS: f64 = 65_536.0;
 /// Chords of one cubic Bézier piece.
 const BEZIER_CHORDS: u32 = 16;
 

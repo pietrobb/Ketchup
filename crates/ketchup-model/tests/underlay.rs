@@ -223,6 +223,31 @@ fn a_block_it_cannot_read_is_left_out_and_counted() {
     assert!(unreadable.contains(&"named"), "{unreadable:?}");
 }
 
+/// UL-3: past ~21 m of radius an arc was drawn with 1024 chords to the circle, 0.47 mm
+/// off at 100 m and 2.35 mm at 500 m, not the 0.1 mm snapping and MCP promise.
+#[test]
+fn the_chords_of_a_large_arc_stay_within_a_tenth_of_a_millimetre() {
+    let entities = concat!(
+        "0\nCIRCLE\n8\nr100\n10\n0\n20\n0\n40\n100000\n",
+        "0\nARC\n8\nr500\n10\n0\n20\n0\n40\n500000\n50\n0\n51\n90\n",
+    );
+    let underlay = read(entities);
+    assert_eq!(underlay.offset_mm, [0.0, 0.0]);
+    for (layer, radius) in underlay.lines.layers().iter().zip([100_000.0, 500_000.0]) {
+        let mut farthest = 0.0_f64;
+        for points in layer.polylines() {
+            for pair in points.windows(2) {
+                let middle = [
+                    (pair[0][0] + pair[1][0]) / 2.0,
+                    (pair[0][1] + pair[1][1]) / 2.0,
+                ];
+                farthest = farthest.max(radius - middle[0].hypot(middle[1]));
+            }
+        }
+        assert!(farthest <= 0.1 + 1.0e-6, "{radius} mm: {farthest} mm");
+    }
+}
+
 #[test]
 fn an_xref_and_its_blocks_are_not_loaded_but_named_with_their_inserts() {
     // SITE is a resolved xref (4 | 32, and 64, ignored on input); SITE|door a block of it (16).
@@ -267,11 +292,17 @@ fn a_drawing_in_national_grid_coordinates_is_moved_near_the_origin_by_its_median
         .collect::<String>();
     entities.push_str(&line("stray", [0.0, 0.0], [1000.0, 0.0]));
     entities.push_str(&line("plan", [x + 5.0e6, y], [x + 5.0e6 + 100.0, y]));
+    entities.push_str(&line(
+        "plan",
+        [x - 2.0e7, y + 500.0],
+        [x + 2.0e7, y + 500.0],
+    ));
     let underlay = read(&entities);
     // The median point, in whole metres: the stray lines do not move it.
     assert_eq!(underlay.offset_mm, [-560_120_000.0, -1_210_987_000.0]);
     assert_eq!(underlay.layers, ["plan", "stray"]);
-    assert_eq!(underlay.lines.segment_count(), 5);
+    // UL-4: the line 5 km off is kept, as the edge of a map of a whole village would be.
+    assert_eq!(underlay.lines.segment_count(), 6);
     let first = underlay.lines.layers()[0].polylines().next().unwrap();
     assert!((first[0][0] - -3456.7).abs() < 1e-6 && (first[0][1] - -654.3).abs() < 1e-6);
     let diagnostic = |code: &str| {
@@ -285,7 +316,8 @@ fn a_drawing_in_national_grid_coordinates_is_moved_near_the_origin_by_its_median
         Some("x -560120 m, y -1210987 m")
     );
     assert!(diagnostic("dxf.wcs-origin-preserved").is_none());
-    // Even moved, the stray line and the one 5 km off leave the ±1,000 m envelope.
+    // Even moved, the stray line and the one from 20 km off to 20 km off are more than
+    // 10 km away.
     assert_eq!(diagnostic("dxf.lines-outside-envelope").unwrap().count(), 2);
 
     // A drawing near the origin stays where it is, and a profile import on the same
