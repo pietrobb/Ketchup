@@ -686,6 +686,24 @@ mod tests {
         assert_eq!(reopened.document.current().canonical_digest(), edited);
     }
 
+    /// Review 2026-10-21 P3 (GUI): a second window editing a file whose unsaved work
+    /// another window holds was told why in a fixed English sentence, whatever the
+    /// user's language.
+    #[test]
+    fn an_edit_refused_for_another_windows_work_is_told_in_the_users_language() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shared.ketchup");
+        assert!(KetchupApp::new().save_document_to(&path));
+        let mut first = KetchupApp::with_catalog(LocaleCatalog::slovak());
+        let mut second = KetchupApp::with_catalog(LocaleCatalog::slovak());
+        assert!(first.open_document_path(&path));
+        assert!(second.open_document_path(&path));
+        assert!(first.create_box());
+        assert!(!second.create_box());
+        let reason = LocaleCatalog::slovak().text("reason-external-conflict");
+        assert!(second.digest.contains(&reason), "{}", second.digest);
+    }
+
     #[test]
     fn cancel_during_the_indication_does_not_write_or_discard_work() {
         let directory = tempfile::tempdir().unwrap();

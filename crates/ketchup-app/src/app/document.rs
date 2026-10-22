@@ -540,9 +540,9 @@ impl KetchupApp {
         error: &ketchup_model::persistence::FilePersistenceError,
     ) {
         let reason = match error {
-            ketchup_model::persistence::FilePersistenceError::ExternalConflict => format!(
-                "{error}; another window may own its unsaved recovery. Keep this window and use Save As to a different file, or close the other writer before reopening."
-            ),
+            ketchup_model::persistence::FilePersistenceError::ExternalConflict => {
+                self.catalog.text("reason-external-conflict")
+            }
             _ => error.to_string(),
         };
         self.digest = self.catalog.format(
@@ -769,11 +769,7 @@ impl KetchupApp {
                 "error-save-document",
                 &BTreeMap::from([
                     ("path", path.display().to_string()),
-                    (
-                        "reason",
-                        ketchup_model::persistence::FilePersistenceError::ExternalConflict
-                            .to_string(),
-                    ),
+                    ("reason", self.catalog.text("reason-external-conflict")),
                 ]),
             );
             return Err(SaveFailure::Failed);
@@ -1361,13 +1357,7 @@ impl KetchupApp {
                     .as_deref()
                     .map(ketchup_model::persistence::work_recovery_path)
                     .unwrap_or_default();
-                self.digest = self.catalog.format(
-                    "error-save-document",
-                    &BTreeMap::from([
-                        ("path", path.display().to_string()),
-                        ("reason", error.to_string()),
-                    ]),
-                );
+                self.report_file_persistence_error("error-save-document", &path, &error);
                 Err(WorkRecoveryMutationError::Recovery(error))
             }
         }

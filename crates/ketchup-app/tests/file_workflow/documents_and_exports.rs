@@ -1619,7 +1619,7 @@ fn two_open_windows_detect_external_save_and_offer_safe_save_as() {
         second
             .app()
             .action_digest()
-            .contains("changed outside this session")
+            .contains(&second.catalog().text("reason-external-conflict"))
     );
     assert_eq!(canonical_state(&second), stale_state);
     assert_eq!(
