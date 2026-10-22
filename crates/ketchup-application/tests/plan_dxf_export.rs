@@ -215,3 +215,36 @@ fn an_anchor_plan_exports_one_text_per_point_and_a_measured_dimension_between_ne
         Err(DxfProfileExportError::InvalidScale)
     );
 }
+
+#[test]
+fn an_anchor_plan_written_as_dwg_keeps_its_dimensions_texts_and_tag_layer() {
+    let (session, _) = applied(ANCHOR_PLAN);
+    let exported = export_visible_plan_dxf(&session.snapshot(), 50.0).unwrap();
+    let dwg = ketchup_dwg::dxf_to_dwg(&exported.dxf).unwrap();
+    let back = ketchup_dwg::dwg_to_dxf(&dwg, 64 << 20).unwrap();
+    let entities = section(&back.dxf, "ENTITIES");
+    let of = |kind: &str| {
+        entities
+            .iter()
+            .filter(|(found, _)| found == kind)
+            .map(|(_, pairs)| pairs.as_slice())
+            .collect::<Vec<_>>()
+    };
+    let kinds = entities
+        .iter()
+        .map(|(kind, _)| kind.as_str())
+        .collect::<Vec<_>>();
+    let (texts, dimensions) = (of("TEXT"), of("DIMENSION"));
+    assert_eq!((texts.len(), dimensions.len()), (8, 7), "{kinds:?}");
+    for pairs in texts.iter().chain(&dimensions) {
+        assert_eq!(text(pairs, 8).trim(), "plan");
+    }
+    for pairs in dimensions {
+        let (first, second) = (
+            [number(pairs, 13), number(pairs, 23)],
+            [number(pairs, 14), number(pairs, 24)],
+        );
+        let measured = (second[0] - first[0]).hypot(second[1] - first[1]);
+        assert!((measured - 5000.0).abs() <= 0.5, "{measured}");
+    }
+}

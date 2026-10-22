@@ -58,7 +58,7 @@ fn visible_profile_dxf_round_trip_is_deterministic_layered_and_non_mutating() {
             .contains(&format!("source_digest={before}"))
     );
     assert!(exported.loss_report.contains("unit=millimetre"));
-    assert!(exported.loss_report.contains("dwg=unsupported"));
+    assert!(exported.loss_report.contains("dwg=a .dwg destination gets this drawing as AutoCAD 2018 DWG"));
 
     let original = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
     let round_trip = inspect_dxf(&exported.dxf, DxfImportOptions::new(None)).unwrap();

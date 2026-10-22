@@ -1793,7 +1793,9 @@ def expect_inside(part, container, tolerance = 0.1, name = None):
 #   with the value Kečup measured, lines as POLYLINE, each on the layer of its tag.
 #   file action=export_drawings plan_only=true drawing_scale=N writes the plan
 #   alone with the annotations as a PDF sheet at 1:N; without plan_only the
-#   project sheet draws them in its plan.
+#   project sheet draws them in its plan. A drawing sheet (create_drawing)
+#   draws them in its top view, exported with sheet_id as DXF or DWG; its
+#   result counts them under annotations and names any off the sheet.
 #   The window draws them where they are, their text one size on screen at every
 #   zoom; a click picks one, and inspect action=status names it as
 #   picked_annotation (name, kind, text, tags).

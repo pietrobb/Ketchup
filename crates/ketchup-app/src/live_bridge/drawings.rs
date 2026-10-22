@@ -9,7 +9,7 @@ use crate::app::project_drawings::{ProjectDrawingsError, SheetRequest};
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
 use ketchup_model::drawing::DrawingSheetId;
-use ketchup_model::drawing_export::DxfCurves;
+use ketchup_model::drawing_export::{DxfCurves, SheetAnnotations};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -149,6 +149,7 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
         "visible_lines": sheet.visible_lines,
         "hidden_lines": sheet.hidden_lines,
         "dxf_curves": dxf_curves(&sheet.curves),
+        "annotations": sheet_annotations(&sheet.annotations),
         "bytes": sheet.bytes,
         "basis": "drawing_sheet_exact_projection",
         "dirty": app.is_dirty(),
@@ -157,6 +158,22 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
 
 /// Most exact curves named one by one in an export result; the count is complete.
 const NAMED_CURVES: usize = 100;
+
+/// The plan annotations the sheet's top views drew, by kind, and those left
+/// out: all of them without a top view, a dimension straight up or down, and by
+/// name one that would reach past the border.
+fn sheet_annotations(annotations: &SheetAnnotations) -> Value {
+    json!({
+        "texts": annotations.texts,
+        "dimensions": annotations.dimensions,
+        "leaders": annotations.leaders,
+        "lines": annotations.lines,
+        "without_plan_view": annotations.without_plan_view,
+        "outside_plan": annotations.outside_plan,
+        "off_sheet": annotations.off_sheet.iter().take(NAMED_CURVES).collect::<Vec<_>>(),
+        "off_sheet_count": annotations.off_sheet.len(),
+    })
+}
 
 /// Exact circles written as CIRCLE/ARC, the projected lines they replace, and
 /// every exact curve the DXF keeps as lines, named with the reason.

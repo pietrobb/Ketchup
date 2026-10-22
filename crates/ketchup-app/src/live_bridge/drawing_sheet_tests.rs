@@ -599,3 +599,149 @@ fn assert_the_dwg_carries_the_dxf(
     assert!(!texts(dxf).is_empty());
     assert_eq!(texts(&back), texts(dxf));
 }
+
+/// A sheet's top view draws the plan's shown annotations where they lie: the
+/// texts at their points, each dimension with the value Kečup measured centred
+/// above its line, and the leader. A dimension straight up has no length in
+/// plan and one text off the sheet is named; hidden, they leave the sheet.
+#[test]
+fn a_drawing_sheet_draws_the_plan_annotations_in_its_top_view() {
+    let (mut app, mut bridge) = setup();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "box('slab', (6000, 3000, 200), at=(0, 0, -200))\n\
+                 points = [(0, 0), (3000, 0), (6000, 0)]\n\
+                 for i, p in enumerate(points):\n    \
+                 text('P' + str(i + 1), 'P' + str(i + 1), at=p, height_mm=3.5, tags='plan')\n\
+                 chain_dim('south', points, offset_mm=500, tags='plan')\n\
+                 leader('anchor', 'M24', point=(1000, 1000), at=(2000, 2000), tags='plan')\n\
+                 dim('up', (0, 0, 0), (0, 0, 2000), offset_mm=300, tags='plan')\n\
+                 text('far', 'far', at=(900000, 0), tags='plan')\n"
+            .into(),
+        overrides: None,
+        file_name: Some("plan.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let directory = tempfile::tempdir().unwrap();
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge, name: &str| {
+        let path = directory.path().join(name);
+        let exported = bridge
+            .execute(app, export_drawings(&path, json!({"sheet_id": id})), false)
+            .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+        (exported, std::fs::read_to_string(&path).unwrap())
+    };
+
+    let (exported, written) = export(&mut app, &mut bridge, "plan.dxf");
+    assert_eq!(
+        exported["annotations"],
+        json!({"texts": 3, "dimensions": 2, "leaders": 1, "lines": 0,
+               "without_plan_view": 0, "outside_plan": 1,
+               "off_sheet": ["far"], "off_sheet_count": 1}),
+        "{exported}"
+    );
+    let sheet = entities(&written);
+    let of = |kind: &str, id: &str| {
+        let found = sheet
+            .iter()
+            .filter(|entity| entity.kind == kind && entity.id == format!("annotation-{id}"))
+            .collect::<Vec<_>>();
+        assert!(!found.is_empty(), "no {kind} of {id}");
+        assert!(
+            found.iter().all(|entity| entity.layer == "plan"),
+            "{id} is on the tag's layer"
+        );
+        found
+    };
+    let at = |entity: &Entity| [entity.codes[&10], entity.codes[&20]];
+    let points = ["P1", "P2", "P3"].map(|name| {
+        let [label] = of("TEXT", name).try_into().ok().unwrap();
+        assert_eq!(label.text, name);
+        at(label)
+    });
+    // The points lie 3000 mm apart along the sheet's x at the view's scale.
+    let scale = (points[1][0] - points[0][0]) / 3000.0;
+    assert!(scale > 0.0);
+    assert!((points[2][0] - points[1][0] - 3000.0 * scale).abs() < 0.01);
+    assert!((points[1][1] - points[0][1]).abs() < 0.01);
+    // Each dimension is a DIMENSION through its two points, carrying the
+    // measured value, which its block writes centred above the line.
+    for (name, pair) in ["south/1", "south/2"].iter().zip(points.windows(2)) {
+        let [dimension] = of("DIMENSION", name).try_into().ok().unwrap();
+        assert_eq!(dimension.text, "3000");
+        assert_eq!(dimension.codes[&70], 1.0, "aligned");
+        for (code, point) in [(13, pair[0]), (14, pair[1])] {
+            assert!((dimension.codes[&code] - point[0]).abs() < 0.01);
+            assert!((dimension.codes[&(code + 10)] - point[1]).abs() < 0.01);
+        }
+        let middle = [dimension.codes[&11], dimension.codes[&21]];
+        assert!((middle[0] - f64::midpoint(pair[0][0], pair[1][0])).abs() < 0.01);
+        // 500 mm into the plan, and 1 mm on paper above the line.
+        assert!((middle[1] - (pair[0][1] + 500.0 * scale + 1.0)).abs() < 0.01);
+    }
+    let block_values = written.matches("\n1\n3000\n").count();
+    assert_eq!(
+        block_values, 4,
+        "two DIMENSION values and the two TEXTs of their blocks"
+    );
+    let [leader] = of("TEXT", "anchor").try_into().ok().unwrap();
+    assert_eq!(leader.text, "M24");
+    assert!(text_free(&sheet, "up") && text_free(&sheet, "far"));
+
+    // As DWG the sheet keeps both DIMENSION entities and the texts on the tag's layer.
+    let dwg = directory.path().join("plan.dwg");
+    bridge
+        .execute(
+            &mut app,
+            export_drawings(&dwg, json!({"sheet_id": id})),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let back = ketchup_dwg::dwg_to_dxf(&std::fs::read(&dwg).unwrap(), 64 << 20).unwrap();
+    let back = entities(&String::from_utf8(back.dxf).unwrap());
+    let on_plan = |kind: &str| {
+        back.iter()
+            .filter(|entity| entity.kind == kind && entity.layer == "plan")
+            .collect::<Vec<_>>()
+    };
+    let dimensions = on_plan("DIMENSION");
+    assert_eq!(dimensions.len(), 2);
+    assert!(dimensions.iter().all(|dimension| dimension.text == "3000"));
+    let mut labels = on_plan("TEXT")
+        .iter()
+        .map(|text| text.text.clone())
+        .collect::<Vec<_>>();
+    labels.sort();
+    assert_eq!(labels, ["M24", "P1", "P2", "P3"]);
+
+    // The PDF of the same sheet writes both values centred by a text matrix.
+    let snapshot = app.document.current();
+    let sheet = snapshot.drawing_sheet(DrawingSheetId(id)).unwrap();
+    let drawing = project_orthographic_drawing(&snapshot, &app.exact.results, sheet).unwrap();
+    let bundle = export_drawing(&snapshot, &drawing).unwrap();
+    let pdf = String::from_utf8_lossy(bundle.pdf());
+    assert_eq!(pdf.matches("Tm <33303030> Tj").count(), 2, "{pdf}");
+    drop(snapshot);
+
+    // Hidden, the annotations leave the sheet.
+    let hide = Request::TagVisibility {
+        expected: None,
+        name: "plan".into(),
+        visible: false,
+    };
+    bridge
+        .execute(&mut app, hide, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let (exported, written) = export(&mut app, &mut bridge, "hidden.dxf");
+    assert_eq!(exported["annotations"]["texts"], 0, "{exported}");
+    assert_eq!(exported["annotations"]["dimensions"], 0);
+    assert!(!written.contains("annotation-"));
+}
+
+fn text_free(entities: &[Entity], id: &str) -> bool {
+    let id = format!("annotation-{id}");
+    !entities.iter().any(|entity| entity.id.starts_with(&id))
+}

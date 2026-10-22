@@ -2,13 +2,14 @@
 
 use ketchup_geometry::linalg::{cross2, dot2};
 use ketchup_model::tolerance::{MAX_COORDINATE_MM, ROUNDING};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
 use ketchup_geometry::sketch::{
     SketchError, SketchSpec, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
 };
 use ketchup_model::document::{CanonicalError, FeatureKind, ProfileSegment, Snapshot, Transform};
+pub(crate) use ketchup_model::drawing_export::layers::R12Layers;
 use ketchup_model::import::{DxfImportError, DxfImportOptions, inspect_dxf, read_dxf_underlay};
 
 use crate::dxf_annotations::{
@@ -110,8 +111,8 @@ struct ExportProfile {
 /// The file is AutoCAD R12 (AC1009), which needs no handles or subclass markers
 /// and is read by AutoCAD and CAM software alike. Each profile is one POLYLINE,
 /// so two profiles on the same layer cannot be joined by a receiving importer.
-/// Profiles are not written as DWG, which the report calls out; a drawing
-/// sheet of the document is (`ketchup-dwg`). The visible annotations are drawn
+/// The app writes the same drawing as DWG through `ketchup-dwg`, which the
+/// report calls out. The visible annotations are drawn
 /// at 1:100, see [`export_visible_plan_dxf`].
 pub fn export_visible_profiles_dxf(
     snapshot: &Snapshot,
@@ -251,7 +252,7 @@ pub fn export_visible_plan_dxf(
         })
         .count();
     let loss_report = format!(
-        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nelevated_profile_count={elevated_profile_count}\nelevation=a profile in a plane parallel to XY above or below z = 0 is drawn where it lies in plan; its height is not written\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=unsupported for profiles; a drawing sheet exports as DWG and a DWG drawing imports through its DXF conversion\nomitted_non_profile_feature_count={omitted_feature_count}\n{}",
+        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nelevated_profile_count={elevated_profile_count}\nelevation=a profile in a plane parallel to XY above or below z = 0 is drawn where it lies in plan; its height is not written\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=a .dwg destination gets this drawing as AutoCAD 2018 DWG, its dimensions still DIMENSION on the layers of their tags; a DWG drawing imports through its DXF conversion\nomitted_non_profile_feature_count={omitted_feature_count}\n{}",
         renamed_layers.len(),
         profiles.len(),
         layers.len(),
@@ -546,79 +547,6 @@ fn angle_degrees(point: [f64; 2], center: [f64; 2]) -> f64 {
         0.0
     } else {
         angle
-    }
-}
-
-/// The longest layer name R12 reads.
-const R12_LAYER_NAME_MAX: usize = 31;
-
-/// One R12 layer for each source name. R12 does not tell upper from lower
-/// case, so a name that folds onto a layer another source already took gets
-/// a `_2`, `_3`, … suffix rather than sharing it.
-#[derive(Default)]
-pub(crate) struct R12Layers {
-    by_source: BTreeMap<String, String>,
-    taken: BTreeSet<String>,
-}
-
-impl R12Layers {
-    pub(crate) fn layer(&mut self, source: &str) -> String {
-        if let Some(layer) = self.by_source.get(source) {
-            return layer.clone();
-        }
-        let base = layer_name(source);
-        let mut layer = base.clone();
-        let mut ordinal = 1_usize;
-        while !self.taken.insert(layer.to_ascii_uppercase()) {
-            ordinal += 1;
-            let suffix = format!("_{ordinal}");
-            let kept = R12_LAYER_NAME_MAX.saturating_sub(suffix.len());
-            layer = format!("{}{suffix}", &base[..base.len().min(kept)]);
-        }
-        self.by_source.insert(source.to_owned(), layer.clone());
-        layer
-    }
-}
-
-/// A layer name every R12 reader accepts: at most 31 of `A-Z 0-9 $ _ -` in
-/// either case, so accents are dropped (`Pôdorys` → `Podorys`) and anything
-/// else, a space included, becomes `_`.
-fn layer_name(source: &str) -> String {
-    let mut name = String::new();
-    for character in source.trim().chars() {
-        let lower = character.to_lowercase().next().unwrap_or(character);
-        let folded = match lower {
-            'á' | 'ä' | 'à' | 'â' | 'ã' | 'å' | 'ā' | 'ă' | 'ą' => "a",
-            'č' | 'ć' | 'ç' => "c",
-            'ď' | 'đ' => "d",
-            'é' | 'ě' | 'ë' | 'è' | 'ê' | 'ē' | 'ę' => "e",
-            'í' | 'ì' | 'î' | 'ï' => "i",
-            'ľ' | 'ĺ' | 'ł' => "l",
-            'ň' | 'ń' | 'ñ' => "n",
-            'ó' | 'ô' | 'ö' | 'ò' | 'õ' | 'ő' | 'ø' => "o",
-            'ŕ' | 'ř' => "r",
-            'š' | 'ś' | 'ş' => "s",
-            'ť' | 'ţ' => "t",
-            'ú' | 'ů' | 'ü' | 'ù' | 'û' | 'ű' => "u",
-            'ý' | 'ÿ' => "y",
-            'ž' | 'ź' | 'ż' => "z",
-            'ß' => "ss",
-            other if other.is_ascii_alphanumeric() || matches!(other, '$' | '_' | '-') => {
-                name.push(character);
-                continue;
-            }
-            _ => "_",
-        };
-        if character.is_uppercase() {
-            name.push_str(&folded.to_ascii_uppercase());
-        } else {
-            name.push_str(folded);
-        }
-    }
-    if name.is_empty() {
-        "0".to_owned()
-    } else {
-        name[..name.len().min(R12_LAYER_NAME_MAX)].to_owned()
     }
 }
 

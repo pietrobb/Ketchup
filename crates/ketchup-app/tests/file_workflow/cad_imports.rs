@@ -500,7 +500,7 @@ fn file_menu_dxf_export_is_layered_authorized_atomic_and_non_mutating_offscreen(
     assert!(inspected.layers().iter().any(|layer| layer == "hatches"));
     assert!(first_report.contains("schema=ketchup.dxf-profile-export.v1"));
     assert!(first_report.contains("unit=millimetre"));
-    assert!(first_report.contains("dwg=unsupported"));
+    assert!(first_report.contains("dwg=a .dwg destination gets this drawing as AutoCAD 2018 DWG"));
 
     std::fs::write(&exported_path, b"stale primary").unwrap();
     std::fs::write(&report_path, b"stale report").unwrap();
@@ -533,8 +533,7 @@ fn file_menu_dxf_export_is_layered_authorized_atomic_and_non_mutating_offscreen(
 }
 
 #[test]
-fn file_menu_refuses_a_dxf_named_dwg_and_profiles_as_dwg_without_preview_authorization_or_side_effects()
- {
+fn file_menu_refuses_a_dxf_named_dwg_and_writes_profiles_to_a_dwg_destination_as_dwg() {
     let directory = tempfile::tempdir().unwrap();
     let renamed_source = directory.path().join("renamed.dwg");
     let destination = directory.path().join("misleading.dwg");
@@ -553,12 +552,17 @@ fn file_menu_refuses_a_dxf_named_dwg_and_profiles_as_dwg_without_preview_authori
     let digest = shell.app().action_digest();
     assert!(digest.contains("DWG file"), "{digest}");
 
+    // A .dwg destination gets the plan as a real AutoCAD 2018 DWG, after consent.
     shell.click_menu_command("menu-file", AppCommand::ExportDrawingDxf);
     assert_eq!(canonical_state(&shell), before);
-    assert!(digest_starts_like(&shell, "error-export-dxf"));
-    assert!(!destination.exists());
+    assert!(digest_starts_like(&shell, "digest-exported-dxf"));
+    assert!(std::fs::read(&destination).unwrap().starts_with(b"AC1032"));
+    assert!(destination.with_extension("dwg.loss.txt").exists());
     assert!(!destination.with_extension("dxf.loss.txt").exists());
-    assert!(script.high_risk_prompts().is_empty());
+    let prompts = script.high_risk_prompts();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains(&shell.catalog().text("dialog-export-dxf-title")));
+    assert!(prompts[0].contains(&destination.display().to_string()));
 }
 
 #[test]

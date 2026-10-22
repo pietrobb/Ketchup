@@ -27,7 +27,7 @@ pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
 }
 
 /// Every export format of the File menu with the file extensions it writes.
-const EXPORT_FORMATS: [(&str, &[&str], Exporter); 13] = [
+const EXPORT_FORMATS: [(&str, &[&str], Exporter); 14] = [
     (
         "step",
         &["step", "stp"],
@@ -47,6 +47,8 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 13] = [
     ("glb", &["glb"], KetchupApp::export_current_model_glb_to),
     ("dae", &["dae"], KetchupApp::export_current_model_dae_to),
     ("dxf", &["dxf"], KetchupApp::export_current_profiles_dxf_to),
+    // The same plan as DXF, written as DWG.
+    ("dwg", &["dwg"], KetchupApp::export_current_profiles_dxf_to),
     ("sheet_metal_dxf", &["dxf"], |app, path| {
         let feature = app.sole_exportable_sheet_metal_feature_id()?;
         app.export_current_sheet_metal_manufacturing_to(feature, path)
@@ -204,12 +206,13 @@ impl LiveBridge {
             return Err("invalid_request");
         };
         if let Some(scale) = drawing_scale
-            && (export_format != "dxf" || !(1.0..=MAX_PLAN_SCALE).contains(&scale))
+            && (!matches!(export_format.as_str(), "dxf" | "dwg")
+                || !(1.0..=MAX_PLAN_SCALE).contains(&scale))
         {
             return Err(failure(
                 "invalid_params",
                 format!(
-                    "drawing_scale is N of the scale 1:N of a dxf export, from 1 to {MAX_PLAN_SCALE}."
+                    "drawing_scale is N of the scale 1:N of a dxf or dwg export, from 1 to {MAX_PLAN_SCALE}."
                 ),
                 json!({"drawing_scale": scale, "export_format": export_format}),
             ));

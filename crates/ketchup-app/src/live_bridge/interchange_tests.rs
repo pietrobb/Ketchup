@@ -39,6 +39,31 @@ fn export(path: &Path, export_format: &str) -> Request {
     }
 }
 
+/// The entities of the ENTITIES section of a DXF text, each as its type and its
+/// trimmed group pairs.
+fn dxf_entities(dxf: &str) -> Vec<(String, Vec<(i32, String)>)> {
+    let lines = dxf.lines().map(str::trim).collect::<Vec<_>>();
+    let pairs = lines
+        .chunks(2)
+        .map(|pair| (pair[0].parse::<i32>().unwrap(), pair[1].to_owned()))
+        .collect::<Vec<_>>();
+    let start = pairs
+        .windows(2)
+        .position(|window| {
+            window[0] == (0, "SECTION".into()) && window[1] == (2, "ENTITIES".into())
+        })
+        .expect("an ENTITIES section");
+    let mut entities: Vec<(String, Vec<(i32, String)>)> = Vec::new();
+    for (code, value) in &pairs[start + 2..] {
+        match (code, value.as_str()) {
+            (0, "ENDSEC") => break,
+            (0, kind) => entities.push((kind.to_owned(), Vec::new())),
+            _ => entities.last_mut().unwrap().1.push((*code, value.clone())),
+        }
+    }
+    entities
+}
+
 #[test]
 fn an_imported_stl_is_one_undo_step_in_the_declared_unit() {
     let (mut app, mut bridge, directory) = window();
@@ -261,6 +286,48 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
         .execute(&mut app, export(&default, "dxf"), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     assert_eq!(height(&default), 350.0);
+
+    // The same plan as DWG keeps the dimension a DIMENSION and both on the tag's layer.
+    let dwg = directory.path().join("plan-20.dwg");
+    let mut request = export(&dwg, "dwg");
+    if let Request::Export { drawing_scale, .. } = &mut request {
+        *drawing_scale = Some(20.0);
+    }
+    bridge
+        .execute(&mut app, request, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert!(dwg.with_extension("dwg.loss.txt").is_file());
+    let read = ketchup_dwg::dwg_to_dxf(&std::fs::read(&dwg).unwrap(), 64 << 20).unwrap();
+    let entities = dxf_entities(&String::from_utf8(read.dxf).unwrap());
+    let group = |pairs: &[(i32, String)], code: i32| {
+        pairs
+            .iter()
+            .find(|(found, _)| *found == code)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| panic!("no group {code} in {pairs:?}"))
+    };
+    let number = |pairs: &[(i32, String)], code: i32| group(pairs, code).parse::<f64>().unwrap();
+    let of = |kind: &str| {
+        entities
+            .iter()
+            .filter(|(found, _)| found == kind)
+            .map(|(_, pairs)| pairs.as_slice())
+            .collect::<Vec<_>>()
+    };
+    let (dimensions, texts) = (of("DIMENSION"), of("TEXT"));
+    assert_eq!((dimensions.len(), texts.len()), (1, 1), "{entities:?}");
+    let measured = (number(dimensions[0], 14) - number(dimensions[0], 13))
+        .hypot(number(dimensions[0], 24) - number(dimensions[0], 23));
+    assert!((measured - 1000.0).abs() <= 0.5, "{measured}");
+    assert_eq!(
+        [
+            group(dimensions[0], 8),
+            group(texts[0], 8),
+            group(texts[0], 1)
+        ],
+        ["plan", "plan", "S-01"]
+    );
+    assert_eq!(number(texts[0], 40), 70.0);
 
     // A scale only a plan has, and only from 1:1.
     for (format, path, scale) in [("stl", "plan.stl", 20.0), ("dxf", "tiny.dxf", 0.5)] {

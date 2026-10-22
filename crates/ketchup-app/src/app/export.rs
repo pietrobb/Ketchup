@@ -95,7 +95,9 @@ impl KetchupApp {
         self.export_current_plan_dxf_to(path, DEFAULT_PLAN_SCALE)
     }
 
-    /// The visible profiles and annotations as a DXF plan, its texts sized for `1:scale`.
+    /// The visible profiles and annotations as a DXF plan, its texts sized for `1:scale`;
+    /// to a `.dwg` destination the same drawing written as DWG, its dimensions still
+    /// DIMENSION entities on the layers of their tags.
     pub(crate) fn export_current_plan_dxf_to(
         &mut self,
         path: &Path,
@@ -103,21 +105,35 @@ impl KetchupApp {
     ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
-        let result = if path
+        let extension = path
             .extension()
             .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("dxf"))
-        {
-            export_visible_plan_dxf(&snapshot, scale).map_err(ExportError::failed)
-        } else {
-            Err(ExportError::Destination {
-                requirement: "an explicit .dxf destination; profiles are not written as DWG (a drawing sheet is, from File > Drawings)",
-            })
+            .map(str::to_ascii_lowercase);
+        let result = match extension.as_deref() {
+            Some(format @ ("dxf" | "dwg")) => export_visible_plan_dxf(&snapshot, scale)
+                .map_err(ExportError::failed)
+                .and_then(|bundle| {
+                    let written = if format == "dwg" {
+                        ketchup_dwg::dxf_to_dwg(&bundle.dxf).map_err(ExportError::failed)?
+                    } else {
+                        bundle.dxf.clone()
+                    };
+                    Ok((format, bundle, written))
+                }),
+            _ => Err(ExportError::Destination {
+                requirement: "an explicit .dxf or .dwg destination",
+            }),
         }
-        .and_then(|bundle| {
-            let report_path = path.with_extension("dxf.loss.txt");
+        .and_then(|(format, bundle, written)| {
+            let report_path = path.with_extension(format!("{format}.loss.txt"));
             let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
-            let evidence = dxf_profile_export_evidence(path, &bundle);
+            let evidence = export_bundle_evidence(
+                b"ketchup.current-profiles-dxf-export.v1",
+                path,
+                &written,
+                &report_path,
+                bundle.loss_report.as_bytes(),
+            );
             self.authorize_export_bundle(
                 ExportConsent {
                     class: HighRiskClass::LossyConversion,
@@ -135,7 +151,13 @@ impl KetchupApp {
                 &precondition,
                 &evidence,
             )?;
-            write_export_bundle(path, &bundle.dxf, &report_path, bundle.loss_report.as_bytes(), &precondition)?;
+            write_export_bundle(
+                path,
+                &written,
+                &report_path,
+                bundle.loss_report.as_bytes(),
+                &precondition,
+            )?;
             Ok(Written::with_loss_report(path, &report_path))
         });
         self.report_export_outcome("dxf", path, result)
@@ -841,16 +863,6 @@ impl KetchupApp {
             self.reviews.cam_export_dialog = Some(pending);
         }
     }
-}
-
-fn dxf_profile_export_evidence(path: &Path, bundle: &DxfProfileExport) -> Vec<u8> {
-    export_bundle_evidence(
-        b"ketchup.current-profiles-dxf-export.v1",
-        path,
-        &bundle.dxf,
-        &path.with_extension("dxf.loss.txt"),
-        bundle.loss_report.as_bytes(),
-    )
 }
 
 fn exact_stl_export_evidence(path: &Path, bundle: &ExactStlExport) -> Vec<u8> {

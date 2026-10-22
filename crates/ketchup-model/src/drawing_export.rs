@@ -12,7 +12,11 @@ use crate::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 use std::collections::BTreeSet;
 use std::fmt;
 
+mod annotations;
 mod arcs;
+pub mod layers;
+
+pub use annotations::SheetAnnotations;
 
 pub const DRAWING_EXPORT_SCHEMA_V1: &str = "ketchup.drawing-export.v1";
 const MAX_EXPORT_LINES: usize = 100_000;
@@ -90,6 +94,7 @@ pub struct DrawingExportBundle {
     dxf: Vec<u8>,
     pdf: Vec<u8>,
     dxf_curves: DxfCurves,
+    annotations: SheetAnnotations,
 }
 
 /// How the DXF carries the curves of the drawing: exact circles of the views
@@ -122,6 +127,12 @@ impl DrawingExportBundle {
     #[must_use]
     pub fn dxf_curves(&self) -> &DxfCurves {
         &self.dxf_curves
+    }
+
+    /// The plan annotations the top views drew, and those left out.
+    #[must_use]
+    pub fn annotations(&self) -> &SheetAnnotations {
+        &self.annotations
     }
 }
 
@@ -188,6 +199,7 @@ impl LineStyle {
     }
 }
 
+#[derive(Clone)]
 struct PageLine {
     id: String,
     start: [f64; 2],
@@ -207,11 +219,22 @@ struct PageArc {
 
 /// A text of the sheet: its first line's baseline starts at `position` and
 /// each further line sits [`LINE_SPACING`] text heights below the previous one.
+#[derive(Clone)]
 struct PageText {
     id: String,
     position: [f64; 2],
     lines: Vec<String>,
     height_mm: f64,
+    /// Counter-clockwise turn of the text about `position`, in degrees.
+    angle_deg: f64,
+    /// Whether `position` is the middle of the line, not its start.
+    middle: bool,
+}
+
+impl PageText {
+    fn turned(&self) -> bool {
+        self.angle_deg.abs() > f64::EPSILON
+    }
 }
 
 pub fn export_drawing(
@@ -219,11 +242,31 @@ pub fn export_drawing(
     drawing: &OrthographicDrawing,
 ) -> Result<DrawingExportBundle, DrawingExportError> {
     let sheet = validate_contract(snapshot, drawing)?;
-    let (lines, texts) = collect_page_content(drawing)?;
+    let (mut lines, mut texts) = collect_page_content(drawing)?;
+    let (annotations, marks) = annotations::draw_sheet_annotations(snapshot, drawing);
+    // The sheet's own lines and texts come first; the DXF writes the
+    // annotations' apart, on the layers of their tags.
+    let (sheet_lines, sheet_texts) = (lines.len(), texts.len());
+    for mark in &marks {
+        lines.extend(mark.lines.iter().cloned());
+        texts.extend(mark.texts.iter().cloned());
+    }
+    if lines.len() > MAX_EXPORT_LINES || texts.len() > MAX_EXPORT_LINES {
+        return Err(DrawingExportError::ResourceLimit);
+    }
     let (page_arcs, replaced_lines) = collect_page_arcs(drawing)?;
     let svg = export_svg(drawing, &lines, &texts);
     let pdf = export_pdf(drawing, &lines, &texts)?;
-    let dxf = export_dxf(drawing, &lines, &texts, &page_arcs, &replaced_lines)?;
+    let dxf = export_dxf(
+        drawing,
+        SheetContent {
+            lines: &lines[..sheet_lines],
+            texts: &texts[..sheet_texts],
+            arcs: &page_arcs,
+            replaced_lines: &replaced_lines,
+            marks: &marks,
+        },
+    )?;
     if [svg.len(), dxf.len(), pdf.len()]
         .into_iter()
         .any(|length| length > MAX_EXPORT_BYTES)
@@ -246,6 +289,7 @@ pub fn export_drawing(
         dxf,
         pdf,
         dxf_curves,
+        annotations,
     })
 }
 
@@ -616,6 +660,8 @@ fn collect_page_content(
             position: row.text_position_mm,
             lines: text_lines(&row.label, f64::INFINITY),
             height_mm: 3.0,
+            angle_deg: 0.0,
+            middle: false,
         });
     }
     let notes = texts.len()..texts.len() + drawing.layout.notes.len();
@@ -625,6 +671,8 @@ fn collect_page_content(
             position: note.position_mm,
             lines: text_lines(&note.text, f64::INFINITY),
             height_mm: 3.5,
+            angle_deg: 0.0,
+            middle: false,
         });
     }
     push_title_block_text(&mut texts, &drawing.layout)?;
@@ -721,6 +769,8 @@ fn push_dimension(
         position: dimension.text_position_mm,
         lines: vec![dimension.label.clone()],
         height_mm: 3.5,
+        angle_deg: 0.0,
+        middle: false,
     });
 }
 
@@ -750,6 +800,8 @@ fn push_angular_dimension(
         position: dimension.text_position_mm,
         lines: vec![dimension.label.clone()],
         height_mm: 3.5,
+        angle_deg: 0.0,
+        middle: false,
     });
 }
 
@@ -769,6 +821,8 @@ fn push_circular_dimension(
         position: dimension.text_position_mm,
         lines: vec![dimension.label.clone()],
         height_mm: 3.5,
+        angle_deg: 0.0,
+        middle: false,
     });
 }
 
@@ -802,6 +856,8 @@ fn push_datum_symbol(
         position: datum.text_position_mm,
         lines: vec![datum.label.clone()],
         height_mm: 3.5,
+        angle_deg: 0.0,
+        middle: false,
     });
 }
 
@@ -835,6 +891,8 @@ fn push_feature_control_frame(
         position: frame.text_position_mm,
         lines: vec![frame.label.clone()],
         height_mm: 3.0,
+        angle_deg: 0.0,
+        middle: false,
     });
 }
 
@@ -871,6 +929,8 @@ fn push_bom_balloon(
         position: balloon.text_position_mm,
         lines: vec![balloon.label.clone()],
         height_mm: 3.5,
+        angle_deg: 0.0,
+        middle: false,
     });
 }
 
@@ -909,6 +969,8 @@ fn push_title_block_text(
                 position: [left + 2.0, first],
                 lines,
                 height_mm,
+                angle_deg: 0.0,
+                middle: false,
             });
             y -= 7.0 * scale;
         }
@@ -1008,11 +1070,21 @@ fn export_svg(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
                 })
                 .collect(),
         };
+        let (x, y) = (number(text.position[0]), number(height - text.position[1]));
+        let anchor = if text.middle {
+            " text-anchor=\"middle\""
+        } else {
+            ""
+        };
+        // The SVG runs y down, so a counter-clockwise turn is negative there.
+        let turn = if !text.turned() {
+            String::new()
+        } else {
+            format!(" transform=\"rotate({} {x} {y})\"", number(-text.angle_deg))
+        };
         svg.push_str(&format!(
-            "<text id=\"{}\" x=\"{}\" y=\"{}\" font-size=\"{}\">{value}</text>\n",
+            "<text id=\"{}\" x=\"{x}\" y=\"{y}\" font-size=\"{}\"{anchor}{turn}>{value}</text>\n",
             xml_escape(&text.id),
-            number(text.position[0]),
-            number(height - text.position[1]),
             number(text.height_mm),
         ));
     }
@@ -1020,36 +1092,64 @@ fn export_svg(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
     svg.into_bytes()
 }
 
+/// What the sheet DXF writes: the sheet's own lines, texts and exact curves,
+/// and the annotations apart, each on the layer of its tag.
+struct SheetContent<'a> {
+    lines: &'a [PageLine],
+    texts: &'a [PageText],
+    arcs: &'a [PageArc],
+    replaced_lines: &'a BTreeSet<String>,
+    marks: &'a [annotations::SheetMark],
+}
+
 /// The sheet as AutoCAD R12 (AC1009) DXF, like the profile export: R12 needs no
 /// handles, BLOCK_RECORD table or OBJECTS section, and each entity ends with
-/// its KETCHUP id as extended data, after all of its own groups.
+/// its KETCHUP id as extended data, after all of its own groups. A sheet
+/// without annotations writes no tag layer and no BLOCKS section.
 fn export_dxf(
     drawing: &OrthographicDrawing,
-    lines: &[PageLine],
-    texts: &[PageText],
-    arcs: &[PageArc],
-    replaced_lines: &BTreeSet<String>,
+    content: SheetContent<'_>,
 ) -> Result<Vec<u8>, DrawingExportError> {
-    let mut dxf = format!(
-        "999\n{DRAWING_EXPORT_SCHEMA_V1}\n999\nresult={} layout={}\n0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n2\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0\n0\nLTYPE\n2\nHIDDEN\n70\n0\n3\nHidden line\n72\n65\n73\n2\n40\n3\n49\n2\n49\n-1\n0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n5\n0\nLAYER\n2\nBORDER\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nVISIBLE\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nHIDDEN\n70\n0\n62\n8\n6\nHIDDEN\n0\nLAYER\n2\nDIMENSION\n70\n0\n62\n3\n6\nCONTINUOUS\n0\nLAYER\n2\nANNOTATION\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nENDTAB\n0\nTABLE\n2\nAPPID\n70\n1\n0\nAPPID\n2\nKETCHUP\n70\n0\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n",
-        drawing.result_digest, drawing.layout.digest
-    );
-    for line in lines
+    let tag_layers: BTreeSet<&str> = content
+        .marks
         .iter()
-        .filter(|line| !replaced_lines.contains(&line.id))
-    {
-        dxf.push_str(&format!(
-            "0\nLINE\n8\n{}\n6\n{}\n10\n{}\n20\n{}\n30\n0\n11\n{}\n21\n{}\n31\n0\n1001\nKETCHUP\n1000\n{}\n",
-            line.style.name(),
-            line.style.dxf_linetype(),
-            number(line.start[0]),
-            number(line.start[1]),
-            number(line.end[0]),
-            number(line.end[1]),
-            dxf_text(&line.id)?,
+        .map(|mark| mark.layer.as_str())
+        .collect();
+    let mut annotation_layers = String::new();
+    if !content.marks.is_empty() {
+        annotation_layers.push_str("0\nLAYER\n2\n0\n70\n0\n62\n7\n6\nCONTINUOUS\n");
+    }
+    for layer in &tag_layers {
+        annotation_layers.push_str(&format!(
+            "0\nLAYER\n2\n{layer}\n70\n0\n62\n7\n6\nCONTINUOUS\n"
         ));
     }
-    for arc in arcs {
+    let layer_count = 5 + usize::from(!content.marks.is_empty()) + tag_layers.len();
+    let mut dxf = format!(
+        "999\n{DRAWING_EXPORT_SCHEMA_V1}\n999\nresult={} layout={}\n0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n2\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0\n0\nLTYPE\n2\nHIDDEN\n70\n0\n3\nHidden line\n72\n65\n73\n2\n40\n3\n49\n2\n49\n-1\n0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n",
+        drawing.result_digest, drawing.layout.digest
+    );
+    dxf.push_str(&format!("{layer_count}\n"));
+    dxf.push_str("0\nLAYER\n2\nBORDER\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nVISIBLE\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nHIDDEN\n70\n0\n62\n8\n6\nHIDDEN\n0\nLAYER\n2\nDIMENSION\n70\n0\n62\n3\n6\nCONTINUOUS\n0\nLAYER\n2\nANNOTATION\n70\n0\n62\n7\n6\nCONTINUOUS\n");
+    dxf.push_str(&annotation_layers);
+    dxf.push_str(
+        "0\nENDTAB\n0\nTABLE\n2\nAPPID\n70\n1\n0\nAPPID\n2\nKETCHUP\n70\n0\n0\nENDTAB\n0\nENDSEC\n",
+    );
+    let (blocks, annotation_entities) = annotation_dxf(content.marks)?;
+    if !blocks.is_empty() {
+        dxf.push_str("0\nSECTION\n2\nBLOCKS\n");
+        dxf.push_str(&blocks);
+        dxf.push_str("0\nENDSEC\n");
+    }
+    dxf.push_str("0\nSECTION\n2\nENTITIES\n");
+    for line in content
+        .lines
+        .iter()
+        .filter(|line| !content.replaced_lines.contains(&line.id))
+    {
+        push_dxf_line(&mut dxf, line, line.style.name(), line.style.dxf_linetype())?;
+    }
+    for arc in content.arcs {
         let angles = if arc.full {
             String::new()
         } else {
@@ -1070,26 +1170,117 @@ fn export_dxf(
             dxf_text(&arc.id)?,
         ));
     }
-    for text in texts {
-        let id = dxf_text(&text.id)?;
-        let mut baseline = text.position[1];
-        for piece in text
-            .lines
-            .iter()
-            .flat_map(|line| text_lines(line, f64::INFINITY))
-        {
-            let value = dxf_text(&piece)?;
-            dxf.push_str(&format!(
-                "0\nTEXT\n8\nANNOTATION\n10\n{}\n20\n{}\n30\n0\n40\n{}\n1\n{value}\n1001\nKETCHUP\n1000\n{id}\n",
-                number(text.position[0]),
-                number(baseline),
-                number(text.height_mm),
-            ));
-            baseline -= LINE_SPACING * text.height_mm;
-        }
+    for text in content.texts {
+        push_dxf_text(&mut dxf, text, "ANNOTATION")?;
     }
+    dxf.push_str(&annotation_entities);
     dxf.push_str("0\nENDSEC\n0\nEOF\n");
     Ok(dxf.into_bytes())
+}
+
+/// The annotations of the sheet as DXF: the blocks that draw its dimensions,
+/// and its entities. A dimension is an aligned DIMENSION through the measured
+/// points on the page; as the view is drawn to scale, it carries the value
+/// Kečup measured in the model as its text.
+fn annotation_dxf(
+    marks: &[annotations::SheetMark],
+) -> Result<(String, String), DrawingExportError> {
+    let (mut blocks, mut entities) = (String::new(), String::new());
+    let mut block_count = 0_usize;
+    for mark in marks {
+        let Some(dimension) = &mark.dimension else {
+            for line in &mark.lines {
+                push_dxf_line(&mut entities, line, &mark.layer, "CONTINUOUS")?;
+            }
+            for text in &mark.texts {
+                push_dxf_text(&mut entities, text, &mark.layer)?;
+            }
+            continue;
+        };
+        block_count += 1;
+        let block = format!("*D{block_count}");
+        blocks.push_str(&format!(
+            "0\nBLOCK\n8\n0\n2\n{block}\n70\n1\n10\n0\n20\n0\n30\n0\n3\n{block}\n"
+        ));
+        for line in &mark.lines {
+            push_dxf_line(&mut blocks, line, "0", "CONTINUOUS")?;
+        }
+        for text in &mark.texts {
+            push_dxf_text(&mut blocks, text, "0")?;
+        }
+        blocks.push_str("0\nENDBLK\n8\n0\n");
+        let id = mark
+            .texts
+            .first()
+            .map_or_else(String::new, |text| text.id.clone());
+        entities.push_str(&format!(
+            "0\nDIMENSION\n8\n{}\n2\n{block}\n3\nSTANDARD\n10\n{}\n20\n{}\n30\n0\n11\n{}\n21\n{}\n31\n0\n70\n1\n1\n{}\n13\n{}\n23\n{}\n33\n0\n14\n{}\n24\n{}\n34\n0\n1001\nKETCHUP\n1000\n{}\n",
+            mark.layer,
+            number(dimension.line[1][0]),
+            number(dimension.line[1][1]),
+            number(dimension.value_at[0]),
+            number(dimension.value_at[1]),
+            dxf_text(&dimension.value)?,
+            number(dimension.measured[0][0]),
+            number(dimension.measured[0][1]),
+            number(dimension.measured[1][0]),
+            number(dimension.measured[1][1]),
+            dxf_text(&id)?,
+        ));
+    }
+    Ok((blocks, entities))
+}
+
+fn push_dxf_line(
+    dxf: &mut String,
+    line: &PageLine,
+    layer: &str,
+    linetype: &str,
+) -> Result<(), DrawingExportError> {
+    dxf.push_str(&format!(
+        "0\nLINE\n8\n{layer}\n6\n{linetype}\n10\n{}\n20\n{}\n30\n0\n11\n{}\n21\n{}\n31\n0\n1001\nKETCHUP\n1000\n{}\n",
+        number(line.start[0]),
+        number(line.start[1]),
+        number(line.end[0]),
+        number(line.end[1]),
+        dxf_text(&line.id)?,
+    ));
+    Ok(())
+}
+
+/// A text as one TEXT per line, each turned with it and the next one a line
+/// pitch further down its own up direction.
+fn push_dxf_text(dxf: &mut String, text: &PageText, layer: &str) -> Result<(), DrawingExportError> {
+    let id = dxf_text(&text.id)?;
+    let (sin, cos) = text.angle_deg.to_radians().sin_cos();
+    let mut at = text.position;
+    for piece in text
+        .lines
+        .iter()
+        .flat_map(|line| text_lines(line, f64::INFINITY))
+    {
+        let value = dxf_text(&piece)?;
+        let (x, y) = (number(at[0]), number(at[1]));
+        let turn = if !text.turned() {
+            String::new()
+        } else {
+            format!("50\n{}\n", number(text.angle_deg))
+        };
+        // Centred on the alignment point (11/21), which R12 reads instead of
+        // the insertion point.
+        let middle = if text.middle {
+            format!("72\n1\n11\n{x}\n21\n{y}\n31\n0\n")
+        } else {
+            String::new()
+        };
+        dxf.push_str(&format!(
+            "0\nTEXT\n8\n{layer}\n10\n{x}\n20\n{y}\n30\n0\n40\n{}\n1\n{value}\n{turn}{middle}1001\nKETCHUP\n1000\n{id}\n",
+            number(text.height_mm),
+        ));
+        let step = LINE_SPACING * text.height_mm;
+        at = [at[0] + sin * step, at[1] - cos * step];
+    }
+    Ok(())
 }
 
 fn export_pdf(
@@ -1123,6 +1314,10 @@ fn export_pdf(
         ));
     }
     for text in texts {
+        if text.middle || text.turned() {
+            push_pdf_turned_text(&mut stream, text)?;
+            continue;
+        }
         let mut baseline = text.position[1];
         for line in &text.lines {
             stream.push_str(&format!(
@@ -1184,6 +1379,46 @@ fn export_pdf(
         .as_bytes(),
     );
     Ok(pdf)
+}
+
+/// A text turned about its position, or centred on it: each line placed by a
+/// text matrix, centred with the Helvetica widths of its characters.
+fn push_pdf_turned_text(stream: &mut String, text: &PageText) -> Result<(), DrawingExportError> {
+    let (sin, cos) = text.angle_deg.to_radians().sin_cos();
+    let mut at = text.position;
+    for line in &text.lines {
+        let half = if text.middle {
+            line.chars().map(helvetica_width_em).sum::<f64>() * text.height_mm / 2.0
+        } else {
+            0.0
+        };
+        stream.push_str(&format!(
+            "% text {}\nBT /F1 {} Tf {} {} {} {} {} {} Tm <{}> Tj ET\n",
+            pdf_comment(&text.id),
+            number(text.height_mm),
+            number(cos),
+            number(sin),
+            number(-sin),
+            number(cos),
+            number(at[0] - cos * half),
+            number(at[1] - sin * half),
+            pdf_text_hex(line)?,
+        ));
+        let step = LINE_SPACING * text.height_mm;
+        at = [at[0] + sin * step, at[1] - cos * step];
+    }
+    Ok(())
+}
+
+/// The advance of a Helvetica character in em (Adobe's AFM): exact for the
+/// digits, separators and signs a measured value writes, a digit's width for
+/// any other.
+fn helvetica_width_em(character: char) -> f64 {
+    match character {
+        '.' | ',' | ' ' => 0.278,
+        '-' => 0.333,
+        _ => 0.556,
+    }
 }
 
 fn page_point(point: [f64; 2], origin: [f64; 2], scale: f64) -> [f64; 2] {

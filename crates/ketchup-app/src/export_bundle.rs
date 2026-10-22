@@ -1122,12 +1122,11 @@ mod tests {
 
         let mut app = KetchupApp::new();
         assert!(
-            app.export_current_profiles_dxf_to(&directory.path().join("plan.dwg"))
+            app.export_current_profiles_dxf_to(&directory.path().join("plan.svg"))
                 .is_err()
         );
         assert!(
-            app.digest
-                .contains("an explicit .dxf destination; profiles are not written as DWG (a drawing sheet is, from File > Drawings)"),
+            app.digest.contains("an explicit .dxf or .dwg destination"),
             "{}",
             app.digest
         );

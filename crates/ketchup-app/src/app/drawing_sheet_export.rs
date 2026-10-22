@@ -13,7 +13,9 @@ use crate::export_bundle::{
 use crate::*;
 use ketchup_dwg::DwgError;
 use ketchup_model::drawing::{DrawingError, DrawingSheetId, project_orthographic_drawing};
-use ketchup_model::drawing_export::{DrawingExportError, DxfCurves, export_drawing};
+use ketchup_model::drawing_export::{
+    DrawingExportError, DxfCurves, SheetAnnotations, export_drawing,
+};
 use ketchup_model::exact_product::ExactResultRegistry;
 
 /// The file a drawing sheet is written as.
@@ -89,6 +91,8 @@ pub(crate) struct ExportedDrawingSheet {
     pub(crate) visible_lines: usize,
     pub(crate) hidden_lines: usize,
     pub(crate) curves: DxfCurves,
+    /// The plan annotations its top views drew, and those left out.
+    pub(crate) annotations: SheetAnnotations,
     pub(crate) bytes: usize,
 }
 
@@ -131,6 +135,7 @@ pub(crate) fn drawing_sheet_bytes(
             .map(|view| view.hidden_lines.len())
             .sum(),
         curves: bundle.dxf_curves().clone(),
+        annotations: bundle.annotations().clone(),
         bytes: bytes.len(),
     };
     Ok((exported, bytes))
