@@ -8,7 +8,6 @@ use ketchup_model::exact_product::{
     ExactBodyPackage, ExactProducerCompilation, ExactProducerEvidenceContext, ExactProducerPlan,
     ExactProductError, ExactResultRegistry, ImportedExactPackage, exact_body_terminal_features,
 };
-use ketchup_model::graph::sha256_bytes;
 use ketchup_model::import::{
     IGES_PARSER_ID, IGES_PARSER_VERSION, IGES_XDE_PARSER_VERSION, ImportFormat,
     ImportUnitAuthority, STEP_PARSER_ID, STEP_PARSER_VERSION, STEP_XDE_PARSER_VERSION,
@@ -603,9 +602,8 @@ fn prepare_requests(
                                     sha256: hash,
                                 });
                             };
-                            if blob.len() as u64 != *source_byte_len
-                                || sha256_bytes(blob) != *source_sha256
-                            {
+                            // Stored under its SHA-256, a blob is not hashed again.
+                            if blob.len() as u64 != *source_byte_len {
                                 return Err(ExactProducerError::ImportedSourceMismatch {
                                     sha256: hash,
                                 });
@@ -634,9 +632,7 @@ fn prepare_requests(
                         let Some(blob) = container_data.blobs().get(&hash) else {
                             return Err(ExactProducerError::ImportedSourceMissing { sha256: hash });
                         };
-                        if blob.len() as u64 != spec.source_byte_len
-                            || sha256_bytes(blob) != spec.source_sha256
-                        {
+                        if blob.len() as u64 != spec.source_byte_len {
                             return Err(ExactProducerError::ImportedSourceMismatch {
                                 sha256: hash,
                             });
@@ -1440,5 +1436,53 @@ mod incremental_scope_tests {
         );
         assert_eq!(scope.changed_feature_count, 1);
         assert_eq!(scope.changed_scene_occurrence_count, 0);
+    }
+}
+
+#[cfg(test)]
+mod imported_source_tests {
+    use super::*;
+    use ketchup_model::import::{ImportLengthUnit, plan_step_import};
+
+    /// Review 2026-10-21 LIM-1: each exact evaluation hands the worker an
+    /// imported source without hashing it again; its blob is stored under the
+    /// SHA-256 of its bytes.
+    #[test]
+    fn preparing_an_imported_exact_source_does_not_hash_it_again() {
+        let mut source = b"ISO-10303-21;HEADER;ENDSEC;DATA;/*".to_vec();
+        source.resize(1 << 20, b'x');
+        source.extend_from_slice(b"*/#1=SI_UNIT(.MILLI.,.METRE.);ENDSEC;END-ISO-10303-21;");
+        let evidence = StepImportEvidence {
+            source_sha256: ketchup_model::graph::sha256_bytes(&source),
+            source_byte_len: source.len() as u64,
+            source_unit: ImportLengthUnit::Millimetre,
+            result_fingerprint: "0123456789abcdef".to_owned(),
+            body_kind: ketchup_model::document::BodyKind::Solid,
+            solid_count: 1,
+            topology_counts: [8, 12, 6, 1, 1],
+            area_mm2: 600.0,
+            volume_mm3: 1_000.0,
+            bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
+            backend: "occt-test".to_owned(),
+            tolerance: "test-tolerance".to_owned(),
+        };
+        let mut document = DocumentStore::new();
+        let batch = plan_step_import(&document.current(), &source, "part.step", &evidence).unwrap();
+        let proposal = document.prepare_proposal(batch).unwrap();
+        document.commit_verified_proposal(&proposal).unwrap();
+        let mut container = ContainerData::default();
+        container.insert_import_blob(source.clone()).unwrap();
+        let snapshot = document.current();
+        let none = ExactResultRegistry::default();
+
+        let (prepared, hashed) = ketchup_model::graph::headless_count_hashed_bytes(|| {
+            prepare_requests(&snapshot, &container, &none, &none, None)
+        });
+        let (requests, _) = prepared.unwrap();
+        assert!(matches!(
+            requests.as_slice(),
+            [(_, ExactEvaluationRequest::Imported(_, bytes))] if *bytes == source
+        ));
+        assert!(hashed < source.len() as u64 / 64, "{hashed}");
     }
 }

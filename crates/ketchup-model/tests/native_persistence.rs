@@ -2485,6 +2485,96 @@ fn a_work_recovery_step_cut_short_opens_the_steps_before_it_and_says_so() {
     ));
 }
 
+/// Review 2026-10-21 LIM-1: every edit checks that neither the file nor its
+/// checkpoint changed on disk. With a large blob in the file, an edit after the
+/// first hashes its step, not the file, the checkpoint or the blob again, and
+/// still refuses to write when another program replaced either file.
+#[test]
+fn an_edit_after_the_first_hashes_its_step_not_the_file_and_still_sees_a_replaced_one() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("large.ketchup");
+    let work_recovery = persistence::work_recovery_path(&path);
+    let blob_len = 4 << 20;
+    let mut container_data = persistence::ContainerData::default();
+    container_data
+        .insert_blob((0..blob_len).map(|index| (index % 251) as u8).collect())
+        .unwrap();
+    let set_dimension = |store: &mut DocumentStore, value: f64| {
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value.to_string(), value).unwrap(),
+                },
+            ]))
+            .unwrap();
+    };
+    let mut store = graph_document();
+    let base = publish(
+        &path,
+        &store,
+        &container_data,
+        persistence::Publish::Replace,
+    )
+    .unwrap();
+    let mut identity = None;
+    let mut hashed = Vec::new();
+    for value in [17.0, 19.0, 23.0, 29.0] {
+        set_dimension(&mut store, value);
+        let (written, bytes) = ketchup_model::graph::headless_count_hashed_bytes(|| {
+            checkpoint(&path, &store, &container_data, base, identity)
+        });
+        identity = Some(written.unwrap());
+        hashed.push(bytes);
+    }
+    let hashed_bytes = |edit: usize| usize::try_from(hashed[edit]).unwrap();
+    assert!(hashed_bytes(0) > blob_len, "{hashed:?}");
+    assert!(
+        (1..hashed.len()).all(|edit| hashed_bytes(edit) < blob_len / 64),
+        "{hashed:?}"
+    );
+    let opened = persistence::load_file_with_source(&path).unwrap();
+    assert_eq!(opened.source_path(), work_recovery);
+    assert_eq!(
+        opened.outcome().snapshot().canonical_digest(),
+        store.current().canonical_digest()
+    );
+    assert_eq!(opened.work_recovery_identity(), identity);
+
+    // Another program writes the checkpoint.
+    let mut changed = std::fs::read(&work_recovery).unwrap();
+    changed.push(0);
+    std::fs::write(&work_recovery, &changed).unwrap();
+    set_dimension(&mut store, 31.0);
+    assert!(matches!(
+        checkpoint(&path, &store, &container_data, base, identity),
+        Err(persistence::FilePersistenceError::ExternalConflict)
+    ));
+    assert_eq!(std::fs::read(&work_recovery).unwrap(), changed);
+
+    // Another session saves the file itself.
+    let changed = persistence::FileIdentity::from_bytes(&changed);
+    let rewritten = checkpoint(&path, &store, &container_data, base, Some(changed)).unwrap();
+    let mut other = graph_document();
+    set_dimension(&mut other, 37.0);
+    publish(
+        &path,
+        &other,
+        &container_data,
+        persistence::Publish::Replace,
+    )
+    .unwrap();
+    let saved_by_other = std::fs::read(&path).unwrap();
+    set_dimension(&mut store, 41.0);
+    let recovery_before = std::fs::read(&work_recovery).unwrap();
+    assert!(matches!(
+        checkpoint(&path, &store, &container_data, base, Some(rewritten)),
+        Err(persistence::FilePersistenceError::ExternalConflict)
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), saved_by_other);
+    assert_eq!(std::fs::read(&work_recovery).unwrap(), recovery_before);
+}
+
 #[test]
 fn stale_session_cleanup_does_not_delete_a_newer_work_recovery_checkpoint() {
     let directory = tempfile::tempdir().unwrap();

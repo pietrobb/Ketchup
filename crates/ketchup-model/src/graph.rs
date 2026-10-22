@@ -732,8 +732,28 @@ pub fn validate_graph(nodes: &BTreeMap<NodeId, Arc<EvaluatorNode>>) -> Result<()
     topological_order(nodes).map(|_| ())
 }
 
+#[cfg(feature = "testing")]
+thread_local! {
+    static HASHED_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg_attr(not(feature = "testing"), allow(unused_variables))]
+pub(crate) fn note_hashed(len: usize) {
+    #[cfg(feature = "testing")]
+    HASHED_BYTES.set(HASHED_BYTES.get() + u64::try_from(len).unwrap_or(u64::MAX));
+}
+
+/// `operation` and how many bytes it hashed with SHA-256 on this thread.
+#[cfg(feature = "testing")]
+pub fn headless_count_hashed_bytes<T>(operation: impl FnOnce() -> T) -> (T, u64) {
+    let before = HASHED_BYTES.get();
+    let result = operation();
+    (result, HASHED_BYTES.get() - before)
+}
+
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
+    note_hashed(bytes.len());
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -757,6 +777,7 @@ pub fn sha256_reader_hex(mut reader: impl std::io::Read) -> std::io::Result<Stri
 
 #[must_use]
 pub fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+    note_hashed(bytes.len());
     Sha256::digest(bytes).into()
 }
 

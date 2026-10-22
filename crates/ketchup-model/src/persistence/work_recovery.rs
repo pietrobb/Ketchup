@@ -1,6 +1,89 @@
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
+
 use sha2::{Digest, Sha256};
 
+use super::work_recovery_steps::CheckpointPlan;
 use super::*;
+
+/// A file as this process last read or wrote it: its identity, the SHA-256
+/// state of its bytes (an appended step is hashed alone) and its step plan.
+#[derive(Clone)]
+struct Observed {
+    identity: FileIdentity,
+    hasher: Sha256,
+    plan: Option<CheckpointPlan>,
+}
+
+impl Observed {
+    fn new(byte_len: u64, hasher: Sha256, plan: Option<CheckpointPlan>) -> Self {
+        let sha256 = hasher.clone().finalize().into();
+        let identity = FileIdentity { byte_len, sha256 };
+        Self {
+            identity,
+            hasher,
+            plan,
+        }
+    }
+}
+
+fn observed_of(bytes: &[u8]) -> Observed {
+    crate::graph::note_hashed(bytes.len());
+    let byte_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let plan = work_recovery_steps::read_plan(bytes);
+    Observed::new(byte_len, Sha256::new_with_prefix(bytes), plan)
+}
+
+/// Length, modified time and, on Unix, inode and change time: while they stay,
+/// an edit does not read and hash the file again (review 2026-10-21 LIM-1). An
+/// in-place rewrite keeping length and times is missed; save locks bar sessions.
+type Fingerprint = (u64, Option<std::time::SystemTime>, (u64, i64, i64));
+
+fn fingerprint(metadata: &fs::Metadata) -> Fingerprint {
+    #[cfg(unix)]
+    let inode = {
+        use std::os::unix::fs::MetadataExt;
+        (metadata.ino(), metadata.ctime(), metadata.ctime_nsec())
+    };
+    #[cfg(not(unix))]
+    let inode = (0, 0, 0);
+    (metadata.len(), metadata.modified().ok(), inode)
+}
+
+fn observed_files() -> MutexGuard<'static, HashMap<PathBuf, (Fingerprint, Observed)>> {
+    static FILES: LazyLock<Mutex<HashMap<PathBuf, (Fingerprint, Observed)>>> =
+        LazyLock::new(Mutex::default);
+    FILES.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The file at `path`, read only when its fingerprint changed since this
+/// process last read or wrote it.
+fn observe(path: &Path) -> Result<Observed, FilePersistenceError> {
+    let mut file = fs::File::open(path)?;
+    let before = fingerprint(&file.metadata()?);
+    if let Some((seen, observed)) = observed_files().get(path)
+        && *seen == before
+    {
+        return Ok(observed.clone());
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let observed = observed_of(&bytes);
+    // A file written while it was read is read again next time.
+    if fingerprint(&file.metadata()?) == before {
+        observed_files().insert(path.to_path_buf(), (before, observed.clone()));
+    }
+    Ok(observed)
+}
+
+/// Records `observed` as what this process just wrote at `path`; its identity.
+fn record_written(path: &Path, observed: Observed) -> FileIdentity {
+    let identity = observed.identity;
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        observed_files().insert(path.to_path_buf(), (fingerprint(&metadata), observed));
+    }
+    identity
+}
 
 /// Exclusive ownership of a live session's recovery branch. The OS releases the
 /// lock on process exit; the lock file itself must never be unlinked.
@@ -52,17 +135,12 @@ pub fn check_work_recovery_identity(
     read_observed_work_recovery(path, expected).map(drop)
 }
 
-/// The checkpoint [`check_work_recovery_identity`] found as `expected`, with the
-/// SHA-256 state of its bytes so a step appended to it is hashed alone.
-struct ObservedWorkRecovery {
-    bytes: Vec<u8>,
-    hasher: Sha256,
-}
-
+/// The checkpoint [`check_work_recovery_identity`] found as `expected`, read
+/// only when its metadata changed since this process last read or wrote it.
 fn read_observed_work_recovery(
     path: &Path,
     expected: Option<FileIdentity>,
-) -> Result<Option<ObservedWorkRecovery>, FilePersistenceError> {
+) -> Result<Option<Observed>, FilePersistenceError> {
     let path = work_recovery_path(path);
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound && expected.is_none() => Ok(None),
@@ -74,15 +152,9 @@ fn read_observed_work_recovery(
             Err(FilePersistenceError::NotARegularFile(path))
         }
         Ok(_) => {
-            let bytes = fs::read(path)?;
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            let identity = FileIdentity {
-                byte_len: u64_len(bytes.len()).map_err(FilePersistenceError::Format)?,
-                sha256: hasher.clone().finalize().into(),
-            };
-            if expected == Some(identity) {
-                Ok(Some(ObservedWorkRecovery { bytes, hasher }))
+            let observed = observe(&path)?;
+            if expected == Some(observed.identity) {
+                Ok(Some(observed))
             } else {
                 Err(FilePersistenceError::ExternalConflict)
             }
@@ -103,23 +175,24 @@ pub(super) fn write_work_recovery(
     after_compare: impl FnOnce(),
 ) -> Result<FileIdentity, FilePersistenceError> {
     let _lock = lock_saves(path)?;
-    if read_native_document_identity(path)? != base_identity {
+    if observe(path)?.identity != base_identity {
         return Err(FilePersistenceError::ExternalConflict);
     }
     let observed = read_observed_work_recovery(path, expected)?;
     after_compare();
     let unchanged = || {
-        if read_native_document_identity(path)? != base_identity {
+        if observe(path)?.identity != base_identity {
             return Err(FilePersistenceError::ExternalConflict);
         }
         check_work_recovery_identity(path, expected)
     };
     if let Some(observed) = observed
-        && let Some(step) =
-            work_recovery_steps::plan_step(&observed.bytes, document, container, base_identity)
+        && let Some(plan) = &observed.plan
+        && let Some((step, next)) =
+            work_recovery_steps::plan_step(plan, document, container, base_identity)
     {
         unchanged()?;
-        return append_step(path, observed, &step);
+        return append_step(path, observed, &step, next);
     }
     // The checkpoint keeps the Undo history the file does not, unless it does not fit.
     let payload = &match save_document_store(document, container) {
@@ -139,29 +212,25 @@ pub(super) fn write_work_recovery(
         u64_len(payload.len()).map_err(FilePersistenceError::Format)?,
     );
     bytes.extend_from_slice(payload);
-    write_atomic_after_prepare(
-        &work_recovery_path(path),
-        &bytes,
-        true,
-        unchanged,
-        sync_parent_directory,
-    )?;
-    Ok(FileIdentity::from_bytes(&bytes))
+    let recovery = work_recovery_path(path);
+    write_atomic_after_prepare(&recovery, &bytes, true, unchanged, sync_parent_directory)?;
+    Ok(record_written(&recovery, observed_of(&bytes)))
 }
 
 /// Appends `step` to the checkpoint of `path`, which the caller observed and
 /// rechecked under the save lock.
 fn append_step(
     path: &Path,
-    observed: ObservedWorkRecovery,
+    observed: Observed,
     step: &[u8],
+    next: CheckpointPlan,
 ) -> Result<FileIdentity, FilePersistenceError> {
     let format = FilePersistenceError::Format;
     let mut framed = Vec::with_capacity(8 + step.len());
     push_u64(&mut framed, u64_len(step.len()).map_err(format)?);
     framed.extend_from_slice(step);
     let recovery = work_recovery_path(path);
-    let observed_len = u64_len(observed.bytes.len()).map_err(format)?;
+    let observed_len = observed.identity.byte_len;
     let mut file = fs::OpenOptions::new().write(true).open(&recovery)?;
     let appended = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(observed_len))
         .and_then(|_| file.write_all(&framed))
@@ -173,11 +242,10 @@ fn append_step(
         return Err(FilePersistenceError::Io(error));
     }
     let mut hasher = observed.hasher;
+    crate::graph::note_hashed(framed.len());
     hasher.update(&framed);
-    let identity = FileIdentity {
-        byte_len: u64_len(observed.bytes.len() + framed.len()).map_err(format)?,
-        sha256: hasher.finalize().into(),
-    };
+    let byte_len = observed_len + u64_len(framed.len()).map_err(format)?;
+    let identity = record_written(&recovery, Observed::new(byte_len, hasher, Some(next)));
     let parent = recovery
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())

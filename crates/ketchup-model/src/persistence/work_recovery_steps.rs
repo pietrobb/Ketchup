@@ -29,8 +29,8 @@ fn index(value: u32) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
 }
 
-/// The base and the steps of a checkpoint made from `base_identity`.
-fn split_checkpoint(bytes: &[u8], base_identity: FileIdentity) -> Option<(&[u8], &[u8])> {
+/// The identity of the file a checkpoint was made from, its base and its steps.
+fn split_checkpoint(bytes: &[u8]) -> Option<(FileIdentity, &[u8], &[u8])> {
     let mut reader = Reader::new(bytes);
     let magic = reader.take(WORK_RECOVERY_MAGIC.len()).ok()?;
     let schema = reader.u16().ok()?;
@@ -38,10 +38,9 @@ fn split_checkpoint(bytes: &[u8], base_identity: FileIdentity) -> Option<(&[u8],
     let sha256 = reader.take(32).ok()?.try_into().ok()?;
     let payload_len = usize::try_from(reader.u64().ok()?).ok()?;
     let payload = reader.take(payload_len).ok()?;
-    (magic == WORK_RECOVERY_MAGIC
-        && schema == WORK_RECOVERY_SCHEMA
-        && FileIdentity { byte_len, sha256 } == base_identity)
-        .then(|| (payload, &bytes[reader.cursor..]))
+    let base = FileIdentity { byte_len, sha256 };
+    (magic == WORK_RECOVERY_MAGIC && schema == WORK_RECOVERY_SCHEMA)
+        .then(|| (base, payload, &bytes[reader.cursor..]))
 }
 
 /// The `document.bin` entry of a base and its parsed `history.bin`.
@@ -60,11 +59,23 @@ fn read_base<'e, 'a>(
 }
 
 /// The blobs and extensions of a file.
-fn side_of(entries: &[ContainerEntry<'_>]) -> BTreeMap<String, (bool, Vec<u8>)> {
+fn side_of<'a>(entries: &[ContainerEntry<'a>]) -> BTreeMap<String, (bool, &'a [u8])> {
     entries
         .iter()
         .filter(|entry| !CORE_ENTRIES.contains(&entry.path.as_str()))
-        .map(|entry| (entry.path.clone(), (entry.required, entry.content.to_vec())))
+        .map(|entry| (entry.path.clone(), (entry.required, entry.content)))
+        .collect()
+}
+
+/// Blobs and extensions (path → required, checksum) as a step compares them: a
+/// blob's path names the SHA-256 of its content, so only an extension is hashed.
+fn compared(side: BTreeMap<String, (bool, &[u8])>) -> BTreeMap<String, (bool, Option<[u8; 32]>)> {
+    side.into_iter()
+        .map(|(path, (required, content))| {
+            let checksum =
+                (!path.starts_with("blobs/")).then(|| crate::graph::sha256_bytes(content));
+            (path, (required, checksum))
+        })
         .collect()
 }
 
@@ -145,15 +156,20 @@ impl<'a> Step<'a> {
     }
 }
 
-/// The step that brings the checkpoint `observed` to `document`, or `None` when
-/// only a whole checkpoint can.
-pub(super) fn plan_step(
-    observed: &[u8],
-    document: &DocumentStore,
-    container: &ContainerData,
+/// What a step is planned against, so an edit neither reads the checkpoint nor
+/// copies its blobs (review 2026-10-21 LIM-1).
+#[derive(Clone, Debug)]
+pub(super) struct CheckpointPlan {
     base_identity: FileIdentity,
-) -> Option<Vec<u8>> {
-    let (payload, steps) = split_checkpoint(observed, base_identity)?;
+    len: usize,
+    payload_len: usize,
+    held: Vec<Held>,
+    side: BTreeMap<String, (bool, Option<[u8; 32]>)>,
+}
+
+/// The plan of the checkpoint `bytes`, `None` where only a whole one can follow.
+pub(super) fn read_plan(bytes: &[u8]) -> Option<CheckpointPlan> {
+    let (base_identity, payload, steps) = split_checkpoint(bytes)?;
     let entries = container_directory(payload).ok()?;
     let (base_document, base) = read_base(&entries).ok()?;
     let mut held = Vec::<Held>::new();
@@ -169,12 +185,31 @@ pub(super) fn plan_step(
         let added = step.added.iter().map(|(held, _)| *held).collect();
         step.apply(&mut held, added).ok()?;
     }
-    if side_entries(container, &history_imported_sources(document)).ok()? != side_of(&entries) {
+    Some(CheckpointPlan {
+        base_identity,
+        len: bytes.len(),
+        payload_len: payload.len(),
+        held,
+        side: compared(side_of(&entries)),
+    })
+}
+
+/// The step that brings the checkpoint planned as `plan` to `document`, with
+/// the plan of the checkpoint it makes, or `None` when only a whole checkpoint
+/// can.
+pub(super) fn plan_step(
+    plan: &CheckpointPlan,
+    document: &DocumentStore,
+    container: &ContainerData,
+    base_identity: FileIdentity,
+) -> Option<(Vec<u8>, CheckpointPlan)> {
+    let side = side_entries(container, &history_imported_sources(document)).ok()?;
+    if plan.base_identity != base_identity || compared(side) != plan.side {
         return None;
     }
-
     let revisions = document.revision_history().collect::<Vec<_>>();
     let current = |revision: &Revision| (revision.id(), revision.encoded().sha256);
+    let held = &plan.held;
     let skip = held
         .iter()
         .position(|held| *held == current(revisions[0]))?;
@@ -205,8 +240,15 @@ pub(super) fn plan_step(
     step.extend_from_slice(&history);
     let step = encode_container(BTreeMap::from([(STEP_ENTRY.to_owned(), (true, step))])).ok()?;
     // The steps stay lighter than the base.
-    let checkpoint_len = observed.len() + 8 + step.len();
-    (checkpoint_len - payload.len() <= payload.len()).then_some(step)
+    let len = plan.len + 8 + step.len();
+    (len - plan.payload_len <= plan.payload_len).then(|| {
+        let next = CheckpointPlan {
+            len,
+            held: revisions.iter().map(|revision| current(revision)).collect(),
+            ..plan.clone()
+        };
+        (step, next)
+    })
 }
 
 /// A revision as a checkpoint holds it, with its program JSON.
@@ -345,11 +387,12 @@ pub(super) fn assemble_checkpoint(
             snapshot,
             HISTORY_BUDGET,
         );
+        let history = history?;
         let mut file = side_of(&entries);
-        file.insert("document.bin".to_owned(), (true, snapshot.bytes.clone()));
-        file.insert("history.bin".to_owned(), (true, history?));
+        file.insert("document.bin".to_owned(), (true, &snapshot.bytes[..]));
+        file.insert("history.bin".to_owned(), (true, &history[..]));
         if let Some(program) = &current.program {
-            file.insert(PROGRAM_ENTRY.to_owned(), (true, program.to_vec()));
+            file.insert(PROGRAM_ENTRY.to_owned(), (true, &program[..]));
         }
         encode_container(file)
     };

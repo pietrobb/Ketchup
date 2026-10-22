@@ -981,27 +981,26 @@ fn save_container_entries(
     program: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, PersistenceError> {
     let mut entries = side_entries(container_data, &imported_sources)?;
-    entries.insert(
-        "document.bin".to_owned(),
-        (true, document_bin.bytes.clone()),
-    );
-    if let Some(revision_history) = revision_history {
-        entries.insert("history.bin".to_owned(), (true, revision_history));
+    entries.insert("document.bin".to_owned(), (true, &document_bin.bytes[..]));
+    if let Some(revision_history) = &revision_history {
+        entries.insert("history.bin".to_owned(), (true, &revision_history[..]));
     }
     // The program that owns the current revision belongs to the document, not
     // to its Undo steps: a history that no longer opens must not take it along.
-    if let Some(program) = program {
-        entries.insert(PROGRAM_ENTRY.to_owned(), (true, program));
+    if let Some(program) = &program {
+        entries.insert(PROGRAM_ENTRY.to_owned(), (true, &program[..]));
     }
     encode_container(entries)
 }
 
 /// The entries a file holds beside its document, history and program: the
-/// blobs of `container_data` it keeps and its extensions.
-fn side_entries(
-    container_data: &ContainerData,
+/// blobs of `container_data` it keeps and its extensions. A blob's key is the
+/// SHA-256 of its content, checked when it is inserted ([`ContainerData::insert_blob`])
+/// or loaded, so it is not hashed again here (review 2026-10-21 LIM-1).
+fn side_entries<'a>(
+    container_data: &'a ContainerData,
     imported_sources: &BTreeSet<String>,
-) -> Result<BTreeMap<String, (bool, Vec<u8>)>, PersistenceError> {
+) -> Result<BTreeMap<String, (bool, &'a [u8])>, PersistenceError> {
     let mut entries = BTreeMap::new();
     if imported_sources
         .iter()
@@ -1010,17 +1009,14 @@ fn side_entries(
         return Err(PersistenceError::InvalidBlobHash);
     }
     for (hash, bytes) in container_data.blobs.iter() {
-        if crate::graph::sha256_hex(bytes) != *hash {
-            return Err(PersistenceError::InvalidBlobHash);
-        }
         if !container_data.imported_source_blobs.contains(hash) || imported_sources.contains(hash) {
-            entries.insert(format!("blobs/{hash}"), (false, bytes.clone()));
+            entries.insert(format!("blobs/{hash}"), (false, &bytes[..]));
         }
     }
     for extension in container_data.extensions.values() {
         let path = format!("extensions/{}/{}", extension.namespace, extension.path);
         if entries
-            .insert(path, (extension.required, extension.bytes.clone()))
+            .insert(path, (extension.required, &extension.bytes[..]))
             .is_some()
         {
             return Err(PersistenceError::DuplicateContainerEntry);
@@ -1031,7 +1027,7 @@ fn side_entries(
 
 /// `entries` (path → required, content) as a native container.
 fn encode_container(
-    entries: BTreeMap<String, (bool, Vec<u8>)>,
+    entries: BTreeMap<String, (bool, impl AsRef<[u8]>)>,
 ) -> Result<Vec<u8>, PersistenceError> {
     if entries.len() > MAX_CONTAINER_ENTRIES as usize {
         return Err(PersistenceError::ResourceLimit);
@@ -1042,12 +1038,13 @@ fn encode_container(
     push_u16(&mut encoded, CONTAINER_SCHEMA);
     push_u32(&mut encoded, u32_count(entries.len())?);
     for (path, (required, bytes)) in entries {
+        let bytes = bytes.as_ref();
         validate_container_path(&path)?;
         push_string(&mut encoded, &path)?;
         push_u8(&mut encoded, u8::from(required));
         push_u64(&mut encoded, u64_len(bytes.len())?);
-        encoded.extend_from_slice(&crate::graph::sha256_bytes(&bytes));
-        encoded.extend_from_slice(&bytes);
+        encoded.extend_from_slice(&crate::graph::sha256_bytes(bytes));
+        encoded.extend_from_slice(bytes);
     }
     Ok(encoded)
 }
