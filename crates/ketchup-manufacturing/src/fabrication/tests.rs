@@ -526,7 +526,7 @@ fn btlx_drilling_maps_definition_axes_and_rejects_invalid_geometry() {
     *end_mm = *start_mm;
     assert_eq!(
         btlx_drilling(&zero_depth, blank_at_origin([100.0, 50.0, 1000.0])),
-        None
+        Err(BtlxDrillRefusal::InvalidGeometry)
     );
 
     let mut invalid_diameter = valid.clone();
@@ -536,7 +536,7 @@ fn btlx_drilling_maps_definition_axes_and_rejects_invalid_geometry() {
     *diameter_mm = 50_000.000_000_001;
     assert_eq!(
         btlx_drilling(&invalid_diameter, blank_at_origin([100.0, 50.0, 1000.0])),
-        None
+        Err(BtlxDrillRefusal::BreaksOutThroughSide)
     );
 
     let mut invalid_center = valid.clone();
@@ -546,7 +546,7 @@ fn btlx_drilling_maps_definition_axes_and_rejects_invalid_geometry() {
     *center_mm = [100_000.000_000_001, 25.0];
     assert_eq!(
         btlx_drilling(&invalid_center, blank_at_origin([100.0, 50.0, 1000.0])),
-        None
+        Err(BtlxDrillRefusal::AxisOutsideStock)
     );
 
     let mut invalid_frame = valid;
@@ -556,7 +556,44 @@ fn btlx_drilling_maps_definition_axes_and_rejects_invalid_geometry() {
     frame.x_axis = [2.0, 0.0, 0.0];
     assert_eq!(
         btlx_drilling(&invalid_frame, blank_at_origin([100.0, 50.0, 1000.0])),
-        None
+        Err(BtlxDrillRefusal::InvalidGeometry)
+    );
+}
+
+/// Review 2026-10-21 P3 (manufacturing): only the drill axis was checked
+/// against the stock, so a hole whose wall breaks out through a side face was
+/// written to BTLx as if it stayed inside, blind or through; and every refused
+/// hole was told as a generic blocked part.
+#[test]
+fn a_hole_breaking_out_through_a_side_is_refused_by_name() {
+    let blank = blank_at_origin([60.0, 140.0, 18.0]);
+    let hole = |center_x: f64, through: bool| GeneralMachiningGeometry::CircularDrill {
+        frame: identity_machining_frame(),
+        center_mm: [center_x, 70.0],
+        diameter_mm: 8.0,
+        through,
+        start_mm: 0.0,
+        end_mm: if through { 18.0 } else { 10.0 },
+    };
+    for through in [false, true] {
+        assert!(
+            btlx_drilling(&hole(4.0, through), blank).is_ok(),
+            "{through}"
+        );
+        assert_eq!(
+            btlx_drilling(&hole(2.0, through), blank),
+            Err(BtlxDrillRefusal::BreaksOutThroughSide),
+            "{through}"
+        );
+    }
+    let error = GeneralFabricationError::BtlxDrillingRefused {
+        part: "rafter".to_owned(),
+        reason: BtlxDrillRefusal::BreaksOutThroughSide,
+    }
+    .to_string();
+    assert!(
+        error.contains("\"rafter\"") && error.contains("side face"),
+        "{error}"
     );
 }
 
@@ -608,7 +645,7 @@ fn btlx_blind_depth_uses_entry_and_direction_in_stock_coordinates() {
         panic!("expected drill")
     };
     *end_mm = 60.0;
-    assert!(btlx_drilling(&drill, dimensions).is_none());
+    assert!(btlx_drilling(&drill, dimensions).is_err());
     let GeneralMachiningGeometry::CircularDrill { through, .. } = &mut drill else {
         panic!("expected drill")
     };
@@ -621,7 +658,7 @@ fn btlx_blind_depth_uses_entry_and_direction_in_stock_coordinates() {
     };
     *start_mm = 75.0;
     *end_mm = 110.0;
-    assert!(btlx_drilling(&drill, dimensions).is_none());
+    assert!(btlx_drilling(&drill, dimensions).is_err());
     // An angled ray exits the top before traversing the full X extent.
     let GeneralMachiningGeometry::CircularDrill {
         frame,
@@ -642,7 +679,7 @@ fn btlx_blind_depth_uses_entry_and_direction_in_stock_coordinates() {
         panic!("expected drill")
     };
     *end_mm = 10.0;
-    assert!(btlx_drilling(&drill, dimensions).is_none());
+    assert!(btlx_drilling(&drill, dimensions).is_err());
 }
 
 #[test]

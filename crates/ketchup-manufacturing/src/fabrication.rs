@@ -37,6 +37,7 @@ mod taps;
 use btlx::*;
 use projection_bytes::*;
 
+pub use btlx::BtlxDrillRefusal;
 pub use capabilities::{Carriage, ShopElement, ShopFormat, ShopLoss, carriage};
 
 pub const FABRICATION_PROJECTION_V1: &str = "ketchup.fabrication-projection.v1";
@@ -290,6 +291,11 @@ pub enum GeneralFabricationError {
     DrilledFromBothFaces {
         part: String,
     },
+    /// A hole of `part` cannot be written as a BTLx drilling, for `reason`.
+    BtlxDrillingRefused {
+        part: String,
+        reason: BtlxDrillRefusal,
+    },
     /// `format` cannot carry `element` of `part`, for `reason` (the
     /// capability table, [`carriage`]).
     CannotCarry {
@@ -377,6 +383,10 @@ impl fmt::Display for GeneralFabricationError {
             Self::PartExportBlocked { part } => write!(
                 formatter,
                 "part \"{part}\" cannot be written to the machine file: its stock is not a rectangular box, a cut is not one the format describes, reaches outside the stock or starts inside the material (a cavity, or a cut that opens only to a side and is not rectangular), or its exact result is stale; let each cut tool reach past the face it enters, or evaluate the model again",
+            ),
+            Self::BtlxDrillingRefused { part, reason } => write!(
+                formatter,
+                "a hole of part \"{part}\" cannot be written as a BTLx drilling: {reason}",
             ),
             Self::DrilledFromBothFaces { part } => write!(
                 formatter,

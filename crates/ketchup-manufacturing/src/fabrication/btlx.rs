@@ -201,7 +201,10 @@ pub(super) fn btlx_processings(
                     ..drilling
                 })]
             })
-            .ok_or(GeneralFabricationError::ExportBlocked),
+            .map_err(|reason| GeneralFabricationError::BtlxDrillingRefused {
+                part: part.to_owned(),
+                reason,
+            }),
         GeneralManufacturingKind::ThroughCut
         | GeneralManufacturingKind::ProfileCut
         | GeneralManufacturingKind::BooleanCut => {
@@ -308,10 +311,45 @@ fn btlx_edge_saw_contours(
     Some(result)
 }
 
+/// Why a hole cannot be written as a BTLx drilling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BtlxDrillRefusal {
+    /// The hole's frame, centre, size, depth or the stock is not a valid drilling.
+    InvalidGeometry,
+    /// The hole's axis does not run through the stock.
+    AxisOutsideStock,
+    /// The hole's wall breaks out through a side face of the stock.
+    BreaksOutThroughSide,
+    /// The hole is cut through but its cut does not span the stock.
+    ThroughCutShort,
+    /// A blind hole starts or ends outside the stock, or its tip breaks through
+    /// the far face.
+    BlindHoleLeavesStock,
+    /// A coordinate, depth or diameter is beyond what BTLx writes.
+    OutOfBtlxRange,
+}
+
+impl fmt::Display for BtlxDrillRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidGeometry => "its frame, centre, size or depth is not a valid drilling",
+            Self::AxisOutsideStock => "its axis does not run through the stock",
+            Self::BreaksOutThroughSide => {
+                "its wall breaks out through a side face of the stock; move it inward or make it smaller"
+            }
+            Self::ThroughCutShort => "it is cut through, but the cut does not span the stock",
+            Self::BlindHoleLeavesStock => {
+                "it starts or ends outside the stock, or its tip breaks through the far face; drill it through or less deep"
+            }
+            Self::OutOfBtlxRange => "a coordinate, its depth or its diameter is beyond what BTLx writes",
+        })
+    }
+}
+
 pub(super) fn btlx_drilling(
     geometry: &GeneralMachiningGeometry,
     blank: StockBlank,
-) -> Option<BtlxDrilling> {
+) -> Result<BtlxDrilling, BtlxDrillRefusal> {
     let GeneralMachiningGeometry::CircularDrill {
         frame,
         center_mm,
@@ -321,19 +359,21 @@ pub(super) fn btlx_drilling(
         end_mm,
     } = geometry
     else {
-        return None;
+        return Err(BtlxDrillRefusal::InvalidGeometry);
     };
     if !machining_frame_is_right_handed(frame)
         || center_mm.iter().any(|value| !value.is_finite())
         || !start_mm.is_finite()
         || !end_mm.is_finite()
         || end_mm <= start_mm
+        || !diameter_mm.is_finite()
+        || *diameter_mm <= 0.0
         || blank
             .extents_mm
             .iter()
             .any(|extent| !extent.is_finite() || *extent <= 0.0)
     {
-        return None;
+        return Err(BtlxDrillRefusal::InvalidGeometry);
     }
     // Check the directed distance to the stock exit, not its smallest dimension
     // or the occurrence's world bounds. This also covers offset/angled frames.
@@ -353,7 +393,7 @@ pub(super) fn btlx_drilling(
         let direction = frame.normal[axis];
         if direction == 0.0 {
             if !(-tolerance..=extent + tolerance).contains(&at_zero[axis]) {
-                return None;
+                return Err(BtlxDrillRefusal::AxisOutsideStock);
             }
             continue;
         }
@@ -363,7 +403,7 @@ pub(super) fn btlx_drilling(
         stock_exit = stock_exit.min(low.max(high));
     }
     if !(stock_entry.is_finite() && stock_exit.is_finite() && stock_entry < stock_exit) {
-        return None;
+        return Err(BtlxDrillRefusal::AxisOutsideStock);
     }
     // A hole that reaches the far face is drilled through, from where its axis
     // enters the stock to where it leaves; ThroughAll's padded Boolean cutter
@@ -371,7 +411,7 @@ pub(super) fn btlx_drilling(
     let drilled_through = *through || *end_mm >= stock_exit - tolerance;
     let (start_mm, depth_mm) = if drilled_through {
         if *start_mm > stock_entry + tolerance || *end_mm < stock_exit - tolerance {
-            return None;
+            return Err(BtlxDrillRefusal::ThroughCutShort);
         }
         (stock_entry, stock_exit - stock_entry)
     } else {
@@ -390,26 +430,45 @@ pub(super) fn btlx_drilling(
                 || (frame.normal[axis] > 0.0 && end + tip_radius >= extent - tolerance)
                 || (frame.normal[axis] < 0.0 && end - tip_radius <= tolerance)
             {
-                return None;
+                return Err(BtlxDrillRefusal::BlindHoleLeavesStock);
             }
         }
         (*start_mm, depth_mm)
     };
+    // The wall stays inside every face the axis does not open through: at both
+    // ends of the drilled length it reaches the radius times the share of the
+    // axis's cross-section along that face's normal.
+    for depth in [start_mm, start_mm + depth_mm] {
+        let point = axis_point(depth);
+        for (axis, extent) in blank.extents_mm.into_iter().enumerate() {
+            let opens = frame.normal[axis] != 0.0
+                && (point[axis] <= tolerance || point[axis] >= extent - tolerance);
+            let reach = diameter_mm / 2.0 * frame.x_axis[axis].hypot(frame.y_axis[axis]);
+            if !opens
+                && (point[axis] - reach < -tolerance || point[axis] + reach > extent + tolerance)
+            {
+                return Err(BtlxDrillRefusal::BreaksOutThroughSide);
+            }
+        }
+    }
     let reference_point_mm = btlx_part_coordinate(
         blank,
         blank.local(std::array::from_fn(|axis| {
             frame.origin_mm[axis] + frame.normal[axis] * start_mm
         })),
     );
-    Some(BtlxDrilling {
+    let in_range = |value: f64, minimum: f64, maximum: f64| {
+        format_btlx_number_in_range(value, minimum, maximum).ok_or(BtlxDrillRefusal::OutOfBtlxRange)
+    };
+    Ok(BtlxDrilling {
         reference_point_mm,
         x_vector: btlx_part_coordinate(blank, frame.x_axis),
         y_vector: btlx_part_coordinate(blank, frame.y_axis),
-        start_x: format_btlx_number_in_range(center_mm[0], -100_000.0, 100_000.0)?,
-        start_y: format_btlx_number_in_range(center_mm[1], -50_000.0, 50_000.0)?,
+        start_x: in_range(center_mm[0], -100_000.0, 100_000.0)?,
+        start_y: in_range(center_mm[1], -50_000.0, 50_000.0)?,
         depth_limited: !drilled_through,
-        depth: format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, 50_000.0)?,
-        diameter: format_btlx_number_in_range(*diameter_mm, f64::MIN_POSITIVE, 50_000.0)?,
+        depth: in_range(depth_mm, f64::MIN_POSITIVE, 50_000.0)?,
+        diameter: in_range(*diameter_mm, f64::MIN_POSITIVE, 50_000.0)?,
         thread: None,
     })
 }
