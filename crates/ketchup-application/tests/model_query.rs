@@ -350,7 +350,7 @@ fn ten_thousand_repeated_occurrences_are_bounded_without_gaps_or_duplicates() {
     assert_eq!(
         summary["counts"],
         json!({"root_occurrences":10000,"tags":0,"instances":10000,"definitions":1,"features":1,
-            "relations":10000,"spaces":0,"clearance_volumes":0,"joints":0,"dimensions":0,"drawing_sheets":0})
+            "relations":10000,"spaces":0,"clearance_volumes":0,"joints":0,"dimensions":0,"drawing_sheets":0,"annotations":0})
     );
     assert_eq!(summary["tags"], json!([]));
     assert_eq!(summary["drawing_sheets"], json!([]));

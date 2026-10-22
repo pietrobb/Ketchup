@@ -1522,6 +1522,7 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
     }
 }
 
+mod annotations;
 mod assemblies;
 mod conditions;
 mod continuity;
@@ -2396,6 +2397,7 @@ fn globals() -> Globals {
     .with(continuity::builtins)
     .with(joints::builtins)
     .with(support::builtins)
+    .with(annotations::builtins)
     .with(path_builtins)
     .with(boolean_builtins)
     .with_namespace("math", math_functions)
@@ -2744,6 +2746,7 @@ mod tests {
             .with(continuity::builtins)
             .with(joints::builtins)
             .with(support::builtins)
+            .with(annotations::builtins)
             .with(path_builtins)
             .with(boolean_builtins)
             .build()

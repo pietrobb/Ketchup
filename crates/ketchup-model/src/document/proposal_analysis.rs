@@ -262,6 +262,9 @@ pub(super) fn authoritative_writes(
             | CanonicalCommand::DeleteUnderlay { id } => {
                 writes.insert(AuthoritativeDependency::Underlay(*id));
             }
+            CanonicalCommand::SetAnnotations { .. } => {
+                writes.insert(AuthoritativeDependency::Annotations);
+            }
             CanonicalCommand::UpsertClassificationDimension { id, .. } => {
                 writes.insert(AuthoritativeDependency::ClassificationDimension(*id));
             }
@@ -561,8 +564,35 @@ fn add_structure_command_dependencies(
         CanonicalCommand::DeleteUnderlay { id } => {
             dependencies.insert(AuthoritativeDependency::Underlay(*id));
         }
+        CanonicalCommand::SetAnnotations { annotations } => {
+            dependencies.insert(AuthoritativeDependency::Annotations);
+            dependencies.extend(
+                annotations
+                    .iter()
+                    .flat_map(|annotation| annotation.tags.iter().copied())
+                    .map(AuthoritativeDependency::Tag),
+            );
+        }
         _ => {}
     }
+}
+
+fn add_classification_dimension_dependencies(
+    snapshot: &Snapshot,
+    id: ClassificationDimensionId,
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    dependencies.insert(AuthoritativeDependency::ClassificationDimension(id));
+    dependencies.extend(
+        snapshot
+            .product
+            .classification_assignments
+            .keys()
+            .filter(|(_, dimension_id)| *dimension_id == id)
+            .map(|(occurrence_id, dimension_id)| {
+                AuthoritativeDependency::OccurrenceClassification(*occurrence_id, *dimension_id)
+            }),
+    );
 }
 
 fn add_local_edit_dependencies(
@@ -1292,7 +1322,8 @@ pub(super) fn authoritative_dependencies(
             | CanonicalCommand::UpsertSavedView(_)
             | CanonicalCommand::DeleteSavedView { .. }
             | CanonicalCommand::UpsertUnderlay(_)
-            | CanonicalCommand::DeleteUnderlay { .. } => {
+            | CanonicalCommand::DeleteUnderlay { .. }
+            | CanonicalCommand::SetAnnotations { .. } => {
                 add_structure_command_dependencies(snapshot, command, &mut dependencies);
             }
             CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
@@ -1507,20 +1538,7 @@ pub(super) fn authoritative_dependencies(
                 dependencies.insert(AuthoritativeDependency::Tag(*id));
             }
             CanonicalCommand::UpsertClassificationDimension { id, .. } => {
-                dependencies.insert(AuthoritativeDependency::ClassificationDimension(*id));
-                dependencies.extend(
-                    snapshot
-                        .product
-                        .classification_assignments
-                        .keys()
-                        .filter(|(_, dimension_id)| dimension_id == id)
-                        .map(|(occurrence_id, dimension_id)| {
-                            AuthoritativeDependency::OccurrenceClassification(
-                                *occurrence_id,
-                                *dimension_id,
-                            )
-                        }),
-                );
+                add_classification_dimension_dependencies(snapshot, *id, &mut dependencies);
             }
             CanonicalCommand::SetOccurrenceClassification {
                 occurrence_id,

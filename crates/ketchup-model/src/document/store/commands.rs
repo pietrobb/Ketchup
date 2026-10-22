@@ -73,6 +73,7 @@ impl BatchEdit {
             | CanonicalCommand::DeleteSavedView { .. }
             | CanonicalCommand::UpsertUnderlay(..)
             | CanonicalCommand::DeleteUnderlay { .. }
+            | CanonicalCommand::SetAnnotations { .. }
             | CanonicalCommand::SetTagVisibility { .. }
             | CanonicalCommand::SetTagName { .. }
             | CanonicalCommand::UpsertClassificationDimension { .. }

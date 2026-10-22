@@ -126,6 +126,10 @@ pub enum CanonicalCommand {
     DeleteUnderlay {
         id: UnderlayId,
     },
+    /// Replace every drawing annotation; their tags must exist. They are no parts.
+    SetAnnotations {
+        annotations: Vec<crate::annotation::Annotation>,
+    },
     UpsertClassificationDimension {
         id: ClassificationDimensionId,
         name: String,
@@ -563,7 +567,7 @@ pub enum ToolBodyPolicy {
 
 impl CanonicalCommand {
     /// Whether the command changes only how the model is viewed: tag or occurrence
-    /// visibility, saved views and underlays. A batch of such commands keeps the
+    /// visibility, saved views, underlays and annotations. A batch of such commands keeps the
     /// document's program.
     #[must_use]
     pub const fn is_view_only(&self) -> bool {
@@ -575,6 +579,7 @@ impl CanonicalCommand {
                 | Self::DeleteSavedView { .. }
                 | Self::UpsertUnderlay(_)
                 | Self::DeleteUnderlay { .. }
+                | Self::SetAnnotations { .. }
         )
     }
 
@@ -623,6 +628,7 @@ pub enum AuthoritativeDependency {
     Tag(TagId),
     SavedView(SavedViewId),
     Underlay(UnderlayId),
+    Annotations,
     ClassificationDimension(ClassificationDimensionId),
     OccurrenceClassification(OccurrenceId, ClassificationDimensionId),
     Collection(CollectionId),

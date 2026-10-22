@@ -374,6 +374,7 @@ fn validate_document_entries(
         ensure_product_id(id.0)?;
         super::saved_view_commands::validate_underlay(product, underlay)?;
     }
+    super::saved_view_commands::validate_annotations(product, &product.annotations)?;
     for (id, collection) in &product.collections {
         if *id != collection.id {
             return Err(CanonicalError::CollectionNotFound(*id));

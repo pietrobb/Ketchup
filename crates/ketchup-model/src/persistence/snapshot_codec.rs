@@ -10,7 +10,8 @@
 //! field, also one with `#[serde(default)]` and a `skip_serializing_if` for that
 //! default. Format 103 shipped in Kečup 0.1.0, which ignores fields it does not know,
 //! so a new field under 103 would be dropped by 0.1.0 and lost at its next Save (PS-4).
-//! Format 104 adds underlays. The optional fields of the current format are listed in
+//! Format 104 adds underlays, 105 annotations; an older file has none, so it reads
+//! without a conversion. The optional fields of the current format are listed in
 //! `tests/format_golden.rs`, which also fails on any other change. The reader refuses a
 //! current-format snapshot with fields it does not know (`PersistenceError::UnknownFields`). The encoder writes the serde
 //! form directly, so every map in it must state its length: `#[serde(flatten)]` would
@@ -22,7 +23,7 @@ use crate::document::{FeatureId, ProductModel, Snapshot};
 use std::collections::BTreeMap;
 
 /// Format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 104;
+pub(super) const SNAPSHOT_FORMAT: u16 = 105;
 
 /// First format this codec wrote. Numbers below it belong to the retired hand-written
 /// codec.

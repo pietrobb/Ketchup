@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adapters;
+pub mod annotation;
 pub mod assembly;
 pub mod assembly_joint;
 pub mod assembly_recipe;

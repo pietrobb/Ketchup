@@ -1769,6 +1769,41 @@ def expect_inside(part, container, tolerance = 0.1, name = None):
                op = "<=", tolerance = tolerance,
                hint = "The part sticks out of that face of the container by this much.")
 
+#@topic annotations: Texts, dimensions, leaders and drawn lines of the plan
+#
+#   Annotations are no parts: never in the cut list, hardware, collisions, mass or
+#   material takeoff. tags= (one name or a list) shows and hides them like parts.
+#   Points are (x, y) on z = 0 or (x, y, z) in world millimetres. height_mm= is the
+#   text height on paper in millimetres (default 2.5), the same at every scale.
+#   Every annotation needs its own name; names do not clash with part names.
+#   text(name, value, at=, height_mm=, tags=)  writes `value` starting at `at`.
+#   dim(name, a, b, offset_mm=0, height_mm=, tags=)  dimensions the distance from a
+#     to b: Kečup measures it (mm, one decimal, no trailing zero), never a typed
+#     value. The dimension line runs parallel to a-b, moved offset_mm model
+#     millimetres to the left of the way from a to b seen from above (negative:
+#     right); a vertical a-b moves along -x.
+#   chain_dim(name, points, offset_mm=0, height_mm=, tags=)  one dim() between each
+#     two neighbouring points, named "name/1", "name/2", ...
+#   leader(name, value, point=, at=, height_mm=, tags=)  an arrow at `point` and a
+#     line to `value` written at `at`.
+#   polyline(name, points, closed=False, tags=)  straight drawn lines through the
+#     points, e.g. an outline or a grid line that is not a part.
+# Example: a 35 x 35 m square with numbered anchor points along its south side
+#   side = 35000
+#   polyline("outline", [(0, 0), (side, 0), (side, side), (0, side)], closed = True, tags = "plan")
+#   south = [(i * side / 18, 0) for i in range(19)]
+#   for i, p in enumerate(south):
+#       label = "S-" + ("0" + str(i + 1))[-2:]   # S-01; Starlark has no "%02d"
+#       text(label, label, at = (p[0] + 150, p[1] + 150), height_mm = 3.5, tags = "plan")
+#   chain_dim("south", south, offset_mm = -1500, tags = "plan")
+
+def chain_dim(name, points, offset_mm = 0, height_mm = None, tags = None):
+    """One dim() between each two neighbouring points; see topic annotations."""
+    if len(points) < 2:
+        fail("chain_dim(%s) needs at least 2 points, got %d" % (name, len(points)))
+    for i in range(len(points) - 1):
+        dim("%s/%d" % (name, i + 1), points[i], points[i + 1], offset_mm = offset_mm, height_mm = height_mm, tags = tags)
+
 #@topic space: Free space: landings, headroom, room to use things, zones a kind of part avoids
 #
 #   keep_clear(zone, name=None, only=None, ignore=[], hint=None)

@@ -124,6 +124,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `slide(axis, min, max)`, `rotate_motion(axis, min, max, pivot=)`, `assembly_step(motion, start=, end=)`, `tool_access(name, envelope=, motion=, start=, end=)` | a motion for `joint(kind="motion")` in mm or degrees; an insertion in source order; a tool envelope's approach, checked by the `assembly_path` and `tool_access` validators |
 | `keep_clear(zone, name=, only=, ignore=[], hint=)`, `load_path(only=, carriers=[], name=, ignore=[], hint=)` | a zone no part may reach into; members that must pass their weight down |
 | `material_weight(material, source=, kg_m3=, kg_m2=)`, `weight_scope(tags)`, `area_load(name, kind=, kn_m2=, on=[tags], projected=True, source=)` | self weight and area loads in kN/m² on the load-path members |
+| `text(name, value, at=, height_mm=2.5, tags=)`, `dim(name, a, b, offset_mm=0, height_mm=2.5, tags=)`, `leader(name, value, point=, at=, height_mm=2.5, tags=)`, `polyline(name, points, closed=False, tags=)` | drawing annotations, no parts (never in the cut list, collisions, mass or takeoff): a text at a point, a dimension whose value Kečup measures between two points, an arrow from a point to a text, drawn lines; text height in mm on paper, the dimension offset in model mm; the library's `chain_dim(name, points, offset_mm=)` dimensions neighbouring points |
 | `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design` |
 
 A box's faces are `x-`, `x+`, `y-`, `y+`, `z-` and `z+` in the part's own
@@ -215,7 +216,7 @@ change them. A part from `box`, `extrude`... sets it in
 value at once; another value in `attributes=` stops the export, which names it.
 
 The file is split into topics by `#@topic id: title` lines (`basics`,
-`placement`, `profiles`, `machining`, `joinery`, `fasteners`, `intent`, `space`, `buildup`,
+`placement`, `profiles`, `machining`, `joinery`, `fasteners`, `intent`, `annotations`, `space`, `buildup`,
 `loads`, `member_check`, `validation`, `report`). Each
 topic holds the comments that document its builtins and the helpers that
 belong to it, so an AI reads the index and then only the topics it needs;

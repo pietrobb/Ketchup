@@ -168,6 +168,10 @@ pub enum CanonicalError {
     },
     SavedViewNotFound(SavedViewId),
     UnderlayNotFound(UnderlayId),
+    InvalidAnnotation {
+        name: String,
+        problem: crate::annotation::AnnotationProblem,
+    },
     InvalidClassificationDimension(ClassificationDimensionId),
     ClassificationDimensionNotFound(ClassificationDimensionId),
     ClassificationCategoryNotFound(ClassificationDimensionId, ClassificationCategoryId),
@@ -371,6 +375,7 @@ impl CanonicalError {
             Self::InvalidSavedView { .. } => "canonical.invalid_saved_view",
             Self::SavedViewNotFound(..) => "canonical.saved_view_not_found",
             Self::UnderlayNotFound(..) => "canonical.underlay_not_found",
+            Self::InvalidAnnotation { .. } => "canonical.invalid_annotation",
             Self::InvalidClassificationDimension(..) => {
                 "canonical.invalid_classification_dimension"
             }
@@ -767,18 +772,15 @@ impl fmt::Display for CanonicalError {
                 tag,
                 holder,
                 holders,
-            } => {
-                write!(formatter, "tag {} is still assigned to {holder}", tag.0)?;
-                if *holders > 1 {
-                    write!(formatter, " and {} more parts", holders - 1)?;
-                }
-                Ok(())
-            }
+            } => write_tag_in_use(formatter, *tag, *holder, *holders),
             Self::InvalidSavedView { id, problem } => {
                 write!(formatter, "saved view {} {problem}", id.0)
             }
             Self::SavedViewNotFound(id) => write!(formatter, "saved view {} does not exist", id.0),
             Self::UnderlayNotFound(id) => write!(formatter, "underlay {} does not exist", id.0),
+            Self::InvalidAnnotation { name, problem } => {
+                write!(formatter, "annotation {name:?} {problem}")
+            }
             Self::InvalidClassificationDimension(id) => {
                 write!(formatter, "classification dimension {} is invalid", id.0)
             }
@@ -894,12 +896,27 @@ fn write_invalid_thread(
     }
 }
 
-/// A part or underlay that carries a tag.
+fn write_tag_in_use(
+    formatter: &mut fmt::Formatter<'_>,
+    tag: TagId,
+    holder: TagHolder,
+    holders: usize,
+) -> fmt::Result {
+    write!(formatter, "tag {} is still assigned to {holder}", tag.0)?;
+    if holders > 1 {
+        write!(formatter, " and {} more parts", holders - 1)?;
+    }
+    Ok(())
+}
+
+/// A part, underlay or annotation that carries a tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TagHolder {
     Occurrence(OccurrenceId),
     LocalOccurrence(LocalOccurrenceKey),
     Underlay(UnderlayId),
+    /// The annotation at this place in the document's list, from 0.
+    Annotation(usize),
 }
 
 impl fmt::Display for TagHolder {
@@ -912,6 +929,7 @@ impl fmt::Display for TagHolder {
                 key.local_id.0, key.definition_id.0
             ),
             Self::Underlay(id) => write!(formatter, "underlay {}", id.0),
+            Self::Annotation(index) => write!(formatter, "annotation {}", index + 1),
         }
     }
 }

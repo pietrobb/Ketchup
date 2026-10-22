@@ -1,10 +1,12 @@
-//! Reconcile the tags (layers) a program names on its root parts, by tag name.
+//! Reconcile the tags (layers) a program names on its root parts and annotations, by
+//! tag name, and set the program's annotations.
 //!
 //! The program owns only the tags it names: re-applying removes a tag the previous
 //! source named and the current one no longer does, keeps tags the user added by
 //! hand, creates missing tags visible, and deletes a tag the program stopped naming
 //! once no part uses it.
 use crate::{RuleProgramApplyError, SessionError, diagnostics::assistant_planning_rejection};
+use ketchup_model::annotation::Annotation;
 use ketchup_model::document::{CanonicalCommand, InstancePath, OccurrenceId, Snapshot, TagId};
 use ketchup_program::ProgramModel;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,12 +16,22 @@ fn names(model: &ProgramModel) -> BTreeSet<&str> {
         .parts
         .iter()
         .flat_map(|part| &part.tags)
+        .chain(
+            model
+                .annotations
+                .iter()
+                .flat_map(|annotation| &annotation.tags),
+        )
         .map(String::as_str)
         .collect()
 }
 
-pub(crate) fn needed(model: &ProgramModel) -> bool {
+/// Whether the program names tags or declares annotations; the program owns every
+/// annotation, so `snapshot` needs this too while it still holds some.
+pub(crate) fn needed(snapshot: &Snapshot, model: &ProgramModel) -> bool {
     model.parts.iter().any(|part| !part.tags.is_empty())
+        || !model.annotations.is_empty()
+        || !snapshot.annotations().is_empty()
 }
 
 fn tag_named(snapshot: &Snapshot, name: &str) -> Result<Option<TagId>, RuleProgramApplyError> {
@@ -104,6 +116,19 @@ pub(crate) fn append(
             id: *id,
             tags: tags.clone(),
         });
+    }
+    // Before the deletions: an annotation the program no longer shows by a tag lets it go.
+    let annotations = model
+        .annotations
+        .iter()
+        .map(|annotation| Annotation {
+            name: annotation.name.clone(),
+            tags: resolve(&annotation.tags),
+            mark: annotation.mark.clone(),
+        })
+        .collect::<Vec<_>>();
+    if annotations != snapshot.annotations() {
+        commands.push(CanonicalCommand::SetAnnotations { annotations });
     }
     for name in old_names.difference(&new_names) {
         let Some(Some(id)) = ids.get(name) else {

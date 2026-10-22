@@ -460,6 +460,12 @@ impl Snapshot {
         self.product.underlays.values().map(Arc::as_ref)
     }
 
+    /// The drawing's texts, dimensions, leaders and lines, in the order they were set.
+    #[must_use]
+    pub fn annotations(&self) -> &[crate::annotation::Annotation] {
+        &self.product.annotations
+    }
+
     pub fn occurrences_with_tag(&self, id: TagId) -> impl Iterator<Item = &Occurrence> {
         self.product
             .occurrences

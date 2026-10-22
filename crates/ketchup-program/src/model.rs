@@ -1798,6 +1798,18 @@ pub struct ProgramModel {
     /// Sets of tags that are alternative representations (`alternatives()`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternative_tags: Vec<BTreeSet<String>>,
+    /// Texts, dimensions, leaders and lines of the drawing; no parts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<ProgramAnnotation>,
+}
+
+/// A drawing annotation the program declares, shown by the tags it names.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct ProgramAnnotation {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub tags: BTreeSet<String>,
+    pub mark: ketchup_model::annotation::AnnotationMark,
 }
 
 impl ProgramModel {

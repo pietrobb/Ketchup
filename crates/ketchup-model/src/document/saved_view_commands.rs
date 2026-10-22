@@ -1,4 +1,5 @@
-//! Applying saved-view commands to the product model, and the tags parts and underlays hold.
+//! Applying saved-view commands to the product model, and the tags parts, underlays
+//! and annotations hold.
 
 use super::*;
 
@@ -76,6 +77,14 @@ pub(super) fn ensure_tag_unassigned(
                 .filter(|underlay| underlay.tags().any(|held| held == tag))
                 .map(|underlay| TagHolder::Underlay(underlay.id)),
         )
+        .chain(
+            product
+                .annotations
+                .iter()
+                .enumerate()
+                .filter(|(_, annotation)| annotation.tags.contains(&tag))
+                .map(|(index, _)| TagHolder::Annotation(index)),
+        )
         .collect::<Vec<_>>();
     match holders.first() {
         Some(holder) => Err(CanonicalError::TagInUse {
@@ -104,6 +113,21 @@ pub(super) fn validate_underlay(
         Some(missing) => Err(CanonicalError::TagNotFound(missing)),
         None => Ok(()),
     }
+}
+
+/// Checks the annotations of a product: each can be drawn, has its own name and is
+/// shown by tags that exist.
+pub(super) fn validate_annotations(
+    product: &ProductModel,
+    annotations: &[crate::annotation::Annotation],
+) -> Result<(), CanonicalError> {
+    if let Some((name, problem)) = crate::annotation::first_problem(annotations) {
+        return Err(CanonicalError::InvalidAnnotation { name, problem });
+    }
+    for annotation in annotations {
+        ensure_tags_exist(product, &annotation.tags)?;
+    }
+    Ok(())
 }
 
 fn ensure_tags_exist(product: &ProductModel, tags: &BTreeSet<TagId>) -> Result<(), CanonicalError> {

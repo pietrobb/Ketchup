@@ -177,6 +177,9 @@ pub(crate) struct ProductModel {
     pub(crate) saved_views: BTreeMap<SavedViewId, Arc<SavedView>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) underlays: BTreeMap<UnderlayId, Arc<Underlay>>,
+    /// Texts, dimensions, leaders and lines of the drawing; no parts. Format 105.
+    #[serde(default, skip_serializing_if = "crate::annotation::none")]
+    pub(crate) annotations: Arc<Vec<crate::annotation::Annotation>>,
     pub(crate) classification_dimensions:
         BTreeMap<ClassificationDimensionId, Arc<ClassificationDimension>>,
     pub(crate) classification_assignments:
@@ -193,8 +196,8 @@ pub(crate) struct ProductModel {
     /// not say; absent while [`DEFAULT_MODELED_THREADS`], as before modelled
     /// threads.
     #[serde(
-        default = "default_modeled_threads",
-        skip_serializing_if = "is_default_modeled_threads"
+        default = "threads::default_modeled_threads",
+        skip_serializing_if = "threads::is_default_modeled_threads"
     )]
     pub(crate) modeled_threads: bool,
     /// The modelled outside threads on the bodies features make.
@@ -225,14 +228,6 @@ pub(crate) struct ProductModel {
 /// The thread mode of a document that does not choose: cosmetic. A thread is
 /// then drawn on its plain cylinder, not modelled.
 pub const DEFAULT_MODELED_THREADS: bool = false;
-
-const fn default_modeled_threads() -> bool {
-    DEFAULT_MODELED_THREADS
-}
-
-const fn is_default_modeled_threads(modeled: &bool) -> bool {
-    *modeled == DEFAULT_MODELED_THREADS
-}
 
 /// Exact B-Rep graphs, the feature dependency graph and the persisted encoding of
 /// one immutable product model. Cached per immutable revision; clones start empty,
@@ -339,6 +334,7 @@ impl Default for ProductModel {
             tags: BTreeMap::new(),
             saved_views: BTreeMap::new(),
             underlays: BTreeMap::new(),
+            annotations: Arc::default(),
             classification_dimensions: BTreeMap::new(),
             classification_assignments: BTreeMap::new(),
             collections: BTreeMap::new(),

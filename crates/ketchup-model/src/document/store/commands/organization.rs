@@ -1,4 +1,5 @@
-//! Tags, saved views, underlays, classification, collections and import receipts.
+//! Tags, saved views, underlays, annotations, classification, collections and import
+//! receipts.
 use super::*;
 
 pub(super) fn apply(
@@ -44,6 +45,10 @@ pub(super) fn apply(
                 .underlays
                 .remove(id)
                 .ok_or(CanonicalError::UnderlayNotFound(*id))?;
+        }
+        CanonicalCommand::SetAnnotations { annotations } => {
+            validate_annotations(&edit.product, annotations)?;
+            edit.product.annotations = Arc::new(annotations.clone());
         }
         CanonicalCommand::SetTagVisibility { id, visible } => {
             let existing = edit

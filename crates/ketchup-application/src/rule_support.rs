@@ -25,8 +25,8 @@ pub(crate) fn append(
         || crate::rule_appearance::needed(&snapshot, model)
         || crate::rule_metadata::needed(model)
         || old.is_some_and(crate::rule_metadata::needed)
-        || crate::rule_tags::needed(model)
-        || old.is_some_and(crate::rule_tags::needed)
+        || crate::rule_tags::needed(&snapshot, model)
+        || old.is_some_and(|old| crate::rule_tags::needed(&snapshot, old))
         || crate::rule_threads::needed(&snapshot, model)
     {
         let mut staged = document.fork_for_planning();

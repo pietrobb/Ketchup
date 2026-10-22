@@ -8,8 +8,10 @@
 //! `snapshot_codec::decode`, keep the golden as the fixture of its format and add a
 //! golden of the new format. Regenerate only for a new format with
 //! `KETCHUP_UPDATE_GOLDEN=1`.
-use ketchup_model::document::DocumentStore;
+use ketchup_model::annotation::{Annotation, AnnotationMark};
+use ketchup_model::document::{CanonicalCommand, CommandBatch, DocumentStore, TagId};
 use ketchup_model::persistence::{self, ContainerData, LoadOutcome};
+use std::collections::BTreeSet;
 
 const FIXTURE_102: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -26,16 +28,23 @@ const FIXTURE_104: &str = concat!(
     "/tests/fixtures/persistence/history-format104.bin"
 );
 
+/// Format 104 as Save wrote it: the current revision alone.
+const SAVED_104: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format104.bin"
+);
+
 /// The current format as Save writes it: the current revision alone.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/persistence/format104.bin"
+    "/tests/fixtures/persistence/format105.bin"
 );
 
 /// Canonical digest of the current revision each fixture was written with.
 const DIGEST_102: &str = "32004c2fb9d7739d";
 const DIGEST_103: &str = "695c01140f69ddb9";
 const DIGEST_104: &str = "36c397ed20d2ec76";
+const DIGEST_105: &str = "fdcd5e8c616c1323";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
 fn opened(path: &str, schema: u16, digest: &str) -> (DocumentStore, ContainerData) {
@@ -57,15 +66,79 @@ fn opened(path: &str, schema: u16, digest: &str) -> (DocumentStore, ContainerDat
 }
 
 #[test]
-fn format_102_and_103_files_with_history_open_at_their_current_revision() {
+fn format_102_to_104_files_open_at_their_current_revision() {
     opened(FIXTURE_102, 102, DIGEST_102);
     opened(FIXTURE_103, 103, DIGEST_103);
+    for path in [FIXTURE_104, SAVED_104] {
+        let (document, _) = opened(path, 104, DIGEST_104);
+        assert_eq!(document.current().underlays().count(), 1);
+        assert!(document.current().annotations().is_empty());
+    }
 }
 
+/// One annotation of each kind, shown by the tag [`ANNOTATION_TAG`].
+fn annotations() -> Vec<Annotation> {
+    let tags = BTreeSet::from([TagId(ANNOTATION_TAG)]);
+    let annotation = |name: &str, mark| Annotation {
+        name: name.to_owned(),
+        tags: tags.clone(),
+        mark,
+    };
+    vec![
+        annotation(
+            "S-01",
+            AnnotationMark::Text {
+                at_mm: [100.0, 200.0, 5.0],
+                text: "S-01".to_owned(),
+                height_mm: 3.5,
+            },
+        ),
+        annotation(
+            "S-01..S-02",
+            AnnotationMark::Dimension {
+                from_mm: [0.0, 0.0, 5.0],
+                to_mm: [1944.4, 0.0, 5.0],
+                offset_mm: -800.0,
+                height_mm: 2.5,
+            },
+        ),
+        annotation(
+            "anchor",
+            AnnotationMark::Leader {
+                point_mm: [0.0, 0.0, 5.0],
+                at_mm: [-500.0, -500.0, 5.0],
+                text: "M24 anchor".to_owned(),
+                height_mm: 2.5,
+            },
+        ),
+        annotation(
+            "outline",
+            AnnotationMark::Line {
+                points_mm: vec![[0.0; 3], [1944.4, 0.0, 0.0], [1944.4, 900.0, 0.0]],
+                closed: true,
+            },
+        ),
+    ]
+}
+
+const ANNOTATION_TAG: u64 = 1_000;
+
 #[test]
-fn a_format_104_file_with_history_opens_at_its_current_revision_and_saves_the_golden() {
-    let (document, container) = opened(FIXTURE_104, persistence::CURRENT_SCHEMA, DIGEST_104);
-    assert_eq!(document.current().underlays().count(), 1);
+fn a_format_105_file_with_annotations_saves_the_golden() {
+    let (mut document, container) = opened(FIXTURE_104, 104, DIGEST_104);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateTag {
+                id: TagId(ANNOTATION_TAG),
+                name: "annotations".to_owned(),
+                visible: true,
+            },
+            CanonicalCommand::SetAnnotations {
+                annotations: annotations(),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_105);
     let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
     if ketchup_test_env::update_golden() {
         std::fs::write(GOLDEN, saved).unwrap();
@@ -76,7 +149,8 @@ fn a_format_104_file_with_history_opens_at_its_current_revision_and_saves_the_go
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_104);
+    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_105);
+    assert_eq!(reopened.current().annotations(), annotations());
     assert_eq!(
         persistence::save_document_store_current_snapshot(&reopened, &container).unwrap(),
         golden
@@ -87,8 +161,9 @@ fn a_format_104_file_with_history_opens_at_its_current_revision_and_saves_the_go
 /// `file: field` under `src/`. Format 103 shipped in Kečup 0.1.0, which drops a field it
 /// does not know and loses it at its next Save, so a new optional field of the saved
 /// document needs a new format number like any other new field (PS-4): `underlays` and an
-/// underlay's `placement` came with format 104.
+/// underlay's `placement` came with format 104, `annotations` with 105.
 const OPTIONAL_FIELDS: &[&str] = &[
+    "document.rs: annotations",
     "document.rs: contact_joints",
     "document.rs: floor_z_mm",
     "document.rs: grounded_instances",

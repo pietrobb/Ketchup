@@ -57,7 +57,7 @@ OVERSIZED = {}
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
 FROZEN_MODULES = {
     "crates/ketchup-app/src/lib.rs": 2420,
-    "crates/ketchup-model/src/document.rs": 518,
+    "crates/ketchup-model/src/document.rs": 514,
 }
 
 MAX_FUNCTION_LINES = 400
@@ -76,7 +76,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 606,
     "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 676,
     "crates/ketchup-model/src/document/product_validation.rs::validate_features": 698,
-    "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 787,
+    "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 775,
     "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 423,
     "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 571,
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1396,

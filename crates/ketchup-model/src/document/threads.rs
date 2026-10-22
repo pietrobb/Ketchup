@@ -6,6 +6,14 @@ use ketchup_geometry::linalg;
 use ketchup_geometry::sketch::{CutStart, PadSpec};
 use ketchup_geometry::tapping::{TappedHole, TappedHoleMismatch, metric_coarse_tapping};
 
+pub(super) const fn default_modeled_threads() -> bool {
+    DEFAULT_MODELED_THREADS
+}
+
+pub(super) const fn is_default_modeled_threads(modeled: &bool) -> bool {
+    *modeled == DEFAULT_MODELED_THREADS
+}
+
 /// One thread on a cylinder of a definition, in its frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ThreadCylinder {

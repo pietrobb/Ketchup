@@ -86,6 +86,7 @@ impl StableDigest {
             D::Tag(id) => self.value(&product.tags.get(id)),
             D::SavedView(id) => self.value(&product.saved_views.get(id)),
             D::Underlay(id) => self.value(&product.underlays.get(id)),
+            D::Annotations => self.value(&product.annotations),
             D::ClassificationDimension(id) => {
                 self.value(&product.classification_dimensions.get(id));
             }
