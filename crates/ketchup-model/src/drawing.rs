@@ -2447,6 +2447,12 @@ fn rigid_source_is_rigid(
     snapshot: &Snapshot,
     instance_paths: &[InstancePath],
 ) -> Result<bool, DrawingError> {
+    // One drawn part has no placement relative to another drawn part, so it is
+    // rigid without grounding or mates, e.g. a fresh mirror copy drawn alone
+    // (review 2026-10-21 MF-21).
+    if let [_] = instance_paths {
+        return Ok(true);
+    }
     if !instance_paths
         .iter()
         .any(|path| snapshot.occurrence_is_grounded(path.root_occurrence()))
