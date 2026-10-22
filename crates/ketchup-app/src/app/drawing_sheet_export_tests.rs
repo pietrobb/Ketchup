@@ -171,6 +171,44 @@ fn a_drawing_export_keeps_the_window_painting_and_escape_cancels_it_without_writ
     assert!(!pdf.exists());
 }
 
+/// Review 2026-10-18 MCP-3: the file an export may replace was read only once
+/// the drawing was done, so a file saved at the path while the sheet was
+/// projected was overwritten. It is taken when the export starts, and such a
+/// file is kept.
+#[test]
+fn a_file_saved_while_the_sheet_is_projected_is_not_overwritten() {
+    use crate::app::drawing_export_activity::{DrawingExport, MadeDrawing};
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("house.pdf");
+    let mut app = KetchupApp::new();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let job = app.project_drawings_job().unwrap();
+    let context = egui::Context::default();
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    app.queue_drawing_export(
+        DrawingExport::Project,
+        pdf.clone(),
+        &context,
+        Box::new(move || {
+            gate.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            MadeDrawing::Project(job.render())
+        }),
+    );
+    std::fs::write(&pdf, b"saved meanwhile").unwrap();
+    release.send(()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while app.file_activity_label().is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the export never ended"
+        );
+        app.poll_drawing_export(&context);
+        std::thread::yield_now();
+    }
+    assert_eq!(std::fs::read(&pdf).unwrap(), b"saved meanwhile");
+}
+
 #[test]
 fn a_sheet_titled_by_a_long_slovak_part_name_exports_as_dxf_and_dwg() {
     let note = "Smrekový hranol, brúsený, dvakrát olejovaný; dĺžka ±1 mm, šírka ±0,5 mm, \

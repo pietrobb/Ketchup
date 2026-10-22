@@ -117,8 +117,10 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
         ));
     };
     refuse_existing(path)?;
+    // Written only as a new file: one saved at the path while the sheet was
+    // projected is kept (review 2026-10-18 MCP-3).
     let sheet = app
-        .write_drawing_sheet(id, Path::new(path), format)
+        .write_drawing_sheet(id, Path::new(path), format, None)
         .map_err(|error| match error {
             DrawingSheetExportError::NotFound(_) => failure(
                 "drawing_sheet_not_found",
@@ -137,7 +139,9 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
                 failed_because("drawings_unavailable", error)
             }
             DrawingSheetExportError::Dwg(_) => failed_because("dwg_conversion_failed", error),
-            DrawingSheetExportError::Write(_) => failed_because("drawings_write_failed", error),
+            DrawingSheetExportError::Write(_) => refuse_existing(path)
+                .err()
+                .unwrap_or_else(|| failed_because("drawings_write_failed", error)),
         })?;
     Ok(json!({
         "exported": true,
@@ -254,13 +258,20 @@ fn export(
     }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
-    // The settings stay in the document only with the sheet they were written on.
+    // The settings stay in the document only with the sheet they were written
+    // on, and the sheet only as a new file: one saved at the path while it was
+    // projected is kept (review 2026-10-18 MCP-3).
     let sheet = app
-        .write_project_drawings(target, request)
+        .write_project_drawings(target, request, None)
         .map_err(|error| {
             app.store_sheet_settings(previous);
             app.drawings.unsaved = previously_unsaved;
-            drawings_failed(error)
+            match error {
+                ProjectDrawingsError::Write(_) => refuse_existing(path)
+                    .err()
+                    .unwrap_or_else(|| drawings_failed(error)),
+                error => drawings_failed(error),
+            }
         })?;
     let settings = app.sheet_settings();
     Ok(json!({
@@ -410,11 +421,35 @@ mod tests {
         assert!(!target.exists());
 
         let error = app
-            .write_project_drawings(&target, SheetRequest::default())
+            .write_project_drawings(&target, SheetRequest::default(), None)
             .unwrap_err();
         assert!(matches!(error, ProjectDrawingsError::SettingsUnreadable(_)));
         assert!(!target.exists());
         assert_eq!(stored(&app), Some(corrupt));
+    }
+
+    /// Review 2026-10-18 MCP-3: the sheet is written only as a new file, so
+    /// one saved at the path while it was projected is kept.
+    #[test]
+    fn a_sheet_is_published_only_as_a_new_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let pdf = directory.path().join("sheet.pdf");
+        let dxf = directory.path().join("sheet.dxf");
+        std::fs::write(&pdf, b"saved meanwhile").unwrap();
+        std::fs::write(&dxf, b"saved meanwhile").unwrap();
+        assert!(
+            crate::app::project_drawings::publish_project_drawings(&pdf, b"%PDF-", None).is_err()
+        );
+        assert!(
+            crate::app::drawing_sheet_export::publish_drawing_sheet(&dxf, b"0\nEOF\n", None)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&pdf).unwrap(), b"saved meanwhile");
+        assert_eq!(std::fs::read(&dxf).unwrap(), b"saved meanwhile");
+        assert_eq!(
+            refuse_existing(pdf.to_str().unwrap()),
+            Err("drawings_target_exists")
+        );
     }
 
     /// Review 2026-10-17 MCP-2: a sheet that could not be drawn, or settings

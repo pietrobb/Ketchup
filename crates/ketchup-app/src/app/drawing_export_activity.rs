@@ -6,9 +6,11 @@
 
 use super::drawing_sheet_export::{
     DrawingSheetExportError, ExportedDrawingSheet, SheetFileFormat, drawing_sheet_bytes,
-    publish_drawing_sheet,
+    drawing_sheet_target, publish_drawing_sheet,
 };
-use super::project_drawings::{ProjectDrawingsError, publish_project_drawings};
+use super::project_drawings::{
+    ProjectDrawingsError, project_drawings_target, publish_project_drawings,
+};
 use crate::*;
 use ketchup_manufacturing::project_drawings::ProjectSheet;
 use ketchup_model::drawing::DrawingSheetId;
@@ -32,6 +34,9 @@ type DrawingWork = Box<dyn FnOnce() -> MadeDrawing + Send>;
 pub(crate) struct DrawingExportTask {
     export: DrawingExport,
     path: PathBuf,
+    /// The SHA-256 of the file the user chose to replace, taken when the
+    /// export started; a file saved there meanwhile is not overwritten.
+    replacing: Option<String>,
     receiver: Receiver<MadeDrawing>,
 }
 
@@ -86,6 +91,15 @@ impl KetchupApp {
         context: &egui::Context,
         work: DrawingWork,
     ) {
+        let replacing = match export {
+            DrawingExport::Project => project_drawings_target(&path)
+                .map_err(|error| self.report_project_drawings(&path, &Err(error))),
+            DrawingExport::Sheet(_, format) => drawing_sheet_target(&path)
+                .map_err(|error| self.report_drawing_sheet(&path, format, &Err(error))),
+        };
+        let Ok(replacing) = replacing else {
+            return;
+        };
         let (sender, receiver) = mpsc::channel();
         let repaint = context.clone();
         std::thread::spawn(move || {
@@ -96,6 +110,7 @@ impl KetchupApp {
         self.file.activity.drawing_export = Some(DrawingExportTask {
             export,
             path,
+            replacing,
             receiver,
         });
         context.request_repaint();
@@ -131,7 +146,8 @@ impl KetchupApp {
                     _ => Err(ProjectDrawingsError::Write(ended())),
                 }
                 .and_then(|(sheet, pdf)| {
-                    publish_project_drawings(&task.path, &pdf).map(|()| sheet)
+                    publish_project_drawings(&task.path, &pdf, task.replacing.as_deref())
+                        .map(|()| sheet)
                 });
                 self.report_project_drawings(&task.path, &result);
             }
@@ -146,7 +162,8 @@ impl KetchupApp {
                     )),
                 }
                 .and_then(|(exported, bytes)| {
-                    publish_drawing_sheet(&task.path, &bytes).map(|()| exported)
+                    publish_drawing_sheet(&task.path, &bytes, task.replacing.as_deref())
+                        .map(|()| exported)
                 });
                 self.report_drawing_sheet(&task.path, format, &result);
             }

@@ -75,14 +75,21 @@ impl ProjectDrawingsJob {
 
 /// Writes `pdf` to `path` through a temporary file and a rename: a failed
 /// write never leaves a half-written sheet, and a link at `path` is replaced,
-/// not followed.
+/// not followed. `replacing` is the SHA-256 of the file the export may
+/// replace, taken before the sheet was drawn (None: no file may be there), so
+/// a file saved at `path` while it was drawn is never overwritten.
 pub(crate) fn publish_project_drawings(
     path: &Path,
     pdf: &[u8],
+    replacing: Option<&str>,
 ) -> Result<(), ProjectDrawingsError> {
-    let expected = crate::export_bundle::export_target_sha256(path)
-        .map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))?;
-    crate::export_bundle::write_export_artifact_if_unchanged(path, pdf, expected.as_deref())
+    crate::export_bundle::write_export_artifact_if_unchanged(path, pdf, replacing)
+        .map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))
+}
+
+/// The SHA-256 of the file at `path` an export started now may replace.
+pub(crate) fn project_drawings_target(path: &Path) -> Result<Option<String>, ProjectDrawingsError> {
+    crate::export_bundle::export_target_sha256(path)
         .map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))
 }
 
@@ -493,20 +500,24 @@ impl KetchupApp {
         }
     }
 
-    /// Writes the project drawings of what is visible as a one-sheet PDF.
+    /// Writes the project drawings of what is visible as a one-sheet PDF,
+    /// replacing only the file whose SHA-256 is `replacing` (None: only a new file).
     pub(crate) fn write_project_drawings(
         &self,
         path: &Path,
         request: SheetRequest,
+        replacing: Option<&str>,
     ) -> Result<ProjectSheet, ProjectDrawingsError> {
         let (sheet, pdf) = self.project_drawings_job_for(request)?.render()?;
-        publish_project_drawings(path, &pdf)?;
+        publish_project_drawings(path, &pdf, replacing)?;
         Ok(sheet)
     }
 
     /// Writes the project drawings as PDF and reports it in the digest.
     pub fn export_project_drawings_to(&mut self, path: &Path) -> bool {
-        let result = self.write_project_drawings(path, SheetRequest::default());
+        let result = project_drawings_target(path).and_then(|replacing| {
+            self.write_project_drawings(path, SheetRequest::default(), replacing.as_deref())
+        });
         self.report_project_drawings(path, &result);
         result.is_ok()
     }

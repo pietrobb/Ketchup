@@ -142,14 +142,21 @@ pub(crate) fn drawing_sheet_bytes(
 }
 
 /// Writes `bytes` to `path` through a temporary file, so a failed write never
-/// leaves half a drawing.
+/// leaves half a drawing. `replacing` is the SHA-256 of the file the export
+/// may replace, taken before the sheet was drawn (None: no file may be there),
+/// so a file saved at `path` while it was drawn is never overwritten.
 pub(crate) fn publish_drawing_sheet(
     path: &Path,
     bytes: &[u8],
+    replacing: Option<&str>,
 ) -> Result<(), DrawingSheetExportError> {
-    let expected = export_target_sha256(path).map_err(DrawingSheetExportError::Write)?;
-    write_export_artifact_if_unchanged(path, bytes, expected.as_deref())
+    write_export_artifact_if_unchanged(path, bytes, replacing)
         .map_err(DrawingSheetExportError::Write)
+}
+
+/// The SHA-256 of the file at `path` an export started now may replace.
+pub(crate) fn drawing_sheet_target(path: &Path) -> Result<Option<String>, DrawingSheetExportError> {
+    export_target_sha256(path).map_err(DrawingSheetExportError::Write)
 }
 
 impl KetchupApp {
@@ -174,15 +181,17 @@ impl KetchupApp {
         drawing_sheet_bytes(&self.document.current(), &self.exact.results, id, format)
     }
 
-    /// Writes drawing sheet `id` as a `format` file to `path`.
+    /// Writes drawing sheet `id` as a `format` file to `path`, replacing only
+    /// the file whose SHA-256 is `replacing` (None: only a new file).
     pub(crate) fn write_drawing_sheet(
         &self,
         id: DrawingSheetId,
         path: &Path,
         format: SheetFileFormat,
+        replacing: Option<&str>,
     ) -> Result<ExportedDrawingSheet, DrawingSheetExportError> {
         let (exported, bytes) = self.drawing_sheet_file(id, format)?;
-        publish_drawing_sheet(path, &bytes)?;
+        publish_drawing_sheet(path, &bytes, replacing)?;
         Ok(exported)
     }
 
@@ -194,7 +203,8 @@ impl KetchupApp {
         path: &Path,
         format: SheetFileFormat,
     ) -> bool {
-        let result = self.write_drawing_sheet(id, path, format);
+        let result = drawing_sheet_target(path)
+            .and_then(|replacing| self.write_drawing_sheet(id, path, format, replacing.as_deref()));
         self.report_drawing_sheet(path, format, &result);
         result.is_ok()
     }
