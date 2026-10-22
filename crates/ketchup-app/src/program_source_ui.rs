@@ -21,13 +21,18 @@ pub(super) fn program_source_line_label(number: usize, line: &str, defining: boo
 }
 
 fn line_ranges(lines: &[SourceLines]) -> String {
-    lines
+    let mut ranges = lines
         .iter()
-        .map(|lines| {
-            if lines.first == lines.last {
-                lines.first.to_string()
+        .map(|lines| (lines.first, lines.last))
+        .collect::<Vec<_>>();
+    ranges.dedup();
+    ranges
+        .into_iter()
+        .map(|(first, last)| {
+            if first == last {
+                first.to_string()
             } else {
-                format!("{}–{}", lines.first, lines.last)
+                format!("{first}–{last}")
             }
         })
         .collect::<Vec<_>>()

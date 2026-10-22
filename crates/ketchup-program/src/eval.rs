@@ -177,6 +177,9 @@ impl State {
 pub struct SourceLines {
     pub first: usize,
     pub last: usize,
+    /// 0-based column on `first` where the call starts, so two calls on one
+    /// line are told apart.
+    pub column: usize,
 }
 
 /// Records every call site in the user's program that led to this builtin
@@ -195,6 +198,7 @@ fn record_source(eval: &Evaluator, state: &State, parts: &[&str]) {
             SourceLines {
                 first: span.begin.line + 1,
                 last: span.end.line + 1,
+                column: span.begin.column,
             }
         })
         .peekable();

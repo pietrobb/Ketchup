@@ -320,14 +320,17 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 8,
           "first": 29,
           "last": 29
         },
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 35,
           "last": 35
         }
@@ -356,14 +359,17 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 8,
           "first": 29,
           "last": 29
         },
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 35,
           "last": 35
         }
@@ -392,14 +398,17 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 8,
           "first": 29,
           "last": 29
         },
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 35,
           "last": 35
         }
@@ -428,14 +437,17 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 8,
           "first": 29,
           "last": 29
         },
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 35,
           "last": 35
         }
@@ -464,10 +476,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 36,
           "last": 36
         }
@@ -496,10 +510,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 36,
           "last": 36
         }
@@ -528,10 +544,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 37,
           "last": 37
         }
@@ -560,10 +578,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 37,
           "last": 37
         }
@@ -592,14 +612,17 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 4,
           "first": 41,
           "last": 41
         },
         {
+          "column": 8,
           "first": 51,
           "last": 51
         },
         {
+          "column": 4,
           "first": 52,
           "last": 52
         }
@@ -628,14 +651,17 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 7,
           "first": 39,
           "last": 39
         },
         {
+          "column": 8,
           "first": 51,
           "last": 51
         },
         {
+          "column": 4,
           "first": 52,
           "last": 52
         }
@@ -664,14 +690,17 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 4,
           "first": 41,
           "last": 41
         },
         {
+          "column": 8,
           "first": 51,
           "last": 51
         },
         {
+          "column": 4,
           "first": 52,
           "last": 52
         }
@@ -700,10 +729,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 4,
           "first": 52,
           "last": 52
         },
         {
+          "column": 4,
           "first": 53,
           "last": 53
         }
@@ -732,10 +763,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 4,
           "first": 52,
           "last": 52
         },
         {
+          "column": 4,
           "first": 54,
           "last": 54
         }
@@ -764,14 +797,17 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 4,
           "first": 41,
           "last": 41
         },
         {
+          "column": 8,
           "first": 51,
           "last": 51
         },
         {
+          "column": 4,
           "first": 52,
           "last": 52
         }
@@ -800,14 +836,17 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 7,
           "first": 39,
           "last": 39
         },
         {
+          "column": 8,
           "first": 51,
           "last": 51
         },
         {
+          "column": 4,
           "first": 52,
           "last": 52
         }
@@ -836,14 +875,17 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 4,
           "first": 41,
           "last": 41
         },
         {
+          "column": 8,
           "first": 51,
           "last": 51
         },
         {
+          "column": 4,
           "first": 52,
           "last": 52
         }
@@ -872,10 +914,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 4,
           "first": 52,
           "last": 52
         },
         {
+          "column": 4,
           "first": 53,
           "last": 53
         }
@@ -904,10 +948,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 4,
           "first": 52,
           "last": 52
         },
         {
+          "column": 4,
           "first": 54,
           "last": 54
         }
@@ -936,10 +982,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 36,
           "last": 36
         }
@@ -968,10 +1016,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 36,
           "last": 36
         }
@@ -1000,10 +1050,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 37,
           "last": 37
         }
@@ -1032,10 +1084,12 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 14,
           "first": 33,
           "last": 33
         },
         {
+          "column": 8,
           "first": 37,
           "last": 37
         }

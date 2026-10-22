@@ -177,22 +177,27 @@
       "severity": "warning",
       "source_lines": [
         {
+          "column": 12,
           "first": 3,
           "last": 3
         },
         {
+          "column": 7,
           "first": 4,
           "last": 4
         },
         {
+          "column": 8,
           "first": 5,
           "last": 5
         },
         {
+          "column": 0,
           "first": 6,
           "last": 6
         },
         {
+          "column": 0,
           "first": 7,
           "last": 7
         }

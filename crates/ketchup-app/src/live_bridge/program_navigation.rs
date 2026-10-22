@@ -160,12 +160,12 @@ pub(super) fn read_piece(
                     "Use search=<text> or mode=outline to find the part, or mode=selection for the selected parts.",
                 )
             })?;
-            answer["lines_of_part"] = json!(
-                ranges
-                    .iter()
-                    .map(|range| [range.first, range.last])
-                    .collect::<Vec<_>>()
-            );
+            let mut lines_of_part = ranges
+                .iter()
+                .map(|range| [range.first, range.last])
+                .collect::<Vec<_>>();
+            lines_of_part.dedup();
+            answer["lines_of_part"] = json!(lines_of_part);
             let included = ranges
                 .iter()
                 .flat_map(|range| range.first.saturating_sub(3)..range.last.saturating_add(2))

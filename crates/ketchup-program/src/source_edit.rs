@@ -325,8 +325,8 @@ impl Search<'_> {
                 ExprP::Lambda(_) => inner.function = Some("lambda".to_owned()),
                 ExprP::Call(callee, arguments) => {
                     let span = self.codemap.resolve_span(expression.span);
-                    if (span.begin.line + 1, span.end.line + 1)
-                        == (self.lines.first, self.lines.last)
+                    if (span.begin.line + 1, span.end.line + 1, span.begin.column)
+                        == (self.lines.first, self.lines.last, self.lines.column)
                     {
                         let called = match &callee.node {
                             ExprP::Identifier(name) if self.functions.contains(&name.ident) => {
@@ -445,7 +445,14 @@ mod tests {
     fn direct_call_names_its_literal_position() {
         let source = "x = 10\nbox(\"a\", (100, 18, 400),\n    at=(0, -5.5, 2))\n";
         let call = call_of(source, "a").expect("found");
-        assert_eq!(call.lines, SourceLines { first: 2, last: 3 });
+        assert_eq!(
+            call.lines,
+            SourceLines {
+                first: 2,
+                last: 3,
+                column: 0
+            }
+        );
         assert_eq!(call.loop_line, None);
         assert_eq!(call.function, None);
         let at = call.at.expect("literal at");
@@ -485,7 +492,11 @@ mod tests {
             "top = box(\"a\", (10, 20, 30), color=(1, 2, 3))  # top\n"
         );
         assert_eq!(call_of(source, "b").expect("found").statement, None);
-        let lines = SourceLines { first: 2, last: 2 };
+        let lines = SourceLines {
+            first: 2,
+            last: 2,
+            column: 6,
+        };
         assert_eq!(
             top_level_call_statement("p.star", source, lines).map(|bytes| &source[bytes]),
             Some("top = box(\"a\", (10, 20, 30), color=(1, 2, 3))  # top\n")
@@ -496,6 +507,17 @@ mod tests {
             (&source[literals[0].0.clone()], literals[0].1),
             ("\"b\"", 3)
         );
+    }
+
+    #[test]
+    fn two_calls_on_one_line_are_told_apart() {
+        let source = "pair = [box(\"a\", (1, 1, 1)), box(\"b\", (2, 2, 2), color=(1, 2, 3))]\n";
+        let a = call_of(source, "a").expect("found");
+        assert_eq!(&source[a.name.expect("literal name")], "\"a\"");
+        assert_eq!(a.color, None);
+        let b = call_of(source, "b").expect("found");
+        assert_eq!(&source[b.name.expect("literal name")], "\"b\"");
+        assert_eq!(&source[b.color.expect("colour").1], "(1, 2, 3)");
     }
 
     #[test]
