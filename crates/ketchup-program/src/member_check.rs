@@ -631,19 +631,14 @@ struct Bending {
     flexibility: [f64; 2],
     modulus: f64,
     shear_area: f64,
-    /// Depth along the vertical across the grain, for kh.
-    depth: f64,
 }
 
 impl Bending {
     fn of(section: &Section) -> Self {
-        let levels = section.segments.iter().map(|s| s.start_mm[section.depth]);
-        let depth = levels.clone().fold(f64::MIN, f64::max) - levels.fold(f64::MAX, f64::min);
         Self {
             flexibility: section.flexibility(),
             modulus: section.modulus(),
             shear_area: section.shear_area(),
-            depth,
         }
     }
 }
@@ -1535,12 +1530,11 @@ fn beam_checks(
     let spans_checked =
         bearings.len() < 2 || segments.iter().any(|(seg, _)| seg.kind == Kind::Span);
     let (b, h) = (shape.b, shape.h);
-    let kh = |depth: f64| {
-        if class.glulam {
-            (600.0 / depth).powf(0.1).clamp(1.0, 1.1)
-        } else {
-            (150.0 / depth).powf(0.2).clamp(1.0, 1.3)
-        }
+    // kh is of the member's depth (EC5 3.2(3)), not of a notched section's.
+    let kh = if class.glulam {
+        (600.0 / h).powf(0.1).clamp(1.0, 1.1)
+    } else {
+        (150.0 / h).powf(0.2).clamp(1.0, 1.3)
     };
     let mut bending = Best(None);
     let mut shear = Best(None);
@@ -1594,7 +1588,7 @@ fn beam_checks(
             };
             let fm = design.strength(class.fm_k, combination.duration);
             let fv = design.strength(class.fv_k, combination.duration);
-            let in_bending = largest(&seg.moments, &|s| s.modulus * fm * kh(s.depth));
+            let in_bending = largest(&seg.moments, &|s| s.modulus * fm * kh);
             bending.offer("bending", in_bending, &combination.label, &at);
             let in_shear = largest(&seg.shears, &|s| KCR * s.shear_area * fv / cos_t);
             shear.offer("shear", in_shear, &combination.label, &at);

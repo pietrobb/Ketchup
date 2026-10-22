@@ -359,8 +359,9 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
     assert_eq!(beam.role, "beam");
     // The notch in the side in tension leaves its stress concentration unchecked (PG-15).
     assert_eq!(beam.missing.len(), 1, "{:?}", beam.missing);
-    // kh of the 100 mm deep section: (150 / 100)^0.2 (3.2).
-    let kh = 1.5f64.powf(0.2);
+    // kh is of the member's depth, 200 mm, not of the notched 100 mm section
+    // (EC5 3.2(3); review 2026-10-19 P3): (150 / 200)^0.2 < 1, so 1.
+    let kh = 1.0;
     let moment = 1.5 * 1.2 * 3900f64.powi(2) / 8.0;
     close(
         utilization(beam, "bending"),
@@ -373,8 +374,9 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
 fn a_notch_in_the_side_in_tension_away_from_the_bearings_is_not_verified() {
     // Review 2026-10-19 PG-15: the beam of the test above at 1 kN/m², its
     // underside notched 100 mm deep at mid-span, passed on the net section
-    // with 0.641. EC5 6.5.1(2) ignores the stress concentration of a
-    // right-angled notch only on the side in compression; on the top it may.
+    // with 0.641 (0.695 since kh is of the member's 200 mm depth). EC5
+    // 6.5.1(2) ignores the stress concentration of a right-angled notch only
+    // on the side in compression; on the top it may.
     let source = |profile: &str| {
         format!(
             "load_path(only = [\"frame\"], carriers = [\"deck\"])
@@ -395,7 +397,7 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
         &[],
     );
     let below = member(&below, "beam");
-    close(utilization(below, "bending"), 0.641);
+    close(utilization(below, "bending"), 0.695);
     assert_eq!(below.status, "not_verified", "{:?}", below.checks);
     assert_eq!(
         below.missing,
