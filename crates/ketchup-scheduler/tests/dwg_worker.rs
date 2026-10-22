@@ -29,13 +29,15 @@ fn a_dwg_declaring_a_huge_section_ends_the_worker_not_the_caller() {
     // Read in this process, the reader would abort it on the 300 GiB allocation.
     let hostile = ketchup_dwg::testing::with_declared_header_section(&dwg, 300 << 30);
     let error = worker
-        .convert_dwg(&hostile, &CancelToken::default())
+        .convert_dwg(&hostile, usize::MAX, &CancelToken::default())
         .unwrap_err();
     assert_eq!(error, DwgConversionError::MemoryLimit, "{error}");
     assert!(error.to_string().contains("2 GiB"), "{error}");
     assert_eq!(worker.process_id(), None);
 
-    let read = worker.convert_dwg(&dwg, &CancelToken::default()).unwrap();
+    let read = worker
+        .convert_dwg(&dwg, usize::MAX, &CancelToken::default())
+        .unwrap();
     assert_eq!(read.version, ketchup_dwg::WRITTEN_VERSION);
 }
 
@@ -45,7 +47,9 @@ fn a_dwg_reads_in_the_worker_as_it_reads_in_process() {
     let mut worker = worker();
     let dwg = drawing_dwg();
     let local = ketchup_dwg::dwg_to_dxf(&dwg, usize::MAX).unwrap();
-    let isolated = worker.convert_dwg(&dwg, &CancelToken::default()).unwrap();
+    let isolated = worker
+        .convert_dwg(&dwg, usize::MAX, &CancelToken::default())
+        .unwrap();
     assert_eq!(isolated.dxf, local.dxf);
     assert_eq!(isolated.version, local.version);
     assert_eq!(isolated.skipped, local.skipped);
@@ -53,7 +57,11 @@ fn a_dwg_reads_in_the_worker_as_it_reads_in_process() {
 
     // A refusal is the reader's answer; the worker stays.
     let error = worker
-        .convert_dwg(b"AC1032 and nothing else", &CancelToken::default())
+        .convert_dwg(
+            b"AC1032 and nothing else",
+            usize::MAX,
+            &CancelToken::default(),
+        )
         .unwrap_err();
     assert!(
         matches!(
@@ -77,7 +85,9 @@ fn a_dwg_whose_dxf_is_larger_than_a_reply_frame_comes_back_whole() {
     }
     dxf.push_str("0\nENDSEC\n0\nEOF\n");
     let dwg = ketchup_dwg::dxf_to_dwg(dxf.as_bytes()).unwrap();
-    let read = worker().convert_dwg(&dwg, &CancelToken::default()).unwrap();
+    let read = worker()
+        .convert_dwg(&dwg, usize::MAX, &CancelToken::default())
+        .unwrap();
     assert!(
         read.dxf.len() > ketchup_scheduler::protocol::MAX_REPLY_FRAME_BYTES,
         "{} bytes",

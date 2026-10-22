@@ -220,6 +220,9 @@ pub struct DwgInput {
     /// The DXF text goes to this file, not into the reply: a large drawing's DXF
     /// is more than one reply frame holds.
     pub output: PathBuf,
+    /// A DXF of more group-code pairs is refused instead of written, so the caller
+    /// never reads a DXF its import refuses.
+    pub max_pairs: usize,
 }
 
 /// [`ketchup_dwg::dwg_to_dxf`] on the wire, its DXF text being in the request's `output`.
@@ -238,6 +241,10 @@ pub enum DwgOutcome {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DwgRefusal {
     DxfTooLarge {
+        limit: usize,
+    },
+    /// The DXF has more group-code pairs than the caller's `max_pairs`.
+    TooManyPairs {
         limit: usize,
     },
     NothingRead {
@@ -270,6 +277,11 @@ impl std::fmt::Display for DwgRefusal {
         use ketchup_dwg::DwgError;
         match self {
             Self::DxfTooLarge { limit } => DwgError::DxfTooLarge { limit: *limit }.fmt(formatter),
+            Self::TooManyPairs { limit } => write!(
+                formatter,
+                "the DXF of the DWG drawing has more than {limit} group-code pairs, the most a \
+                 drawing import reads; import it as an underlay instead"
+            ),
             Self::NothingRead { diagnostic } => DwgError::NothingRead {
                 diagnostic: diagnostic.clone(),
             }
@@ -288,6 +300,15 @@ impl DwgOutcome {
             Ok(drawing) => drawing,
             Err(error) => return Self::Refused(error.into()),
         };
+        // Lines as the import counts them: a last line needs no line break.
+        let dxf = &drawing.dxf;
+        let lines = dxf.iter().filter(|byte| **byte == b'\n').count()
+            + usize::from(dxf.last().is_some_and(|byte| *byte != b'\n'));
+        if lines / 2 > input.max_pairs {
+            return Self::Refused(DwgRefusal::TooManyPairs {
+                limit: input.max_pairs,
+            });
+        }
         if let Err(error) = std::fs::write(&input.output, &drawing.dxf) {
             return Self::Refused(DwgRefusal::Reader {
                 report: format!("writing {}: {error}", input.output.display()),

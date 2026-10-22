@@ -149,6 +149,29 @@ fn a_long_dwg_read_shows_its_estimated_progress_and_cancel_stops_it() {
     drop(release);
 }
 
+/// A DWG drawing whose DXF has more group-code pairs than a drawing import reads is
+/// refused in the worker, so the window never reads its whole DXF only to refuse it
+/// on the pair count (review 2026-10-21 P3; Levoca's DXF is 134 MB, 8.7 million pairs).
+#[test]
+fn a_dwg_with_more_pairs_than_an_import_reads_is_refused_before_the_window_reads_its_dxf() {
+    let mut dxf = String::from("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n");
+    dxf.push_str("0\nSECTION\n2\nENTITIES\n");
+    // Six pairs a line and more for its handle and layer: over 100,000 pairs.
+    for i in 0..20_000 {
+        dxf.push_str(&format!("0\nLINE\n8\n0\n10\n{i}\n20\n0\n11\n{i}\n21\n1\n"));
+    }
+    dxf.push_str("0\nENDSEC\n0\nEOF\n");
+    let dwg = ketchup_dwg::dxf_to_dwg(dxf.as_bytes()).unwrap();
+    let Err(error) =
+        crate::app::dwg_import::read_dwg(&dwg, &ketchup_program::CancelToken::default())
+    else {
+        panic!("the window read the DXF of a drawing an import refuses on its pairs");
+    };
+    let message = error.to_string();
+    assert!(message.contains("100000 group-code pairs"), "{message}");
+    assert!(message.contains("as an underlay"), "{message}");
+}
+
 /// The refusal of the hostile file stays in the status line until the next
 /// file is chosen; read alone so the line is checked before it is replaced.
 #[test]

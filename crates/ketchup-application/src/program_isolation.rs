@@ -128,13 +128,18 @@ pub fn run_program(
     )
 }
 
-/// [`ketchup_dwg::dwg_to_dxf`] in a program worker, for DXF text of any size.
+/// [`ketchup_dwg::dwg_to_dxf`] in a program worker, for DXF text of at most
+/// `max_pairs` group-code pairs.
 ///
 /// # Errors
-/// The reader refused the file, or reading it was stopped at the worker's
-/// memory or time limit.
-pub fn convert_dwg(dwg: &[u8], cancel: &CancelToken) -> Result<DwgDrawing, DwgReadError> {
-    with_worker(|worker| worker.convert_dwg(dwg, cancel))
+/// The reader refused the file, its DXF has more pairs, or reading it was stopped
+/// at the worker's memory or time limit.
+pub fn convert_dwg(
+    dwg: &[u8],
+    max_pairs: usize,
+    cancel: &CancelToken,
+) -> Result<DwgDrawing, DwgReadError> {
+    with_worker(|worker| worker.convert_dwg(dwg, max_pairs, cancel))
         .map_err(DwgReadError::Unavailable)?
         .map_err(DwgReadError::Conversion)
 }

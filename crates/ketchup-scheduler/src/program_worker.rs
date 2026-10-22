@@ -327,7 +327,8 @@ impl ProgramWorker {
     }
 
     /// [`ketchup_dwg::dwg_to_dxf`] in the worker, for DXF text of any size: the worker
-    /// writes it to a file of its own, read back whole here.
+    /// writes it to a file of its own, read back whole here. A DXF of more than
+    /// `max_pairs` group-code pairs is refused in the worker and never read here.
     ///
     /// # Errors
     /// The reader refused the file, the worker was stopped or died, or its DXF
@@ -335,6 +336,7 @@ impl ProgramWorker {
     pub fn convert_dwg(
         &mut self,
         dwg: &[u8],
+        max_pairs: usize,
         cancel: &CancelToken,
     ) -> Result<DwgDrawing, DwgConversionError> {
         let directory = tempfile::tempdir()
@@ -343,6 +345,7 @@ impl ProgramWorker {
         let input = DwgInput {
             dwg: dwg.to_vec(),
             output: output.clone(),
+            max_pairs,
         };
         let outcome = self
             .call(cancel, |client| {

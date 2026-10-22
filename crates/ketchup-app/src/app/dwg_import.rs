@@ -38,8 +38,12 @@ pub(crate) fn read_dwg(
         return Ok(Arc::clone(drawing));
     }
     let drawing = Arc::new(
-        ketchup_application::program_isolation::convert_dwg(source, cancel)
-            .map_err(|error| ImportError::failed(ImportFormat::Dxf, error))?,
+        ketchup_application::program_isolation::convert_dwg(
+            source,
+            ketchup_model::import::MAX_DXF_PAIRS,
+            cancel,
+        )
+        .map_err(|error| ImportError::failed(ImportFormat::Dxf, error))?,
     );
     let mut kept = read();
     kept.retain(|(other, _)| *other != digest);

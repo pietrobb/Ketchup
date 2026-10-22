@@ -17,7 +17,9 @@ use super::{
 pub const DXF_PARSER_ID: &str = "ketchup-dxf";
 pub const DXF_PARSER_VERSION: &str = "28";
 const MAX_DXF_LINE_BYTES: usize = 512;
-const MAX_DXF_PAIRS: usize = 100_000;
+/// The most group-code pairs a drawing import reads; a DWG conversion with more is
+/// refused in the worker, before the window reads its DXF.
+pub const MAX_DXF_PAIRS: usize = 100_000;
 const MAX_DXF_ENTITIES: usize = 10_000;
 const MAX_DXF_PROFILES: usize = (ProposalBudget::HOST_MAX.max_commands - 1) / 3;
 const MAX_DXF_SEGMENTS_PER_PROFILE: usize = 1_024;
