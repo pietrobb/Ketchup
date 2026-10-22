@@ -621,6 +621,29 @@ fn bom_length_of_a_member_built_along_z_is_the_btlx_length() {
     );
 }
 
+/// Review 2026-10-21 P3 (manufacturing): the BOM measured a part over the vertices
+/// of its display mesh, so a part with curved faces came out smaller by the chord
+/// error. It is measured over the exact body's bounds.
+#[test]
+fn bom_dimensions_are_the_exact_bounds_not_the_display_mesh() {
+    let document = drilled_stock_document(
+        &[[0.0, 0.0], [60.0, 0.0], [60.0, 140.0], [0.0, 140.0]],
+        "3000",
+        [30.0, 70.0],
+    );
+    let (snapshot, projection) = tessellated_graph_document_fabrication_projection(
+        document,
+        "p3-chord-member",
+        GRAPH_BOOLEAN,
+        0.05,
+    );
+    let bom = String::from_utf8(projection.bom_export(&snapshot).unwrap()).unwrap();
+    assert!(
+        bom.contains(";length_mm=3000;width_mm=60;height_mm=140;"),
+        "{bom}"
+    );
+}
+
 #[test]
 fn btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner() {
     // Profile (-30, -70) .. (30, 70), 2000 mm long, a hole into the start face
@@ -3244,13 +3267,28 @@ fn exact_graph_document_fabrication_projection(
     result_fingerprint: &str,
     producer_feature_id: FeatureId,
 ) -> (Snapshot, GeneralFabricationProjection) {
+    tessellated_graph_document_fabrication_projection(
+        document,
+        result_fingerprint,
+        producer_feature_id,
+        0.0,
+    )
+}
+
+fn tessellated_graph_document_fabrication_projection(
+    document: DocumentStore,
+    result_fingerprint: &str,
+    producer_feature_id: FeatureId,
+    chord_mm: f64,
+) -> (Snapshot, GeneralFabricationProjection) {
     let snapshot = document.current();
     let registry = ExactResultRegistry::accept(
         &snapshot,
-        [Arc::new(ExactBodyPackage::from(graph_package_for(
+        [Arc::new(ExactBodyPackage::from(graph_package_with_chord(
             &snapshot,
             result_fingerprint,
             producer_feature_id,
+            chord_mm,
         )))],
     )
     .unwrap();
@@ -3643,6 +3681,17 @@ fn graph_package_for(
     result_fingerprint: &str,
     producer_feature_id: FeatureId,
 ) -> ExactBRepGraphPackage {
+    graph_package_with_chord(snapshot, result_fingerprint, producer_feature_id, 0.0)
+}
+
+/// The package of the producer whose display mesh lies `chord_mm` inside its exact
+/// bounds on every side, as a tessellation of curved faces does.
+fn graph_package_with_chord(
+    snapshot: &Snapshot,
+    result_fingerprint: &str,
+    producer_feature_id: FeatureId,
+    chord_mm: f64,
+) -> ExactBRepGraphPackage {
     let graph =
         ExactBRepGraph::from_snapshot(snapshot, GRAPH_DEFINITION, producer_feature_id).unwrap();
     let mut bounds_mm = graph.producer_bounds_mm().unwrap().unwrap();
@@ -3657,7 +3706,8 @@ fn graph_package_for(
     ) {
         bounds_mm[1][0] = 8.0;
     }
-    let [minimum, maximum] = bounds_mm;
+    let minimum = bounds_mm[0].map(|value| value + chord_mm);
+    let maximum = bounds_mm[1].map(|value| value - chord_mm);
     let mesh = StepImportMesh {
         vertices_mm: vec![
             [minimum[0], minimum[1], minimum[2]],
@@ -3680,9 +3730,9 @@ fn graph_package_for(
             mass: None,
             exact_input_digest: "m17-graph-input".to_owned(),
             result_fingerprint: result_fingerprint.to_owned(),
-            volume_mm3: (maximum[0] - minimum[0])
-                * (maximum[1] - minimum[1])
-                * (maximum[2] - minimum[2]),
+            volume_mm3: (0..3)
+                .map(|axis| bounds_mm[1][axis] - bounds_mm[0][axis])
+                .product(),
             area_mm2: 0.0,
             topology_counts: [8, 12, 6, 1, 1],
             wire_count: None,

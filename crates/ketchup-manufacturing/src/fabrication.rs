@@ -4151,14 +4151,14 @@ fn local_dimensions(
     source: &GeneralBodySource,
 ) -> Result<PieceDimensions, GeneralFabricationError> {
     let vertices = match source {
+        // The exact body's bounds: the display mesh of a curved face lies inside
+        // it by the chord error.
         GeneralBodySource::Exact(key) => registry
             .get_result(key)
             .filter(|package| package.is_current(snapshot))
             .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?
-            .vertices()
-            .iter()
-            .map(|vertex| vertex.position_mm)
-            .collect::<Vec<_>>(),
+            .bounds_mm()
+            .to_vec(),
         GeneralBodySource::CanonicalMesh {
             definition_id,
             feature_id,
