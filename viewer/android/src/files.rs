@@ -15,12 +15,18 @@ use ketchup_viewer::app::{FileRequest, ViewerApp};
 use ketchup_viewer::review::Written;
 
 use crate::replace::{
-    Interrupted, ReplaceFailure, kept_files, pending_targets, recover_interrupted,
+    Interrupted, ReplaceFailure, drop_kept, kept_files, pending_targets, recover_interrupted,
     replace_keeping_original,
 };
 
 /// Request code ViewerActivity gives a file another app opened with the Viewer.
 const OPENED_BY_ANOTHER_APP: i32 = 0;
+
+/// What ViewerActivity.openFile answers for a document that is gone
+/// (FileNotFoundException) and for one no longer granted (SecurityException);
+/// -1 is any other failure.
+const OPEN_NOT_FOUND: i32 = -2;
+const OPEN_NOT_GRANTED: i32 = -3;
 
 /// Bytes read first to tell a package from a comments file.
 const SIGNATURE_BYTES: u64 = 64;
@@ -208,7 +214,7 @@ impl Files {
                 && let Some(kept) = self.saving_kept.take()
             {
                 // Saved elsewhere: the next one, if any, is offered.
-                if let Err(error) = std::fs::remove_file(&kept) {
+                if let Err(error) = drop_kept(&kept) {
                     log::error!("Removing {} failed: {error}", kept.display());
                 }
                 self.offer_kept(app);
@@ -268,11 +274,30 @@ impl Files {
     /// The file behind `uri` opened in `mode` ("r" or "wt"), read and written
     /// here so its bytes never pass through the Java heap.
     fn open_file(&self, uri: &str, mode: &str, target: &str) -> Result<File, Rejection> {
+        self.opened(uri, mode, target)
+            .map_err(|(_, rejection)| *rejection)
+    }
+
+    /// [`Self::open_file`] as I/O, its error of the kind the activity named:
+    /// a document that is gone or no longer granted is told from one out of
+    /// reach for a while (review 2026-10-18 VW-14).
+    fn open_io(&self, uri: &str, mode: &str) -> std::io::Result<File> {
+        self.opened(uri, mode, uri)
+            .map_err(|(kind, rejection)| std::io::Error::new(kind, *rejection))
+    }
+
+    fn opened(
+        &self,
+        uri: &str,
+        mode: &str,
+        target: &str,
+    ) -> Result<File, (std::io::ErrorKind, Box<Rejection>)> {
         let code = if mode == "r" {
             "viewer.android.read"
         } else {
             "viewer.android.write"
         };
+        let mut kind = std::io::ErrorKind::Other;
         let fd = with_activity(&self.android_app, |env, activity| {
             let uri = env.new_string(uri)?;
             let mode = env.new_string(mode)?;
@@ -285,11 +310,16 @@ impl Files {
                 )?
                 .i()?;
             if fd < 0 {
+                kind = match fd {
+                    OPEN_NOT_FOUND => std::io::ErrorKind::NotFound,
+                    OPEN_NOT_GRANTED => std::io::ErrorKind::PermissionDenied,
+                    _ => std::io::ErrorKind::Other,
+                };
                 return last_error(env, activity).map(Err);
             }
             Ok(Ok(fd))
         });
-        let fd = answered(code, target, fd)?;
+        let fd = answered(code, target, fd).map_err(|rejection| (kind, Box::new(rejection)))?;
         // SAFETY: `openFile` detached `fd` from its ParcelFileDescriptor, so
         // nothing else owns or closes it.
         #[allow(unsafe_code)]
@@ -340,10 +370,7 @@ impl Files {
         let original = BufReader::new(self.open_file(uri, "r", uri)?);
         // A provider may hand out a pipe, which cannot be synced; the file
         // is unbuffered and closing it hands every byte over.
-        let open_write = || {
-            self.open_file(uri, "wt", uri)
-                .map_err(std::io::Error::other)
-        };
+        let open_write = || self.open_io(uri, "wt");
         // Without the grant a save cut off now is still put back in this
         // process, just not at the next start.
         if let Err(error) = self.hold_grant(uri) {
@@ -382,12 +409,7 @@ impl Files {
         let Some(private) = self.android_app.internal_data_path() else {
             return;
         };
-        let open = |mode: &'static str| {
-            move |uri: &str| {
-                self.open_file(uri, mode, uri)
-                    .map_err(std::io::Error::other)
-            }
-        };
+        let open = |mode: &'static str| move |uri: &str| self.open_io(uri, mode);
         for outcome in recover_interrupted(&private, open("r"), open("wt")) {
             let rejection = || Rejection::new("viewer.android.write", RejectionPhase::Io);
             let failed = |target: String| rejection().target(target);

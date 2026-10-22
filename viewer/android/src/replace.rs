@@ -25,8 +25,10 @@ const END: &str = "end";
 /// The extension of the count of starts that could not finish a replacement.
 const STARTS: &str = "starts";
 /// After this many starts a replacement whose kept bytes no longer match
-/// their record is given up, so the document's write grant is not kept for
-/// ever (review 2026-10-17 D-7); other failures are not counted (VW-13).
+/// their record, or whose document is gone or no longer granted, is given
+/// up, so the document's write grant is not kept for ever (review
+/// 2026-10-17 D-7, 2026-10-18 VW-14); a document out of reach for a while
+/// is not counted (VW-13).
 const MAX_STARTS: u32 = 3;
 
 /// The length and checksum of some bytes.
@@ -250,8 +252,9 @@ pub(crate) enum Interrupted {
         backup: PathBuf,
         error: io::Error,
     },
-    /// [`MAX_STARTS`] starts found the kept bytes not matching their record:
-    /// the old bytes are set aside at `kept` and it is no longer tried.
+    /// [`MAX_STARTS`] starts found the kept bytes not matching their record,
+    /// or the document gone or no longer granted: the old bytes are set
+    /// aside at `kept` and it is no longer tried.
     GivenUp {
         target: String,
         kept: PathBuf,
@@ -310,9 +313,10 @@ pub(crate) fn recover_interrupted<R: Read, W: Write>(
     outcomes
 }
 
-/// The earlier contents set aside in `private` (given up or left), oldest
-/// first: only the Viewer can reach them there, so it offers to save them
-/// elsewhere (review 2026-10-17 VW-13).
+/// The earlier contents in `private`: those set aside (given up or left),
+/// oldest first, then those of replacements a start still tries to finish.
+/// Only the Viewer can reach them there, so it offers to save them
+/// elsewhere (review 2026-10-17 VW-13, 2026-10-18 VW-14).
 pub(crate) fn kept_files(private: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(private) else {
         return Vec::new();
@@ -320,15 +324,33 @@ pub(crate) fn kept_files(private: &Path) -> Vec<PathBuf> {
     let mut kept: Vec<PathBuf> = entries
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
             path.is_file()
                 && path.extension().is_some_and(|extension| extension == "bak")
-                && path
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with("kept-"))
+                && (name.starts_with("kept-")
+                    || (name.starts_with("replacing-") && path.with_extension(RECORD).is_file()))
         })
         .collect();
+    // "kept-" sorts before "replacing-".
     kept.sort();
     kept
+}
+
+/// Lets go of earlier content the customer saved elsewhere: one set aside
+/// is removed, and a replacement still to be finished is given up with it,
+/// so its document is left as it is.
+pub(crate) fn drop_kept(kept: &Path) -> io::Result<()> {
+    let replacing = kept
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with("replacing-"));
+    if replacing {
+        forget(kept);
+        return Ok(());
+    }
+    std::fs::remove_file(kept)
 }
 
 /// The documents a replacement in `private` still has to finish at a start:
@@ -358,10 +380,14 @@ fn recover<R: Read, W: Write>(
     open_write: &mut impl FnMut(&str) -> io::Result<W>,
 ) -> Option<Interrupted> {
     let kept = |error: io::Error| {
-        // Only kept bytes that no longer match their record never get
-        // through; a cloud offline or an SD card taken out does at a later
-        // start, so it is not counted (review 2026-10-17 VW-13).
-        if error.kind() != io::ErrorKind::InvalidData {
+        // Kept bytes that no longer match their record, a deleted document
+        // and a grant taken back never get through (VW-14); a cloud offline
+        // does at a later start, so it is not counted (review 2026-10-17
+        // VW-13).
+        if !matches!(
+            error.kind(),
+            io::ErrorKind::InvalidData | io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+        ) {
             return Interrupted::Kept {
                 target: record.target.clone(),
                 backup: backup.to_owned(),
@@ -889,6 +915,78 @@ mod tests {
         );
         assert_eq!(*document.bytes.borrow(), original);
         assert_eq!(left_in(&backup), 0);
+    }
+
+    /// Review 2026-10-18 VW-14: a document deleted, or whose grant was taken
+    /// back, never gets through; after three starts its old bytes are set
+    /// aside and offered, and its write grant is let go. Before, every such
+    /// failure came as "other" and was tried at every start for ever.
+    #[test]
+    fn a_document_gone_or_no_longer_granted_is_given_up_after_three_starts() {
+        for (name, kind) in [
+            ("deleted", io::ErrorKind::NotFound),
+            ("revoked", io::ErrorKind::PermissionDenied),
+        ] {
+            let backup = backup(name);
+            let document = Document::new(b"old", &[]);
+            document.replace_ending_after(&backup, b"new comments", 4);
+            let private = backup.parent().unwrap();
+            let gone = |_: &str| Err::<io::Cursor<Vec<u8>>, _>(io::Error::from(kind));
+            for _ in 1..MAX_STARTS {
+                let outcomes = recover_interrupted(private, gone, |_| document.open_write());
+                assert!(
+                    matches!(outcomes.as_slice(), [Interrupted::Kept { .. }]),
+                    "{outcomes:?}"
+                );
+                assert_eq!(pending_targets(private), [TARGET]);
+            }
+            let outcomes = recover_interrupted(private, gone, |_| document.open_write());
+            let [
+                Interrupted::GivenUp {
+                    target,
+                    kept,
+                    error,
+                },
+            ] = outcomes.as_slice()
+            else {
+                panic!("{outcomes:?}");
+            };
+            assert_eq!(target, TARGET);
+            assert_eq!(error.kind(), kind);
+            assert!(pending_targets(private).is_empty());
+            assert_eq!(kept_files(private), std::slice::from_ref(kept));
+            assert_set_aside(kept, b"old");
+            assert_eq!(left_in(&backup), 0);
+        }
+    }
+
+    /// VW-14: the earlier content of a document out of reach is offered while
+    /// a start still tries to put it back; once saved elsewhere, the
+    /// replacement is given up and the document left as it is.
+    #[test]
+    fn earlier_content_waiting_for_its_document_is_offered() {
+        let backup = backup("offered");
+        let document = Document::new(b"old", &[]);
+        document.replace_ending_after(&backup, b"new comments", 4);
+        let private = backup.parent().unwrap();
+        let outcomes = recover_interrupted(
+            private,
+            |_| Err::<io::Cursor<Vec<u8>>, _>(io::Error::other("the provider is offline")),
+            |_| document.open_write(),
+        );
+        assert!(
+            matches!(outcomes.as_slice(), [Interrupted::Kept { .. }]),
+            "{outcomes:?}"
+        );
+        assert_eq!(kept_files(private), std::slice::from_ref(&backup));
+        assert_eq!(std::fs::read(&backup).unwrap(), b"old");
+
+        drop_kept(&backup).unwrap();
+        assert!(kept_files(private).is_empty());
+        assert!(pending_targets(private).is_empty());
+        assert_eq!(left_in(&backup), 0);
+        assert!(document.recover(private).is_empty());
+        assert_eq!(*document.bytes.borrow(), b"new ");
     }
 
     /// D-7: a save cut off before it wrote anything leaves the document as it

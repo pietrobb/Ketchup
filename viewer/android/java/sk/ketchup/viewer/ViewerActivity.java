@@ -162,9 +162,11 @@ public class ViewerActivity extends NativeActivity {
 
     /**
      * A file descriptor of {@code uri} opened in {@code mode} ("r" to read,
-     * "wt" to replace), which native code reads or writes and closes; -1 with
-     * {@link #lastError} set. The file's bytes never pass through the Java
-     * heap, so a large package cannot run it out of memory.
+     * "wt" to replace), which native code reads or writes and closes; with
+     * {@link #lastError} set, -2 when the file is gone, -3 when the Viewer may
+     * no longer open it and -1 for any other failure. The file's bytes never
+     * pass through the Java heap, so a large package cannot run it out of
+     * memory.
      */
     public int openFile(String uri, String mode) {
         try {
@@ -174,6 +176,12 @@ public class ViewerActivity extends NativeActivity {
                 return -1;
             }
             return file.detachFd();
+        } catch (java.io.FileNotFoundException error) {
+            lastError = error.toString();
+            return -2;
+        } catch (SecurityException error) {
+            lastError = error.toString();
+            return -3;
         } catch (Throwable error) {
             lastError = error.toString();
             return -1;
