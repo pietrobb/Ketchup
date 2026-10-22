@@ -182,6 +182,47 @@ fn heights_are_flattened_into_the_plan_and_reported_once() {
     assert_eq!(diagnostic("dxf.entity-unreadable").unwrap().count(), 1);
 }
 
+/// UL-2: a block it could not read refused the whole underlay. A block with a raised
+/// base is read flat; one with a second name, a second block of a name and a block
+/// that inserts itself are left out and counted, and the rest of the drawing is kept.
+#[test]
+fn a_block_it_cannot_read_is_left_out_and_counted() {
+    let block = |name: &str, header: &str, entities: &str| {
+        format!("0\nBLOCK\n8\n0\n2\n{name}\n70\n0\n10\n0\n20\n0\n{header}{entities}0\nENDBLK\n")
+    };
+    let short = line("0", [0.0, 0.0], [2.0, 0.0]);
+    let insert = |name: &str| format!("0\nINSERT\n8\n0\n2\n{name}\n10\n5\n20\n5\n");
+    let blocks = [
+        block("door", "", &short),
+        block("raised", "30\n100\n", &short),
+        block("named", "3\nanother\n", &short),
+        block("door", "", &short),
+        block("loop", "", &insert("loop")),
+    ]
+    .concat();
+    let entities = [
+        line("0", [0.0, 0.0], [10.0, 0.0]),
+        insert("door"),
+        insert("raised"),
+        insert("named"),
+        insert("loop"),
+    ]
+    .concat();
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nBLOCKS\n{blocks}0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+    );
+    let underlay = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
+    // The line, the door and the raised block.
+    assert_eq!(underlay.lines.segment_count(), 3);
+    let unreadable = (underlay.diagnostics.iter())
+        .filter(|diagnostic| diagnostic.code() == "dxf.block-unreadable")
+        .map(|diagnostic| diagnostic.subject().unwrap().split(':').next().unwrap())
+        .collect::<Vec<_>>();
+    // The block with a second name and the second "door".
+    assert_eq!(unreadable.len(), 2, "{unreadable:?}");
+    assert!(unreadable.contains(&"named"), "{unreadable:?}");
+}
+
 #[test]
 fn an_xref_and_its_blocks_are_not_loaded_but_named_with_their_inserts() {
     // SITE is a resolved xref (4 | 32, and 64, ignored on input); SITE|door a block of it (16).

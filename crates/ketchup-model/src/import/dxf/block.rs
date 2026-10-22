@@ -51,27 +51,31 @@ pub(super) fn parse_blocks<'a>(
             index += 1;
         }
         let header = &pairs[header_start..index];
-        ensure_planar(header)?;
-        report_ignored_groups(
-            "BLOCK",
-            header,
-            &[5, 8, 2, 3, 10, 20, 30, 70, 100],
-            diagnostics,
-        )?;
-        parse_layer(header)?;
-        // Bits 4, 8, 16 and 32 make an xref or a block of one, which is not loaded; bit 64
-        // is ignored on input.
-        let flags = parse_optional_i64(header, 70)?.unwrap_or(0);
-        if flags & !(1 | 2 | 4 | 8 | 16 | 32 | 64) != 0 {
-            return Err(DxfImportError::InvalidBlock);
-        }
-        let xref = flags & (4 | 8 | 16 | 32) != 0;
-        let name = parse_required_text(header, 2)?;
-        if parse_optional_text(header, 3)?.is_some_and(|alternate| alternate != name) {
-            return Err(DxfImportError::InvalidBlock);
-        }
-        let key = block_name_key(name)?;
-        let base_mm = parse_xy(header, 10, 20, units.millimetres_per_unit())?;
+        let mut read_header = || {
+            ensure_planar(header)?;
+            report_ignored_groups(
+                "BLOCK",
+                header,
+                &[5, 8, 2, 3, 10, 20, 30, 70, 100],
+                diagnostics,
+            )?;
+            parse_layer(header)?;
+            // Bits 4, 8, 16 and 32 make an xref or a block of one, which is not loaded;
+            // bit 64 is ignored on input.
+            let flags = parse_optional_i64(header, 70)?.unwrap_or(0);
+            if flags & !(1 | 2 | 4 | 8 | 16 | 32 | 64) != 0 {
+                return Err(DxfImportError::InvalidBlock);
+            }
+            let xref = flags & (4 | 8 | 16 | 32) != 0;
+            let name = parse_required_text(header, 2)?;
+            if parse_optional_text(header, 3)?.is_some_and(|alternate| alternate != name) {
+                return Err(DxfImportError::InvalidBlock);
+            }
+            let key = block_name_key(name)?;
+            let base_mm = parse_xy(header, 10, 20, units.millimetres_per_unit())?;
+            Ok((key, base_mm, xref))
+        };
+        let read = read_header();
 
         let entities_start = index;
         while index < pairs.len() {
@@ -100,21 +104,29 @@ pub(super) fn parse_blocks<'a>(
         }
         let end_record = &pairs[end_start..index];
         bump_entity_count(entity_count, diagnostics.reading.max_entities)?;
-        parse_optional_layer(end_record)?;
-        report_ignored_groups("ENDBLK", end_record, &[5, 8, 100], diagnostics)?;
-
-        if raw_blocks
-            .insert(
-                key,
-                RawBlockDefinition {
-                    base_mm,
-                    entities,
-                    xref,
-                },
-            )
-            .is_some()
-        {
-            return Err(DxfImportError::InvalidBlock);
+        let read = read.and_then(|block| {
+            parse_optional_layer(end_record)?;
+            report_ignored_groups("ENDBLK", end_record, &[5, 8, 100], diagnostics)?;
+            Ok(block)
+        });
+        match read {
+            Ok((key, _, _)) if raw_blocks.contains_key(&key) => {
+                skip_block(&key, DxfImportError::InvalidBlock, diagnostics)?;
+            }
+            Ok((key, base_mm, xref)) => {
+                raw_blocks.insert(
+                    key,
+                    RawBlockDefinition {
+                        base_mm,
+                        entities,
+                        xref,
+                    },
+                );
+            }
+            Err(error) => {
+                let name = parse_optional_text(header, 2).ok().flatten();
+                skip_block(name.unwrap_or_default(), error, diagnostics)?;
+            }
         }
     }
 
@@ -129,10 +141,32 @@ pub(super) fn parse_blocks<'a>(
             diagnostics,
         };
         for key in keys {
-            resolve_block(&key, &raw_blocks, 0, units, &mut resolution)?;
+            if let Err(error) = resolve_block(&key, &raw_blocks, 0, units, &mut resolution) {
+                resolution.resolving.clear();
+                skip_block(&key, error, resolution.diagnostics)?;
+            }
         }
     }
     Ok(blocks)
+}
+
+/// A block an underlay cannot read is left out and counted, named with why; its
+/// inserts are then left out as entities it cannot read. A profile import refuses the
+/// file.
+fn skip_block(
+    name: &str,
+    error: DxfImportError,
+    diagnostics: &mut DiagnosticCounts,
+) -> Result<(), DxfImportError> {
+    if !diagnostics.reading.skip_unreadable {
+        return Err(error);
+    }
+    diagnostics.add(
+        ImportDiagnosticSeverity::Warning,
+        "dxf.block-unreadable",
+        Some(format!("{name}: {error}")),
+        1,
+    )
 }
 
 fn resolve_block<'a>(
@@ -145,13 +179,13 @@ fn resolve_block<'a>(
     if resolution.blocks.contains_key(key) {
         return Ok(());
     }
-    if depth >= MAX_DXF_BLOCK_DEPTH || !resolution.resolving.insert(key.to_owned()) {
-        return Err(DxfImportError::InvalidBlock);
-    }
     let raw = raw_blocks
         .get(key)
         .cloned()
         .ok_or(DxfImportError::InvalidBlock)?;
+    if depth >= MAX_DXF_BLOCK_DEPTH || !resolution.resolving.insert(key.to_owned()) {
+        return Err(DxfImportError::InvalidBlock);
+    }
     if raw.xref {
         resolution.blocks.insert(
             key.to_owned(),
@@ -166,7 +200,13 @@ fn resolve_block<'a>(
         return Ok(());
     }
     for dependency in block_dependencies(&raw.entities)? {
-        resolve_block(&dependency, raw_blocks, depth + 1, units, resolution)?;
+        // In an underlay, an insert of a block that cannot be resolved here (missing,
+        // too deep, or one inserting itself) is left out as an entity it cannot read.
+        if let Err(error) = resolve_block(&dependency, raw_blocks, depth + 1, units, resolution)
+            && !resolution.diagnostics.reading.skip_unreadable
+        {
+            return Err(error);
+        }
     }
 
     let mut parsed_entities = ParsedEntities::default();
