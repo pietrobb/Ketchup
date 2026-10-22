@@ -89,13 +89,35 @@ pub fn rewrite_rule_program_parts(
 ) -> Result<Option<RuleProgramSource>, RuleProgramApplyError> {
     let mut source = source.clone();
     let mut evaluated = evaluate(&source)?;
-    if changes.is_empty()
-        || changes
-            .iter()
-            .any(|(name, _)| evaluated.model.part(name).is_none())
-    {
+    // A name an earlier change of the batch gives (a rename, a mirrored
+    // copy) is a part of the program by the time its change comes.
+    let mut parts = (evaluated.model.parts.iter())
+        .map(|part| part.name.clone())
+        .collect::<BTreeSet<_>>();
+    for (name, change) in changes {
+        if !parts.contains(name) {
+            return Ok(None);
+        }
+        match change {
+            PartChange::Rename(new) => {
+                parts.remove(name);
+                parts.insert(new.clone());
+            }
+            PartChange::Mirror { copy, .. } => {
+                parts.insert(copy.clone());
+            }
+            PartChange::Delete => {
+                parts.remove(name);
+            }
+            _ => {}
+        }
+    }
+    if changes.is_empty() {
         return Ok(None);
     }
+    // The document name of each part renamed earlier in the batch: the
+    // document still has the part under that name.
+    let mut document_names = BTreeMap::<String, String>::new();
     // Many parts moved alike are written and checked in one evaluation, not
     // two or three for each part (review 2026-10-19 WB-6).
     if let Some(moved) =
@@ -112,7 +134,12 @@ pub fn rewrite_rule_program_parts(
         let (rewritten, expected) = match change {
             PartChange::Delete => edit.delete()?,
             PartChange::Color(color) => edit.color(*color)?,
-            PartChange::Rename(new) => edit.rename(new)?,
+            PartChange::Rename(new) => {
+                let document_name = document_names.remove(name).unwrap_or_else(|| name.clone());
+                let renamed = edit.rename(new, &document_name)?;
+                document_names.insert(new.clone(), document_name);
+                renamed
+            }
             PartChange::Mirror {
                 copy,
                 point,
@@ -166,10 +193,12 @@ pub(crate) enum Expected {
         rotation: Mat3,
     },
     /// `before` with every part name `from` read as `to`, and `to` continuing
-    /// `from`; `kept` are the lines whose literal `from` is not the part's.
+    /// the document's part `was`; `kept` are the lines whose literal `from`
+    /// is not the part's.
     Renamed {
         from: String,
         to: String,
+        was: String,
         kept: Vec<usize>,
     },
     /// `before` and a new part `copy` with these world bounds.
@@ -251,7 +280,7 @@ impl Expected {
     /// A rename that left a literal of the old name the program still needs:
     /// refused with the lines to change by hand.
     fn kept_lines(&self, source: &RuleProgramSource) -> Option<RuleProgramApplyError> {
-        let Self::Renamed { from, to, kept } = self else {
+        let Self::Renamed { from, to, kept, .. } = self else {
             return None;
         };
         let lines = kept
@@ -363,7 +392,7 @@ impl Expected {
                 .of(after, part)
                 .is_some_and(|read| (read - value).abs() <= ACCUMULATED_ROUNDING),
             Self::Same(expected) => **expected == *after,
-            Self::Renamed { from, to, .. } => {
+            Self::Renamed { from, to, was, .. } => {
                 // A part, tool or group whose name starts with the old one
                 // ("p 2", "a mirrored") keeps its name, unless the
                 // program makes it from the part's name and now names it
@@ -379,7 +408,7 @@ impl Expected {
                     .collect::<Vec<_>>();
                 let mut expected = serde_json::to_value(before).expect("models serialize");
                 renamed(&mut expected, from, to, &kept);
-                expected["continuations"][to.as_str()] = from.as_str().into();
+                expected["continuations"][to.as_str()] = was.as_str().into();
                 serde_json::to_value(after).is_ok_and(|after| after == expected)
             }
             Self::Mirrored { copy, bounds } => {
@@ -734,7 +763,13 @@ impl Edit<'_> {
         Ok((rewritten, Expected::Same(Box::new(expected))))
     }
 
-    fn rename(&self, new: &str) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
+    /// `document_name` is the part's name in the document, which its new
+    /// name continues.
+    fn rename(
+        &self,
+        new: &str,
+        document_name: &str,
+    ) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
         let doing = "rename it";
         let name = quote(self.name);
         if new.trim().is_empty() || self.evaluated.model.part(new).is_some() {
@@ -784,12 +819,13 @@ impl Edit<'_> {
         }
         let renamed = self.with(edits);
         // The renamed part keeps the document part, and its ID, of the old name.
+        let was = quote(document_name);
         let rewritten = match source_edit::continuation_of(&renamed.file_name, &renamed.source, new)
         {
-            Some(was) => with_edits(&renamed, vec![(was, name)]),
+            Some(bytes) => with_edits(&renamed, vec![(bytes, was)]),
             None => appended(
                 &renamed,
-                &format!("continue_part({}, was={name})\n", quote(new)),
+                &format!("continue_part({}, was={was})\n", quote(new)),
             ),
         };
         Ok((
@@ -797,6 +833,7 @@ impl Edit<'_> {
             Expected::Renamed {
                 from: self.name.to_owned(),
                 to: new.to_owned(),
+                was: document_name.to_owned(),
                 kept,
             },
         ))

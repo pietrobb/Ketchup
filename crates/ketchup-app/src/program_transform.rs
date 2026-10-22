@@ -220,11 +220,13 @@ impl KetchupApp {
 }
 
 /// The part changes `commands` make, when each deletes, recolours or renames
-/// a part of the document, or sets a value of its feature, by its program name.
+/// a part of the document, or sets a value of its feature, by its program name
+/// at that point of the batch: after an earlier rename, its new name.
 fn part_changes(
     snapshot: &Snapshot,
     commands: &[CanonicalCommand],
 ) -> Option<Vec<(String, PartChange)>> {
+    let mut renamed = BTreeMap::<String, String>::new();
     commands
         .iter()
         .map(|command| {
@@ -255,8 +257,15 @@ fn part_changes(
                 }
                 _ => return None,
             };
-            let name =
+            let document_name =
                 ketchup_application::rule_program_part_name(snapshot, &InstancePath::root(id))?;
+            let name = renamed
+                .get(&document_name)
+                .cloned()
+                .unwrap_or_else(|| document_name.clone());
+            if let PartChange::Rename(new) = &change {
+                renamed.insert(document_name, new.clone());
+            }
             Some((name, change))
         })
         .collect()

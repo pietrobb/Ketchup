@@ -142,6 +142,29 @@ fn rename_changes_the_name_in_the_source_and_keeps_the_part() {
     );
 }
 
+/// Review 2026-10-19 P3: a part renamed twice in one batch, a to p to q,
+/// detached the program because q's old name p was no part of it yet.
+#[test]
+fn a_part_renamed_twice_in_one_batch_continues_its_document_name() {
+    let chained = rewrite_rule_program_parts(
+        &program(TWO),
+        &[
+            ("a".to_owned(), PartChange::Rename("p".to_owned())),
+            ("p".to_owned(), PartChange::Rename("q".to_owned())),
+        ],
+    )
+    .expect("renamed")
+    .expect("still the program's part");
+    assert_eq!(
+        chained.source,
+        "box(\"q\", (10, 20, 30), at=(0, 0, 0))\n\
+         box(\"b\", (5, 5, 5), at=(50, 0, 0))\n\
+         move(\"q\", by=(1, 0, 0))\n\
+         continue_part(\"q\", was=\"a\")\n"
+    );
+    assert_eq!(model(&chained).continuations["q"], "a");
+}
+
 /// Review 2026-10-21 P3: a rename to the name of a group, a component, a
 /// tool or a name another part continues was refused with the raw
 /// evaluation error of the rewritten program.

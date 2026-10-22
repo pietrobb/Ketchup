@@ -205,6 +205,32 @@ fn renaming_a_program_part_keeps_its_id() {
     assert_eq!(app.document.current().occurrences().count(), 2);
 }
 
+/// Review 2026-10-19 P3: renaming a part twice in one batch detached the
+/// program, because the second rename named the part by its document name.
+#[test]
+fn a_part_renamed_twice_in_one_batch_stays_the_programs() {
+    let mut app = app();
+    let a = occurrence(&app, "a").unwrap();
+    let rename = |name: &str| CanonicalCommand::RenameEntity {
+        id: a,
+        name: name.to_owned(),
+    };
+    assert_eq!(
+        app.commit_program_part_batch(&[rename("p"), rename("q")]),
+        Some(true),
+        "{}",
+        app.digest
+    );
+    assert_eq!(
+        source(&app),
+        format!(
+            "{}continue_part(\"q\", was=\"a\")\n",
+            PARTS.replace("box(\"a\"", "box(\"q\"")
+        )
+    );
+    assert_eq!(occurrence(&app, "q"), Some(a));
+}
+
 #[test]
 fn mirroring_a_program_part_adds_a_mirrored_line() {
     let mut app = app();
