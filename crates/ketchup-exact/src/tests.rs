@@ -136,7 +136,11 @@ fn a_shell_maps_the_faces_of_its_body_and_result_once_however_many_faces_it_reco
         .filter_map(|record| record.semantic_role.as_deref())
         .filter(|role| !role.is_empty() && *role != "start" && *role != "end")
         .collect();
-    assert_eq!(walls.len(), SIDES, "every outer wall keeps its name: {walls:?}");
+    assert_eq!(
+        walls.len(),
+        SIDES,
+        "every outer wall keeps its name: {walls:?}"
+    );
     assert!(
         maps <= 3,
         "{maps} face maps for {} history records; each record mapped the result again",
