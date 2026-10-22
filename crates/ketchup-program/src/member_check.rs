@@ -166,7 +166,7 @@ pub const BASIS: [&str; 9] = [
     "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
     "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2, gamma_M 1.3 solid / 1.25 glulam (table 2.3)",
     "bending with kh (3.2, 3.3), kcrit = 1: members assumed braced against lateral torsional buckling by the decking",
-    "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch",
+    "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch; elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
     "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
     "a computed check, not an authorized structural design",
@@ -649,14 +649,15 @@ enum Along {
     Prismatic(Bending),
     /// Cut across from a side or plan `profile` at local[`long`] = `start` +
     /// the load-frame position: each stretch of the cut, `distance` thick
-    /// along the extrusion. `other` and `extrusion` are the section-plane
-    /// coordinates (`across_grain`) of a unit along the profile's other local
-    /// axis and along its extrusion; `corners` the load-frame positions where
+    /// along the extrusion. `long_axis`, `other` and `extrusion` are the
+    /// section-plane coordinates (`across_grain`) of a unit along the
+    /// profile's `long` and other local axis and along its extrusion; `corners` the load-frame positions where
     /// the section changes.
     Profile {
         profile: Vec<ProgramProfileSegment>,
         long: usize,
         start: f64,
+        long_axis: [f64; 2],
         other: [f64; 2],
         extrusion: [f64; 2],
         distance: f64,
@@ -731,6 +732,40 @@ impl Along {
         *known.entry(key).or_insert_with(|| {
             self.outline(&cut)
                 .map(|outline| Bending::of(&Section::new(&outline, &[], 1)))
+        })
+    }
+
+    /// The lowest and highest level of the section at load-frame position `x`,
+    /// along the vertical across the grain, so that a face along the grain
+    /// keeps its level; None for a prismatic section and where there is no
+    /// material.
+    fn edges(&self, x: f64) -> Option<[f64; 2]> {
+        let Self::Profile {
+            start,
+            long_axis,
+            other,
+            extrusion,
+            distance,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let base = (start + x) * long_axis[1];
+        let levels: Vec<f64> = self
+            .cut(x)
+            .iter()
+            .flatten()
+            .flat_map(|c| {
+                let level = base + c * other[1];
+                [level, level + distance * extrusion[1]]
+            })
+            .collect();
+        (!levels.is_empty()).then(|| {
+            [
+                levels.iter().copied().fold(f64::MAX, f64::min),
+                levels.iter().copied().fold(f64::MIN, f64::max),
+            ]
         })
     }
 
@@ -1056,6 +1091,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         profile: segments.clone(),
         long,
         start,
+        long_axis: in_section(world[long]),
         other: in_section(world[1 - long]),
         extrusion: in_section(world[2]),
         distance: *distance_mm,
@@ -1267,6 +1303,18 @@ fn segment(
 /// where it relieves it (1.0 at the ultimate limit state, EN 1990 table
 /// A1.2(B)); each stretch of a variable load counts only where it adds.
 fn envelope(factors: &Loads, kinds: &[usize], values: &[f64], relieving: Option<f64>) -> f64 {
+    let (largest, smallest) = extremes(factors, kinds, values, relieving);
+    largest.abs().max(smallest.abs())
+}
+
+/// The largest and the smallest signed effect that `envelope` takes the
+/// magnitude of.
+fn extremes(
+    factors: &Loads,
+    kinds: &[usize],
+    values: &[f64],
+    relieving: Option<f64>,
+) -> (f64, f64) {
     let mut permanent = 0.0;
     let (mut adding, mut relieving_variable) = (0.0, 0.0);
     for (kind, value) in kinds.iter().zip(values) {
@@ -1283,11 +1331,10 @@ fn envelope(factors: &Loads, kinds: &[usize], values: &[f64], relieving: Option<
     }
     let gamma = factors.get(LOAD_KINDS[0]).copied().unwrap_or(0.0);
     let low = relieving.unwrap_or(gamma);
-    let (largest, smallest) = (
+    (
         (gamma * permanent).max(low * permanent) + adding,
         (gamma * permanent).min(low * permanent) + relieving_variable,
-    );
-    largest.abs().max(smallest.abs())
+    )
 }
 
 /// gamma_G of a permanent load that relieves an ultimate effect.
@@ -1338,7 +1385,7 @@ fn beam_checks(
     design: &Design,
     uls: &[Combination],
     sls: &[(Combination, Loads)],
-) -> (Vec<Check>, bool) {
+) -> (Vec<Check>, bool, Option<String>) {
     let class = design.class;
     let lever = horizontal(load.axis);
     let cos_t = horizontal(shape.grain);
@@ -1621,7 +1668,144 @@ fn beam_checks(
     }
     checks.extend(notch.0);
     checks.extend(bearing.0);
-    (checks, spans_checked)
+    let unchecked = tension_notch(shape, &segments, &zones, uls, &kinds);
+    (checks, spans_checked, unchecked)
+}
+
+/// EN 1995-1-1 6.5.1(2): the stress concentration at a change in depth may be
+/// ignored where the change slopes at 1:10 or flatter, or lies on the side
+/// in compression.
+const NOTCH_SLOPE: f64 = 0.1;
+
+/// Review 2026-10-19 PG-15: where a member's depth changes more steeply than
+/// 1:10 on a side that is in tension, away from its bearings (a notch over a
+/// bearing is checked with kv, 6.5.2), the stress concentration is not
+/// checked; the first such place, as a reason.
+fn tension_notch(
+    shape: &Shape,
+    segments: &[(Segment, Vec<Option<Bending>>)],
+    zones: &[Zone],
+    uls: &[Combination],
+    kinds: &[usize],
+) -> Option<String> {
+    let corners = shape.bending.corners();
+    if corners.len() < 3 {
+        return None;
+    }
+    // The signed moments (sagging positive) at the stations within `near` of x.
+    let moments = |x: f64, near: f64| {
+        let mut bounds = Vec::new();
+        for (seg, _) in segments {
+            for (j, station) in seg.xs.iter().enumerate() {
+                if (station - x).abs() > near {
+                    continue;
+                }
+                let values: Vec<f64> = seg.moments.iter().map(|m| m[j]).collect();
+                for combination in uls {
+                    bounds.push(extremes(
+                        &combination.factors,
+                        kinds,
+                        &values,
+                        Some(GAMMA_G_FAVOURABLE),
+                    ));
+                }
+            }
+        }
+        bounds
+    };
+    let scale = moments(0.0, f64::MAX)
+        .iter()
+        .fold(0.0, |most: f64, (a, b)| most.max(a.abs()).max(b.abs()));
+    let inner = &corners[1..corners.len() - 1];
+    for (i, &c) in inner.iter().enumerate() {
+        let (before, after) = (corners[i], corners[i + 2]);
+        // Underside (0) and top (1); `inward` is the way the edge moves into the member.
+        for (side, inward) in [(0, 1.0), (1, -1.0)] {
+            let level = |x: f64| shape.bending.edges(x).map(|e| e[side]);
+            let stations = [
+                (before + c) / 2.0,
+                c - ROUNDING,
+                c + ROUNDING,
+                (c + after) / 2.0,
+            ];
+            let Some(levels) = stations
+                .iter()
+                .map(|x| level(*x))
+                .collect::<Option<Vec<f64>>>()
+            else {
+                continue;
+            };
+            // How fast the edge moves into the member before c, across it (a
+            // step) and after it. Where that drops by more than 1:10 the edge
+            // has a re-entrant corner: a step, or the floor of a sloped notch;
+            // not where it turns in (a cut end tapering off).
+            let inwards = |a: usize, b: usize| {
+                (levels[b] - levels[a]) * inward / ((stations[b] - stations[a]) * shape.arc)
+            };
+            let (into, across, out) = (inwards(0, 1), inwards(1, 2), inwards(2, 3));
+            if (into - across).max(across - out).max(into - out) <= NOTCH_SLOPE {
+                continue;
+            }
+            // The side the larger moment there pulls; a small reversed moment
+            // (variable load on the overhangs only) does not count.
+            let (sagging, hogging) = moments(c, 2.0 * ROUNDING)
+                .iter()
+                .fold((0.0, 0.0), |(s, h): (f64, f64), (largest, smallest)| {
+                    (s.max(*largest), h.max(-*smallest))
+                });
+            let in_tension = sagging.max(hogging) > ROUNDING * scale
+                && if side == 0 {
+                    sagging >= hogging
+                } else {
+                    hogging >= sagging
+                };
+            if !in_tension {
+                continue;
+            }
+            // A notch over a bearing: the edge stays set back from c to it.
+            let outer = levels
+                .iter()
+                .copied()
+                .fold(f64::MAX, |most, l| most.min(l * inward))
+                * inward;
+            let set_back = |x: f64| level(x).is_none_or(|l| (l - outer) * inward > ROUNDING);
+            let over_bearing = zones.iter().any(|zone| {
+                if zone.lo <= c && c <= zone.hi {
+                    return true;
+                }
+                let (lo, hi) = if zone.hi < c {
+                    (zone.hi, c)
+                } else {
+                    (c, zone.lo)
+                };
+                let mut probes: Vec<f64> = corners
+                    .iter()
+                    .filter(|x| lo < **x && **x < hi)
+                    .flat_map(|x| [x - ROUNDING, x + ROUNDING])
+                    .chain(
+                        corners
+                            .windows(2)
+                            .map(|pair| (pair[0] + pair[1]) / 2.0)
+                            .filter(|x| lo < *x && *x < hi),
+                    )
+                    .collect();
+                probes.push(if zone.hi < c {
+                    c - ROUNDING
+                } else {
+                    c + ROUNDING
+                });
+                probes.into_iter().all(set_back)
+            });
+            if !over_bearing {
+                return Some(format!(
+                    "its depth changes more steeply than 1:10 on its {}, which is in tension, at {} mm, away from its bearings: the stress concentration there is not checked (EN 1995-1-1 6.5.1(2))",
+                    if side == 0 { "underside" } else { "top" },
+                    c.round()
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// EC5 6.5.2, fig. 6.11: `x`, mm, from the middle of the reaction in `zone`
@@ -1850,8 +2034,10 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                 // or that the load twists.
                 missing.push(reason.to_owned());
             } else {
-                let (checks, spans_checked) = beam_checks(load, shape, &design, &uls, &sls);
+                let (checks, spans_checked, unchecked) =
+                    beam_checks(load, shape, &design, &uls, &sls);
                 check.checks = checks;
+                missing.extend(unchecked);
                 // Separate bearings always leave a span; without one, bending,
                 // shear and deflection were never checked.
                 if !spans_checked {

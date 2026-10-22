@@ -357,7 +357,8 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
     );
     let beam = member(&report, "beam");
     assert_eq!(beam.role, "beam");
-    assert_eq!(beam.missing, Vec::<String>::new());
+    // The notch in the side in tension leaves its stress concentration unchecked (PG-15).
+    assert_eq!(beam.missing.len(), 1, "{:?}", beam.missing);
     // kh of the 100 mm deep section: (150 / 100)^0.2 (3.2).
     let kh = 1.5f64.powf(0.2);
     let moment = 1.5 * 1.2 * 3900f64.powi(2) / 8.0;
@@ -366,6 +367,51 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
         moment / (100.0 * 100.0 * 100.0 / 6.0) / (0.8 * 24.0 / 1.3 * kh),
     );
     assert_eq!(beam.status, "fail");
+}
+
+#[test]
+fn a_notch_in_the_side_in_tension_away_from_the_bearings_is_not_verified() {
+    // Review 2026-10-19 PG-15: the beam of the test above at 1 kN/m², its
+    // underside notched 100 mm deep at mid-span, passed on the net section
+    // with 0.641. EC5 6.5.1(2) ignores the stress concentration of a
+    // right-angled notch only on the side in compression; on the top it may.
+    let source = |profile: &str| {
+        format!(
+            "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 1.0, on = [\"deck\"], source = \"test\")
+timber_design({{\"C24\": \"C24\"}})
+box(\"post a\", (100, 100, 2000), material = \"C24\", grounded = True)
+box(\"post b\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+part = extrude(\"beam\", profile = {profile}, distance = 100, material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 100, 2000), z = (0, -1, 0), x = (1, 0, 0))
+box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+"
+        )
+    };
+    let below = report(
+        &source(
+            "[(0, 0), (1950, 0), (1950, 100), (2050, 100), (2050, 0), (4000, 0), (4000, 200), (0, 200)]",
+        ),
+        &[],
+    );
+    let below = member(&below, "beam");
+    close(utilization(below, "bending"), 0.641);
+    assert_eq!(below.status, "not_verified", "{:?}", below.checks);
+    assert_eq!(
+        below.missing,
+        [
+            "its depth changes more steeply than 1:10 on its underside, which is in tension, at 1950 mm, away from its bearings: the stress concentration there is not checked (EN 1995-1-1 6.5.1(2))"
+        ]
+    );
+    let above = report(
+        &source(
+            "[(0, 0), (4000, 0), (4000, 200), (2050, 200), (2050, 100), (1950, 100), (1950, 200), (0, 200)]",
+        ),
+        &[],
+    );
+    let above = member(&above, "beam");
+    assert_eq!(above.missing, Vec::<String>::new());
+    assert_eq!(above.status, "pass", "{:?}", above.checks);
 }
 
 /// A 100 x 200 C24 purlin 4000 mm long along world X turned 30° about its
