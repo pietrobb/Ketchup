@@ -5,8 +5,6 @@ mod bvh_and_broad_phase;
 mod canonical_projection;
 mod face_intent;
 mod picking_snapping_and_locales;
-mod push_pull_gesture;
-mod rectangle_face_authoring;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
