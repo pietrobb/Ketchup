@@ -1474,6 +1474,7 @@ digest-fit-underlay-line-required = Kliknite na bod na zobrazenej čiare podklad
 digest-fit-underlay-model-required = Kliknite na bod v modeli
 digest-fit-underlay-done = Podklad osadený: otočený o { $turn }°, mierka { $scale }, druhý bod mimo o { $mismatch } mm
 digest-fit-underlay-failed = Podklad nebol osadený: { $reason }
+digest-fit-underlay-picks-dropped = Dokument sa zmenil, preto sa vybrané body zahodili: znova kliknite na bod na zobrazenej čiare podkladu
 digest-underlay-selected = Vybraný podklad { $name }: Posun a Otočenie ho osadia
 digest-underlay-edit-failed = Podklad nebol posunutý: { $reason }
 error-underlay-copy = podklad sa osádza, nekopíruje

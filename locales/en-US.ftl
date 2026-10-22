@@ -1474,6 +1474,7 @@ digest-fit-underlay-line-required = Click a point on a shown line of the underla
 digest-fit-underlay-model-required = Click a point in the model
 digest-fit-underlay-done = Underlay placed: turned { $turn }°, scale { $scale }, second point off by { $mismatch } mm
 digest-fit-underlay-failed = The underlay was not placed: { $reason }
+digest-fit-underlay-picks-dropped = The document changed, so the picked points were dropped: click a point on a shown line of the underlay again
 digest-underlay-selected = Underlay { $name } selected: Move and Rotate place it
 digest-underlay-edit-failed = The underlay was not moved: { $reason }
 error-underlay-copy = an underlay is placed, not copied

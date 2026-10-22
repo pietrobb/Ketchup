@@ -12,6 +12,9 @@ pub(crate) struct UnderlayFitGesture {
     pub(crate) from: Option<(UnderlayId, Vec<[f64; 2]>)>,
     /// The picked model points in document XY.
     pub(crate) to: Vec<[f64; 2]>,
+    /// The document revision the points were picked on: once it changes (an MCP edit
+    /// among them) they may no longer lie where the lines and the model are.
+    revision: u64,
     /// The fit also scales the underlay; kept between fits.
     pub(crate) scaled: bool,
 }
@@ -60,6 +63,16 @@ impl KetchupApp {
     /// One click of the Fit underlay tool: the first two pick points on one underlay's
     /// lines, the next two model points; the fourth places the underlay.
     pub(crate) fn pick_underlay_fit_point(&mut self, pointer: Pos2, rect: Rect) {
+        let revision = self.document_revision();
+        if self.gesture.underlay_fit.from.is_some()
+            && self.gesture.underlay_fit.revision != revision
+        {
+            self.gesture.underlay_fit.clear_points();
+            self.status_key = "status-fit-underlay-first-line";
+            self.digest = self.catalog.text("digest-fit-underlay-picks-dropped");
+            return;
+        }
+        self.gesture.underlay_fit.revision = revision;
         let picked_from = self
             .gesture
             .underlay_fit

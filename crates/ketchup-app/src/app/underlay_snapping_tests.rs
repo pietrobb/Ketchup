@@ -293,6 +293,55 @@ fn the_fit_underlay_tool_places_two_clicked_underlay_points_on_two_clicked_model
     );
 }
 
+/// Review 2026-10-21 P3: the points picked on the underlay were kept when the document
+/// changed under the tool, by Undo or by an MCP fit, so the next two model clicks placed
+/// the underlay from where its lines no longer are. The picks are dropped instead.
+#[test]
+fn the_fit_underlay_tool_drops_its_picks_when_the_document_changes_under_it() {
+    let mut app = imported();
+    let rect = viewport();
+    let id = app.document.current().underlays().next().unwrap().id;
+    let click = |app: &mut KetchupApp, point: Vec3| {
+        let pointer = app.project(point, rect) + Vec2::new(2.0, 1.0);
+        app.pick_underlay_fit_point(pointer, rect);
+    };
+    // A first fit, so that Undo has something to take back.
+    app.fit_underlay(
+        id,
+        [[40.0, 20.0], [240.0, 20.0]],
+        [[40.0, 0.0], [240.0, 0.0]],
+        false,
+    )
+    .unwrap();
+    app.dispatch_command(AppCommand::FitUnderlay);
+    click(&mut app, Vec3::new(40.0, 0.0, 0.0));
+    click(&mut app, Vec3::new(240.0, 0.0, 0.0));
+    assert!(app.gesture.underlay_fit.from.is_some());
+    assert!(app.undo());
+    assert!(app.gesture.underlay_fit.from.is_none(), "kept after Undo");
+
+    // An MCP fit while two underlay points are picked: the next click starts over.
+    app.dispatch_command(AppCommand::FitUnderlay);
+    click(&mut app, Vec3::new(40.0, 20.0, 0.0));
+    click(&mut app, Vec3::new(240.0, 20.0, 0.0));
+    app.fit_underlay(
+        id,
+        [[40.0, 20.0], [240.0, 20.0]],
+        [[40.0, 50.0], [240.0, 50.0]],
+        false,
+    )
+    .unwrap();
+    let undo = app.undo_step_count();
+    click(&mut app, Vec3::new(400.0, 100.0, 0.0));
+    assert_eq!(
+        app.digest,
+        app.catalog.text("digest-fit-underlay-picks-dropped")
+    );
+    assert_eq!(app.status_key, "status-fit-underlay-first-line");
+    click(&mut app, Vec3::new(400.0, 300.0, 0.0));
+    assert_eq!(app.undo_step_count(), undo, "{}", app.digest);
+}
+
 #[test]
 fn a_hidden_underlay_layer_or_underlay_gives_no_snap() {
     let mut app = imported();
