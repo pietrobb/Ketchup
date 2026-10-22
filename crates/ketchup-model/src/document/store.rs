@@ -376,6 +376,13 @@ impl DocumentStore {
             Some(BoundRuleProgram::new(source));
     }
 
+    /// Gives the one revision of a store just opened without its history the
+    /// named checkpoint the file kept for it (review 2026-10-21 UNDO-1).
+    pub(crate) fn restore_opened_checkpoint(&mut self, name: String) {
+        debug_assert_eq!(self.revisions.len(), 1);
+        Arc::make_mut(&mut self.revisions[self.cursor]).checkpoint = Some(name);
+    }
+
     /// Associates the source with the current newly committed revision, within the same transaction.
     /// A later manual revision does not inherit it.
     pub fn bind_rule_program(&mut self, source: RuleProgramSource) -> Result<(), CanonicalError> {

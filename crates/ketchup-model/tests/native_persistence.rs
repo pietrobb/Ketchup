@@ -1987,6 +1987,61 @@ fn revision_catalog_checkpoint_diff_and_rollback_are_auditable_and_persistent() 
     );
 }
 
+/// Review 2026-10-21 UNDO-1: Save writes only the current revision, so a named
+/// checkpoint on that revision must come back with the file; one on an earlier
+/// revision has no saved model to name and is not kept.
+#[test]
+fn a_named_checkpoint_on_the_saved_revision_survives_save_and_reopen() {
+    let mut store = graph_document();
+    let base = store.current();
+    store
+        .create_checkpoint(base.revision_id(), &base.canonical_digest(), "Draft")
+        .unwrap();
+    let proposal = store
+        .prepare_proposal_with_context(
+            CommandBatch::new(vec![CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("5", 5.0).unwrap(),
+            }]),
+            ProposalContext::local_assistant_model(),
+        )
+        .unwrap();
+    store.commit_verified_proposal(&proposal).unwrap();
+    let saved = store.current();
+    store
+        .create_checkpoint(
+            saved.revision_id(),
+            &saved.canonical_digest(),
+            "Sent to client",
+        )
+        .unwrap();
+
+    let prepared =
+        persistence::prepare_document(&store, &persistence::ContainerData::default()).unwrap();
+    let mut reopened = persistence::load(prepared.bytes())
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    let catalog = reopened.revision_catalog();
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog[0].revision_id, saved.revision_id());
+    assert_eq!(catalog[0].canonical_digest, saved.canonical_digest());
+    assert_eq!(catalog[0].checkpoint.as_deref(), Some("Sent to client"));
+    assert!(reopened.undo().is_none());
+
+    // A file whose current revision has no checkpoint stays as it was.
+    let unnamed = graph_document();
+    let unnamed_bytes =
+        persistence::prepare_document(&unnamed, &persistence::ContainerData::default()).unwrap();
+    let reopened_unnamed = persistence::load(unnamed_bytes.bytes())
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    assert_eq!(reopened_unnamed.revision_catalog()[0].checkpoint, None);
+}
+
 #[test]
 fn revision_metadata_and_rollback_reject_invalid_or_stale_requests_without_mutation() {
     let mut store = graph_document();

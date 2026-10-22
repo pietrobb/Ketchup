@@ -503,10 +503,12 @@ fn revision_catalog_checkpoint_diff_rollback_and_save_open_work_through_accesski
             .and_then(|entry| entry.checkpoint.as_deref()),
         Some("Reviewed option")
     );
-    // The notice promises no saving: the checkpoint lives with the session's Undo
-    // and its limit, as the save and reopen below show (review 2026-10-21 UNDO-1).
+    // Save keeps the checkpoint only while it names the current revision; after
+    // another edit it lives with the session's Undo and its limit, as the
+    // rollback, save and reopen below show (review 2026-10-21 UNDO-1).
     let notice = shell.app().action_digest();
-    assert!(notice.contains("for this session"), "{notice}");
+    assert!(notice.contains("Save now to keep it"), "{notice}");
+    assert!(notice.contains("for this session only"), "{notice}");
     assert!(
         notice.contains(&format!("{} newer edits", limits::UNDO_REVISIONS)),
         "{notice}"
@@ -537,11 +539,48 @@ fn revision_catalog_checkpoint_diff_rollback_and_save_open_work_through_accesski
 
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
     assert!(fixture.is_file(), "{}", shell.app().action_digest());
-    // The catalog and its checkpoints live with the session's Undo, not in the file.
+    // The saved rollback revision has no checkpoint, so the file holds none: the
+    // one on the earlier revision lived with the session's Undo.
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), base_digest);
     assert_eq!(shell.app().revision_catalog().len(), 1);
+    assert_eq!(shell.app().revision_catalog()[0].checkpoint, None);
+    assert!(!shell.app().can_undo());
+}
+
+/// Review 2026-10-21 UNDO-1: a checkpoint named on the revision the user saves
+/// comes back when the file is opened again, which then is not unsaved.
+#[test]
+fn a_checkpoint_named_before_save_is_there_after_reopening() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("named-checkpoint.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&fixture)
+        .queue_open(&fixture)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    let saved_revision = shell.app().document_revision();
+    let saved_digest = shell.app().canonical_digest();
+
+    open_history(&mut shell);
+    let checkpoint_label = shell.catalog().text("revision-history-checkpoint-name");
+    shell.focus_text_input(&checkpoint_label);
+    shell.type_text("Sent to client");
+    shell.click_button_label(&shell.catalog().text("revision-history-create-checkpoint"));
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(fixture.is_file(), "{}", shell.app().action_digest());
+
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), saved_digest);
+    let catalog = shell.app().revision_catalog();
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog[0].revision_id, saved_revision);
+    assert_eq!(catalog[0].checkpoint.as_deref(), Some("Sent to client"));
+    assert!(!shell.app().is_dirty());
     assert!(!shell.app().can_undo());
 }
 

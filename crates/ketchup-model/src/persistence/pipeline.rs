@@ -28,7 +28,8 @@ impl PreparedDocument {
 }
 
 /// Encodes the current revision of `document` once as a native file. The Undo
-/// history stays in memory: a file holds none.
+/// history stays in memory: a file holds none, only the named checkpoint of
+/// the revision it saves.
 pub fn prepare_document(
     document: &DocumentStore,
     container: &ContainerData,

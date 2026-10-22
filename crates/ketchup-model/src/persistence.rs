@@ -929,9 +929,34 @@ pub fn save_document_store_current_snapshot(
         &document_bin,
         container_data,
         imported_source_blob_hashes(&snapshot),
-        None,
+        current_checkpoint_history(document, &document_bin)?,
         encoded_program(document.current_rule_program())?,
     )
+}
+
+/// The current revision alone as `history.bin`, when it has a named checkpoint:
+/// a file keeps no Undo steps, but the name of the revision it holds comes back
+/// with it (review 2026-10-21 UNDO-1). A checkpoint on an earlier revision has no
+/// saved model to name and is not written.
+fn current_checkpoint_history(
+    document: &DocumentStore,
+    document_bin: &crate::document::EncodedSnapshot,
+) -> Result<Option<Vec<u8>>, PersistenceError> {
+    let current = document
+        .revision_history()
+        .nth(document.history_cursor())
+        .expect("the history cursor names a revision");
+    if current.checkpoint().is_none() {
+        return Ok(None);
+    }
+    encode_history(
+        &[current],
+        0,
+        document.next_revision_id(),
+        document_bin,
+        HISTORY_BUDGET,
+    )
+    .map(Some)
 }
 
 #[cfg(feature = "testing")]
@@ -1744,6 +1769,17 @@ fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, Pe
         }
         (None, _) => {}
     }
+    if let (
+        Some(revision_history),
+        LoadOutcome::Editable {
+            document: opened, ..
+        },
+    ) = (&revision_history, &mut outcome)
+        && let Some(checkpoint) =
+            current_history_checkpoint(revision_history, &document, opened.current().revision_id())
+    {
+        opened.restore_opened_checkpoint(checkpoint);
+    }
     if let Some(revision_history) = revision_history {
         // A file opens without Undo steps; only a work-recovery checkpoint restores
         // them. The current revision was verified on its own; a history that no
@@ -1921,6 +1957,24 @@ fn current_history_program(
         .rule_program
         .map(|program| decode_history_program(program, &chunks))
         .transpose())
+}
+
+/// The named checkpoint of the revision a history names as current, when that
+/// is the revision the file opens at (review 2026-10-21 UNDO-1). Only the name
+/// is read: a history that does not read that far keeps none, as the document
+/// itself was verified on its own.
+fn current_history_checkpoint(
+    bytes: &[u8],
+    document_bytes: &[u8],
+    expected_revision_id: u64,
+) -> Option<String> {
+    let ParsedHistory {
+        cursor, records, ..
+    } = read_history_records(bytes, document_bytes, HISTORY_BUDGET, true).ok()?;
+    let current = records.into_iter().nth(cursor)?;
+    (current.revision_id == expected_revision_id)
+        .then_some(current.checkpoint)
+        .flatten()
 }
 
 fn decode_history_program(
