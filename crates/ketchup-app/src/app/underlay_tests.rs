@@ -119,6 +119,85 @@ fn layers_the_drawing_turned_off_or_froze_come_in_hidden() {
     assert!(drawn(&mut app)[0] > shown_only[0]);
 }
 
+/// Capability review of the fix above: a block placed on a frozen layer showed, and gave
+/// snaps, when what it holds is on a shown layer. Freezing the layer of a block's
+/// placement hides all of it, its nested blocks and attributes too; it comes in on that
+/// layer, hidden. Turning a layer off hides only what the block holds on layer 0.
+#[test]
+fn a_block_placed_on_a_frozen_layer_comes_in_hidden_with_that_layer() {
+    let line =
+        |layer: &str, y: u32| format!("0\nLINE\n8\n{layer}\n10\n0\n20\n{y}\n11\n100\n21\n{y}\n");
+    let layer = |name: &str, color: i32, flags: u32| {
+        format!("0\nLAYER\n2\n{name}\n70\n{flags}\n62\n{color}\n6\nCONTINUOUS\n")
+    };
+    let block = |name: &str, entities: &str| {
+        format!("0\nBLOCK\n8\n0\n2\n{name}\n70\n0\n10\n0\n20\n0\n{entities}0\nENDBLK\n")
+    };
+    let insert = |name: &str, layer: &str, x: u32| {
+        format!("0\nINSERT\n8\n{layer}\n2\n{name}\n10\n{x}\n20\n0\n")
+    };
+    let read = |entities: &str| {
+        let dxf = format!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+             0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n{}{}{}0\nENDTAB\n0\nENDSEC\n\
+             0\nSECTION\n2\nBLOCKS\n{}{}0\nENDSEC\n\
+             0\nSECTION\n2\nENTITIES\n{}{entities}0\nENDSEC\n0\nEOF\n",
+            layer("WALL", 1, 0),
+            layer("FURN", 5, 1),
+            layer("OFF", -3, 0),
+            block("B", &line("WALL", 200)),
+            block("NEST", &insert("B", "FURN", 1000)),
+            line("WALL", 0),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("plan.dxf");
+        std::fs::write(&path, dxf).unwrap();
+        let dialogs = dialogs::ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &path);
+        let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+        app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+        let underlay = app
+            .document
+            .current()
+            .underlays()
+            .next()
+            .unwrap_or_else(|| panic!("no underlay: {}", app.action_digest()))
+            .clone();
+        (app, underlay)
+    };
+    let (mut walls, _) = read("");
+    let walls = drawn(&mut walls);
+    let (mut app, underlay) = read(&format!(
+        "{}{}{}",
+        // B on the frozen layer, with an attribute on a shown one; NEST, on a shown
+        // layer, places B on the frozen layer; B on a layer turned off still shows.
+        "0\nINSERT\n8\nFURN\n2\nB\n10\n0\n20\n0\n66\n1\n\
+         0\nATTRIB\n8\nWALL\n2\nTAG\n1\nchair\n10\n0\n20\n300\n40\n50\n0\nSEQEND\n",
+        insert("NEST", "WALL", 0),
+        insert("B", "OFF", 3000),
+    ));
+    let with_off = drawn(&mut app)[0];
+    let off = underlay.layers.iter().find(|layer| layer.name == "OFF");
+    if let Some(off) = off {
+        assert!(app.set_tag_visibility(off.tag, true));
+        assert_eq!(
+            drawn(&mut app)[0],
+            with_off,
+            "B's line is on WALL, never off"
+        );
+    }
+    let (mut only_off, _) = read(&insert("B", "OFF", 3000));
+    assert_eq!(
+        with_off,
+        drawn(&mut only_off)[0],
+        "nothing of a block on a frozen layer shows: {walls:?}, {}",
+        app.action_digest()
+    );
+    assert!(with_off > walls[0], "a block on a layer turned off shows");
+    let furn = underlay.layers.iter().find(|layer| layer.name == "FURN");
+    assert!(app.set_tag_visibility(furn.expect("FURN layer").tag, true));
+    assert!(drawn(&mut app)[0] > with_off, "shown once FURN is shown");
+}
+
 #[test]
 fn an_underlay_draws_its_texts_on_their_layer_which_hides_them() {
     let directory = tempfile::tempdir().unwrap();

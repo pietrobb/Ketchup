@@ -351,6 +351,9 @@ struct DiagnosticCounts {
     /// a profile import leaves their entities out (review 2026-10-18 MF-13).
     /// An underlay keeps them, with their tags hidden.
     hidden_layers: BTreeSet<String>,
+    /// The layers, upper case, the author froze, as an underlay reads them: all a block
+    /// placed on one of them holds goes on that layer ([`place_on_frozen_layer`]).
+    frozen_layers: BTreeSet<String>,
     /// The code page its `$DWGCODEPAGE` names, ANSI_1252 when it names none: a text's
     /// `%%nnn` is the character nnn of it.
     code_page: &'static encoding_rs::Encoding,
@@ -362,6 +365,7 @@ impl DiagnosticCounts {
             entries: BTreeMap::new(),
             reading,
             hidden_layers: BTreeSet::new(),
+            frozen_layers: BTreeSet::new(),
             code_page: encoding_rs::WINDOWS_1252,
         }
     }
@@ -585,8 +589,10 @@ fn read_dxf(
     let (sections, mut diagnostics) = parse_sections(&pairs, reading)?;
     let header = sections.get("HEADER").map(Vec::as_slice).unwrap_or(&[]);
     let (units, insbase_mm) = parse_header(header, options, &mut diagnostics)?;
-    diagnostics.hidden_layers =
-        hidden_layers(sections.get("TABLES").map(Vec::as_slice).unwrap_or(&[]));
+    diagnostics.hidden_layers = hidden_layers(
+        sections.get("TABLES").map(Vec::as_slice).unwrap_or(&[]),
+        true,
+    );
     let mut entity_count = 0;
     let blocks = parse_blocks(
         sections.get("BLOCKS").map(Vec::as_slice).unwrap_or(&[]),
@@ -1092,7 +1098,7 @@ fn parse_entities(
                 }
                 "INSERT" => {
                     let profile_ordinal = ordinal;
-                    let attributes = parse_insert_attributes(
+                    let mut attributes = parse_insert_attributes(
                         record,
                         pairs,
                         &mut index,
@@ -1102,7 +1108,7 @@ fn parse_entities(
                         diagnostics,
                     )?;
                     let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
-                    let (profiles, texts) = parse_insert(
+                    let (mut profiles, mut texts) = parse_insert(
                         record,
                         units,
                         profile_ordinal,
@@ -1111,16 +1117,19 @@ fn parse_entities(
                         &mut output.xrefs,
                         diagnostics,
                     )?;
+                    texts.append(&mut attributes);
+                    place_on_frozen_layer(record, diagnostics, &mut profiles, &mut texts)?;
                     for profile in profiles {
                         output.layers.insert(profile.layer.clone());
                         output.explicit_profiles.push(profile);
                     }
-                    output.push_texts(texts.into_iter().chain(attributes));
+                    output.push_texts(texts);
                 }
                 "DIMENSION" => {
                     let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
-                    let (profiles, texts) =
+                    let (mut profiles, mut texts) =
                         parse_dimension(record, units, ordinal, block_definitions, diagnostics)?;
+                    place_on_frozen_layer(record, diagnostics, &mut profiles, &mut texts)?;
                     for profile in profiles {
                         output.layers.insert(profile.layer.clone());
                         output.explicit_profiles.push(profile);
@@ -1209,10 +1218,10 @@ fn left_out(
     })
 }
 
-/// The layers, upper case, of the TABLES section `tables` that are turned off
-/// (a negative color, group 62) or frozen (group 70 bit 1); the author sees
-/// none of their entities (review 2026-10-18 MF-13).
-fn hidden_layers(tables: &[DxfPair<'_>]) -> BTreeSet<String> {
+/// The layers, upper case, of the TABLES section `tables` that are frozen (group 70
+/// bit 1), and with `turned_off` those turned off (a negative color, group 62) too; the
+/// author sees none of their entities (review 2026-10-18 MF-13).
+fn hidden_layers(tables: &[DxfPair<'_>], turned_off: bool) -> BTreeSet<String> {
     let mut hidden = BTreeSet::new();
     let mut table = String::new();
     let mut index = 0;
@@ -1235,7 +1244,7 @@ fn hidden_layers(tables: &[DxfPair<'_>]) -> BTreeSet<String> {
             table = group(2).unwrap_or_default().to_ascii_uppercase();
         } else if table == "LAYER"
             && kind.eq_ignore_ascii_case("LAYER")
-            && (integer(62).is_some_and(|color| color < 0)
+            && ((turned_off && integer(62).is_some_and(|color| color < 0))
                 || integer(70).is_some_and(|flags| flags & 1 != 0))
             && let Some(name) = group(2)
         {
@@ -1243,6 +1252,32 @@ fn hidden_layers(tables: &[DxfPair<'_>]) -> BTreeSet<String> {
         }
     }
     hidden
+}
+
+/// Puts all that the block of `record`, an INSERT or a DIMENSION, places on the
+/// placement's layer when the drawing froze it, its nested blocks and attributes too:
+/// freezing that layer hides the whole placement, not only what the block holds on layer
+/// 0 (turning it off hides only that). An underlay keeps it there, hidden with that
+/// layer's tag (capability review of review 2026-10-21 P3).
+fn place_on_frozen_layer(
+    record: &[DxfPair<'_>],
+    diagnostics: &DiagnosticCounts,
+    profiles: &mut [OrderedProfile],
+    texts: &mut [OrderedText],
+) -> Result<(), DxfImportError> {
+    let layer = parse_layer(record)?;
+    if diagnostics
+        .frozen_layers
+        .contains(&layer.to_ascii_uppercase())
+    {
+        for profile in profiles {
+            profile.layer.clone_from(&layer);
+        }
+        for text in texts {
+            text.layer.clone_from(&layer);
+        }
+    }
+    Ok(())
 }
 
 /// Steps over what follows an entity left out up to its SEQEND: the

@@ -55,6 +55,7 @@ pub fn read_dxf_underlay_from(
     let (units, _) = parse_header(&header, options, &mut diagnostics)?;
     let styles =
         style::DrawingStyles::read(&sections.tables.pairs(), &header, units, &mut diagnostics)?;
+    diagnostics.frozen_layers = hidden_layers(&sections.tables.pairs(), false);
     let mut entity_count = 0;
     let blocks = parse_blocks(
         &sections.blocks.pairs(),
@@ -158,7 +159,7 @@ pub fn read_dxf_underlay_from(
         return Err(DxfImportError::NoSupportedGeometry);
     }
     let diagnostics = finish_report(diagnostics, &layers, units, offset_mm)?;
-    let hidden = hidden_layers(&sections.tables.pairs());
+    let hidden = hidden_layers(&sections.tables.pairs(), true);
     let hidden_layers = layer_names
         .iter()
         .filter(|layer| hidden.contains(&layer.to_ascii_uppercase()))
