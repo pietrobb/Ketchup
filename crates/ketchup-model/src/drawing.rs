@@ -5,9 +5,9 @@ use crate::assembly::{
     solve_rigid_assembly,
 };
 use crate::document::{
-    CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, DocumentId, DocumentStore,
-    InstancePath, InstancePathStep, OccurrenceId, Proposal, ProposalPrepareError, ScaledPlacement,
-    Snapshot, Transform,
+    CanonicalCommand, CanonicalError, ClassificationError, CommandBatch, DefinitionId, DocumentId,
+    DocumentStore, InstancePath, InstancePathStep, OccurrenceId, Proposal, ProposalPrepareError,
+    ScaledPlacement, Snapshot, Transform,
 };
 use crate::exact_product::{ExactBRepGraphEdgeEvidence, ExactBodyPackage, ExactResultRegistry};
 use crate::tolerance::{
@@ -21,7 +21,9 @@ use std::f64::consts::TAU;
 use std::fmt;
 use std::sync::Arc;
 
+mod bom_item;
 mod polyline_curves;
+pub use bom_item::{BomItem, BomItems};
 pub use polyline_curves::ProjectedPolylineCurve;
 
 pub const ORTHOGRAPHIC_DRAWING_SCHEMA_V1: &str = "ketchup.orthographic-drawing.v1";
@@ -2139,6 +2141,10 @@ pub struct DrawingBomRowLayout {
     /// mirrored.
     pub mirrored: bool,
     pub part_name: String,
+    /// The name of the material the item is classified with, if any; copies
+    /// of one definition in two materials are two items (review 2026-10-18
+    /// MF-12).
+    pub material: Option<String>,
     pub quantity: u32,
     pub label: String,
     pub text_position_mm: [f64; 2],
@@ -2218,6 +2224,9 @@ pub enum DrawingError {
     AssemblyNotSolved(Box<AssemblySolveError>),
     InvalidGeometry,
     ResourceLimit,
+    /// The material or fabrication-role dimension a BOM item is read by
+    /// cannot be read.
+    Classification(ClassificationError),
 }
 
 impl fmt::Display for DrawingError {
@@ -2235,6 +2244,9 @@ impl fmt::Display for DrawingError {
             }
             Self::ScaledPlacement(error) => {
                 return write!(formatter, "drawing source cannot be projected: {error}");
+            }
+            Self::Classification(error) => {
+                return write!(formatter, "drawing bill of materials: {error}");
             }
             Self::SourceNotRigid(sheet) => {
                 return write!(
@@ -2282,6 +2294,7 @@ impl std::error::Error for DrawingError {
             Self::UnresolvedInstance(_, error) => Some(error.as_ref()),
             Self::AssemblyNotSolved(error) => Some(error.as_ref()),
             Self::ScaledPlacement(error) => Some(error),
+            Self::Classification(error) => Some(error),
             _ => None,
         }
     }
@@ -4235,17 +4248,13 @@ fn layout_bom_annotations(
         return Err(DrawingError::InvalidAnnotation);
     }
 
-    // A mirrored copy is the opposite hand of its definition, a part of its
-    // own as in the fabrication bill of materials (review 2026-10-17 MF-6).
+    // An item is what the fabrication bill of materials lists as one row
+    // (review 2026-10-17 MF-6, 2026-10-18 MF-12).
+    let bom_items = BomItems::new(snapshot)?;
     let items = sheet
         .bom_balloons()
         .iter()
-        .map(|balloon| {
-            let resolved = snapshot
-                .resolve_instance_path(balloon.instance_path())
-                .map_err(|error| unresolved_instance(balloon.instance_path(), error))?;
-            Ok((resolved.definition_id, resolved.mirrored()))
-        })
+        .map(|balloon| bom_items.item(balloon.instance_path()))
         .collect::<Result<Vec<_>, DrawingError>>()?;
     let item_positions = bom_item_positions(
         items
@@ -4253,12 +4262,12 @@ fn layout_bom_annotations(
             .zip(sheet.bom_balloons())
             .map(|(item, balloon)| (*item, balloon.position())),
     );
-    let mut positions = BTreeMap::<u32, ((DefinitionId, bool), String, u32)>::new();
+    let mut positions = BTreeMap::<u32, (BomItem, String, u32)>::new();
     let mut balloons = Vec::with_capacity(sheet.bom_balloons().len());
     for (balloon, item) in sheet.bom_balloons().iter().zip(items) {
         let position = item_positions[&item];
         let definition = snapshot
-            .definition(item.0)
+            .definition(item.definition_id)
             .ok_or(DrawingError::AnnotationSourceLost)?;
         let entry = positions
             .entry(position)
@@ -4361,9 +4370,15 @@ fn layout_bom_annotations(
     let column_width = 70.0;
     let mut rows = Vec::with_capacity(positions.len());
     let (mut column, mut row) = (0.0, 0.0);
-    for (position, ((definition_id, mirrored), part_name, quantity)) in positions {
-        let hand = if mirrored { " (mirrored)" } else { "" };
-        let label = format!("{position} | {part_name}{hand} | QTY {quantity}");
+    for (position, (item, part_name, quantity)) in positions {
+        let hand = if item.mirrored { " (mirrored)" } else { "" };
+        let material = bom_items.material_name(&item)?.map(str::to_owned);
+        let label = match &material {
+            Some(material) => {
+                format!("{position} | {part_name}{hand} | {material} | QTY {quantity}")
+            }
+            None => format!("{position} | {part_name}{hand} | QTY {quantity}"),
+        };
         let line_count = crate::drawing_export::text_lines(&label, f64::INFINITY).len() as f64;
         if line_count > rows_per_column {
             return Err(DrawingError::LayoutOverflow);
@@ -4384,9 +4399,10 @@ fn layout_bom_annotations(
         row += line_count;
         rows.push(DrawingBomRowLayout {
             position,
-            definition_id,
-            mirrored,
+            definition_id: item.definition_id,
+            mirrored: item.mirrored,
             part_name,
+            material,
             quantity,
             label,
             text_position_mm,
@@ -4652,6 +4668,10 @@ pub(crate) fn drawing_layout_digest(
         digest.update(row.position.to_le_bytes());
         digest.update(row.definition_id.0.to_le_bytes());
         push_digest(&mut digest, row.part_name.as_bytes());
+        push_digest(
+            &mut digest,
+            row.material.as_deref().unwrap_or_default().as_bytes(),
+        );
         digest.update(row.quantity.to_le_bytes());
         push_digest(&mut digest, row.label.as_bytes());
         for coordinate in row.text_position_mm {

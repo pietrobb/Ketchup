@@ -300,3 +300,122 @@ fn a_fresh_ungrounded_mirror_copy_drawn_alone_is_the_opposite_hand() {
         [(true, "1 | Side (mirrored) | QTY 1")]
     );
 }
+
+/// Review 2026-10-18 MF-12: the drawing counts items as the fabrication bill
+/// of materials does. Two shelves of one definition, one oak and one pine,
+/// were position 1 with QTY 2 on the sheet and two rows in the BOM; they are
+/// two positions, each naming its material.
+#[test]
+fn an_assembly_drawing_lists_copies_in_two_materials_as_two_positions() {
+    use ketchup_model::document::{ClassificationCategoryId, ClassificationDimensionId};
+    use ketchup_model::validation::MATERIAL_DIMENSION_V1;
+    const DEFINITION: DefinitionId = DefinitionId(100);
+    const PROFILE: FeatureId = FeatureId(100);
+    const EXTRUSION: FeatureId = FeatureId(101);
+    const OAK_SHELF: OccurrenceId = OccurrenceId(100);
+    const PINE_SHELF: OccurrenceId = OccurrenceId(101);
+    const MATERIAL: ClassificationDimensionId = ClassificationDimensionId(1);
+    const OAK: ClassificationCategoryId = ClassificationCategoryId(1);
+    const PINE: ClassificationCategoryId = ClassificationCategoryId(2);
+    let occurrence = |id, name: &str, transform| CanonicalCommand::CreateOccurrence {
+        id,
+        definition_id: DEFINITION,
+        name: name.into(),
+        transform,
+        parent: None,
+        tags: Default::default(),
+        visible: true,
+    };
+    let above = Transform::from_matrix([
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 50.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    let mut commands = vec![
+        CanonicalCommand::CreateDefinition {
+            id: DEFINITION,
+            name: "Shelf".into(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: PROFILE,
+            definition_id: DEFINITION,
+            name: "Profile".into(),
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [30.0, 0.0], [30.0, 10.0], [0.0, 10.0]]),
+        },
+        CanonicalCommand::CreateFeature {
+            id: EXTRUSION,
+            definition_id: DEFINITION,
+            name: "Shelf body".into(),
+            kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("10").unwrap()),
+        },
+        occurrence(OAK_SHELF, "Oak shelf", Transform::identity()),
+        occurrence(PINE_SHELF, "Pine shelf", above),
+        CanonicalCommand::UpsertClassificationDimension {
+            id: MATERIAL,
+            name: MATERIAL_DIMENSION_V1.into(),
+            categories: vec![(OAK, "oak".into()), (PINE, "pine".into())],
+        },
+    ];
+    for (id, material) in [(OAK_SHELF, OAK), (PINE_SHELF, PINE)] {
+        commands.extend([
+            CanonicalCommand::SetOccurrenceGrounded { id, grounded: true },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: id,
+                dimension_id: MATERIAL,
+                category_id: Some(material),
+            },
+        ]);
+    }
+    let mut document = DocumentStore::new();
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    let snapshot = document.current();
+    let paths = [
+        InstancePath::root(OAK_SHELF),
+        InstancePath::root(PINE_SHELF),
+    ];
+    let exact = ExactResultRegistry::accept(
+        &snapshot,
+        [exact_box_package(&snapshot, DEFINITION, EXTRUSION)],
+    )
+    .unwrap();
+    let drawing_program = program(vec![AssistantCadEditOperation::CreateDrawing {
+        name: "Shelves".into(),
+        instance_paths: paths
+            .iter()
+            .map(|path| assistant_instance_path(&snapshot, path))
+            .collect(),
+    }]);
+    drop(snapshot);
+    let batch = plan(&document, &BTreeSet::new(), &exact, &drawing_program).unwrap();
+    document.apply_batch(&batch).unwrap();
+    let completed = document.current();
+    let sheet = completed.drawing_sheets().next().unwrap();
+    let mut positions = sheet
+        .bom_balloons()
+        .iter()
+        .map(|balloon| (balloon.instance_path().clone(), balloon.position()))
+        .collect::<Vec<_>>();
+    positions.sort();
+    assert_eq!(positions, [(paths[0].clone(), 1), (paths[1].clone(), 2)]);
+
+    let exact = ExactResultRegistry::accept(
+        &completed,
+        [exact_box_package(&completed, DEFINITION, EXTRUSION)],
+    )
+    .unwrap();
+    let drawing = project_orthographic_drawing(&completed, &exact, sheet).unwrap();
+    assert_eq!(
+        drawing
+            .layout
+            .bom_rows
+            .iter()
+            .map(|row| (row.material.as_deref(), row.quantity, row.label.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (Some("oak"), 1, "1 | Shelf | oak | QTY 1"),
+            (Some("pine"), 1, "2 | Shelf | pine | QTY 1"),
+        ]
+    );
+    let svg = export_drawing(&completed, &drawing).unwrap();
+    let svg = std::str::from_utf8(svg.svg()).unwrap();
+    assert!(!svg.contains("QTY 2"), "{svg}");
+}

@@ -15,7 +15,7 @@ use ketchup_model::assembly_joint::{
     solve_assembly_joint_kinematics_with_kind_overrides, solve_assembly_motion_study,
 };
 use ketchup_model::drawing::{
-    DrawingBomBalloon, DrawingBomBalloonId, DrawingSheet, DrawingSheetId, DrawingSource,
+    BomItems, DrawingBomBalloon, DrawingBomBalloonId, DrawingSheet, DrawingSheetId, DrawingSource,
     OrthographicViewKind, prepare_create_drawing_sheet,
 };
 use ketchup_model::exact_product::BodySubshapeRef;
@@ -1683,16 +1683,17 @@ impl KetchupApp {
             }
         };
         let balloons = if matches!(&source, DrawingSource::RigidAssemblyInstances { .. }) {
+            let bom_items = BomItems::new(&snapshot)
+                .map_err(|error| failed("assembly.drawing_balloon", error))?;
             let mut positions = BTreeMap::new();
             let mut next_position = 1_u32;
             instance_paths
                 .iter()
                 .enumerate()
                 .map(|(index, path)| {
-                    let resolved = snapshot.resolve_instance_path(path).map_err(|error| {
+                    let item = bom_items.item(path).map_err(|error| {
                         self.catalog.refusal_because("error-preview-stale", error)
                     })?;
-                    let item = (resolved.definition_id, resolved.mirrored());
                     let position = *positions.entry(item).or_insert_with(|| {
                         let assigned = next_position;
                         next_position += 1;

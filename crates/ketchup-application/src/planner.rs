@@ -44,9 +44,10 @@ use ketchup_model::document::{
     SpatialPathSegment, TagId, Transform,
 };
 use ketchup_model::drawing::{
-    DrawingBomBalloon, DrawingBomBalloonId, DrawingError, DrawingMargins, DrawingPageOrientation,
-    DrawingPageSize, DrawingPageTemplate, DrawingScale, DrawingSheet, DrawingSheetId,
-    DrawingSource, DrawingTitleBlock, OrthographicViewKind, project_orthographic_drawing,
+    BomItem, BomItems, DrawingBomBalloon, DrawingBomBalloonId, DrawingError, DrawingMargins,
+    DrawingPageOrientation, DrawingPageSize, DrawingPageTemplate, DrawingScale, DrawingSheet,
+    DrawingSheetId, DrawingSource, DrawingTitleBlock, OrthographicViewKind,
+    project_orthographic_drawing,
 };
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::exact_product::{
@@ -2018,6 +2019,24 @@ fn mirror_copy_rejection(
     }
 }
 
+/// The BOM items of `snapshot`: a new sheet's balloons get one position per
+/// item of the fabrication bill of materials (review 2026-10-18 MF-12).
+fn drawing_bom_items<'a>(
+    snapshot: &'a Snapshot,
+    operation_name: &str,
+    id: DrawingSheetId,
+) -> Result<BomItems<'a>, AssistantRejection> {
+    BomItems::new(snapshot).map_err(|error| {
+        assistant_planning_rejection(
+            "planning.drawing_invalid",
+            operation_name,
+            &format!("drawing_sheet:{}", id.0),
+            error.to_string(),
+            "Give the material and fabrication-role dimensions one name each.",
+        )
+    })
+}
+
 fn drawing_source(
     snapshot: &Snapshot,
     instance_paths: Vec<InstancePath>,
@@ -3185,13 +3204,14 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     )
                 })?;
                 next_drawing_sheet = id.0.checked_add(1);
-                let mut positions = BTreeMap::<(DefinitionId, bool), u32>::new();
+                let bom_items = drawing_bom_items(&snapshot, operation_name, id)?;
+                let mut positions = BTreeMap::<BomItem, u32>::new();
                 let mut next_position = 1_u32;
                 let balloons = resolved_paths
                     .iter()
                     .enumerate()
                     .map(|(index, path)| {
-                        let resolved = snapshot.resolve_instance_path(path).map_err(|error| {
+                        let item = bom_items.item(path).map_err(|error| {
                             assistant_canonical_rejection(
                                 CanonicalError::InvalidInstancePath,
                                 operation_name,
@@ -3199,7 +3219,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             )
                             .caused_by(&error)
                         })?;
-                        let item = (resolved.definition_id, resolved.mirrored());
                         let position = *positions.entry(item).or_insert_with(|| {
                             let assigned = next_position;
                             next_position += 1;

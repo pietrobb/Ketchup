@@ -190,11 +190,11 @@ fn push_projection_bytes(output: &mut Vec<u8>, value: &[u8]) {
 }
 
 pub const GENERAL_FABRICATION_EVALUATOR_V5: &str = "ketchup.general-fabrication-evaluator.v5";
-pub const FABRICATION_ROLE_DIMENSION_V1: &str = "ketchup.fabrication-role.v1";
+// The drawing sheet counts BOM items by the same dimensions (review 2026-10-18 MF-12).
+pub use ketchup_model::validation::{FABRICATION_ROLE_DIMENSION_V1, MATERIAL_DIMENSION_V1};
 pub const TIMBER_MEMBER_ROLE_V1: &str = "fabrication.timber-member.v1";
 pub const MANUFACTURED_ITEM_ROLE_V1: &str = "fabrication.manufactured-item.v1";
 pub const PURCHASED_ITEM_ROLE_V1: &str = "fabrication.purchased-item.v1";
-pub const MATERIAL_DIMENSION_V1: &str = "ketchup.material.v1";
 pub const TIMBER_MATERIAL_V1: &str = "ketchup.material.timber.unspecified.v1";
 pub const UNSPECIFIED_MATERIAL_V1: &str = "ketchup.material.unspecified.v1";
 pub const GENERAL_BOM_EXPORT_V3: &str = "ketchup.general-bom-export.v3";

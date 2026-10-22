@@ -19,6 +19,9 @@ pub const VALIDATOR_ROLE_INPUT_V1: &str = "ketchup.validator-role-input.v1";
 /// Classification dimension whose category names a part's material; the
 /// validators look the material's properties up in their rule set.
 pub const MATERIAL_DIMENSION_V1: &str = "ketchup.material.v1";
+/// Classification dimension whose category names what fabrication does with a
+/// part, such as making it or buying it.
+pub const FABRICATION_ROLE_DIMENSION_V1: &str = "ketchup.fabrication-role.v1";
 
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ValidatorRole(String);
