@@ -474,6 +474,35 @@ place(part, origin = (0, 0, 2000), x = (1, 0, 0), z = (0, -s, c))";
     }
 }
 
+#[test]
+fn a_turned_beam_deflects_by_the_resultant_of_its_vertical_and_sideways_bending() {
+    // Review 2026-10-19 PG-16: the purlin turned 30° deflects sideways 0.742
+    // times as far as it sinks, so the deflection is 1.245 times the vertical
+    // part that alone was checked.
+    let report = report(
+        &turned_purlin(
+            "part = box(\"beam\", (4000, 100, 200), material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 0, 2000), x = (1, 0, 0), z = (0, -s, c))",
+        ),
+        &[],
+    );
+    let beam = member(&report, "beam");
+    assert_eq!(beam.missing, Vec::<String>::new());
+    // The load along the principal axes: q cos 30 bends the strong one, q sin 30 the weak.
+    let (s, c) = (0.5, 0.75f64.sqrt());
+    let (q, l) = (0.01 * 100.0 * c, 3900f64);
+    let (strong, weak) = (100.0 * 200f64.powi(3) / 12.0, 200.0 * 100f64.powi(3) / 12.0);
+    let per_inertia = (c / strong).hypot(s / weak);
+    let vertical = c * c / strong + s * s / weak;
+    close(per_inertia / vertical, 1.245);
+    let w = 5.0 * q * l.powi(4) / (384.0 * 11000.0) * per_inertia;
+    close(utilization(beam, "deflection_inst"), w / (l / 300.0));
+    close(
+        utilization(beam, "deflection_fin"),
+        w * (1.0 + 0.3 * 0.6) / (l / 250.0),
+    );
+}
+
 /// The span of `beam` with a beam of cross-section `profile` (local XY within
 /// 200 x 200, local Y up) extruded 4000 mm along world X, `then` run on it.
 fn profiled_beam(profile: &str, then: &str) -> String {
@@ -575,8 +604,9 @@ fn a_z_beam_bends_about_its_principal_axes_not_its_horizontal_one() {
         "{bending} {about_horizontal}"
     );
     close(utilization(beam, "bending"), bending);
-    // The vertical deflection takes Ix - Ixy² / Iy.
-    let w = 5.0 * q * l.powi(4) / (384.0 * 11000.0 * det / iy);
+    // It sinks as if by Ix - Ixy² / Iy and moves sideways Ixy / Iy times as
+    // far (review 2026-10-19 PG-16).
+    let w = 5.0 * q * l.powi(4) / (384.0 * 11000.0 * det / iy) * (ixy / iy).hypot(1.0);
     close(utilization(beam, "deflection_inst"), w / (l / 300.0));
 }
 

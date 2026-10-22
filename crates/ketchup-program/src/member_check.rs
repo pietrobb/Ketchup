@@ -168,7 +168,7 @@ pub const BASIS: [&str; 9] = [
     "bending with kh (3.2, 3.3), kcrit = 1: members assumed braced against lateral torsional buckling by the decking",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch; elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
-    "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
+    "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes, and its deflection is the resultant of the vertical and the sideways part, each at its own worst load pattern; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
     "a computed check, not an authorized structural design",
 ];
 
@@ -413,10 +413,15 @@ impl<'a> Section<'a> {
         cross2([self.across, self.product], [self.product, self.along])
     }
 
-    /// The second moment that gives the deflection along `depth`: `across`
-    /// when that axis is principal, less when the member bends sideways too.
-    fn inertia(&self) -> f64 {
-        self.inertia_determinant() / self.along
+    /// Curvature per unit moment about the axis across `depth`, along `depth`
+    /// and sideways: a turned section bends sideways too (review 2026-10-19
+    /// PG-16), not at all when that axis is principal.
+    fn flexibility(&self) -> [f64; 2] {
+        let principal_product = self.inertia_determinant();
+        [
+            self.along / principal_product,
+            -self.product / principal_product,
+        ]
     }
 
     /// Bending stress per unit moment at offsets `along_depth` and `across_depth`
@@ -622,7 +627,8 @@ fn polygon(corners: &[[f64; 2]]) -> Vec<ProgramProfileSegment> {
 /// vertical load bends it freely.
 #[derive(Clone, Copy)]
 struct Bending {
-    inertia: f64,
+    /// Curvature per unit moment, vertical and sideways.
+    flexibility: [f64; 2],
     modulus: f64,
     shear_area: f64,
     /// Depth along the vertical across the grain, for kh.
@@ -634,7 +640,7 @@ impl Bending {
         let levels = section.segments.iter().map(|s| s.start_mm[section.depth]);
         let depth = levels.clone().fold(f64::MIN, f64::max) - levels.fold(f64::MAX, f64::min);
         Self {
-            inertia: section.inertia(),
+            flexibility: section.flexibility(),
             modulus: section.modulus(),
             shear_area: section.shear_area(),
             depth,
@@ -1178,8 +1184,8 @@ enum Kind {
     RightCantilever,
 }
 
-/// Bending moments (N mm), shear forces (N) and deflections (mm, for E = 1)
-/// per load component at the stations `xs`.
+/// Bending moments (N mm), shear forces (N) and deflections (mm, for E = 1;
+/// vertical and sideways) per load component at the stations `xs`.
 struct Segment {
     p: f64,
     q: f64,
@@ -1187,13 +1193,14 @@ struct Segment {
     xs: Vec<f64>,
     moments: Vec<Vec<f64>>,
     shears: Vec<Vec<f64>>,
-    deflections: Vec<Vec<f64>>,
+    deflections: [Vec<Vec<f64>>; 2],
 }
 
 /// `end_moments`: per load component, the moments over the supports at p and q of
 /// a span continuous over them (hogging negative; along the member, without
 /// `lever`); cantilevers ignore them. `xs` are the stations from p to q and
-/// `inertia` the second moment at each, None where there is no material.
+/// `flexibility` the curvature per unit moment at each (vertical and
+/// sideways), None where there is no material.
 fn segment(
     kind: Kind,
     components: &[Vec<Piece>],
@@ -1201,7 +1208,7 @@ fn segment(
     lever: f64,
     arc: f64,
     xs: Vec<f64>,
-    inertia: &[Option<f64>],
+    flexibility: &[Option<[f64; 2]>],
 ) -> Segment {
     let ends = match kind {
         Kind::Span => (false, false),
@@ -1216,7 +1223,7 @@ fn segment(
         .collect();
     let mut moments = Vec::new();
     let mut shears = Vec::new();
-    let mut deflections = Vec::new();
+    let mut deflections = [Vec::new(), Vec::new()];
     for (patches, [m_p, m_q]) in components.iter().zip(end_moments) {
         let pieces = clipped(patches, p, q, ends);
         let total: f64 = pieces.iter().map(|piece| piece.2).sum();
@@ -1250,13 +1257,6 @@ fn segment(
             ),
         };
         (v[0], v[last]) = (end_shears[0], end_shears[1]);
-        // w'' = -M / EI along the true length; no material, no curvature
-        // (only at a pointed free end, where M is 0).
-        let curvature: Vec<f64> = m
-            .iter()
-            .zip(inertia)
-            .map(|(value, inertia)| inertia.map_or(0.0, |inertia| -value / inertia))
-            .collect();
         let integrate = |values: &[f64], widths: &[f64]| {
             let mut out = vec![0.0; values.len()];
             for j in 1..values.len() {
@@ -1264,27 +1264,36 @@ fn segment(
             }
             out
         };
-        let w = match kind {
-            Kind::Span => {
-                let raw = integrate(&integrate(&curvature, &widths), &widths);
-                let end = raw[last];
-                raw.iter()
-                    .zip(&xs)
-                    .map(|(value, x)| value - end * (x - p) / (q - p))
-                    .collect()
-            }
-            Kind::RightCantilever => integrate(&integrate(&curvature, &widths), &widths),
-            Kind::LeftCantilever => {
-                let reversed: Vec<f64> = curvature.iter().rev().copied().collect();
-                let back: Vec<f64> = widths.iter().rev().copied().collect();
-                let mut w = integrate(&integrate(&reversed, &back), &back);
-                w.reverse();
-                w
-            }
-        };
+        for (direction, deflections) in deflections.iter_mut().enumerate() {
+            // w'' = -M / EI along the true length, vertical and sideways; no
+            // material, no curvature (only at a pointed free end, where M is 0).
+            let curvature: Vec<f64> = m
+                .iter()
+                .zip(flexibility)
+                .map(|(value, flexibility)| flexibility.map_or(0.0, |f| -value * f[direction]))
+                .collect();
+            let w = match kind {
+                Kind::Span => {
+                    let raw = integrate(&integrate(&curvature, &widths), &widths);
+                    let end = raw[last];
+                    raw.iter()
+                        .zip(&xs)
+                        .map(|(value, x)| value - end * (x - p) / (q - p))
+                        .collect()
+                }
+                Kind::RightCantilever => integrate(&integrate(&curvature, &widths), &widths),
+                Kind::LeftCantilever => {
+                    let reversed: Vec<f64> = curvature.iter().rev().copied().collect();
+                    let back: Vec<f64> = widths.iter().rev().copied().collect();
+                    let mut w = integrate(&integrate(&reversed, &back), &back);
+                    w.reverse();
+                    w
+                }
+            };
+            deflections.push(w);
+        }
         moments.push(m);
         shears.push(v);
-        deflections.push(w);
     }
     Segment {
         p,
@@ -1487,7 +1496,8 @@ fn beam_checks(
             .iter()
             .map(|x| shape.bending.at(*x, &mut known))
             .collect();
-        let inertia: Vec<Option<f64>> = sections.iter().map(|s| s.map(|s| s.inertia)).collect();
+        let flexibility: Vec<Option<[f64; 2]>> =
+            sections.iter().map(|s| s.map(|s| s.flexibility)).collect();
         let seg = segment(
             kind,
             &components,
@@ -1495,7 +1505,7 @@ fn beam_checks(
             lever,
             shape.arc,
             xs,
-            &inertia,
+            &flexibility,
         );
         (seg, sections)
     };
@@ -1599,11 +1609,16 @@ fn beam_checks(
             continue;
         }
         for (characteristic, final_factors) in sls {
+            // The resultant of the vertical and the sideways deflection, each
+            // at its own worst load pattern.
             let largest = |factors: &Loads| {
                 (0..seg.xs.len())
                     .map(|j| {
-                        let values: Vec<f64> = seg.deflections.iter().map(|w| w[j]).collect();
-                        envelope(factors, &kinds, &values, None) / class.e0_mean
+                        let [vertical, sideways] = seg.deflections.each_ref().map(|direction| {
+                            let values: Vec<f64> = direction.iter().map(|w| w[j]).collect();
+                            envelope(factors, &kinds, &values, None)
+                        });
+                        vertical.hypot(sideways) / class.e0_mean
                     })
                     .fold(0.0, f64::max)
             };
