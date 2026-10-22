@@ -484,6 +484,8 @@ fn unsupported_curves_and_non_planar_occurrences_fail_closed() {
     );
     assert_eq!(
         export_visible_profiles_dxf(&non_planar_document.current()),
-        Err(DxfProfileExportError::UnsupportedTransform)
+        Err(DxfProfileExportError::UnsupportedTransform {
+            part: "non-planar-sketch".to_owned()
+        })
     );
 }

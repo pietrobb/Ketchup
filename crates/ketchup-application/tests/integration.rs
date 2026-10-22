@@ -20,6 +20,7 @@ mod mesh_conversion;
 mod model_query;
 mod model_query_catalogs;
 mod operations_support;
+mod plan_dxf_export;
 mod plugin_apply;
 mod program_isolation;
 mod rule_exact_assemblies;

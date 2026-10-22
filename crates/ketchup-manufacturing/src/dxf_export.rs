@@ -31,7 +31,11 @@ pub enum DxfProfileExportError {
     InvalidGeometry,
     Sketch(SketchError),
     UnsupportedCurve,
-    UnsupportedTransform,
+    /// The profiles of `part` do not lie in a plane parallel to world XY, or
+    /// are scaled unevenly or sheared.
+    UnsupportedTransform {
+        part: String,
+    },
     Transform(CanonicalError),
     VerificationFailed,
     Reimport(DxfImportError),
@@ -49,14 +53,18 @@ impl fmt::Display for DxfProfileExportError {
             Self::Sketch(error) => {
                 return write!(formatter, "sketch geometry cannot be exported: {error}");
             }
+            Self::UnsupportedTransform { part } => {
+                return write!(
+                    formatter,
+                    "the profiles of {part:?} do not lie in a plane parallel to XY under a \
+                     uniform scale; hide that part or turn it flat before exporting the plan"
+                );
+            }
             Self::Empty => "the visible model contains no exportable planar profiles",
             Self::TooManyProfiles => "DXF export exceeds the bounded 170 profile limit",
             Self::TooManySegments => "DXF export exceeds the bounded 10,000 segment limit",
             Self::InvalidGeometry => "DXF profile contains invalid or out-of-envelope geometry",
             Self::UnsupportedCurve => "DXF export does not approximate cubic profile curves",
-            Self::UnsupportedTransform => {
-                "DXF export requires profiles to remain in world XY under a uniform planar transform"
-            }
             Self::VerificationFailed => "generated DXF failed deterministic bounded reinspection",
         })
     }
@@ -95,6 +103,7 @@ pub fn export_visible_profiles_dxf(
 ) -> Result<DxfProfileExport, DxfProfileExportError> {
     let mut profiles = Vec::new();
     let mut segment_count = 0_usize;
+    let mut elevated_profile_count = 0_usize;
     let mut renamed_layers = BTreeSet::new();
     let mut r12_layers = R12Layers::default();
     for occurrence in snapshot
@@ -144,10 +153,24 @@ pub fn export_visible_profiles_dxf(
                 if segment_count > MAX_EXPORT_SEGMENTS {
                     return Err(DxfProfileExportError::TooManySegments);
                 }
+                let vertices =
+                    polyline_vertices(&source_segments, closed, transform).map_err(|error| {
+                        match error {
+                            DxfProfileExportError::UnsupportedTransform { .. } => {
+                                DxfProfileExportError::UnsupportedTransform {
+                                    part: definition.name().to_owned(),
+                                }
+                            }
+                            other => other,
+                        }
+                    })?;
+                if transform.matrix()[11].abs() > EPSILON {
+                    elevated_profile_count += 1;
+                }
                 profiles.push(ExportProfile {
                     layer: layer.clone(),
                     closed,
-                    vertices: polyline_vertices(&source_segments, closed, transform)?,
+                    vertices,
                 });
                 if profiles.len() > MAX_EXPORT_PROFILES {
                     return Err(DxfProfileExportError::TooManyProfiles);
@@ -182,7 +205,7 @@ pub fn export_visible_profiles_dxf(
         })
         .count();
     let loss_report = format!(
-        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=unsupported for profiles; a drawing sheet exports as DWG and a DWG drawing imports through its DXF conversion\nomitted_non_profile_feature_count={omitted_feature_count}\n",
+        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nelevated_profile_count={elevated_profile_count}\nelevation=a profile in a plane parallel to XY above or below z = 0 is drawn where it lies in plan; its height is not written\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=unsupported for profiles; a drawing sheet exports as DWG and a DWG drawing imports through its DXF conversion\nomitted_non_profile_feature_count={omitted_feature_count}\n",
         renamed_layers.len(),
         profiles.len(),
         layers.len(),
@@ -350,16 +373,19 @@ fn transform_segments(
     let dot = dot2(x_axis, y_axis);
     let determinant = cross2(x_axis, y_axis);
     let scale = scale_x.max(scale_y).max(1.0);
+    // The profile's plane must be parallel to world XY (its axes have no z);
+    // a height above or below z = 0 is left out, as a plan shows it.
     if matrix.iter().any(|value| !value.is_finite())
         || matrix[8].abs() > EPSILON
         || matrix[9].abs() > EPSILON
-        || matrix[11].abs() > EPSILON
         || scale_x <= EPSILON
         || (scale_x - scale_y).abs() > EPSILON * scale
         || dot.abs() > EPSILON * scale * scale
         || determinant.abs() <= EPSILON
     {
-        return Err(DxfProfileExportError::UnsupportedTransform);
+        return Err(DxfProfileExportError::UnsupportedTransform {
+            part: String::new(),
+        });
     }
     let reflected = determinant < 0.0;
     segments
