@@ -283,8 +283,21 @@ impl Expected {
                 .is_some_and(|read| (read - value).abs() <= ACCUMULATED_ROUNDING),
             Self::Same(expected) => **expected == *after,
             Self::Renamed { from, to, .. } => {
+                // A part, tool or group whose name starts with the old one
+                // ("shelf 2", "a mirrored") keeps its name, unless the
+                // program makes it from the part's name and now names it
+                // after the new one.
+                let now = names(after);
+                let kept = names(before)
+                    .into_iter()
+                    .filter(|other| {
+                        derived_from(other, from).is_some_and(|rest| {
+                            !now.contains(&format!("{to}{rest}")) || now.contains(other)
+                        })
+                    })
+                    .collect::<Vec<_>>();
                 let mut expected = serde_json::to_value(before).expect("models serialize");
-                renamed(&mut expected, from, to);
+                renamed(&mut expected, from, to, &kept);
                 expected["continuations"][to.as_str()] = from.as_str().into();
                 serde_json::to_value(after).is_ok_and(|after| after == expected)
             }
@@ -315,20 +328,39 @@ const NOT_PART_NAMES: [&str; 9] = [
     "alternative_tags",
 ];
 
+/// What follows `from` in `name` when `name` is one derived from it
+/// ("a transform", "a/notch"): `Some("")` for `from` itself.
+fn derived_from<'n>(name: &'n str, from: &str) -> Option<&'n str> {
+    name.strip_prefix(from)
+        .filter(|rest| rest.is_empty() || rest.starts_with([' ', '/']))
+}
+
+/// The names of the parts, tools, groups, components and instances a
+/// program makes.
+fn names(model: &ProgramModel) -> BTreeSet<String> {
+    (model.parts.iter().chain(&model.tools))
+        .map(|part| &part.name)
+        .chain(model.groups.iter().map(|group| &group.name))
+        .chain(model.components.iter().map(|component| &component.name))
+        .chain(model.instances.iter().map(|instance| &instance.name))
+        .cloned()
+        .collect()
+}
+
 /// `value` with the part name `from` read as `to`, also where it starts a
-/// name the program derives from it ("a transform", "a/notch").
-fn renamed(value: &mut serde_json::Value, from: &str, to: &str) {
+/// name the program derives from it ("a transform", "a/notch"), but not in
+/// the names `kept` or the names derived from them.
+fn renamed(value: &mut serde_json::Value, from: &str, to: &str, kept: &[String]) {
     match value {
         serde_json::Value::String(text)
-            if text
-                .strip_prefix(from)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '/'])) =>
+            if derived_from(text, from).is_some()
+                && !(kept.iter()).any(|kept| derived_from(text, kept).is_some()) =>
         {
             text.replace_range(..from.len(), to);
         }
-        serde_json::Value::Array(items) => {
-            items.iter_mut().for_each(|item| renamed(item, from, to))
-        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| renamed(item, from, to, kept)),
         serde_json::Value::Object(fields) => {
             let keys = fields
                 .keys()
@@ -343,7 +375,7 @@ fn renamed(value: &mut serde_json::Value, from: &str, to: &str) {
             fields
                 .iter_mut()
                 .filter(|(key, _)| !NOT_PART_NAMES.contains(&key.as_str()))
-                .for_each(|(_, field)| renamed(field, from, to));
+                .for_each(|(_, field)| renamed(field, from, to, kept));
         }
         _ => {}
     }

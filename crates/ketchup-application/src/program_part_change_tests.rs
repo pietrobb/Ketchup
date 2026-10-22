@@ -172,6 +172,38 @@ fn rename_changes_only_the_literals_that_name_the_part() {
     assert_eq!(after.part("b").unwrap().material.as_deref(), Some("oak"));
 }
 
+/// Review 2026-10-21 WB-11: a rename read every part named "<name> ..." as
+/// derived from the renamed one, so "shelf" next to "shelf 2", a part with
+/// a mirrored copy and "door" next to "door/handle" were refused.
+#[test]
+fn rename_keeps_the_parts_whose_names_only_start_with_the_old_name() {
+    for (source, from, other) in [
+        (
+            "box(\"shelf\", (10, 18, 30))\nbox(\"shelf 2\", (10, 18, 30), at=(0, 50, 0))\n",
+            "shelf",
+            "shelf 2",
+        ),
+        (
+            "box(\"a\", (10, 20, 30), at=(100, 0, 0))\n\
+             mirrored(\"a\", \"a mirrored\", point=(0, 0, 0), normal=(1, 0, 0))\n",
+            "a",
+            "a mirrored",
+        ),
+        (
+            "box(\"door\", (10, 18, 30))\nbox(\"door/handle\", (5, 5, 5), at=(0, 50, 0))\n",
+            "door",
+            "door/handle",
+        ),
+    ] {
+        let before = model(&program(source));
+        let renamed = change(source, from, PartChange::Rename("board".to_owned()));
+        let after = model(&renamed);
+        assert!(after.part("board").is_some(), "{}", renamed.source);
+        assert_eq!(after.part(other), before.part(other), "{}", renamed.source);
+        assert_eq!(after.continuations["board"], from);
+    }
+}
+
 #[test]
 fn rename_is_refused_with_the_line_that_still_needs_the_old_name() {
     let source = "box(\"oak\", (10, 18, 30))\n\
