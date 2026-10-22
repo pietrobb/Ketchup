@@ -7,6 +7,7 @@ use ketchup_model::document::{
 };
 use ketchup_program::model::ProgramOperation;
 use ketchup_program::{ProgramFeatureKind, ProgramModel, ProgramParameterValueType, Report};
+use ketchup_rejection::{Rejection, RejectionPhase};
 
 #[derive(Debug)]
 pub enum RuleProgramApplyError {
@@ -41,6 +42,49 @@ impl std::fmt::Display for RuleProgramApplyError {
 }
 
 impl std::error::Error for RuleProgramApplyError {}
+
+impl RuleProgramApplyError {
+    /// The code of the failure: the program's own for a refusal of the
+    /// program or of a change written into it.
+    #[must_use]
+    pub fn code(&self) -> &str {
+        match self {
+            Self::Program { code, .. } => code,
+            Self::IncrementalUnsupported => "incremental_unsupported",
+            Self::ReplacementConfirmationRequired => "not_program_document",
+            Self::UnsavedChanges => "unsaved_changes",
+            Self::Session(_) => "not_published",
+        }
+    }
+
+    /// The shared rejection (AGENTS.md §2): the code stays, the line of the
+    /// program to change is the target and the fix comes from the catalog
+    /// ([`crate::rejections`]); a code it lacks is fixed as a rejected program.
+    #[must_use]
+    pub fn rejection(&self) -> Rejection {
+        let (phase, target, fix_hint) = crate::rejections::host_rejection(self.code())
+            .or_else(|| crate::rejections::host_rejection("program_rejected"))
+            .map_or(
+                (
+                    RejectionPhase::Evaluation,
+                    "program",
+                    "Fix the program and apply it again.",
+                ),
+                |entry| (entry.phase, entry.target, entry.fix_hint),
+            );
+        let target = match self {
+            Self::Program {
+                location: Some(location),
+                ..
+            } => format!("program line {}", location.at.line),
+            _ => target.to_owned(),
+        };
+        Rejection::new(self.code().to_owned(), phase)
+            .target(target)
+            .reason(self.to_string())
+            .fix_hint(fix_hint)
+    }
+}
 
 impl From<ketchup_program::ProgramError> for RuleProgramApplyError {
     fn from(error: ketchup_program::ProgramError) -> Self {

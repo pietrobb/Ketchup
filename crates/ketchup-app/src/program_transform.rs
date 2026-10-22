@@ -45,7 +45,7 @@ impl KetchupApp {
     fn publish_program_source(&mut self, source: RuleProgramSource) -> Result<(), Rejection> {
         self.apply_program_source(source, false)
             .map(|_| ())
-            .map_err(|error| failed("program.apply", error))
+            .map_err(|error| error.rejection())
     }
 
     /// `None` when no program owns the document or the edit moves something
@@ -206,7 +206,7 @@ impl KetchupApp {
         source: &RuleProgramSource,
     ) -> Result<Proposal, Rejection> {
         let plan = ketchup_application::plan_rule_program(&self.document, source)
-            .map_err(|error| failed("program.apply", error))?;
+            .map_err(|error| error.rejection())?;
         let ketchup_application::RuleProgramChange::Incremental(batch) = plan.change else {
             return Err(Rejection::new("program.apply", RejectionPhase::Planning)
                 .reason("the program edit does not change the model in place"));
@@ -265,7 +265,7 @@ fn rewrite_parts(
     changes: &[(String, PartChange)],
 ) -> Result<Option<RuleProgramSource>, Rejection> {
     ketchup_application::rewrite_rule_program_parts(source, changes)
-        .map_err(|error| failed("program.part_change", error))
+        .map_err(|error| error.rejection())
 }
 
 fn transformed(parts: &[String], world_edit: Transform) -> Vec<(String, PartChange)> {

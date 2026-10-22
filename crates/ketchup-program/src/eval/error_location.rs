@@ -80,20 +80,41 @@ pub(super) fn locate(
         .rfind(|span| span.filename() == file_name)
         .map(position)?;
     call_stack.drain(..call_stack.len().saturating_sub(MAX_FRAMES));
-    let first = at.line.saturating_sub(CONTEXT_LINES).max(1);
-    let excerpt = source
+    Some(Box::new(ErrorLocation {
+        excerpt: excerpt(source, at.line),
+        at,
+        call_stack,
+    }))
+}
+
+impl ErrorLocation {
+    /// Line `line` of `source` (the program named `file_name`), for a
+    /// refusal of the host that names a line of the user's program.
+    #[must_use]
+    pub fn of_line(file_name: &str, source: &str, line: usize) -> Box<Self> {
+        Box::new(Self {
+            at: Position {
+                file: file_name.to_owned(),
+                line,
+                column: 1,
+            },
+            excerpt: excerpt(source, line),
+            call_stack: Vec::new(),
+        })
+    }
+}
+
+/// Line `line` of `source` and up to [`CONTEXT_LINES`] on each side.
+fn excerpt(source: &str, line: usize) -> Vec<NumberedLine> {
+    let first = line.saturating_sub(CONTEXT_LINES).max(1);
+    source
         .lines()
         .enumerate()
         .skip(first - 1)
-        .take(at.line + CONTEXT_LINES + 1 - first)
+        .take(line + CONTEXT_LINES + 1 - first)
         .map(|(index, text)| NumberedLine {
             line: index + 1,
             text: text.chars().take(MAX_LINE_CHARS).collect(),
         })
-        .collect();
-    Some(Box::new(ErrorLocation {
-        at,
-        excerpt,
-        call_stack,
-    }))
+        .collect()
 }

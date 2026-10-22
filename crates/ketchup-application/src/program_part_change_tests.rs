@@ -673,3 +673,77 @@ fn a_param_driven_length_makes_the_typed_length_with_other_pulls() {
     let refusal = set_length(&pushed, 10.0).expect_err("refused");
     assert!(refusal.to_string().contains("-5 mm long"), "{refusal}");
 }
+
+/// Review 2026-10-19 WB-5: a refusal of writing into the program had no
+/// target and no fix, and a value no param() sets was refused with the line
+/// of the part's creating call instead of the fillet() that writes it.
+#[test]
+fn a_refusal_names_the_program_line_to_change_and_its_fix() {
+    let source = "box(\"p\", (40, 20, 10))\n\
+                  move(\"p\", by=(1, 0, 0))\n\
+                  fillet(\"p\", edges=[[\"z+\", \"x+\"]], radius=2, name=\"round\")\n";
+    let made = model(&program(source));
+    let round = (made.part("p").unwrap().features.iter())
+        .find(|feature| feature.kind == ProgramFeatureKind::Fillet)
+        .unwrap();
+    let error = rewrite_rule_program_parts(
+        &program(source),
+        &[(
+            "p".to_owned(),
+            PartChange::Parameter {
+                feature: round.name.clone(),
+                path: round.parameters[0].path.clone(),
+                value: 3.0,
+            },
+        )],
+    )
+    .expect_err("refused");
+    let rejection = error.rejection();
+    assert_eq!(rejection.code(), "program_parameter_not_driven");
+    assert_eq!(rejection.target_name(), "program line 3");
+    assert!(
+        rejection.reason_text().contains("change it on line 3"),
+        "{}",
+        rejection.reason_text()
+    );
+    let entry = crate::rejections::host_rejection("program_parameter_not_driven").unwrap();
+    assert_eq!(rejection.fix_hint_text(), entry.fix_hint);
+
+    let looped = "for i in range(3):\n    box(\"s%d\" % i, (10, 10, 10), at=(0, 0, 20 * i))\n";
+    let error =
+        rewrite_rule_program_parts(&program(looped), &[("s1".to_owned(), PartChange::Delete)])
+            .expect_err("refused");
+    let rejection = error.rejection();
+    assert_eq!(
+        (rejection.code(), rejection.target_name()),
+        ("program_part_in_loop", "program line 1")
+    );
+    let RuleProgramApplyError::Program {
+        location: Some(location),
+        ..
+    } = &error
+    else {
+        panic!("{error:?}");
+    };
+    assert_eq!(location.excerpt[0].text, "for i in range(3):");
+}
+
+/// Review 2026-10-19 WB-5: a program that did not make the part as asked
+/// was refused without saying what came out otherwise.
+#[test]
+fn a_mismatch_says_what_the_program_made_otherwise() {
+    let before = model(&program(TWO));
+    let placed = Expected::Placed {
+        part: "a".to_owned(),
+        at: [5.0, 0.0, 0.0],
+        rotation: before.part("a").unwrap().rotation,
+    };
+    assert_eq!(
+        placed.difference(&before, &before),
+        "part \"a\" stands at (1, 0, 0) instead of (5, 0, 0)"
+    );
+    let mut after = before.clone();
+    after.parts.retain(|part| part.name != "b");
+    let same = Expected::Same(Box::new(before.clone()));
+    assert_eq!(same.difference(&before, &after), "\"b\" changed too");
+}

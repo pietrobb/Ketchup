@@ -5,7 +5,7 @@
 //! own function is refused with the line to change instead, as is a part
 //! another line still uses.
 use crate::RuleProgramApplyError;
-use crate::program_part_edit::refused;
+use crate::program_part_edit::{refused, refused_at};
 use crate::rule_program::evaluate;
 use ketchup_model::document::{RuleProgramSource, Transform};
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM};
@@ -124,16 +124,21 @@ pub fn rewrite_rule_program_parts(
             } => edit.parameter(feature, path, *value)?,
             PartChange::Transform(world_edit) => edit.transform(*world_edit)?,
         };
-        let after = evaluate(&rewritten).map_err(|error| expected.kept_lines().unwrap_or(error))?;
+        let after =
+            evaluate(&rewritten).map_err(|error| expected.kept_lines(&source).unwrap_or(error))?;
         if !expected.holds(&evaluated.model, &after.model) {
-            return Err(expected.kept_lines().unwrap_or_else(|| {
-                refused(
-                    "program_part_change_mismatch",
-                    format!(
-                        "the program did not make part {} as the edit asked; change it in the program",
-                        quote(name)
-                    ),
-                )
+            return Err(expected.kept_lines(&source).unwrap_or_else(|| {
+                let message = format!(
+                    "the program did not make part {} as the edit asked: {}; change it in the program",
+                    quote(name),
+                    expected.difference(&evaluated.model, &after.model)
+                );
+                match edit.found_call() {
+                    Some(call) => {
+                        edit.refused_on(call.lines.first, "program_part_change_mismatch", message)
+                    }
+                    None => refused("program_part_change_mismatch", message),
+                }
             }));
         }
         source = rewritten;
@@ -238,7 +243,7 @@ fn near(a: [f64; 3], b: [f64; 3]) -> bool {
 impl Expected {
     /// A rename that left a literal of the old name the program still needs:
     /// refused with the lines to change by hand.
-    fn kept_lines(&self) -> Option<RuleProgramApplyError> {
+    fn kept_lines(&self, source: &RuleProgramSource) -> Option<RuleProgramApplyError> {
         let Self::Renamed { from, to, kept } = self else {
             return None;
         };
@@ -248,8 +253,10 @@ impl Expected {
             .collect::<Vec<_>>()
             .join(", ");
         let word = if kept.len() == 1 { "line" } else { "lines" };
-        (!kept.is_empty()).then(|| {
-            refused(
+        kept.first().map(|first| {
+            refused_at(
+                source,
+                *first,
                 "program_part_name_elsewhere",
                 format!(
                     "{word} {lines} of the program read {} not as the part's name, and renaming the part to {} alone changes what the program makes; change {word} {lines} in the program",
@@ -258,6 +265,73 @@ impl Expected {
                 ),
             )
         })
+    }
+
+    /// What `after` makes otherwise than the change asked, for a refusal.
+    fn difference(&self, before: &ProgramModel, after: &ProgramModel) -> String {
+        match self {
+            Self::Placed { part, at, .. } => match after.part(part) {
+                None => format!("it no longer makes part {}", quote(part)),
+                Some(made) if !near(made.at_mm, *at) => format!(
+                    "part {} stands at {} instead of {}",
+                    quote(part),
+                    point_literal(written_point(made.at_mm)),
+                    point_literal(written_point(*at))
+                ),
+                Some(_) => changed_parts(before, after, Some(part))
+                    .unwrap_or_else(|| format!("part {} is turned otherwise", quote(part))),
+            },
+            Self::Reads {
+                part,
+                reading,
+                value,
+            } => match reading.of(after, part) {
+                Some(read) => format!(
+                    "part {} reads {} instead of {}",
+                    quote(part),
+                    number_literal(written(read)),
+                    number_literal(written(*value))
+                ),
+                None => format!("part {} no longer has that value", quote(part)),
+            },
+            Self::Same(expected) => changed_parts(expected, after, None)
+                .unwrap_or_else(|| "what it declares besides parts changed".to_owned()),
+            Self::Renamed { to, .. } => {
+                if after.part(to).is_none() {
+                    return format!("it makes no part {}", quote(to));
+                }
+                let (old, new) = (names(before), names(after));
+                let gone = old.difference(&new).cloned().collect::<Vec<_>>();
+                let added = new.difference(&old).filter(|name| *name != to);
+                match (
+                    gone.as_slice(),
+                    added.cloned().collect::<Vec<_>>().as_slice(),
+                ) {
+                    ([], []) => "its parts changed besides the name".to_owned(),
+                    (gone, added) => {
+                        format!("it also renames {} to {}", listed(gone), listed(added))
+                    }
+                }
+            }
+            Self::Mirrored { copy, bounds } => match after.part(copy) {
+                None => format!("it makes no part {}", quote(copy)),
+                Some(made)
+                    if !(near(made.world_bounds().0, bounds.0)
+                        && near(made.world_bounds().1, bounds.1)) =>
+                {
+                    format!(
+                        "part {} lies from {} to {} instead of {} to {}",
+                        quote(copy),
+                        point_literal(written_point(made.world_bounds().0)),
+                        point_literal(written_point(made.world_bounds().1)),
+                        point_literal(written_point(bounds.0)),
+                        point_literal(written_point(bounds.1))
+                    )
+                }
+                Some(_) => changed_parts(before, after, Some(copy))
+                    .unwrap_or_else(|| "what it declares besides parts changed".to_owned()),
+            },
+        }
     }
 
     pub(crate) fn holds(&self, before: &ProgramModel, after: &ProgramModel) -> bool {
@@ -312,6 +386,44 @@ impl Expected {
             }
         }
     }
+}
+
+/// "parts a, b and 3 more changed" for the parts and tools `after` makes
+/// otherwise than `expected`, `except` aside; `None` when none differs.
+fn changed_parts(
+    expected: &ProgramModel,
+    after: &ProgramModel,
+    except: Option<&str>,
+) -> Option<String> {
+    fn bodies(model: &ProgramModel) -> BTreeMap<&str, &Part> {
+        (model.parts.iter().chain(&model.tools))
+            .map(|part| (part.name.as_str(), part))
+            .collect()
+    }
+    let (expected, after) = (bodies(expected), bodies(after));
+    let changed = (expected.keys().chain(after.keys()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|name| Some(**name) != except && expected.get(*name) != after.get(*name))
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+    (!changed.is_empty()).then(|| format!("{} changed too", listed(&changed)))
+}
+
+/// Up to five quoted names, then how many more.
+fn listed(names: &[String]) -> String {
+    if names.is_empty() {
+        return "nothing".to_owned();
+    }
+    let mut shown = names
+        .iter()
+        .take(5)
+        .map(|name| quote(name))
+        .collect::<Vec<_>>();
+    if names.len() > 5 {
+        shown.push(format!("{} more", names.len() - 5));
+    }
+    shown.join(", ")
 }
 
 /// Fields of a program model that hold names of something else than parts:
@@ -400,6 +512,16 @@ impl Edit<'_> {
         self.text()[..byte].matches('\n').count() + 1
     }
 
+    /// As [`refused`], naming `line` of the program as the one to change.
+    fn refused_on(
+        &self,
+        line: usize,
+        code: &str,
+        message: impl Into<String>,
+    ) -> RuleProgramApplyError {
+        refused_at(self.source, line, code, message)
+    }
+
     pub(crate) fn found_call(&self) -> Option<CreatingCall> {
         let recorded = self.evaluated.part_sources.get(self.name)?;
         source_edit::creating_call(&self.source.file_name, self.text(), recorded)
@@ -416,7 +538,8 @@ impl Edit<'_> {
             )
         })?;
         if let Some(line) = call.loop_line {
-            return Err(refused(
+            return Err(self.refused_on(
+                line,
                 "program_part_in_loop",
                 format!(
                     "part {name} is made in a loop on line {line}, with the other parts of the loop; {doing} in the program"
@@ -424,7 +547,8 @@ impl Edit<'_> {
             ));
         }
         if let Some(function) = &call.function {
-            return Err(refused(
+            return Err(self.refused_on(
+                call.lines.first,
                 "program_part_in_function",
                 format!(
                     "part {name} is made by the program's function {function}() called on line {}; {doing} in the program",
@@ -440,7 +564,8 @@ impl Edit<'_> {
         let name = quote(self.name);
         let call = self.creating_call(doing)?;
         let Some(statement) = call.statement.clone() else {
-            return Err(refused(
+            return Err(self.refused_on(
+                call.lines.first,
                 "program_part_shared_line",
                 format!(
                     "part {name} is made on line {} together with other values; {doing} in the program",
@@ -459,7 +584,8 @@ impl Edit<'_> {
                 .iter()
                 .find(|(other, recorded)| other.as_str() != self.name && recorded.contains(lines))
             {
-                return Err(refused(
+                return Err(self.refused_on(
+                    lines.first,
                     "program_part_referenced",
                     format!(
                         "part {name} is used on line {} together with part {}; delete that line first",
@@ -471,7 +597,8 @@ impl Edit<'_> {
             let Some(changing) =
                 source_edit::top_level_call_statement(&self.source.file_name, self.text(), *lines)
             else {
-                return Err(refused(
+                return Err(self.refused_on(
+                    lines.first,
                     "program_part_referenced",
                     format!(
                         "part {name} is changed on line {}; {doing} in the program",
@@ -492,7 +619,8 @@ impl Edit<'_> {
                         .any(|gone| gone.start <= bytes.start && bytes.end <= gone.end)
                 })
         {
-            return Err(refused(
+            return Err(self.refused_on(
+                line,
                 "program_part_referenced",
                 format!("part {name} is used on line {line}; delete that use first"),
             ));
@@ -507,16 +635,13 @@ impl Edit<'_> {
             message, location, ..
         }) = evaluate(&rewritten)
         {
-            let at = location.map_or_else(String::new, |location| {
-                format!(
-                    " on line {}",
-                    self.original_line(&removed, location.at.line)
-                )
+            let line = location.map(|location| self.original_line(&removed, location.at.line));
+            let at = line.map_or_else(String::new, |line| format!(" on line {line}"));
+            let message = format!("part {name} is still used{at}: {message}");
+            return Err(match line {
+                Some(line) => self.refused_on(line, "program_part_referenced", message),
+                None => refused("program_part_referenced", message),
             });
-            return Err(refused(
-                "program_part_referenced",
-                format!("part {name} is still used{at}: {message}"),
-            ));
         }
         let mut expected = self.evaluated.model.clone();
         expected.parts.retain(|part| part.name != self.name);
@@ -583,7 +708,8 @@ impl Edit<'_> {
         }
         let call = self.creating_call(doing)?;
         let Some(made) = call.name else {
-            return Err(refused(
+            return Err(self.refused_on(
+                call.lines.first,
                 "program_part_computed_name",
                 format!(
                     "part {name} gets its name from an expression on line {}; {doing} in the program",
@@ -930,16 +1056,23 @@ impl Edit<'_> {
         {
             return Err(refusal);
         }
-        let line = self
-            .found_call()
-            .map_or_else(String::new, |call| format!(" on line {}", call.lines.first));
+        // The line that writes the value: the operation that makes the
+        // feature (a push_pull(), a fillet()), else the creating call.
+        let written_on = self
+            .line_making(&reading)
+            .or_else(|| self.found_call().map(|call| call.lines.first));
+        let line = written_on.map_or_else(String::new, |line| format!(" on line {line}"));
+        let refusal = |code: &str, message: String| match written_on {
+            Some(line) => self.refused_on(line, code, message),
+            None => refused(code, message),
+        };
         if let Some(Driven::Shared { parameter, changes }) = driven {
             let more = changes.len().saturating_sub(5);
             let mut named = changes.into_iter().take(5).collect::<Vec<_>>();
             if more > 0 {
                 named.push(format!("{more} more"));
             }
-            return Err(refused(
+            return Err(refusal(
                 "program_parameter_shared",
                 format!(
                     "param({}) sets {feature} · {path} of part {name} and also changes {}; set the parameter {} to change them all, or change part {name}{line} in the program",
@@ -949,12 +1082,34 @@ impl Edit<'_> {
                 ),
             ));
         }
-        Err(refused(
+        Err(refusal(
             "program_parameter_not_driven",
             format!(
                 "{feature} · {path} of part {name} is not set by one param(); change it{line} in the program"
             ),
         ))
+    }
+
+    /// The first line besides the part's creating call without which the
+    /// part no longer reads what `reading` reads: the operation that makes it.
+    fn line_making(&self, reading: &Reading) -> Option<usize> {
+        let before = reading.of(&self.evaluated.model, self.name)?;
+        let creating = self.found_call().map(|call| call.lines);
+        let mut lines = self.evaluated.part_sources.get(self.name)?.clone();
+        lines.sort_by_key(|lines| lines.first);
+        lines.into_iter().find_map(|lines| {
+            if Some(lines) == creating {
+                return None;
+            }
+            let statement =
+                source_edit::top_level_call_statement(&self.source.file_name, self.text(), lines)?;
+            let without = self.with(vec![(statement, String::new())]);
+            let read = evaluate(&without)
+                .ok()
+                .and_then(|after| reading.of(&after.model, self.name));
+            read.is_none_or(|read| (read - before).abs() > ACCUMULATED_ROUNDING)
+                .then_some(lines.first)
+        })
     }
 
     /// The part of the extrusion `feature`, `pad` long as the program writes

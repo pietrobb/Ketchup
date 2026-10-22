@@ -619,6 +619,29 @@ fn planning_failure(code: &'static str, diagnostic: &AssistantRejectionDiagnosti
     code
 }
 
+/// A typed edit the program cannot take, answered as the rejection it is: a
+/// code of the catalog (a part made in a loop, say) is the answer with its
+/// program line and fix; any other is `planning_rejected` with the same
+/// target, reason and fix.
+fn program_write_failure(rejection: &Rejection) -> &'static str {
+    match ketchup_application::rejections::host_rejection(rejection.code()) {
+        Some(entry) => {
+            record_rejection(rejection, json!({"published": false}));
+            entry.code
+        }
+        None => {
+            record_rejection(
+                &rejected("planning_rejected")
+                    .target(rejection.target_name())
+                    .reason(rejection.reason_text())
+                    .fix_hint(rejection.fix_hint_text()),
+                json!({"rejection_code": rejection.code(), "published": false}),
+            );
+            "planning_rejected"
+        }
+    }
+}
+
 /// The result of an error response for `code`: the recorded rejection when it
 /// belongs to this code, otherwise the code's catalog rejection.
 fn rejection_result(code: &str, recorded: Option<Value>) -> Value {
@@ -2088,9 +2111,7 @@ impl LiveBridge {
         let rewritten = app
             .program_edit_source(&program)
             .transpose()
-            .map_err(|rejection| {
-                failure("planning_rejected", rejection.reason_text(), json!({}))
-            })?;
+            .map_err(|rejection| program_write_failure(&rejection))?;
         if rewritten.is_none() {
             reject_program_detach(app, strict && !view_only(&program))?;
         }
@@ -2099,9 +2120,9 @@ impl LiveBridge {
             return Err(PlanRejection::Code("planning_rejected"));
         }
         let proposal = match &rewritten {
-            Some(source) => app.program_source_proposal(source).map_err(|rejection| {
-                failure("planning_rejected", rejection.reason_text(), json!({}))
-            })?,
+            Some(source) => app
+                .program_source_proposal(source)
+                .map_err(|rejection| program_write_failure(&rejection))?,
             None => app
                 .derive_assistant_cad_edit_proposal(&program)
                 .map_err(|diagnostic| {
@@ -2838,16 +2859,14 @@ impl LiveBridge {
                     .validate()
                     .map_err(|error| failure("invalid_program", error.to_string(), json!({})))?;
                 Self::program_scope(app, &program)?;
-                let rewritten =
-                    app.program_edit_source(&program)
-                        .transpose()
-                        .map_err(|rejection| {
-                            failure("planning_rejected", rejection.reason_text(), json!({}))
-                        })?;
+                let rewritten = app
+                    .program_edit_source(&program)
+                    .transpose()
+                    .map_err(|rejection| program_write_failure(&rejection))?;
                 let proposal = match &rewritten {
-                    Some(source) => app.program_source_proposal(source).map_err(|rejection| {
-                        failure("planning_rejected", rejection.reason_text(), json!({}))
-                    })?,
+                    Some(source) => app
+                        .program_source_proposal(source)
+                        .map_err(|rejection| program_write_failure(&rejection))?,
                     None => app
                         .derive_assistant_cad_edit_proposal(&program)
                         .map_err(|diagnostic| planning_failure("planning_rejected", &diagnostic))?,

@@ -1009,7 +1009,7 @@ impl KetchupApp {
             DrawnShapeChange::Program { source, consumed } => self
                 .apply_program_source_with(source.clone(), false, consumed.clone())
                 .map(|_| ())
-                .map_err(|error| failed("program.apply", error)),
+                .map_err(|error| error.rejection()),
             DrawnShapeChange::Definition(batch) => {
                 match self.prepare_manual_push_pull_proposal(batch.clone()) {
                     Some(proposal) => self

@@ -939,7 +939,23 @@ fn a_typed_colour_is_written_into_the_program_and_a_delete_of_a_joined_part_is_r
             false,
         )
         .unwrap_err();
-    assert_eq!(refused, "planning_rejected");
+    // Review 2026-10-19 WB-5: the refusal was always planning_rejected with
+    // a bare reason; it keeps its code, the program line and its fix.
+    assert_eq!(refused, "program_part_shared_line");
+    let details = crate::live_bridge::take_error_details().unwrap();
+    assert_eq!(details["code"], "program_part_shared_line");
+    assert_eq!(details["target"], "program line 13", "{details}");
+    assert!(
+        details["reason"]
+            .as_str()
+            .unwrap()
+            .contains("is made on line 13 together with other values"),
+        "{details}"
+    );
+    assert_eq!(
+        details["fix_hint"],
+        "Put the part's call on a line of its own in the program."
+    );
     assert_eq!(app.live_bridge_stamp(), before);
     assert_eq!(app.document.current_rule_program().unwrap().source, source);
 }

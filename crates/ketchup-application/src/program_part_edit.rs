@@ -111,6 +111,24 @@ pub(crate) fn refused(code: &str, message: impl Into<String>) -> RuleProgramAppl
     }
 }
 
+/// As [`refused`], with line `line` of `source` as where the program must change.
+pub(crate) fn refused_at(
+    source: &RuleProgramSource,
+    line: usize,
+    code: &str,
+    message: impl Into<String>,
+) -> RuleProgramApplyError {
+    RuleProgramApplyError::Program {
+        code: code.to_owned(),
+        message: message.into(),
+        location: Some(ketchup_program::ErrorLocation::of_line(
+            &source.file_name,
+            &source.source,
+            line,
+        )),
+    }
+}
+
 impl Edit<'_> {
     /// The part's literal `at=` shifted, when its creating call has one
     /// outside any loop and the program then makes what the `move()` line
