@@ -100,7 +100,7 @@ reproduced failure that they catch, or explicit approval by the owner.
   installer build or a push. When the full suite fails, fix it and rerun only the failed tests
   by filter; the next full run is at the end of the next block.
 - Tests that need the large house or a document of its size (750-part `tiny-house.star`,
-  history past the file limit, whole-house drawings) are named `large_house_*` and marked
+  whole-house collisions and drawings) are named `large_house_*` and marked
   `#[ignore = "large-house: runs in full suite"]`, so per-step runs skip them. The end of a
   block also runs them: `cargo test --locked --workspace --all-targets -- --ignored large_house`
   (plain `--include-ignored` would also start the opt-in tests that need Blender, a GPU or
