@@ -247,6 +247,9 @@ pub enum LoadNotice {
     /// The saved Undo history was not restored; the document opened with its
     /// current revision only.
     HistoryDiscarded { reason: String },
+    /// An earlier Kečup saved `steps` Undo steps in the file. A file opens without
+    /// Undo steps, so they were not restored; the document is complete.
+    UndoStepsNotRestored { steps: u64 },
     /// The work-recovery checkpoint beside the file could not be used. While it
     /// stays there no session of the file can write its own; the caller that
     /// holds the file's WorkRecoveryLock sets it aside with
@@ -1826,6 +1829,15 @@ fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, Pe
             }
         }
         let Some(restored) = restored else {
+            // An earlier Kečup saved its Undo steps in the file (before 2026-10-21); they
+            // are not restored, and the open says so instead of dropping them unnamed.
+            if let (Some(revisions @ 2..), LoadOutcome::Editable { audit, .. }) =
+                (history_revision_count(&revision_history), &mut outcome)
+            {
+                audit.notices.push(LoadNotice::UndoStepsNotRestored {
+                    steps: revisions - 1,
+                });
+            }
             return Ok(outcome);
         };
         let discarded = |reason: String| LoadNotice::HistoryDiscarded { reason };
@@ -1982,6 +1994,19 @@ fn decode_history_program(
     chunks: &[&[u8]],
 ) -> Result<crate::document::RuleProgramSource, PersistenceError> {
     decode_rule_program(&program.assemble(chunks)?)
+}
+
+/// How many revisions a history holds, read from its header alone.
+fn history_revision_count(bytes: &[u8]) -> Option<u64> {
+    let mut reader = Reader::with_item_budget(bytes, HISTORY_BUDGET.items);
+    if reader.take(HISTORY_MAGIC.len()).ok()? != HISTORY_MAGIC {
+        return None;
+    }
+    reader.u16().ok()?;
+    reader
+        .count_with_limit(FILE_HISTORY_REVISIONS)
+        .ok()
+        .map(u64::from)
 }
 
 /// A history as the file names it: every revision's place, nothing assembled.

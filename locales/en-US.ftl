@@ -1291,6 +1291,7 @@ digest-opened-work-recovery = Warning: restored the unsaved work of “{ $path }
 digest-opened-work-recovery-step-damaged = Warning: the last edits in the unsaved-work checkpoint of “{ $path }” could not be read ({ $reason }). The work up to the edit before them was restored.
 digest-opened-without-work-recovery = Opened “{ $path }” from a read-only folder: unsaved work is not checkpointed there, so save it to another folder with Save As to keep it.
 digest-opened-without-history = Warning: opened “{ $path }” without its Undo history ({ $reason }). The model is complete.
+digest-opened-without-saved-undo = Opened “{ $path }” without the { $steps } Undo steps an earlier Kečup saved in it: Undo is now kept only while a document is open. The model is complete.
 digest-opened-work-recovery-set-aside = Warning: opened “{ $path }”. Its unsaved-work checkpoint could not be used ({ $reason }), so it was moved to “{ $set_aside }”; edits are checkpointed again from here.
 error-work-recovery-set-aside = Warning: opened “{ $path }”, but its unsaved-work checkpoint could not be used ({ $reason }) nor moved aside ({ $error }). Edits cannot be kept until that file is moved or removed.
 digest-saved-document = Saved “{ $path }” atomically

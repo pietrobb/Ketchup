@@ -10,7 +10,7 @@
 //! `KETCHUP_UPDATE_GOLDEN=1`.
 use ketchup_model::annotation::{Annotation, AnnotationMark};
 use ketchup_model::document::{CanonicalCommand, CommandBatch, DocumentStore, TagId};
-use ketchup_model::persistence::{self, ContainerData, LoadOutcome};
+use ketchup_model::persistence::{self, ContainerData, LoadNotice, LoadOutcome};
 use std::collections::BTreeSet;
 
 const FIXTURE_102: &str = concat!(
@@ -81,6 +81,33 @@ fn format_102_to_104_files_open_at_their_current_revision() {
         assert_eq!(document.current().underlays().count(), 1);
         assert!(document.current().annotations().is_empty());
     }
+}
+
+/// A file an earlier Kečup saved with its Undo steps opens without them, as every file
+/// does, and says so; a file saved now holds none and says nothing (review 2026-10-21 P3).
+#[test]
+fn a_file_saved_with_undo_steps_opens_without_them_and_says_so() {
+    let audit = |path: &str| {
+        let LoadOutcome::Editable {
+            document, audit, ..
+        } = persistence::load(&std::fs::read(path).unwrap()).unwrap()
+        else {
+            panic!("the fixture is editable")
+        };
+        assert_eq!(document.visible_undo_steps(), 0);
+        audit
+    };
+    let opened = audit(FIXTURE_104);
+    assert!(
+        matches!(
+            opened.notices[..],
+            [LoadNotice::UndoStepsNotRestored { steps }] if steps > 0
+        ),
+        "{:?}",
+        opened.notices
+    );
+    assert_eq!(opened.history_discarded(), None);
+    assert!(audit(SAVED_104).notices.is_empty());
 }
 
 #[test]

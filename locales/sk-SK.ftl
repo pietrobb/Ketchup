@@ -1291,6 +1291,7 @@ digest-opened-work-recovery = Upozornenie: neuložená práca „{ $path }“ bo
 digest-opened-work-recovery-step-damaged = Upozornenie: posledné úpravy v kontrolnom bode neuloženej práce „{ $path }“ sa nedali prečítať ({ $reason }). Obnovila sa práca po úpravu pred nimi.
 digest-opened-without-work-recovery = „{ $path }“ sa otvoril z priečinka len na čítanie: neuložená práca sa tam nezálohuje, preto ju uložte cez Uložiť ako do iného priečinka.
 digest-opened-without-history = Upozornenie: „{ $path }“ sa otvoril bez histórie Undo ({ $reason }). Model je celý.
+digest-opened-without-saved-undo = „{ $path }“ sa otvoril bez krokov Undo ({ $steps }), ktoré doň uložil starší Kečup: Undo sa teraz drží len kým je dokument otvorený. Model je celý.
 digest-opened-work-recovery-set-aside = Upozornenie: „{ $path }“ sa otvoril. Jeho záznam neuloženej práce sa nedal použiť ({ $reason }), preto sa presunul do „{ $set_aside }“; úpravy sa odtiaľto znova zaznamenávajú.
 error-work-recovery-set-aside = Upozornenie: „{ $path }“ sa otvoril, ale jeho záznam neuloženej práce sa nedal použiť ({ $reason }) ani odsunúť ({ $error }). Úpravy sa nedajú zachovať, kým sa ten súbor nepresunie alebo nezmaže.
 digest-saved-document = „{ $path }“ uložené atomicky

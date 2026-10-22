@@ -324,6 +324,14 @@ fn load_warning(
                  the document opened with its current revision only"
             ),
         }),
+        (LoadNotice::UndoStepsNotRestored { steps }, _) => json!({
+            "kind": "undo_steps_not_restored",
+            "message": format!(
+                "an earlier Kečup saved {steps} Undo steps in this file; Undo is kept only \
+                 while a document is open, so the document opened complete without them"
+            ),
+            "steps": steps,
+        }),
         (LoadNotice::WorkRecoveryStepDamaged { reason }, _) => json!({
             "kind": "work_recovery_step_damaged",
             "message": format!(

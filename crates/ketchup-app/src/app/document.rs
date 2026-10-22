@@ -368,6 +368,10 @@ impl KetchupApp {
                             LoadNotice::HistoryDiscarded { reason } => {
                                 ("digest-opened-without-history", vec![("reason", reason)])
                             }
+                            LoadNotice::UndoStepsNotRestored { steps } => (
+                                "digest-opened-without-saved-undo",
+                                vec![("steps", steps.to_string())],
+                            ),
                             LoadNotice::WorkRecoveryStepDamaged { reason } => (
                                 "digest-opened-work-recovery-step-damaged",
                                 vec![("reason", reason)],
