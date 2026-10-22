@@ -20,6 +20,13 @@ same corner (`StockBlank` in `fabrication.rs`).
 
 The definition point `(x, y, z)` is `(z, x − x_min, y − y_min)` in the part.
 
+A stock longer across its profile than along z (a box drawn lying along x or
+y) is measured along its longest axis instead: part X is that axis and Y, Z the
+next definition axes in cyclic order, so the part frame stays a rotation. A
+`(4000, 120, 200)` box gives `Length="4000" Width="120" Height="200"` and the
+definition point `(x, y, z)` is `(x − x_min, y − y_min, z)`; along y it is
+`(y − y_min, z, x − x_min)` (review 2026-10-21 MF-22).
+
 ## Machining reference plane
 
 `UserReferencePlane` has `ReferencePoint`, `XVector` and `YVector` in part

@@ -843,6 +843,11 @@ fn btlx_woodwop_and_the_job_frame_place_a_hole_alike_in_every_axis_order() {
                 height_mm: extents[2],
             });
             let blank = rectangular_stock(&stock).unwrap();
+            assert_eq!(
+                btlx_part_coordinate(blank, blank.extents_mm)[0],
+                sizes[0],
+                "BTLx length, {extents:?}"
+            );
             let woodwop = woodwop_stock_frame(&stock).unwrap();
             let JobStockFrame {
                 origin_mm,
@@ -887,7 +892,11 @@ fn btlx_woodwop_and_the_job_frame_place_a_hole_alike_in_every_axis_order() {
                             + btlx.x_vector[index] * start[0]
                             + btlx.y_vector[index] * start[1]
                     });
-                    let from_part = |[x, y, z]: [f64; 3]| [y, z, x];
+                    // BTLx X runs along the longest extent (MF-22).
+                    let length = blank.btlx_length_axis();
+                    let from_part = |part: [f64; 3]| -> [f64; 3] {
+                        std::array::from_fn(|axis| part[(axis + 3 - length) % 3])
+                    };
                     let btlx_entry: [f64; 3] = std::array::from_fn(|index| {
                         from_part(part)[index] + blank.corner_mm[index]
                     });

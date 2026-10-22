@@ -377,6 +377,32 @@ fn a_stock_box_with_successive_prism_cuts_exports_to_btlx() {
     assert!(btlx.matches("ProcessID=").count() >= 2, "{btlx}");
 }
 
+/// Review 2026-10-21 MF-22: a member drawn lying along x was written with its
+/// depth as the BTLx length (Length 200, Width 4000) and its machining in that
+/// frame. Its length is the 4000 mm, and a hole 1000 mm along it is 1000 mm
+/// along the part.
+#[test]
+fn a_member_drawn_along_x_is_written_with_its_length_along_the_part() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let source = format!(
+        "p=box('beam',(4000,120,200),{ROLE})\n\
+         hole(p, 'z+', at = (1000, 40), diameter = 10, depth = 50)\n"
+    );
+    let snapshot = apply(&source);
+    let projection = projection(&mut worker, &snapshot, "beam");
+    let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert!(
+        btlx.contains("Length=\"4000\" Width=\"120\" Height=\"200\""),
+        "{btlx}"
+    );
+    // Entering the top face (Z 200) 1000 mm along the part, 40 mm across it.
+    assert!(
+        btlx.contains("<ReferencePoint X=\"1000\" Y=\"40\" Z=\"200\"/>"),
+        "{btlx}"
+    );
+}
+
 /// Review MF-N4: a cut open only to the side of the rafter (its tool from
 /// z = 500 to 580 inside the 2000 mm length, reaching past the side face x = 60)
 /// was written as a contour from a plane inside the rafter, so the cutter would
