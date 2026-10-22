@@ -183,12 +183,15 @@ fn the_first_detaching_edit_says_so_and_undo_keeps_the_program() {
     assert!(harness.query_by_label(&owned).is_some());
     assert!(harness.query_by_label(&undo).is_none());
 
-    // Once per session: the next detaching edit only shows the status chip.
+    // Undo gave the program back, so the next detaching edit warns again
+    // (review 2026-10-19 WB-7). Keeping the change answers it for the session.
     rename(harness.state_mut());
     harness.run_steps(3);
     assert!(harness.query_by_label(&detached).is_some());
+    harness.get_by_role_and_label(Role::Button, &keep).click();
+    harness.run_steps(3);
     assert!(harness.query_by_label(&undo).is_none());
-    assert!(harness.query_by_label(&keep).is_none());
+    assert!(harness.state().document.current_rule_program().is_none());
 }
 
 /// #2562: the detach notice says which part the edit changed and why the
@@ -508,4 +511,43 @@ fn cut_list_export_is_a_table_of_the_visible_parts_in_csv_or_xlsx() {
         !text.contains("obal"),
         "the hidden concept is not cut: {text}"
     );
+}
+
+/// Review 2026-10-19 WB-7: the detach warning was shown once per window, so
+/// after Undo gave the program back, or in the next document, an edit that
+/// detached it again did so without a word.
+#[test]
+fn the_detach_warning_comes_again_after_undo_or_in_another_document() {
+    let mut app = KetchupApp::new();
+    let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "house.star".into(),
+        source: SOURCE.into(),
+        overrides: BTreeMap::new(),
+    };
+    let detach = |app: &mut KetchupApp, name: &str| {
+        app.program_detach_notice = None;
+        let id = app.document.current().occurrences().next().unwrap().id();
+        app.apply_batch_with_work_recovery(&CommandBatch::new(vec![
+            CanonicalCommand::RenameEntity {
+                id,
+                name: name.into(),
+            },
+        ]))
+        .unwrap();
+        assert!(app.document.current_rule_program().is_none());
+        app.program_detach_notice.is_some()
+    };
+    app.apply_program_source(program.clone(), true).unwrap();
+    assert!(detach(&mut app, "first"));
+    assert!(app.undo());
+    assert!(app.document.current_rule_program().is_some());
+    assert!(detach(&mut app, "second"), "after Undo");
+
+    // Open puts the read document in place and resets what the old one showed.
+    let mut other = KetchupApp::new();
+    other.apply_program_source(program, true).unwrap();
+    app.document = other.document;
+    app.reset_document_presentation();
+    assert!(detach(&mut app, "third"), "in another document");
 }

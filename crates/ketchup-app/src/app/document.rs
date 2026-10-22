@@ -55,6 +55,9 @@ impl KetchupApp {
     }
 
     pub(crate) fn reset_document_presentation(&mut self) {
+        // Another document's program is detached with its own warning
+        // (review 2026-10-19 WB-7).
+        self.program_detach_warned = false;
         self.invalidate_pending_import_reviews();
         self.cancel_mesh_conversion();
         self.tool_preview = None;
@@ -1434,6 +1437,11 @@ impl KetchupApp {
         self.parameter.last_recomputed_nodes.clear();
         self.reconcile_selection();
         self.status_key = "status-undo";
+        // An Undo that gives the program back (the notice's "Undo the edit"
+        // among them) warns again when an edit detaches it next.
+        if self.document.current_rule_program().is_some() {
+            self.program_detach_warned = false;
+        }
         true
     }
 
