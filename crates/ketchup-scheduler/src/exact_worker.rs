@@ -3955,6 +3955,29 @@ mod tests {
         );
     }
 
+    // Review 2026-10-19 P3: the document a worker keeps was named after the
+    // temporary copy it read, deleted right after, so the evidence of every part
+    // and failure answered from it changed with each read of the same source.
+    #[test]
+    fn a_kept_source_document_is_named_by_its_source_not_its_deleted_copy() {
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/independent-xde-assembly.step");
+        let step = SourceFile {
+            sha256: sha256_hex(&std::fs::read(&corpus).unwrap()),
+            path: corpus,
+        };
+        let backend = ExactBackend::new();
+        let digests = || {
+            let mut read = SourceDocument::default();
+            let (document, _) = read
+                .get(&backend, &step, XdeFormat::Step, "inspect_step_part")
+                .unwrap();
+            let part = document.part(0).unwrap().input_digest;
+            (part, document.part(u32::MAX).unwrap_err().input_digest)
+        };
+        assert_eq!(digests(), digests());
+    }
+
     // Review 2026-10-18 EX-8: evaluating an imported part asked the worker to
     // inspect it, then to tessellate it, and each request parsed the whole
     // source again (inspection twice: unit, then part). A 100-part STEP took 300

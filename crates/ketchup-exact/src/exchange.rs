@@ -72,11 +72,20 @@ impl std::error::Error for StepXdeManifestError {}
 /// unit and every part come from that single parse (review 2026-10-17 EX-2).
 pub struct StepXdeDocument {
     native: cxx::UniquePtr<ffi::NativeXdeDocument>,
-    path: String,
+    /// What part evidence and failures name the source by: the path read.
+    source: String,
     operation: &'static str,
 }
 
 impl StepXdeDocument {
+    /// Names the source by `source` instead of the path it was read from, for
+    /// a caller that keeps the document after deleting the file it read.
+    #[must_use]
+    pub fn named(mut self, source: String) -> Self {
+        self.source = source;
+        self
+    }
+
     pub fn manifest(&self) -> Result<StepXdeManifest, StepXdeManifestError> {
         parse_step_xde_manifest(&ffi::xde_document_manifest_native(&self.native))
     }
@@ -90,7 +99,7 @@ impl StepXdeDocument {
 
     /// The body of manifest part `part_index`.
     pub fn part(&self, part_index: u32) -> Result<ExactOpOutput, GeometryError> {
-        let input = format!("{}:{}:{part_index}", self.operation, self.path);
+        let input = format!("{}:{}:{part_index}", self.operation, self.source);
         if !usize::try_from(part_index).is_ok_and(|index| index < MAX_STEP_XDE_NODES) {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidParameter,
@@ -124,7 +133,7 @@ fn open_xde(
     }
     Ok(StepXdeDocument {
         native,
-        path: path.to_owned(),
+        source: path.to_owned(),
         operation,
     })
 }

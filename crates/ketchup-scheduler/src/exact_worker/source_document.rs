@@ -63,7 +63,9 @@ impl SourceDocument {
                 XdeFormat::Step => backend.open_step_xde(&path),
                 XdeFormat::Iges => backend.open_iges_xde(&path),
             }
-            .map_err(|error| backend_failure(operation, &error.to_string()))?;
+            .map_err(|error| backend_failure(operation, &error.to_string()))?
+            // The copy is deleted when this returns; the document outlives it.
+            .named(format!("sha256:{}", source.sha256));
             self.0 = Some(ReadSource {
                 format,
                 sha256: source.sha256.clone(),
