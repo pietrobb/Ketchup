@@ -413,6 +413,8 @@ pub enum WorkerError {
     },
     /// The named worker output is not a regular file.
     NotRegularFile(String),
+    /// The named worker output had another size when it was read than when it was opened.
+    ChangedWhileRead(String),
     OutOfMemory(OutOfMemory),
     /// The worker needed more than the `bytes` its job may commit and was stopped.
     MemoryLimit {
@@ -453,6 +455,9 @@ impl fmt::Display for WorkerError {
                 }
             }
             Self::NotRegularFile(label) => write!(formatter, "{label} is not a regular file"),
+            Self::ChangedWhileRead(label) => {
+                write!(formatter, "the {label} changed while it was read")
+            }
             Self::OutOfMemory(error) => error.fmt(formatter),
             Self::MemoryLimit { bytes } => write!(
                 formatter,
@@ -611,9 +616,20 @@ fn read_regular_file(path: &Path, label: &str) -> Result<Vec<u8>, WorkerError> {
     if !metadata.is_file() {
         return Err(WorkerError::NotRegularFile(label.to_owned()));
     }
-    let mut bytes = reserve_whole(metadata.len(), label).map_err(WorkerError::OutOfMemory)?;
-    file.read_to_end(&mut bytes)
-        .map_err(|error| WorkerError::Transport(error.to_string()))?;
+    read_reserved(&mut file, metadata.len(), label)
+}
+
+/// The `len` bytes `reader` holds, in a buffer reserved for them up front.
+fn read_reserved(reader: &mut impl Read, len: u64, label: &str) -> Result<Vec<u8>, WorkerError> {
+    let mut bytes = reserve_whole(len, label).map_err(WorkerError::OutOfMemory)?;
+    let transport = |error: io::Error| WorkerError::Transport(error.to_string());
+    reader
+        .take(len)
+        .read_to_end(&mut bytes)
+        .map_err(transport)?;
+    if u64::try_from(bytes.len()) != Ok(len) || reader.read(&mut [0]).map_err(transport)? != 0 {
+        return Err(WorkerError::ChangedWhileRead(label.to_owned()));
+    }
     Ok(bytes)
 }
 
@@ -2894,6 +2910,22 @@ mod tests {
                 format!("not enough memory to hold the STEP output ({len} bytes)")
             );
         }
+    }
+
+    /// Review 10-21: a file that grows while it is read is refused, never read past the
+    /// room reserved for its size.
+    #[test]
+    fn a_whole_read_stays_within_the_room_reserved_for_it() {
+        let bytes = read_reserved(&mut b"ten bytes!".as_slice(), 10, "DXF").unwrap();
+        assert_eq!(
+            (bytes.as_slice(), bytes.capacity()),
+            (b"ten bytes!".as_slice(), 10)
+        );
+        let grown = read_reserved(&mut b"ten bytes!+".as_slice(), 10, "DXF");
+        assert!(
+            matches!(&grown, Err(WorkerError::ChangedWhileRead(label)) if label == "DXF"),
+            "{grown:?}"
+        );
     }
 
     #[test]

@@ -594,17 +594,45 @@ impl WorkerFailure {
 /// A frame bounded only by its u32 length prefix, which `encode_frame` refuses to overflow.
 pub const ANY_FRAME_BYTES: usize = usize::MAX;
 
+/// A frame being encoded, which refuses to grow its body past `max_bytes` and reports
+/// memory it cannot get as an error.
+struct BoundedFrame {
+    frame: Vec<u8>,
+    max_bytes: usize,
+}
+
+impl Write for BoundedFrame {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.frame.len() - 4 + bytes.len() > self.max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("worker frame exceeds the {}-byte limit", self.max_bytes),
+            ));
+        }
+        self.frame
+            .try_reserve(bytes.len())
+            .map_err(io::Error::other)?;
+        self.frame.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Encodes one length-prefixed frame, refusing bodies above `max_bytes`.
 pub fn encode_frame(message: &impl Serialize, max_bytes: usize) -> io::Result<Vec<u8>> {
-    let mut frame = vec![0; 4];
-    ciborium::into_writer(message, &mut frame).map_err(io::Error::other)?;
+    let mut bounded = BoundedFrame {
+        frame: vec![0; 4],
+        max_bytes,
+    };
+    ciborium::into_writer(message, &mut bounded).map_err(|error| match error {
+        ciborium::ser::Error::Io(error) => error,
+        ciborium::ser::Error::Value(error) => io::Error::other(error),
+    })?;
+    let mut frame = bounded.frame;
     let length = frame.len() - 4;
-    if length > max_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("worker frame of {length} bytes exceeds the {max_bytes}-byte limit"),
-        ));
-    }
     let prefix =
         u32::try_from(length).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     frame[..4].copy_from_slice(&prefix.to_le_bytes());
@@ -647,18 +675,24 @@ pub fn read_frame<T: DeserializeOwned>(reader: &mut impl Read, max_bytes: usize)
     if length > max_bytes {
         return Frame::TooLarge;
     }
-    let mut body = Vec::with_capacity(length);
-    match reader.take(length as u64).read_to_end(&mut body) {
-        Ok(read) if read == length => {}
+    let body = match read_body(reader, length) {
+        Ok(body) if body.len() == length => body,
         Ok(_) => return Frame::Malformed("worker frame body was truncated".to_owned()),
         Err(error) => return Frame::Transport(error.to_string()),
-    }
+    };
     let mut cursor = io::Cursor::new(body.as_slice());
     match ciborium::from_reader(&mut cursor) {
         Ok(message) if cursor.position() as usize == length => Frame::Message(message),
         Ok(_) => Frame::Malformed("worker frame has trailing bytes".to_owned()),
         Err(error) => Frame::Malformed(format!("worker frame does not decode: {error}")),
     }
+}
+
+/// Up to `length` bytes of `reader`, in memory for the bytes that arrive.
+fn read_body(reader: &mut impl Read, length: usize) -> io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    reader.take(length as u64).read_to_end(&mut body)?;
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -742,6 +776,50 @@ mod tests {
                 Frame::Malformed(_)
             ));
         }
+    }
+
+    /// A sequence of `total` zero bytes that counts how many of them were encoded.
+    struct Counted {
+        total: usize,
+        encoded: std::cell::Cell<usize>,
+    }
+
+    impl Serialize for Counted {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq((0..self.total).map(|_| {
+                self.encoded.set(self.encoded.get() + 1);
+                0_u8
+            }))
+        }
+    }
+
+    /// Review 10-21: a frame takes memory for the bytes that arrive, not for the length
+    /// its header declares, and a frame over its limit stops being encoded at the limit.
+    #[test]
+    fn a_frame_takes_memory_for_its_bytes_not_its_header() {
+        let mut lying = io::Cursor::new(b"ten bytes!".as_slice());
+        let body = read_body(&mut lying, 1 << 30).unwrap();
+        assert_eq!(body, b"ten bytes!");
+        assert!(
+            body.capacity() < 1 << 20,
+            "10 bytes took {}",
+            body.capacity()
+        );
+
+        let message = Counted {
+            total: 16 << 20,
+            encoded: std::cell::Cell::new(0),
+        };
+        let refused = encode_frame(&message, 1 << 20).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            message.encoded.get() <= (1 << 20) + 1,
+            "{} of {} bytes were encoded",
+            message.encoded.get(),
+            message.total
+        );
+        let reply = WorkerReply::Failure(WorkerFailure::invalid_request());
+        assert!(matches!(round_trip(&reply), Frame::Message(read) if read == reply));
     }
 
     #[test]
