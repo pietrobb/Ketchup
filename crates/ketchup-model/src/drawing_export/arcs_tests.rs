@@ -19,6 +19,7 @@ fn chord(id: String, from: usize, to: usize) -> ProjectedVisibleLine {
         start_mm: point(step * from as f64),
         end_mm: point(step * to as f64),
         foreshortened: false,
+        clipped: false,
     }
 }
 
@@ -84,6 +85,7 @@ fn a_circle_split_by_hidden_line_removal_gives_a_visible_and_a_hidden_arc() {
             start_mm: split.start_mm,
             end_mm: middle,
             foreshortened: false,
+            clipped: false,
         },
     ];
     let mut hidden = vec![ProjectedVisibleLine {
@@ -91,6 +93,7 @@ fn a_circle_split_by_hidden_line_removal_gives_a_visible_and_a_hidden_arc() {
         start_mm: middle,
         end_mm: split.end_mm,
         foreshortened: false,
+        clipped: false,
     }];
     hidden.extend((3..STEPS).map(|step| chord(format!("e:{step}"), step, step + 1)));
     visible.reverse();
@@ -186,6 +189,7 @@ fn lines_that_are_not_chords_of_an_exact_circle_stay_lines() {
             start_mm: point(0.0),
             end_mm: point(quarter),
             foreshortened: false,
+            clipped: false,
         },
         // One end on the circle, the other just inside it.
         ProjectedVisibleLine {
@@ -193,6 +197,7 @@ fn lines_that_are_not_chords_of_an_exact_circle_stay_lines() {
             start_mm: point(0.0),
             end_mm: [point(0.3)[0] - 1e-3, point(0.3)[1]],
             foreshortened: false,
+            clipped: false,
         },
         // A chord whose pieces leave the chord.
         ProjectedVisibleLine {
@@ -200,12 +205,14 @@ fn lines_that_are_not_chords_of_an_exact_circle_stay_lines() {
             start_mm: point(1.0),
             end_mm: [CENTER[0], CENTER[1] + RADIUS + 1.0],
             foreshortened: false,
+            clipped: false,
         },
         ProjectedVisibleLine {
             stable_line_id: "bent/segment-000001".into(),
             start_mm: [CENTER[0], CENTER[1] + RADIUS + 1.0],
             end_mm: point(1.3),
             foreshortened: false,
+            clipped: false,
         },
     ];
     let result = view_arcs(&view(lines.clone(), Vec::new(), vec![circle("c:1")]));

@@ -2905,6 +2905,97 @@ fn dimensions_on_foreshortened_edges_are_refused_by_name() {
     assert!((true_length.layout.linear_dimensions[0].value_mm - 30.0).abs() <= 1.0e-9);
 }
 
+/// Review 2026-10-18 MF-10: a detail circle 12 mm across near the start of the
+/// box's 20 mm edge shows 8.2 mm of it, and a length dimension there read 8.2 mm.
+/// It is refused by name; the same edge inside a detail that holds all of it
+/// still reads 20 mm.
+#[test]
+fn a_length_dimension_on_an_edge_cut_by_its_detail_circle_is_refused_by_name() {
+    let document = seeded_document();
+    let exact = registry(
+        &document.current(),
+        "clipped-detail-dimension",
+        [[0.0, 0.0, 0.0], [20.0, 10.0, 30.0]],
+    );
+    let sheet_with = |views: Vec<OrthographicViewKind>, annotations| {
+        DrawingSheet::with_contract_views_and_annotations(
+            SHEET,
+            "Detail",
+            DrawingSource::Definition(DEFINITION),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Detail", "", "", "").unwrap(),
+            views,
+            annotations,
+        )
+        .unwrap()
+    };
+    let front = project_orthographic_drawing(
+        &document.current(),
+        &exact,
+        &sheet_with(
+            vec![OrthographicViewKind::Front],
+            DrawingAnnotations::new(vec![], vec![]),
+        ),
+    )
+    .unwrap();
+    let edge = front.views[0]
+        .visible_lines
+        .iter()
+        .find(|line| {
+            let delta = [
+                line.end_mm[0] - line.start_mm[0],
+                line.end_mm[1] - line.start_mm[1],
+            ];
+            (ketchup_geometry::linalg::dot2(delta, delta).sqrt() - 20.0).abs() <= 1.0e-6
+        })
+        .expect("the front view draws the 20 mm edge")
+        .clone();
+    // Near the edge's start, so the detail also holds a piece of the edge
+    // that meets it there.
+    let near_start = [edge.start_mm[0] + 3.0, edge.start_mm[1] + 3.0];
+    let detail = |radius_mm| {
+        OrthographicViewKind::detail(
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            near_start,
+            radius_mm,
+            DrawingScale::new(2, 1).unwrap(),
+        )
+        .unwrap()
+    };
+    let dimension_on = |view: OrthographicViewKind| {
+        project_orthographic_drawing(
+            &document.current(),
+            &exact,
+            &sheet_with(
+                vec![OrthographicViewKind::Front, view],
+                DrawingAnnotations::new(
+                    vec![
+                        DrawingLinearDimension::new(
+                            DrawingDimensionId(1),
+                            view,
+                            edge.stable_line_id.replacen(
+                                "/view-front/",
+                                &format!("/view-{}/", view.stable_name()),
+                                1,
+                            ),
+                            8.0,
+                        )
+                        .unwrap(),
+                    ],
+                    vec![],
+                ),
+            ),
+        )
+    };
+    assert_eq!(
+        dimension_on(detail(6.0)),
+        Err(DrawingError::DimensionClipped)
+    );
+    let whole = dimension_on(detail(40.0)).unwrap();
+    assert!((whole.layout.linear_dimensions[0].value_mm - 20.0).abs() <= 1.0e-9);
+}
+
 #[test]
 fn malformed_geometry_is_rejected_without_mutation() {
     let document = seeded_document();

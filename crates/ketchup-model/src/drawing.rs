@@ -2019,6 +2019,9 @@ pub struct ProjectedVisibleLine {
     /// The edge is not parallel to the view plane, so the drawn line is
     /// shorter than the edge and cannot carry a length dimension.
     pub foreshortened: bool,
+    /// A detail view cut the line at its circle, so the drawn line is a piece
+    /// of the edge and cannot carry its length (review 2026-10-18 MF-10).
+    pub clipped: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2200,6 +2203,8 @@ pub enum DrawingError {
     InvalidAnnotation,
     DimensionSourceLost,
     DimensionForeshortened,
+    /// A length dimension names an edge its detail view shows only a piece of.
+    DimensionClipped,
     AnnotationSourceLost,
     LayoutOverflow,
     SourceLost,
@@ -2249,6 +2254,9 @@ impl fmt::Display for DrawingError {
             Self::DimensionSourceLost => "drawing dimension source line is lost",
             Self::DimensionForeshortened => {
                 "drawing dimension source edge is not parallel to its view, so the drawn line is shorter than the edge; dimension it on a view the edge lies in"
+            }
+            Self::DimensionClipped => {
+                "drawing dimension source edge runs out of its detail view, so the view shows only a piece of it; dimension the edge on the parent view, or an edge that lies inside the detail circle"
             }
             Self::AnnotationSourceLost => "drawing annotation source line is lost",
             Self::LayoutOverflow => {
@@ -3094,6 +3102,7 @@ fn project_view(
                 start_mm,
                 end_mm,
                 foreshortened,
+                clipped: false,
             };
             if hidden {
                 hidden_lines.push(line);
@@ -3166,6 +3175,8 @@ fn clip_lines_to_detail(
         let [start_mm, end_mm] = [line.start_mm, line.end_mm];
         line.start_mm = interpolate(start_mm, end_mm, start_parameter);
         line.end_mm = interpolate(start_mm, end_mm, end_parameter);
+        line.clipped =
+            start_parameter > INTERSECTION_EPSILON || end_parameter < 1.0 - INTERSECTION_EPSILON;
         clipped.push(line);
     }
     Ok(clipped)
@@ -3712,6 +3723,7 @@ fn whole_projected_edge(
         start_mm,
         end_mm,
         foreshortened: pieces.iter().any(|line| line.foreshortened),
+        clipped: pieces.iter().any(|line| line.clipped),
     })
 }
 
@@ -3735,6 +3747,9 @@ fn layout_linear_dimensions(
         // line is shorter than the edge; its 2D length is not the edge's.
         if source_line.foreshortened {
             return Err(DrawingError::DimensionForeshortened);
+        }
+        if source_line.clipped {
+            return Err(DrawingError::DimensionClipped);
         }
         let source_delta = subtract_2d(source_line.end_mm, source_line.start_mm);
         let value_mm = dot2(source_delta, source_delta).sqrt();
