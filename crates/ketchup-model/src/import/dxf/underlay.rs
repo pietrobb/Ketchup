@@ -502,5 +502,5 @@ fn read_line(source: &mut impl BufRead, line: &mut Vec<u8>) -> Result<bool, DxfI
 }
 
 fn read_error(error: std::io::Error) -> DxfImportError {
-    DxfImportError::Read(error.kind())
+    DxfImportError::Read(error.into())
 }

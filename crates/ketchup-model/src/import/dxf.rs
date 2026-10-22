@@ -159,7 +159,7 @@ impl ParsedDxf {
 pub enum DxfImportError {
     Empty,
     /// The drawing could not be read on (an underlay is read from its file as it goes).
-    Read(std::io::ErrorKind),
+    Read(ReadFailure),
     NonAscii,
     LineTooLong,
     TooManyPairs,
@@ -221,8 +221,8 @@ impl fmt::Display for DxfImportError {
             Self::InvalidReport(cause) => {
                 return write!(formatter, "DXF unsupported/loss report is invalid: {cause}");
             }
-            Self::Read(kind) => {
-                return write!(formatter, "the DXF could not be read on: {kind}");
+            Self::Read(failure) => {
+                return write!(formatter, "the DXF could not be read on: {}", failure.0);
             }
             Self::Empty => "DXF source is empty",
             Self::NonAscii => "DXF must be UTF-8 text, or older than DXF 2007 and in the Windows code page its $DWGCODEPAGE names; binary DXF is unsupported",
@@ -270,7 +270,40 @@ impl fmt::Display for DxfImportError {
     }
 }
 
-impl std::error::Error for DxfImportError {}
+impl std::error::Error for DxfImportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read(failure) => Some(failure.0.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+/// The error a read of the drawing failed with, shared so the import error stays `Clone`;
+/// two are equal when they are of one kind and say the same.
+#[derive(Clone, Debug)]
+pub struct ReadFailure(pub std::sync::Arc<std::io::Error>);
+
+impl ReadFailure {
+    #[must_use]
+    pub fn kind(&self) -> std::io::ErrorKind {
+        self.0.kind()
+    }
+}
+
+impl From<std::io::Error> for ReadFailure {
+    fn from(error: std::io::Error) -> Self {
+        Self(std::sync::Arc::new(error))
+    }
+}
+
+impl PartialEq for ReadFailure {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.kind() == other.0.kind() && self.0.to_string() == other.0.to_string()
+    }
+}
+
+impl Eq for ReadFailure {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DxfImportPlanError {

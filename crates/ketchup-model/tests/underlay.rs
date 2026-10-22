@@ -279,6 +279,54 @@ fn an_xref_and_its_blocks_are_not_loaded_but_named_with_their_inserts() {
     assert_eq!(not_loaded, [("SITE", 2), ("SITE|door", 1)]);
 }
 
+/// A drawing whose reading fails after `good` bytes, as a file on a share that goes away.
+struct FailingAfter {
+    source: std::io::Cursor<Vec<u8>>,
+    good: u64,
+}
+
+impl std::io::Read for FailingAfter {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.good.saturating_sub(self.source.position());
+        if left == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "the share went away",
+            ));
+        }
+        let length = buffer
+            .len()
+            .min(usize::try_from(left).unwrap_or(usize::MAX));
+        std::io::Read::read(&mut self.source, &mut buffer[..length])
+    }
+}
+
+impl std::io::Seek for FailingAfter {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        std::io::Seek::seek(&mut self.source, position)
+    }
+}
+
+/// Review 2026-10-21 P3: a failed read was reported by its kind only ("permission
+/// denied"), its message lost. The message is in the report and the error is its source.
+#[test]
+fn a_read_that_fails_partway_names_the_systems_message() {
+    let entities = line("0", [0.0, 0.0], [10.0, 0.0]).repeat(100);
+    let source = dxf(&entities);
+    let reader = std::io::BufReader::with_capacity(
+        64,
+        FailingAfter {
+            good: u64::try_from(source.len() / 2).unwrap(),
+            source: std::io::Cursor::new(source),
+        },
+    );
+    let error = read_dxf_underlay_from(reader, DxfImportOptions::new(None)).unwrap_err();
+    assert!(matches!(error, DxfImportError::Read(_)), "{error:?}");
+    assert!(error.to_string().contains("the share went away"), "{error}");
+    let source = std::error::Error::source(&error).expect("the read error as its source");
+    assert!(source.to_string().contains("the share went away"));
+}
+
 /// Review 2026-10-21 P3: an xref inserted in a block was counted once, when the block was
 /// read, however often the block was placed, and even when it never was. It is counted
 /// per place it would be drawn, and a block holding only an xref is placed as one.
