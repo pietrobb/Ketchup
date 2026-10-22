@@ -221,22 +221,38 @@ def member(name, start, end, section, across = None, material = "timber", grain 
     timber member unless role= says otherwise (a steel post: MANUFACTURED_ITEM).
 
     The bar's local z runs along its length (z- face at `start`, z+ at `end`);
-    local x is `across` made perpendicular to the length (default: world x, or
-    world y when the bar runs along x). Ends are square; trim them with
-    booleans when they must follow another surface.
+    local x is `across` made perpendicular to the length. By default it is
+    horizontal and square to the length, so a sloping bar (a rafter, a brace)
+    keeps its height in the vertical plane at every slope; only a vertical bar
+    takes world x. Ends are square; trim them with booleans when they must
+    follow another surface.
     """
     direction = vec_sub(end, start)
     length = vec_length(direction)
     if length <= 0:
         fail("member(%r): start and end must differ" % name)
     if across == None:
-        across = (0, 1, 0) if abs(direction[0]) > 0.9 * length else (1, 0, 0)
+        across = _member_across(direction, length)
     attributes = grain_attributes(grain)
     attributes[FABRICATION_ROLE] = _role("member(%r)" % name, role)
     part = box(name, (section[0], section[1], length), material = material, color = color, attributes = attributes)
     placed = place(part, origin = start, z = direction, x = across)
     offset = vec_add(vec_scale(placed.x, -section[0] / 2.0), vec_scale(placed.y, -section[1] / 2.0))
     return place(part, origin = vec_add(start, offset), z = direction, x = across)
+
+def _member_across(direction, length):
+    """The default across of member(): world z x the length, horizontal at any
+    slope, signed as before (towards world y for a bar along x, towards world
+    x otherwise) so level bars keep their face names; world x when vertical."""
+    horizontal = (-direction[1], direction[0], 0)
+    size = vec_length(horizontal)
+    if size <= 1e-9 * length:
+        return (1, 0, 0)
+    previous = (0, 1, 0) if abs(direction[0]) > 0.9 * length else (1, 0, 0)
+    side = _dot(horizontal, previous)
+    if abs(side) <= 1e-9 * size:
+        side = horizontal[1]
+    return horizontal if side > 0 else vec_scale(horizontal, -1)
 
 #@topic placement: Placing parts by relation, distances and contact
 #

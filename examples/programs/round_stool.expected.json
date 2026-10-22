@@ -124,7 +124,7 @@
     {
       "approx": true,
       "cut_in": "seat",
-      "depth_mm": 46.8,
+      "depth_mm": 42.6,
       "direction": [
         -0.257,
         -0.149,
@@ -140,7 +140,7 @@
     {
       "approx": true,
       "cut_in": "seat",
-      "depth_mm": 46.8,
+      "depth_mm": 42.6,
       "direction": [
         0.257,
         -0.149,
@@ -185,7 +185,7 @@
     },
     {
       "cut_in": "leg2",
-      "depth_mm": 28.4,
+      "depth_mm": 28.3,
       "direction": [
         0.5,
         0.866,
@@ -200,7 +200,7 @@
     },
     {
       "cut_in": "leg2",
-      "depth_mm": 22.0,
+      "depth_mm": 28.3,
       "direction": [
         1.0,
         0.0,
@@ -215,7 +215,7 @@
     },
     {
       "cut_in": "leg3",
-      "depth_mm": 22.0,
+      "depth_mm": 28.3,
       "direction": [
         -1.0,
         0.0,
@@ -230,7 +230,7 @@
     },
     {
       "cut_in": "leg3",
-      "depth_mm": 28.4,
+      "depth_mm": 28.3,
       "direction": [
         -0.5,
         0.866,
