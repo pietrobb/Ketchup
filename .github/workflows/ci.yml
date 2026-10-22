@@ -312,7 +312,7 @@ jobs:
     name: fuzzing of the document, Viewer package and import readers
     # libFuzzer with AddressSanitizer gives every target in fuzz/Cargo.toml
     # (load(), Package::read_with_comments and the DXF, STL, GLB and SketchUp
-    # scene imports) any bytes for two minutes each; one input may take 10 s
+    # scene imports and the DXF underlay) any bytes for two minutes each; one input may take 10 s
     # and the process 2 GiB. Each run starts from the seeds in fuzz/seeds and
     # the corpus earlier runs kept in the Actions cache (tests/test_fuzz_job.py).
     runs-on: ubuntu-latest
@@ -343,7 +343,8 @@ jobs:
           restore-keys: fuzz-corpus-
       - name: seeds kept elsewhere in the repository
         run: |
-          mkdir -p fuzz/seeds/load fuzz/seeds/view_package fuzz/seeds/glb
+          mkdir -p fuzz/seeds/load fuzz/seeds/view_package fuzz/seeds/glb fuzz/seeds/dxf_underlay/
+          cp fuzz/seeds/dxf/* fuzz/seeds/dxf_underlay/
           cp crates/ketchup-assistant/tests/fixtures/intent_entities.ketchup examples/programs/table.ketchup fuzz/seeds/load/
           cp viewer/samples/kitchen.ketchup-view fuzz/seeds/view_package/
           cp artifacts/blender/garden-studio-colored.glb fuzz/seeds/glb/
