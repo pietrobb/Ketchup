@@ -42,6 +42,18 @@ def test_counts_the_viewer_crates_too(tmp_path):
     }
 
 
+def test_counts_the_sleep_calls_of_python_tests(tmp_path):
+    # Review 2026-10-21 P3: Python tests were not scanned. A sleep named in a string is not
+    # a call, and a script outside the tests is not counted.
+    write(tmp_path, "tests/test_flow.py", "import time\ntime.sleep(0.1)\nFIXTURE = 'sleep(A)'\n")
+    write(tmp_path, "sdk/python/tests/test_client.py", "from time import sleep\nsleep(1)\nsleep(2)\n")
+    write(tmp_path, "scripts/tool.py", "import time\ntime.sleep(1)\n")
+    assert checker.current_counts(tmp_path) == {
+        "sdk/python/tests/test_client.py": 2,
+        "tests/test_flow.py": 1,
+    }
+
+
 def test_growth_fails_and_shrinking_passes(tmp_path):
     write(tmp_path, "crates/a/tests/flow.rs", "fn t() { sleep(A); sleep(B); }\n")
     assert checker.check(tmp_path, update=True) == 0

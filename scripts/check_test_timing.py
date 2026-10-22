@@ -60,7 +60,7 @@ def unignored_perf_tests(text: str) -> list[int]:
 
 def violations(root: Path = ROOT) -> list[str]:
     found = []
-    for path in sorted(root.glob("crates/*/**/*.rs")):
+    for path in sorted([*root.glob("crates/*/**/*.rs"), *root.glob("viewer/*/**/*.rs")]):
         relative = path.relative_to(root)
         if "target" in relative.parts:
             continue

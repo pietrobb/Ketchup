@@ -33,6 +33,17 @@ def test_budgets_fail_outside_perf_functions(tmp_path):
     assert checker.check(tmp_path) == 1
 
 
+def test_the_viewer_crates_are_checked_too(tmp_path):
+    # Review 2026-10-21 P3: only crates/ was scanned.
+    write(tmp_path, "viewer/web/tests/smoke.rs", (
+        "fn timed() {\n"
+        "    let started = Instant::now();\n"
+        "    assert!(started.elapsed() < Duration::from_secs(1));\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == ["viewer/web/tests/smoke.rs:3"]
+
+
 def test_deadlines_of_waits_and_computed_durations_pass(tmp_path):
     write(tmp_path, "crates/a/tests/wait.rs", (
         "fn wait() {\n"

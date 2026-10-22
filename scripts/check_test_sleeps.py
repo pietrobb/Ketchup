@@ -3,7 +3,8 @@
 
 A test that sleeps guesses how long the code under test needs; under load the guess is
 wrong and the test flakes. Wait on the condition instead (`wait_until(predicate,
-deadline)` in the UI harness, a channel, a join).
+deadline)` in the UI harness, a channel, a join). The Python tests (`tests/`,
+`sdk/*/tests/`) count their `sleep(...)` calls, not the word in a string.
 
 The check is a ratchet: scripts/test_sleeps_baseline.txt records the sleeps that still
 exist per test file. A count may only go down; a new file or a higher count fails. Run
@@ -11,6 +12,7 @@ with --update after removing sleeps to shrink the baseline. Never add entries by
 """
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -27,8 +29,19 @@ def is_test_file(relative: Path) -> bool:
     return "tests" in relative.parts[:-1] or relative.stem == "tests" or relative.stem.endswith("_tests")
 
 
+def python_sleeps(text: str) -> int:
+    """The `sleep(...)` and `time.sleep(...)` calls of a Python file."""
+    return sum(1 for node in ast.walk(ast.parse(text)) if isinstance(node, ast.Call) and (
+        isinstance(node.func, ast.Name) and node.func.id == "sleep"
+        or isinstance(node.func, ast.Attribute) and node.func.attr == "sleep"))
+
+
 def current_counts(root: Path = ROOT) -> dict[str, int]:
     counts: dict[str, int] = {}
+    for path in sorted([*root.glob("tests/**/*.py"), *root.glob("sdk/*/tests/**/*.py")]):
+        count = python_sleeps(path.read_text(encoding="utf-8"))
+        if count:
+            counts[path.relative_to(root).as_posix()] = count
     paths = [*root.glob("crates/*/**/*.rs"), *root.glob("viewer/*/**/*.rs")]
     for path in sorted(paths):
         relative = path.relative_to(root)
