@@ -1845,9 +1845,36 @@ mod tests {
 
     /// Review 2026-10-15 S3: a `program_check` evaluates, reports, builds the
     /// exact solids and refines the report by one deadline, not by a fresh
-    /// one for every step (capability review run 99).
+    /// one for every step (capability review run 99). The pull-request test
+    /// checks only that the check stopped at the limit (review 2026-10-19
+    /// TST-6); how soon after it is `perf_a_program_check_ends_soon_after_its_deadline`.
     #[test]
     fn a_program_check_ends_by_one_deadline() {
+        let (_, _, checked) = check_past_one_deadline();
+        assert_stopped_at_time_limit(&checked);
+    }
+
+    #[test]
+    #[ignore = "time budget, run in the nightly release perf_ step"]
+    fn perf_a_program_check_ends_soon_after_its_deadline() {
+        let (elapsed, total, checked) = check_past_one_deadline();
+        assert!(
+            elapsed < total + std::time::Duration::from_secs(1),
+            "{elapsed:?} for a deadline of {total:?}: {checked}"
+        );
+        assert_stopped_at_time_limit(&checked);
+    }
+
+    fn assert_stopped_at_time_limit(checked: &serde_json::Value) {
+        let (error, exact) = (&checked["error"], &checked["result"]["exact"]);
+        let stopped = error["code"] == "program.time_limit"
+            || exact["not_evaluated"][0]["reason"] == "time_limit";
+        assert!(stopped, "{error} {exact}");
+    }
+
+    /// Runs a check whose steps each fit the deadline but together do not,
+    /// and returns how long it took, the deadline and the answer.
+    fn check_past_one_deadline() -> (std::time::Duration, std::time::Duration, serde_json::Value) {
         use std::time::{Duration, Instant};
         // Overlapping boxes cost the checks time; the hole makes the first an
         // exact candidate, so the check goes on to the exact solids.
@@ -1886,15 +1913,7 @@ mod tests {
         server.check_time = total;
         let started = Instant::now();
         let checked = request(&mut server, "program_check", json!({"source": source}));
-        let elapsed = started.elapsed();
-        let (error, exact) = (&checked["error"], &checked["result"]["exact"]);
-        assert!(
-            elapsed < total + Duration::from_secs(1),
-            "{elapsed:?} for a deadline of {total:?}: {error} {exact}"
-        );
-        let stopped = error["code"] == "program.time_limit"
-            || exact["not_evaluated"][0]["reason"] == "time_limit";
-        assert!(stopped, "{error} {exact}");
+        (started.elapsed(), total, checked)
     }
 
     /// Review 2026-10-15 S1: an open from the `.recovery` backup whose Undo
