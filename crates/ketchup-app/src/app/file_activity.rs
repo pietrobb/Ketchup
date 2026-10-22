@@ -11,6 +11,7 @@ pub(crate) struct FileActivity {
     pub(super) saving: Option<super::save_activity::SaveTask>,
     pub(super) viewer_export: Option<super::viewer_export_activity::ViewerExportTask>,
     pub(super) exchange_export: Option<super::exchange_export::ExchangeExportTask>,
+    pub(super) drawing_export: Option<super::drawing_export_activity::DrawingExportTask>,
     pub(super) dwg_reading: Option<super::dwg_import::DwgReadTask>,
     pub(super) exact_import_reading: Option<super::exact_import_activity::ExactImportReadTask>,
     pub(crate) underlay: super::underlay::UnderlayImport,
@@ -168,6 +169,7 @@ impl KetchupApp {
             || self.file.activity.saving.is_some()
             || self.file.activity.viewer_export.is_some()
             || self.file.activity.exchange_export.is_some()
+            || self.file.activity.drawing_export.is_some()
             || self.file.activity.dwg_reading.is_some()
             || self.file.activity.exact_import_reading.is_some()
             || self.file.activity.underlay.reading.is_some()
@@ -211,6 +213,14 @@ impl KetchupApp {
     }
 
     pub(crate) fn file_activity_label(&self) -> Option<String> {
+        if let Some(task) = &self.file.activity.drawing_export {
+            return Some(format!(
+                "{}…",
+                self.catalog
+                    .text(task.label_key())
+                    .trim_end_matches(['.', '…'])
+            ));
+        }
         let command = if self.file.activity.opening.is_some() {
             AppCommand::Open
         } else if self.file.activity.dwg_reading.is_some() {
@@ -278,6 +288,7 @@ impl KetchupApp {
             self.cancel_save_preparation();
             self.cancel_viewer_export_preparation();
             self.cancel_exchange_export();
+            self.cancel_drawing_export();
         }
         let Some(label) = self.file_activity_label() else {
             return;
@@ -309,7 +320,12 @@ impl KetchupApp {
             self.cancel_save_preparation();
             self.cancel_viewer_export_preparation();
             self.cancel_exchange_export();
+            self.cancel_drawing_export();
             context.request_repaint();
+            return;
+        }
+        if self.file.activity.drawing_export.is_some() {
+            self.poll_drawing_export(context);
             return;
         }
         if self.file.activity.exchange_export.is_some() {

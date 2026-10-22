@@ -42,9 +42,7 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_dwg_and_the_project_s
         .with_size(Vec2::new(1600.0, 1200.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run();
-    let label = harness.state().catalog.text("drawings-export-sheet-dxf");
-    harness.get_by_label(&label).click();
-    harness.run();
+    export_from_the_window(&mut harness, "drawings-export-sheet-dxf");
     assert_eq!(std::fs::read(&dxf).unwrap(), dxf_bytes);
     assert!(
         harness.state().digest.contains(&expected.name),
@@ -52,9 +50,7 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_dwg_and_the_project_s
         harness.state().digest
     );
 
-    let label = harness.state().catalog.text("drawings-export-sheet-dwg");
-    harness.get_by_label(&label).click();
-    harness.run();
+    export_from_the_window(&mut harness, "drawings-export-sheet-dwg");
     assert_eq!(std::fs::read(&dwg).unwrap(), dwg_bytes);
     assert!(dwg_bytes.starts_with(ketchup_dwg::WRITTEN_VERSION.as_bytes()));
     let exported = harness.state().catalog.format(
@@ -66,9 +62,7 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_dwg_and_the_project_s
     );
     assert_eq!(harness.state().digest, exported);
 
-    let label = harness.state().catalog.text("drawings-export-pdf");
-    harness.get_by_label(&label).click();
-    harness.run();
+    export_from_the_window(&mut harness, "drawings-export-pdf");
     assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF-"));
     assert_eq!(
         script
@@ -90,6 +84,91 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_dwg_and_the_project_s
         state,
         "exporting changes nothing in the document"
     );
+}
+
+/// Clicks the window's `button` and waits for its export. The frame of the
+/// click already shows the file activity indication, so the projection did
+/// not run in it (review 2026-10-18 UI-11).
+fn export_from_the_window(harness: &mut egui_kittest::Harness<'_, KetchupApp>, button: &str) {
+    let label = harness.state().catalog.text(button);
+    harness.get_by_label(&label).click();
+    harness.step();
+    assert_eq!(
+        harness
+            .query_all(egui_kittest::kittest::by().label(&label))
+            .count(),
+        2,
+        "the button and the indication over the window"
+    );
+    crate::tests::shell::step_until(
+        harness,
+        std::time::Duration::from_secs(120),
+        "the drawing export did not finish",
+        |app| app.file_activity_label().is_none(),
+    );
+}
+
+/// A drawing export runs behind the file activity indication: the window
+/// keeps painting while it is made, and Esc cancels it without writing the
+/// file, even once the drawing is done (review 2026-10-18 UI-11; before, the
+/// projection ran in the frame of the click and the window froze).
+#[test]
+fn a_drawing_export_keeps_the_window_painting_and_escape_cancels_it_without_writing() {
+    use crate::app::drawing_export_activity::{DrawingExport, MadeDrawing};
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("house.pdf");
+    let mut app = KetchupApp::new();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let job = app.project_drawings_job().unwrap();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1600.0, 1200.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.step();
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let (made, done) = std::sync::mpsc::channel::<()>();
+    let context = harness.ctx.clone();
+    harness.state_mut().queue_drawing_export(
+        DrawingExport::Project,
+        pdf.clone(),
+        &context,
+        Box::new(move || {
+            gate.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            let drawing = job.render();
+            made.send(()).unwrap();
+            MadeDrawing::Project(drawing)
+        }),
+    );
+    let label = harness.state().file_activity_label().unwrap();
+    for _ in 0..5 {
+        harness.step();
+        assert!(
+            harness
+                .query_all(egui_kittest::kittest::by().label(&label))
+                .next()
+                .is_some()
+        );
+    }
+    harness.input_mut().events.push(egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+    assert!(harness.state().file_activity_label().is_none());
+    assert_eq!(
+        harness.state().digest,
+        harness.state().catalog.text("digest-cancelled")
+    );
+    release.send(()).unwrap();
+    done.recv_timeout(std::time::Duration::from_secs(60))
+        .unwrap();
+    for _ in 0..3 {
+        harness.step();
+    }
+    assert!(!pdf.exists());
 }
 
 #[test]

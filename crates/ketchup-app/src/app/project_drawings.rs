@@ -4,6 +4,7 @@
 //! concept layer draws the construction. The title block and the sheet format
 //! are kept in the document.
 
+use crate::app::drawing_export_activity::DrawingExport;
 use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
 use ketchup_application::threads::{CosmeticThreadBodyError, ThreadCylinder, cosmetic_thread_body};
@@ -40,6 +41,41 @@ pub(crate) enum ProjectDrawingsError {
     /// sheet, which would otherwise draw every edge of their helices.
     CosmeticThreads(String, CosmeticThreadBodyError),
     Write(std::io::Error),
+}
+
+/// The visible solids, the sheet options and the PDF's document information:
+/// everything the project sheet is drawn from.
+pub(crate) struct ProjectDrawingsJob {
+    solids: Vec<DrawingSolid>,
+    options: ProjectSheetOptions,
+    info: PdfInfo,
+}
+
+impl ProjectDrawingsJob {
+    /// Projects the solids and removes the hidden lines.
+    fn sheet(&self) -> Result<ProjectSheet, ProjectDrawingsError> {
+        project_sheet(&self.solids, &self.options).map_err(ProjectDrawingsError::Drawing)
+    }
+
+    /// The sheet and its PDF.
+    pub(crate) fn render(&self) -> Result<(ProjectSheet, Vec<u8>), ProjectDrawingsError> {
+        let sheet = self.sheet()?;
+        let pdf = sheet.pdf(&self.info);
+        Ok((sheet, pdf))
+    }
+}
+
+/// Writes `pdf` to `path` through a temporary file and a rename: a failed
+/// write never leaves a half-written sheet, and a link at `path` is replaced,
+/// not followed.
+pub(crate) fn publish_project_drawings(
+    path: &Path,
+    pdf: &[u8],
+) -> Result<(), ProjectDrawingsError> {
+    let expected = crate::export_bundle::export_target_sha256(path)
+        .map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))?;
+    crate::export_bundle::write_export_artifact_if_unchanged(path, pdf, expected.as_deref())
+        .map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))
 }
 
 /// The first few names of parts left out of the sheet, then how many more.
@@ -311,7 +347,14 @@ impl KetchupApp {
     }
 
     /// The sheet of the visible exact solids with the document's title block.
+    #[cfg(test)]
     pub(crate) fn project_drawings(&self) -> Result<ProjectSheet, ProjectDrawingsError> {
+        self.project_drawings_job()?.sheet()
+    }
+
+    /// What the project sheet is drawn from, taken from the window; the
+    /// projection itself needs nothing of it.
+    pub(crate) fn project_drawings_job(&self) -> Result<ProjectDrawingsJob, ProjectDrawingsError> {
         self.stored_sheet_settings()
             .map_err(ProjectDrawingsError::SettingsUnreadable)?;
         let snapshot = self.document.current();
@@ -339,9 +382,25 @@ impl KetchupApp {
                 (view, title)
             })
             .collect();
-        project_sheet(
-            &solids,
-            &ProjectSheetOptions {
+        let field = |field| {
+            settings
+                .title_block
+                .get(&field)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let info = PdfInfo {
+            title: format!(
+                "{} – {}",
+                field(TitleField::Project),
+                field(TitleField::Drawing)
+            ),
+            author: field(TitleField::Author),
+            subject: field(TitleField::Stage),
+        };
+        Ok(ProjectDrawingsJob {
+            solids,
+            options: ProjectSheetOptions {
                 view_titles,
                 plan_cut_z_mm: Some(cut),
                 format: settings.format,
@@ -349,8 +408,8 @@ impl KetchupApp {
                 title_labels: self.title_labels(),
                 title_block: settings.title_block,
             },
-        )
-        .map_err(ProjectDrawingsError::Drawing)
+            info,
+        })
     }
 
     pub(crate) fn project_drawings_error_text(&self, error: &ProjectDrawingsError) -> String {
@@ -383,37 +442,25 @@ impl KetchupApp {
         &self,
         path: &Path,
     ) -> Result<ProjectSheet, ProjectDrawingsError> {
-        let sheet = self.project_drawings()?;
-        let block = &self.sheet_settings().title_block;
-        let field = |field| block.get(&field).cloned().unwrap_or_default();
-        let info = PdfInfo {
-            title: format!(
-                "{} – {}",
-                field(TitleField::Project),
-                field(TitleField::Drawing)
-            ),
-            author: field(TitleField::Author),
-            subject: field(TitleField::Stage),
-        };
-        // Through a temporary file and a rename: a failed write never leaves a
-        // half-written sheet, and a link at `path` is replaced, not followed.
-        let publish = || {
-            let expected = crate::export_bundle::export_target_sha256(path)?;
-            crate::export_bundle::write_export_artifact_if_unchanged(
-                path,
-                &sheet.pdf(&info),
-                expected.as_deref(),
-            )
-        };
-        publish().map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))?;
+        let (sheet, pdf) = self.project_drawings_job()?.render()?;
+        publish_project_drawings(path, &pdf)?;
         Ok(sheet)
     }
 
     /// Writes the project drawings as PDF and reports it in the digest.
     pub fn export_project_drawings_to(&mut self, path: &Path) -> bool {
         let result = self.write_project_drawings(path);
+        self.report_project_drawings(path, &result);
+        result.is_ok()
+    }
+
+    pub(crate) fn report_project_drawings(
+        &mut self,
+        path: &Path,
+        result: &Result<ProjectSheet, ProjectDrawingsError>,
+    ) {
         let path = path.display().to_string();
-        self.digest = match &result {
+        self.digest = match result {
             Ok(sheet) => self.catalog.format(
                 "digest-exported-project-drawings",
                 &BTreeMap::from([
@@ -430,7 +477,6 @@ impl KetchupApp {
                 ]),
             ),
         };
-        result.is_ok()
     }
 
     pub(crate) fn open_project_drawings_window(&mut self) {
@@ -563,13 +609,15 @@ impl KetchupApp {
         if !open {
             self.drawings.open = false;
         }
+        // Projected and hidden lines removed on a thread behind the file
+        // activity indication, which can cancel it (review 2026-10-18 UI-11).
         if export && let Some(path) = self.choose_export_path("pdf") {
-            self.export_project_drawings_to(&path);
+            self.start_drawing_export(DrawingExport::Project, path, context);
         }
         if let Some((id, format)) = export_sheet
             && let Some(path) = self.choose_export_path(format.extension())
         {
-            self.export_drawing_sheet_to(id, &path, format);
+            self.start_drawing_export(DrawingExport::Sheet(id, format), path, context);
         }
     }
 }
