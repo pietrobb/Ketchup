@@ -232,6 +232,32 @@ fn mirroring_a_program_part_adds_a_mirrored_line() {
     assert_close(size, [20.0, 30.0, 40.0]);
 }
 
+/// Review 2026-10-21 P3: two mirrors of one part in one MCP program get two
+/// names, not the same name twice.
+#[test]
+fn two_mirrors_of_one_part_in_one_program_get_two_names() {
+    let app = app();
+    let a = occurrence(&app, "a").unwrap();
+    let mirror = |normal| AssistantCadEditOperation::Mirror {
+        selector: AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: vec![a.0],
+        },
+        plane_origin_mm: [0.0, 0.0, 0.0],
+        plane_normal: normal,
+    };
+    let program = AssistantCadEditProgram {
+        operations: vec![mirror([1.0, 0.0, 0.0]), mirror([0.0, 1.0, 0.0])],
+    };
+    let source = app.program_edit_source(&program).unwrap().unwrap().source;
+    assert_eq!(
+        source,
+        format!(
+            "{PARTS}mirrored(\"a\", \"a mirrored\", point=(0, 0, 0), normal=(1, 0, 0))\n\
+             mirrored(\"a\", \"a mirrored 2\", point=(0, 0, 0), normal=(0, 1, 0))\n"
+        )
+    );
+}
+
 /// Sets the value at `path` of part `name`'s feature, as the parameter panel does.
 fn set_value(app: &mut KetchupApp, name: &str, path: &str, value: f64) -> bool {
     let snapshot = app.document.current();

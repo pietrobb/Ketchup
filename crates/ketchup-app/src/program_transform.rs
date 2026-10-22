@@ -107,6 +107,12 @@ impl KetchupApp {
             return None;
         }
         let snapshot = self.document.current();
+        // Names of the parts, and of the copies earlier mirrors of this
+        // program make, that a new copy may not take.
+        let mut taken = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.name().to_owned())
+            .collect::<BTreeSet<_>>();
         for operation in &program.operations {
             let rewritten = match operation {
                 AssistantCadEditOperation::Transform {
@@ -150,10 +156,6 @@ impl KetchupApp {
                     plane_origin_mm,
                     plane_normal,
                 } => {
-                    let mut taken = snapshot
-                        .occurrences()
-                        .map(|occurrence| occurrence.name().to_owned())
-                        .collect::<BTreeSet<_>>();
                     let changes = occurrence_ids
                         .iter()
                         .map(|id| {
