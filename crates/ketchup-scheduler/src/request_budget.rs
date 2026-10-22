@@ -4,7 +4,7 @@
 //! parts it holds, so such a request is given time for both; cancellation
 //! still ends it at once.
 
-use crate::protocol::WorkerRequest;
+use crate::protocol::{GraphInput, SourceFile, WorkerRequest};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -36,6 +36,28 @@ fn bytes_of<'a>(paths: impl IntoIterator<Item = &'a Path>) -> u64 {
         .filter_map(|path| std::fs::metadata(path).ok())
         .map(|metadata| metadata.len())
         .sum()
+}
+
+/// The time a graph request reading `source_bytes` of imported sources is
+/// given: the fixed graph time plus reading them (review 2026-10-18 EX-12).
+#[must_use]
+pub(crate) fn graph_budget(source_bytes: u64) -> Duration {
+    let mib = u32::try_from(source_bytes.div_ceil(1 << 20)).unwrap_or(u32::MAX);
+    crate::EXACT_BREP_GRAPH_REQUEST_TIMEOUT
+        .saturating_add(EXCHANGE_PER_MIB.saturating_mul(mib))
+        .min(EXCHANGE_MOST)
+}
+
+impl GraphInput {
+    /// The time a request carrying this graph and its sources is given.
+    #[must_use]
+    pub(crate) fn budget(&self) -> Duration {
+        sources_budget(&self.sources)
+    }
+}
+
+fn sources_budget(sources: &[SourceFile]) -> Duration {
+    graph_budget(bytes_of(sources.iter().map(|source| source.path.as_path())))
 }
 
 impl WorkerRequest {
@@ -103,5 +125,23 @@ mod tests {
             Some(exchange_budget(10 << 20, 750))
         );
         assert_eq!(request.exchange_budget(), Some(EXCHANGE_MOST));
+    }
+
+    /// Review 2026-10-18 EX-12: a graph reading up to 128 MiB of imported
+    /// sources had the fixed 60 s of a graph without them.
+    #[test]
+    fn a_graph_is_given_time_for_its_imported_sources() {
+        let source = tempfile::NamedTempFile::new().unwrap();
+        source.as_file().set_len(100 << 20).unwrap();
+        assert_eq!(sources_budget(&[]), crate::EXACT_BREP_GRAPH_REQUEST_TIMEOUT);
+        let with_source = [SourceFile {
+            sha256: "a".repeat(64),
+            path: source.path().to_owned(),
+        }];
+        assert_eq!(
+            sources_budget(&with_source),
+            crate::EXACT_BREP_GRAPH_REQUEST_TIMEOUT + EXCHANGE_PER_MIB * 100
+        );
+        assert_eq!(graph_budget(u64::MAX), EXCHANGE_MOST);
     }
 }

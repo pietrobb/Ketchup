@@ -40,13 +40,9 @@ struct ExchangeExportJob {
 }
 
 impl ExchangeExportJob {
-    /// The checked file bytes, written in a temporary folder next to the target.
+    /// The checked file bytes, prepared in [`prepared_directory`].
     fn run(&self, cancelled: &AtomicBool) -> Result<Vec<u8>, ExportError> {
-        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
-        let prepared_directory = tempfile::Builder::new()
-            .prefix(".ketchup-prepared-export-")
-            .tempdir_in(parent)
-            .map_err(ExportError::failed)?;
+        let prepared_directory = prepared_directory().map_err(ExportError::failed)?;
         let prepared_step = prepared_directory.path().join("model.step");
         let mut worker =
             ExactWorkerSupervisor::spawn_with_cancellation(&self.executable, cancelled)
@@ -94,6 +90,15 @@ impl ExchangeExportJob {
             }
         }
     }
+}
+
+/// Where an export is prepared: the system temporary folder, as on Windows a
+/// cancelled worker may still hold its files, and what it leaves must not land
+/// next to the user's file (review 2026-10-18 EX-12).
+fn prepared_directory() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .prefix("ketchup-prepared-export-")
+        .tempdir()
 }
 
 /// Replaces the writing time in the STEP header, so the same model gives the same file.

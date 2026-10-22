@@ -2112,10 +2112,12 @@ impl ExactWorkerSupervisor {
             }
         }
 
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        // The parts go to the system temporary folder: on Windows a cancelled
+        // worker may still hold them, and what it leaves must not land next
+        // to the user's file (review 2026-10-18 EX-12).
         let directory = tempfile::Builder::new()
-            .prefix(".ketchup-step-model-")
-            .tempdir_in(parent)
+            .prefix("ketchup-step-model-")
+            .tempdir()
             .map_err(|error| WorkerError::Transport(error.to_string()))?;
         let mut sources = Vec::with_capacity(occurrences.len());
         let mut part_indices = BTreeMap::new();
@@ -2239,6 +2241,8 @@ impl ExactWorkerSupervisor {
             part_indices.insert(geometry_key, part_index);
         }
         manifest.nodes = build_step_assembly_nodes(snapshot, occurrences, &part_indices)?;
+        // Next to the target, so persisting it is one rename.
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let temporary = tempfile::Builder::new()
             .prefix(".ketchup-step-")
             .suffix(".tmp")

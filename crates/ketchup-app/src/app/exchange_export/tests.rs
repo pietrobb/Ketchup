@@ -99,6 +99,14 @@ fn a_client_export_whose_client_gave_up_stops_the_worker_and_writes_nothing() {
     assert!(!path.with_extension("step.loss.txt").exists());
 }
 
+/// Review 2026-10-18 EX-12: an export was prepared in a hidden folder next to
+/// the user's file, which a cancelled worker on Windows could leave behind.
+#[test]
+fn an_export_is_prepared_in_the_system_temporary_folder() {
+    let prepared = prepared_directory().unwrap();
+    assert!(prepared.path().starts_with(std::env::temp_dir()));
+}
+
 #[test]
 fn a_finished_export_is_published_with_its_loss_report_after_consent() {
     let directory = tempfile::tempdir().unwrap();

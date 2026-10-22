@@ -180,11 +180,11 @@ impl ExactWorkerSupervisor {
                         .map(|hash| worker_client::source_file(hash, staged.files[hash].1.path()))
                         .collect(),
                 };
-                match self.client.call(
-                    &WorkerRequest::PairLoad(input),
-                    cancelled,
-                    EXACT_BREP_GRAPH_REQUEST_TIMEOUT,
-                )? {
+                let budget = input.budget();
+                match self
+                    .client
+                    .call(&WorkerRequest::PairLoad(input), cancelled, budget)?
+                {
                     WorkerReply::PairLoaded { slot: loaded } if loaded == slot => {}
                     reply => return Err(worker_client::unexpected_reply(&reply)),
                 }

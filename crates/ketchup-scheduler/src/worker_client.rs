@@ -139,8 +139,10 @@ impl ExactWorkerClient {
         imported_sources: &[(&str, &Path)],
         cancelled: &AtomicBool,
     ) -> Result<WorkerExactBRepGraphResult, WorkerError> {
-        let request = WorkerRequest::EvaluateGraph(graph_input(graph, imported_sources)?);
-        match self.call(&request, cancelled, EXACT_BREP_GRAPH_REQUEST_TIMEOUT)? {
+        let input = graph_input(graph, imported_sources)?;
+        let budget = input.budget();
+        let request = WorkerRequest::EvaluateGraph(input);
+        match self.call(&request, cancelled, budget)? {
             WorkerReply::Graph(result) => Ok(result),
             reply => self.unexpected(reply),
         }
@@ -154,12 +156,14 @@ impl ExactWorkerClient {
         imported_sources: &[(&str, &Path)],
         cancelled: &AtomicBool,
     ) -> Result<StepImportMesh, WorkerError> {
+        let input = graph_input(graph, imported_sources)?;
+        let budget = input.budget();
         let request = WorkerRequest::TessellateGraph {
-            input: graph_input(graph, imported_sources)?,
+            input,
             result_fingerprint: result_fingerprint.to_owned(),
             output: output_path.to_owned(),
         };
-        match self.call(&request, cancelled, EXACT_BREP_GRAPH_REQUEST_TIMEOUT)? {
+        match self.call(&request, cancelled, budget)? {
             WorkerReply::Mesh(receipt) => self.verified_mesh(
                 receipt,
                 result_fingerprint,
@@ -179,13 +183,15 @@ impl ExactWorkerClient {
         imported_sources: &[(&str, &Path)],
         cancelled: &AtomicBool,
     ) -> Result<WorkerExactVolumeMesh, WorkerError> {
+        let input = graph_input(graph, imported_sources)?;
+        let budget = input.budget();
         let request = WorkerRequest::VolumeMeshGraph {
-            input: graph_input(graph, imported_sources)?,
+            input,
             result_fingerprint: result_fingerprint.to_owned(),
             options,
             output: output_path.to_owned(),
         };
-        let receipt = match self.call(&request, cancelled, EXACT_BREP_GRAPH_REQUEST_TIMEOUT)? {
+        let receipt = match self.call(&request, cancelled, budget)? {
             WorkerReply::VolumeMesh(receipt) => receipt,
             reply => return self.unexpected(reply),
         };
@@ -235,12 +241,14 @@ impl ExactWorkerClient {
         imported_sources: &[(&str, &Path)],
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
+        let input = graph_input(graph, imported_sources)?;
+        let budget = input.budget();
         let request = WorkerRequest::ExportGraphStep {
-            input: graph_input(graph, imported_sources)?,
+            input,
             result_fingerprint: result_fingerprint.to_owned(),
             output: output_path.to_owned(),
         };
-        match self.call(&request, cancelled, EXACT_BREP_GRAPH_REQUEST_TIMEOUT)? {
+        match self.call(&request, cancelled, budget)? {
             WorkerReply::Exported(ExportReceipt {
                 result_fingerprint: exported,
                 sha256: None,
