@@ -291,9 +291,12 @@ fn dae_coordinate(value_mm: f64) -> String {
     if text == "-0" { "0" } else { text }.to_owned()
 }
 
-/// The row-major matrix COLLADA `<matrix>` takes, in Ketchup's millimetres.
+/// The row-major matrix COLLADA `<matrix>` takes, in Ketchup's millimetres; refused
+/// when it is singular or any entry, the translation among them, is not finite.
 fn dae_matrix(transform: Transform) -> Result<String, ExactProductError> {
-    if transform.affine().linear.is_singular() {
+    if transform.affine().linear.is_singular()
+        || transform.matrix().iter().any(|value| !value.is_finite())
+    {
         return Err(ExactProductError::InvalidMeshExport);
     }
     Ok(transform
@@ -380,5 +383,19 @@ mod tests {
         assert_eq!(dae_coordinate(-20.0), "-20");
         assert_eq!(dae_coordinate(-1.0e-9), "0");
         assert_eq!(dae_coordinate(123_456.000_000_4), "123456");
+    }
+
+    // Review 2026-10-21 P3: only the linear part was checked, so a placement whose
+    // translation overflowed was written as `inf`.
+    #[test]
+    fn a_matrix_with_a_non_finite_translation_is_refused() {
+        let far = Transform::from_translation(1.0e308, 0.0, 0.0).unwrap();
+        let overflowed = far.compose(far);
+        assert!(overflowed.matrix()[3].is_infinite());
+        assert!(matches!(
+            dae_matrix(overflowed),
+            Err(ExactProductError::InvalidMeshExport)
+        ));
+        assert!(dae_matrix(far).is_ok());
     }
 }
