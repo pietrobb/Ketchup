@@ -151,6 +151,7 @@ def grain_attributes(grain):
 #   TIMBER_MEMBER      a bar cut and machined from timber stock (BTLx, bar list)
 #   MANUFACTURED_ITEM  a part made in the shop: a panel, a steel or cut piece (cut list)
 #   PURCHASED_ITEM     a part bought finished: fasteners, bars, hardware (hardware list)
+#   SITE_BUILT_ITEM    a part built on site: a cast footing, masonry (BOM only, no machine file)
 # A made part without a role stops the export, which names it. Each creator sets
 # one and takes role= to change it: member() a timber member, board() a
 # manufactured item, bolt(), nut(), washer(), threaded_rod() and rebar() a
@@ -160,12 +161,13 @@ FABRICATION_ROLE = "classification:ketchup.fabrication-role.v1"
 TIMBER_MEMBER = "fabrication.timber-member.v1"
 MANUFACTURED_ITEM = "fabrication.manufactured-item.v1"
 PURCHASED_ITEM = "fabrication.purchased-item.v1"
-_FABRICATION_ROLES = [TIMBER_MEMBER, MANUFACTURED_ITEM, PURCHASED_ITEM]
+SITE_BUILT_ITEM = "fabrication.site-built-item.v1"
+_FABRICATION_ROLES = [TIMBER_MEMBER, MANUFACTURED_ITEM, PURCHASED_ITEM, SITE_BUILT_ITEM]
 
 def _role(who, role):
     """`role` if it is a fabrication role, else fail naming `who`."""
     if role not in _FABRICATION_ROLES:
-        fail("%s: role must be TIMBER_MEMBER, MANUFACTURED_ITEM or PURCHASED_ITEM, got %r" % (who, role))
+        fail("%s: role must be TIMBER_MEMBER, MANUFACTURED_ITEM, PURCHASED_ITEM or SITE_BUILT_ITEM, got %r" % (who, role))
     return role
 
 def board(name, size, at = (0, 0, 0), material = "board", grain = None, edges = None, color = None,

@@ -195,6 +195,9 @@ pub use ketchup_model::validation::{FABRICATION_ROLE_DIMENSION_V1, MATERIAL_DIME
 pub const TIMBER_MEMBER_ROLE_V1: &str = "fabrication.timber-member.v1";
 pub const MANUFACTURED_ITEM_ROLE_V1: &str = "fabrication.manufactured-item.v1";
 pub const PURCHASED_ITEM_ROLE_V1: &str = "fabrication.purchased-item.v1";
+/// A part built on site, such as a cast footing: listed, never machined
+/// (review 2026-10-19 MF-15).
+pub const SITE_BUILT_ITEM_ROLE_V1: &str = "fabrication.site-built-item.v1";
 pub const TIMBER_MATERIAL_V1: &str = "ketchup.material.timber.unspecified.v1";
 pub const UNSPECIFIED_MATERIAL_V1: &str = "ketchup.material.unspecified.v1";
 pub const GENERAL_BOM_EXPORT_V3: &str = "ketchup.general-bom-export.v3";
@@ -430,6 +433,9 @@ pub enum GeneralBomItemKind {
     Timber,
     Manufactured,
     Purchased,
+    /// Built on site (cast, laid): in the BOM and on the drawings, in no
+    /// machine format (review 2026-10-19 MF-15).
+    SiteBuilt,
 }
 
 impl GeneralBomItemKind {
@@ -440,11 +446,19 @@ impl GeneralBomItemKind {
         matches!(self, Self::Timber)
     }
 
+    /// Whether the shop makes the part, so a machine format writes it: not a
+    /// part bought finished or one built on site.
+    #[must_use]
+    pub const fn is_shop_made(self) -> bool {
+        !matches!(self, Self::Purchased | Self::SiteBuilt)
+    }
+
     const fn token(self) -> &'static str {
         match self {
             Self::Timber => "manufactured-timber",
             Self::Manufactured => "manufactured",
             Self::Purchased => "purchased",
+            Self::SiteBuilt => "site-built",
         }
     }
 }
@@ -1055,9 +1069,7 @@ impl GeneralFabricationProjection {
         let [row] = self.bom.rows.as_slice() else {
             return Err(GeneralFabricationError::ExportBlocked);
         };
-        if row.quantity == 0
-            || row.quantity != row.instances.len()
-            || row.item_kind == GeneralBomItemKind::Purchased
+        if row.quantity == 0 || row.quantity != row.instances.len() || !row.item_kind.is_shop_made()
         {
             return Err(GeneralFabricationError::ExportBlocked);
         }
@@ -2150,6 +2162,7 @@ fn bom_occurrence_metadata(
             TIMBER_MEMBER_ROLE_V1 => GeneralBomItemKind::Timber,
             MANUFACTURED_ITEM_ROLE_V1 => GeneralBomItemKind::Manufactured,
             PURCHASED_ITEM_ROLE_V1 => GeneralBomItemKind::Purchased,
+            SITE_BUILT_ITEM_ROLE_V1 => GeneralBomItemKind::SiteBuilt,
             unknown => {
                 metadata.insert(occurrence.id(), BomRole::Unknown(unknown.to_owned()));
                 continue;
@@ -2670,9 +2683,10 @@ pub fn project_general_fabrication(
     for row in &bom.rows {
         // A member must be described; a manufactured item is machined
         // (woodWOP, production job) when it can be, and otherwise those exports
-        // refuse it by name, without holding back the members' exports.
+        // refuse it by name, without holding back the members' exports. A part
+        // bought or built on site is not machined.
         let required = match row.item_kind {
-            GeneralBomItemKind::Purchased => continue,
+            kind if !kind.is_shop_made() => continue,
             kind => kind.is_member(),
         };
         // Rows of one body (a member and a manufactured copy) share its operations.
@@ -4261,7 +4275,7 @@ fn drawn_operations(
     row: &GeneralBomRow,
     operations: &[GeneralManufacturingOperation],
 ) -> Vec<GeneralManufacturingOperation> {
-    if row.item_kind == GeneralBomItemKind::Purchased {
+    if !row.item_kind.is_shop_made() {
         return Vec::new();
     }
     operations

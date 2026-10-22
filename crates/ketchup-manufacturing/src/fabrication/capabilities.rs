@@ -30,13 +30,14 @@ impl fmt::Display for ShopFormat {
 
 impl ShopFormat {
     /// Whether the format writes a part of this kind: BTLx prismatic members
-    /// only, the drawing every part, the others every part that is made.
+    /// only, the drawing every part, the others every part the shop makes
+    /// (not one bought or built on site, review 2026-10-19 MF-15).
     #[must_use]
     pub fn writes(self, kind: GeneralBomItemKind) -> bool {
         match self {
             Self::Drawing => true,
             Self::Btlx => kind.is_member(),
-            Self::ProductionJob | Self::Woodwop { .. } => kind != GeneralBomItemKind::Purchased,
+            Self::ProductionJob | Self::Woodwop { .. } => kind.is_shop_made(),
         }
     }
 }

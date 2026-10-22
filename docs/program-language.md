@@ -202,8 +202,9 @@ Every made part needs a fabrication role (attribute `FABRICATION_ROLE`); the
 production export refuses a part without one and names it. The roles are
 `TIMBER_MEMBER` (a bar cut and machined from timber stock: BTLx and the bar
 list), `MANUFACTURED_ITEM` (a part made in the shop: a panel, a steel or cut
-piece; the cut list) and `PURCHASED_ITEM` (bought finished: fasteners, bars,
-hardware). `member` sets a timber member, `board` a manufactured item, the
+piece; the cut list), `PURCHASED_ITEM` (bought finished: fasteners, bars,
+hardware) and `SITE_BUILT_ITEM` (built on site: a cast footing, masonry; in
+the BOM and on the drawings, in no machine file). `member` sets a timber member, `board` a manufactured item, the
 fasteners and `rebar` a purchased item; each takes `role=` to change it (a
 steel post from `member(..., role=MANUFACTURED_ITEM)`, a bought panel from
 `board(..., role=PURCHASED_ITEM)`). `buildup` makes the plates, studs,

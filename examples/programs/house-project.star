@@ -23,11 +23,12 @@
 # výrezy, otvory a zárezy pre susedné diely („zárez pre …“): prijímajúci diel má zárez
 # presne podľa vloženého dielu, takže kontrola kolízií nehlási žiadne prekrytie.
 # Pravouhlé zárezy vchádzajú do dielu z jeho plochy, kade sú najplytšie.
-# Betónové pätky a komín nie sú tesárske prvky: sú to vyrábané položky kusovníka, nie
-# prvky pre BTLx. Diel bez výrobnej role by výroba odmietla.
+# Betónové pätky a komín nie sú tesárske prvky: stavajú sa na stavbe, sú v kusovníku
+# a na výkresoch, ale v žiadnom strojovom súbore (BTLx, woodWOP, výrobný job). Diel bez
+# výrobnej role by výroba odmietla.
 
 TESAR = {"classification:ketchup.fabrication-role.v1": "fabrication.timber-member.v1"}
-VYROBOK = {"classification:ketchup.fabrication-role.v1": "fabrication.manufactured-item.v1"}
+STAVBA = {"classification:ketchup.fabrication-role.v1": "fabrication.site-built-item.v1"}
 
 def tram(name, size, at, x, z, tags, material, color, cuts):
     """Tesársky prvok: hranol `size` (šírka, výška, dĺžka) s rohom v `at`, dĺžka pozdĺž z.
@@ -35,8 +36,8 @@ def tram(name, size, at, x, z, tags, material, color, cuts):
     vytiahnutý o hĺbku pozdĺž z, odčítaný od prvku."""
     diel(name, size, at, x, z, tags, material, color, cuts, TESAR)
 
-def diel(name, size, at, x, z, tags, material, color, cuts, attributes = VYROBOK):
-    """Hranol s rezmi ako tram(), ale nie tesársky prvok (betón): vyrábaná položka."""
+def diel(name, size, at, x, z, tags, material, color, cuts, attributes = STAVBA):
+    """Hranol s rezmi ako tram(), ale nie tesársky prvok (betón): stavia sa na stavbe."""
     p = box(name, size, material = material, color = color, tags = tags, attributes = attributes)
     place(p, origin = at, z = z, x = x)
     for cut in cuts:

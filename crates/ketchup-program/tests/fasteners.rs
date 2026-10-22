@@ -586,7 +586,9 @@ fn a_role_that_is_no_fabrication_role_is_refused() {
     ] {
         let error = refused(source);
         assert!(
-            error.contains("role must be TIMBER_MEMBER, MANUFACTURED_ITEM or PURCHASED_ITEM"),
+            error.contains(
+                "role must be TIMBER_MEMBER, MANUFACTURED_ITEM, PURCHASED_ITEM or SITE_BUILT_ITEM"
+            ),
             "{source}: {error}"
         );
     }

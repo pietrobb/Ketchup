@@ -10,8 +10,8 @@ use ketchup_manufacturing::fabrication::{
     GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
     GeneralMachiningFrame, GeneralMachiningGeometry, GeneralManufacturingKind,
     MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus,
-    ShopElement, ShopFormat, TIMBER_MATERIAL_V1, TIMBER_MEMBER_ROLE_V1, carriage,
-    project_general_fabrication, shown_parts,
+    SITE_BUILT_ITEM_ROLE_V1, ShopElement, ShopFormat, TIMBER_MATERIAL_V1, TIMBER_MEMBER_ROLE_V1,
+    carriage, project_general_fabrication, shown_parts,
 };
 use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
@@ -1964,6 +1964,87 @@ fn production_preserves_proper_rotations_and_translations() {
         }
     }
 }
+/// Review 2026-10-19 MF-15: a part built on site, such as a cast footing, is
+/// in the bill of materials and on the drawings but in no machine file. Made
+/// a manufactured item, the house's footings went to woodWOP and the job.
+#[test]
+fn a_site_built_part_is_listed_but_never_machined() {
+    const SITE_BUILT_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(924);
+    let mut document = circular_drill_document_at([20.0, 15.0]);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: FABRICATION_ROLE_DIMENSION,
+                name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (TIMBER_MEMBER_CATEGORY, TIMBER_MEMBER_ROLE_V1.to_owned()),
+                    (SITE_BUILT_CATEGORY, SITE_BUILT_ITEM_ROLE_V1.to_owned()),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: GRAPH_RIGHT,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: Some(SITE_BUILT_CATEGORY),
+            },
+            // The footing has no production code: the job does not ask for one.
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_LEFT),
+                code: Some("000000000046".into()),
+            },
+        ]))
+        .unwrap();
+    let (snapshot, projection) =
+        exact_graph_document_fabrication_projection(document, "mf-15-site-built", GRAPH_BOOLEAN);
+
+    assert_eq!(
+        projection
+            .bom
+            .rows
+            .iter()
+            .map(|row| (row.item_kind, row.instances.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                GeneralBomItemKind::Timber,
+                vec![InstancePath::root(GRAPH_LEFT)]
+            ),
+            (
+                GeneralBomItemKind::SiteBuilt,
+                vec![InstancePath::root(GRAPH_RIGHT)]
+            ),
+        ]
+    );
+    let bom = String::from_utf8(projection.bom_export(&snapshot).unwrap()).unwrap();
+    assert!(bom.contains("site-built"), "{bom}");
+    assert_eq!(projection.drawings.drawings.len(), 2);
+
+    let job = projection.production_job(&snapshot, &[]).unwrap();
+    let codes = job["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|part| part["code"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(codes, ["000000000046"]);
+    assert_eq!(
+        projection
+            .woodwop_mpr_4_0_production_package(&snapshot, Default::default())
+            .unwrap()
+            .len(),
+        1
+    );
+    for format in [
+        ShopFormat::ProductionJob,
+        ShopFormat::Woodwop {
+            vertical_pocket_tool: true,
+        },
+        ShopFormat::Btlx,
+    ] {
+        assert!(!format.writes(GeneralBomItemKind::SiteBuilt), "{format}");
+    }
+    assert!(ShopFormat::Drawing.writes(GeneralBomItemKind::SiteBuilt));
+}
+
 #[test]
 fn the_production_job_stock_frame_is_right_handed_and_the_woodwop_frame() {
     use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
