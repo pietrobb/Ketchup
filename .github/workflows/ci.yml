@@ -278,6 +278,9 @@ jobs:
         run: cargo clippy --locked -p ketchup-viewer-android --target aarch64-linux-android --all-targets -- -D warnings
       - name: clippy for the browser
         run: cargo clippy --locked -p ketchup-viewer-web --target wasm32-unknown-unknown -- -D warnings
+      - name: the browser Viewer reads the browser's languages
+        # sys-locale without its js feature returns no language in a browser.
+        run: cargo tree --locked -p ketchup-viewer-web --target wasm32-unknown-unknown -e normal -i js-sys | grep -q "sys-locale v"
 
   viewer-macos:
     name: clippy of the macOS Viewer

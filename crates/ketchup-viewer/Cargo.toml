@@ -31,6 +31,8 @@ eframe = { version = "0.32.3", default-features = false, features = ["android-na
 wgpu = { version = "25.0.2", default-features = false, features = ["vulkan", "gles"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# Without `js` the browser's languages read as none and the web Viewer is always English.
+sys-locale = { version = "0.3", features = ["js"] }
 wgpu = { version = "25.0.2", default-features = false, features = ["webgpu", "webgl"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
