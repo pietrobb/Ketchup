@@ -2,6 +2,7 @@
 //! program's `production(tags=…)` scope whether their layers are shown or
 //! hidden; without a scope they make the shown parts and leave hidden ones out.
 use crate::*;
+use ketchup_manufacturing::fabrication::GeneralBomItemKind;
 
 const TIMBER: &str =
     "attributes = {'classification:ketchup.fabrication-role.v1': 'fabrication.timber-member.v1'}";
@@ -92,6 +93,78 @@ fn a_production_scope_makes_its_hidden_parts_and_never_the_shown_concept() {
             ],
             2
         )
+    );
+}
+
+/// Review 2026-10-21 MF-18: a framed layer from buildup() and a reinforcing bar
+/// had no fabrication role, so the export refused the program; a bought board
+/// was made and a steel post timber. Each creator now sets its role and role=
+/// (or a layer's "role") changes it.
+#[test]
+fn every_part_creator_gives_its_part_a_fabrication_role_and_role_changes_it() {
+    let mut app = KetchupApp::new();
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "roles.star".into(),
+            source: "buildup('s', (0, 0, 0), (1, 0, 0), (0, 0, 1), 1200, height = 2400, layers = [\n\
+                     {'name': 'rám', 'thickness': 100, 'material': 'C24', 'spacing': 600, 'infill': 'vata'},\n\
+                     {'name': 'osb', 'thickness': 15, 'material': 'OSB'},\n\
+                     {'name': 'sdk', 'thickness': 12.5, 'material': 'SDK', 'role': PURCHASED_ITEM}])\n\
+                     board('doska', (600, 18, 400), at = (2000, 0, 0), role = PURCHASED_ITEM)\n\
+                     member('stĺp', (3000, 0, 0), (3000, 0, 2400), (100, 100), material = 'steel', \
+                     role = MANUFACTURED_ITEM)\n\
+                     rebar('prút', 12, 1000, at = (4000, 0, 0))\n\
+                     bolt('skrutka', 'M8', 40, at = (5000, 0, 0))\n"
+                .into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let projection = app.current_general_fabrication_projection().unwrap();
+    let snapshot = app.document.current();
+    assert!(
+        projection.bom_export(&snapshot).is_ok(),
+        "{:?}",
+        projection.bom_export(&snapshot).err()
+    );
+    let mut kinds = BTreeMap::<String, Vec<GeneralBomItemKind>>::new();
+    for row in &projection.bom.rows {
+        for path in &row.instances {
+            let name = ketchup_application::rule_program_part_name(&snapshot, path).unwrap();
+            // "s/rám/infill 2" -> "s/rám/infill", "s/osb" stays.
+            let group = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == ' ');
+            let group = if group.starts_with("s/rám/") && !group.ends_with("infill") {
+                "s/rám frame"
+            } else {
+                group
+            };
+            kinds
+                .entry(group.to_owned())
+                .or_default()
+                .push(row.item_kind);
+        }
+    }
+    use GeneralBomItemKind::{Manufactured, Purchased, Timber};
+    let expected = [
+        ("doska", vec![Purchased]),
+        ("prút", vec![Purchased]),
+        ("s/osb", vec![Manufactured]),
+        // Bottom plate, top plate and three members at 0, 600 and 1140.
+        ("s/rám frame", vec![Timber; 5]),
+        ("s/rám/infill", vec![Manufactured; 2]),
+        ("s/sdk", vec![Purchased]),
+        ("skrutka", vec![Purchased]),
+        ("stĺp", vec![Manufactured]),
+    ];
+    assert_eq!(
+        kinds,
+        expected
+            .into_iter()
+            .map(|(group, kinds)| (group.to_owned(), kinds))
+            .collect()
     );
 }
 

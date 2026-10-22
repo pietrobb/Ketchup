@@ -573,3 +573,21 @@ fn the_prelude_thread_tables_are_the_tapping_table_export_checks_against() {
         assert_eq!(threads.get(size), Some(&tapping), "{size}");
     }
 }
+
+/// Review 2026-10-21 MF-18: role= of a part creator takes only a fabrication
+/// role; anything else is refused with the creator and the valid names.
+#[test]
+fn a_role_that_is_no_fabrication_role_is_refused() {
+    for source in [
+        "bolt('b', 'M8', 40, role = 'steel')",
+        "rebar('r', 12, 1000, role = 'fabrication.rebar.v1')",
+        "buildup('w', (0, 0, 0), (1, 0, 0), (0, 0, 1), 1200, \
+         [{'name': 'osb', 'thickness': 15, 'role': None}], height = 2400)",
+    ] {
+        let error = refused(source);
+        assert!(
+            error.contains("role must be TIMBER_MEMBER, MANUFACTURED_ITEM or PURCHASED_ITEM"),
+            "{source}: {error}"
+        );
+    }
+}

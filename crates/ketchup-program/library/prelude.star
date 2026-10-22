@@ -148,18 +148,32 @@ def grain_attributes(grain):
     return {"grain": grain}
 
 # The fabrication role a part is exported with (BOM, BTLx, woodWOP, job):
-# a timber member, a manufactured item or a purchased item. member(), board()
-# and the fasteners set theirs; a part made otherwise sets it in attributes=.
+#   TIMBER_MEMBER      a bar cut and machined from timber stock (BTLx, bar list)
+#   MANUFACTURED_ITEM  a part made in the shop: a panel, a steel or cut piece (cut list)
+#   PURCHASED_ITEM     a part bought finished: fasteners, bars, hardware (hardware list)
+# A made part without a role stops the export, which names it. Each creator sets
+# one and takes role= to change it: member() a timber member, board() a
+# manufactured item, bolt(), nut(), washer(), threaded_rod() and rebar() a
+# purchased item, buildup() by layer (see topic buildup). A part made with
+# box(), extrude()... sets it in attributes={FABRICATION_ROLE: MANUFACTURED_ITEM}.
 FABRICATION_ROLE = "classification:ketchup.fabrication-role.v1"
 TIMBER_MEMBER = "fabrication.timber-member.v1"
 MANUFACTURED_ITEM = "fabrication.manufactured-item.v1"
 PURCHASED_ITEM = "fabrication.purchased-item.v1"
+_FABRICATION_ROLES = [TIMBER_MEMBER, MANUFACTURED_ITEM, PURCHASED_ITEM]
 
-def board(name, size, at = (0, 0, 0), material = "board", grain = None, edges = None, color = None):
+def _role(who, role):
+    """`role` if it is a fabrication role, else fail naming `who`."""
+    if role not in _FABRICATION_ROLES:
+        fail("%s: role must be TIMBER_MEMBER, MANUFACTURED_ITEM or PURCHASED_ITEM, got %r" % (who, role))
+    return role
+
+def board(name, size, at = (0, 0, 0), material = "board", grain = None, edges = None, color = None,
+          role = MANUFACTURED_ITEM):
     """A flat panel: an axis-aligned cuboid with a material for the cut list,
-    a manufactured item."""
+    a manufactured item unless role= says otherwise (a bought panel: PURCHASED_ITEM)."""
     attributes = grain_attributes(grain)
-    attributes[FABRICATION_ROLE] = MANUFACTURED_ITEM
+    attributes[FABRICATION_ROLE] = _role("board(%r)" % name, role)
     if edges != None:
         if type(edges) != "string":
             fail("edges must be text such as \"L1 L2 W1\", got %r" % edges)
@@ -198,10 +212,11 @@ def divide(span, count, round_to = 1):
     extra = int(remainder / round_to + 0.5)
     return [base + (round_to if i < extra else 0) for i in range(count)]
 
-def member(name, start, end, section, across = None, material = "timber", grain = "z", color = None):
+def member(name, start, end, section, across = None, material = "timber", grain = "z", color = None,
+           role = TIMBER_MEMBER):
     """A straight bar of rectangular `section` (width, height) whose centre
     line runs from world point `start` to `end` (legs, rails, struts), a
-    timber member.
+    timber member unless role= says otherwise (a steel post: MANUFACTURED_ITEM).
 
     The bar's local z runs along its length (z- face at `start`, z+ at `end`);
     local x is `across` made perpendicular to the length (default: world x, or
@@ -215,7 +230,7 @@ def member(name, start, end, section, across = None, material = "timber", grain 
     if across == None:
         across = (0, 1, 0) if abs(direction[0]) > 0.9 * length else (1, 0, 0)
     attributes = grain_attributes(grain)
-    attributes[FABRICATION_ROLE] = TIMBER_MEMBER
+    attributes[FABRICATION_ROLE] = _role("member(%r)" % name, role)
     part = box(name, (section[0], section[1], length), material = material, color = color, attributes = attributes)
     placed = place(part, origin = start, z = direction, x = across)
     offset = vec_add(vec_scale(placed.x, -section[0] / 2.0), vec_scale(placed.y, -section[1] / 2.0))
@@ -1508,9 +1523,9 @@ def _circle(radius, name):
     return [[name, (radius, 0), (-radius, 0), {"center": (0, 0)}],
             [name + "_back", (-radius, 0), (radius, 0), {"center": (0, 0)}]]
 
-def _fastener_part(name, outline, height, at, norm, size, designation, tags, thread = None, modeled_thread = None):
+def _fastener_part(name, outline, height, at, norm, size, designation, tags, role, thread = None, modeled_thread = None):
     """A steel prism of `outline`, `height` along local +z from `at`, with the cut-list
-    attributes of a standard, purchased part; `thread` = (size, from_z, to_z) names the outside thread
+    attributes of a standard part of fabrication `role`; `thread` = (size, from_z, to_z) names the outside thread
     of a bolt or rod and where it runs along the part's local z, `modeled_thread` whether
     it is modelled whatever the document says."""
     attributes = {
@@ -1518,7 +1533,7 @@ def _fastener_part(name, outline, height, at, norm, size, designation, tags, thr
         "standard": norm,
         "mass_basis": _SIMPLIFIED_MASS,
         "source": _fastener_source(norm, size),
-        FABRICATION_ROLE: PURCHASED_ITEM,
+        FABRICATION_ROLE: _role(name, role),
     }
     if thread != None:
         attributes["thread"] = thread[0]
@@ -1542,23 +1557,23 @@ def _hexagon(s):
     """A hexagon `s` across flats, flats square to local x."""
     return polygon(6, s / math.sqrt(3), angle = 30)
 
-def _fastener_body(name, outline, bore, height, at, axis, norm, size, tags):
+def _fastener_body(name, outline, bore, height, at, axis, norm, size, tags, role):
     """A steel ring of `outline` with a through bore `bore` wide, `height` along local +z,
     its seating face in local z=0 at `at`, turned so that local z runs along `axis`."""
-    part = _fastener_part(name, outline, height, at, norm, size, "%s %s" % (norm, size), tags)
+    part = _fastener_part(name, outline, height, at, norm, size, "%s %s" % (norm, size), tags, role)
     cut(part, profile = _circle(bore / 2.0, "bore"), through = True, name = "bore")
     return _turn_onto(part, at, axis)
 
-def nut(name, size, norm = "ISO 4032", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+def nut(name, size, norm = "ISO 4032", at = (0, 0, 0), axis = (0, 0, 1), tags = None, role = PURCHASED_ITEM):
     """A standard hexagon nut (simplified body) on the axis through `at`, seated at `at`."""
     s, height = _fastener_row("nut", NUTS, norm, size)
     # Flats square to local x: the part is s wide along x, 2 s / sqrt(3) along y.
-    return _fastener_body(name, _hexagon(s), int(size[1:]), height, at, axis, norm, size, tags)
+    return _fastener_body(name, _hexagon(s), int(size[1:]), height, at, axis, norm, size, tags, role)
 
-def washer(name, size, norm = "ISO 7089", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+def washer(name, size, norm = "ISO 7089", at = (0, 0, 0), axis = (0, 0, 1), tags = None, role = PURCHASED_ITEM):
     """A standard plain washer (simplified body) on the axis through `at`, seated at `at`."""
     d1, d2, h = _fastener_row("washer", WASHERS, norm, size)
-    return _fastener_body(name, _circle(d2 / 2.0, "outside"), d1, h, at, axis, norm, size, tags)
+    return _fastener_body(name, _circle(d2 / 2.0, "outside"), d1, h, at, axis, norm, size, tags, role)
 
 def bolt_lengths(size, norm = "ISO 4017"):
     """The nominal lengths this library offers for a bolt of `size` and `norm`."""
@@ -1576,7 +1591,8 @@ def bolt_thread_length(size, length, norm = "ISO 4017"):
     b = 2 * d + (6 if length <= 125 else 12 if length <= 200 else 25)
     return min(b, length)
 
-def bolt(name, size, length, norm = "ISO 4017", at = (0, 0, 0), axis = (0, 0, 1), tags = None, modeled_thread = None):
+def bolt(name, size, length, norm = "ISO 4017", at = (0, 0, 0), axis = (0, 0, 1), tags = None, modeled_thread = None,
+         role = PURCHASED_ITEM):
     """A standard bolt (simplified body): head seated at `at` and rising along `axis`, the
     shank `length` long running the other way."""
     head = _fastener_row("bolt", BOLT_HEADS, norm, size)
@@ -1589,23 +1605,24 @@ def bolt(name, size, length, norm = "ISO 4017", at = (0, 0, 0), axis = (0, 0, 1)
     thread = (size, -length, bolt_thread_length(size, length, norm) - length)
     if norm == "ISO 4762":
         dk, k, s, t = head
-        part = _fastener_part(name, _circle(dk / 2.0, "head"), k, at, norm, size, designation, tags, thread, modeled_thread)
+        part = _fastener_part(name, _circle(dk / 2.0, "head"), k, at, norm, size, designation, tags, role, thread, modeled_thread)
         cut(part, profile = _hexagon(s), depth = t, name = "socket")
     else:
         s, k = head
-        part = _fastener_part(name, _hexagon(s), k, at, norm, size, designation, tags, thread, modeled_thread)
+        part = _fastener_part(name, _hexagon(s), k, at, norm, size, designation, tags, role, thread, modeled_thread)
     shank = extrude("%s/shank" % name, profile = _circle(int(size[1:]) / 2.0, "shank"), distance = length,
                     at = (at[0], at[1], at[2] - length), tool = True)
     union(part, shank, name = "shank")
     return _turn_onto(part, at, axis)
 
-def threaded_rod(name, size, length, norm = "DIN 975", at = (0, 0, 0), axis = (0, 0, 1), tags = None, modeled_thread = None):
+def threaded_rod(name, size, length, norm = "DIN 975", at = (0, 0, 0), axis = (0, 0, 1), tags = None, modeled_thread = None,
+                 role = PURCHASED_ITEM):
     """A threaded rod (simplified: a full-diameter cylinder) `length` long from `at` along `axis`."""
     d = _fastener_row("threaded_rod", THREADED_RODS, norm, size)
     if length <= 0:
         fail("threaded_rod(): length must be positive, got %r" % length)
     designation = "%s %sx%s" % (norm, size, length)
-    part = _fastener_part(name, _circle(d / 2.0, "rod"), length, at, norm, size, designation, tags, (size, 0, length), modeled_thread)
+    part = _fastener_part(name, _circle(d / 2.0, "rod"), length, at, norm, size, designation, tags, role, (size, 0, length), modeled_thread)
     return _turn_onto(part, at, axis)
 
 # Reinforcing bars B500B (EN 10080): nominal diameter: catalogue mass in kg/m. The library
@@ -1631,9 +1648,9 @@ def rebar_mass_kg(diameter, length):
     """The nominal mass of a straight bar: the plain round section of the nominal diameter."""
     return math.pi * diameter * diameter / 4.0 * length * 7850 * 1e-9
 
-def rebar(name, diameter, length, grade = "B500B", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+def rebar(name, diameter, length, grade = "B500B", at = (0, 0, 0), axis = (0, 0, 1), tags = None, role = PURCHASED_ITEM):
     """A straight reinforcing bar (simplified: a plain cylinder of the nominal diameter)
-    `length` long from `at` along `axis`."""
+    `length` long from `at` along `axis`, a purchased item cut to length."""
     if grade != "B500B":
         fail("rebar(): unknown grade %r; use \"B500B\"" % (grade,))
     if diameter not in REBAR_MASS_KG_M:
@@ -1653,6 +1670,7 @@ def rebar(name, diameter, length, grade = "B500B", at = (0, 0, 0), axis = (0, 0,
                        "mass_basis": _REBAR_MASS_BASIS,
                        "mass_kg": str(int(rebar_mass_kg(d, length) * 1000 + 0.5) / 1000.0),
                        "source": _REBAR_SOURCE + ("; " + note if note else ""),
+                       FABRICATION_ROLE: _role("rebar(%r)" % name, role),
                    })
     return _turn_onto(part, at, axis)
 
@@ -1875,6 +1893,9 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     openings: [(u, v, width, height), ...] in panel coordinates, apart along u.
 #     Pieces are "<name>/<layer>", "<name>/<layer>/stud 3", ... with `tags` plus their
 #     layer's tags. Only extrusions, no booleans: every piece is rebuilt from the numbers.
+#     Fabrication role (FABRICATION_ROLE): plates, studs, noggins, headers and sills of a
+#     framed layer are TIMBER_MEMBER, a sheet layer's pieces and infill MANUFACTURED_ITEM;
+#     a layer's "role" and "infill_role" change them (a bought panel: PURCHASED_ITEM).
 #     Pair it with a concept body through alternatives() and tags, e.g. a wall facing -y:
 #     buildup("wall S", (0, 200, 0), (1, 0, 0), (0, 0, 1), 4000, height = 2600,
 #             layers = [{"name": "gypsum", "thickness": 12.5, "material": "gypsum board"},
@@ -1991,9 +2012,9 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
     base_tags = _names(tags)
     pieces = []
 
-    def piece(label, poly, at, thickness, material, color, piece_tags):
+    def piece(label, poly, at, thickness, material, color, piece_tags, role):
         part = extrude("%s/%s" % (name, label), profile = [[p[0], p[1]] for p in poly], distance = thickness,
-                       material = material, color = color, tags = piece_tags)
+                       material = material, color = color, tags = piece_tags, attributes = {FABRICATION_ROLE: role})
         placed = place(part, origin = vec_add(origin, vec_scale(out, at)), z = out, x = along)
         pieces.append(placed)
         return placed
@@ -2010,6 +2031,8 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         material = layer.get("material", label)
         color = layer.get("color")
         layer_tags = base_tags + _names(layer.get("tags"))
+        role = _role("buildup(%s) layer %s" % (name, label),
+                     layer.get("role", TIMBER_MEMBER if "spacing" in layer else MANUFACTURED_ITEM))
         points = _outline(name, length, height, top, offset)
         flat = [0.0 for _ in points]
         # Openings that leave no room above them run out through the top edge.
@@ -2024,7 +2047,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 blocks = [(o[1], None if through[holes.index(o)] else o[1] + o[3]) for o in covering(a, b)]
                 parts += _column(points, flat, a, b, 0.0, blocks)
             for k in range(len(parts)):
-                piece(label if len(parts) == 1 else "%s %d" % (label, k + 1), parts[k], offset, thickness, material, color, layer_tags)
+                piece(label if len(parts) == 1 else "%s %d" % (label, k + 1), parts[k], offset, thickness, material, color, layer_tags, role)
             offset += thickness
             continue
         stud = float(layer.get("stud", 60))
@@ -2054,7 +2077,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         for k in range(len(bottom)):
             a, b = bottom[k]
             plate_name = "%s/bottom plate%s" % (label, "" if len(bottom) == 1 else " %d" % (k + 1))
-            plate = piece(plate_name, _rect(a, 0.0, b, stud), offset, thickness, material, color, layer_tags)
+            plate = piece(plate_name, _rect(a, 0.0, b, stud), offset, thickness, material, color, layer_tags, role)
             if anchor != None:
                 edge = min(anchor.get("edge", 300), (b - a) / 4.0)
                 min_edge = anchor.get("min_edge", 80)
@@ -2076,7 +2099,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 top_hi = v0 + slopes[i] * (hi - u0)
                 plates.append([(lo, top_lo - drops[i]), (hi, top_hi - drops[i]), (hi, top_hi), (lo, top_lo)])
         for k in range(len(plates)):
-            piece("%s/top plate%s" % (label, "" if len(plates) == 1 else " %d" % (k + 1)), plates[k], offset, thickness, material, color, layer_tags)
+            piece("%s/top plate%s" % (label, "" if len(plates) == 1 else " %d" % (k + 1)), plates[k], offset, thickness, material, color, layer_tags, role)
         kings = []
         for ou, ov, ow, oh in holes:
             for side in (ou - stud, ou + ow):
@@ -2194,7 +2217,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 right = [n for n in notches[i][1] if poly[1][1] < n[0] and n[1] < poly[2][1]]
                 count += 1
                 members.append(piece("%s/stud %d" % (label, count), _notched(poly, left, right, depth) if left or right else poly,
-                                     offset, thickness, material, color, layer_tags))
+                                     offset, thickness, material, color, layer_tags, role))
         if [r for r in rows if r]:
             nog_tags = base_tags + _names(layer.get("noggin_tags", layer.get("tags")))
             count = 0
@@ -2202,16 +2225,16 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 for lo, hi in rows[k]:
                     count += 1
                     piece("%s/noggin %d" % (label, count), _rect(studs[k] + stud - depth, lo, studs[k + 1] + depth, hi),
-                          offset, thickness, material, color, nog_tags)
+                          offset, thickness, material, color, nog_tags, role)
         beams = []
         for k in range(len(holes)):
             ou, ov, ow, oh = holes[k]
             if spans[k] != None:
                 a, b, low, high = spans[k]
-                beams.append(piece("%s/header %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags))
+                beams.append(piece("%s/header %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags, role))
             if sills[k] != None:
                 a, b, low, high = sills[k]
-                beams.append(piece("%s/sill %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags))
+                beams.append(piece("%s/sill %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags, role))
         # In a floor or roof the headers hang on hangers from the joists beside the
         # opening, and the joists cut short by the opening hang on the headers.
         hanger = layer.get("hanger")
@@ -2228,12 +2251,13 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                               rating = layer.get("hanger_rating", connector_rating_of(hanger)))
         if layer.get("infill") != None:
             fill_tags = base_tags + _names(layer.get("infill_tags", layer.get("tags")))
+            fill_role = _role("buildup(%s) layer %s infill" % (name, label), layer.get("infill_role", MANUFACTURED_ITEM))
             bays = []
             for k in range(len(studs) - 1):
                 if studs[k + 1] - studs[k] - stud >= 1:
                     bays += bay(k, rows[k])
             for k in range(len(bays)):
-                piece("%s/infill %d" % (label, k + 1), bays[k], offset, thickness, layer["infill"], layer.get("infill_color"), fill_tags)
+                piece("%s/infill %d" % (label, k + 1), bays[k], offset, thickness, layer["infill"], layer.get("infill_color"), fill_tags, fill_role)
         offset += thickness
     return group(name, pieces)
 

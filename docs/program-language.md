@@ -198,6 +198,21 @@ and subtract a bar or rod cast into concrete from the concrete.
 anchors a timber beam to a reinforced footing with threaded rods, washers, nuts
 and bolts.
 
+Every made part needs a fabrication role (attribute `FABRICATION_ROLE`); the
+production export refuses a part without one and names it. The roles are
+`TIMBER_MEMBER` (a bar cut and machined from timber stock: BTLx and the bar
+list), `MANUFACTURED_ITEM` (a part made in the shop: a panel, a steel or cut
+piece; the cut list) and `PURCHASED_ITEM` (bought finished: fasteners, bars,
+hardware). `member` sets a timber member, `board` a manufactured item, the
+fasteners and `rebar` a purchased item; each takes `role=` to change it (a
+steel post from `member(..., role=MANUFACTURED_ITEM)`, a bought panel from
+`board(..., role=PURCHASED_ITEM)`). `buildup` makes the plates, studs,
+noggins, headers and sills of a framed layer timber members and sheet and
+infill pieces manufactured items; a layer's `"role"` and `"infill_role"`
+change them. A part from `box`, `extrude`... sets it in
+`attributes={FABRICATION_ROLE: MANUFACTURED_ITEM}`. `role=` refuses any other
+value at once; another value in `attributes=` stops the export, which names it.
+
 The file is split into topics by `#@topic id: title` lines (`basics`,
 `placement`, `profiles`, `machining`, `joinery`, `fasteners`, `intent`, `space`, `buildup`,
 `loads`, `member_check`, `validation`, `report`). Each
