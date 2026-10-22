@@ -1032,7 +1032,8 @@ fn mixed_mechanical_bom_keeps_make_buy_materials_positions_and_timber_export_bou
             .iter()
             .map(|drawing| drawing.machining_operations.len())
             .collect::<Vec<_>>(),
-        vec![1, 0, 0]
+        // Both made rows of the body show its stock; the bought one nothing (MF-20).
+        vec![1, 1, 0]
     );
     assert_eq!(projection.manufacturing.operations.len(), 1);
     assert!(projection.manufacturing.unresolved_sources.is_empty());
@@ -1591,6 +1592,74 @@ fn a_mirrored_copy_is_a_bom_row_and_drawing_of_its_own_with_mirrored_machining()
     assert_eq!(
         svg.matches("mirrored: opposite hand of the part").count(),
         1
+    );
+}
+/// Two copies of one drilled part in different materials are two BOM rows; the
+/// shop makes each row from its own drawing, so both show the drilling (MF-20).
+#[test]
+fn each_row_of_one_drilled_part_in_two_materials_draws_the_drilling() {
+    let mut document = circular_drill_document_at([20.0, 15.0]);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: MATERIAL_DIMENSION,
+                name: MATERIAL_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (STEEL_MATERIAL_CATEGORY, "C30".to_owned()),
+                    (C24_MATERIAL_CATEGORY, "C24".to_owned()),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: GRAPH_LEFT,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(C24_MATERIAL_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: GRAPH_RIGHT,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(STEEL_MATERIAL_CATEGORY),
+            },
+        ]))
+        .unwrap();
+    let (snapshot, projection) =
+        exact_graph_document_fabrication_projection(document, "mf20-two-materials", GRAPH_BOOLEAN);
+    let drawings = &projection.drawings.drawings;
+    assert_eq!(
+        drawings
+            .iter()
+            .map(|drawing| drawing.material_key.as_str())
+            .collect::<Vec<_>>(),
+        ["C24", "C30"]
+    );
+    for drawing in drawings {
+        assert_eq!(
+            drawing
+                .machining_operations
+                .iter()
+                .map(|operation| operation.kind)
+                .collect::<Vec<_>>(),
+            [
+                GeneralManufacturingKind::Stock,
+                GeneralManufacturingKind::CircularDrill
+            ],
+            "{}",
+            drawing.material_key
+        );
+    }
+    let svg = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+    assert_eq!(
+        svg.matches("data-kind=\"circular-drill\"").count(),
+        2,
+        "{svg}"
+    );
+    // A drawing missing the drilling another row of its body shows is refused.
+    let mut stripped = projection.clone();
+    stripped.drawings.drawings[1]
+        .machining_operations
+        .truncate(1);
+    assert_eq!(
+        stripped.drawing_svg(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
     );
 }
 #[test]

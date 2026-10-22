@@ -806,6 +806,8 @@ impl GeneralFabricationProjection {
                         || drawing.instances != row.instances
                         || drawing.mirrored != row.mirrored
                         || drawing.evidence_class != row.evidence_class
+                        || drawing.machining_operations
+                            != drawn_operations(row, &self.manufacturing.operations)
                 })
         {
             return Err(GeneralFabricationError::ExportBlocked);
@@ -817,19 +819,18 @@ impl GeneralFabricationProjection {
             &self.manufacturing.unresolved_sources,
             self.manufacturing.validation_state,
         );
-        let drawing_operations = self
-            .drawings
-            .drawings
-            .iter()
-            .flat_map(|drawing| drawing.machining_operations.iter())
-            .collect::<Vec<_>>();
-        let manufacturing_operations = self.manufacturing.operations.iter().collect::<Vec<_>>();
+        let every_operation_drawn = self.manufacturing.operations.iter().all(|operation| {
+            self.drawings
+                .drawings
+                .iter()
+                .any(|drawing| drawing.machining_operations.contains(operation))
+        });
         if self.drawings.envelope.status != ProjectionStatus::Complete
             || !general_envelope_is_current(&self.drawings.envelope, snapshot)
             || self.drawings.envelope.result_digest != sha256_hex(&result_bytes)
             || !general_envelope_is_current(&self.manufacturing.envelope, snapshot)
             || self.manufacturing.envelope.result_digest != sha256_hex(&manufacturing_bytes)
-            || drawing_operations != manufacturing_operations
+            || !every_operation_drawn
             || self.drawings.validation_state != ValidationState::Passed
             || self.drawings.drawings.is_empty()
         {
@@ -927,7 +928,7 @@ impl GeneralFabricationProjection {
             {
                 let (minimum, maximum) = machining_detail_bounds(&operation.machining)
                     .expect("machining detail bounds were validated during sheet sizing");
-                append_machining_detail(&mut svg, operation, minimum, maximum, 25.0, y);
+                append_machining_detail(&mut svg, drawing, operation, [minimum, maximum], y);
                 y += maximum[1] - minimum[1] + 55.0;
             }
             svg.push_str("</g>\n");
@@ -3360,24 +3361,7 @@ pub fn project_general_fabrication(
     let drawings = bom
         .rows
         .iter()
-        .enumerate()
-        .map(|(index, row)| {
-            // A body's operations are drawn once, on the first row that makes it.
-            let makes = |row: &GeneralBomRow| row.item_kind != GeneralBomItemKind::Purchased;
-            let owner = makes(row)
-                && !bom.rows[..index].iter().any(|earlier| {
-                    makes(earlier)
-                        && earlier.definition_id == row.definition_id
-                        && earlier.source == row.source
-                        && earlier.mirrored == row.mirrored
-                });
-            let operations: &[GeneralManufacturingOperation] = if owner {
-                &manufacturing.operations
-            } else {
-                &[]
-            };
-            general_piece_drawing(row, operations)
-        })
+        .map(|row| general_piece_drawing(row, &manufacturing.operations))
         .collect::<Vec<_>>();
     let drawing_bytes = general_drawing_bytes(&drawings, validation_state);
     let drawings = GeneralDrawingProjection {
@@ -4283,17 +4267,19 @@ fn machining_detail_bounds(geometry: &GeneralMachiningGeometry) -> Option<([f64;
 
 fn append_machining_detail(
     svg: &mut String,
+    drawing: &GeneralPieceDrawing,
     operation: &GeneralManufacturingOperation,
-    minimum: [f64; 2],
-    maximum: [f64; 2],
-    x: f64,
+    [minimum, maximum]: [[f64; 2]; 2],
     y: f64,
 ) {
+    let x = 25.0;
     let point = |value: [f64; 2]| [x + value[0] - minimum[0], y + value[1] - minimum[1]];
     let width = maximum[0] - minimum[0];
     let height = maximum[1] - minimum[1];
+    // A body made on several rows has the same operation on each row's drawing.
     svg.push_str(&format!(
-        "<g id=\"{}/machining-detail\" data-kind=\"{}\">\n",
+        "<g id=\"{}/{}/machining-detail\" data-kind=\"{}\">\n",
+        drawing.stable_drawing_id,
         operation.stable_operation_id,
         operation.kind.token()
     ));
@@ -4868,6 +4854,22 @@ fn local_dimensions(
     Ok(dimensions)
 }
 
+/// The operations the drawing of `row` shows: every row that makes the body shows
+/// all of them, as each is made from that drawing (review 2026-10-21 MF-20).
+fn drawn_operations(
+    row: &GeneralBomRow,
+    operations: &[GeneralManufacturingOperation],
+) -> Vec<GeneralManufacturingOperation> {
+    if row.item_kind == GeneralBomItemKind::Purchased {
+        return Vec::new();
+    }
+    operations
+        .iter()
+        .filter(|operation| is_row_operation(row, operation))
+        .cloned()
+        .collect()
+}
+
 fn general_piece_drawing(
     row: &GeneralBomRow,
     operations: &[GeneralManufacturingOperation],
@@ -4926,11 +4928,7 @@ fn general_piece_drawing(
             dimension("y", row.dimensions.width_mm),
             dimension("z", row.dimensions.height_mm),
         ],
-        machining_operations: operations
-            .iter()
-            .filter(|operation| is_row_operation(row, operation))
-            .cloned()
-            .collect(),
+        machining_operations: drawn_operations(row, operations),
         evidence_class: row.evidence_class.clone(),
     }
 }
