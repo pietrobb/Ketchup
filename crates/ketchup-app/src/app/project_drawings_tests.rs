@@ -582,3 +582,17 @@ fn the_title_block_keeps_only_what_the_user_wrote_and_defaults_follow_the_docume
     harness.step();
     assert_eq!(stored(harness.state())[&TitleField::Project], "Dom Novák");
 }
+
+/// The title block date is the user's: 23:30 UTC on 22 October is already 23 October
+/// in Bratislava (+02:00), and still 22 October in New York (-04:00).
+#[test]
+fn the_drawing_date_is_the_date_on_the_users_clock() {
+    use crate::app::project_drawings::date_at;
+    // 2026-10-22 23:30:00 UTC.
+    let late_evening = 1_792_711_800;
+    assert_eq!(date_at(late_evening, 0), "22. 10. 2026");
+    assert_eq!(date_at(late_evening, 2 * 3_600), "23. 10. 2026");
+    assert_eq!(date_at(late_evening, -4 * 3_600), "22. 10. 2026");
+    // A minute after midnight UTC on 1 January is still New Year's Eve west of it.
+    assert_eq!(date_at(1_798_761_660, -3_600), "31. 12. 2026");
+}

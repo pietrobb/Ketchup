@@ -351,7 +351,7 @@ LINT_ALLOW = re.compile(r"#!?\[allow\(")
 CASTS_AND_ALLOWS = {
     "ketchup-analysis allows": 1,
     "ketchup-analysis casts": 6,
-    "ketchup-app allows": 9,
+    "ketchup-app allows": 10,
     "ketchup-app casts": 218,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,

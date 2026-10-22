@@ -51,6 +51,7 @@ pub(crate) mod joints_ui;
 #[path = "app/joints_ui_tests.rs"]
 mod joints_ui_tests;
 mod local_outliner;
+mod local_time;
 mod mirror;
 mod outliner;
 mod patterns;

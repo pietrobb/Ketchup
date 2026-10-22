@@ -2379,6 +2379,7 @@ dependencies = [
  "sys-locale",
  "tempfile",
  "wgpu",
+ "windows-sys 0.61.2",
  "winreg",
 ]
 

@@ -108,12 +108,17 @@ pub(crate) fn missing_parts_list(parts: &[String]) -> String {
     list
 }
 
-/// Today's date as d. m. yyyy (UTC).
+/// Today's date where the user is, as d. m. yyyy.
 fn today() -> String {
-    let days = std::time::SystemTime::now()
+    let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs() / 86_400);
-    let days = i64::try_from(days).unwrap_or(0) + 719_468;
+        .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0));
+    date_at(now, super::local_time::utc_offset_seconds())
+}
+
+/// The date, as d. m. yyyy, at `unix_seconds` on a clock `offset_seconds` ahead of UTC.
+pub(crate) fn date_at(unix_seconds: i64, offset_seconds: i64) -> String {
+    let days = (unix_seconds + offset_seconds).div_euclid(86_400) + 719_468;
     // Civil date from days since 0000-03-01 (H. Hinnant's algorithm).
     let era = days.div_euclid(146_097);
     let day_of_era = days.rem_euclid(146_097);
