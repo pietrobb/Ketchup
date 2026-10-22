@@ -597,6 +597,15 @@ impl Edit<'_> {
         let name = quote(self.name);
         let call = self.creating_call(doing)?;
         let Some(statement) = call.statement.clone() else {
+            if let Some(line) = call.condition_line {
+                return Err(self.refused_on(
+                    line,
+                    "program_part_in_condition",
+                    format!(
+                        "part {name} is made under the if on line {line}; {doing} in the program"
+                    ),
+                ));
+            }
             return Err(self.refused_on(
                 call.lines.first,
                 "program_part_shared_line",

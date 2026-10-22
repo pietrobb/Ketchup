@@ -785,6 +785,26 @@ fn a_refusal_names_the_program_line_to_change_and_its_fix() {
     assert_eq!(location.excerpt[0].text, "for i in range(3):");
 }
 
+#[test]
+fn deleting_a_part_made_under_an_if_names_the_if() {
+    let source = "W = 120\nbox(\"a\", (10, 10, 10))\nif W > 110:\n    box(\"extra\", (5, 5, 5), at=(0, 100, 0))\n";
+    let error = rewrite_rule_program_parts(
+        &program(source),
+        &[("extra".to_owned(), PartChange::Delete)],
+    )
+    .expect_err("refused");
+    let rejection = error.rejection();
+    assert_eq!(
+        (rejection.code(), rejection.target_name()),
+        ("program_part_in_condition", "program line 3")
+    );
+    assert!(
+        rejection.reason_text().contains("if on line 3"),
+        "{}",
+        rejection.reason_text()
+    );
+}
+
 /// Review 2026-10-19 WB-5: a program that did not make the part as asked
 /// was refused without saying what came out otherwise.
 #[test]

@@ -507,6 +507,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Rename the part in the expression on the program line named in the target.",
     ),
     entry(
+        "program_part_in_condition",
+        Planning,
+        "program line",
+        "The part is made under an if, so deleting its line alone could leave the if without a body.",
+        "Delete the part's line under the if named in the target, or the whole if, in the program.",
+    ),
+    entry(
         "program_part_in_function",
         Planning,
         "program line",

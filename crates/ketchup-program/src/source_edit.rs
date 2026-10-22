@@ -19,6 +19,8 @@ pub struct CreatingCall {
     pub lines: SourceLines,
     /// First line of the loop the call runs in once per pass.
     pub loop_line: Option<usize>,
+    /// First line of the `if` the call is made under.
+    pub condition_line: Option<usize>,
     /// The program's own function the call is made in or calls; it may
     /// create other parts too.
     pub function: Option<String>,
@@ -293,6 +295,7 @@ pub fn point_literal(point: [f64; 3]) -> String {
 #[derive(Clone, Default)]
 struct Context {
     loop_line: Option<usize>,
+    condition_line: Option<usize>,
     function: Option<String>,
 }
 
@@ -318,6 +321,9 @@ impl Search<'_> {
         match node {
             Visit::Stmt(statement) => match &statement.node {
                 StmtP::For(_) => inner.loop_line = Some(self.line(statement.span)),
+                StmtP::If(..) | StmtP::IfElse(..) => {
+                    inner.condition_line = Some(self.line(statement.span));
+                }
                 StmtP::Def(def) => inner.function = Some(def.name.ident.clone()),
                 _ => {}
             },
@@ -340,6 +346,7 @@ impl Search<'_> {
                         let call = CreatingCall {
                             lines: self.lines,
                             loop_line: context.loop_line,
+                            condition_line: context.condition_line,
                             function: context.function.clone().or(called),
                             at: arguments
                                 .args
