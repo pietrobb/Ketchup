@@ -436,7 +436,7 @@ pub(super) fn place_texts(
                 } else {
                     ordered.layer.clone()
                 },
-                style: ordered.style.clone(),
+                style: ordered.style.placed_on(layer),
                 text: UnderlayText {
                     anchor_mm: place_point(
                         text.anchor_mm,

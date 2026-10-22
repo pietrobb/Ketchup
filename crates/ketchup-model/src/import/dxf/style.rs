@@ -20,6 +20,9 @@ pub(super) const STYLE_VARIABLES: [&str; 2] = ["$LTSCALE", "$LWDEFAULT"];
 enum Named<T> {
     #[default]
     ByLayer,
+    /// ByBlock of an insert that takes it ByLayer: the style of the insert's layer, not of
+    /// the layer the entity is drawn on.
+    ByLayerOf(String),
     ByBlock,
     Own(T),
     /// A value that names none, as the drawing gives it: drawn ByLayer and reported.
@@ -91,21 +94,40 @@ impl EntityStyle {
         })
     }
 
-    /// The style of an entity of a block an insert of `style` places at `scale`: what it
-    /// takes ByBlock it takes from the insert, and its pattern scales with it.
-    pub(super) fn within(&self, style: &Self, scale: f64) -> Self {
-        fn of<T: Clone>(own: &Named<T>, insert: &Named<T>) -> Named<T> {
-            match own {
-                Named::ByBlock => insert.clone(),
+    /// The style of an entity of a block an insert of `style` on `layer` places at
+    /// `scale`: what it takes ByBlock it takes from the insert (the insert's layer's, where
+    /// the insert takes it ByLayer), and its pattern scales with it.
+    pub(super) fn within(&self, style: &Self, layer: &str, scale: f64) -> Self {
+        fn of<T: Clone>(own: &Named<T>, insert: &Named<T>, layer: &str) -> Named<T> {
+            match (own, insert) {
+                (Named::ByBlock, Named::ByLayer) => Named::ByLayerOf(layer.to_owned()),
+                (Named::ByBlock, _) => insert.clone(),
                 _ => own.clone(),
             }
         }
         Self {
-            color: of(&self.color, &style.color),
-            linetype: of(&self.linetype, &style.linetype),
-            weight: of(&self.weight, &style.weight),
+            color: of(&self.color, &style.color, layer),
+            linetype: of(&self.linetype, &style.linetype, layer),
+            weight: of(&self.weight, &style.weight, layer),
             scale: self.scale * scale,
             invalid_scale: self.invalid_scale,
+        }
+    }
+
+    /// Its style where an insert on `layer` places the block it belongs to: an insert on
+    /// layer 0 of that block is on `layer` there, and so is what took its layer's style.
+    pub(super) fn placed_on(&self, layer: &str) -> Self {
+        fn on<T: Clone>(named: &Named<T>, layer: &str) -> Named<T> {
+            match named {
+                Named::ByLayerOf(own) if own == "0" => Named::ByLayerOf(layer.to_owned()),
+                _ => named.clone(),
+            }
+        }
+        Self {
+            color: on(&self.color, layer),
+            linetype: on(&self.linetype, layer),
+            weight: on(&self.weight, layer),
+            ..self.clone()
         }
     }
 }
@@ -265,27 +287,31 @@ impl DrawingStyles {
         diagnostics: &mut DiagnosticCounts,
     ) -> Result<LineStyle, DxfImportError> {
         let own = self.layers.get(&layer.to_ascii_uppercase());
+        let of = |layer: &str| self.layers.get(&layer.to_ascii_uppercase());
         let color = match &style.color {
             Named::Own(color) => *color,
             Named::ByLayer => own.and_then(|layer| layer.color),
+            Named::ByLayerOf(layer) => of(layer).and_then(|layer| layer.color),
             Named::ByBlock => None,
             Named::Unknown(aci) => {
                 report(COLOR_UNKNOWN, *aci, diagnostics)?;
                 own.and_then(|layer| layer.color)
             }
         };
-        let weight = match style.weight {
-            Named::Own(weight) => weight,
+        let weight = match &style.weight {
+            Named::Own(weight) => *weight,
             Named::ByLayer => own.map_or(-3, |layer| layer.weight),
+            Named::ByLayerOf(layer) => of(layer).map_or(-3, |layer| layer.weight),
             Named::ByBlock => -3,
             Named::Unknown(weight) => {
-                report(LINEWEIGHT_UNKNOWN, weight, diagnostics)?;
+                report(LINEWEIGHT_UNKNOWN, *weight, diagnostics)?;
                 own.map_or(-3, |layer| layer.weight)
             }
         };
         let linetype = match &style.linetype {
             Named::Own(name) => Some(name.as_str()),
             Named::ByLayer => own.map(|layer| layer.linetype.as_str()),
+            Named::ByLayerOf(layer) => of(layer).map(|layer| layer.linetype.as_str()),
             Named::ByBlock | Named::Unknown(_) => None,
         };
         if let Some(scale) = style.invalid_scale {

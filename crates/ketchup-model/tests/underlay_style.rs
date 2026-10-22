@@ -118,6 +118,45 @@ fn each_line_keeps_the_color_pattern_and_weight_its_drawing_gives_it() {
     assert_eq!(decoded, underlay.lines);
 }
 
+/// Review 2026-10-21 UL-7: a block's line on WALLS drawn ByBlock, placed by an insert on
+/// DOORS that takes its own style ByLayer, is drawn as DOORS (blue, dashed, 0.35 mm), not
+/// as WALLS (red, continuous, 0.50 mm); so it is when that insert is on layer 0 of another
+/// block, which an insert on DOORS places.
+#[test]
+fn a_line_drawn_by_block_takes_the_layer_style_of_an_insert_drawn_by_layer() {
+    let tables = concat!(
+        "0\nSECTION\n2\nTABLES\n",
+        "0\nTABLE\n2\nLTYPE\n70\n1\n",
+        "0\nLTYPE\n2\nDASHED\n70\n0\n3\n__ __\n72\n65\n73\n2\n40\n15\n49\n10\n74\n0\n49\n-5\n74\n0\n",
+        "0\nENDTAB\n",
+        "0\nTABLE\n2\nLAYER\n70\n2\n",
+        "0\nLAYER\n2\nWALLS\n70\n0\n62\n1\n6\nCONTINUOUS\n370\n50\n",
+        "0\nLAYER\n2\nDOORS\n70\n0\n62\n5\n6\nDASHED\n370\n35\n",
+        "0\nENDTAB\n",
+        "0\nENDSEC\n",
+    );
+    let blocks = concat!(
+        "0\nSECTION\n2\nBLOCKS\n",
+        "0\nBLOCK\n8\n0\n2\ndoor\n70\n0\n10\n0\n20\n0\n",
+        "0\nLINE\n8\nWALLS\n62\n0\n6\nBYBLOCK\n370\n-2\n10\n0\n20\n0\n11\n100\n21\n0\n",
+        "0\nENDBLK\n",
+        "0\nBLOCK\n8\n0\n2\nleaf\n70\n0\n10\n0\n20\n0\n",
+        "0\nINSERT\n8\n0\n2\ndoor\n10\n0\n20\n0\n",
+        "0\nENDBLK\n",
+        "0\nENDSEC\n",
+    );
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n9\n$LTSCALE\n40\n2\n0\nENDSEC\n{tables}{blocks}0\nSECTION\n2\nENTITIES\n{}0\nENDSEC\n0\nEOF\n",
+        concat!(
+            "0\nINSERT\n8\nDOORS\n2\ndoor\n10\n0\n20\n0\n",
+            "0\nINSERT\n8\nDOORS\n2\nleaf\n10\n1000\n20\n0\n",
+        )
+    );
+    let underlay = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
+    let doors = style(Some([0, 0, 255]), 35, &[20.0, -10.0]);
+    assert_eq!(styles(&underlay, "WALLS"), [&doors, &doors]);
+}
+
 #[test]
 fn dashed_lines_start_their_pattern_anew_and_continuous_ones_join() {
     let underlay = read(concat!(

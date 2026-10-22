@@ -425,9 +425,10 @@ impl ParsedEntities {
         placed_at: Option<f64>,
     ) -> Result<(), DxfImportError> {
         let style = EntityStyle::read(record)?;
+        let layer = parse_layer(record)?;
         let restyle = |own: &mut EntityStyle| {
             *own = match placed_at {
-                Some(scale) => own.within(&style, scale),
+                Some(scale) => own.within(&style, &layer, scale),
                 None => style.clone(),
             };
         };
@@ -2950,7 +2951,7 @@ fn parse_dimension(
                     profile.layer.clone()
                 },
                 ordinal,
-                style: profile.style.clone(),
+                style: profile.style.placed_on(&layer),
                 segments: profile
                     .segments
                     .iter()
@@ -3111,7 +3112,7 @@ fn parse_insert(
                         profile.layer.clone()
                     },
                     ordinal,
-                    style: profile.style.clone(),
+                    style: profile.style.placed_on(&layer),
                     segments: profile
                         .segments
                         .iter()
