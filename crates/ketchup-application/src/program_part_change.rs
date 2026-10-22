@@ -1023,11 +1023,11 @@ impl Edit<'_> {
             "push_pull({}, face={}, distance={}, name={})\n",
             quote(self.name),
             quote(written_face),
-            number_literal(distance),
+            number_literal(written(distance)),
             quote(&format!("GUI Push/Pull {}", count + 1))
         );
         let reading = Reading::Face(written_face.to_owned());
-        Ok((self.appended(&line), self.reads(reading, distance)))
+        Ok((self.appended(&line), self.reads(reading, written(distance))))
     }
 
     fn finish(
@@ -1048,7 +1048,7 @@ impl Edit<'_> {
             "{call}({}, edges=[{}], {amount_name}={})\n",
             quote(self.name),
             edges.join(", "),
-            number_literal(amount)
+            number_literal(written(amount))
         );
         let operations = Reading::Operations.of(&self.evaluated.model, self.name);
         let expected = self.reads(Reading::Operations, operations.unwrap_or_default() + 1.0);

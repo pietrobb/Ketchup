@@ -839,3 +839,36 @@ fn many_parts_moved_alike_are_written_and_checked_at_once() {
     assert_eq!(after.part("q").unwrap().at_mm, [5.0, 0.0, 0.0]);
     assert_eq!(after.part("p11").unwrap().at_mm, [225.0, 0.0, 0.0]);
 }
+
+/// Review 2026-10-19 (program writing) and 2026-10-21 (GUI): a Push/Pull distance or a
+/// fillet or chamfer amount the window computed is written to the nanometre, as every
+/// other written length is, not with the noise of its sum (0.30000000000000004).
+#[test]
+fn a_pulled_distance_and_a_finish_amount_are_written_without_noise() {
+    let source = "box(\"p\", (40, 20, 10))\n";
+    let noisy = 0.1 + 0.2;
+    let pulled = change(
+        source,
+        "p",
+        PartChange::PushPull {
+            face: "z+".to_owned(),
+            distance: noisy,
+        },
+    );
+    assert!(pulled.source.contains("distance=0.3,"), "{}", pulled.source);
+    for kind in [
+        ProgramEdgeFinishKind::Fillet,
+        ProgramEdgeFinishKind::Chamfer,
+    ] {
+        let finished = change(
+            source,
+            "p",
+            PartChange::Finish {
+                kind,
+                edges: vec![["z+".to_owned(), "x+".to_owned()]],
+                amount: noisy,
+            },
+        );
+        assert!(finished.source.contains("=0.3)"), "{}", finished.source);
+    }
+}
