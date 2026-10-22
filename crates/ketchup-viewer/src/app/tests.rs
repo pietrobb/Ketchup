@@ -1256,6 +1256,64 @@ fn a_phone_reads_its_start_model_apart_from_the_frame() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Review 2026-10-21 VW-18: a kept session whose package no longer opens
+/// still has its unsaved comments on disk. The next package opened used to
+/// replace them while the failure was only logged; now the Viewer says so,
+/// nothing is kept over them, a first open only warns, and opening their own
+/// package again brings them back, still unsaved.
+#[test]
+fn unsaved_comments_of_a_session_that_does_not_open_are_kept_until_the_customer_decides() {
+    let dir = std::env::temp_dir().join(format!("ketchup-viewer-unopened-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (first, second) = two_packages();
+    let mut app = customer_with_comment(&first, "Darker oak");
+    keep_all(&mut SessionKeeper::new(dir.clone(), None), &mut app).unwrap();
+    let comments = dir.join("session.ketchup-comments");
+    let kept = std::fs::read(&comments).unwrap();
+    std::fs::write(dir.join("session.ketchup-view"), b"not a package").unwrap();
+
+    let mut started = ViewerApp::new(None).with_host_files();
+    let (mark, failures) =
+        StartupOpen::start(&mut started, Some(dir.clone()), None).finish(&mut started);
+    assert_eq!((mark, failures.len()), (None, 1));
+    let code = |app: &ViewerApp| app.error().map(|error| error.code().to_owned());
+    assert_eq!(code(&started).as_deref(), Some("viewer.session.unopened"));
+    assert!(started.has_unsaved_comments());
+    let mut keeper = SessionKeeper::new(dir.clone(), mark);
+
+    // A package opened without asking (another app's file before the
+    // check, or the installed one) is shown, but not kept over them.
+    started.open(second.as_slice()).unwrap();
+    assert_eq!(code(&started).as_deref(), Some("viewer.session.unopened"));
+    keep_all(&mut keeper, &mut started).unwrap();
+    assert_eq!(std::fs::read(&comments).unwrap(), kept);
+    assert!(dir.join("session.unsaved").exists());
+
+    // Opening their own package asks first; repeated, it opens and the
+    // comments come back, unsaved.
+    started.report(Rejection::new("other", RejectionPhase::Request));
+    assert!(!started.may_discard_comments());
+    assert_eq!(code(&started).as_deref(), Some("viewer.session.unopened"));
+    assert!(started.may_discard_comments());
+    started.open(first.as_slice()).unwrap();
+    keep_all(&mut keeper, &mut started).unwrap();
+    let texts: Vec<_> = started
+        .review
+        .as_ref()
+        .unwrap()
+        .comments
+        .comments
+        .iter()
+        .map(|comment| comment.text.clone())
+        .collect();
+    assert_eq!(texts, ["Darker oak"]);
+    assert!(started.has_unsaved_comments());
+    let mut restarted = ViewerApp::new(None);
+    assert!(restarted.restore_session(&dir).unwrap().is_some());
+    assert!(restarted.has_unsaved_comments());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Holds the package writer for good in the child process of
 /// [`comments_beside_a_package_whose_writer_was_killed_open_with_it_again`],
 /// so it is killed with its `.part` not renamed.

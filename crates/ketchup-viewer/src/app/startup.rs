@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 /// The session and the package being read at the start.
 pub struct StartupOpen {
     handle: JoinHandle<Started>,
+    session_dir: Option<PathBuf>,
 }
 
 struct Started {
@@ -31,6 +32,7 @@ impl StartupOpen {
         package: Option<PathBuf>,
     ) -> Self {
         app.set_loading(true);
+        let kept_in = session_dir.clone();
         let handle = std::thread::spawn(move || {
             #[cfg(test)]
             super::tests::hold_startup_reader();
@@ -44,7 +46,10 @@ impl StartupOpen {
             };
             Started { session, package }
         });
-        Self { handle }
+        Self {
+            handle,
+            session_dir: kept_in,
+        }
     }
 
     /// Whether [`Self::finish`] would not wait.
@@ -55,7 +60,8 @@ impl StartupOpen {
     /// Shows what was read in `app`, waiting for it if need be. Gives the
     /// mark of the session it opened, for the [`super::SessionKeeper`], and
     /// every failure met on the way, which the caller logs; a package that
-    /// does not open leaves the Viewer empty.
+    /// does not open leaves the Viewer empty. A session that does not open
+    /// with unsaved comments is held, not overwritten (review 2026-10-21 VW-18).
     pub fn finish(self, app: &mut ViewerApp) -> (Option<SessionMark>, Vec<Rejection>) {
         app.set_loading(false);
         let mut failures = Vec::new();
@@ -70,6 +76,9 @@ impl StartupOpen {
             Ok(mark) => mark,
             Err(error) => {
                 failures.push(error);
+                if let Some(dir) = &self.session_dir {
+                    app.hold_unopened_session(dir);
+                }
                 None
             }
         };

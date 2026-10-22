@@ -50,6 +50,16 @@ impl ViewerApp {
         }
     }
 
+    /// The session kept in `dir` did not open: with unsaved comments it is
+    /// held, the Viewer says so, and only a package opened after the warning
+    /// lets the [`SessionKeeper`] replace it.
+    pub(super) fn hold_unopened_session(&mut self, dir: &Path) {
+        if dir.join(UNSAVED).exists() {
+            self.unopened_session = Some(false);
+            self.error = Some(super::unopened_session_error());
+        }
+    }
+
     pub(super) fn show_session(
         &mut self,
         kept: KeptSession,
@@ -147,13 +157,19 @@ impl SessionKeeper {
     /// their package and open only on it (review 2026-10-17 D-7). The unsaved
     /// marker is written before the comments and removed after them, so
     /// unsaved comments never show as saved. A failed comments write keeps the
-    /// package, so the next edit writes only the comments again.
+    /// package, so the next edit writes only the comments again. Nothing is
+    /// kept while the last session's unsaved comments did not open.
     ///
     /// A package whose write a process end cut short is still named by the
     /// comments kept beside it; opened again, it gets them back instead of
     /// dropping them, unless something was already changed on it (review
     /// 2026-10-17 VW-12).
     pub fn keep(&mut self, app: &mut ViewerApp) -> Result<(), Rejection> {
+        // Unsaved comments of a session that did not open stay as they are
+        // until the customer decides (review 2026-10-21 VW-18).
+        if app.unopened_session.is_some() {
+            return Ok(());
+        }
         if let Some(writing) = self.writing.take_if(|writing| writing.handle.is_finished()) {
             let path = self.dir.join(PACKAGE);
             let written = writing.handle.join().unwrap_or_else(|_| {

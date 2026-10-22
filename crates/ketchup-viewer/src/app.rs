@@ -77,6 +77,10 @@ pub struct ViewerApp {
     kept: bool,
     /// Packages shown so far, so a [`PendingOpen`] knows it was superseded.
     shown: u64,
+    /// The session kept from the last start did not open and its comments
+    /// are unsaved: kept untouched until the customer, warned (`true`),
+    /// opens another package anyway.
+    unopened_session: Option<bool>,
 }
 
 /// An open the host started and finishes later, as the download of a shared
@@ -110,6 +114,7 @@ impl ViewerApp {
             loading: false,
             kept: false,
             shown: 0,
+            unopened_session: None,
         }
     }
 
@@ -265,7 +270,8 @@ impl ViewerApp {
         self.camera = Some(camera);
         self.scene = scene;
         self.selected = None;
-        self.error = None;
+        // Held unsaved comments stay announced over whatever opens next.
+        self.error = self.unopened_session.map(|_| unopened_session_error());
         self.shown += 1;
         Ok(())
     }
@@ -772,13 +778,21 @@ impl ViewerApp {
     /// Unsaved comments, or a changed comment being written, would be lost by
     /// opening another package or comments file, or by closing.
     pub fn has_unsaved_comments(&self) -> bool {
-        self.review.as_ref().is_some_and(Review::has_unkept_work)
+        self.unopened_session.is_some() || self.review.as_ref().is_some_and(Review::has_unkept_work)
     }
 
     /// Whether the opened comments and the one being written may be replaced
     /// now; the first attempt with unsaved work only shows a warning.
     pub fn may_discard_comments(&mut self) -> bool {
+        if self.unopened_session == Some(false) {
+            self.unopened_session = Some(true);
+            self.error = Some(unopened_session_error());
+            return false;
+        }
         let allowed = self.review.as_mut().is_none_or(Review::may_discard);
+        if allowed {
+            self.unopened_session = None;
+        }
         if !allowed {
             self.error = Some(
                 Rejection::new("viewer.comments.unsaved", RejectionPhase::Request)
@@ -788,6 +802,15 @@ impl ViewerApp {
         }
         allowed
     }
+}
+
+/// The kept session's comments are unsaved but their model did not open.
+fn unopened_session_error() -> Rejection {
+    Rejection::new("viewer.session.unopened", RejectionPhase::Request)
+        .reason(
+            "Unsaved comments from the last start are kept, but their model could not be opened.",
+        )
+        .fix_hint("Open that model again to get them back, or repeat the action to discard them.")
 }
 
 /// Comment arrows from tail to tip, drawn over the 3D image.
