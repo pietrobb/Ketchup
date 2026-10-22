@@ -31,30 +31,43 @@ jobs:
         with:
           python-version: "3.11"
       - name: No named products in core source
+        if: ${{ !cancelled() }}
         run: python scripts/check_no_named_products.py
       - name: No new tolerance literals outside tolerance.rs
+        if: ${{ !cancelled() }}
         run: python scripts/check_tolerance_literals.py
       - name: Crate dependencies point to lower layers
+        if: ${{ !cancelled() }}
         run: python scripts/check_crate_layers.py
       - name: Every workspace crate is checked by a CI job
+        if: ${{ !cancelled() }}
         run: python scripts/check_ci_crates.py
       - name: No new errors that drop their cause
+        if: ${{ !cancelled() }}
         run: python scripts/check_error_hygiene.py
       - name: The documented tool rail matches the window
+        if: ${{ !cancelled() }}
         run: python scripts/check_tool_rail_docs.py
       - name: Tests gain no sleep calls
+        if: ${{ !cancelled() }}
         run: python scripts/check_test_sleeps.py
       - name: Time budgets only in perf tests
+        if: ${{ !cancelled() }}
         run: python scripts/check_test_timing.py
       - name: GPU tests share one wgpu instance
+        if: ${{ !cancelled() }}
         run: python scripts/check_gpu_test_instances.py
       - name: Test hooks stay out of production code
+        if: ${{ !cancelled() }}
         run: python scripts/check_test_hooks.py
       - name: Tests read their settings from ketchup-test-env
+        if: ${{ !cancelled() }}
         run: python scripts/check_test_env.py
       - name: Every ignored test runs in some CI step
+        if: ${{ !cancelled() }}
         run: python scripts/check_ignored_tests.py
       - name: BTLx schemas from the cache
+        if: ${{ !cancelled() }}
         id: btlx
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -62,6 +75,7 @@ jobs:
           key: btlx-schema-${{ hashFiles('tests/test_btlx_schema.py', 'crates/ketchup-manufacturing/src/fabrication.rs') }}
           restore-keys: btlx-schema-
       - name: Python tests
+        if: ${{ !cancelled() }}
         run: |
           python -m pip install --quiet --require-hashes -r tests/requirements-ci.txt
           python -m pytest -q tests sdk/python/tests
