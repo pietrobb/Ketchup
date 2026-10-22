@@ -7,7 +7,12 @@ param(
     [switch]$Release,
     # Installs the APK on the single connected device/emulator and starts it,
     # with this .ketchup-view as the opened model.
-    [string]$InstallWithModel
+    [string]$InstallWithModel,
+    # Signing key. It lives outside target\ so `cargo clean` or another
+    # checkout keeps the key the installed Viewer was signed with: Android
+    # updates an app only with the same key, and uninstalling deletes the
+    # saved session and earlier content kept after a cut-off save.
+    [string]$Keystore = $(if ($env:KETCHUP_ANDROID_KEYSTORE) { $env:KETCHUP_ANDROID_KEYSTORE } else { Join-Path $env:USERPROFILE ".ketchup\viewer-android.keystore" })
 )
 
 # Builds the Android Kečup Viewer as an APK signed with a local debug key.
@@ -75,18 +80,53 @@ try {
 & (Join-Path $buildTools.FullName "zipalign.exe") -p -f 4 $unsigned $aligned
 if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
 
-$keystore = Join-Path $targetDir "debug.keystore"
-if (-not (Test-Path $keystore)) {
-    & $keytool -genkeypair -keystore $keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "keytool failed" }
+$apksigner = Join-Path $buildTools.FullName "apksigner.bat"
+# The SHA-256 digest of the certificate an APK is signed with.
+function Get-SignerDigest([string]$Path) {
+    $printed = & $apksigner verify --print-certs $Path
+    if ($LASTEXITCODE -ne 0) { throw "apksigner could not read the signature of $Path" }
+    $line = $printed | Select-String "certificate SHA-256 digest: ([0-9a-f]+)" | Select-Object -First 1
+    if (-not $line) { throw "apksigner printed no certificate digest for $Path" }
+    $line.Matches[0].Groups[1].Value
+}
+
+if (-not (Test-Path $Keystore)) {
+    New-Item (Split-Path $Keystore) -ItemType Directory -Force | Out-Null
+    # Builds before the key moved out of target\ signed with this one; the
+    # Viewers they installed update only with it.
+    $earlier = Join-Path $targetDir "debug.keystore"
+    if (Test-Path $earlier) {
+        Copy-Item $earlier $Keystore
+        Write-Host "Signing key copied from $earlier to $Keystore"
+    } else {
+        & $keytool -genkeypair -keystore $Keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "keytool failed" }
+        Write-Host "New signing key $Keystore; keep it, Viewers signed with it update only with it"
+    }
 }
 $apk = if ([System.IO.Path]::IsPathRooted($Output)) { $Output } else { Join-Path $root $Output }
-& (Join-Path $buildTools.FullName "apksigner.bat") sign --ks $keystore --ks-pass pass:android --key-pass pass:android --out $apk $aligned
+& $apksigner sign --ks $Keystore --ks-pass pass:android --key-pass pass:android --out $apk $aligned
 if ($LASTEXITCODE -ne 0) { throw "apksigner failed" }
+$digest = Get-SignerDigest $apk
 Write-Host "Android Viewer (debug-signed): $apk"
+Write-Host "Signing certificate SHA-256: $digest ($Keystore)"
 
 if ($InstallWithModel) {
     $adb = Join-Path $sdk "platform-tools\adb.exe"
+    # A Viewer signed with another key cannot be updated, only uninstalled,
+    # which deletes its saved session and kept earlier content; say so
+    # before trying instead of leaving that as the way out.
+    $installed = @(& $adb shell pm path sk.ketchup.viewer) | Where-Object { $_ -match '^package:(.+base\.apk)\s*$' } | ForEach-Object { $Matches[1] } | Select-Object -First 1
+    if ($installed) {
+        $pulled = Join-Path $targetDir "installed.apk"
+        & $adb pull $installed $pulled | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "adb pull of the installed Viewer failed" }
+        $installedDigest = Get-SignerDigest $pulled
+        Remove-Item $pulled
+        if ($installedDigest -ne $digest) {
+            throw "The installed Viewer is signed with certificate SHA-256 $installedDigest, this APK with $digest from $Keystore. Android will not update it. Build again with -Keystore set to the key the installed Viewer was signed with; uninstalling it instead deletes its saved session and the earlier content it kept."
+        }
+    }
     & $adb install -r $apk
     if ($LASTEXITCODE -ne 0) { throw "adb install failed" }
     $remote = "/sdcard/Android/data/sk.ketchup.viewer/files/model.ketchup-view"
