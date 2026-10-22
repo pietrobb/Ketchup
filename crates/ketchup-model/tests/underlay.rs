@@ -547,4 +547,21 @@ fn a_two_point_fit_places_the_underlay_on_the_model_in_one_undo_step() {
         plan_underlay_edit(&document.current(), id, shift).unwrap_err(),
         UnderlayFitError::OffPlane
     );
+
+    // Review 2026-10-21 P3: a fit or move that scales the underlay a billion times or
+    // places it 1e12 mm away, a unit mix-up, is refused with the bounds instead of saved.
+    let snapshot = document.current();
+    let far = [[1.0e12, 0.0], [1.0e12 + 1000.0, 0.0]];
+    let huge = [[0.0, 0.0], [1.0e12, 0.0]];
+    for (to, scaled) in [(far, false), (huge, true)] {
+        let refusal = plan_underlay_fit(&snapshot, id, ends, to, scaled)
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("1000000 mm"), "{refusal}");
+    }
+    let away = Transform::from_translation(1.0e12, 0.0, 0.0).unwrap();
+    let refusal = plan_underlay_edit(&snapshot, id, away)
+        .unwrap_err()
+        .to_string();
+    assert!(refusal.contains("1000000 mm"), "{refusal}");
 }

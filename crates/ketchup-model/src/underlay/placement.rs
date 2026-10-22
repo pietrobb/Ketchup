@@ -8,7 +8,7 @@ use ketchup_geometry::linalg::{cross2, dot2};
 
 use super::{Underlay, UnderlayId};
 use crate::document::{CanonicalCommand, CanonicalError, CommandBatch, Snapshot, Transform};
-use crate::tolerance::PICK_MATCH_MM;
+use crate::tolerance::{MAX_COORDINATE_MM, PICK_MATCH_MM, UNDERLAY_MAX_SCALE};
 
 pub(super) fn is_identity(placement: &Transform) -> bool {
     *placement == Transform::identity()
@@ -22,6 +22,23 @@ pub(crate) fn is_planar(placement: &Transform) -> bool {
         && [matrix[2], matrix[6], matrix[8], matrix[9], matrix[11]] == [0.0; 5]
         && matrix[10] == 1.0
         && placement.inverse().is_some()
+}
+
+/// `placement` when it scales by at most [`UNDERLAY_MAX_SCALE`] either way and keeps the
+/// origin of the lines within the model's ±[`MAX_COORDINATE_MM`].
+fn in_range(placement: Transform) -> Result<Transform, UnderlayFitError> {
+    let scale = placement.affine().determinant().abs().sqrt();
+    let matrix = placement.matrix();
+    let origin_mm = [matrix[3], matrix[7]];
+    if (1.0 / UNDERLAY_MAX_SCALE..=UNDERLAY_MAX_SCALE).contains(&scale)
+        && origin_mm
+            .iter()
+            .all(|value| value.abs() <= MAX_COORDINATE_MM)
+    {
+        Ok(placement)
+    } else {
+        Err(UnderlayFitError::OutOfRange { scale, origin_mm })
+    }
 }
 
 fn in_plane(transform: Transform, point_mm: [f64; 2]) -> [f64; 2] {
@@ -78,6 +95,12 @@ pub enum UnderlayFitError {
     Placement(CanonicalError),
     /// The edit would lift or tilt the underlay out of the ground plane.
     OffPlane,
+    /// The placement would scale the underlay more than [`UNDERLAY_MAX_SCALE`] either way
+    /// or put its origin outside the model's ±[`MAX_COORDINATE_MM`].
+    OutOfRange {
+        scale: f64,
+        origin_mm: [f64; 2],
+    },
 }
 
 impl fmt::Display for UnderlayFitError {
@@ -96,6 +119,14 @@ impl fmt::Display for UnderlayFitError {
             Self::Placement(error) => write!(formatter, "the fitted placement is invalid: {error}"),
             Self::OffPlane => formatter.write_str(
                 "an underlay stays in the ground plane: it moves along X and Y and turns about Z only",
+            ),
+            Self::OutOfRange { scale, origin_mm } => write!(
+                formatter,
+                "the placement would scale the underlay by {scale} and put its origin at \
+                 ({}, {}) mm; an underlay scales by at most {UNDERLAY_MAX_SCALE} either way \
+                 and its origin stays within ±{MAX_COORDINATE_MM} mm, so check the unit of \
+                 the points",
+                origin_mm[0], origin_mm[1]
             ),
         }
     }
@@ -151,7 +182,7 @@ pub fn fit_two_points(
     };
     let edit = turn_onto(from_mm[0], to_mm[0], cos, sin).map_err(UnderlayFitError::Placement)?;
     Ok(UnderlayFit {
-        placement: edit.compose(placement),
+        placement: in_range(edit.compose(placement))?,
         turn_deg: sin.atan2(cos).to_degrees(),
         scale,
         length_mismatch_mm: to_length - scale * from_length,
@@ -216,7 +247,7 @@ pub fn plan_underlay_edit(
     }
     Ok(CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
         Underlay {
-            placement,
+            placement: in_range(placement)?,
             ..underlay.clone()
         },
     )]))

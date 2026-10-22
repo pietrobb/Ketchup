@@ -77,6 +77,10 @@ pub const LOAD_AT_SUPPORT_MM: f64 = 0.5;
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
 /// The largest distance between an underlay's arc and the chords drawn for it, in mm.
 pub const UNDERLAY_ARC_CHORD_MM: f64 = 0.1;
+/// The most an underlay's placement scales it, up or down: room for a drawing read in the
+/// wrong unit (a foot or a metre taken for a millimetre), not for a unit mix-up of points
+/// picked a billion times apart.
+pub const UNDERLAY_MAX_SCALE: f64 = 10_000.0;
 /// The shortest drawing dimension, in mm: two points closer than this give it no direction.
 pub const MIN_DIMENSION_MM: f64 = 0.001;
 /// Smallest angular sampling step for a material boundary, in radians.
