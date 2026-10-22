@@ -282,6 +282,38 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
 }
 
 #[test]
+fn a_beam_notched_over_a_bearing_longer_than_400_mm_is_not_verified() {
+    // Review 2026-10-19 P3: the beam of `beam` 100 x 200 over two spans, its
+    // underside notched 40 mm deep over 1700..2300 mm, where a wall 500 mm
+    // long reaches up into the notch. A bearing that long supports the beam
+    // along it, and 6.5.2 was skipped without a word, so the beam passed with
+    // its notch unchecked. A permanent load alone holds the end posts down.
+    let report = report(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"finish\", kind = \"permanent\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+timber_design({\"C24\": \"C24\"})
+box(\"post a\", (100, 100, 2000), material = \"C24\", grounded = True)
+box(\"wall b\", (500, 100, 2040), at = (1750, 0, 0), material = \"C24\", grounded = True)
+box(\"post c\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+part = extrude(\"beam\", profile = [(0, 0), (1700, 0), (1700, 40), (2300, 40), (2300, 0), (4000, 0), (4000, 200), (0, 200)],
+               distance = 100, material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 100, 2000), z = (0, -1, 0), x = (1, 0, 0))
+box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+",
+        &[],
+    );
+    let beam = member(&report, "beam");
+    assert!(beam.checks.iter().all(|c| c.name != "shear_notch"));
+    assert_eq!(
+        beam.missing,
+        [
+            "it is notched over wall b, a bearing longer than 400 mm, where the line of its reaction is not known: the notch is not checked (EN 1995-1-1 6.5.2)"
+        ]
+    );
+    assert_eq!(beam.status, "not_verified", "{:?}", beam.checks);
+}
+
+#[test]
 fn a_beam_mirrored_into_its_shape_is_checked_as_the_same_beam_drawn() {
     // Review 2026-10-19 PG-13: the beam notched over post a, under a deck of
     // 8 kN/m² on its half next to post a, drawn with its notch at the other

@@ -1389,7 +1389,7 @@ fn beam_checks(
     design: &Design,
     uls: &[Combination],
     sls: &[(Combination, Loads)],
-) -> (Vec<Check>, bool, Option<String>) {
+) -> (Vec<Check>, bool, Vec<String>) {
     let class = design.class;
     let lever = horizontal(load.axis);
     let cos_t = horizontal(shape.grain);
@@ -1636,18 +1636,23 @@ fn beam_checks(
         .collect();
     let mut notch = Best(None);
     let mut bearing = Best(None);
+    let mut unchecked = Vec::new();
     for zone in &zones {
         let names = zone.names(load);
         let reaction = zone.total(load, false);
         // Notched bearings (6.5.2).
-        if let Some(depth_at) = &shape.depth_at
-            && (zone.hi - zone.lo) * shape.arc <= BED_MM
-        {
+        if let Some(depth_at) = &shape.depth_at {
             let h_ef = (0..=8)
                 .map(|k| depth_at(zone.lo + (zone.hi - zone.lo) * f64::from(k) / 8.0))
                 .filter(|depth| *depth > 1.0)
                 .fold(f64::MAX, f64::min);
-            if h_ef < 0.95 * h {
+            if h_ef < 0.95 * h && (zone.hi - zone.lo) * shape.arc > BED_MM {
+                // A long bearing supports the member along it: x of fig. 6.11
+                // has no reaction line to start from.
+                unchecked.push(format!(
+                    "it is notched over {names}, a bearing longer than {BED_MM} mm, where the line of its reaction is not known: the notch is not checked (EN 1995-1-1 6.5.2)"
+                ));
+            } else if h_ef < 0.95 * h {
                 let kn = if class.glulam { 6.5 } else { 5.0 };
                 let alpha = h_ef / h;
                 let x = notch_corner(depth_at, zone, load.length_mm, 0.95 * h, shape.arc);
@@ -1677,7 +1682,7 @@ fn beam_checks(
     }
     checks.extend(notch.0);
     checks.extend(bearing.0);
-    let unchecked = tension_notch(shape, &segments, &zones, uls, &kinds);
+    unchecked.extend(tension_notch(shape, &segments, &zones, uls, &kinds));
     (checks, spans_checked, unchecked)
 }
 
