@@ -1794,6 +1794,9 @@ def expect_inside(part, container, tolerance = 0.1, name = None):
 #   file action=export_drawings plan_only=true drawing_scale=N writes the plan
 #   alone with the annotations as a PDF sheet at 1:N; without plan_only the
 #   project sheet draws them in its plan.
+#   The window draws them where they are, their text one size on screen at every
+#   zoom; a click picks one, and inspect action=status names it as
+#   picked_annotation (name, kind, text, tags).
 # Example: a 35 x 35 m square with numbered anchor points along its south side
 #   side = 35000
 #   polyline("outline", [(0, 0), (side, 0), (side, side), (0, side)], closed = True, tags = "plan")

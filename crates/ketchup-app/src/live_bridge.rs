@@ -2737,6 +2737,7 @@ impl LiveBridge {
                 "busy":!self.busy_diagnostics(app, ui_busy).is_empty(),"busy_reasons":self.busy_diagnostics(app, ui_busy),"read_only":app.file.review_candidate.is_some(),
                 "selection":Self::viewed_selection(app).ok(),"selection_scope":"root_occurrences_only",
                 "selected_context":Self::selected_context(app),
+                "picked_annotation":app.picked_annotation_summary(),
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},

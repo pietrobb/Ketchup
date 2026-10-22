@@ -2,6 +2,10 @@
 //! `impl KetchupApp` block next to the free helpers it needs; the state stays
 //! in the crate root.
 
+pub(crate) mod annotations_view;
+#[cfg(test)]
+#[path = "app/annotations_view_tests.rs"]
+mod annotations_view_tests;
 mod cad_program;
 mod commands;
 mod connect_ai;

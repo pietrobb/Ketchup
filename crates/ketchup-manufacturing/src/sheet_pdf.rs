@@ -158,7 +158,8 @@ impl SheetFont {
     }
 
     /// The font size whose capitals are `height_mm` tall.
-    fn size_for(&self, height_mm: f64) -> f64 {
+    #[must_use]
+    pub fn size_for(&self, height_mm: f64) -> f64 {
         height_mm / self.cap_height()
     }
 

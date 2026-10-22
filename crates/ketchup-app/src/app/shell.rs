@@ -160,6 +160,7 @@ impl KetchupApp {
             dimension_fields: Default::default(),
             picked_joint: None,
             joint_fields: Default::default(),
+            picked_annotation: None,
             hover: app_state::HoverState {
                 target: None,
                 drawn_profile: None,
@@ -169,6 +170,7 @@ impl KetchupApp {
                 alt_choice: false,
                 pointer: None,
                 projection_cache: RefCell::new(None),
+                presses: [None, None],
             },
             active_tool: ActiveTool::Select,
             panels: app_state::Panels {

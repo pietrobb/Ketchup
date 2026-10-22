@@ -1846,7 +1846,18 @@ impl KetchupApp {
             {
                 self.add_revolve_axis_point(point);
             }
+        } else if self.active_tool == ActiveTool::Select
+            && self.pick_annotation_at(ui.ctx(), pointer, response.rect)
+        {
+            // An annotation drawn over the model is picked before what lies under it.
+            self.hover.presses = [self.hover.presses[1].take(), None];
         } else if self.active_tool == ActiveTool::Select {
+            let pressed = self
+                .hover
+                .target
+                .as_ref()
+                .map(|hit| hit.instance_path.clone());
+            self.hover.presses = [self.hover.presses[1].take(), pressed];
             let additive = ui.input(|input| input.modifiers.shift);
             let target = self
                 .hover
@@ -2087,6 +2098,12 @@ impl KetchupApp {
         if self.active_tool == ActiveTool::Select
             && response.double_clicked()
             && let Some(target) = self.hover.target.clone()
+            // Not a click on an annotation, then one on the part under it.
+            && self
+                .hover
+                .presses
+                .iter()
+                .all(|press| press.as_ref() == Some(&target.instance_path))
         {
             self.enter_occurrence_context(target.instance_path);
         }
@@ -3411,6 +3428,7 @@ impl KetchupApp {
             }
         }
 
+        self.paint_annotations(painter, response.rect);
         self.paint_face_feedback(painter, faces.iter().chain(&feedback_faces));
         self.paint_projected_selection(painter, &edges);
         self.paint_selected_topological_edges(painter, response.rect);

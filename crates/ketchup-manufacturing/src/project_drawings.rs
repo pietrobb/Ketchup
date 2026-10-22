@@ -23,8 +23,8 @@ use std::collections::BTreeMap;
 mod annotations;
 mod threads;
 
-pub use annotations::AnnotationCounts;
 use annotations::PlanAnnotations;
+pub use annotations::{AnnotationCounts, annotation_marks};
 use ketchup_model::annotation::Annotation;
 pub use threads::DrawingThread;
 use threads::ThreadMarks;

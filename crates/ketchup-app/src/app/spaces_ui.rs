@@ -331,6 +331,7 @@ impl KetchupApp {
         self.clear_selection();
         self.picked_dimension = None;
         self.picked_joint = None;
+        self.picked_annotation = None;
         self.picked_space = Some((row, BTreeSet::new()));
     }
 

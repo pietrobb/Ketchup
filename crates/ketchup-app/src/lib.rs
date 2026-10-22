@@ -2146,13 +2146,13 @@ pub struct KetchupApp {
     /// finding, with the part selection it was picked together with.
     picked_space: Option<(app::spaces_ui::SpaceRow, BTreeSet<InstancePath>)>,
     space_fields: app::spaces_ui::SpaceFields,
-    /// The dimension picked in the dock, with the part selection it was
-    /// picked together with.
+    /// The dimension picked in the dock, with the part selection it was picked with.
     picked_dimension: Option<(PersistentDimensionId, BTreeSet<InstancePath>)>,
     dimension_fields: app::dimensions_ui::DimensionFields,
-    /// The declared joint picked in the dock, with the part selection it was
-    /// picked together with.
+    /// The declared joint picked in the dock, with the part selection picked with it.
     picked_joint: Option<(ketchup_geometry::prismatic::JointId, BTreeSet<InstancePath>)>,
+    /// The annotation picked in the viewport by name, with the part selection then.
+    picked_annotation: Option<(String, BTreeSet<InstancePath>)>,
     joint_fields: app::joints_ui::JointFields,
     hover: app_state::HoverState,
     active_tool: ActiveTool,

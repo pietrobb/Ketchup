@@ -149,6 +149,10 @@ pub(crate) struct HoverState {
     pub(crate) alt_choice: bool,
     pub(crate) pointer: Option<Pos2>,
     pub(crate) projection_cache: RefCell<Option<InteractionProjectionCache>>,
+    /// The parts the last two Select presses hit, the latest last (none for a
+    /// press that picked an annotation): a double click opens a part only when
+    /// both of its presses hit it.
+    pub(crate) presses: [Option<InstancePath>; 2],
 }
 
 /// Which side panels and windows are open.

@@ -71,64 +71,18 @@ impl PlanAnnotations {
         let mut counts = AnnotationCounts::default();
         let mut marks = Vec::with_capacity(annotations.len());
         for annotation in annotations {
-            let mark = match &annotation.mark {
-                AnnotationMark::Text {
-                    at_mm,
-                    text,
-                    height_mm,
-                } => {
-                    counts.texts += 1;
-                    Projected::Text {
-                        at: frame.project(*at_mm),
-                        text: text.clone(),
-                        height_mm: *height_mm,
-                    }
-                }
-                AnnotationMark::Dimension {
-                    from_mm,
-                    to_mm,
-                    offset_mm,
-                    height_mm,
-                } => {
-                    let layout = DimensionLayout::new(*from_mm, *to_mm, *offset_mm);
-                    let line = layout.line.map(|point| frame.project(point));
-                    if distance(line[0], line[1]) < MIN_DIMENSION_MM {
-                        counts.outside_plan += 1;
-                        continue;
-                    }
-                    counts.dimensions += 1;
-                    Projected::Dimension {
-                        measured: [*from_mm, *to_mm].map(|point| frame.project(point)),
-                        line,
-                        value: dimension_text(layout.value_mm),
-                        height_mm: *height_mm,
-                    }
-                }
-                AnnotationMark::Leader {
-                    point_mm,
-                    at_mm,
-                    text,
-                    height_mm,
-                } => {
-                    counts.leaders += 1;
-                    Projected::Leader {
-                        point: frame.project(*point_mm),
-                        at: frame.project(*at_mm),
-                        text: text.clone(),
-                        height_mm: *height_mm,
-                    }
-                }
-                AnnotationMark::Line { points_mm, closed } => {
-                    counts.lines += 1;
-                    Projected::Line {
-                        points: points_mm
-                            .iter()
-                            .map(|point| frame.project(*point))
-                            .collect(),
-                        closed: *closed,
-                    }
-                }
+            // The view places every point, so only a dimension without length in plan
+            // is left out.
+            let Some(mark) = projected(annotation, |point| Some(frame.project(point))) else {
+                counts.outside_plan += 1;
+                continue;
             };
+            match mark {
+                Projected::Text { .. } => counts.texts += 1,
+                Projected::Dimension { .. } => counts.dimensions += 1,
+                Projected::Leader { .. } => counts.leaders += 1,
+                Projected::Line { .. } => counts.lines += 1,
+            }
             marks.push(mark);
         }
         Self { marks, counts }
@@ -149,34 +103,106 @@ impl PlanAnnotations {
     /// Draws them on `page`; `at` takes a view point to the page.
     pub(super) fn draw(&self, page: &mut Page, at: impl Fn([f64; 2]) -> [f64; 2]) {
         for mark in &self.marks {
-            match mark {
-                Projected::Text {
-                    at: point,
-                    text,
-                    height_mm,
-                } => lines_of_text(page, at(*point), text, *height_mm),
-                Projected::Dimension {
-                    measured,
-                    line,
-                    value,
-                    height_mm,
-                } => dimension(page, measured.map(&at), line.map(&at), value, *height_mm),
-                Projected::Leader {
-                    point,
-                    at: text_at,
-                    text,
-                    height_mm,
-                } => {
-                    let (point, text_at) = (at(*point), at(*text_at));
-                    leader(page, point, text_at);
-                    lines_of_text(page, text_at, text, *height_mm);
-                }
-                Projected::Line { points, closed } => page.marks.push(Mark::Line {
-                    points: points.iter().map(|point| at(*point)).collect(),
-                    closed: *closed,
-                    stroke: stroke(),
-                }),
+            mark.draw(page, &at);
+        }
+    }
+}
+
+/// The marks one annotation draws where `project` places its points in page
+/// millimetres (y down): the plan of a sheet, or a window's view of the model. Text
+/// heights and the marks of a dimension are millimetres of that page. `None` when
+/// `project` has no place for a point, or a dimension has no length there.
+pub fn annotation_marks(
+    annotation: &Annotation,
+    project: impl Fn([f64; 3]) -> Option<[f64; 2]>,
+) -> Option<Vec<Mark>> {
+    let mut page = Page::default();
+    projected(annotation, project)?.draw(&mut page, &|point| point);
+    Some(page.marks)
+}
+
+fn projected(
+    annotation: &Annotation,
+    project: impl Fn([f64; 3]) -> Option<[f64; 2]>,
+) -> Option<Projected> {
+    Some(match &annotation.mark {
+        AnnotationMark::Text {
+            at_mm,
+            text,
+            height_mm,
+        } => Projected::Text {
+            at: project(*at_mm)?,
+            text: text.clone(),
+            height_mm: *height_mm,
+        },
+        AnnotationMark::Dimension {
+            from_mm,
+            to_mm,
+            offset_mm,
+            height_mm,
+        } => {
+            let layout = DimensionLayout::new(*from_mm, *to_mm, *offset_mm);
+            let line = [project(layout.line[0])?, project(layout.line[1])?];
+            if distance(line[0], line[1]) < MIN_DIMENSION_MM {
+                return None;
             }
+            Projected::Dimension {
+                measured: [project(*from_mm)?, project(*to_mm)?],
+                line,
+                value: dimension_text(layout.value_mm),
+                height_mm: *height_mm,
+            }
+        }
+        AnnotationMark::Leader {
+            point_mm,
+            at_mm,
+            text,
+            height_mm,
+        } => Projected::Leader {
+            point: project(*point_mm)?,
+            at: project(*at_mm)?,
+            text: text.clone(),
+            height_mm: *height_mm,
+        },
+        AnnotationMark::Line { points_mm, closed } => Projected::Line {
+            points: points_mm
+                .iter()
+                .map(|point| project(*point))
+                .collect::<Option<_>>()?,
+            closed: *closed,
+        },
+    })
+}
+
+impl Projected {
+    fn draw(&self, page: &mut Page, at: &impl Fn([f64; 2]) -> [f64; 2]) {
+        match self {
+            Self::Text {
+                at: point,
+                text,
+                height_mm,
+            } => lines_of_text(page, at(*point), text, *height_mm),
+            Self::Dimension {
+                measured,
+                line,
+                value,
+                height_mm,
+            } => dimension(page, measured.map(at), line.map(at), value, *height_mm),
+            Self::Leader {
+                point,
+                at: text_at,
+                text,
+                height_mm,
+            } => {
+                let (point, text_at) = (at(*point), at(*text_at));
+                leader(page, point, text_at);
+                lines_of_text(page, text_at, text, *height_mm);
+            }
+            Self::Line { points, closed } => page.marks.push(Mark::Line {
+                points: points.iter().map(|point| at(*point)).collect(),
+                closed: *closed,
+                stroke: stroke(),
+            }),
         }
     }
 }
