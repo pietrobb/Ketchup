@@ -59,7 +59,7 @@ use ketchup_interaction::{
     },
 };
 use ketchup_manufacturing::blender_export::{ExactGlbExport, MeshGlbInstance, model_glb_export};
-use ketchup_manufacturing::dxf_export::{DxfProfileExport, export_visible_profiles_dxf};
+use ketchup_manufacturing::dxf_export::{DxfProfileExport, export_visible_plan_dxf};
 use ketchup_manufacturing::fabrication::{
     BtlxExportOptions, BtlxProfileProcessingRequest, GeneralFabricationProjection,
     project_general_fabrication,

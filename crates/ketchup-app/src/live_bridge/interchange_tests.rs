@@ -35,6 +35,7 @@ fn export(path: &Path, export_format: &str) -> Request {
         expected: None,
         path: path.display().to_string(),
         export_format: export_format.to_owned(),
+        drawing_scale: None,
     }
 }
 
@@ -210,4 +211,68 @@ fn unknown_formats_and_mismatched_extensions_write_and_change_nothing() {
     );
     assert!(!wrong.exists());
     assert_eq!(app.canonical_digest(), before);
+}
+
+/// A client exports the plan a program drew at the scale it names: the label is
+/// 3.5 mm tall on paper, so 70 mm in the file at 1:20, and 350 mm at the default 1:100.
+#[test]
+fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "text('S-01', 'S-01', at=(1000, 2000), height_mm=3.5, tags='plan')\n\
+                 dim('d', (0, 0), (1000, 0), offset_mm=-500, tags='plan')\n"
+            .into(),
+        overrides: None,
+        file_name: Some("plan.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let height = |path: &Path| {
+        let written = std::fs::read_to_string(path).unwrap();
+        let lines = written.lines().collect::<Vec<_>>();
+        // The label, after the dimension's own text in BLOCKS.
+        let entities = lines.iter().position(|line| *line == "ENTITIES").unwrap();
+        let text = entities
+            + lines[entities..]
+                .iter()
+                .position(|line| *line == "TEXT")
+                .unwrap();
+        let at = lines[text..].iter().position(|line| *line == "40").unwrap();
+        lines[text + at + 1].parse::<f64>().unwrap()
+    };
+
+    let scaled = directory.path().join("plan-20.dxf");
+    let mut request = export(&scaled, "dxf");
+    if let Request::Export { drawing_scale, .. } = &mut request {
+        *drawing_scale = Some(20.0);
+    }
+    bridge
+        .execute(&mut app, request, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(height(&scaled), 70.0);
+    let report = std::fs::read_to_string(scaled.with_extension("dxf.loss.txt")).unwrap();
+    assert!(report.contains("annotation_dimension_count=1"), "{report}");
+
+    let default = directory.path().join("plan.dxf");
+    bridge
+        .execute(&mut app, export(&default, "dxf"), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(height(&default), 350.0);
+
+    // A scale only a plan has, and only from 1:1.
+    for (format, path, scale) in [("stl", "plan.stl", 20.0), ("dxf", "tiny.dxf", 0.5)] {
+        let target = directory.path().join(path);
+        let mut request = export(&target, format);
+        if let Request::Export { drawing_scale, .. } = &mut request {
+            *drawing_scale = Some(scale);
+        }
+        assert_eq!(
+            bridge.execute(&mut app, request, false),
+            Err("invalid_params")
+        );
+        assert!(!target.exists());
+    }
 }

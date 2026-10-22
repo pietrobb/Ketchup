@@ -10,6 +10,7 @@ use crate::app::import_file::{import_format, parse_unit};
 use crate::export_bundle::{ExportError, Written};
 use crate::{ImportError, ImportFormat, ImportLengthUnit, KetchupApp};
 use ketchup_application::rejections::rejected;
+use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -172,10 +173,17 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Value, &'static str> {
+        let drawing_scale = match &request {
+            Request::Export { drawing_scale, .. } => *drawing_scale,
+            _ => None,
+        };
         let (path, export_format, exporter) = Self::export_target(app, request, ui_busy)?;
         Self::require_request_authority(cancelled)?;
         app.live.client_export = Some(Arc::clone(cancelled));
-        let exported = exporter(app, Path::new(&path));
+        let exported = match drawing_scale {
+            Some(scale) => app.export_current_plan_dxf_to(Path::new(&path), scale),
+            None => exporter(app, Path::new(&path)),
+        };
         app.live.client_export = None;
         Self::exported(&path, &export_format, exported)
     }
@@ -190,10 +198,22 @@ impl LiveBridge {
             expected,
             path,
             export_format,
+            drawing_scale,
         } = request
         else {
             return Err("invalid_request");
         };
+        if let Some(scale) = drawing_scale
+            && (export_format != "dxf" || !(1.0..=MAX_PLAN_SCALE).contains(&scale))
+        {
+            return Err(failure(
+                "invalid_params",
+                format!(
+                    "drawing_scale is N of the scale 1:N of a dxf export, from 1 to {MAX_PLAN_SCALE}."
+                ),
+                json!({"drawing_scale": scale, "export_format": export_format}),
+            ));
+        }
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
         let Some((_, extensions, exporter)) = EXPORT_FORMATS

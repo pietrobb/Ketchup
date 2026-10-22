@@ -420,6 +420,7 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
             expected: None,
             path: path.to_string_lossy().into_owned(),
             export_format: "btlx".to_owned(),
+            drawing_scale: None,
         },
     })
     .unwrap();

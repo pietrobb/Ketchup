@@ -1788,6 +1788,9 @@ def expect_inside(part, container, tolerance = 0.1, name = None):
 #     line to `value` written at `at`.
 #   polyline(name, points, closed=False, tags=)  straight drawn lines through the
 #     points, e.g. an outline or a grid line that is not a part.
+#   file action=export export_format=dxf drawing_scale=N writes the plan with the
+#   visible annotations at 1:N (default 100): texts as TEXT, dimensions as DIMENSION
+#   with the value Kečup measured, lines as POLYLINE, each on the layer of its tag.
 # Example: a 35 x 35 m square with numbered anchor points along its south side
 #   side = 35000
 #   polyline("outline", [(0, 0), (side, 0), (side, side), (0, side)], closed = True, tags = "plan")

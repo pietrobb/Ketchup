@@ -442,6 +442,9 @@ pub enum Request {
         expected: Option<Stamp>,
         path: String,
         export_format: String,
+        /// For dxf: N of the scale 1:N the annotations are drawn at.
+        #[serde(default)]
+        drawing_scale: Option<f64>,
     },
     Selection {
         #[serde(default)]

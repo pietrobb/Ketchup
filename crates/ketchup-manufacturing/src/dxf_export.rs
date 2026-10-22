@@ -9,7 +9,11 @@ use ketchup_geometry::sketch::{
     SketchError, SketchSpec, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
 };
 use ketchup_model::document::{CanonicalError, FeatureKind, ProfileSegment, Snapshot, Transform};
-use ketchup_model::import::{DxfImportError, DxfImportOptions, inspect_dxf};
+use ketchup_model::import::{DxfImportError, DxfImportOptions, inspect_dxf, read_dxf_underlay};
+
+use crate::dxf_annotations::{
+    DEFAULT_PLAN_SCALE, MAX_PLAN_SCALE, PlanAnnotations, plan_annotations,
+};
 
 pub const DXF_PROFILE_EXPORT_SCHEMA_V1: &str = "ketchup.dxf-profile-export.v1";
 const MAX_EXPORT_PROFILES: usize = 170;
@@ -37,6 +41,8 @@ pub enum DxfProfileExportError {
         part: String,
     },
     Transform(CanonicalError),
+    /// The scale is not 1:N with N from 1 to [`MAX_PLAN_SCALE`].
+    InvalidScale,
     VerificationFailed,
     Reimport(DxfImportError),
 }
@@ -60,7 +66,15 @@ impl fmt::Display for DxfProfileExportError {
                      uniform scale; hide that part or turn it flat before exporting the plan"
                 );
             }
-            Self::Empty => "the visible model contains no exportable planar profiles",
+            Self::InvalidScale => {
+                return write!(
+                    formatter,
+                    "the plan scale is 1:N with N from 1 to {MAX_PLAN_SCALE}"
+                );
+            }
+            Self::Empty => {
+                "the visible model contains no exportable planar profiles or annotations"
+            }
             Self::TooManyProfiles => "DXF export exceeds the bounded 170 profile limit",
             Self::TooManySegments => "DXF export exceeds the bounded 10,000 segment limit",
             Self::InvalidGeometry => "DXF profile contains invalid or out-of-envelope geometry",
@@ -97,10 +111,23 @@ struct ExportProfile {
 /// and is read by AutoCAD and CAM software alike. Each profile is one POLYLINE,
 /// so two profiles on the same layer cannot be joined by a receiving importer.
 /// Profiles are not written as DWG, which the report calls out; a drawing
-/// sheet of the document is (`ketchup-dwg`).
+/// sheet of the document is (`ketchup-dwg`). The visible annotations are drawn
+/// at 1:100, see [`export_visible_plan_dxf`].
 pub fn export_visible_profiles_dxf(
     snapshot: &Snapshot,
 ) -> Result<DxfProfileExport, DxfProfileExportError> {
+    export_visible_plan_dxf(snapshot, DEFAULT_PLAN_SCALE)
+}
+
+/// [`export_visible_profiles_dxf`] with the visible annotations drawn at `1:scale`:
+/// their texts as TEXT, their dimensions as DIMENSION, each on the layer of its tag.
+pub fn export_visible_plan_dxf(
+    snapshot: &Snapshot,
+    scale: f64,
+) -> Result<DxfProfileExport, DxfProfileExportError> {
+    if !(1.0..=MAX_PLAN_SCALE).contains(&scale) {
+        return Err(DxfProfileExportError::InvalidScale);
+    }
     let mut profiles = Vec::new();
     let mut segment_count = 0_usize;
     let mut elevated_profile_count = 0_usize;
@@ -178,7 +205,8 @@ pub fn export_visible_profiles_dxf(
             }
         }
     }
-    if profiles.is_empty() {
+    let annotations = plan_annotations(snapshot, scale, &mut r12_layers);
+    if profiles.is_empty() && annotations.is_empty() {
         return Err(DxfProfileExportError::Empty);
     }
 
@@ -186,14 +214,32 @@ pub fn export_visible_profiles_dxf(
         .iter()
         .map(|profile| profile.layer.clone())
         .collect::<BTreeSet<_>>();
-    let dxf = encode_dxf(&profiles);
-    let inspected =
-        inspect_dxf(&dxf, DxfImportOptions::new(None)).map_err(DxfProfileExportError::Reimport)?;
-    if inspected.profiles().len() != profiles.len()
-        || inspected.layers().iter().cloned().collect::<BTreeSet<_>>() != layers
-    {
-        return Err(DxfProfileExportError::VerificationFailed);
+    let profiles_only = encode_dxf(&profiles, &PlanAnnotations::default());
+    if !profiles.is_empty() {
+        let inspected = inspect_dxf(&profiles_only, DxfImportOptions::new(None))
+            .map_err(DxfProfileExportError::Reimport)?;
+        if inspected.profiles().len() != profiles.len()
+            || inspected.layers().iter().cloned().collect::<BTreeSet<_>>() != layers
+        {
+            return Err(DxfProfileExportError::VerificationFailed);
+        }
     }
+    let dxf = if annotations.is_empty() {
+        profiles_only
+    } else {
+        let dxf = encode_dxf(&profiles, &annotations);
+        let drawn = read_dxf_underlay(&dxf, DxfImportOptions::new(None))
+            .map_err(DxfProfileExportError::Reimport)?;
+        if drawn.lines.text_count() != annotations.drawn_texts
+            || !annotations
+                .layers
+                .iter()
+                .all(|layer| drawn.layers.contains(layer))
+        {
+            return Err(DxfProfileExportError::VerificationFailed);
+        }
+        dxf
+    };
 
     let omitted_feature_count = snapshot
         .features()
@@ -205,13 +251,35 @@ pub fn export_visible_profiles_dxf(
         })
         .count();
     let loss_report = format!(
-        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nelevated_profile_count={elevated_profile_count}\nelevation=a profile in a plane parallel to XY above or below z = 0 is drawn where it lies in plan; its height is not written\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=unsupported for profiles; a drawing sheet exports as DWG and a DWG drawing imports through its DXF conversion\nomitted_non_profile_feature_count={omitted_feature_count}\n",
+        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nelevated_profile_count={elevated_profile_count}\nelevation=a profile in a plane parallel to XY above or below z = 0 is drawn where it lies in plan; its height is not written\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=unsupported for profiles; a drawing sheet exports as DWG and a DWG drawing imports through its DXF conversion\nomitted_non_profile_feature_count={omitted_feature_count}\n{}",
         renamed_layers.len(),
         profiles.len(),
         layers.len(),
         snapshot.canonical_digest(),
+        annotation_report(&annotations, scale),
     );
     Ok(DxfProfileExport { dxf, loss_report })
+}
+
+/// The lines of the loss report about the annotations.
+fn annotation_report(annotations: &PlanAnnotations, scale: f64) -> String {
+    format!(
+        "scale=1:{scale}\ntext_height=height on paper times the scale, in model millimetres\n\
+         annotation_text_count={}\nannotation_dimension_count={}\nannotation_leader_count={}\n\
+         annotation_line_count={}\nhidden_annotation_count={}\n\
+         dimensions=aligned DIMENSION drawn by its anonymous block *Dn (line, oblique ticks, \
+         extension lines and the value Ketchup measured); a reader that redraws it measures in plan\n\
+         dimension_value_override_count={}\ndimension_outside_plan_count={}\n\
+         leaders=a LINE and a SOLID arrowhead, then the TEXT\n\
+         annotation_layers=the name of the annotation's tag, or Annotations without one\n",
+        annotations.texts,
+        annotations.dimensions,
+        annotations.leaders,
+        annotations.lines,
+        annotations.hidden,
+        annotations.value_overrides,
+        annotations.outside_plan,
+    )
 }
 
 fn polygon_segments(points: &[[f64; 2]]) -> Result<Vec<ProfileSegment>, DxfProfileExportError> {
@@ -488,13 +556,13 @@ const R12_LAYER_NAME_MAX: usize = 31;
 /// case, so a name that folds onto a layer another source already took gets
 /// a `_2`, `_3`, … suffix rather than sharing it.
 #[derive(Default)]
-struct R12Layers {
+pub(crate) struct R12Layers {
     by_source: BTreeMap<String, String>,
     taken: BTreeSet<String>,
 }
 
 impl R12Layers {
-    fn layer(&mut self, source: &str) -> String {
+    pub(crate) fn layer(&mut self, source: &str) -> String {
         if let Some(layer) = self.by_source.get(source) {
             return layer.clone();
         }
@@ -554,11 +622,17 @@ fn layer_name(source: &str) -> String {
     }
 }
 
-fn encode_dxf(profiles: &[ExportProfile]) -> Vec<u8> {
-    let layers = profiles
+fn encode_dxf(profiles: &[ExportProfile], annotations: &PlanAnnotations) -> Vec<u8> {
+    let mut layers = profiles
         .iter()
         .map(|profile| profile.layer.as_str())
+        .chain(annotations.layers.iter().map(String::as_str))
         .collect::<BTreeSet<_>>();
+    let annotated = !annotations.is_empty();
+    if annotated {
+        // Dimension blocks draw on layer 0, so that they take their dimension's layer.
+        layers.insert("0");
+    }
     let mut output = format!(
         "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
          0\nSECTION\n2\nTABLES\n\
@@ -573,7 +647,20 @@ fn encode_dxf(profiles: &[ExportProfile]) -> Vec<u8> {
         )
         .expect("writing to a String cannot fail");
     }
-    output.push_str("0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n");
+    output.push_str("0\nENDTAB\n");
+    if annotated {
+        output.push_str(
+            "0\nTABLE\n2\nSTYLE\n70\n1\n0\nSTYLE\n2\nSTANDARD\n70\n0\n40\n0\n41\n1\n50\n0\n71\n0\n42\n2.5\n3\ntxt\n4\n\n0\nENDTAB\n\
+             0\nTABLE\n2\nDIMSTYLE\n70\n1\n0\nDIMSTYLE\n2\nSTANDARD\n70\n0\n0\nENDTAB\n",
+        );
+    }
+    output.push_str("0\nENDSEC\n");
+    if annotated {
+        output.push_str("0\nSECTION\n2\nBLOCKS\n");
+        output.push_str(&annotations.blocks);
+        output.push_str("0\nENDSEC\n");
+    }
+    output.push_str("0\nSECTION\n2\nENTITIES\n");
     for profile in profiles {
         let layer = &profile.layer;
         write!(
@@ -597,11 +684,12 @@ fn encode_dxf(profiles: &[ExportProfile]) -> Vec<u8> {
         }
         write!(output, "0\nSEQEND\n8\n{layer}\n").expect("writing to a String cannot fail");
     }
+    output.push_str(&annotations.entities);
     output.push_str("0\nENDSEC\n0\nEOF\n");
     output.into_bytes()
 }
 
-fn number(value: f64) -> String {
+pub(crate) fn number(value: f64) -> String {
     let canonical = if value.abs() <= f64::EPSILON {
         0.0
     } else {

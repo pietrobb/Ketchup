@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod blender_export;
+pub mod dxf_annotations;
 pub mod dxf_export;
 pub mod fabrication;
 pub mod project_drawings;

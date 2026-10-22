@@ -2,6 +2,7 @@
 
 use crate::*;
 use ketchup_manufacturing::blender_export::{DaeExport, model_dae_export};
+use ketchup_manufacturing::dxf_annotations::DEFAULT_PLAN_SCALE;
 
 impl KetchupApp {
     pub(crate) fn homag_mpr_program_name(stem: &str) -> String {
@@ -91,6 +92,15 @@ impl KetchupApp {
         &mut self,
         path: &Path,
     ) -> Result<Written, ExportError> {
+        self.export_current_plan_dxf_to(path, DEFAULT_PLAN_SCALE)
+    }
+
+    /// The visible profiles and annotations as a DXF plan, its texts sized for `1:scale`.
+    pub(crate) fn export_current_plan_dxf_to(
+        &mut self,
+        path: &Path,
+        scale: f64,
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = if path
@@ -98,7 +108,7 @@ impl KetchupApp {
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("dxf"))
         {
-            export_visible_profiles_dxf(&snapshot).map_err(ExportError::failed)
+            export_visible_plan_dxf(&snapshot, scale).map_err(ExportError::failed)
         } else {
             Err(ExportError::Destination {
                 requirement: "an explicit .dxf destination; profiles are not written as DWG (a drawing sheet is, from File > Drawings)",
