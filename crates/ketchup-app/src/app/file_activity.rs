@@ -84,7 +84,6 @@ struct Pending {
     path: Option<PathBuf>,
     frame: u64,
     document: DocumentId,
-    revision: u64,
 }
 
 impl FileActivity {
@@ -109,7 +108,6 @@ impl KetchupApp {
                 .as_ref()
                 .map_or(0, egui::Context::cumulative_frame_nr),
             document: snapshot.document_id(),
-            revision: snapshot.revision_id(),
         });
     }
 
@@ -225,7 +223,6 @@ impl KetchupApp {
             path: None,
             frame: context.cumulative_frame_nr(),
             document: snapshot.document_id(),
-            revision: snapshot.revision_id(),
         });
         context.request_repaint();
         true
@@ -389,8 +386,9 @@ impl KetchupApp {
         }
         let pending = self.file.activity.pending.take().expect("visible activity");
         let snapshot = self.document.current();
-        if pending.document == snapshot.document_id() && pending.revision == snapshot.revision_id()
-        {
+        // An edit since the command was given, such as a client's, does not cancel it: Save
+        // and the exports take the model as it is now.
+        if pending.document == snapshot.document_id() {
             if pending.command == AppCommand::Open {
                 if self.confirm_discard_if_dirty()
                     && let Some(path) = pending.path.or_else(|| self.choose_open_path())
@@ -668,6 +666,24 @@ mod tests {
         let mut reopened = KetchupApp::new();
         assert!(reopened.open_document_path(&path));
         assert_eq!(reopened.document.current().canonical_digest(), before);
+    }
+
+    /// Review 2026-10-21 P3 (GUI): an edit that lands between the Save and the frame that
+    /// starts it, as a client's MCP edit does, dropped the Save without a word. The Save
+    /// writes the model as it is when it starts, the edit included.
+    #[test]
+    fn a_save_queued_before_an_edit_saves_the_edited_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("edited.ketchup");
+        let mut harness = shell(ScriptedFileDialogs::new().queue_save(&path));
+        start_save(&mut harness);
+        assert!(harness.state_mut().create_box());
+        let edited = harness.state().document.current().canonical_digest();
+        wait_for_open(&mut harness);
+        assert!(path.exists(), "the queued save was dropped");
+        let mut reopened = KetchupApp::new();
+        assert!(reopened.open_document_path(&path));
+        assert_eq!(reopened.document.current().canonical_digest(), edited);
     }
 
     #[test]
