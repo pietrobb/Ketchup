@@ -11,6 +11,7 @@ mod text;
 
 use super::{linear_rgba, single_precision};
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
+use ketchup_model::document::Transform;
 use ketchup_model::underlay::UnderlayLines;
 use ketchup_model::underlay::style::LineStyle;
 use letters::{CellView, INSTANCE_STRIDE, LetterInstance, Letters};
@@ -23,7 +24,7 @@ use wgpu::util::DeviceExt as _;
 const PX_PER_WEIGHT_MM: f32 = 96.0 / 25.4;
 
 /// Bytes of one [`Segment`] on the GPU.
-const SEGMENT_STRIDE: u64 = 24;
+const SEGMENT_STRIDE: u64 = 40;
 /// Bytes of one [`GpuStyle`] on the GPU.
 const STYLE_STRIDE: usize = 32;
 
@@ -31,18 +32,43 @@ const STYLE_STRIDE: usize = 32;
 /// millimetres, where its dash pattern starts, and the index of its style.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Segment {
-    start: [f32; 2],
-    end: [f32; 2],
+    start: SplitPoint,
+    end: SplitPoint,
     from_mm: f32,
     style: u32,
 }
 
 impl Segment {
     fn write(&self, bytes: &mut Vec<u8>) {
-        for value in self.start.iter().chain(&self.end).chain([&self.from_mm]) {
+        let [start, end] = [self.start, self.end].map(|point| [point.high, point.low]);
+        for value in start.iter().chain(&end).flatten().chain([&self.from_mm]) {
             bytes.extend(value.to_ne_bytes());
         }
         bytes.extend(self.style.to_ne_bytes());
+    }
+}
+
+/// A point in millimetres as two single-precision parts whose sum is it to about a
+/// nanometre: the GPU subtracts the point the camera looks at part by part, so a point
+/// near it keeps its precision however far both lie from the origin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SplitPoint {
+    pub high: [f32; 2],
+    pub low: [f32; 2],
+}
+
+impl SplitPoint {
+    pub(crate) fn new(point_mm: [f64; 2]) -> Self {
+        let high = point_mm.map(|value| single_precision([value, 0.0, 0.0])[0]);
+        let low = [0, 1]
+            .map(|axis| single_precision([point_mm[axis] - f64::from(high[axis]), 0.0, 0.0])[0]);
+        Self { high, low }
+    }
+
+    /// Where the shader puts it relative to `eye`, both split, in single precision.
+    #[cfg(test)]
+    fn relative_to(self, eye: Self) -> [f32; 2] {
+        [0, 1].map(|axis| (self.high[axis] - eye.high[axis]) + (self.low[axis] - eye.low[axis]))
     }
 }
 
@@ -95,7 +121,7 @@ impl UnderlayGeometry {
             for (style, polyline) in layer.styled_polylines() {
                 let mut from_mm = 0.0;
                 for pair in polyline.windows(2) {
-                    let [start, end] = [pair[0], pair[1]].map(|point| point.map(gpu));
+                    let [start, end] = [pair[0], pair[1]].map(SplitPoint::new);
                     segments.push(Segment {
                         start,
                         end,
@@ -180,23 +206,76 @@ fn vertex_index(count: usize) -> u32 {
 }
 
 /// One underlay of the frame, the indices of its visible layers (none while it or all its
-/// layers are hidden: its upload is kept for when it is shown again) and its placement,
-/// column-major, from its lines to the world.
+/// layers are hidden: its upload is kept for when it is shown again) and its placement
+/// from its lines to the world.
 #[derive(Clone, Debug)]
 pub struct UnderlayDraw {
     pub geometry: Arc<UnderlayGeometry>,
     pub visible: Vec<usize>,
-    pub placement: [f32; 16],
+    pub placement: Transform,
 }
 
-/// A row-major placement column-major in single precision, as the GPU reads it.
-#[must_use]
-pub fn gpu_placement(row_major: &[f64; 16]) -> [f32; 16] {
-    std::array::from_fn(|at| single_precision([row_major[(at % 4) * 4 + at / 4], 0.0, 0.0])[0])
+/// How a frame draws an underlay's lines: from its lines to clip space, column-major, in
+/// double precision; the point of its lines the camera looks at; and from there to clip
+/// space in the GPU's single precision. Composed in double precision, the large
+/// translations of a drawing far from the origin and of a camera looking at it cancel
+/// before anything is single precision.
+pub(crate) struct LinesView {
+    pub to_clip: [f64; 16],
+    pub eye: SplitPoint,
+    pub eye_to_clip: [f32; 16],
+}
+
+impl LinesView {
+    /// Through `world_to_clip` (column-major) of lines placed by `placement`, the camera's
+    /// line of sight `[point, direction]` in the world. The eye is where it meets the lines'
+    /// plane, or where its point lies over that plane while it runs along it.
+    pub(crate) fn new(
+        world_to_clip: &[f64; 16],
+        placement: Transform,
+        [sight_point, sight_direction]: [[f64; 3]; 2],
+    ) -> Self {
+        let row_major = placement.matrix();
+        let placement_columns = std::array::from_fn(|at| row_major[(at % 4) * 4 + at / 4]);
+        let to_clip = column_major_product(world_to_clip, &placement_columns);
+        let eye_mm = placement.inverse().map_or([0.0; 2], |inverse| {
+            let point = inverse.transform_point(sight_point);
+            let ahead = inverse.transform_point(std::array::from_fn(|axis| {
+                sight_point[axis] + sight_direction[axis]
+            }));
+            let direction: [f64; 3] = std::array::from_fn(|axis| ahead[axis] - point[axis]);
+            // A sight along the plane never meets it.
+            let along = Some(-point[2] / direction[2]).filter(|along| along.is_finite());
+            let along = along.unwrap_or(0.0);
+            [0, 1].map(|axis| point[axis] + direction[axis] * along)
+        });
+        let eye = SplitPoint::new(eye_mm);
+        let eye_at = [0, 1].map(|axis| f64::from(eye.high[axis]) + f64::from(eye.low[axis]));
+        let mut from_eye: [f64; 16] = std::array::from_fn(|at| f64::from(u8::from(at % 5 == 0)));
+        from_eye[12] = eye_at[0];
+        from_eye[13] = eye_at[1];
+        let eye_to_clip = column_major_product(&to_clip, &from_eye)
+            .map(|value| single_precision([value, 0.0, 0.0])[0]);
+        Self {
+            to_clip,
+            eye,
+            eye_to_clip,
+        }
+    }
+
+    /// The uniform of a draw: the matrix, then the eye's high and low parts.
+    fn bytes(&self) -> Vec<u8> {
+        self.eye_to_clip
+            .iter()
+            .chain(&self.eye.high)
+            .chain(&self.eye.low)
+            .flat_map(|value| value.to_ne_bytes())
+            .collect()
+    }
 }
 
 /// The column-major product `outer · inner`: `inner` applied first.
-fn column_major_product(outer: &[f32; 16], inner: &[f32; 16]) -> [f32; 16] {
+fn column_major_product(outer: &[f64; 16], inner: &[f64; 16]) -> [f64; 16] {
     std::array::from_fn(|at| {
         let (column, row) = (at / 4, at % 4);
         (0..4)
@@ -309,8 +388,8 @@ impl GpuUnderlayRenderer {
             source: wgpu::ShaderSource::Wgsl(UNDERLAY_SHADER.into()),
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Ketchup underlay camera, color and viewport"),
-            size: 96,
+            label: Some("Ketchup underlay color and viewport"),
+            size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -384,11 +463,13 @@ impl GpuUnderlayRenderer {
             })
         };
         let segment = wgpu::vertex_attr_array![
-            0 => Float32x2, 1 => Float32x2, 2 => Float32, 3 => Uint32
+            0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Float32,
+            5 => Uint32
         ];
         let point = wgpu::vertex_attr_array![0 => Float32x2];
         let instance = wgpu::vertex_attr_array![
-            1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Uint32, 5 => Float32, 6 => Uint32
+            1 => Float32x2, 7 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Uint32,
+            5 => Float32, 6 => Uint32
         ];
         let point_buffer = wgpu::VertexBufferLayout {
             array_stride: 8,
@@ -445,13 +526,12 @@ impl GpuUnderlayRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         draws: &[UnderlayDraw],
-        world_to_clip: [f32; 16],
+        (world_to_clip, sight): ([f64; 16], [[f64; 3]; 2]),
         viewport_px: [f32; 2],
         color: [f32; 4],
     ) {
-        let uniform = world_to_clip
+        let uniform = color
             .into_iter()
-            .chain(color)
             .chain(viewport_px)
             .chain([0.0; 2])
             .flat_map(f32::to_ne_bytes)
@@ -459,8 +539,8 @@ impl GpuUnderlayRenderer {
         queue.write_buffer(&self.uniform, 0, &uniform);
         while self.placements.len() < draws.len() {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Ketchup underlay placement"),
-                size: 64,
+                label: Some("Ketchup underlay lines to clip"),
+                size: 80,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -474,16 +554,19 @@ impl GpuUnderlayRenderer {
             });
             self.placements.push((buffer, group));
         }
-        for (draw, (buffer, _)) in draws.iter().zip(&self.placements) {
-            let bytes = draw.placement.map(f32::to_ne_bytes).concat();
-            queue.write_buffer(buffer, 0, &bytes);
+        let views = draws
+            .iter()
+            .map(|draw| LinesView::new(&world_to_clip, draw.placement, sight))
+            .collect::<Vec<_>>();
+        for (view, (buffer, _)) in views.iter().zip(&self.placements) {
+            queue.write_buffer(buffer, 0, &view.bytes());
         }
         self.uploaded.retain(|key, _| {
             draws
                 .iter()
                 .any(|draw| draw.geometry.key == *key && !draw.geometry.is_empty())
         });
-        for draw in draws {
+        for (draw, view) in draws.iter().zip(&views) {
             let geometry = &draw.geometry;
             if geometry.is_empty() {
                 continue;
@@ -510,14 +593,13 @@ impl GpuUnderlayRenderer {
                 queue.write_buffer(&uploaded.shown, 0, &bytes);
                 uploaded.shown_layers = shown;
             }
-            let lines_to_clip = column_major_product(&world_to_clip, &draw.placement);
             uploaded.cell_views.clear();
             uploaded.cell_views.extend(
                 geometry
                     .letters
                     .cells
                     .iter()
-                    .map(|cell| cell.view(&lines_to_clip, viewport_px)),
+                    .map(|cell| cell.view(&view.to_clip, viewport_px)),
             );
         }
         self.draws = draws.to_vec();
@@ -662,25 +744,27 @@ impl GpuUnderlayRenderer {
 #[derive(Clone)]
 pub struct UnderlayPaintCallback {
     draws: Vec<UnderlayDraw>,
-    world_to_clip: [f32; 16],
+    world_to_clip: [f64; 16],
+    sight: [[f64; 3]; 2],
     viewport_px: [f32; 2],
     color: [f32; 4],
 }
 
 impl UnderlayPaintCallback {
-    /// `world_to_clip` column-major, as the scene's, onto a viewport `viewport_px` pixels
-    /// wide and high; `color` opaque sRGB, of what the drawing draws in its foreground
-    /// color.
+    /// `world_to_clip` column-major, as the scene's in double precision, the camera's line
+    /// of sight `[point, direction]` in the world, onto a viewport `viewport_px` pixels wide
+    /// and high; `color` opaque sRGB, of what the drawing draws in its foreground color.
     #[must_use]
     pub fn new(
         draws: Vec<UnderlayDraw>,
-        world_to_clip: [f32; 16],
+        (world_to_clip, sight): ([f64; 16], [[f64; 3]; 2]),
         viewport_px: [f32; 2],
         color: [u8; 3],
     ) -> Self {
         Self {
             draws,
             world_to_clip,
+            sight,
             viewport_px,
             color: linear_rgba(color),
         }
@@ -701,7 +785,7 @@ impl CallbackTrait for UnderlayPaintCallback {
                 device,
                 queue,
                 &self.draws,
-                self.world_to_clip,
+                (self.world_to_clip, self.sight),
                 self.viewport_px,
                 self.color,
             );
@@ -723,7 +807,6 @@ impl CallbackTrait for UnderlayPaintCallback {
 
 const UNDERLAY_SHADER: &str = r"
 struct Underlay {
-    world_to_clip: mat4x4<f32>,
     color: vec4<f32>,
     viewport_px: vec2<f32>,
 };
@@ -750,9 +833,26 @@ var<storage, read> styles: array<Style>;
 @group(1) @binding(2)
 var<storage, read> pattern_mm: array<f32>;
 
-// From the underlay's lines to the world.
+// From the point of the underlay's lines the camera looks at to clip space, and that
+// point split in a high and a low part.
+struct Lines {
+    eye_to_clip: mat4x4<f32>,
+    eye_high: vec2<f32>,
+    eye_low: vec2<f32>,
+};
+
 @group(2) @binding(0)
-var<uniform> placement: mat4x4<f32>;
+var<uniform> lines: Lines;
+
+// A point of the lines, split, relative to the eye: the parts subtracted first keep its
+// precision near the eye however far it lies from the origin.
+fn from_eye(high: vec2<f32>, low: vec2<f32>) -> vec2<f32> {
+    return (high - lines.eye_high) + (low - lines.eye_low);
+}
+
+fn to_clip(point: vec2<f32>) -> vec4<f32> {
+    return lines.eye_to_clip * vec4<f32>(point, 0.0, 1.0);
+}
 
 struct Drawn {
     @builtin(position) position: vec4<f32>,
@@ -769,16 +869,20 @@ const NOWHERE = vec4<f32>(2.0, 2.0, 2.0, 1.0);
 @vertex
 fn vs_line(
     @builtin(vertex_index) corner: u32,
-    @location(0) start: vec2<f32>,
-    @location(1) end: vec2<f32>,
-    @location(2) from_mm: f32,
-    @location(3) style: u32,
+    @location(0) start_high: vec2<f32>,
+    @location(1) start_low: vec2<f32>,
+    @location(2) end_high: vec2<f32>,
+    @location(3) end_low: vec2<f32>,
+    @location(4) from_mm: f32,
+    @location(5) style: u32,
 ) -> Drawn {
     var drawn: Drawn;
     drawn.style = style;
     drawn.along_mm = 0.0;
-    let a = underlay.world_to_clip * placement * vec4<f32>(start, 0.0, 1.0);
-    let b = underlay.world_to_clip * placement * vec4<f32>(end, 0.0, 1.0);
+    let start = from_eye(start_high, start_low);
+    let end = from_eye(end_high, end_low);
+    let a = to_clip(start);
+    let b = to_clip(end);
     // What lies behind the camera is cut off before the segment is widened on screen.
     // not a tolerance: the clip-space w where a segment is cut, kept off 0 to divide by.
     let near = 1e-5;
@@ -842,7 +946,7 @@ fn letter_point(position: vec2<f32>, layer: u32, style: u32) -> Drawn {
     drawn.style = style;
     drawn.along_mm = 0.0;
     drawn.position = select(
-        underlay.world_to_clip * placement * vec4<f32>(position, 0.0, 1.0),
+        to_clip(position),
         NOWHERE,
         layer_shown[layer] == 0u,
     );
@@ -852,12 +956,14 @@ fn letter_point(position: vec2<f32>, layer: u32, style: u32) -> Drawn {
 @vertex
 fn vs_letter(
     @location(0) outline: vec2<f32>,
-    @location(1) origin: vec2<f32>,
+    @location(1) origin_high: vec2<f32>,
+    @location(7) origin_low: vec2<f32>,
     @location(2) x_axis: vec2<f32>,
     @location(3) y_axis: vec2<f32>,
     @location(4) layer: u32,
     @location(6) style: u32,
 ) -> Drawn {
+    let origin = from_eye(origin_high, origin_low);
     return letter_point(origin + x_axis * outline.x + y_axis * outline.y, layer, style);
 }
 
@@ -865,12 +971,14 @@ fn vs_letter(
 @vertex
 fn vs_stroke(
     @builtin(vertex_index) end: u32,
-    @location(1) origin: vec2<f32>,
+    @location(1) origin_high: vec2<f32>,
+    @location(7) origin_low: vec2<f32>,
     @location(2) x_axis: vec2<f32>,
     @location(4) layer: u32,
     @location(5) advance: f32,
     @location(6) style: u32,
 ) -> Drawn {
+    let origin = from_eye(origin_high, origin_low);
     return letter_point(origin + x_axis * advance * f32(end), layer, style);
 }
 
@@ -958,6 +1066,64 @@ mod tests {
         assert_eq!(geometry.patterns, [20.0, -10.0, 0.0, -10.0]);
     }
 
+    /// A road 900 m from the origin seen at 100 pixels per millimetre, in a drawing whose
+    /// lines reach a kilometre the other way and a view panned about 90 million pixels
+    /// (review 2026-10-21 UL-6): the GPU draws its ends where the CPU draws their snap
+    /// markers, to a twentieth of a pixel. Single precision alone puts them over a pixel
+    /// off.
+    #[test]
+    fn lines_far_from_the_origin_land_where_their_snap_markers_are_when_zoomed_in() {
+        use crate::{KetchupApp, ProjectionMode, Vec3};
+        use eframe::egui::{Pos2, Rect, Vec2};
+        let line = |from: [f64; 2], to: [f64; 2]| ProfileSegment::Line {
+            start_mm: from,
+            end_mm: to,
+        };
+        let ends = [[900_000.3, 400_000.7], [900_001.7, 400_002.1]];
+        let mut builder = UnderlayLinesBuilder::default();
+        builder.add_loose(
+            "edge",
+            &line([-1_000_000.0, -1_000_000.0], [-999_000.0, -1_000_000.0]),
+        );
+        builder.add_loose("road", &line(ends[0], ends[1]));
+        let (_, lines) = builder.finish();
+        let geometry = UnderlayGeometry::new([5; 32], &lines);
+        let road = geometry
+            .segments
+            .iter()
+            .find(|segment| segment.start.high[0] > 0.0)
+            .expect("the road");
+        let placement = Transform::from_translation(-250.0, 120.0, 0.0).expect("a translation");
+        let world = |[x, y]: [f64; 2]| {
+            let [x, y, z] = placement.transform_point([x, y, 0.0]);
+            Vec3::new(x, y, z)
+        };
+        let mut app = KetchupApp::new();
+        let rect = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(1000.0, 800.0));
+        app.camera.projection_mode = ProjectionMode::Parallel;
+        app.camera.zoom = 100.0 * 420.0 / 800.0;
+        app.camera.pan = Vec2::ZERO;
+        app.camera.pan = rect.center() - app.project(world(ends[0]), rect);
+        assert!(app.camera.pan.length() > 5e7, "{:?}", app.camera.pan);
+        let view = LinesView::new(
+            &app.world_to_clip_f64(rect),
+            placement,
+            app.view_ray_mm(rect),
+        );
+        for (point, end) in [road.start, road.end].into_iter().zip(ends) {
+            let [x, y] = point.relative_to(view.eye);
+            let m = view.eye_to_clip;
+            let [clip_x, clip_y, clip_w] =
+                [0, 1, 3].map(|row| m[row] * x + m[4 + row] * y + m[12 + row]);
+            let gpu = Pos2::new(
+                rect.center().x + clip_x / clip_w * rect.width() * 0.5,
+                rect.center().y - clip_y / clip_w * rect.height() * 0.5,
+            );
+            let cpu = app.project(world(end), rect);
+            assert!((gpu - cpu).length() < 0.05, "{gpu:?} {cpu:?}");
+        }
+    }
+
     #[test]
     fn a_range_split_over_chunks_draws_each_part_from_its_chunks_start() {
         assert_eq!(local_range(&(4..10), 0, 6), Some(4..6));
@@ -1015,7 +1181,7 @@ mod tests {
             {
                 for [x, y] in outline {
                     let point = [0, 1].map(|axis| {
-                        letter.origin[axis] + letter.x_axis[axis] * x + letter.y_axis[axis] * y
+                        letter.origin.high[axis] + letter.x_axis[axis] * x + letter.y_axis[axis] * y
                     });
                     assert!(
                         (0.0..1000.0).contains(&point[0]) && (490.0..640.0).contains(&point[1]),

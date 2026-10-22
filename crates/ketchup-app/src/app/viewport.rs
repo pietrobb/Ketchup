@@ -4330,37 +4330,45 @@ impl KetchupApp {
     }
 
     pub(crate) fn world_to_clip(&self, rect: Rect) -> [f32; 16] {
+        self.world_to_clip_f64(rect).map(|value| value as f32)
+    }
+
+    /// The line of sight through the middle of the view: its point in the plane through the
+    /// orbit target facing the camera, where both projections agree, and the view direction.
+    pub(crate) fn view_ray_mm(&self, rect: Rect) -> [[f64; 3]; 2] {
+        let (right, up, forward) = self.camera_basis();
+        let scale = self.view_scale(rect);
+        let eye = self.camera_target() - right * (f64::from(self.camera.pan.x) / scale)
+            + up * (f64::from(self.camera.pan.y) / scale);
+        [[eye.x, eye.y, eye.z], [forward.x, forward.y, forward.z]]
+    }
+
+    /// [`Self::world_to_clip`] in double precision, for what is composed with it before it
+    /// goes to the GPU: far from the origin, the camera's and a drawing's translations
+    /// cancel only in double precision.
+    pub(crate) fn world_to_clip_f64(&self, rect: Rect) -> [f64; 16] {
         if self.camera.projection_mode == ProjectionMode::Perspective {
             return self.perspective_world_to_clip(rect);
         }
-        let yaw_sin = self.camera.yaw.sin();
-        let yaw_cos = self.camera.yaw.cos();
-        let pitch_sin = self.camera.pitch.sin();
-        let pitch_cos = self.camera.pitch.cos();
-        let scale = self.camera.zoom * rect.width().min(rect.height()) / 420.0;
-        let centre_x = BOX_WIDTH_MM as f32 * 0.5;
-        let centre_y = BOX_DEPTH_MM as f32 * 0.5;
-        let centre_z = self.camera.target_z as f32;
-        let sx = 2.0 / rect.width();
-        let sy = 2.0 / rect.height();
-        let x_constant = rect.width() * 0.5 + self.camera.pan.x
-            - scale * (yaw_cos * centre_x - yaw_sin * centre_y);
-        let y_constant = rect.height() * 0.5
-            + self.camera.pan.y
-            + scale
-                * (yaw_sin * pitch_cos * centre_x + yaw_cos * pitch_cos * centre_y
-                    - pitch_sin * centre_z);
+        let (right, up, _) = self.camera_basis();
+        let scale = self.view_scale(rect);
+        let target = self.camera_target();
+        let [width, height] = [rect.width(), rect.height()].map(f64::from);
+        let sx = 2.0 / width;
+        let sy = 2.0 / height;
+        let x_constant = width * 0.5 + f64::from(self.camera.pan.x) - scale * dot(target, right);
+        let y_constant = height * 0.5 + f64::from(self.camera.pan.y) + scale * dot(target, up);
         [
-            sx * scale * yaw_cos,
-            sy * scale * yaw_sin * pitch_cos,
+            sx * scale * right.x,
+            sy * scale * up.x,
             0.0,
             0.0,
-            -sx * scale * yaw_sin,
-            sy * scale * yaw_cos * pitch_cos,
+            sx * scale * right.y,
+            sy * scale * up.y,
             0.0,
             0.0,
-            0.0,
-            -sy * scale * pitch_sin,
+            sx * scale * right.z,
+            sy * scale * up.z,
             0.0,
             0.0,
             sx * x_constant - 1.0,
@@ -4375,35 +4383,35 @@ impl KetchupApp {
     /// The clip `w` carries the eye-space depth, so the fixed-function divide
     /// gives exactly the same picture the CPU painter draws in
     /// [`Self::project`]. There is no depth buffer, so clip `z` stays zero.
-    pub(crate) fn perspective_world_to_clip(&self, rect: Rect) -> [f32; 16] {
+    pub(crate) fn perspective_world_to_clip(&self, rect: Rect) -> [f64; 16] {
         let (right, up, forward) = self.camera_basis();
         let eye = self.camera_target() - forward * self.camera_distance();
         let focal = self.camera_focal(rect);
         let sx = f64::from(2.0 / rect.width());
         let sy = f64::from(2.0 / rect.height());
-        let a = sx * f64::from(rect.width() * 0.5 + self.camera.pan.x) - 1.0;
-        let b = 1.0 - sy * f64::from(rect.height() * 0.5 + self.camera.pan.y);
+        let a = sx * (f64::from(rect.width()) * 0.5 + f64::from(self.camera.pan.x)) - 1.0;
+        let b = 1.0 - sy * (f64::from(rect.height()) * 0.5 + f64::from(self.camera.pan.y));
 
         let clip_x = forward * a + right * (sx * focal);
         let clip_y = forward * b + up * (sy * focal);
         let clip_w = forward;
         [
-            clip_x.x as f32,
-            clip_y.x as f32,
+            clip_x.x,
+            clip_y.x,
             0.0,
-            clip_w.x as f32,
-            clip_x.y as f32,
-            clip_y.y as f32,
+            clip_w.x,
+            clip_x.y,
+            clip_y.y,
             0.0,
-            clip_w.y as f32,
-            clip_x.z as f32,
-            clip_y.z as f32,
+            clip_w.y,
+            clip_x.z,
+            clip_y.z,
             0.0,
-            clip_w.z as f32,
-            -dot(clip_x, eye) as f32,
-            -dot(clip_y, eye) as f32,
+            clip_w.z,
+            -dot(clip_x, eye),
+            -dot(clip_y, eye),
             0.0,
-            -dot(clip_w, eye) as f32,
+            -dot(clip_w, eye),
         ]
     }
 
@@ -4423,9 +4431,11 @@ impl KetchupApp {
                 self.camera_focal(rect) / depth
             }
         };
+        // Summed in double precision: far from the origin the pan and the projected point
+        // are both large and cancel.
         Pos2::new(
-            rect.center().x + self.camera.pan.x + (view_x * scale) as f32,
-            rect.center().y + self.camera.pan.y - (view_y * scale) as f32,
+            (f64::from(rect.center().x) + f64::from(self.camera.pan.x) + view_x * scale) as f32,
+            (f64::from(rect.center().y) + f64::from(self.camera.pan.y) - view_y * scale) as f32,
         )
     }
 

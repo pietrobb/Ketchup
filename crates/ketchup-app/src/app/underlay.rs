@@ -5,9 +5,7 @@
 
 use super::underlay_snapping::UnderlaySnapSlot;
 use crate::import_source::BoxedCause;
-use crate::renderer::underlay::{
-    UnderlayDraw, UnderlayGeometry, UnderlayPaintCallback, gpu_placement,
-};
+use crate::renderer::underlay::{UnderlayDraw, UnderlayGeometry, UnderlayPaintCallback};
 use crate::*;
 use ketchup_application::program_isolation::{
     UnderlayInput, UnderlayRead, UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
@@ -354,7 +352,7 @@ impl KetchupApp {
             rect,
             UnderlayPaintCallback::new(
                 self.render.underlay_frame.clone(),
-                self.world_to_clip(rect),
+                (self.world_to_clip_f64(rect), self.view_ray_mm(rect)),
                 [pixels.x, pixels.y],
                 [dim.r(), dim.g(), dim.b()],
             ),
@@ -417,7 +415,7 @@ impl KetchupApp {
             draws.push(UnderlayDraw {
                 geometry,
                 visible,
-                placement: gpu_placement(placement.matrix()),
+                placement,
             });
         }
         let named = |key: &[u8; 32]| {

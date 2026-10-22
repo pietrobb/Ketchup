@@ -4,7 +4,7 @@
 //! screen to read, or not at all while it is out of view: a drawing full of texts costs a
 //! frame about what the letters it shows readably cost.
 
-use super::{single_precision, text, vertex_index};
+use super::{SplitPoint, single_precision, text, vertex_index};
 use ketchup_model::underlay::UnderlayLines;
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -13,10 +13,10 @@ use std::ops::Range;
 /// enough that a whole drawing is few draws.
 const LETTERS_PER_CELL: usize = 4096;
 /// A letter whose capitals are lower than this on screen, in pixels, is drawn as a stroke.
-const READABLE_PX: f32 = 3.0;
+const READABLE_PX: f64 = 3.0;
 
 /// Bytes of one [`LetterInstance`] on the GPU.
-pub(super) const INSTANCE_STRIDE: u64 = 36;
+pub(super) const INSTANCE_STRIDE: u64 = 44;
 
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Letters {
@@ -41,7 +41,7 @@ pub(super) struct LetterRun {
 /// long as a stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct LetterInstance {
-    pub origin: [f32; 2],
+    pub origin: SplitPoint,
     pub x_axis: [f32; 2],
     pub y_axis: [f32; 2],
     pub layer: u32,
@@ -51,7 +51,8 @@ pub(super) struct LetterInstance {
 
 impl LetterInstance {
     pub(super) fn write(&self, bytes: &mut Vec<u8>) {
-        for value in [self.origin, self.x_axis, self.y_axis].iter().flatten() {
+        let [high, low] = [self.origin.high, self.origin.low];
+        for value in [high, low, self.x_axis, self.y_axis].iter().flatten() {
             bytes.extend(value.to_ne_bytes());
         }
         bytes.extend(self.layer.to_ne_bytes());
@@ -64,9 +65,9 @@ impl LetterInstance {
 /// millimetres, and their instances and runs.
 #[derive(Debug, PartialEq)]
 pub(super) struct LetterCell {
-    low: [f32; 2],
-    high: [f32; 2],
-    letter_mm: f32,
+    low: [f64; 2],
+    high: [f64; 2],
+    letter_mm: f64,
     pub instances: Range<u32>,
     pub runs: Range<usize>,
 }
@@ -120,7 +121,7 @@ impl Letters {
                         cell: 0,
                         glyph: letter.glyph,
                         instance: LetterInstance {
-                            origin: letter.origin_mm.map(gpu_float),
+                            origin: SplitPoint::new(letter.origin_mm),
                             x_axis: letter.x_axis.map(gpu_float),
                             y_axis: letter.y_axis.map(gpu_float),
                             layer: vertex_index(index),
@@ -139,7 +140,7 @@ impl Letters {
         // A square grid over where the letters stand, about LETTERS_PER_CELL to a cell.
         let cells = placed.len().div_ceil(LETTERS_PER_CELL);
         let side = cells.isqrt() + usize::from(cells.isqrt().pow(2) < cells);
-        let origin = |letter: &Placed| letter.instance.origin.map(f64::from);
+        let origin = |letter: &Placed| letter.instance.origin.high.map(f64::from);
         let [low, high] = bounds_of(placed.iter().map(origin));
         // The inner edges between the columns and between the rows.
         let edges = [0, 1].map(|axis| {
@@ -181,13 +182,12 @@ impl Letters {
             }
             let [low, high] = bounds_of(cell.iter().flat_map(|letter| letter.bounds));
             letters.cells.push(LetterCell {
-                low: low.map(gpu_float),
-                high: high.map(gpu_float),
-                letter_mm: gpu_float(
-                    cell.iter()
-                        .map(|letter| letter.letter_mm)
-                        .fold(0.0, f64::max),
-                ),
+                low,
+                high,
+                letter_mm: cell
+                    .iter()
+                    .map(|letter| letter.letter_mm)
+                    .fold(0.0, f64::max),
                 instances: first_instance..vertex_index(letters.instances.len()),
                 runs: first_run..letters.runs.len(),
             });
@@ -200,8 +200,8 @@ impl LetterCell {
     /// How a frame through `world_to_clip` (column-major) onto a viewport this many pixels
     /// wide and high draws the cell. Seen from behind the camera's plane, a cell is drawn
     /// whole: no size on screen is known for it.
-    pub(super) fn view(&self, world_to_clip: &[f32; 16], viewport_px: [f32; 2]) -> CellView {
-        let clip = |[x, y]: [f32; 2]| {
+    pub(super) fn view(&self, world_to_clip: &[f64; 16], viewport_px: [f32; 2]) -> CellView {
+        let clip = |[x, y]: [f64; 2]| {
             [0, 1, 2, 3].map(|row| {
                 world_to_clip[row] * x + world_to_clip[4 + row] * y + world_to_clip[12 + row]
             })
@@ -213,17 +213,21 @@ impl LetterCell {
             [self.low[0], self.high[1]],
         ];
         let projected = corners.map(clip);
-        if projected.iter().any(|point| point[3] <= f32::EPSILON) {
+        if projected
+            .iter()
+            .any(|point| point[3] <= f64::from(f32::EPSILON))
+        {
             return CellView::Whole;
         }
         let beyond =
-            |axis: usize, side: f32| projected.iter().all(|point| side * point[axis] > point[3]);
+            |axis: usize, side: f64| projected.iter().all(|point| side * point[axis] > point[3]);
         if beyond(0, 1.0) || beyond(0, -1.0) || beyond(1, 1.0) || beyond(1, -1.0) {
             return CellView::Hidden;
         }
-        let pixels = |from: [f32; 4], to: [f32; 4]| {
-            let [dx, dy] = [0, 1]
-                .map(|axis| (to[axis] / to[3] - from[axis] / from[3]) * viewport_px[axis] / 2.0);
+        let pixels = |from: [f64; 4], to: [f64; 4]| {
+            let [dx, dy] = [0, 1].map(|axis| {
+                (to[axis] / to[3] - from[axis] / from[3]) * f64::from(viewport_px[axis]) / 2.0
+            });
             dx.hypot(dy)
         };
         let tallest = corners
@@ -233,7 +237,7 @@ impl LetterCell {
                 [[self.letter_mm, 0.0], [0.0, self.letter_mm]]
                     .map(|[dx, dy]| pixels(at, clip([corner[0] + dx, corner[1] + dy])))
             })
-            .fold(0.0, f32::max);
+            .fold(0.0, f64::max);
         if tallest < READABLE_PX {
             CellView::Strokes
         } else {
@@ -271,7 +275,7 @@ mod tests {
     use ketchup_model::underlay::text::UnderlayText;
 
     /// A top view of the square `centre ± half` millimetres on a 1000 x 1000 pixel viewport.
-    fn top_view(centre: [f32; 2], half: f32) -> [f32; 16] {
+    fn top_view(centre: [f64; 2], half: f64) -> [f64; 16] {
         let scale = 1.0 / half;
         [
             scale,
