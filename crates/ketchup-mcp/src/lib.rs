@@ -29,6 +29,22 @@ pub use server::serve_stdio;
 pub const PROGRAM_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 /// Opening asks the user in the window first, then loads a possibly large document.
 pub const OPEN_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+/// An import is given [`OPEN_RESPONSE_WAIT`] plus this per started MiB of its file,
+/// as reading it (a DWG converted or read as an underlay, a STEP) grows with its bytes.
+const IMPORT_WAIT_PER_MIB: std::time::Duration = std::time::Duration::from_secs(4);
+/// No import is given longer.
+const IMPORT_WAIT_MOST: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// How long the window waits for importing the file at `path`; a file it cannot
+/// read is refused at once and adds nothing.
+#[must_use]
+pub fn import_response_wait(path: &std::path::Path) -> std::time::Duration {
+    let bytes = std::fs::metadata(path).map_or(0, |metadata| metadata.len());
+    let mib = u32::try_from(bytes.div_ceil(1 << 20)).unwrap_or(u32::MAX);
+    OPEN_RESPONSE_WAIT
+        .saturating_add(IMPORT_WAIT_PER_MIB.saturating_mul(mib))
+        .min(IMPORT_WAIT_MOST)
+}
 /// Every request the window answers within this, whatever the request.
 pub const DEFAULT_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The window's last frame on a connection it ends because another client

@@ -199,9 +199,8 @@ fn response_wait(request: &Request) -> Duration {
         | Request::Mass { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
         // The user confirms the open in the window, then a large document loads;
         // imports and exports run the exact worker and may ask the user too.
-        Request::Open { .. } | Request::Import { .. } | Request::Export { .. } => {
-            ketchup_mcp::OPEN_RESPONSE_WAIT
-        }
+        Request::Import { path, .. } => ketchup_mcp::import_response_wait(Path::new(path)),
+        Request::Open { .. } | Request::Export { .. } => ketchup_mcp::OPEN_RESPONSE_WAIT,
         _ => DEFAULT_RESPONSE_WAIT,
     }
 }
@@ -948,6 +947,32 @@ mod tests {
             serde_json::from_value(json!({"method": "open", "path": "C:\\house.ketchup"})).unwrap();
         assert_eq!(response_wait(&open), ketchup_mcp::OPEN_RESPONSE_WAIT);
         assert!(response_wait(&open) > DEFAULT_RESPONSE_WAIT);
+    }
+
+    /// Review 2026-10-21: an import was given 120 s whatever its file, then
+    /// cancelled, so a DWG the worker needs longer for never imported. levoca.dwg
+    /// (37 MiB) reads as an underlay in 7.1 s; a 1 GiB drawing at that rate
+    /// takes over three minutes.
+    #[test]
+    fn an_import_is_given_time_for_its_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("site.dwg");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(1 << 30)
+            .unwrap();
+        let import: Request =
+            serde_json::from_value(json!({"method": "import", "path": path, "as_underlay": true}))
+                .unwrap();
+        let measured = Duration::from_secs_f64(7.1 / 37.0 * 1024.0);
+        assert!(
+            response_wait(&import) > measured,
+            "{:?}",
+            response_wait(&import)
+        );
+        let small: Request =
+            serde_json::from_value(json!({"method": "import", "path": "C:\\missing.dwg"})).unwrap();
+        assert_eq!(response_wait(&small), ketchup_mcp::OPEN_RESPONSE_WAIT);
     }
 
     #[test]

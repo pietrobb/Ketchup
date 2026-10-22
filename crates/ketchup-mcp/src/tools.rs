@@ -29,6 +29,11 @@ const DEFAULT_PLUGIN_MS: u64 = 30_000;
 fn apply_and_verify_wait(timeout_ms: u64) -> Duration {
     crate::apply_and_verify_response_wait(timeout_ms) + DELIVERY_MARGIN
 }
+/// How long the client waits for importing the file `args` names.
+fn import_wait(args: &Map<String, Value>) -> Duration {
+    let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
+    crate::import_response_wait(std::path::Path::new(path)) + DELIVERY_MARGIN
+}
 const IMAGE_PROTOCOL_VERSION: u32 = 4;
 const WINDOW_START_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -228,7 +233,9 @@ impl Tools {
                         "export_drawings",
                     ],
                 )?;
-                let wait = if matches!(action.as_str(), "open" | "import" | "export") {
+                let wait = if action == "import" {
+                    import_wait(&args)
+                } else if matches!(action.as_str(), "open" | "export") {
                     OPEN_WAIT
                 } else {
                     DEFAULT_WAIT
@@ -951,6 +958,12 @@ mod wait_tests {
         assert!(DEFAULT_WAIT > crate::DEFAULT_RESPONSE_WAIT);
         assert!(APPLY_PROGRAM_WAIT > crate::PROGRAM_RESPONSE_WAIT);
         assert!(OPEN_WAIT > crate::OPEN_RESPONSE_WAIT);
+        let drawing = tempfile::NamedTempFile::new().unwrap();
+        drawing.as_file().set_len(1 << 30).unwrap();
+        let path = drawing.path().to_str().unwrap();
+        let args = json!({"path": path}).as_object().unwrap().clone();
+        assert!(import_wait(&args) > crate::import_response_wait(drawing.path()));
+        assert!(import_wait(&args) > OPEN_WAIT);
     }
 
     /// A window started with a document loads it before it reports ready.
