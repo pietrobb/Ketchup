@@ -802,8 +802,12 @@ fn spawn_window(executable: &Path, document: Option<&str>) -> std::io::Result<st
             .spawn()
             .or_else(|_: std::io::Error| command().creation_flags(flags).spawn())
     }
-    #[cfg(not(windows))]
-    command().spawn()
+    // Its own process group, so Ctrl+C in the client's terminal does not reach it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command().process_group(0).spawn()
+    }
 }
 
 pub(crate) fn read_program_source(path: &Path) -> Result<String, ToolError> {
@@ -971,5 +975,36 @@ mod wait_tests {
     fn a_window_started_with_a_document_gets_as_long_as_opening_it() {
         assert!(window_start_wait(Some("C:/house.ketchup")) >= OPEN_WAIT);
         assert!(window_start_wait(None) >= WINDOW_START_TIMEOUT);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod detach_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn process_group(pid: u32) -> String {
+        let output = Command::new("ps")
+            .args(["-o", "pgid=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    /// Ctrl+C in the AI client's terminal goes to the client's process group;
+    /// the window it started must not be in it.
+    #[test]
+    fn a_started_window_leads_its_own_process_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("window");
+        std::fs::write(&executable, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = spawn_window(&executable, None).unwrap();
+        let group = process_group(child.id());
+        let own_group = process_group(std::process::id());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(group, child.id().to_string());
+        assert_ne!(group, own_group);
     }
 }
