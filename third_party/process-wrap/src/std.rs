@@ -18,7 +18,7 @@ pub use creation_flags::CreationFlags;
 pub use job_object::{JobObject, JobObjectChild};
 #[cfg(any(all(windows, feature = "job-object"), unix))]
 #[doc(inline)]
-pub use job_memory_limit::JobMemoryLimit;
+pub use job_memory_limit::{JobMemoryLimit, physical_memory_bytes};
 #[cfg(feature = "kill-on-drop")]
 #[doc(inline)]
 pub use kill_on_drop::KillOnDrop;

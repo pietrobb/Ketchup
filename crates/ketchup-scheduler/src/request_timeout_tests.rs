@@ -39,6 +39,8 @@ fn controlled_worker() -> (
             terminated: false,
             write_sender,
             response_receiver,
+            memory_limit: 0,
+            stderr_tail: None,
             _temp_directory: tempfile::tempdir().unwrap(),
         },
         write_receiver,
@@ -69,6 +71,8 @@ fn request_timeout_terminates_exact_worker_descendants() {
         terminated: false,
         write_sender,
         response_receiver,
+        memory_limit: 0,
+        stderr_tail: None,
         _temp_directory: tempfile::tempdir().unwrap(),
     };
     let responder = std::thread::spawn(move || {
@@ -111,6 +115,8 @@ fn dropping_exact_worker_terminates_descendants() {
         terminated: false,
         write_sender,
         response_receiver,
+        memory_limit: 0,
+        stderr_tail: None,
         _temp_directory: tempfile::tempdir().unwrap(),
     };
     std::thread::sleep(Duration::from_millis(300));

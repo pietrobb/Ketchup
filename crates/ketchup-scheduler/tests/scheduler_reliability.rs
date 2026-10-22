@@ -2,8 +2,8 @@ use ketchup_exact::GeometryErrorCode;
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId, ProposalCommitError,
 };
-use ketchup_scheduler::ExactWorkerClient;
 use ketchup_scheduler::protocol::{MAX_REQUEST_FRAME_BYTES, WorkerRequest, encode_frame};
+use ketchup_scheduler::{ExactWorkerClient, WorkerError};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
@@ -56,6 +56,24 @@ fn simulated_worker_crash_ends_without_os_crash_reporting() {
     let frame = encode_frame(&WorkerRequest::Crash, MAX_REQUEST_FRAME_BYTES).unwrap();
     worker.stdin.take().unwrap().write_all(&frame).unwrap();
     assert_eq!(worker.wait().unwrap().code(), Some(1));
+}
+
+/// The exact worker reads STEP and IGES files of any size: past half of this
+/// computer's memory it is stopped with a named error, not left to exhaust the
+/// system and the window with it (review 2026-10-21 LIM-3).
+#[test]
+fn the_exact_worker_is_stopped_past_its_memory_limit() {
+    let _turn = crate::integration_support::file_turn();
+    let limit = ketchup_scheduler::exact_worker_memory_bytes();
+    let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
+    worker.allocate_probe(64 << 20).unwrap();
+    let past_limit = u64::try_from(limit).unwrap() + (256 << 20);
+    assert_eq!(
+        worker.allocate_probe(past_limit),
+        Err(WorkerError::MemoryLimit { bytes: limit })
+    );
+    let mut next = ExactWorkerClient::spawn(worker_path()).unwrap();
+    next.ping().unwrap();
 }
 
 fn exercise_proposal_race() -> usize {

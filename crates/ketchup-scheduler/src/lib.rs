@@ -414,6 +414,10 @@ pub enum WorkerError {
     /// The named worker output is not a regular file.
     NotRegularFile(String),
     OutOfMemory(OutOfMemory),
+    /// The worker needed more than the `bytes` its job may commit and was stopped.
+    MemoryLimit {
+        bytes: usize,
+    },
 }
 
 impl fmt::Display for WorkerError {
@@ -450,6 +454,11 @@ impl fmt::Display for WorkerError {
             }
             Self::NotRegularFile(label) => write!(formatter, "{label} is not a regular file"),
             Self::OutOfMemory(error) => error.fmt(formatter),
+            Self::MemoryLimit { bytes } => write!(
+                formatter,
+                "the worker needed more than {:.1} GiB of memory and was stopped",
+                f64::from(u32::try_from(bytes >> 20).unwrap_or(u32::MAX)) / 1024.0
+            ),
         }
     }
 }
@@ -815,6 +824,19 @@ fn verify_exact_worker_identity(
     Ok(guarded)
 }
 
+/// Memory the exact worker may commit: half of this computer's, so a hostile or huge
+/// STEP or IGES file stops the worker instead of exhausting the system and the window
+/// with it. 4 GiB when the system does not say how much it has. On macOS, which accepts
+/// `RLIMIT_AS` without enforcing it, this is no limit yet.
+pub fn exact_worker_memory_bytes() -> usize {
+    static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BYTES.get_or_init(|| {
+        process_wrap::std::physical_memory_bytes()
+            .and_then(|bytes| usize::try_from(bytes / 2).ok())
+            .unwrap_or(4 << 30)
+    })
+}
+
 /// `memory_limit`: bytes each process of the worker's job may commit.
 fn spawn_limited_worker_command(
     command: Command,
@@ -855,6 +877,10 @@ pub struct ExactWorkerClient {
     terminated: bool,
     write_sender: Sender<WorkerWriteRequest>,
     response_receiver: Receiver<WorkerResponse>,
+    /// The job's memory limit and the last bytes of standard error, which arrive when
+    /// the worker exits: a failed allocation names itself there before it aborts.
+    memory_limit: usize,
+    stderr_tail: Option<Receiver<Vec<u8>>>,
     _temp_directory: tempfile::TempDir,
 }
 
@@ -901,9 +927,7 @@ impl ExactWorkerSupervisor {
     /// The executable was hashed when the worker started, so this only
     /// compares its length and modification time.
     pub fn is_reusable(&mut self) -> bool {
-        !self.client.terminated
-            && matches!(self.client.child.try_wait(), Ok(None))
-            && executable_unchanged(&self.executable, self.executable_stamp)
+        self.client.is_alive() && executable_unchanged(&self.executable, self.executable_stamp)
     }
 
     fn spawn_verified_client(

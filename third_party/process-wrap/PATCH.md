@@ -1,8 +1,8 @@
 # process-wrap 10.0.0, patched for Ketchup
 
 Unmodified copy of `process-wrap` 10.0.0 from crates.io (Apache-2.0 OR MIT, see the license
-files) except six changes (the fourth: `JobMemoryLimit` on Unix; the fifth: `KillOnDrop` on Linux;
-the sixth: killing a reaped process group, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
+files) except seven changes (the fourth: `JobMemoryLimit` on Unix; the fifth: `KillOnDrop` on Linux;
+the sixth: killing a reaped process group; the seventh: `physical_memory_bytes`, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
 has, a `JobMemoryLimit` wrapper, and its job object starts the child without suspending it (below). The upstream `tests/` directory is left out, and
 with it the `[[test]]` targets and dev-dependencies of `Cargo.toml`. The unit tests in `src/` run in
 CI on Linux and macOS with this directory's own `Cargo.lock` (`.github/workflows/ci.yml`).
@@ -47,6 +47,11 @@ On Unix, where there is no job object, `JobMemoryLimit` is exported too (any fea
 needs nix's `resource` feature (`Cargo.toml`). Ketchup's crates forbid `unsafe`, and `pre_exec`
 is unsafe. The limit caps address space, not committed memory as on Windows; the program worker
 reserves little beyond what it uses, so the same number serves both (review 2026-10-15 PRG-1).
+
+`src/std/job_memory_limit.rs` also has `physical_memory_bytes()` (`GlobalMemoryStatusEx` on
+Windows, which adds `Win32_System_SystemInformation` to the `job-object` feature in `Cargo.toml`;
+`sysconf` on Unix), exported next to `JobMemoryLimit`. Ketchup's exact worker, which reads STEP and
+IGES files of any size, may commit half of it (review 2026-10-21 LIM-3); both calls are unsafe.
 
 ## KillOnDrop on Linux
 

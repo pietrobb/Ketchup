@@ -26,10 +26,7 @@ use ketchup_program::{
 };
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::ChildStderr;
-use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 /// Memory one program worker may commit: the interpreter's own heap limit, and
@@ -99,17 +96,6 @@ impl CheckDeadline {
 /// cancelled by the user, or stops at the worker's memory limit. A century stands in
 /// for "never" where the worker client wants a time.
 const UNTIL_CANCELLED: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
-
-/// How long a dead worker's standard error may take to arrive.
-const STDERR_WAIT: Duration = Duration::from_secs(3);
-
-/// Bytes of standard error kept: enough for the allocation failure message.
-const STDERR_TAIL_BYTES: usize = 4096;
-
-struct Running {
-    client: ExactWorkerClient,
-    stderr: Receiver<Vec<u8>>,
-}
 
 /// Why the worker gave no answer.
 enum Stopped {
@@ -185,7 +171,7 @@ pub struct ProgramWorker {
     executable: PathBuf,
     executable_sha256: String,
     deadline: Duration,
-    running: Option<Running>,
+    running: Option<ExactWorkerClient>,
 }
 
 impl ProgramWorker {
@@ -214,7 +200,7 @@ impl ProgramWorker {
     /// Process id of the worker that evaluates the next program, if one runs.
     pub fn process_id(&mut self) -> Option<u32> {
         let running = self.running.as_mut()?;
-        running.is_alive().then(|| running.client.child.id())
+        running.is_alive().then(|| running.child.id())
     }
 
     /// Evaluates like [`ketchup_program::evaluate_cancellable`], in the worker.
@@ -428,38 +414,34 @@ impl ProgramWorker {
         if cancel.is_cancelled() {
             return Err(Stopped::Cancelled);
         }
-        let alive = self.running.as_mut().is_some_and(Running::is_alive);
+        let alive = self
+            .running
+            .as_mut()
+            .is_some_and(ExactWorkerClient::is_alive);
         let mut running = match self.running.take() {
             Some(running) if alive => running,
             _ => self.spawn(cancel)?,
         };
-        match request(&mut running.client) {
+        match request(&mut running) {
             Ok(reply) => {
                 self.running = Some(running);
                 Ok(reply)
             }
             // The client has already killed the worker; it is dropped here.
-            Err(error) => Err(stopped(error, &running.stderr)),
+            Err(error) => Err(stopped(error)),
         }
     }
 
-    fn spawn(&self, cancel: &CancelToken) -> Result<Running, Stopped> {
+    fn spawn(&self, cancel: &CancelToken) -> Result<ExactWorkerClient, Stopped> {
         let executable = verify_exact_worker_identity(&self.executable, &self.executable_sha256)
             .map_err(Stopped::Failed)?;
-        let (mut client, stderr) =
-            ExactWorkerClient::spawn_guarded_with(executable, Some(PROGRAM_WORKER_MEMORY_BYTES))
+        let mut client =
+            ExactWorkerClient::spawn_guarded_with(executable, PROGRAM_WORKER_MEMORY_BYTES)
                 .map_err(Stopped::Failed)?;
-        let stderr = stderr_tail(stderr);
         client
             .ping_with_cancellation(cancel.flag())
-            .map_err(|error| stopped(error, &stderr))?;
-        Ok(Running { client, stderr })
-    }
-}
-
-impl Running {
-    fn is_alive(&mut self) -> bool {
-        !self.client.terminated && matches!(self.client.child.try_wait(), Ok(None))
+            .map_err(stopped)?;
+        Ok(client)
     }
 }
 
@@ -589,39 +571,12 @@ fn failed_too_large(reply: &WorkerReply) -> WorkerReply {
     }
 }
 
-/// Collects the last bytes of the worker's standard error; they arrive when it exits.
-fn stderr_tail(stderr: Option<ChildStderr>) -> Receiver<Vec<u8>> {
-    let (sender, receiver) = mpsc::sync_channel(1);
-    if let Some(mut stderr) = stderr {
-        let _ = std::thread::spawn(move || {
-            let mut tail = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            while let Ok(read) = stderr.read(&mut buffer) {
-                if read == 0 {
-                    break;
-                }
-                tail.extend_from_slice(&buffer[..read]);
-                let excess = tail.len().saturating_sub(STDERR_TAIL_BYTES);
-                tail.drain(..excess);
-            }
-            let _ = sender.send(tail);
-        });
-    }
-    receiver
-}
-
-fn stopped(error: WorkerError, stderr: &Receiver<Vec<u8>>) -> Stopped {
+fn stopped(error: WorkerError) -> Stopped {
     match error {
         WorkerError::Cancelled => Stopped::Cancelled,
         WorkerError::RequestTimedOut(after) => Stopped::TimeLimit(after),
-        _ => {
-            let tail = stderr.recv_timeout(STDERR_WAIT).unwrap_or_default();
-            if String::from_utf8_lossy(&tail).contains("memory allocation of") {
-                Stopped::MemoryLimit
-            } else {
-                Stopped::Failed(error)
-            }
-        }
+        WorkerError::MemoryLimit { .. } => Stopped::MemoryLimit,
+        error => Stopped::Failed(error),
     }
 }
 

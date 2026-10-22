@@ -37,15 +37,15 @@ impl ExactWorkerClient {
     }
 
     pub(crate) fn spawn_guarded(executable: GuardedExactWorker) -> Result<Self, WorkerError> {
-        Self::spawn_guarded_with(executable, None).map(|(client, _)| client)
+        Self::spawn_guarded_with(executable, exact_worker_memory_bytes())
     }
 
-    /// With a memory limit the worker's standard error comes back too: a failed
-    /// allocation names itself there before the process aborts.
+    /// The worker may commit `memory_limit` bytes; past them it is stopped and the
+    /// request fails with [`WorkerError::MemoryLimit`].
     pub(crate) fn spawn_guarded_with(
         executable: GuardedExactWorker,
-        memory_limit: Option<usize>,
-    ) -> Result<(Self, Option<std::process::ChildStderr>), WorkerError> {
+        memory_limit: usize,
+    ) -> Result<Self, WorkerError> {
         let working_directory = executable
             .executable
             .parent()
@@ -61,14 +61,10 @@ impl ExactWorkerClient {
             .env("TMPDIR", temp_directory.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(if memory_limit.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            });
-        let mut child = spawn_limited_worker_command(command, memory_limit)
+            .stderr(Stdio::piped());
+        let mut child = spawn_limited_worker_command(command, Some(memory_limit))
             .map_err(|error| WorkerError::Spawn(error.to_string()))?;
-        let stderr = child.stderr().take();
+        let stderr_tail = Some(stderr_tail(child.stderr().take()));
         let stdin = child
             .stdin()
             .take()
@@ -86,9 +82,15 @@ impl ExactWorkerClient {
             terminated: false,
             write_sender,
             response_receiver,
+            memory_limit,
+            stderr_tail,
             _temp_directory: temp_directory,
         };
-        Ok((client, stderr))
+        Ok(client)
+    }
+
+    pub(crate) fn is_alive(&mut self) -> bool {
+        !self.terminated && matches!(self.child.try_wait(), Ok(None))
     }
 
     /// Handshake: the worker must speak the protocol of this exact build.
@@ -721,6 +723,15 @@ impl ExactWorkerClient {
         }
     }
 
+    /// Has the worker hold one block of `bytes`.
+    pub fn allocate_probe(&mut self, bytes: u64) -> Result<(), WorkerError> {
+        self.call_done(
+            &WorkerRequest::Allocate { bytes },
+            &NEVER_CANCELLED,
+            DEFAULT_WORKER_REQUEST_TIMEOUT,
+        )
+    }
+
     pub fn begin_killable_job(&mut self, duration: Duration) -> Result<(), WorkerError> {
         let deadline = Instant::now() + DEFAULT_WORKER_REQUEST_TIMEOUT;
         let milliseconds = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
@@ -959,8 +970,26 @@ impl ExactWorkerClient {
         self.fail(WorkerError::Protocol(response))
     }
 
+    /// Stops the worker; one that died of a failed allocation fails with
+    /// [`WorkerError::MemoryLimit`] instead of `error`.
     fn fail<T>(&mut self, error: WorkerError) -> Result<T, WorkerError> {
         self.terminate_worker();
+        if matches!(
+            error,
+            WorkerError::Cancelled | WorkerError::RequestTimedOut(_)
+        ) {
+            return Err(error);
+        }
+        let tail = self
+            .stderr_tail
+            .take()
+            .and_then(|tail| tail.recv_timeout(STDERR_WAIT).ok())
+            .unwrap_or_default();
+        if String::from_utf8_lossy(&tail).contains("memory allocation of") {
+            return Err(WorkerError::MemoryLimit {
+                bytes: self.memory_limit,
+            });
+        }
         Err(error)
     }
 
@@ -968,6 +997,33 @@ impl ExactWorkerClient {
         self.terminated = true; // Never reuse a job whose termination has started.
         let _ = child_process::terminate(&mut *self.child);
     }
+}
+
+/// How long a dead worker's standard error may take to arrive.
+const STDERR_WAIT: Duration = Duration::from_secs(3);
+
+/// Bytes of standard error kept: enough for the allocation failure message.
+const STDERR_TAIL_BYTES: usize = 4096;
+
+/// Collects the last bytes of the worker's standard error; they arrive when it exits.
+fn stderr_tail(stderr: Option<std::process::ChildStderr>) -> Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    if let Some(mut stderr) = stderr {
+        let _ = std::thread::spawn(move || {
+            let mut tail = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while let Ok(read) = std::io::Read::read(&mut stderr, &mut buffer) {
+                if read == 0 {
+                    break;
+                }
+                tail.extend_from_slice(&buffer[..read]);
+                let excess = tail.len().saturating_sub(STDERR_TAIL_BYTES);
+                tail.drain(..excess);
+            }
+            let _ = sender.send(tail);
+        });
+    }
+    receiver
 }
 
 pub(crate) fn unexpected_reply(reply: &WorkerReply) -> WorkerError {

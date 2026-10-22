@@ -137,12 +137,15 @@ pub enum WorkerRequest {
     /// Reads a DXF or DWG drawing as underlay lines. Only the program worker gets it: an
     /// underlay keeps every line it reads, bounded by the worker's limits alone.
     ReadUnderlay(UnderlayInput),
-    /// Test hooks: a native exception, a long job and a hard crash.
+    /// Test hooks: a native exception, a long job, a hard crash and one block of memory.
     Exception,
     Sleep {
         milliseconds: u64,
     },
     Crash,
+    Allocate {
+        bytes: u64,
+    },
 }
 
 /// Row-major local-to-world affine placements of two loaded slots.

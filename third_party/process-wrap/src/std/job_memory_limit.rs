@@ -12,6 +12,29 @@ use super::{CommandWrap, CommandWrapper};
 #[derive(Clone, Copy, Debug)]
 pub struct JobMemoryLimit(pub usize);
 
+/// Bytes of physical memory of this computer, or `None` when the system does not say; a
+/// limit is often a share of it.
+pub fn physical_memory_bytes() -> Option<u64> {
+	#[cfg(windows)]
+	{
+		use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+		let mut status = MEMORYSTATUSEX {
+			dwLength: u32::try_from(std::mem::size_of::<MEMORYSTATUSEX>()).ok()?,
+			..Default::default()
+		};
+		// SAFETY: `status` is a MEMORYSTATUSEX whose dwLength names its size.
+		unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
+		Some(status.ullTotalPhys)
+	}
+	#[cfg(unix)]
+	{
+		use nix::libc::{_SC_PAGESIZE, _SC_PHYS_PAGES, sysconf};
+		// SAFETY: sysconf only reads a system value.
+		let (pages, page_bytes) = unsafe { (sysconf(_SC_PHYS_PAGES), sysconf(_SC_PAGESIZE)) };
+		Some(u64::try_from(pages).ok()? * u64::try_from(page_bytes).ok()?)
+	}
+}
+
 impl CommandWrapper for JobMemoryLimit {
 	#[cfg(windows)]
 	fn pre_spawn(&mut self, _command: &mut Command, _core: &CommandWrap) -> Result<()> {
