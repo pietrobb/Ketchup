@@ -77,6 +77,28 @@ fn a_running_export_keeps_the_window_painting_and_cancel_stops_its_worker_before
     assert!(harness.state().last_side_effect_receipt().is_none());
 }
 
+/// Review 2026-10-21 MCP-6: the client's request is cancelled when it stops
+/// waiting; its worker sees that and the finished file is not written.
+#[test]
+fn a_client_export_whose_client_gave_up_stops_the_worker_and_writes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("abandoned.step");
+    let mut harness = shell();
+    let client = Arc::new(AtomicBool::new(false));
+    let app = harness.state_mut();
+    app.live.client_export = Some(Arc::clone(&client));
+    let result = app.export_exchange_with(ExchangeFormat::Step, &path, |_, cancelled| {
+        // The client times out while the worker runs.
+        client.store(true, Ordering::Release);
+        assert!(cancelled.load(Ordering::Acquire), "the worker sees it");
+        Ok(b"ISO-10303-21;".to_vec())
+    });
+    app.live.client_export = None;
+    assert!(result.is_err());
+    assert!(!path.exists());
+    assert!(!path.with_extension("step.loss.txt").exists());
+}
+
 #[test]
 fn a_finished_export_is_published_with_its_loss_report_after_consent() {
     let directory = tempfile::tempdir().unwrap();

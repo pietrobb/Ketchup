@@ -173,9 +173,31 @@ impl KetchupApp {
         format: ExchangeFormat,
         path: &Path,
     ) -> Result<Written, ExportError> {
+        self.export_exchange_with(format, path, ExchangeExportJob::run)
+    }
+
+    /// A client that stops waiting for its export stops the worker, and
+    /// nothing is written for it afterwards (review 2026-10-21 MCP-6).
+    fn export_exchange_with(
+        &mut self,
+        format: ExchangeFormat,
+        path: &Path,
+        run: impl FnOnce(&ExchangeExportJob, &AtomicBool) -> Result<Vec<u8>, ExportError>,
+    ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
+        let cancelled = self.live.client_export.clone().unwrap_or_default();
         let result = self.exchange_export_job(format, path).and_then(|job| {
-            let bytes = job.run(&AtomicBool::new(false))?;
+            let bytes = run(&job, &cancelled)?;
+            if cancelled.load(Ordering::Acquire) {
+                return Err(Rejection::new(
+                        "side_effect.client_gone",
+                        RejectionPhase::Validation,
+                    )
+                    .reason(
+                        "the client that asked for this export disconnected before it was written",
+                    )
+                    .into());
+            }
             self.publish_exchange_export(format, path, &job.snapshot, &job.model, bytes)
         });
         self.report_export_outcome(format.key(), path, result)
