@@ -964,6 +964,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ExportMeshStl);
                 self.menu_command(ui, AppCommand::ExportPrintThreeMf);
                 self.menu_command(ui, AppCommand::ExportBlenderGlb);
+                self.menu_command(ui, AppCommand::ExportSketchupDae);
                 self.menu_command(ui, AppCommand::ExportViewer);
                 self.menu_command(ui, AppCommand::OpenViewerComments);
                 self.menu_command(ui, AppCommand::ExportGeneralFabrication);

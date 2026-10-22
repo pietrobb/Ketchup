@@ -131,7 +131,7 @@ This is an evolving assembly and drafting path, not yet a complete mechanical si
 - **DXF and DWG:** a bounded 2D geometry subset with a loss report, or a whole drawing as an underlay; a DWG is read as the DXF it converts to.
 - **Blender GLB:** mesh import preserving names, hierarchy, transforms, opaque colors, and shared instances. Imported geometry stays a mesh; boxes, cylinders, and linear extrusions can be converted to exact features after verification.
 - **SketchUp bridge:** open `.kscene` interchange subset rather than native `.skp` parsing.
-- **Export:** the visible exact model to STEP and IGES; tessellation to STL, 3MF, and Blender GLB; COLLADA for SketchUp (through MCP), where equal parts become one component; and a `.ketchup-view` package for Ketchup Viewer. All exports check freshness and write a loss report where something is left out.
+- **Export:** the visible exact model to STEP and IGES; tessellation to STL, 3MF, and Blender GLB; COLLADA for SketchUp, where equal parts become one component; and a `.ketchup-view` package for Ketchup Viewer. All exports check freshness and write a loss report where something is left out.
 - **Production:** cut lists, hardware lists, bar schedules, and material takeoff as CSV or XLSX; a general BOM with drawings; Hundegger BTLx 2.3.1 for timber members; HOMAG woodWOP drilling programs; a reviewed ISO metric CAM program; sheet-metal flat patterns with bend tables; and weldment cut lists.
 
 ### Ketchup Viewer

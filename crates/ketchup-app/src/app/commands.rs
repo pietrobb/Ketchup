@@ -325,6 +325,7 @@ impl KetchupApp {
             | AppCommand::ExportMeshStl
             | AppCommand::ExportPrintThreeMf
             | AppCommand::ExportBlenderGlb
+            | AppCommand::ExportSketchupDae
             | AppCommand::ExportViewer
             | AppCommand::ExportGeneralFabrication
             | AppCommand::ExportWeldmentCutList

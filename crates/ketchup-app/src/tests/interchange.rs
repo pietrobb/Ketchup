@@ -104,6 +104,51 @@ fn blender_glb_file_command_exports_current_scene_with_loss_report() {
     );
 }
 
+/// Review 2026-10-21 UI-16: the File menu exports COLLADA for SketchUp, as MCP does.
+#[test]
+fn sketchup_dae_file_command_exports_current_scene_with_loss_report() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("current-model.dae");
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_export(&path)
+        .always_confirm_high_risk_as(85);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    install_initial_graph_result(&mut app);
+    let digest = app.document.current().canonical_digest();
+
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    let file_menu = harness.state().catalog.text("menu-file");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    harness.run();
+    let export = harness.state().command_label(AppCommand::ExportSketchupDae);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+    assert_eq!(script.export_requests()[0].extension, "dae");
+    let dae = std::fs::read_to_string(&path).unwrap();
+    assert!(dae.contains("<COLLADA xmlns=\"http://www.collada.org/2005/11/COLLADASchema\""));
+    assert!(dae.contains("<triangles "), "{dae}");
+    let report = std::fs::read_to_string(path.with_extension("dae.loss.txt")).unwrap();
+    assert!(report.contains("format=COLLADA 1.4.1 (DAE)"));
+    let receipt = harness.state().last_side_effect_receipt().unwrap();
+    assert_eq!(
+        receipt.operation(),
+        "export-current-model-dae-with-loss-report"
+    );
+}
+
 #[test]
 fn viewer_menu_exports_saved_scenes_and_package_without_editing_cad() {
     let directory = tempfile::tempdir().unwrap();

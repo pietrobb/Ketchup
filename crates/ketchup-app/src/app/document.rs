@@ -996,6 +996,11 @@ impl KetchupApp {
                     self.export_current_model_glb_to(&path).ok();
                 }
             }
+            AppCommand::ExportSketchupDae => {
+                if let Some(path) = self.choose_export_path("dae") {
+                    self.export_current_model_dae_to(&path).ok();
+                }
+            }
             AppCommand::ExportViewer => {
                 if let Some(path) = self.choose_export_path("ketchup-view") {
                     self.export_current_model_viewer_to(&path).ok();
