@@ -90,22 +90,18 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
-    let (bootstrap, document_path) = if let Some(live) = live {
+    let (bootstrap, start_arguments) = if let Some(live) = live {
         // Fail before creating a native window when input is absent or invalid.
         (
             Some(
                 live.read_stdin()
                     .unwrap_or_else(|error| bootstrap_failed(error)),
             ),
-            None,
+            Vec::new(),
         )
     } else {
-        let document_path = first_argument.map(std::path::PathBuf::from);
-        if arguments.next().is_some() {
-            eprintln!("ketchup-app accepts at most one document path");
-            std::process::exit(2);
-        }
-        (None, document_path)
+        // Checked in the window, which says what it cannot open.
+        (None, first_argument.into_iter().chain(arguments).collect())
     };
     let live_requested = bootstrap.is_some();
     let result = eframe::run_native(
@@ -129,9 +125,7 @@ fn main() -> eframe::Result {
                         "optional live consent broker unavailable; manual CAD remains available: {error}"
                     );
                 }
-                if let Some(path) = document_path.as_deref() {
-                    app.queue_open_document_path(path);
-                }
+                app.queue_startup_arguments(start_arguments);
             }
             Ok(Box::new(app))
         }),

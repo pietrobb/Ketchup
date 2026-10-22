@@ -87,6 +87,14 @@ struct Pending {
     revision: u64,
 }
 
+impl FileActivity {
+    /// The document queued to open when the window starts.
+    #[cfg(test)]
+    pub(crate) fn queued_open_path(&self) -> Option<PathBuf> {
+        self.pending.as_ref()?.path.clone()
+    }
+}
+
 impl KetchupApp {
     /// Queue a startup document; the native window paints before disk I/O begins.
     pub fn queue_open_document_path(&mut self, path: &Path) {
