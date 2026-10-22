@@ -52,7 +52,7 @@ pub(super) fn validate_product_change(
 ) -> Result<(), CanonicalError> {
     let change = ProductChange::between(before, product);
     ensure_product_id(product.document_id.0)?;
-    validate_document_entries(product, validate_drawing_sources, change.definitions)?;
+    validate_document_entries(product, validate_drawing_sources, &change)?;
     if change.definitions {
         validate_definitions(product)?;
         validate_features(product)?;
@@ -80,15 +80,54 @@ struct ProductChange<'a> {
     /// compared in [`definition_inputs_unchanged`].
     definitions: bool,
     groups: bool,
+    /// Whether anything an instance path or a part reference resolves through changed: the
+    /// definition inputs, the groups, which occurrences exist, or the definition an
+    /// occurrence places or the group it hangs in. The checks of an entry that names parts
+    /// read nothing else of the product besides their own entries.
+    structure: bool,
+    /// Whether where a part sits may have changed, which pin joints and the assembly recipe
+    /// read; a colour or a name counts too, as an occurrence is compared as a whole.
+    placement: bool,
 }
 
 impl<'a> ProductChange<'a> {
     fn between(before: Option<&'a ProductModel>, product: &ProductModel) -> Self {
+        let definitions = before.is_none_or(|before| !definition_inputs_unchanged(before, product));
+        let groups = before.is_none_or(|before| !same_entries(&before.groups, &product.groups));
+        let structure = definitions
+            || groups
+            || before.is_none_or(|before| !occurrence_identities_unchanged(before, product));
+        let placement = structure
+            || before.is_none_or(|before| {
+                !same_entries(&before.occurrences, &product.occurrences)
+                    || before.instance_transform_overrides != product.instance_transform_overrides
+            });
         Self {
             before,
-            definitions: before.is_none_or(|before| !definition_inputs_unchanged(before, product)),
-            groups: before.is_none_or(|before| !same_entries(&before.groups, &product.groups)),
+            definitions,
+            groups,
+            structure,
+            placement,
         }
+    }
+
+    /// Whether the checks of entries `kept` compares must run: something they resolve
+    /// through changed, or `kept` says the entries did.
+    fn recheck(
+        &self,
+        product: &ProductModel,
+        kept: fn(&ProductModel, &ProductModel) -> bool,
+    ) -> bool {
+        self.structure || self.before.is_none_or(|before| !kept(before, product))
+    }
+
+    /// [`Self::recheck`] for checks that also read where parts sit.
+    fn recheck_placed(
+        &self,
+        product: &ProductModel,
+        kept: fn(&ProductModel, &ProductModel) -> bool,
+    ) -> bool {
+        self.placement || self.recheck(product, kept)
     }
 
     /// The occurrences to check when only some of them can fail: an occurrence's checks read
@@ -162,25 +201,49 @@ fn same_keys<K: Ord, V>(before: &BTreeMap<K, V>, after: &BTreeMap<K, V>) -> bool
     before.len() == after.len() && before.keys().eq(after.keys())
 }
 
+/// The same occurrences exist and each places the same definition in the same group: all
+/// an instance path reads of an occurrence, whatever else of it changed.
+fn occurrence_identities_unchanged(before: &ProductModel, product: &ProductModel) -> bool {
+    same_keys(&before.occurrences, &product.occurrences)
+        && before
+            .occurrences
+            .values()
+            .zip(product.occurrences.values())
+            .all(|(before, after)| {
+                Arc::ptr_eq(before, after)
+                    || before.definition_id == after.definition_id && before.parent == after.parent
+            })
+}
+
 /// Checks every entry outside definitions, occurrences and groups, in the order the full
-/// validation reports them; the feature dependency graph sits among them and is checked
-/// only when `definitions_changed`.
+/// validation reports them; the feature dependency graph sits among them. A check runs
+/// only when `change` says what it reads changed (review 2026-10-19 M-16), so moving,
+/// colouring or renaming a part checks nothing here unless pin joints or an assembly
+/// recipe read where parts sit. A skipped check passes, so the first error stays the one
+/// the full validation reports.
 fn validate_document_entries(
     product: &ProductModel,
     validate_drawing_sources: bool,
-    definitions_changed: bool,
+    change: &ProductChange<'_>,
 ) -> Result<(), CanonicalError> {
-    let mut assigned_codes = BTreeSet::new();
-    for (path, code) in &product.production_codes {
-        validate_production_code(code)?;
-        if !assigned_codes.insert(code.to_ascii_uppercase()) {
-            return Err(CanonicalError::DuplicateProductionCode(code.clone()));
-        }
-        if production_code_identity(product, path).is_none() {
-            return Err(CanonicalError::InvalidProductionCodePath(path.clone()));
+    let recheck = |kept: fn(&ProductModel, &ProductModel) -> bool| change.recheck(product, kept);
+    let recheck_placed =
+        |kept: fn(&ProductModel, &ProductModel) -> bool| change.recheck_placed(product, kept);
+    if recheck(|before, after| before.production_codes == after.production_codes) {
+        let mut assigned_codes = BTreeSet::new();
+        for (path, code) in &product.production_codes {
+            validate_production_code(code)?;
+            if !assigned_codes.insert(code.to_ascii_uppercase()) {
+                return Err(CanonicalError::DuplicateProductionCode(code.clone()));
+            }
+            if production_code_identity(product, path).is_none() {
+                return Err(CanonicalError::InvalidProductionCodePath(path.clone()));
+            }
         }
     }
-    if product
+    if recheck(|before, after| {
+        before.instance_transform_overrides == after.instance_transform_overrides
+    }) && product
         .instance_transform_overrides
         .iter()
         .any(|(path, transform)| {
@@ -193,209 +256,288 @@ fn validate_document_entries(
         return Err(CanonicalError::InvalidInstancePath);
     }
     support::validate_floor(product.floor_z_mm)?;
-    support::validate_grounded_instances(product, &product.grounded_instances)?;
-    contact_joint::validate(product, &product.contact_joints)?;
-    if let Some(id) = product.hole_threads.iter().find_map(|(id, thread)| {
-        (!product.features.contains_key(id) || !thread.is_valid()).then_some(*id)
-    }) {
-        return Err(CanonicalError::InvalidHoleThread(id));
+    if recheck(|before, after| before.grounded_instances == after.grounded_instances) {
+        support::validate_grounded_instances(product, &product.grounded_instances)?;
     }
-    if let Some(id) = product.shaft_threads.iter().find_map(|(id, thread)| {
-        (!product.features.contains_key(id) || !thread.is_valid()).then_some(*id)
-    }) {
-        return Err(CanonicalError::InvalidShaftThread(id));
+    if recheck(|before, after| before.contact_joints == after.contact_joints) {
+        contact_joint::validate(product, &product.contact_joints)?;
     }
-    // A thread names a standard size, which a Scale behind it would silently
-    // stop being; a hole tapped after a Scale is cut at its true size. A
-    // modelled bolt thread is cut into the body before a Scale on it too.
-    // Definitions are checked after this, so a missing entry is left to them.
-    let scaled_later = |id: &FeatureId| {
-        let Some(definition) = product
-            .features
-            .get(id)
-            .and_then(|feature| product.definitions.get(&feature.definition_id))
-        else {
-            return false;
+    // Threads and sheet metal read only features and definitions besides themselves.
+    if recheck(|before, after| {
+        before.hole_threads == after.hole_threads && before.shaft_threads == after.shaft_threads
+    }) {
+        if let Some(id) = product.hole_threads.iter().find_map(|(id, thread)| {
+            (!product.features.contains_key(id) || !thread.is_valid()).then_some(*id)
+        }) {
+            return Err(CanonicalError::InvalidHoleThread(id));
+        }
+        if let Some(id) = product.shaft_threads.iter().find_map(|(id, thread)| {
+            (!product.features.contains_key(id) || !thread.is_valid()).then_some(*id)
+        }) {
+            return Err(CanonicalError::InvalidShaftThread(id));
+        }
+        // A thread names a standard size, which a Scale behind it would silently
+        // stop being; a hole tapped after a Scale is cut at its true size. A
+        // modelled bolt thread is cut into the body before a Scale on it too.
+        // Definitions are checked after this, so a missing entry is left to them.
+        let scaled_later = |id: &FeatureId| {
+            let Some(definition) = product
+                .features
+                .get(id)
+                .and_then(|feature| product.definitions.get(&feature.definition_id))
+            else {
+                return false;
+            };
+            definition
+                .feature_ids
+                .iter()
+                .skip_while(|candidate| *candidate != id)
+                .filter_map(|later| product.features.get(later))
+                .any(|later| matches!(later.kind, FeatureKind::Scale { .. }))
         };
-        definition
-            .feature_ids
+        if let Some(id) = product
+            .hole_threads
+            .keys()
+            .chain(product.shaft_threads.keys())
+            .copied()
+            .find(|id| scaled_later(id))
+        {
+            return Err(CanonicalError::ScaledHoleThread(id));
+        }
+        // The flat pattern and the bend table come from the sheet-metal record,
+        // which a Scale behind it would leave as it was.
+        if let Some(id) = product
+            .features
             .iter()
-            .skip_while(|candidate| *candidate != id)
-            .filter_map(|later| product.features.get(later))
-            .any(|later| matches!(later.kind, FeatureKind::Scale { .. }))
-    };
-    if let Some(id) = product
-        .hole_threads
-        .keys()
-        .chain(product.shaft_threads.keys())
-        .copied()
-        .find(|id| scaled_later(id))
-    {
-        return Err(CanonicalError::ScaledHoleThread(id));
+            .filter(|(_, feature)| matches!(feature.kind, FeatureKind::SheetMetal(_)))
+            .map(|(id, _)| *id)
+            .find(|id| scaled_later(id))
+        {
+            return Err(CanonicalError::ScaledSheetMetal(id));
+        }
     }
-    // The flat pattern and the bend table come from the sheet-metal record,
-    // which a Scale behind it would leave as it was.
-    if let Some(id) = product
-        .features
-        .iter()
-        .filter(|(_, feature)| matches!(feature.kind, FeatureKind::SheetMetal(_)))
-        .map(|(id, _)| *id)
-        .find(|id| scaled_later(id))
-    {
-        return Err(CanonicalError::ScaledSheetMetal(id));
-    }
-    if let Some(id) = product
-        .grounded_occurrences
-        .iter()
-        .find(|id| !product.occurrences.contains_key(id))
+    if recheck(|before, after| before.grounded_occurrences == after.grounded_occurrences)
+        && let Some(id) = product
+            .grounded_occurrences
+            .iter()
+            .find(|id| !product.occurrences.contains_key(id))
     {
         return Err(CanonicalError::OccurrenceNotFound(*id));
     }
-    for (id, mate) in &product.assembly_mates {
-        if *id != mate.id() {
-            return Err(CanonicalError::InvalidAssemblyMate(*id));
+    if recheck(|before, after| same_entries(&before.assembly_mates, &after.assembly_mates)) {
+        for (id, mate) in &product.assembly_mates {
+            if *id != mate.id() {
+                return Err(CanonicalError::InvalidAssemblyMate(*id));
+            }
+            validate_assembly_mate(product, mate, false)?;
         }
-        validate_assembly_mate(product, mate, false)?;
     }
-    for (id, joint) in &product.assembly_joints {
-        if *id != joint.id() {
-            return Err(CanonicalError::InvalidAssemblyJoint(*id));
+    if recheck(|before, after| same_entries(&before.assembly_joints, &after.assembly_joints)) {
+        for (id, joint) in &product.assembly_joints {
+            if *id != joint.id() {
+                return Err(CanonicalError::InvalidAssemblyJoint(*id));
+            }
+            validate_assembly_joint(product, joint)?;
         }
-        validate_assembly_joint(product, joint)?;
     }
-    for (id, coupling) in &product.assembly_motion_couplings {
-        if *id != coupling.id() {
-            return Err(CanonicalError::InvalidAssemblyMotionCoupling(*id));
+    if recheck(|before, after| {
+        same_entries(&before.assembly_joints, &after.assembly_joints)
+            && same_entries(
+                &before.assembly_motion_couplings,
+                &after.assembly_motion_couplings,
+            )
+    }) {
+        for (id, coupling) in &product.assembly_motion_couplings {
+            if *id != coupling.id() {
+                return Err(CanonicalError::InvalidAssemblyMotionCoupling(*id));
+            }
+            validate_assembly_motion_coupling(product, coupling)?;
         }
-        validate_assembly_motion_coupling(product, coupling)?;
     }
-    for (id, interface) in &product.mechanical_interfaces {
-        if *id != interface.id() {
-            return Err(CanonicalError::InvalidMechanicalInterface(*id));
+    if recheck(|before, after| {
+        same_entries(&before.mechanical_interfaces, &after.mechanical_interfaces)
+    }) {
+        for (id, interface) in &product.mechanical_interfaces {
+            if *id != interface.id() {
+                return Err(CanonicalError::InvalidMechanicalInterface(*id));
+            }
+            validate_mechanical_interface(product, interface)?;
         }
-        validate_mechanical_interface(product, interface)?;
     }
-    for (id, condition) in &product.mechanical_conditions {
-        if *id != condition.id() {
-            return Err(CanonicalError::InvalidMechanicalCondition(*id));
+    if recheck(|before, after| {
+        same_entries(&before.assembly_joints, &after.assembly_joints)
+            && same_entries(&before.mechanical_interfaces, &after.mechanical_interfaces)
+            && same_entries(&before.mechanical_conditions, &after.mechanical_conditions)
+    }) {
+        for (id, condition) in &product.mechanical_conditions {
+            if *id != condition.id() {
+                return Err(CanonicalError::InvalidMechanicalCondition(*id));
+            }
+            validate_mechanical_condition(product, condition)?;
         }
-        validate_mechanical_condition(product, condition)?;
     }
-    for (id, study) in &product.assembly_motion_studies {
-        if *id != study.id() {
-            return Err(CanonicalError::InvalidAssemblyMotionStudy(*id));
+    if recheck(|before, after| {
+        same_entries(&before.assembly_joints, &after.assembly_joints)
+            && same_entries(
+                &before.assembly_motion_studies,
+                &after.assembly_motion_studies,
+            )
+    }) {
+        for (id, study) in &product.assembly_motion_studies {
+            if *id != study.id() {
+                return Err(CanonicalError::InvalidAssemblyMotionStudy(*id));
+            }
+            validate_assembly_motion_study(product, study)?;
         }
-        validate_assembly_motion_study(product, study)?;
     }
     let snapshot = std::cell::OnceCell::new();
     let snapshot = || snapshot.get_or_init(|| validation_snapshot(product));
-    for (id, sheet) in &product.drawing_sheets {
-        if *id != sheet.id() {
-            return Err(CanonicalError::Drawing(DrawingError::InvalidSheet));
-        }
-        if validate_drawing_sources {
-            validate_drawing_sheet(snapshot(), sheet)?;
+    if recheck(|before, after| same_entries(&before.drawing_sheets, &after.drawing_sheets)) {
+        for (id, sheet) in &product.drawing_sheets {
+            if *id != sheet.id() {
+                return Err(CanonicalError::Drawing(DrawingError::InvalidSheet));
+            }
+            if validate_drawing_sources {
+                validate_drawing_sheet(snapshot(), sheet)?;
+            }
         }
     }
-    for (id, plan) in &product.cam_plans {
-        if *id != plan.id() {
-            return Err(CanonicalError::Cam(CamError::InvalidPlan));
+    if recheck(|before, after| same_entries(&before.cam_plans, &after.cam_plans)) {
+        for (id, plan) in &product.cam_plans {
+            if *id != plan.id() {
+                return Err(CanonicalError::Cam(CamError::InvalidPlan));
+            }
+            plan.validate_structure().map_err(CanonicalError::Cam)?;
         }
-        plan.validate_structure().map_err(CanonicalError::Cam)?;
     }
-    for (id, joint) in &product.pin_joints {
-        if *id != joint.id {
-            return Err(CanonicalError::PinJoint(PinJointError::InvalidJointId));
+    if recheck_placed(|before, after| same_entries(&before.pin_joints, &after.pin_joints)) {
+        for (id, joint) in &product.pin_joints {
+            if *id != joint.id {
+                return Err(CanonicalError::PinJoint(PinJointError::InvalidJointId));
+            }
+            project_pin_joint_contract(snapshot(), joint).map_err(CanonicalError::PinJoint)?;
         }
-        project_pin_joint_contract(snapshot(), joint).map_err(CanonicalError::PinJoint)?;
     }
-    if let Some(recipe) = product.assembly_recipe.as_deref() {
+    if recheck_placed(|before, after| {
+        same_entries(&before.pin_joints, &after.pin_joints)
+            && match (&before.assembly_recipe, &after.assembly_recipe) {
+                (Some(before), Some(after)) => Arc::ptr_eq(before, after),
+                (before, after) => before.is_none() && after.is_none(),
+            }
+    }) && let Some(recipe) = product.assembly_recipe.as_deref()
+    {
         recipe
             .audit(snapshot())
             .map_err(CanonicalError::AssemblyRecipe)?;
     }
-    if definitions_changed {
+    if change.definitions {
         FeatureDependencyGraph::from_product(product)?;
     }
-    for (id, joint) in &product.joints {
-        if *id != joint.id() || !joint.volume().has_positive_volume() {
-            return Err(CanonicalError::Prismatic(PrismaticError::EmptyVolume));
-        }
-        joint::validate(product, joint)?;
-    }
-    for (id, space) in &product.spaces {
-        if *id != space.id() || !space.volume().has_positive_volume() {
-            return Err(CanonicalError::Space(SpaceError::InvalidVolume));
-        }
-        for adjacent_id in space.adjacent_to() {
-            let adjacent = product
-                .spaces
-                .get(adjacent_id)
-                .ok_or(CanonicalError::Space(SpaceError::MissingSpace))?;
-            if !adjacent.adjacent_to().contains(id) {
-                return Err(CanonicalError::Space(SpaceError::AsymmetricAdjacency));
+    if recheck(|before, after| same_entries(&before.joints, &after.joints)) {
+        for (id, joint) in &product.joints {
+            if *id != joint.id() || !joint.volume().has_positive_volume() {
+                return Err(CanonicalError::Prismatic(PrismaticError::EmptyVolume));
             }
-        }
-        if space
-            .accessible_to()
-            .iter()
-            .any(|target| !product.spaces.contains_key(target))
-        {
-            return Err(CanonicalError::Space(SpaceError::MissingSpace));
+            joint::validate(product, joint)?;
         }
     }
-    for (id, clearance) in &product.clearance_volumes {
-        if *id != clearance.id() || !clearance.volume().has_positive_volume() {
-            return Err(CanonicalError::Space(SpaceError::InvalidVolume));
-        }
-        let owner_is_valid = match clearance.owner() {
-            ClearanceOwner::Occurrence(path) => snapshot().resolve_instance_path(path).is_ok(),
-            ClearanceOwner::Space(space_id) => product.spaces.contains_key(space_id),
-        };
-        if !owner_is_valid {
-            return Err(CanonicalError::Space(SpaceError::InvalidOwner));
-        }
-    }
-    for (id, dimension) in &product.persistent_dimensions {
-        if *id != dimension.id {
-            return Err(CanonicalError::InvalidPersistentDimensionTarget);
-        }
-        validate_persistent_dimension(dimension)?;
-    }
-    for tag in product.tags.values() {
-        ensure_product_id(tag.id.0)?;
-        ensure_name(&tag.name)?;
-    }
-    validate_saved_views(product)?;
-    for (id, underlay) in &product.underlays {
-        if *id != underlay.id {
-            return Err(CanonicalError::UnderlayNotFound(*id));
-        }
-        ensure_product_id(id.0)?;
-        super::saved_view_commands::validate_underlay(product, underlay)?;
-    }
-    super::saved_view_commands::validate_annotations(product, &product.annotations)?;
-    for (id, collection) in &product.collections {
-        if *id != collection.id {
-            return Err(CanonicalError::CollectionNotFound(*id));
-        }
-        ensure_product_id(collection.id.0)?;
-        ensure_name(&collection.name)?;
-        for occurrence_id in &collection.occurrence_ids {
-            if !product.occurrences.contains_key(occurrence_id) {
-                return Err(CanonicalError::OccurrenceNotFound(*occurrence_id));
+    if recheck(|before, after| same_entries(&before.spaces, &after.spaces)) {
+        for (id, space) in &product.spaces {
+            if *id != space.id() || !space.volume().has_positive_volume() {
+                return Err(CanonicalError::Space(SpaceError::InvalidVolume));
+            }
+            for adjacent_id in space.adjacent_to() {
+                let adjacent = product
+                    .spaces
+                    .get(adjacent_id)
+                    .ok_or(CanonicalError::Space(SpaceError::MissingSpace))?;
+                if !adjacent.adjacent_to().contains(id) {
+                    return Err(CanonicalError::Space(SpaceError::AsymmetricAdjacency));
+                }
+            }
+            if space
+                .accessible_to()
+                .iter()
+                .any(|target| !product.spaces.contains_key(target))
+            {
+                return Err(CanonicalError::Space(SpaceError::MissingSpace));
             }
         }
     }
-    for (id, receipt) in &product.import_receipts {
-        if *id != receipt.id() {
-            return Err(CanonicalError::InvalidImportReceipt(
-                ImportContractError::InvalidIdentity,
-            ));
+    if recheck(|before, after| {
+        same_entries(&before.spaces, &after.spaces)
+            && same_entries(&before.clearance_volumes, &after.clearance_volumes)
+    }) {
+        for (id, clearance) in &product.clearance_volumes {
+            if *id != clearance.id() || !clearance.volume().has_positive_volume() {
+                return Err(CanonicalError::Space(SpaceError::InvalidVolume));
+            }
+            let owner_is_valid = match clearance.owner() {
+                ClearanceOwner::Occurrence(path) => snapshot().resolve_instance_path(path).is_ok(),
+                ClearanceOwner::Space(space_id) => product.spaces.contains_key(space_id),
+            };
+            if !owner_is_valid {
+                return Err(CanonicalError::Space(SpaceError::InvalidOwner));
+            }
         }
-        receipt
-            .validate()
-            .map_err(CanonicalError::InvalidImportReceipt)?;
+    }
+    if recheck(|before, after| {
+        same_entries(&before.persistent_dimensions, &after.persistent_dimensions)
+    }) {
+        for (id, dimension) in &product.persistent_dimensions {
+            if *id != dimension.id {
+                return Err(CanonicalError::InvalidPersistentDimensionTarget);
+            }
+            validate_persistent_dimension(dimension)?;
+        }
+    }
+    // Tags and import receipts are definition inputs, so `structure` covers them.
+    if change.structure {
+        for tag in product.tags.values() {
+            ensure_product_id(tag.id.0)?;
+            ensure_name(&tag.name)?;
+        }
+    }
+    if recheck(|before, after| same_entries(&before.saved_views, &after.saved_views)) {
+        validate_saved_views(product)?;
+    }
+    if recheck(|before, after| same_entries(&before.underlays, &after.underlays)) {
+        for (id, underlay) in &product.underlays {
+            if *id != underlay.id {
+                return Err(CanonicalError::UnderlayNotFound(*id));
+            }
+            ensure_product_id(id.0)?;
+            super::saved_view_commands::validate_underlay(product, underlay)?;
+        }
+    }
+    if recheck(|before, after| Arc::ptr_eq(&before.annotations, &after.annotations)) {
+        super::saved_view_commands::validate_annotations(product, &product.annotations)?;
+    }
+    if recheck(|before, after| same_entries(&before.collections, &after.collections)) {
+        for (id, collection) in &product.collections {
+            if *id != collection.id {
+                return Err(CanonicalError::CollectionNotFound(*id));
+            }
+            ensure_product_id(collection.id.0)?;
+            ensure_name(&collection.name)?;
+            for occurrence_id in &collection.occurrence_ids {
+                if !product.occurrences.contains_key(occurrence_id) {
+                    return Err(CanonicalError::OccurrenceNotFound(*occurrence_id));
+                }
+            }
+        }
+    }
+    if change.structure {
+        for (id, receipt) in &product.import_receipts {
+            if *id != receipt.id() {
+                return Err(CanonicalError::InvalidImportReceipt(
+                    ImportContractError::InvalidIdentity,
+                ));
+            }
+            receipt
+                .validate()
+                .map_err(CanonicalError::InvalidImportReceipt)?;
+        }
     }
     Ok(())
 }
@@ -1535,7 +1677,23 @@ mod incremental_equivalence_tests {
         }
         let mut store = DocumentStore::new();
         store.apply_batch(&CommandBatch::new(commands)).unwrap();
-        (*store.current().product).clone()
+        let mut product = (*store.current().product).clone();
+        // Entries outside definitions, occurrences and groups that name parts.
+        product.contact_joints = vec![ContactJoint {
+            name: "shelf on side".into(),
+            parts: [OccurrenceId(1), OccurrenceId(4)].map(InstancePath::root),
+            max_gap_mm: 0.5,
+        }];
+        product.grounded_occurrences = [OccurrenceId(1)].into();
+        let collection = Collection {
+            id: CollectionId(1),
+            name: "fronts".into(),
+            occurrence_ids: [OccurrenceId(2), OccurrenceId(3)].into(),
+        };
+        product
+            .collections
+            .insert(collection.id, Arc::new(collection));
+        product
     }
 
     /// Edits the entry under `key` if an earlier edit kept it.
@@ -1628,6 +1786,26 @@ mod incremental_equivalence_tests {
         ("rename a tag", |p| {
             edit(&mut p.tags, TagId(2), |t| t.name = "fronts".into());
         }),
+        ("contact joint with a negative gap", |p| {
+            p.contact_joints[0].max_gap_mm = -1.0;
+        }),
+        ("contact joint names a missing part", |p| {
+            p.contact_joints[0].parts[1] = InstancePath::root(OccurrenceId(99));
+        }),
+        ("ground a missing occurrence", |p| {
+            p.grounded_occurrences.insert(OccurrenceId(99));
+        }),
+        ("collection names a missing occurrence", |p| {
+            edit(&mut p.collections, CollectionId(1), |c| {
+                c.occurrence_ids.insert(OccurrenceId(99));
+            });
+        }),
+        ("empty collection name", |p| {
+            edit(&mut p.collections, CollectionId(1), |c| c.name = " ".into());
+        }),
+        ("remove an occurrence a collection holds", |p| {
+            p.occurrences.remove(&OccurrenceId(3));
+        }),
     ];
 
     /// Review 2026-10-17 M-6: a batch copied the whole product once per drawing sheet to
@@ -1669,8 +1847,8 @@ mod incremental_equivalence_tests {
         let moved = Transform::from_translation(10.0, 0.0, 0.0).unwrap();
         assert_eq!(
             copies(vec![move_to(moved)]),
-            1,
-            "three sheets share one copy"
+            0,
+            "a sheet names parts, not where they sit, so a move rechecks none (M-16)"
         );
         assert_eq!(copies(vec![show(false)]), 0);
         let command = CanonicalCommand::SetTagVisibility {
@@ -1680,10 +1858,20 @@ mod incremental_equivalence_tests {
         assert_eq!(copies(vec![command]), 0);
         let moved = Transform::from_translation(20.0, 0.0, 0.0).unwrap();
         let mixed = vec![show(true), move_to(moved)];
+        assert_eq!(copies(mixed), 0);
+        let added = CanonicalCommand::CreateOccurrence {
+            id: OccurrenceId(9),
+            definition_id: DefinitionId(1),
+            name: "added".into(),
+            transform: Transform::identity(),
+            parent: None,
+            tags: BTreeSet::new(),
+            visible: true,
+        };
         assert_eq!(
-            copies(mixed),
+            copies(vec![added]),
             1,
-            "a move beside a visibility change is checked in full"
+            "a new part is checked against every sheet, and three sheets share one copy"
         );
     }
 
