@@ -14,8 +14,8 @@ use crate::document::{
     Transform,
 };
 use crate::drawing::{
-    DrawingSheet, DrawingSheetId, DrawingSource, OrthographicDrawing, OrthographicViewKind,
-    project_orthographic_drawing, validate_source,
+    DrawingError, DrawingSheet, DrawingSheetId, DrawingSource, OrthographicDrawing,
+    OrthographicViewKind, project_orthographic_drawing, validate_source,
 };
 use crate::exact_brep_graph::ExactBRepGraph;
 use crate::exact_product::{
@@ -948,6 +948,8 @@ pub struct SharedDefinitionPropagationReceipt {
     pub occurrences: Vec<SharedChangeOccurrenceRefresh>,
     pub rebound_mate_ids: Vec<AssemblyMateId>,
     pub drawings: Vec<OrthographicDrawing>,
+    /// Affected sheets kept undrawn because their assembly is not rigid.
+    pub not_rigid_sheet_ids: Vec<DrawingSheetId>,
     pub exports: Vec<SharedChangeExportImpact>,
 }
 
@@ -1052,6 +1054,8 @@ pub struct OccurrenceForkCommitReceipt {
     pub unaffected_sibling_occurrence_ids: Vec<OccurrenceId>,
     pub rebound_mate_ids: Vec<AssemblyMateId>,
     pub drawings: Vec<OrthographicDrawing>,
+    /// Affected sheets kept undrawn because their assembly is not rigid.
+    pub not_rigid_sheet_ids: Vec<DrawingSheetId>,
     pub exports: Vec<SharedChangeExportImpact>,
 }
 
@@ -1576,9 +1580,8 @@ where
         ));
     }
     validate_occurrence_fork_mates(&source, &final_candidate, &final_results, impact)?;
-    let drawings = refresh_occurrence_fork_drawings(&final_candidate, &final_results, impact)?;
-    let exports =
-        refresh_occurrence_fork_exports(&final_candidate, &final_results, impact, *body_id)?;
+    let (drawings, not_rigid_sheet_ids, exports) =
+        refresh_occurrence_fork_outputs(&final_candidate, &final_results, impact, *body_id)?;
     let fork_package = final_results
         .get_body(&final_candidate, impact.fork_definition_id, *body_id)
         .map_err(|error| OccurrenceForkPropagationError::ExactPublication(error.to_string()))?
@@ -1634,6 +1637,7 @@ where
             .collect(),
         rebound_mate_ids,
         drawings,
+        not_rigid_sheet_ids,
         exports,
     })
 }
@@ -1741,17 +1745,34 @@ fn validate_occurrence_fork_mates(
     Ok(())
 }
 
+type ForkOutputs = (
+    Vec<OrthographicDrawing>,
+    Vec<DrawingSheetId>,
+    Vec<SharedChangeExportImpact>,
+);
+
+/// Redraws the affected sheets and rechecks the affected exports of a fork.
+fn refresh_occurrence_fork_outputs(
+    snapshot: &Snapshot,
+    exact_results: &ExactResultRegistry,
+    impact: &OccurrenceForkImpactProjection,
+    body_id: BodyId,
+) -> Result<ForkOutputs, OccurrenceForkPropagationError> {
+    let (drawings, not_rigid) = refresh_occurrence_fork_drawings(snapshot, exact_results, impact)?;
+    let exports = refresh_occurrence_fork_exports(snapshot, exact_results, impact, body_id)?;
+    Ok((drawings, not_rigid, exports))
+}
+
 fn refresh_occurrence_fork_drawings(
     snapshot: &Snapshot,
     exact_results: &ExactResultRegistry,
     impact: &OccurrenceForkImpactProjection,
-) -> Result<Vec<OrthographicDrawing>, OccurrenceForkPropagationError> {
+) -> Result<(Vec<OrthographicDrawing>, Vec<DrawingSheetId>), OccurrenceForkPropagationError> {
     let mut drawings = Vec::<OrthographicDrawing>::new();
+    let mut not_rigid = Vec::new();
+    let mut previous = None;
     for affected in &impact.drawing_views {
-        if drawings
-            .last()
-            .is_some_and(|drawing| drawing.sheet_id == affected.sheet_id)
-        {
+        if previous.replace(affected.sheet_id) == Some(affected.sheet_id) {
             continue;
         }
         let sheet = snapshot.drawing_sheet(affected.sheet_id).ok_or({
@@ -1760,13 +1781,18 @@ fn refresh_occurrence_fork_drawings(
                 problem: SheetProblem::Missing,
             })
         })?;
-        let drawing =
-            project_orthographic_drawing(snapshot, exact_results, sheet).map_err(|error| {
-                OccurrenceForkPropagationError::Dependency(DependencyBlocker::Sheet {
-                    sheet: affected.sheet_id,
-                    problem: SheetProblem::Projection(error),
-                })
-            })?;
+        let Some(drawing) =
+            project_unless_not_rigid(snapshot, exact_results, sheet, &mut not_rigid).map_err(
+                |error| {
+                    OccurrenceForkPropagationError::Dependency(DependencyBlocker::Sheet {
+                        sheet: affected.sheet_id,
+                        problem: SheetProblem::Projection(error),
+                    })
+                },
+            )?
+        else {
+            continue;
+        };
         if !drawing.is_current(snapshot) {
             return Err(OccurrenceForkPropagationError::Dependency(
                 DependencyBlocker::Sheet {
@@ -1777,7 +1803,7 @@ fn refresh_occurrence_fork_drawings(
         }
         drawings.push(drawing);
     }
-    Ok(drawings)
+    Ok((drawings, not_rigid))
 }
 
 fn refresh_occurrence_fork_exports(
@@ -2056,7 +2082,8 @@ where
         producer_transition,
         job.producer_feature_id,
     )?;
-    let drawings = refresh_drawings(&final_candidate, &final_results, impact)?;
+    let (drawings, not_rigid_sheet_ids) =
+        refresh_drawings(&final_candidate, &final_results, impact)?;
     let exports = refresh_export_eligibility(&final_candidate, &final_results, impact, body_id)?;
 
     let mut lineage_digests = final_package
@@ -2098,6 +2125,7 @@ where
         occurrences,
         rebound_mate_ids,
         drawings,
+        not_rigid_sheet_ids,
         exports,
     })
 }
@@ -2250,13 +2278,12 @@ fn refresh_drawings(
     snapshot: &Snapshot,
     exact_results: &ExactResultRegistry,
     impact: &SharedChangeImpactProjection,
-) -> Result<Vec<OrthographicDrawing>, SharedChangePropagationError> {
+) -> Result<(Vec<OrthographicDrawing>, Vec<DrawingSheetId>), SharedChangePropagationError> {
     let mut drawings = Vec::<OrthographicDrawing>::new();
+    let mut not_rigid = Vec::new();
+    let mut previous = None;
     for affected in &impact.drawing_views {
-        if drawings
-            .last()
-            .is_some_and(|drawing| drawing.sheet_id == affected.sheet_id)
-        {
+        if previous.replace(affected.sheet_id) == Some(affected.sheet_id) {
             continue;
         }
         let sheet = snapshot.drawing_sheet(affected.sheet_id).ok_or({
@@ -2265,13 +2292,18 @@ fn refresh_drawings(
                 problem: SheetProblem::Missing,
             })
         })?;
-        let drawing =
-            project_orthographic_drawing(snapshot, exact_results, sheet).map_err(|error| {
-                SharedChangePropagationError::Dependency(DependencyBlocker::Sheet {
-                    sheet: affected.sheet_id,
-                    problem: SheetProblem::Projection(error),
-                })
-            })?;
+        let Some(drawing) =
+            project_unless_not_rigid(snapshot, exact_results, sheet, &mut not_rigid).map_err(
+                |error| {
+                    SharedChangePropagationError::Dependency(DependencyBlocker::Sheet {
+                        sheet: affected.sheet_id,
+                        problem: SheetProblem::Projection(error),
+                    })
+                },
+            )?
+        else {
+            continue;
+        };
         if !drawing.is_current(snapshot) {
             return Err(SharedChangePropagationError::Dependency(
                 DependencyBlocker::Sheet {
@@ -2282,7 +2314,7 @@ fn refresh_drawings(
         }
         drawings.push(drawing);
     }
-    Ok(drawings)
+    Ok((drawings, not_rigid))
 }
 
 fn refresh_export_eligibility(
@@ -2348,6 +2380,24 @@ fn selected_sheets(
     snapshot
         .drawing_sheets()
         .filter(move |sheet| sheet.source().references_root_occurrence(occurrence_id))
+}
+
+/// Draws `sheet`, except that a sheet whose assembly is no longer rigid does
+/// not block the edit: it stays in the document, is listed in `not_rigid`,
+/// and drawing it names it (review 2026-10-19 M-14).
+fn project_unless_not_rigid(
+    snapshot: &Snapshot,
+    exact_results: &ExactResultRegistry,
+    sheet: &DrawingSheet,
+    not_rigid: &mut Vec<DrawingSheetId>,
+) -> Result<Option<OrthographicDrawing>, DrawingError> {
+    match project_orthographic_drawing(snapshot, exact_results, sheet) {
+        Err(DrawingError::SourceNotRigid(id)) if id == sheet.id() => {
+            not_rigid.push(id);
+            Ok(None)
+        }
+        result => result.map(Some),
+    }
 }
 
 /// The three orthographic views every drawing sheet projects.

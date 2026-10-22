@@ -102,6 +102,8 @@ pub struct ComponentReplacementCommitReceipt {
     pub reused_target_results: Vec<(BodyId, String)>,
     pub rebound_mate_ids: Vec<AssemblyMateId>,
     pub drawings: Vec<OrthographicDrawing>,
+    /// Affected sheets kept undrawn because their assembly is not rigid.
+    pub not_rigid_sheet_ids: Vec<DrawingSheetId>,
     pub exports: Vec<SharedChangeExportImpact>,
 }
 
@@ -1105,14 +1107,14 @@ fn replacement_drawing_views(
 ) -> Result<Vec<SharedChangeDrawingViewImpact>, ComponentReplacementImpactError> {
     let mut drawing_views = Vec::new();
     for sheet in selected_sheets(source, selection.occurrence_id) {
-        let drawing =
-            project_orthographic_drawing(source, exact_results, sheet).map_err(|error| {
+        let drawing = project_unless_not_rigid(source, exact_results, sheet, &mut Vec::new())
+            .map_err(|error| {
                 unsupported(DependencyBlocker::Sheet {
                     sheet: sheet.id(),
                     problem: SheetProblem::Projection(error),
                 })
             })?;
-        if !drawing.is_current(source) {
+        if drawing.is_some_and(|drawing| !drawing.is_current(source)) {
             return Err(ComponentReplacementImpactError::Stale);
         }
         drawing_views.extend(sheet_views(sheet.id()));
@@ -1366,12 +1368,14 @@ fn verify_replacement_candidate(
         return Err(unsupported(DependencyBlocker::CandidateChanged(drift)));
     }
     for sheet in selected_sheets(source, selection.occurrence_id) {
-        project_orthographic_drawing(&candidate, &candidate_results, sheet).map_err(|error| {
-            unsupported(DependencyBlocker::Sheet {
-                sheet: sheet.id(),
-                problem: SheetProblem::Projection(error),
-            })
-        })?;
+        project_unless_not_rigid(&candidate, &candidate_results, sheet, &mut Vec::new()).map_err(
+            |error| {
+                unsupported(DependencyBlocker::Sheet {
+                    sheet: sheet.id(),
+                    problem: SheetProblem::Projection(error),
+                })
+            },
+        )?;
     }
     export_replacement(
         &candidate_results,
@@ -1465,7 +1469,8 @@ pub fn commit_component_replacement(
         impact,
         &rebound_mate_ids,
     )?;
-    let drawings = publish_replacement_outputs(&candidate, &staged_results, impact)?;
+    let (drawings, not_rigid_sheet_ids) =
+        publish_replacement_outputs(&candidate, &staged_results, impact)?;
 
     let revision = document
         .commit_proposal(proposal)
@@ -1485,6 +1490,7 @@ pub fn commit_component_replacement(
         reused_target_results,
         rebound_mate_ids: rebound_mate_ids.into_iter().collect(),
         drawings,
+        not_rigid_sheet_ids,
         exports: impact.exports.clone(),
     })
 }
@@ -1783,34 +1789,38 @@ fn check_replaced_mates(
 }
 
 /// Projects the reviewed drawing sheets and exports the replaced occurrence
-/// from the staged results. Returns the drawings.
+/// from the staged results. Returns the drawings and the sheets kept undrawn
+/// because their assembly is not rigid.
 fn publish_replacement_outputs(
     candidate: &Snapshot,
     staged_results: &ExactResultRegistry,
     impact: &ComponentReplacementImpactProjection,
-) -> Result<Vec<OrthographicDrawing>, ComponentReplacementCommitError> {
+) -> Result<(Vec<OrthographicDrawing>, Vec<DrawingSheetId>), ComponentReplacementCommitError> {
     let drawing_sheet_ids = impact
         .drawing_views
         .iter()
         .map(|view| view.sheet_id)
         .collect::<std::collections::BTreeSet<_>>();
-    let drawings = drawing_sheet_ids
-        .into_iter()
-        .map(|sheet_id| {
-            let sheet = candidate.drawing_sheet(sheet_id).ok_or_else(|| {
-                invalid(ReviewMismatch::Dependency(DependencyBlocker::Sheet {
-                    sheet: sheet_id,
-                    problem: SheetProblem::Missing,
-                }))
-            })?;
-            project_orthographic_drawing(candidate, staged_results, sheet).map_err(|error| {
-                publication(DependencyBlocker::Sheet {
-                    sheet: sheet_id,
-                    problem: SheetProblem::Projection(error),
-                })
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut not_rigid = Vec::new();
+    let mut drawings = Vec::new();
+    for sheet_id in drawing_sheet_ids {
+        let sheet = candidate.drawing_sheet(sheet_id).ok_or_else(|| {
+            invalid(ReviewMismatch::Dependency(DependencyBlocker::Sheet {
+                sheet: sheet_id,
+                problem: SheetProblem::Missing,
+            }))
+        })?;
+        drawings.extend(
+            project_unless_not_rigid(candidate, staged_results, sheet, &mut not_rigid).map_err(
+                |error| {
+                    publication(DependencyBlocker::Sheet {
+                        sheet: sheet_id,
+                        problem: SheetProblem::Projection(error),
+                    })
+                },
+            )?,
+        );
+    }
     if impact.exports.iter().any(|export| {
         export.eligibility != SharedChangeExportEligibility::CurrentExact
             || export.occurrence_paths.as_slice() != [impact.selected_instance_path.clone()]
@@ -1829,7 +1839,7 @@ fn publish_replacement_outputs(
         .collect::<Result<Vec<_>, _>>()?;
     exact_model_stl_export(candidate, &export_bodies)
         .map_err(|error| publication(DependencyBlocker::Exact(error)))?;
-    Ok(drawings)
+    Ok((drawings, not_rigid))
 }
 
 fn replacement_target_reference(

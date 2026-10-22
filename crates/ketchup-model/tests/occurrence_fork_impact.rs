@@ -1215,6 +1215,58 @@ fn ungrounding_a_drawn_assembly_part_is_applied_and_the_sheet_says_it_is_not_rig
     assert_eq!(reopened.drawing_sheet(SHEET), Some(sheet));
 }
 
+/// After that ungrounding, forking a part on the sheet is not refused because
+/// of the sheet: the sheet stays undrawn, is named in the receipt, and drawing
+/// it still says it is not rigid (review 2026-10-19 M-14).
+#[test]
+fn forking_a_part_of_an_ungrounded_drawn_assembly_keeps_the_sheet_and_names_it() {
+    let mut document = seed(false);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: SECOND,
+                grounded: false,
+            },
+        ]))
+        .unwrap();
+    let source = document.current();
+    let mut exact_results = registry(&source, "ungrounded-source");
+    let impact = project_occurrence_fork_impact(
+        &document,
+        &exact_results,
+        edit_request(&source, FIRST),
+        ProposalPrincipal::LocalAssistant,
+    )
+    .unwrap();
+    let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
+    let evaluated = Arc::new(exact_package_for(
+        &candidate,
+        impact.fork_definition_id,
+        "ungrounded-fork",
+    ));
+
+    let receipt = commit_occurrence_fork_change(
+        &mut document,
+        &mut exact_results,
+        &impact,
+        |_| -> Result<Arc<ExactBodyPackage>, String> { Ok(Arc::clone(&evaluated)) },
+    )
+    .unwrap();
+
+    assert_eq!(receipt.not_rigid_sheet_ids, vec![SHEET]);
+    assert!(receipt.drawings.is_empty(), "{:?}", receipt.drawings);
+    let committed = document.current();
+    assert_eq!(
+        committed.occurrence(FIRST).unwrap().definition_id(),
+        impact.fork_definition_id
+    );
+    let sheet = committed.drawing_sheet(SHEET).unwrap();
+    assert_eq!(
+        project_orthographic_drawing(&committed, &exact_results, sheet).unwrap_err(),
+        DrawingError::SourceNotRigid(SHEET)
+    );
+}
+
 #[test]
 fn unsupported_local_export_preserves_last_valid_views_and_products() {
     let mut document = seed(false);
