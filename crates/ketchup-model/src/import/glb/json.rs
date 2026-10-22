@@ -275,3 +275,71 @@ impl<'de> Visitor<'de> for Count {
         Ok(count)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// Literals of `glb.rs` that are values, not keys: alpha modes, accessor types and
+    /// the attribute it reads inside `attributes`, an object kept whole (NAMED_KEYS).
+    const VALUES: &[&str] = &[
+        "BLEND", "MASK", "OPAQUE", "MAT2", "MAT3", "MAT4", "SCALAR", "VEC2", "VEC3", "VEC4",
+        "POSITION",
+    ];
+
+    /// The string literals of `source` that could be a JSON key.
+    fn identifier_literals(source: &str) -> BTreeSet<&str> {
+        let mut found = BTreeSet::new();
+        let mut rest = source;
+        while let Some(start) = rest.find('"') {
+            let body = &rest[start + 1..];
+            let mut end = 0;
+            let mut escaped = false;
+            for (index, character) in body.char_indices() {
+                match character {
+                    '\\' if !escaped => escaped = true,
+                    '"' if !escaped => {
+                        end = index;
+                        break;
+                    }
+                    _ => escaped = false,
+                }
+            }
+            let literal = &body[..end];
+            if literal.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && literal
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                found.insert(literal);
+            }
+            rest = &body[end + 1..];
+        }
+        found
+    }
+
+    /// A key `glb.rs` starts to read must be one this reader keeps, or the reader would
+    /// drop it and the import would take it for missing.
+    #[test]
+    fn every_key_the_import_reads_is_kept() {
+        let import = include_str!("../glb.rs");
+        let import = import.split("#[cfg(test)]").next().unwrap();
+        let unknown: Vec<_> = identifier_literals(import)
+            .into_iter()
+            .filter(|literal| {
+                !(READ_KEYS.contains(literal)
+                    || PRESENCE_KEYS.contains(literal)
+                    || COUNTED_KEYS.contains(literal)
+                    || VALUES.contains(literal)
+                    || literal.starts_with("glb_"))
+            })
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "glb.rs names {unknown:?}: add each key it reads to READ_KEYS, PRESENCE_KEYS or \
+             COUNTED_KEYS, or a value to VALUES"
+        );
+        assert!(identifier_literals(import).contains("bufferViews"));
+    }
+}
