@@ -280,6 +280,33 @@ fn woodwop_frame_of_an_odd_axis_order_stays_right_handed() {
     }
 }
 
+/// A blank drawn lying down has its length along x or y in the bill of
+/// materials as in BTLx, the cross-section in cyclic order after it (MF-9).
+#[test]
+fn bom_stock_length_follows_the_btlx_length_axis() {
+    let stock = |length_mm, width_mm, height_mm| {
+        PieceDimensions {
+            length_mm,
+            width_mm,
+            height_mm,
+        }
+        .stock_mm()
+    };
+    assert_eq!(stock(60.0, 140.0, 3000.0), [3000.0, 60.0, 140.0]);
+    assert_eq!(stock(3000.0, 60.0, 140.0), [3000.0, 60.0, 140.0]);
+    assert_eq!(stock(60.0, 3000.0, 140.0), [3000.0, 140.0, 60.0]);
+    for extents in [[60.0, 140.0, 3000.0], [60.0, 3000.0, 140.0]] {
+        let blank = StockBlank {
+            corner_mm: [0.0; 3],
+            extents_mm: extents,
+        };
+        assert_eq!(
+            btlx_part_coordinate(blank, extents),
+            stock(extents[0], extents[1], extents[2])
+        );
+    }
+}
+
 #[test]
 fn woodwop_drilling_maps_horizontal_and_top_vertical_axes_and_rejects_unsafe_axes() {
     let beam_stock = woodwop_stock_frame(&test_stock_geometry(PieceDimensions {

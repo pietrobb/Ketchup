@@ -102,11 +102,38 @@ impl FabricationProjectionEnvelope {
     }
 }
 
+/// Extents of a piece along its definition-local x (`length_mm`), y
+/// (`width_mm`) and z (`height_mm`) axes, as its drawing views show them. The
+/// length a shop measures is [`PieceDimensions::stock_mm`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PieceDimensions {
     pub length_mm: f64,
     pub width_mm: f64,
     pub height_mm: f64,
+}
+
+impl PieceDimensions {
+    /// Length, width and height as BTLx states them for the same blank: the
+    /// length along the axis [`stock_length_axis`] picks, then the next axes in
+    /// cyclic order (review 2026-10-18 MF-9).
+    #[must_use]
+    pub fn stock_mm(self) -> [f64; 3] {
+        let extents = [self.length_mm, self.width_mm, self.height_mm];
+        let length = stock_length_axis(extents);
+        std::array::from_fn(|axis| extents[(length + axis) % 3])
+    }
+}
+
+/// The definition axis a blank's length runs along: z, along which a member is
+/// built, unless the blank is longer along x or y (a box drawn lying down).
+fn stock_length_axis([x, y, z]: [f64; 3]) -> usize {
+    if z >= x && z >= y {
+        2
+    } else if x >= y {
+        0
+    } else {
+        1
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -170,7 +197,7 @@ pub const PURCHASED_ITEM_ROLE_V1: &str = "fabrication.purchased-item.v1";
 pub const MATERIAL_DIMENSION_V1: &str = "ketchup.material.v1";
 pub const TIMBER_MATERIAL_V1: &str = "ketchup.material.timber.unspecified.v1";
 pub const UNSPECIFIED_MATERIAL_V1: &str = "ketchup.material.unspecified.v1";
-pub const GENERAL_BOM_EXPORT_V2: &str = "ketchup.general-bom-export.v2";
+pub const GENERAL_BOM_EXPORT_V3: &str = "ketchup.general-bom-export.v3";
 pub const GENERAL_DRAWING_SVG_V3: &str = "ketchup.general-drawing-svg.v3";
 pub const GENERAL_MANUFACTURING_EXPORT_V2: &str = "ketchup.general-manufacturing-export.v2";
 pub const WOODWOP_MPR_4_0_DRILL_EXPORT_V1: &str = "ketchup.woodwop-mpr-4.0-drill-export.v1";
@@ -759,13 +786,14 @@ impl GeneralFabricationProjection {
             return Err(GeneralFabricationError::ExportBlocked);
         }
         let mut output = format!(
-            "{GENERAL_BOM_EXPORT_V2}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\n",
+            "{GENERAL_BOM_EXPORT_V3}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\n",
             self.bom.envelope.document_id.0,
             self.bom.envelope.source_revision,
             self.bom.envelope.source_digest,
             self.bom.envelope.result_digest
         );
         for row in &self.bom.rows {
+            let [length_mm, width_mm, height_mm] = row.dimensions.stock_mm();
             output.push_str(&format!(
                 "row={};position={};definition={};kind={};quantity={};length_mm={};width_mm={};height_mm={};material={};evidence={}\n",
                 row.stable_row_id,
@@ -773,9 +801,9 @@ impl GeneralFabricationProjection {
                 row.definition_id.0,
                 row.item_kind.token(),
                 row.quantity,
-                format_number(row.dimensions.length_mm),
-                format_number(row.dimensions.width_mm),
-                format_number(row.dimensions.height_mm),
+                format_number(length_mm),
+                format_number(width_mm),
+                format_number(height_mm),
                 row.material_key,
                 evidence_token(&row.evidence_class)
             ));
@@ -1965,18 +1993,10 @@ impl StockBlank {
         std::array::from_fn(|axis| definition_point[axis] - self.corner_mm[axis])
     }
 
-    /// The definition axis BTLx measures the length along: z, along which a
-    /// member is built, unless the stock is longer along x or y (a box drawn
-    /// lying down), which BTLx would otherwise call its depth.
+    /// The definition axis BTLx measures the length along, which it would
+    /// otherwise call its depth.
     fn btlx_length_axis(self) -> usize {
-        let [x, y, z] = self.extents_mm;
-        if z >= x && z >= y {
-            2
-        } else if x >= y {
-            0
-        } else {
-            1
-        }
+        stock_length_axis(self.extents_mm)
     }
 }
 

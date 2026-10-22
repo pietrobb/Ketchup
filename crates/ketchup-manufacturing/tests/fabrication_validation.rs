@@ -6,7 +6,7 @@ use ketchup_geometry::prismatic::Aabb;
 use ketchup_geometry::tapping::TappedHoleMismatch;
 use ketchup_manufacturing::fabrication::{
     BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
-    BtlxProfileProcessingRequest, Carriage, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,
+    BtlxProfileProcessingRequest, Carriage, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V3,
     GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
     GeneralMachiningFrame, GeneralMachiningGeometry, GeneralManufacturingKind,
     MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus,
@@ -589,6 +589,35 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
     );
 }
 
+/// The bill of materials gives a member built 3000 mm along z the length BTLx
+/// gives it: it said length 60, width 140, height 3000 (x, y, z), so the
+/// carpenter's list and the machine file named different lengths (review
+/// 2026-10-18 MF-9).
+#[test]
+fn bom_length_of_a_member_built_along_z_is_the_btlx_length() {
+    let document = drilled_stock_document(
+        &[[0.0, 0.0], [60.0, 0.0], [60.0, 140.0], [0.0, 140.0]],
+        "3000",
+        [30.0, 70.0],
+    );
+    let (snapshot, projection) = exact_graph_document_fabrication_projection(
+        document,
+        "mf9-60x140x3000-member",
+        GRAPH_BOOLEAN,
+    );
+    let bom = String::from_utf8(projection.bom_export(&snapshot).unwrap()).unwrap();
+    assert!(bom.starts_with(GENERAL_BOM_EXPORT_V3), "{bom}");
+    assert!(
+        bom.contains(";length_mm=3000;width_mm=60;height_mm=140;"),
+        "{bom}"
+    );
+    let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert!(
+        btlx.contains("Length=\"3000\" Width=\"60\" Height=\"140\""),
+        "{btlx}"
+    );
+}
+
 #[test]
 fn btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner() {
     // Profile (-30, -70) .. (30, 70), 2000 mm long, a hole into the start face
@@ -1038,7 +1067,7 @@ fn mixed_mechanical_bom_keeps_make_buy_materials_positions_and_timber_export_bou
     assert_eq!(projection.manufacturing.operations.len(), 1);
     assert!(projection.manufacturing.unresolved_sources.is_empty());
     let export = String::from_utf8(projection.bom_export(&snapshot).unwrap()).unwrap();
-    assert!(export.starts_with(GENERAL_BOM_EXPORT_V2));
+    assert!(export.starts_with(GENERAL_BOM_EXPORT_V3));
     assert!(export.contains("position=1;definition=10;kind=manufactured-timber;quantity=1"));
     assert!(export.contains("position=2;definition=10;kind=manufactured;quantity=1"));
     assert!(export.contains("position=3;definition=10;kind=purchased;quantity=1"));

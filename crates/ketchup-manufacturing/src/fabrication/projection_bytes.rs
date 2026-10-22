@@ -7,7 +7,7 @@ pub(super) fn general_bom_bytes(
     rows: &[GeneralBomRow],
     evidence_counts: EvidenceCounts,
 ) -> Vec<u8> {
-    let mut bytes = GENERAL_BOM_EXPORT_V2.as_bytes().to_vec();
+    let mut bytes = GENERAL_BOM_EXPORT_V3.as_bytes().to_vec();
     bytes.extend_from_slice(&(rows.len() as u64).to_le_bytes());
     bytes.extend_from_slice(&(evidence_counts.exact as u64).to_le_bytes());
     bytes.extend_from_slice(&(evidence_counts.tolerant as u64).to_le_bytes());

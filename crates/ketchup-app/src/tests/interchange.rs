@@ -740,7 +740,7 @@ fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_packa
     assert!(path.exists(), "{}", harness.state().digest);
     let bom = std::fs::read_to_string(&path).unwrap();
     let drawings = std::fs::read_to_string(path.with_extension("drawings.svg")).unwrap();
-    assert!(bom.contains("ketchup.general-bom-export.v2"));
+    assert!(bom.contains("ketchup.general-bom-export.v3"));
     assert!(bom.contains("position=1;definition=1;kind=manufactured;quantity=2"));
     assert!(bom.contains("material=ketchup.material.steel.s355.v1"));
     assert!(bom.contains("position=2;definition=1;kind=purchased;quantity=2"));
