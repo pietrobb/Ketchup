@@ -153,6 +153,17 @@ pub fn validate(file: &File) -> io::Result<()> {
     }
     Ok(())
 }
+/// Whether drive `letter` is mapped to a network share (`net use Z: \\server\share`),
+/// for the path policy; Windows answers from its drive table, not the share. Here
+/// so that this crate's Windows API calls stay in one module.
+pub fn remote_drive(letter: u8) -> bool {
+    use windows_sys::Win32::{
+        Storage::FileSystem::GetDriveTypeW, System::WindowsProgramming::DRIVE_REMOTE,
+    };
+    let root = [u16::from(letter), u16::from(b':'), u16::from(b'\\'), 0];
+    // SAFETY: `root` is a NUL-terminated UTF-16 string that outlives the call.
+    unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

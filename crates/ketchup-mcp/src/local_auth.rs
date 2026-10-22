@@ -79,6 +79,8 @@ pub fn proofs_match(supplied: &str, expected: &str) -> bool {
 #[allow(unsafe_code)]
 #[path = "local_auth_windows.rs"]
 mod platform;
+#[cfg(windows)]
+pub(crate) use platform::remote_drive;
 
 #[cfg(unix)]
 #[allow(unsafe_code)]

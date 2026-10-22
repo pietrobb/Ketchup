@@ -1,7 +1,8 @@
 //! The one path policy for files the window or this server touches on behalf of
 //! a client: absolute, bounded and on a local drive. It reads nothing from the
-//! file system, so a network path is refused before any request reaches its
-//! server (and before Windows sends it the user's NTLM hash).
+//! file system (on Windows only the drive table, to see a drive letter mapped to
+//! a share), so a network path is refused before any request reaches its server
+//! (and before Windows sends it the user's NTLM hash).
 
 use std::path::{Component, Path, Prefix};
 
@@ -13,8 +14,8 @@ const PATH_BYTES: usize = 4096;
 const RESERVED: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
 
 /// Whether `path` is an absolute path of a file on a local drive. On Windows
-/// that is a drive letter and a root (`C:\…` or `C:/…`) and nothing else: no
-/// share or device however its separators are mixed (`\\server`, `\/server`,
+/// that is a drive letter not mapped to a share and a root (`C:\…` or `C:/…`)
+/// and nothing else: no share or device however its separators are mixed (`\\server`, `\/server`,
 /// `\\?\`, `\\.\`), no alternate data stream (`file.pdf:stream`) and no device
 /// name.
 #[must_use]
@@ -23,18 +24,23 @@ pub fn local_absolute_path(path: &str) -> bool {
         && path.len() <= PATH_BYTES
         && !path.contains('\0')
         && Path::new(path).is_absolute()
-        && (!cfg!(windows) || local_windows_path(path))
+        && (!cfg!(windows) || local_windows_path(path, remote_drive))
 }
 
-fn local_windows_path(path: &str) -> bool {
+fn local_windows_path(path: &str, remote_drive: impl Fn(u8) -> bool) -> bool {
     let mut components = Path::new(path).components();
-    let on_disk = matches!(
-        components.next(),
-        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
-    ) && components.next() == Some(Component::RootDir);
+    let drive = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(letter) => Some(letter),
+            _ => None,
+        },
+        _ => None,
+    };
+    let on_disk = drive.is_some() && components.next() == Some(Component::RootDir);
     let stream = path.char_indices().any(|(index, c)| c == ':' && index != 1);
     on_disk
         && !stream
+        && !drive.is_some_and(&remote_drive)
         && components.all(|component| match component {
             Component::Normal(name) => !reserved_name(&name.to_string_lossy()),
             _ => true,
@@ -57,9 +63,26 @@ fn reserved_name(name: &str) -> bool {
         })
 }
 
+#[cfg(windows)]
+use crate::local_auth::remote_drive;
+
+#[cfg(not(windows))]
+fn remote_drive(_letter: u8) -> bool {
+    false
+}
+
 #[cfg(all(test, windows))]
 mod tests {
-    use super::local_absolute_path;
+    use super::{local_absolute_path, local_windows_path};
+
+    // Review 2026-10-19 P3: a drive letter mapped to a share passed as local.
+    #[test]
+    fn a_drive_mapped_to_a_network_share_is_not_local() {
+        let z_is_a_share = |letter: u8| letter.eq_ignore_ascii_case(&b'Z');
+        assert!(!local_windows_path(r"Z:\backup\x.pdf", z_is_a_share));
+        assert!(!local_windows_path("z:/backup/x.pdf", z_is_a_share));
+        assert!(local_windows_path(r"C:\work\x.pdf", z_is_a_share));
+    }
 
     #[test]
     fn only_a_drive_path_is_local_however_the_separators_are_mixed() {
