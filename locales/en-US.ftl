@@ -1742,6 +1742,7 @@ drawings-view-back = Rear elevation
 drawings-view-left = Left elevation
 drawings-view-right = Right elevation
 drawings-unavailable = There are no visible exact solids to draw yet; wait until the model is evaluated.
+drawings-do-not-fit = At 1:{ $scale } the views do not fit an { $format } sheet; choose a coarser scale or a larger format.
 drawings-parts-not-evaluated = { $count } visible parts have no exact solid, so the sheet would leave them out: { $parts }. Fix or hide them, or wait until the model is evaluated.
 drawings-settings-unreadable = The title block and sheet format stored in the document cannot be read ({ $reason }); they are kept as they are. Fill in the title block again in Project drawings to replace them.
 drawings-cosmetic-threads-failed = The modelled threads of { $part } cannot be drawn by ISO 6410 ({ $reason }); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic.

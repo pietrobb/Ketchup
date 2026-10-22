@@ -1791,6 +1791,9 @@ def expect_inside(part, container, tolerance = 0.1, name = None):
 #   file action=export export_format=dxf drawing_scale=N writes the plan with the
 #   visible annotations at 1:N (default 100): texts as TEXT, dimensions as DIMENSION
 #   with the value Kečup measured, lines as POLYLINE, each on the layer of its tag.
+#   file action=export_drawings plan_only=true drawing_scale=N writes the plan
+#   alone with the annotations as a PDF sheet at 1:N; without plan_only the
+#   project sheet draws them in its plan.
 # Example: a 35 x 35 m square with numbered anchor points along its south side
 #   side = 35000
 #   polyline("outline", [(0, 0), (side, 0), (side, side), (0, side)], closed = True, tags = "plan")

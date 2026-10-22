@@ -276,3 +276,104 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
         assert!(!target.exists());
     }
 }
+
+/// A client writes the plan alone as a PDF at the scale it names: the sheet holds
+/// one view, the texts and the measured value of the dimension, and says what it drew.
+#[test]
+fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n\
+                 text('S-02', 'S-02', at=(5000, 0), height_mm=3.5, tags='plan')\n\
+                 dim('d', (0, 0), (5000, 0), offset_mm=-1000, tags='plan')\n"
+            .into(),
+        overrides: None,
+        file_name: Some("plan.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let drawings =
+        |path: &Path, plan_only: bool, drawing_scale: Option<f64>, format: Option<&str>| {
+            Request::ExportDrawings {
+                expected: None,
+                path: path.display().to_string(),
+                sheet_id: None,
+                format: format.map(str::to_owned),
+                title_block: BTreeMap::new(),
+                plan_only,
+                drawing_scale,
+            }
+        };
+
+    let target = directory.path().join("plan.pdf");
+    let written = bridge
+        .execute(&mut app, drawings(&target, true, Some(250.0), None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["scale"], "1:250");
+    assert_eq!(written["format"], "A3");
+    assert_eq!(written["views"].as_array().unwrap().len(), 1);
+    assert_eq!(written["views"][0]["view"], "plan");
+    assert_eq!(written["annotations"]["texts"], 2);
+    assert_eq!(written["annotations"]["dimensions"], 1);
+    assert!(std::fs::read(&target).unwrap().starts_with(b"%PDF"));
+    let sheet = app
+        .project_drawings_job_for(crate::app::project_drawings::SheetRequest {
+            plan_only: true,
+            scale: Some(250),
+        })
+        .unwrap()
+        .render()
+        .unwrap()
+        .0;
+    let texts = sheet.page.texts().collect::<Vec<_>>();
+    for wanted in ["S-01", "S-02", "5000"] {
+        assert!(texts.contains(&wanted), "{wanted} not in {texts:?}");
+    }
+
+    // Hidden, the annotations leave nothing to draw.
+    let visibility = |visible: bool| Request::TagVisibility {
+        expected: None,
+        name: "plan".into(),
+        visible,
+    };
+    bridge
+        .execute(&mut app, visibility(false), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let hidden = directory.path().join("hidden.pdf");
+    assert_eq!(
+        bridge.execute(&mut app, drawings(&hidden, true, Some(250.0), None), false),
+        Err("drawings_unavailable")
+    );
+    bridge
+        .execute(&mut app, visibility(true), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+
+    // Too fine for the format, a scale that is no whole 1:N, and a drawing sheet
+    // with a plan option: nothing is written.
+    for (path, scale, format, code) in [
+        ("fine.pdf", 1.0, Some("A3"), "drawings_do_not_fit"),
+        ("half.pdf", 2.5, None, "invalid_params"),
+    ] {
+        let target = directory.path().join(path);
+        assert_eq!(
+            bridge.execute(
+                &mut app,
+                drawings(&target, true, Some(scale), format),
+                false
+            ),
+            Err(code)
+        );
+        assert!(!target.exists());
+    }
+    let mut sheet = drawings(&directory.path().join("sheet.dxf"), true, None, None);
+    if let Request::ExportDrawings { sheet_id, .. } = &mut sheet {
+        *sheet_id = Some(1);
+    }
+    assert_eq!(
+        bridge.execute(&mut app, sheet, false),
+        Err("invalid_params")
+    );
+}

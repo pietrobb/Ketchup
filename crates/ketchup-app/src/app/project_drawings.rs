@@ -43,6 +43,14 @@ pub(crate) enum ProjectDrawingsError {
     Write(std::io::Error),
 }
 
+/// What a client asks of one project sheet beyond the settings the document
+/// keeps: the plan alone, and a fixed scale 1:N.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SheetRequest {
+    pub(crate) plan_only: bool,
+    pub(crate) scale: Option<u32>,
+}
+
 /// The visible solids, the sheet options and the PDF's document information:
 /// everything the project sheet is drawn from.
 pub(crate) struct ProjectDrawingsJob {
@@ -374,12 +382,29 @@ impl KetchupApp {
     /// What the project sheet is drawn from, taken from the window; the
     /// projection itself needs nothing of it.
     pub(crate) fn project_drawings_job(&self) -> Result<ProjectDrawingsJob, ProjectDrawingsError> {
+        self.project_drawings_job_for(SheetRequest::default())
+    }
+
+    /// The job of the sheet `request` asks for: the whole sheet or the plan
+    /// alone, at the scale it fixes or the one the sheet picks.
+    pub(crate) fn project_drawings_job_for(
+        &self,
+        request: SheetRequest,
+    ) -> Result<ProjectDrawingsJob, ProjectDrawingsError> {
         self.stored_sheet_settings()
             .map_err(ProjectDrawingsError::SettingsUnreadable)?;
         let snapshot = self.document.current();
         let solids = self.visible_drawing_solids(&snapshot)?;
+        let annotations = snapshot
+            .annotations()
+            .iter()
+            .filter(|annotation| snapshot.tags_visible(&annotation.tags))
+            .cloned()
+            .collect::<Vec<_>>();
         let settings = self.sheet_settings();
+        // A plan of annotations alone cuts nothing; its cut is at the floor.
         let cut = default_plan_cut_z(&solids, settings.plan_cut_above_floor_mm())
+            .or_else(|| (solids.is_empty() && !annotations.is_empty()).then_some(0.0))
             .ok_or(ProjectDrawingsError::Drawing(ProjectDrawingError::Empty))?;
         let view_titles = ProjectView::ALL
             .into_iter()
@@ -426,6 +451,9 @@ impl KetchupApp {
                 coarsest_scale: Some(settings.coarsest_scale()),
                 title_labels: self.title_labels(),
                 title_block: settings.title_block,
+                plan_only: request.plan_only,
+                scale: request.scale,
+                annotations,
             },
             info,
         })
@@ -435,6 +463,15 @@ impl KetchupApp {
         match error {
             ProjectDrawingsError::Drawing(ProjectDrawingError::Empty) => {
                 self.catalog.text("drawings-unavailable")
+            }
+            ProjectDrawingsError::Drawing(ProjectDrawingError::DoesNotFit { scale, format }) => {
+                self.catalog.format(
+                    "drawings-do-not-fit",
+                    &BTreeMap::from([
+                        ("scale", scale.to_string()),
+                        ("format", format.map_or("A0", SheetFormat::name).to_owned()),
+                    ]),
+                )
             }
             ProjectDrawingsError::NotEvaluated(parts) => self.catalog.format(
                 "drawings-parts-not-evaluated",
@@ -460,15 +497,16 @@ impl KetchupApp {
     pub(crate) fn write_project_drawings(
         &self,
         path: &Path,
+        request: SheetRequest,
     ) -> Result<ProjectSheet, ProjectDrawingsError> {
-        let (sheet, pdf) = self.project_drawings_job()?.render()?;
+        let (sheet, pdf) = self.project_drawings_job_for(request)?.render()?;
         publish_project_drawings(path, &pdf)?;
         Ok(sheet)
     }
 
     /// Writes the project drawings as PDF and reports it in the digest.
     pub fn export_project_drawings_to(&mut self, path: &Path) -> bool {
-        let result = self.write_project_drawings(path);
+        let result = self.write_project_drawings(path, SheetRequest::default());
         self.report_project_drawings(path, &result);
         result.is_ok()
     }

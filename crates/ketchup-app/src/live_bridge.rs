@@ -392,6 +392,12 @@ pub enum Request {
         format: Option<String>,
         #[serde(default)]
         title_block: BTreeMap<ketchup_manufacturing::title_block::TitleField, String>,
+        /// Only the plan, with the annotations, rather than all seven views.
+        #[serde(default)]
+        plan_only: bool,
+        /// N of the scale 1:N the sheet is drawn at; the sheet picks it when absent.
+        #[serde(default)]
+        drawing_scale: Option<f64>,
     },
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
     /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.

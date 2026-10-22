@@ -5,7 +5,8 @@
 use super::{LiveBridge, Request, failed_because, failure};
 use crate::KetchupApp;
 use crate::app::drawing_sheet_export::{DrawingSheetExportError, SheetFileFormat};
-use crate::app::project_drawings::ProjectDrawingsError;
+use crate::app::project_drawings::{ProjectDrawingsError, SheetRequest};
+use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
 use ketchup_model::drawing::DrawingSheetId;
 use ketchup_model::drawing_export::DxfCurves;
@@ -36,6 +37,8 @@ impl LiveBridge {
             sheet_id,
             format,
             title_block,
+            plan_only,
+            drawing_scale,
         } = request
         else {
             return Err("invalid_request");
@@ -44,18 +47,44 @@ impl LiveBridge {
         Self::available(app, ui_busy)?;
         match sheet_id {
             Some(id) => {
-                if format.is_some() || !title_block.is_empty() {
+                if format.is_some()
+                    || !title_block.is_empty()
+                    || plan_only
+                    || drawing_scale.is_some()
+                {
                     return Err(failure(
                         "invalid_params",
-                        "format and title_block belong to the project sheet; a drawing sheet keeps its own page and title block.",
+                        "format, title_block, plan_only and drawing_scale belong to the project sheet; a drawing sheet keeps its own page, views, scale and title block.",
                         json!({"sheet_id": id}),
                     ));
                 }
                 export_sheet(app, &path, DrawingSheetId(id))
             }
-            None => export(app, &path, format.as_deref(), title_block),
+            None => {
+                let request = SheetRequest {
+                    plan_only,
+                    scale: drawing_scale.map(sheet_scale).transpose()?,
+                };
+                export(app, &path, format.as_deref(), title_block, request)
+            }
         }
     }
+}
+
+/// N of a scale 1:N a sheet is drawn at: a whole number from 1 to 100 000.
+fn sheet_scale(scale: f64) -> Result<u32, &'static str> {
+    let whole = (scale.fract() == 0.0 && (1.0..=MAX_PLAN_SCALE).contains(&scale))
+        .then(|| format!("{scale:.0}").parse::<u32>().ok())
+        .flatten();
+    whole.ok_or_else(|| {
+        failure(
+            "invalid_params",
+            format!(
+                "drawing_scale is N of the scale 1:N of the sheet, a whole number from 1 to {MAX_PLAN_SCALE}."
+            ),
+            json!({"drawing_scale": scale}),
+        )
+    })
 }
 
 fn has_extension(path: &Path, wanted: &str) -> bool {
@@ -153,6 +182,7 @@ fn export(
     path: &str,
     format: Option<&str>,
     title_block: BTreeMap<TitleField, String>,
+    request: SheetRequest,
 ) -> Result<Value, &'static str> {
     let target = Path::new(path);
     if has_extension(target, "dxf") || has_extension(target, "dwg") {
@@ -208,11 +238,13 @@ fn export(
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
     // The settings stay in the document only with the sheet they were written on.
-    let sheet = app.write_project_drawings(target).map_err(|error| {
-        app.store_sheet_settings(previous);
-        app.drawings.unsaved = previously_unsaved;
-        drawings_failed(error)
-    })?;
+    let sheet = app
+        .write_project_drawings(target, request)
+        .map_err(|error| {
+            app.store_sheet_settings(previous);
+            app.drawings.unsaved = previously_unsaved;
+            drawings_failed(error)
+        })?;
     let settings = app.sheet_settings();
     Ok(json!({
         "exported": true,
@@ -220,6 +252,7 @@ fn export(
         "format": sheet.format.name(),
         "scale": format!("1:{}", sheet.scale),
         "views": sheet.views,
+        "annotations": sheet.annotations,
         "format_setting": settings.format.map_or("auto", SheetFormat::name),
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",
@@ -230,6 +263,15 @@ fn export(
 /// The answer to a sheet that could not be written, its cause recorded.
 fn drawings_failed(error: ProjectDrawingsError) -> &'static str {
     match error {
+        ProjectDrawingsError::Drawing(
+            error @ ketchup_manufacturing::project_drawings::ProjectDrawingError::DoesNotFit {
+                ..
+            },
+        ) => failure(
+            "drawings_do_not_fit",
+            format!("{error}; choose a coarser drawing_scale or a larger format."),
+            json!({}),
+        ),
         ProjectDrawingsError::Drawing(error) => failed_because("drawings_unavailable", error),
         ProjectDrawingsError::NotEvaluated(parts) => failure(
             "drawings_unavailable",
@@ -272,7 +314,13 @@ mod tests {
         let before = app.stored_sheet_settings().unwrap();
         let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
         assert_eq!(
-            export(&mut app, target.to_str().unwrap(), Some("A1"), title),
+            export(
+                &mut app,
+                target.to_str().unwrap(),
+                Some("A1"),
+                title,
+                SheetRequest::default()
+            ),
             Err("drawings_target_exists")
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"user file");
@@ -288,7 +336,16 @@ mod tests {
         let before = app.stored_sheet_settings().unwrap();
         let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
         // The empty document has no exact solid to draw.
-        assert!(export(&mut app, target.to_str().unwrap(), Some("A1"), title).is_err());
+        assert!(
+            export(
+                &mut app,
+                target.to_str().unwrap(),
+                Some("A1"),
+                title,
+                SheetRequest::default()
+            )
+            .is_err()
+        );
         assert!(!target.exists());
         assert_eq!(app.stored_sheet_settings().unwrap(), before);
         assert!(!app.drawings.unsaved);
@@ -318,7 +375,16 @@ mod tests {
         };
         assert!(app.stored_sheet_settings().is_err());
         let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
-        assert!(export(&mut app, target.to_str().unwrap(), Some("A1"), title).is_err());
+        assert!(
+            export(
+                &mut app,
+                target.to_str().unwrap(),
+                Some("A1"),
+                title,
+                SheetRequest::default()
+            )
+            .is_err()
+        );
         assert_eq!(
             stored(&app),
             Some(corrupt.clone()),
@@ -326,7 +392,9 @@ mod tests {
         );
         assert!(!target.exists());
 
-        let error = app.write_project_drawings(&target).unwrap_err();
+        let error = app
+            .write_project_drawings(&target, SheetRequest::default())
+            .unwrap_err();
         assert!(matches!(error, ProjectDrawingsError::SettingsUnreadable(_)));
         assert!(!target.exists());
         assert_eq!(stored(&app), Some(corrupt));

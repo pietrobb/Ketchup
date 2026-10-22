@@ -20,8 +20,12 @@ use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+mod annotations;
 mod threads;
 
+pub use annotations::AnnotationCounts;
+use annotations::PlanAnnotations;
+use ketchup_model::annotation::Annotation;
 pub use threads::DrawingThread;
 use threads::ThreadMarks;
 
@@ -91,6 +95,12 @@ pub struct ProjectSheetOptions {
     pub title_labels: BTreeMap<TitleField, String>,
     /// The title block values; scale and format are filled in by the sheet.
     pub title_block: TitleBlock,
+    /// Only the plan, x to the right and y up, rather than all seven views.
+    pub plan_only: bool,
+    /// The scale 1:N every view is drawn at; when absent the sheet picks it.
+    pub scale: Option<u32>,
+    /// The annotations to draw in the plan.
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -113,6 +123,8 @@ pub struct ProjectSheet {
     pub scale: u32,
     pub format: SheetFormat,
     pub views: Vec<ViewSummary>,
+    /// The annotations drawn in the plan.
+    pub annotations: AnnotationCounts,
 }
 
 impl ProjectSheet {
@@ -128,13 +140,29 @@ impl ProjectSheet {
 pub enum ProjectDrawingError {
     /// There is nothing visible to draw.
     Empty,
+    /// The views do not fit the format (the largest when none is chosen) at the
+    /// chosen scale.
+    DoesNotFit {
+        scale: u32,
+        format: Option<SheetFormat>,
+    },
 }
 
 impl std::fmt::Display for ProjectDrawingError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Empty => "there are no visible solids to draw",
-        })
+        match self {
+            Self::Empty => {
+                formatter.write_str("there are no visible solids or annotations to draw")
+            }
+            Self::DoesNotFit { scale, format } => write!(
+                formatter,
+                "the views do not fit {} at 1:{scale}",
+                format.map_or_else(
+                    || "even an A0 sheet".to_owned(),
+                    |format| format!("an {} sheet", format.name())
+                )
+            ),
+        }
     }
 }
 
@@ -416,9 +444,27 @@ struct DrawnView {
     cuts: Vec<(Vec<Polyline>, [u8; 3])>,
     /// Thread lines on the cut, drawn over its fill.
     on_cut: Vec<Item>,
+    /// What the view draws, annotations included.
     min: [f64; 2],
     max: [f64; 2],
+    /// The extent of the solids alone, which the overall dimensions measure.
+    solids: Option<([f64; 2], [f64; 2])>,
+    annotations: Option<PlanAnnotations>,
     cut_at_mm: Option<f64>,
+}
+
+impl DrawnView {
+    /// Draws `annotations` in this view and grows it to hold them.
+    fn annotate(&mut self, frame: &ViewFrame, annotations: &[Annotation]) {
+        let annotations = PlanAnnotations::project(frame, annotations);
+        for point in annotations.points() {
+            for (axis, value) in point.into_iter().enumerate() {
+                self.min[axis] = self.min[axis].min(value);
+                self.max[axis] = self.max[axis].max(value);
+            }
+        }
+        self.annotations = Some(annotations);
+    }
 }
 
 fn shade(color: [u8; 3], facing: f64) -> [u8; 3] {
@@ -536,6 +582,8 @@ fn draw_view(
         on_cut: threads.on_cut,
         min,
         max,
+        solids: min[0].is_finite().then_some((min, max)),
+        annotations: None,
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {
@@ -558,10 +606,16 @@ fn polygon_area(points: &[[f64; 2]]) -> f64 {
 }
 
 /// The frames of the seven views around the model's bounds. The longer
-/// horizontal side is the length: the longitudinal section runs along it.
-fn view_frames(min: Point, max: Point, plan_cut_z: f64) -> [(ProjectView, ViewFrame); 7] {
+/// horizontal side is the length: the longitudinal section runs along it;
+/// `x_right` keeps x to the right in every case, as a plan of its own shows it.
+fn view_frames(
+    min: Point,
+    max: Point,
+    plan_cut_z: f64,
+    x_right: bool,
+) -> [(ProjectView, ViewFrame); 7] {
     let centre = lerp(min, max, 0.5);
-    let along_x = max[0] - min[0] >= max[1] - min[1];
+    let along_x = x_right || max[0] - min[0] >= max[1] - min[1];
     // `length` runs along the model, `width` across it, seen from the front.
     let (length, width) = if along_x {
         ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
@@ -625,28 +679,31 @@ fn extent(view: &DrawnView) -> [f64; 2] {
 /// The largest standard scale at which both rows fit the drawing area of
 /// `format` above the title block, if any does.
 fn choose_scale(views: &[DrawnView], format: SheetFormat) -> Option<u32> {
+    SCALES.into_iter().find(|scale| fits(views, format, *scale))
+}
+
+/// Whether both rows fit the drawing area of `format` at 1:`scale`.
+fn fits(views: &[DrawnView], format: SheetFormat, scale: u32) -> bool {
     let rows = rows(views);
     let [[left, top], [right, bottom]] = drawing_area(format);
     let usable_width = right - left;
     let usable_height = bottom - top - TITLE_BLOCK_MM[1];
-    SCALES.into_iter().find(|scale| {
-        let scale = f64::from(*scale);
-        let widths_fit = rows.iter().all(|row| {
+    let scale = f64::from(scale);
+    let widths_fit = rows.iter().all(|row| {
+        row.iter()
+            .map(|index| extent(&views[*index])[0] / scale + 2.0 * VIEW_PAD_MM)
+            .sum::<f64>()
+            <= usable_width
+    });
+    let height = rows
+        .iter()
+        .map(|row| {
             row.iter()
-                .map(|index| extent(&views[*index])[0] / scale + 2.0 * VIEW_PAD_MM)
-                .sum::<f64>()
-                <= usable_width
-        });
-        let height = rows
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(|index| extent(&views[*index])[1] / scale + 2.0 * VIEW_PAD_MM)
-                    .fold(0.0, f64::max)
-            })
-            .sum::<f64>();
-        widths_fit && height <= usable_height
-    })
+                .map(|index| extent(&views[*index])[1] / scale + 2.0 * VIEW_PAD_MM)
+                .fold(0.0, f64::max)
+        })
+        .sum::<f64>();
+    widths_fit && height <= usable_height
 }
 
 /// The requested format at its best scale, or the smallest format that holds
@@ -670,6 +727,24 @@ fn choose_layout(
         .unwrap_or_else(|| {
             let format = SheetFormat::A0;
             (format, choose_scale(views, format).unwrap_or(coarsest))
+        })
+}
+
+/// The requested format, or the smallest that holds the views at the fixed
+/// `scale`; never a sheet the views run off.
+fn layout_at_scale(
+    views: &[DrawnView],
+    requested: Option<SheetFormat>,
+    scale: u32,
+) -> Result<(SheetFormat, u32), ProjectDrawingError> {
+    requested
+        .map_or_else(|| SheetFormat::ALL.to_vec(), |format| vec![format])
+        .into_iter()
+        .find(|format| fits(views, *format, scale))
+        .map(|format| (format, scale))
+        .ok_or(ProjectDrawingError::DoesNotFit {
+            scale,
+            format: requested,
         })
 }
 
@@ -735,12 +810,41 @@ fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f6
             thread_line(page, points, *width_mm);
         }
     }
-    let [width, height] = extent(view);
-    let [left, bottom] = at(view.min);
-    let [right, top] = at(view.max);
+    if let Some(annotations) = &view.annotations {
+        annotations.draw(page, at);
+    }
+    let [outer_left, outer_bottom] = at(view.min);
+    // Overall width below the view and overall height on its left, outside
+    // whatever the view draws.
+    let below = outer_bottom + 8.0;
+    if let Some((low, high)) = view.solids {
+        overall_dimensions(
+            page,
+            [at(low), at(high)],
+            [high[0] - low[0], high[1] - low[1]],
+            [below, outer_left - 8.0],
+        );
+    }
+    page.marks.push(Mark::Text {
+        at: [outer_left, below + 8.0],
+        text: title.to_owned(),
+        height_mm: VIEW_TITLE_MM,
+        anchor: Anchor::Start,
+        angle_deg: 0.0,
+        bold: true,
+    });
+}
+
+/// The overall width of the solids at `below` and their height at `aside`, from
+/// their lower-left and upper-right corners on the page; `size` is in model
+/// millimetres.
+fn overall_dimensions(
+    page: &mut Page,
+    [[left, bottom], [right, top]]: [[f64; 2]; 2],
+    [width, height]: [f64; 2],
+    [below, aside]: [f64; 2],
+) {
     let thin = Stroke::solid(EDGE_STROKE_MM);
-    // Overall width below the view and overall height on its left.
-    let below = bottom + 8.0;
     page.line(
         vec![[left - 2.0, below], [right + 2.0, below]],
         thin.clone(),
@@ -755,7 +859,6 @@ fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f6
         DIMENSION_TEXT_MM,
         Anchor::Middle,
     );
-    let aside = left - 8.0;
     page.line(
         vec![[aside, bottom + 2.0], [aside, top - 2.0]],
         thin.clone(),
@@ -771,14 +874,6 @@ fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f6
         anchor: Anchor::Middle,
         angle_deg: 90.0,
         bold: false,
-    });
-    page.marks.push(Mark::Text {
-        at: [left, below + 8.0],
-        text: title.to_owned(),
-        height_mm: VIEW_TITLE_MM,
-        anchor: Anchor::Start,
-        angle_deg: 0.0,
-        bold: true,
     });
 }
 
@@ -844,27 +939,48 @@ pub fn default_plan_cut_z(solids: &[DrawingSolid], above_floor_mm: f64) -> Optio
 /// Draws the project sheet of `solids`.
 ///
 /// # Errors
-/// [`ProjectDrawingError::Empty`] when there is no triangle to draw.
+/// [`ProjectDrawingError::Empty`] when there is no triangle and no annotation
+/// to draw; [`ProjectDrawingError::DoesNotFit`] when the views do not fit the
+/// sheet at the scale the options fix.
 pub fn project_sheet(
     solids: &[DrawingSolid],
     options: &ProjectSheetOptions,
 ) -> Result<ProjectSheet, ProjectDrawingError> {
-    let (min, max) = bounds(solids).ok_or(ProjectDrawingError::Empty)?;
+    let annotated = annotation_bounds(&options.annotations);
+    let (min, max) = match (bounds(solids), annotated) {
+        (Some((min, max)), Some((low, high))) => (
+            std::array::from_fn(|axis| min[axis].min(low[axis])),
+            std::array::from_fn(|axis| max[axis].max(high[axis])),
+        ),
+        (Some(bounds), None) | (None, Some(bounds)) => bounds,
+        (None, None) => return Err(ProjectDrawingError::Empty),
+    };
+    // A plan of annotations alone cuts nothing: the cut height does not matter.
     let plan_cut_z = options
         .plan_cut_z_mm
         .or_else(|| default_plan_cut_z(solids, f64::from(DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM)))
-        .ok_or(ProjectDrawingError::Empty)?;
+        .unwrap_or(max[2]);
     let edges = solids.iter().map(solid_edges).collect::<Vec<_>>();
-    let views = view_frames(min, max, plan_cut_z)
+    let views = view_frames(min, max, plan_cut_z, options.plan_only)
         .into_iter()
-        .map(|(view, frame)| draw_view(view, frame, solids, &edges))
+        .filter(|(view, _)| !options.plan_only || *view == ProjectView::Plan)
+        .map(|(view, frame)| {
+            let mut drawn = draw_view(view, frame, solids, &edges);
+            if view == ProjectView::Plan && !options.annotations.is_empty() {
+                drawn.annotate(&frame, &options.annotations);
+            }
+            drawn
+        })
         .filter(|view| view.min[0].is_finite())
         .collect::<Vec<_>>();
-    let (format, scale) = choose_layout(
-        &views,
-        options.format,
-        options.coarsest_scale.unwrap_or(DEFAULT_COARSEST_SCALE),
-    );
+    let (format, scale) = match options.scale {
+        Some(scale) => layout_at_scale(&views, options.format, scale)?,
+        None => choose_layout(
+            &views,
+            options.format,
+            options.coarsest_scale.unwrap_or(DEFAULT_COARSEST_SCALE),
+        ),
+    };
     let title_of = |view: ProjectView| {
         options
             .view_titles
@@ -912,12 +1028,30 @@ pub fn project_sheet(
             extent_mm: extent(view).map(|value| (value * 10.0).round() / 10.0),
         })
         .collect();
+    let annotations = views
+        .iter()
+        .find_map(|view| view.annotations.as_ref())
+        .map(|annotations| annotations.counts.clone())
+        .unwrap_or_default();
     Ok(ProjectSheet {
         page,
         scale,
         format,
         views: summaries,
+        annotations,
     })
+}
+
+fn annotation_bounds(annotations: &[Annotation]) -> Option<(Point, Point)> {
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for point in annotations.iter().flat_map(Annotation::points) {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(point[axis]);
+            max[axis] = max[axis].max(point[axis]);
+        }
+    }
+    min[0].is_finite().then_some((min, max))
 }
 
 /// A dimension in whole millimetres, a half rounded up as a drawing reads:
@@ -1015,7 +1149,7 @@ mod tests {
     fn a_cylinder_seen_from_the_side_shows_its_outline() {
         let column = cylinder(50.0, 100.0, 17);
         let edges = vec![solid_edges(&column)];
-        let frames = view_frames([-50.0, -50.0, 0.0], [50.0, 50.0, 100.0], 200.0);
+        let frames = view_frames([-50.0, -50.0, 0.0], [50.0, 50.0, 100.0], 200.0, false);
         let (view, front) = frames[3];
         assert_eq!(view, ProjectView::Front);
         let drawn = draw_view(view, front, std::slice::from_ref(&column), &edges);
@@ -1333,6 +1467,130 @@ mod tests {
         assert_eq!(
             project_sheet(&[], &ProjectSheetOptions::default()),
             Err(ProjectDrawingError::Empty)
+        );
+    }
+
+    /// Eight points 5 m apart on the south side of a 35 m square: a number at
+    /// each, a chain of dimensions below them and the square's outline.
+    fn anchor_plan() -> Vec<Annotation> {
+        use ketchup_model::annotation::AnnotationMark;
+        let point = |index: u32| [f64::from(index) * 5000.0, 0.0, 0.0];
+        let annotation = |name: String, mark| Annotation {
+            name,
+            tags: std::collections::BTreeSet::new(),
+            mark,
+        };
+        let mut plan = (0..8)
+            .map(|index| {
+                annotation(
+                    format!("S-{:02}", index + 1),
+                    AnnotationMark::Text {
+                        at_mm: point(index),
+                        text: format!("S-{:02}", index + 1),
+                        height_mm: 3.5,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        plan.extend((0..7).map(|index| {
+            annotation(
+                format!("d{index}"),
+                AnnotationMark::Dimension {
+                    from_mm: point(index),
+                    to_mm: point(index + 1),
+                    offset_mm: -1500.0,
+                    height_mm: 2.5,
+                },
+            )
+        }));
+        plan.push(annotation(
+            "outline".to_owned(),
+            AnnotationMark::Line {
+                points_mm: vec![
+                    [0.0, 0.0, 0.0],
+                    [35_000.0, 0.0, 0.0],
+                    [35_000.0, 35_000.0, 0.0],
+                    [0.0, 35_000.0, 0.0],
+                ],
+                closed: true,
+            },
+        ));
+        plan
+    }
+
+    fn text_at<'a>(sheet: &'a ProjectSheet, wanted: &str) -> Vec<&'a [f64; 2]> {
+        sheet
+            .page
+            .marks
+            .iter()
+            .filter_map(|mark| match mark {
+                Mark::Text { text, at, .. } if text == wanted => Some(at),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_plan_of_its_own_draws_its_annotations_at_the_scale_it_is_given() {
+        let marker = cuboid("marker", [-100.0, -100.0, 5.0], [100.0, 100.0, 10.0]);
+        let options = ProjectSheetOptions {
+            plan_only: true,
+            scale: Some(250),
+            annotations: anchor_plan(),
+            ..ProjectSheetOptions::default()
+        };
+        let sheet = project_sheet(std::slice::from_ref(&marker), &options).unwrap();
+        assert_eq!(sheet.scale, 250);
+        assert_eq!(
+            sheet.views.iter().map(|view| view.view).collect::<Vec<_>>(),
+            [ProjectView::Plan]
+        );
+        assert_eq!(
+            sheet.annotations,
+            AnnotationCounts {
+                texts: 8,
+                dimensions: 7,
+                lines: 1,
+                ..AnnotationCounts::default()
+            }
+        );
+        // Every number at its point: 5 m apart is 20 mm at 1:250.
+        let numbers = (1..=8)
+            .map(|index| {
+                let found = text_at(&sheet, &format!("S-{index:02}"));
+                assert_eq!(found.len(), 1, "S-{index:02}");
+                *found[0]
+            })
+            .collect::<Vec<_>>();
+        for pair in numbers.windows(2) {
+            assert!((pair[1][0] - pair[0][0] - 20.0).abs() < 1e-9, "{pair:?}");
+            assert!((pair[1][1] - pair[0][1]).abs() < 1e-9, "{pair:?}");
+        }
+        // Seven measured values, each centred between its two points and below them.
+        let values = text_at(&sheet, "5000");
+        assert_eq!(values.len(), 7, "{values:?}");
+        for (value, pair) in values.iter().zip(numbers.windows(2)) {
+            assert!((value[0] - f64::midpoint(pair[0][0], pair[1][0])).abs() < 1e-9);
+            assert!(value[1] > pair[0][1], "below the points on the sheet");
+        }
+        // The overall dimensions measure the marker, not the annotations.
+        assert_eq!(text_at(&sheet, "200").len(), 2);
+        assert!(text_at(&sheet, "35000").is_empty());
+
+        let annotations_alone = project_sheet(&[], &options).unwrap();
+        assert_eq!(annotations_alone.annotations, sheet.annotations);
+        assert_eq!(text_at(&annotations_alone, "5000").len(), 7);
+
+        let too_fine = ProjectSheetOptions {
+            scale: Some(10),
+            ..options
+        };
+        assert_eq!(
+            project_sheet(&[marker], &too_fine),
+            Err(ProjectDrawingError::DoesNotFit {
+                scale: 10,
+                format: None
+            })
         );
     }
 }
