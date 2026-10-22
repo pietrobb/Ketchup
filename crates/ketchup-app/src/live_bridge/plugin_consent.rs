@@ -102,7 +102,7 @@ impl PluginConsent {
         let refused =
             |reason: String| failure("invalid_path", reason, json!({"canonical_mutation": false}));
         let executable = started_executable(Path::new(executable), Path::is_file)?;
-        super::plugin_manifest::not_a_shebang(&executable).map_err(refused)?;
+        super::plugin_manifest::not_a_shebang(&executable, refused)?;
         let sha256 = held
             .hash(&executable)
             .map_err(|error| failed_because("plugin_failed", error))?;
@@ -123,8 +123,7 @@ impl PluginConsent {
             command.push(given);
             files.extend(file);
         }
-        super::plugin_manifest::script_first(&files[0].0, &command[1..], &names_file)
-            .map_err(refused)?;
+        super::plugin_manifest::script_first(&files[0].0, &command[1..], &names_file, refused)?;
         Ok(Self {
             folder: None,
             files,

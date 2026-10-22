@@ -1408,7 +1408,7 @@ fn an_interpreter_gets_only_listed_options_before_its_hashed_script() {
         ),
     ] {
         assert_eq!(
-            script_first(executable, &arguments, &names_file).is_ok(),
+            script_first(executable, &arguments, &names_file, |_| "invalid_path").is_ok(),
             passes,
             "{executable:?} {arguments:?}"
         );

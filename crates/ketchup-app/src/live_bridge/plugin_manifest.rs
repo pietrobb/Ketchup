@@ -331,40 +331,47 @@ fn script_option(executable: &Path, option: &str) -> bool {
 /// the script, not the interpreter. A list of refused options was never
 /// complete: `pwsh -C cmdlet hashed.txt` ran a cmdlet, and any hashed file
 /// anywhere on the line counted as the script (review 2026-10-18 SEC-8).
+/// `refuse` gives the caller's refusal for the reason.
 pub(super) fn script_first(
     executable: &Path,
     arguments: &[String],
     names_file: &[bool],
-) -> Result<(), String> {
+    refuse: impl FnOnce(String) -> &'static str,
+) -> Result<(), &'static str> {
     for (argument, file) in arguments.iter().zip(names_file) {
         if *file {
             return Ok(());
         }
         if !script_option(executable, argument) {
-            return Err(format!(
+            return Err(refuse(format!(
                 "argument {argument:?} stands before the script and is no option {} may \
                  take there; name the script first (docs/plugins.md lists the options)",
                 executable.display()
-            ));
+            )));
         }
     }
-    Err(NO_SCRIPT.to_owned())
+    Err(refuse(NO_SCRIPT.to_owned()))
 }
 
 /// Refuses an executable that starts with `#!`: it starts the interpreter its
-/// first line names, which nobody hashed (review 2026-10-18 SEC-8).
-pub(super) fn not_a_shebang(executable: &Path) -> Result<(), String> {
+/// first line names, which nobody hashed (review 2026-10-18 SEC-8). `refuse`
+/// gives the caller's refusal; a file that cannot be read is `plugin_failed`
+/// with the read error as its cause.
+pub(super) fn not_a_shebang(
+    executable: &Path,
+    refuse: impl FnOnce(String) -> &'static str,
+) -> Result<(), &'static str> {
     use std::io::Read;
     let mut start = Vec::with_capacity(2);
     open_regular(executable)
         .and_then(|file| file.take(2).read_to_end(&mut start))
-        .map_err(|error| format!("{}: {error}", executable.display()))?;
+        .map_err(|error| failed_because("plugin_failed", error))?;
     if start == b"#!" {
-        return Err(format!(
+        return Err(refuse(format!(
             "{} starts with #! and so runs the interpreter its first line names, which is \
              not hashed; give that interpreter as the executable and this file as its script",
             executable.display()
-        ));
+        )));
     }
     Ok(())
 }
@@ -521,7 +528,7 @@ fn outside_files(
         path.strip_prefix(folder)
             .is_ok_and(|relative| files.iter().any(|(file, _)| *file == slashed(relative)))
     };
-    not_a_shebang(&executable).map_err(invalid)?;
+    not_a_shebang(&executable, invalid)?;
     let mut arguments = Vec::new();
     let mut names_file = Vec::new();
     for argument in &manifest.arguments {
@@ -533,7 +540,7 @@ fn outside_files(
     }
     // An executable in the folder is the plugin's hashed code itself.
     if !in_folder(&executable) {
-        script_first(&executable, &arguments, &names_file).map_err(invalid)?;
+        script_first(&executable, &arguments, &names_file, invalid)?;
     }
     Ok((executable, arguments, outside))
 }
