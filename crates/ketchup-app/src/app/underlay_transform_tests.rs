@@ -140,6 +140,33 @@ fn move_and_rotate_place_a_clicked_underlay_in_one_undo_step_each() {
     );
 }
 
+/// Review 2026-10-21 P3: a move onto a model point above the ground (z > 0) lands the
+/// underlay where that point lies in plan, and says how far it moved there.
+#[test]
+fn an_underlay_moved_onto_a_point_above_the_ground_lands_in_plan() {
+    let mut harness = shell();
+    let axes_end = Vec3::new(240.0, 120.0, 0.0);
+    click(&mut harness, axes_end);
+    assert!(harness.state().selected_underlay().is_some());
+    let undo = harness.state().undo_step_count();
+    harness.state_mut().dispatch_command(AppCommand::ViewIso);
+    harness.step();
+    harness.state_mut().dispatch_command(AppCommand::Move);
+    click(&mut harness, axes_end);
+    let corner = Vec3::new(100.0, 60.0, 20.0);
+    point(&mut harness, corner);
+    let app = harness.state();
+    let snapped = app.hover.snap.as_ref().map(|snap| snap.position_mm);
+    assert_eq!(snapped, Some(corner), "the box's top corner is snapped");
+    click(&mut harness, corner);
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(underlay_end_at(app, [100.0, 60.0]), "{}", app.digest);
+    // The status line names how far it moved in plan, not toward the point above it.
+    let in_plan = format_height(140.0_f64.hypot(60.0));
+    assert!(app.digest.contains(&in_plan), "{in_plan} in {}", app.digest);
+}
+
 #[test]
 fn an_underlay_move_out_of_the_ground_plane_or_a_copy_is_refused_by_name() {
     let mut harness = shell();

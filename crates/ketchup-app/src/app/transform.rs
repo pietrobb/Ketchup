@@ -424,7 +424,7 @@ impl KetchupApp {
             let Some(plan) = self.move_transform_plan(drag) else {
                 return false;
             };
-            self.commit_move_transform(plan, &drag.selection, drag.delta_mm)
+            self.commit_move_transform(plan, &drag.selection, moved_by(drag))
         }
     }
 
@@ -1842,19 +1842,14 @@ impl KetchupApp {
         {
             return None;
         }
-        // An underlay moves in plan: a point picked above the ground lands where it lies in plan.
-        let delta_z = if underlay_of(&drag.selection).is_some() {
-            0.0
-        } else {
-            drag.delta_mm.z
-        };
+        let delta = moved_by(drag);
         let request = self.transform_request(
             drag.source_document_id,
             drag.source_revision,
             &drag.selection,
             &drag.occurrence_paths,
             drag.group_id,
-            Transform::from_translation(drag.delta_mm.x, drag.delta_mm.y, delta_z).ok()?,
+            Transform::from_translation(delta.x, delta.y, delta.z).ok()?,
         )?;
         TransformPlan::prepare(&self.document.current(), request)
     }
@@ -3032,6 +3027,16 @@ impl KetchupApp {
             pick.snap.reference = pick.primary.reference.clone();
             pick.snap.position_mm = pick.primary.position_mm;
         }
+    }
+}
+
+/// What a move drag moves its target by. An underlay moves in plan: a point picked above
+/// the ground lands where it lies in plan, and the move is as long as it is there.
+fn moved_by(drag: &MoveDrag) -> Vec3 {
+    if underlay_of(&drag.selection).is_some() {
+        Vec3::new(drag.delta_mm.x, drag.delta_mm.y, 0.0)
+    } else {
+        drag.delta_mm
     }
 }
 
