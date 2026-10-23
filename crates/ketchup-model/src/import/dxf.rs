@@ -16,7 +16,7 @@ use super::{
 };
 
 pub const DXF_PARSER_ID: &str = "ketchup-dxf";
-pub const DXF_PARSER_VERSION: &str = "29";
+pub const DXF_PARSER_VERSION: &str = "30";
 const MAX_DXF_LINE_BYTES: usize = 512;
 /// The most group-code pairs a drawing import reads; a DWG conversion with more is
 /// refused in the worker, before the window reads its DXF.
@@ -33,7 +33,9 @@ const DXF_GEOMETRY_EPSILON_MM: f64 = ROUNDING;
 
 /// What one reading of a DXF keeps to. A profile import turns what it reads into canonical
 /// profiles in the window and keeps their bounded limits. An underlay is read in the program
-/// worker, whose memory and time limits bound it, and keeps every line it can read.
+/// worker, whose memory and time limits bound it, and keeps every line it can read. Either
+/// leaves out, and counts, an entity or block it cannot read, and refuses the drawing only
+/// when nothing readable is left.
 #[derive(Clone, Copy)]
 struct DxfReading {
     max_pairs: usize,
@@ -42,8 +44,6 @@ struct DxfReading {
     max_segments: usize,
     /// Joins loose lines and arcs into profiles; otherwise each stays one of its own.
     chain: bool,
-    /// Leaves out, and counts, an entity it cannot read instead of refusing the file.
-    skip_unreadable: bool,
     /// Reads texts and attributes instead of reporting them unsupported or dropped.
     texts: bool,
     /// Reads the colors, linetypes and lineweights of entities and layers instead of
@@ -57,7 +57,6 @@ const PROFILE_READING: DxfReading = DxfReading {
     max_profiles: MAX_DXF_PROFILES,
     max_segments: MAX_DXF_SEGMENTS_PER_PROFILE,
     chain: true,
-    skip_unreadable: false,
     texts: false,
     styles: false,
 };
@@ -71,7 +70,6 @@ const UNDERLAY_READING: DxfReading = DxfReading {
     max_profiles: UNBOUNDED,
     max_segments: UNBOUNDED,
     chain: false,
-    skip_unreadable: true,
     texts: true,
     styles: true,
 };
@@ -198,12 +196,39 @@ pub enum DxfImportError {
     TooManyProfiles,
     TooManySegments,
     AmbiguousGeometry,
+    /// A closed profile encloses no area or crosses itself.
+    InvalidProfile,
     NoSupportedGeometry,
     ReportTooLarge,
     InvalidReport(ImportContractError),
 }
 
 impl DxfImportError {
+    /// Whether it ends the whole reading: the drawing cannot be read on, or a limit of
+    /// the reading or of its report is reached. Any other error is the fault of one
+    /// entity or block, which is left out and counted.
+    const fn ends_reading(&self) -> bool {
+        matches!(
+            self,
+            Self::Read(_)
+                | Self::TooManyPairs
+                | Self::TooManyEntities
+                | Self::TooManyProfiles
+                | Self::ReportTooLarge
+                | Self::InvalidReport(_)
+        )
+    }
+
+    /// Why it was left out, the same for every entity left out for it: without the
+    /// value that is not a number, which would give each its own report entry.
+    fn reason(&self) -> String {
+        match self {
+            Self::NotANumber { .. } => "DXF contains a value that is not a number".to_owned(),
+            Self::NotAnInteger { .. } => "DXF contains a value that is not an integer".to_owned(),
+            other => other.to_string(),
+        }
+    }
+
     /// Whether reading the same source in another length unit could avoid
     /// this error: only coordinate range and millimetre tolerances scale.
     #[must_use]
@@ -282,6 +307,9 @@ impl fmt::Display for DxfImportError {
             Self::TooManySegments => "one DXF chain exceeds the 1,024 segment limit",
             Self::AmbiguousGeometry => {
                 "DXF line/arc connectivity is branched, duplicated, or otherwise ambiguous"
+            }
+            Self::InvalidProfile => {
+                "DXF contains a closed profile that encloses no area or crosses itself"
             }
             Self::NoSupportedGeometry => {
                 "DXF contains no supported LINE, ARC, CIRCLE, circular ELLIPSE, linear SPLINE, HATCH/MPOLYGON/MESH boundary, SOLID, TRACE, 3DFACE, straight LEADER, POLYLINE/polyface/polygon-mesh, or LWPOLYLINE geometry"
@@ -376,7 +404,24 @@ struct DiagnosticCounts {
     /// The code page its `$DWGCODEPAGE` names, ANSI_1252 when it names none: a text's
     /// `%%nnn` is the character nnn of it.
     code_page: &'static encoding_rs::Encoding,
+    /// What it left out, by diagnostic code and what (an entity type or a block, and
+    /// why): one report entry each, with the count and the first handles or names.
+    skipped: BTreeMap<(&'static str, String), Skipped>,
+    /// Why the first entity or block it left out could not be read: the refusal when
+    /// nothing readable is left.
+    first_skip: Option<DxfImportError>,
 }
+
+/// Entities or blocks left out for one reason: how many, and the handles or names of the
+/// first [`NAMED_SKIPS`], which the report lists.
+struct Skipped {
+    count: u32,
+    label: &'static str,
+    names: Vec<String>,
+}
+
+/// How many handles or names one report entry of what was left out lists.
+const NAMED_SKIPS: usize = 20;
 
 impl DiagnosticCounts {
     const fn new(reading: DxfReading) -> Self {
@@ -386,7 +431,91 @@ impl DiagnosticCounts {
             hidden_layers: BTreeSet::new(),
             frozen_layers: BTreeSet::new(),
             code_page: encoding_rs::WINDOWS_1252,
+            skipped: BTreeMap::new(),
+            first_skip: None,
         }
+    }
+
+    /// Counts one entity or block left out under `code`, as `what` (its type or kind and
+    /// why), with its handle or name `name` among the first listed, `label` saying which;
+    /// `error` is why it could not be read.
+    fn skip(
+        &mut self,
+        code: &'static str,
+        what: String,
+        named: Option<(&'static str, &str)>,
+        error: Option<DxfImportError>,
+    ) -> Result<(), DxfImportError> {
+        if self.first_skip.is_none() {
+            self.first_skip = error;
+        }
+        let (label, name) = named.unwrap_or(("", ""));
+        let skipped = self.skipped.entry((code, what)).or_insert(Skipped {
+            count: 0,
+            label,
+            names: Vec::new(),
+        });
+        skipped.count = skipped
+            .count
+            .checked_add(1)
+            .ok_or(DxfImportError::ReportTooLarge)?;
+        if !name.is_empty()
+            && skipped.names.len() < NAMED_SKIPS
+            && !skipped.names.iter().any(|known| known == name)
+        {
+            skipped.names.push(name.to_owned());
+        }
+        Ok(())
+    }
+
+    /// Why nothing readable is left: why the first thing left out could not be read, or
+    /// that the drawing holds nothing it reads.
+    fn nothing_left(&mut self) -> DxfImportError {
+        self.first_skip
+            .take()
+            .unwrap_or(DxfImportError::NoSupportedGeometry)
+    }
+
+    /// Adds one report entry for each reason something was left out: `what`, then the
+    /// first handles or names, as many as fit the report's text.
+    fn report_skipped(&mut self) -> Result<(), DxfImportError> {
+        for ((code, what), skipped) in std::mem::take(&mut self.skipped) {
+            let mut subject = what;
+            let mut end = subject.len().min(limits::TEXT_BYTES / 2);
+            while !subject.is_char_boundary(end) {
+                end -= 1;
+            }
+            subject.truncate(end);
+            let mut listed = String::new();
+            let mut shown = 0;
+            for name in &skipped.names {
+                let separator = if listed.is_empty() { "" } else { ", " };
+                if subject.len() + listed.len() + separator.len() + name.len() + 32
+                    > limits::TEXT_BYTES
+                    || name.chars().any(char::is_control)
+                {
+                    continue;
+                }
+                listed.push_str(separator);
+                listed.push_str(name);
+                shown += 1;
+            }
+            if shown > 0 {
+                let first = if (shown as u32) < skipped.count {
+                    format!("first {shown} ")
+                } else {
+                    String::new()
+                };
+                subject = format!("{subject}; {first}{}: {listed}", skipped.label);
+            }
+            self.add(
+                ImportDiagnosticSeverity::Warning,
+                code,
+                Some(subject),
+                skipped.count,
+            )?;
+        }
+        Ok(())
     }
 
     fn add(
@@ -416,7 +545,8 @@ impl DiagnosticCounts {
         Ok(())
     }
 
-    fn finish(self) -> Result<Vec<ImportDiagnostic>, DxfImportError> {
+    fn finish(mut self) -> Result<Vec<ImportDiagnostic>, DxfImportError> {
+        self.report_skipped()?;
         self.entries
             .into_iter()
             .map(|((severity, code, subject), count)| {
@@ -467,6 +597,8 @@ struct ParsedEntities {
     /// The xrefs it would place, by name, with how often: counted in the report only where
     /// the drawing itself places them, so an xref in a block counts once per insert of it.
     xrefs: BTreeMap<String, u32>,
+    /// The handle (group 5) of each entity read here that has one, by its ordinal.
+    handles: BTreeMap<usize, String>,
 }
 
 impl ParsedEntities {
@@ -549,23 +681,28 @@ enum UndirectedSegmentKey {
 
 /// Inspect an ASCII DXF of any size, within the profile count limits, without mutating a document.
 pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf, DxfImportError> {
-    let (units, insbase_mm, mut parsed_entities, diagnostics) =
+    let (units, insbase_mm, mut parsed_entities, mut diagnostics) =
         read_dxf(source, options, PROFILE_READING)?;
-    let mut profiles =
-        assemble_loose_segments(parsed_entities.loose, MAX_DXF_SEGMENTS_PER_PROFILE)?;
+    let mut profiles = assemble_loose_segments(
+        parsed_entities.loose,
+        MAX_DXF_SEGMENTS_PER_PROFILE,
+        Some((&parsed_entities.handles, &mut diagnostics)),
+    )?;
     profiles.append(&mut parsed_entities.explicit_profiles);
+    let profiles = without_invalid_profiles(profiles, &parsed_entities.handles, &mut diagnostics)?;
     let layers = parsed_entities.layers;
     if profiles.len() > MAX_DXF_PROFILES {
         return Err(DxfImportError::TooManyProfiles);
     }
-    // Two equal profiles of a layer share every segment, so this also refuses them, in
-    // one pass over the segments instead of comparing every pair of profiles.
-    reject_duplicate_segments(&profiles)?;
+    // Two equal profiles of a layer share every segment, so this also leaves out the
+    // second, in one pass over the segments instead of comparing every pair of profiles.
+    let mut profiles =
+        without_duplicate_segments(profiles, Some((&parsed_entities.handles, &mut diagnostics)))?;
     profiles.sort_by(|left, right| {
         (left.layer.as_str(), left.ordinal).cmp(&(right.layer.as_str(), right.ordinal))
     });
     if profiles.is_empty() {
-        return Err(DxfImportError::NoSupportedGeometry);
+        return Err(diagnostics.nothing_left());
     }
     let diagnostics = finish_report(diagnostics, &layers, units, [0.0, 0.0])?;
     Ok(ParsedDxf {
@@ -582,6 +719,40 @@ pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf
             .collect(),
         diagnostics,
     })
+}
+
+/// `profiles` without those a document would refuse, a closed one enclosing no area or
+/// crossing itself, which are left out and counted by the handle of their entity.
+fn without_invalid_profiles(
+    profiles: Vec<OrderedProfile>,
+    handles: &BTreeMap<usize, String>,
+    diagnostics: &mut DiagnosticCounts,
+) -> Result<Vec<OrderedProfile>, DxfImportError> {
+    let mut valid = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        let kind = FeatureKind::Profile {
+            segments: profile.segments,
+            closed: profile.closed,
+        };
+        if crate::document::is_valid_profile_kind(&kind)
+            && let FeatureKind::Profile { segments, .. } = kind
+        {
+            valid.push(OrderedProfile {
+                segments,
+                ..profile
+            });
+            continue;
+        }
+        diagnostics.skip(
+            "dxf.profile-invalid",
+            DxfImportError::InvalidProfile.reason(),
+            handles
+                .get(&profile.ordinal)
+                .map(|handle| ("handles", handle.as_str())),
+            Some(DxfImportError::InvalidProfile),
+        )?;
+    }
+    Ok(valid)
 }
 
 type ReadDxf = (
@@ -990,8 +1161,15 @@ fn parse_entities(
             index += 1;
         }
         let record = &pairs[start..index];
-        // An underlay leaves out an entity it cannot read, and counts it,
-        // instead of refusing the whole drawing.
+        let handle = record
+            .iter()
+            .find(|pair| pair.code == 5)
+            .map(|pair| pair.value.trim().to_owned());
+        if let Some(handle) = &handle {
+            output.handles.insert(ordinal, handle.clone());
+        }
+        // An entity it cannot read is left out and counted, by its handle, instead of
+        // refusing the whole drawing.
         let read = (|| -> Result<(), DxfImportError> {
             if !matches!(kind.as_str(), "ATTRIB" | "SEQEND")
                 && let Some((severity, code)) = left_out(record, &diagnostics.hidden_layers)?
@@ -1151,14 +1329,14 @@ fn parse_entities(
             Ok(())
         })();
         if let Err(error) = read {
-            if !diagnostics.reading.skip_unreadable {
+            if error.ends_reading() {
                 return Err(error);
             }
-            diagnostics.add(
-                ImportDiagnosticSeverity::Warning,
+            diagnostics.skip(
                 "dxf.entity-unreadable",
-                Some(format!("{kind}: {error}")),
-                1,
+                format!("{kind}: {}", error.reason()),
+                handle.as_deref().map(|handle| ("handles", handle)),
+                Some(error),
             )?;
         }
         // Many INSERTs of a block each within the limit must not build millions
@@ -2333,7 +2511,7 @@ fn parse_hatch_edge_path(
         }
     }
 
-    let mut profiles = assemble_loose_segments(loose, max_segments)?;
+    let mut profiles = assemble_loose_segments(loose, max_segments, None)?;
     if profiles.len() != 1 {
         return Err(DxfImportError::AmbiguousGeometry);
     }
@@ -2688,7 +2866,7 @@ fn build_mesh_boundary_profiles(
             },
         })
         .collect();
-    let mut profiles = assemble_loose_segments(loose, diagnostics.reading.max_segments)?;
+    let mut profiles = assemble_loose_segments(loose, diagnostics.reading.max_segments, None)?;
     if profiles.iter().any(|profile| !profile.closed) {
         return Err(DxfImportError::AmbiguousGeometry);
     }
@@ -3055,11 +3233,11 @@ fn parse_dimension(
     // A dimension whose drawn block is missing or empty is left out and
     // counted; it no longer refuses the whole drawing (review 2026-10-18 MF-13).
     let Some(block) = blocks.get(&key).filter(|block| !block.is_empty()) else {
-        diagnostics.add(
-            ImportDiagnosticSeverity::Warning,
+        diagnostics.skip(
             "dxf.dimension-block-missing",
-            Some(name.to_owned()),
-            1,
+            "DIMENSION whose drawn block is undefined, unreadable or empty".to_owned(),
+            Some(("blocks", name)),
+            Some(DxfImportError::InvalidBlock),
         )?;
         return Ok((Vec::new(), Vec::new()));
     };
@@ -4049,6 +4227,21 @@ fn build_polyline_profile(
             ])
         })
         .collect::<Result<Vec<_>, DxfImportError>>()?;
+    let read = points.len();
+    let (points, vertices) = without_repeated_vertices(points, vertices, closed);
+    let removed = u32::try_from(read - points.len())
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManySegments)?;
+    if removed > 0 {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Info,
+            "dxf.repeated-vertex-removed",
+            Some(layer.clone()),
+            removed,
+        )?;
+    }
+    if points.len() < 2 {
+        return Err(DxfImportError::DegenerateGeometry);
+    }
     let edge_count = if closed {
         points.len()
     } else {
@@ -4465,6 +4658,37 @@ fn normalize_coordinate(value: f64) -> Result<f64, DxfImportError> {
     Ok(if value == 0.0 { 0.0 } else { value })
 }
 
+/// `points`, read from `vertices`, without a point at the one before it, nor, of a closed
+/// polyline, a last point at the first: the zero-length edge between them is dropped, and
+/// the kept point's edge onwards takes the bulge of the dropped point's.
+fn without_repeated_vertices(
+    points: Vec<[f64; 2]>,
+    vertices: Vec<PolylineVertex>,
+    closed: bool,
+) -> (Vec<[f64; 2]>, Vec<PolylineVertex>) {
+    let repeated = |left: [f64; 2], right: [f64; 2]| ensure_distinct(left, right).is_err();
+    let mut kept_points: Vec<[f64; 2]> = Vec::with_capacity(points.len());
+    let mut kept_vertices: Vec<PolylineVertex> = Vec::with_capacity(vertices.len());
+    for (point, vertex) in points.into_iter().zip(vertices) {
+        if let (Some(&last), Some(kept)) = (kept_points.last(), kept_vertices.last_mut())
+            && repeated(last, point)
+        {
+            kept.bulge = vertex.bulge;
+            continue;
+        }
+        kept_points.push(point);
+        kept_vertices.push(vertex);
+    }
+    while closed
+        && kept_points.len() > 1
+        && repeated(kept_points[0], kept_points[kept_points.len() - 1])
+    {
+        kept_points.pop();
+        kept_vertices.pop();
+    }
+    (kept_points, kept_vertices)
+}
+
 fn ensure_distinct(start: [f64; 2], end: [f64; 2]) -> Result<(), DxfImportError> {
     if (start[0] - end[0]).hypot(start[1] - end[1]) <= DXF_GEOMETRY_EPSILON_MM {
         Err(DxfImportError::DegenerateGeometry)
@@ -4599,33 +4823,75 @@ fn arc_endpoint_buckets(segments: &[LooseSegment]) -> BTreeMap<[i64; 2], Vec<[f6
     arc_endpoints
 }
 
+/// Snaps the ends of `segments` that lie within the tolerance of an arc end onto it, and
+/// takes out, in their order, those whose ends it cannot snap unambiguously, each with why.
 fn snap_lines_to_unambiguous_arc_endpoints(
-    segments: &mut [LooseSegment],
-) -> Result<(), DxfImportError> {
+    segments: &mut Vec<LooseSegment>,
+) -> Vec<(LooseSegment, DxfImportError)> {
     // Arc ends come from a centre, a radius and angles, so two arcs with
     // different centres rarely meet bit for bit. Two ends within the tolerance
     // become one of them, the same one for both.
+    let mut removed = Vec::new();
     let arc_endpoints = arc_endpoint_buckets(segments);
-    for segment in segments.iter_mut() {
+    let mut failed = BTreeMap::new();
+    for (index, segment) in segments.iter_mut().enumerate() {
         if let ProfileSegment::CircularArc {
             start_mm, end_mm, ..
         } = &mut segment.segment
         {
-            *start_mm = shared_arc_endpoint(*start_mm, &arc_endpoints)?;
-            *end_mm = shared_arc_endpoint(*end_mm, &arc_endpoints)?;
-            ensure_distinct(*start_mm, *end_mm)?;
+            let snapped = shared_arc_endpoint(*start_mm, &arc_endpoints).and_then(|start| {
+                let end = shared_arc_endpoint(*end_mm, &arc_endpoints)?;
+                ensure_distinct(start, end)?;
+                Ok((start, end))
+            });
+            match snapped {
+                Ok((start, end)) => (*start_mm, *end_mm) = (start, end),
+                Err(error) => {
+                    failed.insert(index, error);
+                }
+            }
         }
     }
+    take_out(segments, failed, &mut removed);
     let arc_endpoints = arc_endpoint_buckets(segments);
-    for segment in segments.iter_mut() {
+    let mut failed = BTreeMap::new();
+    for (index, segment) in segments.iter_mut().enumerate() {
         let ProfileSegment::Line { start_mm, end_mm } = &mut segment.segment else {
             continue;
         };
-        *start_mm = unambiguous_arc_endpoint(*start_mm, &arc_endpoints)?;
-        *end_mm = unambiguous_arc_endpoint(*end_mm, &arc_endpoints)?;
-        ensure_distinct(*start_mm, *end_mm)?;
+        let snapped = unambiguous_arc_endpoint(*start_mm, &arc_endpoints).and_then(|start| {
+            let end = unambiguous_arc_endpoint(*end_mm, &arc_endpoints)?;
+            ensure_distinct(start, end)?;
+            Ok((start, end))
+        });
+        match snapped {
+            Ok((start, end)) => (*start_mm, *end_mm) = (start, end),
+            Err(error) => {
+                failed.insert(index, error);
+            }
+        }
     }
-    Ok(())
+    take_out(segments, failed, &mut removed);
+    removed
+}
+
+/// Moves the `segments` at the indices of `failed` to `removed`, each with its error.
+fn take_out(
+    segments: &mut Vec<LooseSegment>,
+    mut failed: BTreeMap<usize, DxfImportError>,
+    removed: &mut Vec<(LooseSegment, DxfImportError)>,
+) {
+    if failed.is_empty() {
+        return;
+    }
+    let mut kept = Vec::with_capacity(segments.len() - failed.len());
+    for (index, segment) in std::mem::take(segments).into_iter().enumerate() {
+        match failed.remove(&index) {
+            Some(error) => removed.push((segment, error)),
+            None => kept.push(segment),
+        }
+    }
+    *segments = kept;
 }
 
 /// The point an arc end shares with at most one other arc end near it.
@@ -4680,9 +4946,47 @@ fn connectivity_bucket(point: [f64; 2]) -> [i64; 2] {
     ]
 }
 
+/// Where a drawing or block reports what it leaves out of its profiles: the handles of its
+/// entities by ordinal, and its report. Without one, the first ambiguity refuses the whole
+/// reading, as within one hatch.
+type LeaveOut<'a> = Option<(&'a BTreeMap<usize, String>, &'a mut DiagnosticCounts)>;
+
+/// Leaves out what the entities of `ordinals` drew, counted by handle as `detail` of
+/// `error`; refuses with `error` when there is nowhere to report it.
+fn leave_out(
+    report: &mut LeaveOut<'_>,
+    ordinals: impl IntoIterator<Item = usize>,
+    detail: &str,
+    error: DxfImportError,
+) -> Result<(), DxfImportError> {
+    let mut ordinals = ordinals.into_iter().peekable();
+    if ordinals.peek().is_none() {
+        return Ok(());
+    }
+    let Some((handles, diagnostics)) = report else {
+        return Err(error);
+    };
+    let what = format!("{} ({detail})", error.reason());
+    for ordinal in ordinals {
+        diagnostics.skip(
+            "dxf.profile-ambiguous",
+            what.clone(),
+            handles
+                .get(&ordinal)
+                .map(|handle| ("handles", handle.as_str())),
+            Some(error.clone()),
+        )?;
+    }
+    Ok(())
+}
+
+/// The profiles `loose` chains into, layer by layer. With a `report`, a line it cannot
+/// place unambiguously is left out and counted: a repeated line alone, and every line of
+/// a run that branches or does not chain; without one, it refuses them all.
 fn assemble_loose_segments(
     loose: Vec<LooseSegment>,
     max_segments: usize,
+    mut report: LeaveOut<'_>,
 ) -> Result<Vec<OrderedProfile>, DxfImportError> {
     let mut by_layer: BTreeMap<String, Vec<LooseSegment>> = BTreeMap::new();
     for segment in loose {
@@ -4693,27 +4997,48 @@ fn assemble_loose_segments(
     }
     let mut profiles = Vec::new();
     for (layer, mut segments) in by_layer {
-        snap_lines_to_unambiguous_arc_endpoints(&mut segments)?;
-        let mut endpoints: BTreeMap<[u64; 2], Vec<usize>> = BTreeMap::new();
+        for (segment, error) in snap_lines_to_unambiguous_arc_endpoints(&mut segments) {
+            leave_out(
+                &mut report,
+                [segment.ordinal],
+                "an end near arc ends",
+                error,
+            )?;
+        }
         let mut duplicate_lines = BTreeSet::new();
-        for (index, segment) in segments.iter().enumerate() {
-            let start = point_key(segment.segment.start_mm());
-            let end = point_key(segment.segment.end_mm());
-            endpoints.entry(start).or_default().push(index);
-            endpoints.entry(end).or_default().push(index);
+        let mut repeated = Vec::new();
+        segments.retain(|segment| {
             if let ProfileSegment::Line { .. } = segment.segment {
+                let start = point_key(segment.segment.start_mm());
+                let end = point_key(segment.segment.end_mm());
                 let key = if start <= end {
                     (start, end)
                 } else {
                     (end, start)
                 };
                 if !duplicate_lines.insert(key) {
-                    return Err(DxfImportError::AmbiguousGeometry);
+                    repeated.push(segment.ordinal);
+                    return false;
                 }
             }
-        }
-        if endpoints.values().any(|incident| incident.len() > 2) {
-            return Err(DxfImportError::AmbiguousGeometry);
+            true
+        });
+        leave_out(
+            &mut report,
+            repeated,
+            "a repeated line",
+            DxfImportError::AmbiguousGeometry,
+        )?;
+        let mut endpoints: BTreeMap<[u64; 2], Vec<usize>> = BTreeMap::new();
+        for (index, segment) in segments.iter().enumerate() {
+            endpoints
+                .entry(point_key(segment.segment.start_mm()))
+                .or_default()
+                .push(index);
+            endpoints
+                .entry(point_key(segment.segment.end_mm()))
+                .or_default()
+                .push(index);
         }
         let mut unused = (0..segments.len()).collect::<BTreeSet<_>>();
         // Seeds in ordinal order, and open ends looked up among the
@@ -4740,78 +5065,30 @@ fn assemble_loose_segments(
                     }
                 }
             }
-            let component_points = component
+            for index in &component {
+                unused.remove(index);
+            }
+            let ordinal = component
                 .iter()
-                .flat_map(|index| {
-                    [
-                        point_key(segments[*index].segment.start_mm()),
-                        point_key(segments[*index].segment.end_mm()),
-                    ]
-                })
-                .collect::<BTreeSet<_>>();
-            let degree_one = component_points
-                .into_iter()
-                .filter(|point| {
-                    endpoints[point]
-                        .iter()
-                        .filter(|index| component.contains(index))
-                        .count()
-                        == 1
-                })
-                .collect::<Vec<_>>();
-            let closed = match degree_one.len() {
-                0 => true,
-                2 => false,
-                _ => return Err(DxfImportError::AmbiguousGeometry),
-            };
-            let start_point = if closed {
-                point_key(segments[seed].segment.start_mm())
-            } else {
-                *degree_one.iter().min().expect("two open endpoints")
-            };
-            let mut current = start_point;
-            let mut ordered = Vec::with_capacity(component.len());
-            while ordered.len() < component.len() {
-                let mut candidates = endpoints
-                    .get(&current)
-                    .into_iter()
-                    .flatten()
-                    .filter(|index| component.contains(index) && unused.contains(index))
-                    .copied()
-                    .collect::<Vec<_>>();
-                candidates.sort_by_key(|index| segments[*index].ordinal);
-                let Some(index) = candidates.first().copied() else {
-                    return Err(DxfImportError::AmbiguousGeometry);
+                .map(|index| segments[*index].ordinal)
+                .min()
+                .expect("non-empty component");
+            let (ordered, closed) =
+                match chain_component(&segments, &endpoints, &component, seed, max_segments) {
+                    Ok(chained) => chained,
+                    Err((error, detail)) => {
+                        leave_out(
+                            &mut report,
+                            component.iter().map(|index| segments[*index].ordinal),
+                            detail,
+                            error,
+                        )?;
+                        continue;
+                    }
                 };
-                let segment = &segments[index].segment;
-                let oriented = if point_key(segment.start_mm()) == current {
-                    segment.clone()
-                } else if point_key(segment.end_mm()) == current {
-                    reverse_segment(segment)
-                } else {
-                    return Err(DxfImportError::AmbiguousGeometry);
-                };
-                current = point_key(oriented.end_mm());
-                ordered.push(oriented);
-                unused.remove(&index);
-            }
-            if (closed && current != start_point)
-                || (!closed && !degree_one.contains(&current))
-                || ordered.len() > max_segments
-            {
-                return Err(if ordered.len() > max_segments {
-                    DxfImportError::TooManySegments
-                } else {
-                    DxfImportError::AmbiguousGeometry
-                });
-            }
             profiles.push(OrderedProfile {
                 layer: layer.clone(),
-                ordinal: component
-                    .iter()
-                    .map(|index| segments[*index].ordinal)
-                    .min()
-                    .expect("non-empty component"),
+                ordinal,
                 style: EntityStyle::default(),
                 segments: ordered,
                 closed,
@@ -4821,16 +5098,112 @@ fn assemble_loose_segments(
     Ok(profiles)
 }
 
-fn reject_duplicate_segments(profiles: &[OrderedProfile]) -> Result<(), DxfImportError> {
-    let mut seen = BTreeSet::new();
-    for profile in profiles {
-        for segment in &profile.segments {
-            if !seen.insert((profile.layer.clone(), undirected_segment_key(segment))) {
-                return Err(DxfImportError::AmbiguousGeometry);
-            }
-        }
+/// The segments of `component`, a connected run of `segments` that `endpoints` indexes by
+/// end, in order from its smaller open end (or from the start of `seed` when it closes),
+/// and whether it closes; or why they do not chain into one profile.
+fn chain_component(
+    segments: &[LooseSegment],
+    endpoints: &BTreeMap<[u64; 2], Vec<usize>>,
+    component: &BTreeSet<usize>,
+    seed: usize,
+    max_segments: usize,
+) -> Result<(Vec<ProfileSegment>, bool), (DxfImportError, &'static str)> {
+    let ambiguous = |detail| (DxfImportError::AmbiguousGeometry, detail);
+    let component_points = component
+        .iter()
+        .flat_map(|index| {
+            [
+                point_key(segments[*index].segment.start_mm()),
+                point_key(segments[*index].segment.end_mm()),
+            ]
+        })
+        .collect::<BTreeSet<_>>();
+    let degree = |point: &[u64; 2]| {
+        endpoints[point]
+            .iter()
+            .filter(|index| component.contains(index))
+            .count()
+    };
+    if component_points.iter().any(|point| degree(point) > 2) {
+        return Err(ambiguous("lines that branch"));
     }
-    Ok(())
+    if component.len() > max_segments {
+        return Err((
+            DxfImportError::TooManySegments,
+            "a run of too many segments",
+        ));
+    }
+    let degree_one = component_points
+        .into_iter()
+        .filter(|point| degree(point) == 1)
+        .collect::<Vec<_>>();
+    let closed = match degree_one.len() {
+        0 => true,
+        2 => false,
+        _ => return Err(ambiguous("lines that do not chain")),
+    };
+    let start_point = if closed {
+        point_key(segments[seed].segment.start_mm())
+    } else {
+        *degree_one.iter().min().expect("two open endpoints")
+    };
+    let mut unused = component.clone();
+    let mut current = start_point;
+    let mut ordered = Vec::with_capacity(component.len());
+    while !unused.is_empty() {
+        let Some(index) = endpoints
+            .get(&current)
+            .into_iter()
+            .flatten()
+            .filter(|index| unused.contains(index))
+            .copied()
+            .min_by_key(|index| segments[*index].ordinal)
+        else {
+            return Err(ambiguous("lines that do not chain"));
+        };
+        let segment = &segments[index].segment;
+        let oriented = if point_key(segment.start_mm()) == current {
+            segment.clone()
+        } else {
+            reverse_segment(segment)
+        };
+        current = point_key(oriented.end_mm());
+        ordered.push(oriented);
+        unused.remove(&index);
+    }
+    if (closed && current != start_point) || (!closed && !degree_one.contains(&current)) {
+        return Err(ambiguous("lines that do not chain"));
+    }
+    Ok((ordered, closed))
+}
+
+/// `profiles` without each that repeats a segment of its layer, of an earlier profile or
+/// of its own, left out and counted in `report` (refused without one).
+fn without_duplicate_segments(
+    profiles: Vec<OrderedProfile>,
+    mut report: LeaveOut<'_>,
+) -> Result<Vec<OrderedProfile>, DxfImportError> {
+    let mut seen = BTreeSet::new();
+    let mut kept = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        let mut own = BTreeSet::new();
+        let repeats = profile.segments.iter().any(|segment| {
+            let key = (profile.layer.clone(), undirected_segment_key(segment));
+            seen.contains(&key) || !own.insert(key)
+        });
+        if repeats {
+            leave_out(
+                &mut report,
+                [profile.ordinal],
+                "a segment another profile of its layer has",
+                DxfImportError::AmbiguousGeometry,
+            )?;
+            continue;
+        }
+        seen.extend(own);
+        kept.push(profile);
+    }
+    Ok(kept)
 }
 
 fn undirected_segment_key(segment: &ProfileSegment) -> UndirectedSegmentKey {

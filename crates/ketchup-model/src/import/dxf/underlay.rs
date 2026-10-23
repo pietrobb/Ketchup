@@ -165,7 +165,7 @@ pub fn read_dxf_underlay_from(
         }
     }
     if lines.segment_count() == 0 && lines.text_count() == 0 {
-        return Err(DxfImportError::NoSupportedGeometry);
+        return Err(diagnostics.nothing_left());
     }
     let diagnostics = finish_report(diagnostics, &layers, units, offset_mm)?;
     let hidden = hidden_layers(&sections.tables.pairs(), true);

@@ -23,6 +23,8 @@ impl BlockDefinition {
 
 #[derive(Clone)]
 struct RawBlockDefinition<'a> {
+    /// As the drawing writes it; its key is upper case.
+    name: String,
     base_mm: [f64; 2],
     entities: Vec<DxfPair<'a>>,
     xref: bool,
@@ -31,6 +33,8 @@ struct RawBlockDefinition<'a> {
 struct BlockResolution<'a> {
     blocks: &'a mut BTreeMap<String, BlockDefinition>,
     resolving: &'a mut BTreeSet<String>,
+    /// The blocks that could not be resolved, with why: each is read and reported once.
+    failed: BTreeMap<String, DxfImportError>,
     entity_count: &'a mut usize,
     diagnostics: &'a mut DiagnosticCounts,
 }
@@ -112,24 +116,28 @@ pub(super) fn parse_blocks<'a>(
             report_ignored_groups("ENDBLK", end_record, &[5, 8, 100], diagnostics)?;
             Ok(block)
         });
+        let name = || {
+            parse_optional_text(header, 2)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        };
         match read {
             Ok((key, _, _)) if raw_blocks.contains_key(&key) => {
-                skip_block(&key, DxfImportError::InvalidBlock, diagnostics)?;
+                skip_block(name(), DxfImportError::InvalidBlock, diagnostics)?;
             }
             Ok((key, base_mm, xref)) => {
                 raw_blocks.insert(
                     key,
                     RawBlockDefinition {
+                        name: name().to_owned(),
                         base_mm,
                         entities,
                         xref,
                     },
                 );
             }
-            Err(error) => {
-                let name = parse_optional_text(header, 2).ok().flatten();
-                skip_block(name.unwrap_or_default(), error, diagnostics)?;
-            }
+            Err(error) => skip_block(name(), error, diagnostics)?,
         }
     }
 
@@ -140,35 +148,35 @@ pub(super) fn parse_blocks<'a>(
         let mut resolution = BlockResolution {
             blocks: &mut blocks,
             resolving: &mut resolving,
+            failed: BTreeMap::new(),
             entity_count,
             diagnostics,
         };
         for key in keys {
             if let Err(error) = resolve_block(&key, &raw_blocks, 0, units, &mut resolution) {
-                resolution.resolving.clear();
-                skip_block(&key, error, resolution.diagnostics)?;
+                skip_block(&raw_blocks[&key].name, error, resolution.diagnostics)?;
             }
         }
     }
     Ok(blocks)
 }
 
-/// A block an underlay cannot read is left out and counted, named with why; its
-/// inserts are then left out as entities it cannot read. A profile import refuses the
-/// file.
+/// A block it cannot read is left out and counted by why, with its name; its inserts and
+/// dimensions are then left out as entities it cannot read. A limit of the reading still
+/// ends it.
 fn skip_block(
     name: &str,
     error: DxfImportError,
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<(), DxfImportError> {
-    if !diagnostics.reading.skip_unreadable {
+    if error.ends_reading() {
         return Err(error);
     }
-    diagnostics.add(
-        ImportDiagnosticSeverity::Warning,
+    diagnostics.skip(
         "dxf.block-unreadable",
-        Some(format!("{name}: {error}")),
-        1,
+        error.reason(),
+        Some(("blocks", name)),
+        Some(error),
     )
 }
 
@@ -182,6 +190,9 @@ fn resolve_block<'a>(
     if resolution.blocks.contains_key(key) {
         return Ok(());
     }
+    if let Some(error) = resolution.failed.get(key) {
+        return Err(error.clone());
+    }
     let raw = raw_blocks
         .get(key)
         .cloned()
@@ -189,6 +200,23 @@ fn resolve_block<'a>(
     if depth >= MAX_DXF_BLOCK_DEPTH || !resolution.resolving.insert(key.to_owned()) {
         return Err(DxfImportError::InvalidBlock);
     }
+    let resolved = resolve_raw_block(key, raw, raw_blocks, depth, units, resolution);
+    resolution.resolving.remove(key);
+    if let Err(error) = &resolved {
+        resolution.failed.insert(key.to_owned(), error.clone());
+    }
+    resolved
+}
+
+/// [`resolve_block`] of the block `key`, read as `raw`, while it is being resolved.
+fn resolve_raw_block<'a>(
+    key: &str,
+    raw: RawBlockDefinition<'a>,
+    raw_blocks: &BTreeMap<String, RawBlockDefinition<'a>>,
+    depth: usize,
+    units: ImportUnitDecision,
+    resolution: &mut BlockResolution<'_>,
+) -> Result<(), DxfImportError> {
     if raw.xref {
         resolution.blocks.insert(
             key.to_owned(),
@@ -200,14 +228,13 @@ fn resolve_block<'a>(
                 xrefs: BTreeMap::new(),
             },
         );
-        resolution.resolving.remove(key);
         return Ok(());
     }
     for dependency in block_dependencies(&raw.entities)? {
-        // In an underlay, an insert of a block that cannot be resolved here (missing,
-        // too deep, or one inserting itself) is left out as an entity it cannot read.
+        // An insert or dimension of a block that cannot be resolved here (missing, too
+        // deep, or one inserting itself) is left out as an entity it cannot read.
         if let Err(error) = resolve_block(&dependency, raw_blocks, depth + 1, units, resolution)
-            && !resolution.diagnostics.reading.skip_unreadable
+            && error.ends_reading()
         {
             return Err(error);
         }
@@ -224,7 +251,11 @@ fn resolve_block<'a>(
     )?;
     let reading = resolution.diagnostics.reading;
     let mut profiles = if reading.chain {
-        assemble_loose_segments(parsed_entities.loose, reading.max_segments)?
+        assemble_loose_segments(
+            parsed_entities.loose,
+            reading.max_segments,
+            Some((&parsed_entities.handles, &mut *resolution.diagnostics)),
+        )?
     } else {
         parsed_entities
             .loose
@@ -234,7 +265,10 @@ fn resolve_block<'a>(
     };
     profiles.append(&mut parsed_entities.explicit_profiles);
     if reading.chain {
-        reject_duplicate_segments(&profiles)?;
+        profiles = without_duplicate_segments(
+            profiles,
+            Some((&parsed_entities.handles, &mut *resolution.diagnostics)),
+        )?;
     }
     if profiles.len() > reading.max_profiles {
         return Err(DxfImportError::TooManyProfiles);
@@ -249,7 +283,6 @@ fn resolve_block<'a>(
             xrefs: parsed_entities.xrefs,
         },
     );
-    resolution.resolving.remove(key);
     Ok(())
 }
 

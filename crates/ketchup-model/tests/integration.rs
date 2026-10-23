@@ -13,6 +13,7 @@ mod component_replacement_impact_verifier;
 mod digest_formats;
 mod document_revisions;
 mod dxf_import;
+mod dxf_resilience;
 mod exact_brep_graph;
 mod exact_brep_graph_resources;
 mod exact_parameter_editing;

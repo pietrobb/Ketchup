@@ -796,6 +796,21 @@ pub(super) fn validate_sketch_projections(product: &ProductModel) -> Result<(), 
     Ok(())
 }
 
+/// Whether `kind` is a profile a document holds: its segments connect, and a closed chain
+/// of lines, a polygon, or a closed spline, which runs around the polygon of its points,
+/// is simple and encloses an area.
+pub(crate) fn is_valid_profile_kind(kind: &FeatureKind) -> bool {
+    let FeatureKind::Profile { segments, closed } = kind else {
+        return false;
+    };
+    is_valid_segment_profile(segments, *closed)
+        && !kind
+            .polygon_points()
+            .as_deref()
+            .or(kind.closed_spline_points())
+            .is_some_and(|points| !is_valid_profile(points))
+}
+
 pub(super) fn validate_feature_kind(
     kind: &FeatureKind,
     tolerance_mm: f64,
@@ -816,16 +831,8 @@ pub(super) fn validate_feature_kind(
             canonical.validate_local().map_err(CanonicalError::from)
         }
         FeatureKind::Sketch(spec) => spec.solve().map(|_| ()).map_err(CanonicalError::from),
-        FeatureKind::Profile { segments, closed } => {
-            // A closed chain of lines is a polygon, and a closed spline runs around the
-            // polygon of its points: that polygon must be simple and enclose an area.
-            if !is_valid_segment_profile(segments, *closed)
-                || kind
-                    .polygon_points()
-                    .as_deref()
-                    .or(kind.closed_spline_points())
-                    .is_some_and(|points| !is_valid_profile(points))
-            {
+        FeatureKind::Profile { .. } => {
+            if !is_valid_profile_kind(kind) {
                 return Err(CanonicalError::InvalidProfile);
             }
             Ok(())

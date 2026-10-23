@@ -216,11 +216,16 @@ fn a_block_it_cannot_read_is_left_out_and_counted() {
     assert_eq!(underlay.lines.segment_count(), 3);
     let unreadable = (underlay.diagnostics.iter())
         .filter(|diagnostic| diagnostic.code() == "dxf.block-unreadable")
-        .map(|diagnostic| diagnostic.subject().unwrap().split(':').next().unwrap())
+        .map(|diagnostic| (diagnostic.subject().unwrap(), diagnostic.count()))
         .collect::<Vec<_>>();
-    // The block with a second name and the second "door".
-    assert_eq!(unreadable.len(), 2, "{unreadable:?}");
-    assert!(unreadable.contains(&"named"), "{unreadable:?}");
+    // The block with a second name and the second "door", in one entry by why.
+    assert_eq!(
+        unreadable,
+        [(
+            "DXF contains an invalid, duplicate, cyclic, or undefined block; blocks: named, door",
+            2
+        )]
+    );
 }
 
 /// UL-3: past ~21 m of radius an arc was drawn with 1024 chords to the circle, 0.47 mm
