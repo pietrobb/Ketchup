@@ -1321,9 +1321,11 @@ impl KetchupApp {
             &source.target,
             &source.target_box,
             source.topological_reference.as_ref(),
-            distance_mm,
-            new_extent_mm,
-            new_extent.source_token().to_owned(),
+            PushPullAmount {
+                distance_mm,
+                new_extent_mm,
+                source_token: new_extent.source_token().to_owned(),
+            },
             &self.catalog,
         )?;
         let proposal = if principal == ProposalPrincipal::ManualClient {
@@ -3385,17 +3387,27 @@ pub(crate) fn computed_length(mm: f64) -> Option<Dimension> {
         .or_else(|| Dimension::new(mm.to_string(), mm).ok())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// How far a Push/Pull moves a face: the distance, the extent it gives a sketch or
+/// extrusion, and the text the user typed for that extent.
+pub(crate) struct PushPullAmount {
+    pub(crate) distance_mm: f64,
+    pub(crate) new_extent_mm: f64,
+    pub(crate) source_token: String,
+}
+
 pub(crate) fn push_pull_batch(
     snapshot: &Snapshot,
     selection: &SelectionId,
     item: &RenderBox,
     topological_reference: Option<&TopologicalElementRef>,
-    distance_mm: f64,
-    new_extent_mm: f64,
-    source_token: String,
+    amount: PushPullAmount,
     catalog: &LocaleCatalog,
 ) -> Option<CommandBatch> {
+    let PushPullAmount {
+        distance_mm,
+        new_extent_mm,
+        source_token,
+    } = amount;
     let resolved = snapshot
         .resolve_instance_path(&selection.instance_path)
         .ok()?;

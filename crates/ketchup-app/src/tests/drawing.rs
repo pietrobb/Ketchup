@@ -222,9 +222,11 @@ fn push_pull_uses_the_projected_feature_pair_and_preserves_local_profile_origin(
             },
             &item,
             None,
-            50.0,
-            150.0,
-            "150".to_owned(),
+            PushPullAmount {
+                distance_mm: 50.0,
+                new_extent_mm: 150.0,
+                source_token: "150".to_owned(),
+            },
             &app.catalog,
         )
         .is_none()

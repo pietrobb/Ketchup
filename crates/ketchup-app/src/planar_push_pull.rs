@@ -256,9 +256,11 @@ impl KetchupApp {
             &source.target,
             &source.target_box,
             source.topological_reference.as_ref(),
-            distance / face.local_to_world_scale,
-            0.0,
-            expression.to_owned(),
+            PushPullAmount {
+                distance_mm: distance / face.local_to_world_scale,
+                new_extent_mm: 0.0,
+                source_token: expression.to_owned(),
+            },
             &self.catalog,
         )?;
         let proposal = if principal == ProposalPrincipal::ManualClient {
