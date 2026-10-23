@@ -6,7 +6,7 @@ use ketchup_manufacturing::viewer_export::{
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId,
-    LocalOccurrenceKey, OccurrenceId, Transform,
+    LocalOccurrenceKey, OccurrenceId, TagId, Transform,
 };
 use ketchup_model::exact_product::MeshExportSource;
 use ketchup_model::testing::box_package;
@@ -562,6 +562,109 @@ fn invalid_authored_dimensions_and_foreign_scene_references_are_refused() {
         ..Default::default()
     };
     assert!(model_viewer_export(&snapshot, &instances, &data).is_err());
+}
+
+#[test]
+fn document_dimensions_of_shown_tags_follow_the_authored_ones_and_other_marks_are_reported() {
+    use ketchup_model::annotation::{Annotation, AnnotationMark};
+    let mut document = nested_document();
+    let tagged = |name: &str, tag: u64, mark| Annotation {
+        name: name.into(),
+        tags: [TagId(tag)].into(),
+        mark,
+    };
+    let dimension = |to_mm, offset_mm| AnnotationMark::Dimension {
+        from_mm: [0.0; 3],
+        to_mm,
+        offset_mm,
+        height_mm: 3.5,
+    };
+    let text = || AnnotationMark::Text {
+        at_mm: [0.0; 3],
+        text: "HPL".into(),
+        height_mm: 3.5,
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateTag {
+                id: TagId(1),
+                name: "plan".into(),
+                visible: true,
+            },
+            CanonicalCommand::CreateTag {
+                id: TagId(2),
+                name: "hidden".into(),
+                visible: false,
+            },
+            CanonicalCommand::SetAnnotations {
+                annotations: vec![
+                    tagged("width", 1, dimension([600.0, 0.0, 0.0], -50.0)),
+                    tagged("secret", 2, dimension([0.0, 0.0, 400.0], 0.0)),
+                    tagged("label", 1, text()),
+                    tagged("hidden label", 2, text()),
+                ],
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let body = box_package(&snapshot, DefinitionId(1), FeatureId(3), "current", &[]).unwrap();
+    let occurrences = snapshot.scene_query();
+    let instances: Vec<_> = occurrences
+        .iter()
+        .filter(|item| item.definition_id == DefinitionId(1))
+        .map(|occurrence| MeshGlbInstance {
+            source: MeshExportSource::Exact(&body),
+            occurrence,
+        })
+        .collect();
+    let authored = |id| view::Dimension {
+        id,
+        from: view::Anchor {
+            occurrence: None,
+            point_mm: [0.0; 3],
+        },
+        to: view::Anchor {
+            occurrence: None,
+            point_mm: [0.0, 18.0, 0.0],
+        },
+        label_offset_mm: [0.0; 3],
+        value_mm: 18.0,
+        display_unit: view::LengthUnit::Millimetre,
+    };
+    let data = ViewerExportData {
+        dimensions: vec![authored(7)],
+        ..Default::default()
+    };
+    let export = model_viewer_export(&snapshot, &instances, &data).unwrap();
+    let dimensions = &roundtrip(&export.package).manifest.dimensions;
+    assert_eq!(
+        dimensions.iter().map(|d| d.id).collect::<Vec<_>>(),
+        [7, 8],
+        "the hidden tag's dimension stays out; the shown one is numbered after the authored one"
+    );
+    let width = &dimensions[1];
+    assert_eq!(width.from.point_mm, [0.0; 3]);
+    assert_eq!(width.to.point_mm, [600.0, 0.0, 0.0]);
+    assert!(width.from.occurrence.is_none() && width.to.occurrence.is_none());
+    assert_eq!(width.value_mm, 600.0);
+    assert_eq!(
+        width.label_offset_mm,
+        [0.0, -50.0, 0.0],
+        "the dimension line sits where the plan draws it"
+    );
+    assert!(
+        export.loss_report.contains("viewer_omitted_annotations=1;"),
+        "only the shown text is reported, not the hidden one: {}",
+        export.loss_report
+    );
+    let full = ViewerExportData {
+        dimensions: vec![authored(u64::MAX)],
+        ..Default::default()
+    };
+    assert!(
+        model_viewer_export(&snapshot, &instances, &full).is_err(),
+        "no ID is left after the authored ones"
+    );
 }
 
 #[test]

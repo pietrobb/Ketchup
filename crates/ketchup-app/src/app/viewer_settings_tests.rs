@@ -143,6 +143,83 @@ fn notes_tell_definition_from_occurrence_and_survive_save_reopen_and_reexport() 
 }
 
 #[test]
+fn program_dimensions_join_the_measured_ones_in_the_scenes_unless_their_tag_is_hidden() {
+    let mut app = KetchupApp::new();
+    let mut source = program();
+    source.source.push_str(
+        "\ndim(\"width\", (0,0,0), (600,0,0), offset_mm=-50, tags=\"plan\")\
+         \ndim(\"secret\", (0,0,0), (0,0,400), tags=\"hidden\")\
+         \ntext(\"label\", \"HPL\", at=(0,0,0), tags=\"plan\")",
+    );
+    app.apply_program_source(source, true).expect("program");
+    let hidden = app
+        .document
+        .current()
+        .tags()
+        .find(|tag| tag.name() == "hidden")
+        .expect("tag")
+        .id();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetTagVisibility {
+                id: hidden,
+                visible: false,
+            },
+        ]))
+        .expect("hide tag");
+    install_geometry(&mut app);
+    let front = app.save_view("Front").expect("scene");
+    let back = app.save_view("Back").expect("scene");
+    app.add_measured_point(Vec3::new(0.0, 0.0, 0.0));
+    app.add_measured_point(Vec3::new(0.0, 18.0, 0.0));
+    assert!(app.add_viewer_measured_dimension());
+    assert!(app.set_viewer_scene_dimensions(back, false));
+    let measured = app.stored_viewer_settings().unwrap().dimensions[0].id;
+
+    let export = export(&app);
+    let manifest = &export.package.manifest;
+    assert_eq!(
+        manifest.dimensions.len(),
+        2,
+        "the hidden tag's dimension stays out"
+    );
+    let width = manifest
+        .dimensions
+        .iter()
+        .find(|d| d.id != measured)
+        .expect("program dimension");
+    assert_eq!(width.from.point_mm, [0.0, 0.0, 0.0]);
+    assert_eq!(width.to.point_mm, [600.0, 0.0, 0.0]);
+    assert!(width.from.occurrence.is_none() && width.to.occurrence.is_none());
+    assert_eq!(width.value_mm, 600.0);
+    assert_eq!(
+        width.label_offset_mm,
+        [0.0, -50.0, 0.0],
+        "moved to the right of the way from a to b, as in the plan"
+    );
+    assert_eq!(
+        width.display_unit,
+        ketchup_manufacturing::viewer_export::view::LengthUnit::Millimetre
+    );
+    let shown = |id: SavedViewId| {
+        manifest
+            .scenes
+            .iter()
+            .find(|scene| scene.id == id.0)
+            .expect("scene")
+            .visible_dimensions
+            .clone()
+    };
+    assert_eq!(shown(front), [measured, width.id]);
+    assert!(shown(back).is_empty(), "the author hid dimensions in Back");
+    assert!(
+        export.loss_report.contains("viewer_omitted_annotations=1;"),
+        "{}",
+        export.loss_report
+    );
+}
+
+#[test]
 fn measured_dimensions_go_to_chosen_scenes_without_touching_cad_and_survive_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("dimensions.ketchup");
