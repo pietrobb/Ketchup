@@ -73,10 +73,10 @@ struct OpenTask {
     path: PathBuf,
     document: DocumentId,
     revision: u64,
-    receiver: std::sync::mpsc::Receiver<(
-        OpenResult,
-        Option<ketchup_model::persistence::WorkRecoveryLock>,
-    )>,
+    /// Held by the task, not by its read, so cancelling the open releases the file at
+    /// once even though the read goes on (review 2026-10-19 P3, GUI).
+    recovery_lock: Option<ketchup_model::persistence::WorkRecoveryLock>,
+    receiver: std::sync::mpsc::Receiver<OpenResult>,
 }
 
 struct Pending {
@@ -135,7 +135,7 @@ impl KetchupApp {
         let repaint = context.clone();
         std::thread::spawn(move || {
             let result = load(&worker_path);
-            if sender.send((result, recovery_lock)).is_ok() {
+            if sender.send(result).is_ok() {
                 repaint.request_repaint();
             }
         });
@@ -143,6 +143,7 @@ impl KetchupApp {
             path,
             document: snapshot.document_id(),
             revision: snapshot.revision_id(),
+            recovery_lock,
             receiver,
         });
     }
@@ -154,17 +155,14 @@ impl KetchupApp {
         let result = match task.receiver.try_recv() {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(error @ std::sync::mpsc::TryRecvError::Disconnected) => (
-                Err(ketchup_model::persistence::FilePersistenceError::Io(
-                    std::io::Error::other(error),
-                )),
-                None,
+            Err(error @ std::sync::mpsc::TryRecvError::Disconnected) => Err(
+                ketchup_model::persistence::FilePersistenceError::Io(std::io::Error::other(error)),
             ),
         };
         let task = self.file.activity.opening.take().expect("polled task");
         let snapshot = self.document.current();
         if task.document == snapshot.document_id() && task.revision == snapshot.revision_id() {
-            self.install_loaded_document(&task.path, result.1, result.0);
+            self.install_loaded_document(&task.path, task.recovery_lock, result);
         } else {
             // An edit (by MCP, say) came while the file was read; it is kept,
             // and the user is told the file was not opened (review
@@ -602,6 +600,48 @@ mod tests {
             harness.step();
             assert_eq!(harness.state().document.history_digest(), before);
         }
+    }
+
+    /// Review 2026-10-19 P3 (GUI): a cancelled Open left the file's lock with the read,
+    /// which went on in the background, so opening the file again at once was refused as
+    /// a conflict until the read ended.
+    #[test]
+    fn a_cancelled_open_lets_the_file_be_opened_again_at_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reopened.ketchup");
+        assert!(KetchupApp::new().save_document_to(&path));
+        let mut harness = shell(ScriptedFileDialogs::new());
+        let lock = ketchup_model::persistence::WorkRecoveryLock::acquire(&path).unwrap();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let (finished, completion) = std::sync::mpsc::channel();
+        let context = harness.ctx.clone();
+        harness
+            .state_mut()
+            .queue_document_read(path.clone(), Some(lock), &context, move |path| {
+                gate.recv_timeout(Duration::from_secs(10)).unwrap();
+                let result = ketchup_model::persistence::load_file_with_source(path);
+                finished.send(()).unwrap();
+                result
+            });
+        harness.step();
+        harness.input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+        assert!(harness.state().file.activity.opening.is_none());
+        let reopened = ketchup_model::persistence::WorkRecoveryLock::acquire(&path);
+        release.send(()).unwrap();
+        completion.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            reopened.is_ok(),
+            "the cancelled read still holds the file's lock"
+        );
+        drop(reopened);
+        assert!(harness.state_mut().open_document_path(&path));
     }
 
     #[test]
