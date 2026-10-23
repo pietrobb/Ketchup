@@ -329,17 +329,23 @@ jobs:
 
   fuzz:
     name: fuzzing of the document, Viewer package and import readers
-    # libFuzzer with AddressSanitizer gives every target in fuzz/Cargo.toml
-    # (load(), Package::read_with_comments and the DXF, STL, GLB and SketchUp
-    # scene imports and the DXF underlay) any bytes for two minutes each; one input may take 10 s
-    # and the process 2 GiB. Each run starts from the seeds in fuzz/seeds and
-    # the corpus earlier runs kept in the Actions cache (tests/test_fuzz_job.py).
+    # libFuzzer with AddressSanitizer runs every target in fuzz/Cargo.toml
+    # (load(), Package::read_with_comments, Comments::read_unbound, the DWG
+    # reader and the DXF, STL, GLB and SketchUp scene imports and the DXF
+    # underlay); one input may take 10 s and the process 2 GiB. Each run starts
+    # from the seeds in fuzz/seeds and the corpus earlier runs kept in the
+    # Actions cache (tests/test_fuzz_job.py). Only the nightly and manual runs
+    # look for new inputs, two minutes a target, and keep the corpus they grow;
+    # a push or pull request replays the seeds and the kept corpus once, so an
+    # input that crashes code a pull request did not touch fails the nightly
+    # run, not that pull request. A crash's input is uploaded as an artifact.
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
       NIGHTLY: nightly-2026-10-01
       FUZZ_VERSION: 0.13.2
-      LIMITS: -max_total_time=120 -timeout=10 -rss_limit_mb=2048 -malloc_limit_mb=2048
+      LIMITS: -timeout=10 -rss_limit_mb=2048 -malloc_limit_mb=2048
+      EXPLORE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -369,15 +375,23 @@ jobs:
           cp artifacts/blender/garden-studio-colored.glb fuzz/seeds/glb/
       - name: every target
         run: |
+          if [ "$EXPLORE" = true ]; then LENGTH=-max_total_time=120; else LENGTH=-runs=0; fi
           for target in $(cargo "+$NIGHTLY" fuzz list --fuzz-dir fuzz); do
             echo "::group::$target"
             mkdir -p "fuzz/corpus/$target"
-            cargo "+$NIGHTLY" fuzz run --fuzz-dir fuzz -O "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- $LIMITS
+            cargo "+$NIGHTLY" fuzz run --fuzz-dir fuzz -O "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- $LENGTH $LIMITS
             echo "::endgroup::"
           done
+      - name: input of a found crash
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ github.run_id }}
+          path: fuzz/artifacts
+          if-no-files-found: ignore
       # Saved after a found crash too, so the next run starts from the same corpus.
       - name: corpus for later runs
-        if: always()
+        if: always() && env.EXPLORE == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: fuzz/corpus

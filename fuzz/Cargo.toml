@@ -1,6 +1,6 @@
 [package]
 name = "ketchup-fuzz"
-description = "cargo-fuzz targets for the readers of untrusted files: a .ketchup document, a Viewer package, the DXF, STL, GLB and SketchUp scene imports and the DXF underlay"
+description = "cargo-fuzz targets for the readers of untrusted files: a .ketchup document, a Viewer package and its comments, the DXF, DWG, STL, GLB and SketchUp scene imports and the DXF underlay"
 version = "0.0.0"
 edition = "2024"
 license = "Apache-2.0"
@@ -13,6 +13,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4.13"
 ketchup-model = { path = "../crates/ketchup-model" }
 ketchup-view-format = { path = "../crates/ketchup-view-format" }
+ketchup-dwg = { path = "../crates/ketchup-dwg" }
 
 # Not a member of the Ketchup workspace: it builds only on a nightly toolchain
 # with the sanitizer flags `cargo fuzz` gives it.
@@ -64,6 +65,20 @@ bench = false
 [[bin]]
 name = "sketchup_scene"
 path = "fuzz_targets/sketchup_scene.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "comments"
+path = "fuzz_targets/comments.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dwg"
+path = "fuzz_targets/dwg.rs"
 test = false
 doc = false
 bench = false
