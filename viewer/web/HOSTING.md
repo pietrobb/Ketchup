@@ -72,8 +72,12 @@ host's responsibility; the Viewer never uploads or publishes anything by itself.
 | WebKit 26 (Playwright build, Safari's engine) | WebGL2 | same |
 | Chrome, Pixel 7 emulation (touch, phone screen) | WebGPU | link and drawing |
 
-`viewer/web/tests/browser_smoke.py <site-folder>` repeats these checks. A
-comment file downloaded in the browser opens in the desktop Viewer and in Kečup.
+`viewer/web/tests/browser_smoke.py <site-folder>` repeats these checks. CI does
+not run it: run it by hand before uploading the web Viewer, on the site folder
+built with a model, e.g.
+`scripts\windows\build-web-viewer.ps1 -OutputDir <site-folder> -Model <file>.ketchup-view`
+and then `python viewer\web\tests\browser_smoke.py <site-folder>` (needs
+Playwright and Pillow; exit code 1 on any failed check). A comment file downloaded in the browser opens in the desktop Viewer and in Kečup.
 Scenes, dimensions and comment arrows run the same Rust code as the desktop
 Viewer and are covered by its headless tests, not separately per browser.
 Not verified here: Safari itself on macOS, Safari/Chrome on a real iPhone,
