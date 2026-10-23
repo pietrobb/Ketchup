@@ -22,28 +22,36 @@ fn counts(report: &ketchup_program::Report) -> (usize, usize) {
     (count(COLLISION_UNVERIFIED), count("collision"))
 }
 
+fn assert_refined_without_exact_is_whole(file: &str, source: &str) {
+    let evaluated = evaluate(file, source, &BTreeMap::new()).unwrap();
+    let whole = report(&evaluated);
+    let mut before = report_before_exact(&evaluated);
+    assert!(before.checks_pending());
+    assert!(before.relations.is_empty(), "{file}");
+    assert!(!whole.relations.is_empty(), "{file}");
+    assert!(before.issues.len() <= whole.issues.len(), "{file}");
+    // What the exact check cleared is counted on these.
+    assert_eq!(counts(&before), counts(&whole), "{file}");
+    assert!(counts(&whole).0 > 0, "{file}");
+    assert_eq!(
+        (&before.joints, &before.loads, &before.design),
+        (&whole.joints, &whole.loads, &whole.design),
+        "{file}"
+    );
+    before.apply_refined(refine(&evaluated.model, &ExactShapes::default()));
+    assert!(!before.checks_pending());
+    assert_eq!(before, whole, "{file}");
+}
+
 #[test]
 fn a_report_before_the_exact_check_refined_without_it_is_the_whole_report() {
-    for (file, source) in [("tiny-house.star", HOUSE), ("house-project.star", PROJECT)] {
-        let evaluated = evaluate(file, source, &BTreeMap::new()).unwrap();
-        let whole = report(&evaluated);
-        let mut before = report_before_exact(&evaluated);
-        assert!(before.checks_pending());
-        assert!(before.relations.is_empty(), "{file}");
-        assert!(!whole.relations.is_empty(), "{file}");
-        assert!(before.issues.len() <= whole.issues.len(), "{file}");
-        // What the exact check cleared is counted on these.
-        assert_eq!(counts(&before), counts(&whole), "{file}");
-        assert!(counts(&whole).0 > 0, "{file}");
-        assert_eq!(
-            (&before.joints, &before.loads, &before.design),
-            (&whole.joints, &whole.loads, &whole.design),
-            "{file}"
-        );
-        before.apply_refined(refine(&evaluated.model, &ExactShapes::default()));
-        assert!(!before.checks_pending());
-        assert_eq!(before, whole, "{file}");
-    }
+    assert_refined_without_exact_is_whole("house-project.star", PROJECT);
+}
+
+#[test]
+#[ignore = "large-house: runs in full suite"]
+fn large_house_report_before_the_exact_check_refined_without_it_is_the_whole_report() {
+    assert_refined_without_exact_is_whole("tiny-house.star", HOUSE);
 }
 
 #[test]
