@@ -248,13 +248,6 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Request the image again; restart the window if it keeps failing.",
     ),
     entry(
-        "import_declined",
-        Validation,
-        "path",
-        "The user did not allow importing this file into the window.",
-        "Ask the user to import it, or confirm the import prompt in the window.",
-    ),
-    entry(
         "import_failed",
         Validation,
         "path",
@@ -379,13 +372,6 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "workset_handle",
         "An occurrence of the workset no longer has the identity it was collected with.",
         "Create the workset again from the current document.",
-    ),
-    entry(
-        "open_declined",
-        Validation,
-        "path",
-        "The user did not allow opening this file in the window.",
-        "Ask the user to open it, or confirm the open prompt in the window.",
     ),
     entry(
         "open_rejected",

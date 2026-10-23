@@ -689,33 +689,19 @@ fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
 }
 
 #[test]
-fn open_names_a_declined_path_apart_from_a_file_that_fails_to_load() {
+fn open_names_a_file_that_fails_to_load() {
     let directory = tempfile::tempdir().unwrap();
-    let good = directory.path().join("good.ketchup");
-    let mut source = KetchupApp::new();
-    assert!(source.create_box());
-    assert!(source.save_document_to(&good));
     let broken = directory.path().join("broken.ketchup");
     std::fs::write(&broken, b"not a Kecup document").unwrap();
 
-    let mut app = KetchupApp::new().with_dialogs(Box::new(
-        ScriptedFileDialogs::new().queue_refused_high_risk(),
-    ));
+    let mut app = KetchupApp::new();
     app.live.consent_attached = true;
     let before = app.document_snapshot().canonical_digest();
     let mut bridge = transport::start(egui::Context::default()).unwrap();
-    let open = |app: &KetchupApp, path: &Path| Request::Open {
+    let request = Request::Open {
         expected: Some(app.live_bridge_stamp()),
-        path: path.to_string_lossy().into_owned(),
+        path: broken.to_string_lossy().into_owned(),
     };
-
-    let request = open(&app, &good);
-    assert_eq!(
-        bridge.execute(&mut app, request, false),
-        Err("open_declined")
-    );
-    app.live.consent_attached = false;
-    let request = open(&app, &broken);
     assert_eq!(
         bridge.execute(&mut app, request, false),
         Err("open_rejected")

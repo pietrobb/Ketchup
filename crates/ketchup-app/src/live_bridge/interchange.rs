@@ -163,9 +163,6 @@ impl LiveBridge {
                 })
             })
             .transpose()?;
-        if !app.confirm_live_import_path(Path::new(path)) {
-            return Err("import_declined");
-        }
         Ok((path.clone(), format, unit))
     }
 

@@ -3048,9 +3048,6 @@ impl LiveBridge {
                 if !drawings::local_absolute_path(&path) || !Path::new(&path).is_file() {
                     return Err("invalid_path");
                 }
-                if !app.confirm_live_open_path(Path::new(&path)) {
-                    return Err("open_declined");
-                }
                 if !app.confirm_discard_if_dirty() {
                     return Err("discard_declined");
                 }

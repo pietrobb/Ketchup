@@ -925,22 +925,18 @@ fn local_attach_is_granted_without_prompt_and_disconnect_revokes_the_credential(
 }
 
 #[test]
-fn attached_live_open_requires_explicit_consent_for_the_exact_path() {
+fn an_attached_client_opens_a_file_asking_only_to_discard_unsaved_work() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("approved-live-open.ketchup");
+    let path = directory.path().join("live-open.ketchup");
     let mut source = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&path));
     assert!(source.app_mut().create_box());
     source.click_menu_command("menu-file", AppCommand::SaveAs);
     let target_digest = source.app().canonical_digest();
 
-    let dialogs = ScriptedFileDialogs::new()
-        .queue_refused_high_risk()
-        .queue_high_risk_approval(41)
-        .always_discard();
+    let dialogs = ScriptedFileDialogs::new().always_discard();
     let probe = dialogs.clone();
     let mut shell = Shell::with_dialogs(dialogs);
     assert!(shell.app_mut().create_box());
-    let before_digest = shell.app().canonical_digest();
     shell.enable_live_consent_broker();
     let consent_address = shell.app().live_consent_address().unwrap();
     let bootstrap = bootstrap(&shell, None);
@@ -953,22 +949,6 @@ fn attached_live_open_requires_explicit_consent_for_the_exact_path() {
     let expected = call(&mut shell, &mut live, token, Request::Status {})
         .stamp
         .unwrap();
-    let refused = call(
-        &mut shell,
-        &mut live,
-        token,
-        Request::Open {
-            expected: Some(expected.clone()),
-            path: path.to_string_lossy().into_owned(),
-        },
-    );
-    assert_eq!(refused.error.as_deref(), Some("open_declined"));
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    assert!(shell.app().document_path().is_none());
-    assert_eq!(probe.high_risk_prompts().len(), 1);
-    assert!(probe.high_risk_prompts()[0].contains(&path.display().to_string()));
-    assert_eq!(probe.discard_prompts(), 0);
-
     let opened = call(
         &mut shell,
         &mut live,
@@ -981,15 +961,15 @@ fn attached_live_open_requires_explicit_consent_for_the_exact_path() {
     assert!(opened.ok, "{:?}", opened.error);
     assert_eq!(shell.app().document_path(), Some(path.as_path()));
     assert_eq!(shell.app().canonical_digest(), target_digest);
-    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert!(probe.high_risk_prompts().is_empty());
     assert_eq!(probe.discard_prompts(), 1);
 }
 
-/// SEC-4 (review 2026-10-15): a path from the client is shown in every
-/// high-risk prompt with its bidirectional and control characters escaped, so
-/// it cannot reorder the text of the prompt or start a forged line.
+/// SEC-4 (review 2026-10-15): a path from the client is shown in the overwrite
+/// prompt with its bidirectional and control characters escaped, so it cannot
+/// reorder the text of the prompt or start a forged line.
 #[test]
-fn a_client_path_is_shown_escaped_in_the_open_and_overwrite_prompts() {
+fn a_client_path_is_shown_escaped_in_the_overwrite_prompt() {
     let directory = tempfile::tempdir().unwrap();
     // Shown raw, U+202E (right-to-left override) makes the name read as ending in "html.ketchup".
     let path = directory.path().join("invoice\u{202E}lmth.ketchup");
@@ -998,9 +978,7 @@ fn a_client_path_is_shown_escaped_in_the_open_and_overwrite_prompts() {
     source.click_menu_command("menu-file", AppCommand::SaveAs);
     assert!(path.is_file());
 
-    let dialogs = ScriptedFileDialogs::new()
-        .queue_refused_high_risk()
-        .queue_refused_high_risk();
+    let dialogs = ScriptedFileDialogs::new().queue_refused_high_risk();
     let probe = dialogs.clone();
     let mut shell = Shell::with_dialogs(dialogs);
     assert!(shell.app_mut().create_box());
@@ -1014,16 +992,6 @@ fn a_client_path_is_shown_escaped_in_the_open_and_overwrite_prompts() {
     let mut live = TcpStream::connect(allowed["live_bridge_address"].as_str().unwrap()).unwrap();
     let text = path.to_string_lossy().into_owned();
 
-    let opened = call(
-        &mut shell,
-        &mut live,
-        token,
-        Request::Open {
-            expected: None,
-            path: text.clone(),
-        },
-    );
-    assert_eq!(opened.error.as_deref(), Some("open_declined"));
     let saved = call(
         &mut shell,
         &mut live,
@@ -1036,7 +1004,7 @@ fn a_client_path_is_shown_escaped_in_the_open_and_overwrite_prompts() {
     assert!(!saved.ok);
 
     let prompts = probe.high_risk_prompts();
-    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
     for prompt in prompts {
         assert!(!prompt.contains('\u{202E}'), "{prompt:?}");
         assert!(

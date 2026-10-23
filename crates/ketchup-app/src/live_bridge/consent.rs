@@ -5,7 +5,6 @@
 //! No manual token entry or additional confirmation is needed.
 use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::{KetchupApp, egui, transport};
-use crate::dialogs::HighRiskConfirmationRequest;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -254,38 +253,6 @@ impl KetchupApp {
     pub fn revoke_live_consent(&mut self) {
         self.live.consent_attached = false;
         self.disable_live_bridge();
-    }
-
-    pub(crate) fn confirm_live_open_path(&mut self, path: &Path) -> bool {
-        self.confirm_live_read_path(
-            path,
-            "live-open-consent-title",
-            "live-open-consent-description",
-        )
-    }
-
-    pub(crate) fn confirm_live_import_path(&mut self, path: &Path) -> bool {
-        self.confirm_live_read_path(
-            path,
-            "live-import-consent-title",
-            "live-import-consent-description",
-        )
-    }
-
-    /// An attached client reads a local file into the window only after the
-    /// user allows that exact path.
-    fn confirm_live_read_path(&mut self, path: &Path, title: &str, description: &str) -> bool {
-        if !self.live.consent_attached {
-            return true;
-        }
-        let title = self.catalog.text(title);
-        let description = self.catalog.format(
-            description,
-            &std::collections::BTreeMap::from([("path", path.display().to_string())]),
-        );
-        self.dialogs
-            .confirm_high_risk(HighRiskConfirmationRequest::new(&title, [description]))
-            .is_some()
     }
 
     fn live_consent_document(&self) -> String {
