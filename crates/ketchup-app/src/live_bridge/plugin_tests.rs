@@ -883,7 +883,8 @@ fn a_plugin_folder_is_read_staged_and_hashed_off_the_ui_thread() {
     });
 
     // While the folder cannot be read every frame returns: one that waited for
-    // the gate, opened below, would never end.
+    // the gate, opened below, would return only after its 5 s timeout, with the
+    // folder read and the job no longer preparing.
     for _ in 0..50 {
         wire.app.poll_live_bridge(&wire.context);
         assert!(rx.recv_timeout(Duration::from_millis(5)).is_err());

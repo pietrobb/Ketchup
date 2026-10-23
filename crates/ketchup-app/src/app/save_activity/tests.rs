@@ -1,6 +1,6 @@
 use super::*;
 use crate::dialogs::ScriptedFileDialogs;
-use crate::tests::shell::step_until;
+use crate::tests::shell::{hang_guard, step_until};
 use egui_kittest::{Harness, kittest::Queryable as _};
 
 fn shell(dialogs: ScriptedFileDialogs) -> Harness<'static, KetchupApp> {
@@ -21,7 +21,8 @@ fn wait(harness: &mut Harness<'_, KetchupApp>) {
 
 fn assert_indicated(harness: &mut Harness<'_, KetchupApp>) {
     // The file worker is held (a gate or a lock): a frame that waited for it
-    // would end only once the save was over, with nothing left to show.
+    // would end only once the save was over, with nothing left to show, or for
+    // a lock when the test's hang guard ends the run.
     for _ in 0..8 {
         harness.step();
         let label = harness
@@ -107,6 +108,7 @@ fn actual_locked_write_keeps_ui_alive_then_reopens_saved_geometry() {
     let path = directory.path().join("locked.ketchup");
     let lock = std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap();
     lock.lock().unwrap();
+    let _hang = hang_guard("a save waiting for its locked file");
     let mut harness = shell(ScriptedFileDialogs::new());
     assert!(harness.state_mut().create_box());
     let expected_count = harness.state().document.current().occurrences().count();
@@ -151,6 +153,7 @@ fn an_edit_during_write_stays_dirty_and_is_not_in_the_saved_file() {
     let path = directory.path().join("edited.ketchup");
     let lock = std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap();
     lock.lock().unwrap();
+    let _hang = hang_guard("a save waiting for its locked file");
     let mut harness = shell(ScriptedFileDialogs::new());
     let before = harness.state().document.current().occurrences().count();
     let context = harness.ctx.clone();
@@ -202,6 +205,7 @@ fn a_destination_conflict_is_reported_even_after_an_edit_during_write() {
     let path = directory.path().join("conflict.ketchup");
     let lock = std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap();
     lock.lock().unwrap();
+    let _hang = hang_guard("a save waiting for its locked file");
     let mut harness = shell(ScriptedFileDialogs::new());
     assert!(harness.state_mut().create_box());
     let context = harness.ctx.clone();

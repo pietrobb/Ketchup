@@ -39,6 +39,21 @@ struct Pending {
     cancel: CancelToken,
 }
 
+/// A test's hold on an evaluation ([`ProgramEvaluations::hold`]), with the
+/// guard that ends a hung test run until the evaluation is sent.
+#[cfg(test)]
+pub(crate) struct Held {
+    sender: mpsc::SyncSender<Evaluation>,
+    _hang: crate::tests::shell::HangGuard,
+}
+
+#[cfg(test)]
+impl Held {
+    pub(crate) fn send(self, evaluation: Evaluation) -> Result<(), mpsc::SendError<Evaluation>> {
+        self.sender.send(evaluation)
+    }
+}
+
 impl Drop for Pending {
     /// Nobody will read this evaluation any more: its thread stops at the
     /// program's next statement instead of finishing a superseded program.
@@ -141,9 +156,9 @@ impl ProgramEvaluations {
 
     /// Makes `source` pending until the test sends its evaluation, as after an
     /// Open or Undo of a program that takes long to evaluate. A tool that
-    /// waited for it would hang the test.
+    /// waited for it would hang; the hold's guard ends the test run instead.
     #[cfg(test)]
-    pub(crate) fn hold(&self, source: &RuleProgramSource) -> mpsc::SyncSender<Evaluation> {
+    pub(crate) fn hold(&self, source: &RuleProgramSource) -> Held {
         let (sender, receiver) = mpsc::sync_channel(1);
         self.ready.borrow_mut().take();
         *self.pending.borrow_mut() = Some(Pending {
@@ -151,7 +166,10 @@ impl ProgramEvaluations {
             receiver,
             cancel: CancelToken::default(),
         });
-        sender
+        Held {
+            sender,
+            _hang: crate::tests::shell::hang_guard("a held program evaluation"),
+        }
     }
 
     /// Evaluates `source` the way the background thread does.

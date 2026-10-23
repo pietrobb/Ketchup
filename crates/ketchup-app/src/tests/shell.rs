@@ -23,6 +23,34 @@ pub(crate) fn step_until(
     }
 }
 
+/// How long a test may hold work before a frame still waiting for it counts as
+/// hung: far longer than any frame, far shorter than a CI job's timeout.
+const HANG_PATIENCE: Duration = Duration::from_secs(120);
+
+/// While alive, ends the test process naming `what` once [`HANG_PATIENCE`] has
+/// passed. A test that holds work with no deadline of its own (a locked file, a
+/// held program evaluation) arms one, so a frame that waits for that work fails
+/// the run instead of blocking it until the CI job is cancelled.
+pub(crate) struct HangGuard {
+    _disarm: std::sync::mpsc::Sender<()>,
+}
+
+pub(crate) fn hang_guard(what: &'static str) -> HangGuard {
+    let (disarm, armed) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if armed.recv_timeout(HANG_PATIENCE) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            use std::io::Write as _;
+            // Straight to stderr: the test's captured output is lost on exit.
+            let _ = writeln!(
+                std::io::stderr(),
+                "hung: {what} was still held after {HANG_PATIENCE:?}; a frame waited for it"
+            );
+            std::process::exit(101);
+        }
+    });
+    HangGuard { _disarm: disarm }
+}
+
 #[test]
 fn review_only_open_preserves_the_active_document_and_its_history() {
     let directory = tempfile::tempdir().unwrap();
