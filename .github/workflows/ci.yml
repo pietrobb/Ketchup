@@ -228,6 +228,15 @@ jobs:
           cargo test --locked $env:CRATES.Split(' ') --no-fail-fast --
           --skip instanced_rendering::real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw
           --skip instanced_rendering::garden_studio_hardware_gpu_camera_frames
+      # The Viewer's comment save has its own Windows code, which the Linux
+      # Viewer job never compiles (review 2026-10-19).
+      - name: atomic comment save on Windows
+        shell: bash
+        run: |
+          cargo test --locked -p ketchup-viewer --lib -- --exact \
+            app::tests::atomic_save::interrupted_save_keeps_the_earlier_file_and_leaves_no_partial_one \
+            | tee "$RUNNER_TEMP/atomic-save.log"
+          grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/atomic-save.log"
       # The Python tests that drive the real CLI skip without it in the
       # checks job; here every such file runs and a skip fails (review
       # 2026-10-17 TST-2).
@@ -307,6 +316,16 @@ jobs:
           persist-credentials: false
       - name: clippy
         run: cargo clippy --locked -p ketchup-viewer-macos -p ketchup-viewer --all-targets -- -D warnings
+      # The Viewer's comment save has its own Windows and macOS code, which
+      # the Linux Viewer job never compiles; a renamed test fails here
+      # instead of silently matching nothing (review 2026-10-19).
+      - name: atomic comment save on macOS
+        shell: bash
+        run: |
+          cargo test --locked -p ketchup-viewer --lib -- --exact \
+            app::tests::atomic_save::interrupted_save_keeps_the_earlier_file_and_leaves_no_partial_one \
+            | tee "$RUNNER_TEMP/atomic-save.log"
+          grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/atomic-save.log"
 
   fuzz:
     name: fuzzing of the document, Viewer package and import readers
