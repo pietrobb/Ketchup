@@ -116,6 +116,8 @@ fn bought<'a>(
 pub fn bom(model: &ProgramModel) -> Bom {
     let mut rows: BTreeMap<(String, [i64; 3]), CutListRow> = BTreeMap::new();
     let mut hardware = BTreeMap::new();
+    // (designation, bought item) already counted: its other pieces add parts only.
+    let mut items: BTreeSet<(String, String)> = BTreeSet::new();
     let mut bars: BTreeMap<(i64, String, String, i64), BarRow> = BTreeMap::new();
     for part in model.parts.iter().filter(|part| model.in_production(part)) {
         let text = |name: &str| part.attributes.get(name).cloned().unwrap_or_default();
@@ -151,11 +153,16 @@ pub fn bom(model: &ProgramModel) -> Bom {
             let attributes = part
                 .attributes
                 .iter()
-                .filter(|(name, _)| plain_attribute(name) && *name != "designation")
+                .filter(|(name, _)| {
+                    plain_attribute(name) && *name != "designation" && *name != "bought_item"
+                })
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect();
+            let first_piece = part
+                .bought_item()
+                .is_none_or(|item| items.insert((designation.to_owned(), item.to_owned())));
             let row = bought(&mut hardware, designation, attributes);
-            row.count += 1;
+            row.count += usize::from(first_piece);
             row.parts.push(part.name.clone());
             continue;
         }

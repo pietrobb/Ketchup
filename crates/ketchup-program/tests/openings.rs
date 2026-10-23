@@ -208,6 +208,41 @@ no_window_over(bed)"
 }
 
 #[test]
+fn each_window_and_door_is_one_bought_item_in_the_hardware_list() {
+    let source = format!(
+        "{WALL}
+# The same window in the storey above, and a small one named in the program's words.
+window(\"win 2\", (0, 200, 2600), (1, 0, 0), (0, 0, 1), 200, 2200, 900, 1200, 1250)
+window(\"stair\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 100, 1200, 400, 800, cut = wall, designation = \"okno {{width}} × {{height}}\")"
+    );
+    let (model, issues) = evaluate(&source);
+    assert_eq!(errors(&issues), Vec::<String>::new());
+    let bom = ketchup_program::bom(&model);
+    let rows: Vec<_> = bom
+        .hardware
+        .iter()
+        .map(|row| (row.item.as_str(), row.count, row.parts.len()))
+        .collect();
+    // Five pieces each, every opening counted once; equal sizes share a row.
+    assert_eq!(
+        rows,
+        [
+            ("door 900 x 2100", 1, 5),
+            ("okno 400 × 800", 1, 5),
+            ("window 1200 x 1250", 2, 10),
+        ]
+    );
+    assert!(bom.hardware.iter().all(|row| row.attributes.is_empty()));
+    // Bought, so none of their parts is made: only the wall is in the cut list.
+    let made: Vec<_> = bom
+        .cut_list
+        .iter()
+        .flat_map(|row| row.parts.iter())
+        .collect();
+    assert_eq!(made, ["wall"]);
+}
+
+#[test]
 fn bad_windows_and_doors_name_the_problem() {
     let wall = "wall = box(\"wall\", (4000, 200, 2600))\n";
     for (call, message) in [
@@ -238,6 +273,10 @@ fn bad_windows_and_doors_name_the_problem() {
         (
             "window(\"w\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 100, 900, 900, 1200, glass = 90)",
             "the pane must be thinner than the 78 mm frame",
+        ),
+        (
+            "door(\"d\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 100, 0, 900, 2100, designation = \" \")",
+            "designation must be a text",
         ),
         (
             "buildup(\"floor\", (0, 0, 0), (1, 0, 0), (0, 1, 0), 4000, [{\"name\": \"a\", \"thickness\": 20}], height = 3000,

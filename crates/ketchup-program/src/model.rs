@@ -762,6 +762,14 @@ impl Part {
         self.attributes.get("designation").map(String::as_str)
     }
 
+    /// The one bought item a designated part is a piece of (attribute
+    /// `bought_item`, e.g. a library window's frame and pane): pieces of the
+    /// same item and designation are counted once in the hardware list.
+    #[must_use]
+    pub fn bought_item(&self) -> Option<&str> {
+        self.attributes.get("bought_item").map(String::as_str)
+    }
+
     /// The length a bar is cut to (attribute `cut_length_mm`, the developed
     /// length of a bent one, e.g. a library `rebar()`): it is ordered as
     /// pieces of that length and shape, in the bar schedule, neither bought

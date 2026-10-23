@@ -1304,8 +1304,9 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 #   one with cut_length_mm is a bar cut (and bent) to that length, in report section
 #   bar_schedule (position, diameter, grade, shape, cut length, count, total length, mass
 #   derived from mass_kg); any other with a designation is bought, in report section
-#   hardware (one row per designation with count, parts and the other attributes); the
-#   rest is made, in the cut list. Nuts, washers, bolts and rods are bought. Their
+#   hardware (one row per designation with count, parts and the other attributes; parts
+#   with the same designation and attribute bought_item are pieces of one item, counted
+#   once); the rest is made, in the cut list. Nuts, washers, bolts and rods are bought. Their
 #   attributes: designation (e.g. "ISO 4032 M8", "ISO 4017 M8x40"),
 #   standard, mass_basis (the mass is the simplified body's volume x 7850 kg/m3, not a
 #   catalogue weight) and source, which names a value of this size that has only one source.
@@ -2342,10 +2343,10 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
 #
 #   window(name, origin, along, up, wall, u, v, width, height, frame=(80, 78), inset=None,
 #          glass=24, material="wood", color=, fill_material="insulating glass", fill_color=,
-#          tags=[], cut=None)  -> opening
+#          tags=[], cut=None, designation="window {width} x {height}")  -> opening
 #   door(name, origin, along, up, wall, u, v, width, height, frame=(80, 78), inset=None,
 #        leaf=40, threshold=20, material="wood", color=, fill_material="wood", fill_color=,
-#        tags=[], cut=None)  -> opening
+#        tags=[], cut=None, designation="door {width} x {height}")  -> opening
 #     The opening is u .. u + width, v .. v + height in the plane of a wall's inside face,
 #     spanned from world point `origin` by `along` and `up` as in buildup(); the wall is
 #     `wall` mm thick outward along along x up. A frame of section `frame` = (width, depth)
@@ -2356,6 +2357,10 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
 #     Parts "<name>/frame top", "frame bottom", "frame left", "frame right" and "glass"
 #     (a door: "frame head", "threshold", "frame left", "frame right" and "leaf"), tagged
 #     `tags` plus "window" or "door": no_window_over() finds the windows by that tag.
+#     A window or door is bought as one item: its parts carry the designation, with
+#     {width} and {height} replaced by the opening's size (designation="okno {width} × {height}"
+#     in the program's own words), and bought_item = name, so report section hardware counts
+#     each opening once under its designation; none of its parts is in the cut list.
 #     The result is one value: .name, .kind ("window" or "door"), .parts, .tool and the
 #     numbers above (.origin, .along, .up, .out, .wall, .u, .v, .width, .height).
 #       buildup(openings=[...]) takes it as it is: a build-up in the same wall and storey
@@ -2364,7 +2369,8 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
 #       .tool is a tool body through the whole wall; cut=part subtracts it from that plain
 #       wall body (a concept wall), the cut named like the opening.
 #     Refused with the reason: a frame that leaves no room inside the opening or does not
-#     fit in the wall, a door not at v = 0, an opening reaching outside the wall in cut=.
+#     fit in the wall, a door not at v = 0, an opening reaching outside the wall in cut=,
+#     a designation that is no text or empty.
 # Example: a window and a door in a wall facing -y, inside face at y = 200, 200 mm thick
 #   wall = box("wall", (4000, 200, 2600), material = "timber frame")
 #   win = window("win", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 2200, 900, 1200, 1250, cut = wall)
@@ -2376,7 +2382,7 @@ _FRAME_COLOR = (240, 240, 236)
 _GLASS_COLOR = (150, 200, 230)
 _LEAF_COLOR = (150, 100, 60)
 
-def _wall_opening(kind, name, origin, along, up, wall, u, v, width, height, tags, cut, pieces):
+def _wall_opening(kind, name, origin, along, up, wall, u, v, width, height, tags, cut, designation, pieces):
     """The parts, tool and checks shared by window() and door(); `pieces` are
     (label, u0, v0, u1, v1, inset, depth, material, color) in the opening's plane."""
     along = vec_scale(along, 1.0 / vec_length(along))
@@ -2389,10 +2395,18 @@ def _wall_opening(kind, name, origin, along, up, wall, u, v, width, height, tags
         fail("%s(%s): width, height and wall must be positive, got %s, %s and %s" %
              (kind, name, fmt_mm(width), fmt_mm(height), fmt_mm(wall)))
 
+    if type(designation) != "string" or not designation.strip():
+        fail("%s(%s): designation must be a text, e.g. \"%s {width} x {height}\", got %r" % (kind, name, kind, designation))
+    bought = {
+        "designation": designation.replace("{width}", fmt_mm(width)).replace("{height}", fmt_mm(height)),
+        "bought_item": name,
+        FABRICATION_ROLE: PURCHASED_ITEM,
+    }
+
     def slab(label, u0, v0, u1, v1, at, thickness, material, color, tool = False):
         part = extrude("%s/%s" % (name, label), profile = [[p[0], p[1]] for p in _rect(u0, v0, u1, v1)],
                        distance = thickness, material = material, color = color, tool = tool,
-                       tags = None if tool else _names(tags) + [kind])
+                       attributes = None if tool else bought, tags = None if tool else _names(tags) + [kind])
         return place(part, origin = vec_add(origin, vec_scale(out, at)), z = out, x = along)
 
     tool = slab("opening", u, v, u + width, v + height, -1, wall + 2, None, None, tool = True)
@@ -2419,7 +2433,7 @@ def _frame_fit(kind, name, wall, frame, inset):
 
 def window(name, origin, along, up, wall, u, v, width, height, frame = (80, 78), inset = None, glass = 24,
            material = "wood", color = _FRAME_COLOR, fill_material = "insulating glass", fill_color = _GLASS_COLOR,
-           tags = [], cut = None):
+           tags = [], cut = None, designation = "window {width} x {height}"):
     """A window: frame and pane in a wall opening; see topic openings."""
     fw, fd, inset = _frame_fit("window", name, wall, frame, inset)
     if width - 2 * fw < 1 or height - 2 * fw < 1:
@@ -2428,7 +2442,7 @@ def window(name, origin, along, up, wall, u, v, width, height, frame = (80, 78),
     if glass <= 0 or glass > fd:
         fail("window(%s): the pane must be thinner than the %s mm frame, got %s mm" % (name, fmt_mm(fd), fmt_mm(glass)))
     u1, v1 = u + width, v + height
-    return _wall_opening("window", name, origin, along, up, wall, u, v, width, height, tags, cut, [
+    return _wall_opening("window", name, origin, along, up, wall, u, v, width, height, tags, cut, designation, [
         ("frame bottom", u, v, u1, v + fw, inset, fd, material, color),
         ("frame top", u, v1 - fw, u1, v1, inset, fd, material, color),
         ("frame left", u, v + fw, u + fw, v1 - fw, inset, fd, material, color),
@@ -2438,7 +2452,7 @@ def window(name, origin, along, up, wall, u, v, width, height, frame = (80, 78),
 
 def door(name, origin, along, up, wall, u, v, width, height, frame = (80, 78), inset = None, leaf = 40, threshold = 20,
          material = "wood", color = _FRAME_COLOR, fill_material = "wood", fill_color = _LEAF_COLOR,
-         tags = [], cut = None):
+         tags = [], cut = None, designation = "door {width} x {height}"):
     """A door: frame, threshold and leaf in a wall opening on the floor; see topic openings."""
     if abs(v) > 0.001:
         fail("door(%s): a door stands on its floor at v = 0 of its wall, got v = %s" % (name, fmt_mm(v)))
@@ -2449,7 +2463,7 @@ def door(name, origin, along, up, wall, u, v, width, height, frame = (80, 78), i
     if leaf <= 0 or leaf > fd:
         fail("door(%s): the leaf must be thinner than the %s mm frame, got %s mm" % (name, fmt_mm(fd), fmt_mm(leaf)))
     u1, v1 = u + width, v + height
-    return _wall_opening("door", name, origin, along, up, wall, u, v, width, height, tags, cut, [
+    return _wall_opening("door", name, origin, along, up, wall, u, v, width, height, tags, cut, designation, [
         ("threshold", u, v, u1, v + threshold, inset, fd, material, color),
         ("frame head", u, v1 - fw, u1, v1, inset, fd, material, color),
         ("frame left", u, v + threshold, u + fw, v1 - fw, inset, fd, material, color),
