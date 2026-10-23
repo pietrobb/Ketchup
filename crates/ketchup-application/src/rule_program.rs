@@ -178,7 +178,7 @@ pub fn plan_rule_program_by(
 
 /// [`plan_rule_program`] of `source` the caller already evaluated as
 /// `evaluated`, with `current` the evaluation of the document's program when
-/// the caller holds it: a window edit of a house then evaluates it once.
+/// the caller holds it: a window edit of a large program then evaluates it once.
 ///
 /// # Errors
 /// As [`plan_rule_program`].
@@ -391,8 +391,8 @@ fn feature_level_changes(
         let Some(&after) = new_parts.get(before.name.as_str()) else {
             continue;
         };
-        // A part the program makes as before needs no command; on a house
-        // that is nearly every part of an edit.
+        // A part the program makes as before needs no command; in a large
+        // program that is nearly every part of an edit.
         if after == before {
             let occurrence = occurrences.get(before.name.as_str())?;
             if occurrence.transform() != Transform::from_matrix(before.transform_matrix()).ok()? {
@@ -858,7 +858,7 @@ mod tests {
 
     /// Turning a part of a large program in the window cost four evaluations
     /// of the whole program (the edit and its plan each evaluated the program
-    /// before and after it): 370 ms on the timber-frame house. From the
+    /// before and after it): 370 ms on the largest example program. From the
     /// evaluation the window keeps, only the turned program is evaluated, and
     /// the plan is the one evaluating both again makes.
     #[test]

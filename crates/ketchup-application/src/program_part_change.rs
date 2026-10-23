@@ -100,7 +100,7 @@ pub struct RewrittenProgram {
 
 /// [`rewrite_rule_program_parts`] that starts from `current`, the evaluation
 /// of `source` the caller holds (evaluated here when `None`), and keeps the
-/// evaluation of the rewritten program: on a house each evaluation costs as
+/// evaluation of the rewritten program: on a large program each evaluation costs as
 /// much as the rest of the edit.
 ///
 /// # Errors
