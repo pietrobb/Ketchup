@@ -7,6 +7,7 @@
 //! joined into one line.
 
 use super::{DrawnView, EDGE_STROKE_MM, Item};
+use ketchup_geometry::linalg::{cross2, dot2};
 use ketchup_model::tolerance::HIDDEN_LINE_TOUCH_MM;
 use std::collections::BTreeMap;
 
@@ -109,9 +110,9 @@ fn lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
 
 fn distance_to_side(point: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let side = [b[0] - a[0], b[1] - a[1]];
-    let squared = side[0] * side[0] + side[1] * side[1];
+    let squared = dot2(side, side);
     let t = if squared > 0.0 {
-        (((point[0] - a[0]) * side[0] + (point[1] - a[1]) * side[1]) / squared).clamp(0.0, 1.0)
+        (dot2([point[0] - a[0], point[1] - a[1]], side) / squared).clamp(0.0, 1.0)
     } else {
         0.0
     };
@@ -122,14 +123,30 @@ fn distance_to_side(point: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 fn crossing(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Option<f64> {
     let r = [b[0] - a[0], b[1] - a[1]];
     let s = [d[0] - c[0], d[1] - c[1]];
-    let denominator = r[0] * s[1] - r[1] * s[0];
+    let denominator = cross2(r, s);
     if denominator == 0.0 {
         return None;
     }
     let q = [c[0] - a[0], c[1] - a[1]];
-    let t = (q[0] * s[1] - q[1] * s[0]) / denominator;
-    let u = (q[0] * r[1] - q[1] * r[0]) / denominator;
+    let t = cross2(q, s) / denominator;
+    let u = cross2(q, r) / denominator;
     ((0.0..=1.0).contains(&u) && t > 0.0 && t < 1.0).then_some(t)
+}
+
+/// A count of cells as a coordinate factor; a grid has at most 512 cells a side.
+fn factor(count: usize) -> f64 {
+    f64::from(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
+/// `value` rounded to a whole number, as a key that sorts as the number does: equal
+/// numbers, minus zero among them, give one key.
+fn whole_key(value: f64) -> u64 {
+    let bits = (value.round() + 0.0).to_bits();
+    if bits >> 63 == 1 {
+        !bits
+    } else {
+        bits | 1 << 63
+    }
 }
 
 /// The occluders by the cells of a regular grid their bounds touch.
@@ -143,14 +160,11 @@ struct Grid {
 impl Grid {
     fn new(min: [f64; 2], max: [f64; 2], occluders: &[Occluder]) -> Self {
         // not a tolerance: about four occluders a cell, at most 512 cells a side.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss
-        )]
-        let size = ((occluders.len() as f64 / 4.0).sqrt().ceil() as usize).clamp(1, 512);
-        #[allow(clippy::cast_precision_loss)]
-        let cell = std::array::from_fn(|axis| ((max[axis] - min[axis]) / size as f64).max(1.0));
+        let mut size = 1;
+        while size < 512 && size * size * 4 < occluders.len() {
+            size += 1;
+        }
+        let cell = std::array::from_fn(|axis| ((max[axis] - min[axis]) / factor(size)).max(1.0));
         let mut grid = Self {
             min,
             cell,
@@ -169,13 +183,20 @@ impl Grid {
         grid
     }
 
+    /// The column and row of `point`, clamped to the grid: the last whose low edge
+    /// is not beyond it, found by halving.
     fn cell_of(&self, point: [f64; 2]) -> [usize; 2] {
         std::array::from_fn(|axis| {
-            let at = ((point[axis] - self.min[axis]) / self.cell[axis]).floor();
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            {
-                (at.max(0.0) as usize).min(self.size - 1)
+            let (mut low, mut high) = (0, self.size - 1);
+            while low < high {
+                let middle = (low + high).div_ceil(2);
+                if self.min[axis] + factor(middle) * self.cell[axis] <= point[axis] {
+                    low = middle;
+                } else {
+                    high = middle - 1;
+                }
             }
+            low
         })
     }
 
@@ -187,8 +208,7 @@ impl Grid {
         let direction = [b[0] - a[0], b[1] - a[1]];
         let step = direction.map(|value| if value > 0.0 { 1_i64 } else { -1 });
         let boundary = |axis: usize, index: usize| {
-            #[allow(clippy::cast_precision_loss)]
-            let index = index as f64 + if direction[axis] > 0.0 { 1.0 } else { 0.0 };
+            let index = factor(index) + if direction[axis] > 0.0 { 1.0 } else { 0.0 };
             self.min[axis] + index * self.cell[axis]
         };
         let next_t = |axis: usize, index: usize| {
@@ -301,7 +321,7 @@ pub(super) fn visible_lines(view: &DrawnView) -> Vec<VisibleLine> {
 fn joined(pieces: Vec<Piece>) -> Vec<VisibleLine> {
     // Pieces on one line: its direction (made unique), its distance from the
     // origin and the pen; along it, where each piece starts and ends.
-    let mut lines: BTreeMap<(i64, i64, i64), Vec<(f64, f64)>> = BTreeMap::new();
+    let mut lines: BTreeMap<(u64, u64, u64), Vec<(f64, f64)>> = BTreeMap::new();
     let mut directions = BTreeMap::new();
     for Piece { a, b, width_mm } in pieces {
         let length = distance(a, b);
@@ -315,13 +335,12 @@ fn joined(pieces: Vec<Piece>) -> Vec<VisibleLine> {
         }
         let offset = direction[0] * a[1] - direction[1] * a[0];
         // not a tolerance: directions are told apart to a millionth of a radian.
-        #[allow(clippy::cast_possible_truncation)]
         let key = (
-            (direction[1].atan2(direction[0]) * 1_000_000.0).round() as i64,
-            (offset / HIDDEN_LINE_TOUCH_MM).round() as i64,
-            (width_mm / HIDDEN_LINE_TOUCH_MM).round() as i64,
+            whole_key(direction[1].atan2(direction[0]) * 1_000_000.0),
+            whole_key(offset / HIDDEN_LINE_TOUCH_MM),
+            whole_key(width_mm / HIDDEN_LINE_TOUCH_MM),
         );
-        let along = |point: [f64; 2]| direction[0] * point[0] + direction[1] * point[1];
+        let along = |point: [f64; 2]| dot2(direction, point);
         let (start, end) = (along(a).min(along(b)), along(a).max(along(b)));
         lines.entry(key).or_default().push((start, end));
         directions

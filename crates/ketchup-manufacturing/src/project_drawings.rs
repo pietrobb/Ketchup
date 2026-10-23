@@ -14,7 +14,7 @@
 
 use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area};
-use ketchup_geometry::linalg::{Vec3, cross, dot, normalize_within, sub};
+use ketchup_geometry::linalg::{Vec3, cross, cross2, dot, dot2, normalize_within, sub};
 use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -403,9 +403,7 @@ fn without_straight_corners(mut polyline: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     let straight = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
         let (ab, bc) = ([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]);
         let length = ab[0].hypot(ab[1]) + bc[0].hypot(bc[1]);
-        length > 0.0
-            && (ab[0] * bc[1] - ab[1] * bc[0]).abs() <= HIDDEN_LINE_TOUCH_MM * length
-            && ab[0] * bc[0] + ab[1] * bc[1] >= 0.0
+        length > 0.0 && cross2(ab, bc).abs() <= HIDDEN_LINE_TOUCH_MM * length && dot2(ab, bc) >= 0.0
     };
     let mut changed = true;
     while changed && polyline.len() > 3 {
