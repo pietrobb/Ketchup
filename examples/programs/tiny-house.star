@@ -18,7 +18,6 @@ SYSTEM = param("system", 0, min = 0, max = 1, doc = "skladba: 0 drevostavba 200 
 WALL_C = (226, 208, 172)
 SLAB_C = (150, 150, 150)
 ROOF_C = (72, 72, 78)
-GLASS_C = (150, 200, 230)
 WOOD_C = (150, 100, 60)
 STEEL_C = (190, 192, 196)
 TIMBER_C = (205, 165, 110)
@@ -111,8 +110,9 @@ lift = ROOF_T / math.cos(a)      # zvislá hrúbka strešného plášťa
 
 alternatives(["koncept", "konštrukcia"])
 # Vyrába sa drevostavba: kusovník, kovanie a výkaz materiálu počítajú len diely konštrukcie,
-# aj keď je ich vrstva skrytá. Koncept, základová doska, schody, komín a nábytok nie.
-production(tags = ["konštrukcia"])
+# a kúpené okná a dvere, aj keď je ich vrstva skrytá. Koncept, základová doska, schody,
+# komín a nábytok nie.
+production(tags = ["konštrukcia", "window", "door"])
 # Nosné prvky musia preniesť svoju tiaž až na základ: ležať zhora na nesenom prvku
 # (trám pod oboma koncami) alebo visieť na nosnom spoji (joint(..., bearing = True)).
 # Krytina nesie hrebenáč a odovzdá ho cez debnenie krokvám.
@@ -136,17 +136,6 @@ timber_design({"KVH C24": "C24", "BSH GL24h": "GL24h"}, service_class = 1)
 box("základ/doska", (L, B, SLAB), material = "betón", color = SLAB_C)
 box("terasa", (2400, 1500, SLAB - 30), at = (450, -1500, 0), material = "drevo terasa", color = WOOD_C)
 
-# Otvory: stena, názov, od, do (pozdĺž steny vo svetových x alebo y), spodok, vrch (z).
-# Západný štít pri nástupe na schody a východný štít nad posteľou okno v danom
-# podlaží nemajú.
-OPENINGS = [
-    ("south", "dvere", 800, 1700, SLAB, SLAB + 2100),
-    ("south", "obývačka juh", 3500, 5300, SLAB + 750, SLAB + 2100),
-    ("north", "kuchyňa sever", 4400, 5400, SLAB + 1000, SLAB + 2100),
-    ("west", "podkrovie západ", 1500, 2500, attic + 500, attic + 1600),
-    ("east", "prízemie východ", 1400, 2600, SLAB + 750, SLAB + 2100),
-]
-
 # --- koncept: plné steny ---
 south = box("steny/južná", (L - 2 * WALL, WALL, eave + 400 - SLAB), at = (WALL, 0, SLAB),
             material = "drevostavba", color = WALL_C, tags = "koncept")
@@ -161,29 +150,29 @@ def gable(name, x):
                    distance = WALL, material = "drevostavba", color = WALL_C, tags = "koncept")
     return place(part, origin = (x, 0, 0), z = (1, 0, 0), x = (0, 1, 0))
 
-CONCEPT_WALLS = {
-    "south": (south, "y", 0),
-    "north": (north, "y", B - WALL),
-    "west": (gable("steny/štít západ", 0), "x", 0),
-    "east": (gable("steny/štít východ", L - WALL), "x", L - WALL),
+# Steny: plné teleso konceptu, líce interiéru vo výške SLAB a smer pozdĺž steny (von je smer × z).
+WALLS = {
+    "south": (south, (0, WALL, SLAB), (1, 0, 0)),
+    "north": (north, (L, B - WALL, SLAB), (-1, 0, 0)),
+    "west": (gable("steny/štít západ", 0), (WALL, B, SLAB), (0, -1, 0)),
+    "east": (gable("steny/štít východ", L - WALL), (L - WALL, 0, SLAB), (0, 1, 0)),
 }
 
-# Otvor vo všetkých reprezentáciách: výplň (sklo, krídlo dverí) je spoločná.
-for side, name, lo, hi, z0, z1 in OPENINGS:
-    wall, axis, wall_min = CONCEPT_WALLS[side]
-    door = name == "dvere"
-    thickness = 60 if door else 24
-    if axis == "y":
-        tool_at, tool_size = (lo, wall_min - 1, z0), (hi - lo, WALL + 2, z1 - z0)
-        fill_at, fill_size = (lo, wall_min + (WALL - thickness) / 2.0, z0), (hi - lo, thickness, z1 - z0)
-    else:
-        tool_at, tool_size = (wall_min - 1, lo, z0), (WALL + 2, hi - lo, z1 - z0)
-        fill_at, fill_size = (wall_min + (WALL - thickness) / 2.0, lo, z0), (thickness, hi - lo, z1 - z0)
-    tool = box(part_info(wall).name + "/" + name, tool_size, at = tool_at, tool = True)
-    subtract(wall, tool, name = name)
-    box("dvere/krídlo" if door else "okná/" + name, fill_size, at = fill_at,
-        material = "drevo" if door else "izolačné sklo", color = WOOD_C if door else GLASS_C,
-        tags = [] if door else ["okno"])
+# Okná a dvere z knižnice: jedna definícia dáva otvor v každej skladbe tej steny, výrez
+# v stene konceptu aj rám s výplňou (spoločné pre obe reprezentácie); v kovaní je každé raz.
+# Stena, druh, názov, u (od začiatku steny), v (od SLAB), šírka, výška. Západný štít pri
+# nástupe na schody a východný štít nad posteľou okno v danom podlaží nemajú.
+OPENINGS = {side: [] for side in WALLS}
+for side, kind, name, u, v, width, height in [
+        ("south", "dvere", "dvere", 800, 0, 900, 2100),
+        ("south", "okno", "okná/obývačka juh", 3500, 750, 1800, 1350),
+        ("north", "okno", "okná/kuchyňa sever", L - 5400, 1000, 1000, 1100),
+        ("west", "okno", "okná/podkrovie západ", B - 2500, attic + 500 - SLAB, 1000, 1100),
+        ("east", "okno", "okná/prízemie východ", 1400, 750, 1200, 1350)]:
+    wall, origin, along = WALLS[side]
+    make, fill = (door, "drevo") if kind == "dvere" else (window, "izolačné sklo")
+    OPENINGS[side].append(make(name, origin, along, (0, 0, 1), WALL, u, v, width, height, material = "drevo",
+                               fill_material = fill, designation = kind + " {width} × {height}", cut = wall))
 
 # --- koncept: strop / podlaha podkrovia s otvormi pre schody a komín ---
 attic_floor = box("podkrovie/podlaha", (L - 2 * WALL, B - 2 * WALL, FLOOR), at = (WALL, WALL, ceiling),
@@ -275,15 +264,7 @@ roof_north = roof("strecha/severná", [[B / 2.0, ridge], [B + EAVE_OVER, low], [
 subtract(roof_south, flue_hole, name = "prestup komína")
 
 # --- konštrukcia: tie isté rozmery, skladby podľa systému ---
-def openings_of(side, start, reverse, base = SLAB, below = None):
-    """Otvory steny medzi výškami base a below v jej súradniciach (u od `start`
-    pozdĺž steny, v od base)."""
-    found = []
-    for wall, name, lo, hi, z0, z1 in OPENINGS:
-        if wall == side and z0 >= base and (below == None or z1 <= below):
-            u = start - hi if reverse else lo - start
-            found.append((u, z0 - base, hi - lo, z1 - z0))
-    return found
+# Skladba steny dostane z OPENINGS[stena] len otvory svojho podlažia.
 
 T = ["konštrukcia"]
 KROV = T + ["krokvy"]
@@ -356,23 +337,22 @@ def plate_pockets(u0, base, length):
 
 GROUND = deck - SLAB
 SIDES = [
-    # stena, prízemie, podkrovie, (začiatok, smer), dĺžka, otvory od
-    ("south", "prízemie/stena južná", "podkrovie/nadmurovka južná", (WALL, WALL), (1, 0, 0), L - 2 * WALL, WALL, False),
-    ("north", "prízemie/stena severná", "podkrovie/nadmurovka severná", (L - WALL, B - WALL), (-1, 0, 0), L - 2 * WALL, L - WALL, True),
-    ("west", "prízemie/stena západ", "štít západ", (WALL, B - FACADE), (0, -1, 0), B - 2 * FACADE, B - FACADE, True),
-    ("east", "prízemie/stena východ", "štít východ", (L - WALL, FACADE), (0, 1, 0), B - 2 * FACADE, FACADE, False),
+    # stena, prízemie, podkrovie, (začiatok, smer), dĺžka
+    ("south", "prízemie/stena južná", "podkrovie/nadmurovka južná", (WALL, WALL), (1, 0, 0), L - 2 * WALL),
+    ("north", "prízemie/stena severná", "podkrovie/nadmurovka severná", (L - WALL, B - WALL), (-1, 0, 0), L - 2 * WALL),
+    ("west", "prízemie/stena západ", "štít západ", (WALL, B - FACADE), (0, -1, 0), B - 2 * FACADE),
+    ("east", "prízemie/stena východ", "štít východ", (L - WALL, FACADE), (0, 1, 0), B - 2 * FACADE),
 ]
-for side, ground, upper, (x, y), along, length, start, reverse in SIDES:
+for side, ground, upper, (x, y), along, length in SIDES:
     buildup("konštrukcia/" + ground, (x, y, SLAB), along, (0, 0, 1), length, INNER, height = GROUND,
-            openings = openings_of(side, start, reverse, SLAB, deck), tags = T,
+            openings = OPENINGS[side], tags = T,
             anchor = {"to": "základ/doska", "fastener": SILL_ANCHOR, "spacing": 1000})
-    attic_openings = openings_of(side, start, reverse, attic)
     if side in ("south", "north"):
         buildup("konštrukcia/" + upper, (x, y, attic), along, (0, 0, 1), length, INNER, top = knee_top,
-                openings = attic_openings, tags = T)
+                openings = OPENINGS[side], tags = T)
     else:
         buildup("konštrukcia/" + upper, (x, y, attic), along, (0, 0, 1), length, INNER, top = gable_top(attic),
-                openings = attic_openings + [ridge_pocket(FACADE, attic)] + plate_pockets(FACADE, attic, length),
+                openings = OPENINGS[side] + [ridge_pocket(FACADE, attic)] + plate_pockets(FACADE, attic, length),
                 tags = T)
 # Sadrokartón nad východným oknom nesiaha na stĺpiky: je priskrutkovaný cez OSB, ktoré
 # ho nesie. Bez spoja by sa dotyk s OSB nerátal ako uloženie.
@@ -380,16 +360,15 @@ joint("konštrukcia/prízemie/stena východ/sadrokartón 3", "konštrukcia/príz
 
 FACADE_LAYERS = WALL_LAYERS[-1:]
 eave_line = roof_z(0, G) - SLAB
-for side, (x, y), along, length, start, reverse in (
-        ("south", (FACADE, FACADE), (1, 0, 0), L - 2 * FACADE, FACADE, False),
-        ("north", (L - FACADE, B - FACADE), (-1, 0, 0), L - 2 * FACADE, L - FACADE, True)):
+for side, (x, y), along, length in (("south", (FACADE, FACADE), (1, 0, 0), L - 2 * FACADE),
+                                    ("north", (L - FACADE, B - FACADE), (-1, 0, 0), L - 2 * FACADE)):
     buildup("konštrukcia/fasáda %s" % ("južná" if side == "south" else "severná"), (x, y, SLAB), along, (0, 0, 1),
-            length, FACADE_LAYERS, height = eave_line, openings = openings_of(side, start, reverse), tags = T)
-for side, name, (x, y), along, start, reverse in (("west", "západ", (FACADE, B), (0, -1, 0), B, True),
-                                                  ("east", "východ", (L - FACADE, 0), (0, 1, 0), 0, False)):
+            length, FACADE_LAYERS, height = eave_line, openings = OPENINGS[side], tags = T)
+for side, name, (x, y), along in (("west", "západ", (FACADE, B), (0, -1, 0)),
+                                  ("east", "východ", (L - FACADE, 0), (0, 1, 0))):
     buildup("konštrukcia/fasáda %s" % name, (x, y, SLAB), along, (0, 0, 1), B, FACADE_LAYERS,
             top = [(0, eave_line), (B / 2.0, roof_z(B / 2.0, G) - SLAB), (B, eave_line)],
-            openings = openings_of(side, start, reverse) + [ridge_pocket(0, SLAB)] + plate_pockets(0, SLAB, B), tags = T)
+            openings = OPENINGS[side] + [ridge_pocket(0, SLAB)] + plate_pockets(0, SLAB, B), tags = T)
 
 # Strop: stropnice ležia na hornej pásnici stien prízemia, obvodový veniec (krajné
 # stropnice a čelné fošne) stojí na jej vonkajšej časti. Podhľad je len v interiéri.
@@ -574,7 +553,7 @@ bed = box("podkrovie/posteľ rám", (2000, BED_W, 250), at = (bed_x, bed_y, atti
 box("podkrovie/matrac", (1950, BED_W - 50, 180), at = (bed_x + 25, bed_y + 25, attic + 250), material = "matrac", color = (240, 240, 245))
 for i, y in enumerate((bed_y + 100, bed_y + BED_W - 650)):
     box("podkrovie/vankúš %d" % (i + 1), (350, 550, 100), at = (bed_x + 1550, y, attic + 430), material = "textil", color = (200, 215, 235))
-no_window_over(bed, tag = "okno")
+no_window_over(bed)
 
 print("stena %s mm, strop %s mm, strecha %s mm; podkrovie: podlaha %d, hrebeň (spodok strechy) %d mm" %
       (fmt_mm(WALL), fmt_mm(FLOOR), fmt_mm(ROOF_T), attic, ridge))

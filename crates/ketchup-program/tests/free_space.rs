@@ -50,14 +50,26 @@ fn large_house_the_house_keeps_its_landings_headroom_stove_space_and_bed_free() 
 #[ignore = "large-house: runs in full suite"]
 fn large_house_a_window_over_the_bed_is_reported() {
     let source = changed(
-        "    (\"east\", \"prízemie východ\"",
-        "    (\"east\", \"podkrovie východ\", 1500, 2500, attic + 500, attic + 1500),\n    (\"east\", \"prízemie východ\"",
+        "        (\"east\", \"okno\", \"okná/prízemie východ\"",
+        "        (\"east\", \"okno\", \"okná/podkrovie východ\", 1500, attic + 500 - SLAB, 1000, 1000),\n        (\"east\", \"okno\", \"okná/prízemie východ\"",
     );
     let found = occupied(&issues(&source, &[]));
-    assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(found[0].0, "okná/podkrovie východ");
+    // The bed's zone reaches y = 2010: the right frame piece (y 2420..2500) is beyond it.
+    let parts: Vec<_> = found.iter().map(|(part, _)| part.as_str()).collect();
+    assert_eq!(
+        parts,
+        [
+            "okná/podkrovie východ/frame bottom",
+            "okná/podkrovie východ/frame top",
+            "okná/podkrovie východ/frame left",
+            "okná/podkrovie východ/glass"
+        ],
+        "{found:#?}"
+    );
     assert!(
-        found[0].1.contains("podkrovie/posteľ rám/no okno above"),
+        found
+            .iter()
+            .all(|(_, message)| message.contains("podkrovie/posteľ rám/no window above")),
         "{found:#?}"
     );
 }

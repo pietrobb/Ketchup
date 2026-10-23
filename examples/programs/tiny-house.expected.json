@@ -5,6 +5,17 @@
     },
     "hardware": [
       {
+        "count": 1,
+        "item": "dvere 900 × 2100",
+        "parts": [
+          "dvere/threshold",
+          "dvere/frame head",
+          "dvere/frame left",
+          "dvere/frame right",
+          "dvere/leaf"
+        ]
+      },
+      {
         "count": 4,
         "item": "kotevná pätka stĺpika"
       },
@@ -21,6 +32,44 @@
         "item": "krokvová spojka 30x210 VORMANN ľavá"
       },
       {
+        "count": 2,
+        "item": "okno 1000 × 1100",
+        "parts": [
+          "okná/kuchyňa sever/frame bottom",
+          "okná/kuchyňa sever/frame top",
+          "okná/kuchyňa sever/frame left",
+          "okná/kuchyňa sever/frame right",
+          "okná/kuchyňa sever/glass",
+          "okná/podkrovie západ/frame bottom",
+          "okná/podkrovie západ/frame top",
+          "okná/podkrovie západ/frame left",
+          "okná/podkrovie západ/frame right",
+          "okná/podkrovie západ/glass"
+        ]
+      },
+      {
+        "count": 1,
+        "item": "okno 1200 × 1350",
+        "parts": [
+          "okná/prízemie východ/frame bottom",
+          "okná/prízemie východ/frame top",
+          "okná/prízemie východ/frame left",
+          "okná/prízemie východ/frame right",
+          "okná/prízemie východ/glass"
+        ]
+      },
+      {
+        "count": 1,
+        "item": "okno 1800 × 1350",
+        "parts": [
+          "okná/obývačka juh/frame bottom",
+          "okná/obývačka juh/frame top",
+          "okná/obývačka juh/frame left",
+          "okná/obývačka juh/frame right",
+          "okná/obývačka juh/glass"
+        ]
+      },
+      {
         "count": 28,
         "item": "strmeň vonkajší 80x120x2 typ A"
       },
@@ -30,7 +79,7 @@
       }
     ],
     "machining": [],
-    "total_parts": 709
+    "total_parts": 734
   },
   "design": {
     "basis": [
@@ -50,9 +99,9 @@
   },
   "errors": 0,
   "issues": {
-    "count": 770,
+    "count": 782,
     "kinds": {
-      "collision_unverified": 760,
+      "collision_unverified": 772,
       "group_contact_unverified": 10
     }
   },
@@ -390,14 +439,14 @@
     }
   ],
   "relations": {
-    "count": 6653,
+    "count": 6752,
     "kinds": {
-      "contact": 3528,
-      "gap": 810,
-      "overlap": 1833,
+      "contact": 3588,
+      "gap": 817,
+      "overlap": 1865,
       "touch": 482
     }
   },
   "unused_overrides": [],
-  "warnings": 770
+  "warnings": 782
 }

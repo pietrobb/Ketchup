@@ -12,12 +12,17 @@ fn large_house_takeoff_groups_the_construction_by_material_and_section() {
     let model = ketchup_program::evaluate("tiny-house.star", HOUSE, &BTreeMap::new())
         .expect("the house evaluates")
         .model;
-    // production(tags = ["konštrukcia"]) makes the timber frame only: the
-    // takeoff of everything counts exactly those parts.
+    // production(tags = ["konštrukcia", "window", "door"]) makes the timber
+    // frame and buys the windows and doors: the takeoff of everything counts
+    // exactly those parts.
     let made = model
         .parts
         .iter()
-        .filter(|part| part.tags.contains("konštrukcia"))
+        .filter(|part| {
+            ["konštrukcia", "window", "door"]
+                .iter()
+                .any(|tag| part.tags.contains(*tag))
+        })
         .count();
     assert!(made > 0 && made < model.parts.len());
     let all = material_takeoff_of_all(&model);
