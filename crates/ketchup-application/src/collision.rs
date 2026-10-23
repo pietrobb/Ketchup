@@ -587,13 +587,24 @@ fn receive_pair_batch(
 }
 
 const RANGES_PER_WORKER: usize = 6;
+const PAIRS_PER_IDLE_WORKER: usize = 16;
 
 /// Isolated workers for `left_graphs` distinct left solids: one per eight of
 /// them, so process startup never dominates, and at most one per two cores.
-fn pair_worker_count(left_graphs: usize) -> usize {
-    crate::worker_pool::parallel_worker_limit()
-        .min(left_graphs / 8)
-        .max(1)
+/// A check with fewer left solids, such as one changed part against its
+/// neighbours, still spreads its `pairs`, one worker per sixteen, over the
+/// `idle` workers already running, but starts none for that: a start costs
+/// about as much as it would save. The flag says whether only the first worker
+/// may be started.
+fn pair_worker_count(left_graphs: usize, pairs: usize, idle: usize) -> (usize, bool) {
+    let limit = crate::worker_pool::parallel_worker_limit();
+    let started = limit.min(left_graphs / 8);
+    let running = limit.min(pairs.div_ceil(PAIRS_PER_IDLE_WORKER)).min(idle);
+    if running > started.max(1) {
+        (running, true)
+    } else {
+        (started.max(1), false)
+    }
 }
 
 /// Independent graph ranges use several isolated workers; small checks keep one.
@@ -608,7 +619,11 @@ fn send_exact_pair_batches(
     tx: &mpsc::Sender<ExactPairBatch>,
 ) {
     let left_graphs: BTreeSet<_> = pairs.iter().map(|pair| pair.2.left_graph).collect();
-    let workers = pair_worker_count(left_graphs.len());
+    let (workers, idle_only) = pair_worker_count(
+        left_graphs.len(),
+        pairs.len(),
+        crate::worker_pool::idle_workers(path),
+    );
     if workers == 1 {
         send_serial_pair_batches(
             path,
@@ -641,16 +656,31 @@ fn send_exact_pair_batches(
     let senders = std::sync::Mutex::new(senders.into_iter().map(Some).collect::<Vec<_>>());
     let next = AtomicUsize::new(0);
     let running = AtomicUsize::new(workers);
+    let (ranges, senders, next, running) = (&ranges, &senders, &next, &running);
     std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
+        for worker in 0..workers {
+            scope.spawn(move || {
                 let claim = || {
                     let index = next.fetch_add(1, Ordering::AcqRel);
                     let sender = senders.lock().ok()?.get_mut(index)?.take()?;
                     Some((ranges[index], sender))
                 };
-                if let Some((range, range_tx)) = claim() {
-                    match crate::worker_pool::checkout(path, cancelled) {
+                // Only an already running worker joins; the first one always works.
+                let idle_only = idle_only && worker > 0;
+                let idle = idle_only
+                    .then(|| crate::worker_pool::checkout_idle(path))
+                    .flatten();
+                let claimed = if idle_only && idle.is_none() {
+                    None
+                } else {
+                    claim()
+                };
+                if let Some((range, range_tx)) = claimed {
+                    let checked_out = match idle {
+                        Some(supervisor) => Ok(supervisor),
+                        None => crate::worker_pool::checkout(path, cancelled),
+                    };
+                    match checked_out {
                         Ok(mut supervisor) => {
                             let mut current = Some((range, range_tx));
                             while let Some((range, range_tx)) = current.take() {
@@ -678,6 +708,8 @@ fn send_exact_pair_batches(
                                 .send(Err(ExactPairFailure::WorkerUnavailable(unavailable)));
                         }
                     }
+                } else if let Some(unused) = idle {
+                    unused.release();
                 }
                 if running.fetch_sub(1, Ordering::AcqRel) == 1
                     && let Ok(mut senders) = senders.lock()
@@ -1873,7 +1905,7 @@ box('beside', (100, 100, 18), at=(100, 300, 0))";
             .into_iter()
             .find(|path| path.is_file())
             .expect("native exact worker required");
-        let most = pair_worker_count(usize::MAX);
+        let (most, _) = pair_worker_count(usize::MAX, 0, 0);
         let cancelled = AtomicBool::new(false);
         let workers: Vec<_> = (0..most)
             .map(|_| crate::worker_pool::checkout(Some(&path), &cancelled).unwrap())

@@ -59,25 +59,55 @@ pub(crate) fn idle_count() -> usize {
         .len()
 }
 
+/// Idle workers of `executable` a request can take without starting one.
+pub(crate) fn idle_workers(executable: Option<&Path>) -> usize {
+    let Some(canonical) = executable.and_then(|path| path.canonicalize().ok()) else {
+        return 0;
+    };
+    IDLE.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .filter(|worker| worker.executable() == canonical.as_path())
+        .count()
+}
+
+/// A reusable idle worker of `executable`; a discarded one is killed by its
+/// client's Drop.
+fn take_idle(executable: &Path) -> Option<ExactWorkerSupervisor> {
+    let canonical = executable.canonicalize().ok();
+    loop {
+        let mut worker = {
+            let mut idle = IDLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let index = idle
+                .iter()
+                .rposition(|worker| Some(worker.executable()) == canonical.as_deref())?;
+            idle.remove(index)
+        };
+        if worker.is_reusable() {
+            return Some(worker);
+        }
+    }
+}
+
 pub fn checkout(
     executable: Option<&Path>,
     cancelled: &AtomicBool,
 ) -> Result<PooledExactWorker, ExactWorkerUnavailable> {
     let executable = executable.ok_or(ExactWorkerUnavailable::NotFound)?;
-    let canonical = executable.canonicalize().ok();
-    let idle = {
-        let mut idle = IDLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        idle.iter()
-            .rposition(|worker| Some(worker.executable()) == canonical.as_deref())
-            .map(|index| idle.remove(index))
-    };
-    // A discarded idle worker is killed by its client's Drop.
-    let worker = match idle.and_then(|mut worker| worker.is_reusable().then_some(worker)) {
+    let worker = match take_idle(executable) {
         Some(worker) => worker,
         None => ExactWorkerSupervisor::spawn_with_cancellation(executable, cancelled)
             .map_err(|cause| ExactWorkerUnavailable::Checkout { cause })?,
     };
     Ok(PooledExactWorker {
+        worker: Some(worker),
+        reusable: false,
+    })
+}
+
+/// An already running worker of `executable`, or none; never starts one.
+pub fn checkout_idle(executable: Option<&Path>) -> Option<PooledExactWorker> {
+    take_idle(executable?).map(|worker| PooledExactWorker {
         worker: Some(worker),
         reusable: false,
     })
