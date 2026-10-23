@@ -31,6 +31,39 @@ fn blank_at_origin(extents_mm: [f64; 3]) -> StockBlank {
 }
 
 #[test]
+fn a_production_job_refusal_gives_no_machine_file_reason() {
+    let row = GeneralBomRow {
+        stable_row_id: "row".to_owned(),
+        position: 1,
+        definition_id: DefinitionId(7),
+        source: GeneralBodySource::CanonicalMesh {
+            definition_id: DefinitionId(7),
+            feature_id: FeatureId(8),
+            geometry_digest: "mesh".to_owned(),
+        },
+        item_kind: GeneralBomItemKind::Manufactured,
+        material_key: "oak".to_owned(),
+        quantity: 1,
+        dimensions: PieceDimensions {
+            length_mm: 400.0,
+            width_mm: 200.0,
+            height_mm: 18.0,
+        },
+        instances: vec![InstancePath::root(OccurrenceId(9))],
+        mirrored: false,
+        evidence_class: EvidenceClass::Exact,
+        validation_state: ValidationState::Passed,
+    };
+    let refused = production::row_stock(&row, &[]).map(|_| ()).unwrap_err();
+    // The job refuses a body that is not exact; the machine file's reasons
+    // (stock shape, cut reach) and their fixes do not apply to it.
+    assert!(
+        matches!(refused, GeneralFabricationError::ExportBlocked),
+        "{refused}"
+    );
+}
+
+#[test]
 fn btlx_numeric_values_follow_supported_xsd_ranges() {
     assert_eq!(btlx_component_identifiers(1, 0), Some((1, 1)));
     assert_eq!(

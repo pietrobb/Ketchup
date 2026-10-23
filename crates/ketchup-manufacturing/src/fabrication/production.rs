@@ -99,33 +99,13 @@ impl GeneralFabricationProjection {
                 .definition(row.definition_id)
                 .ok_or(GeneralFabricationError::ExportBlocked)?
                 .name();
-            // A refusal of this row names its part, so the user knows what to check.
-            let blocked = || GeneralFabricationError::ExportBlocked.at_part(part);
-            let GeneralBodySource::Exact(_) = &row.source else {
-                return Err(blocked());
-            };
-            if row.quantity == 0 || row.quantity != row.instances.len() {
-                return Err(blocked());
-            }
-            let matching = self
-                .manufacturing
-                .operations
-                .iter()
-                .enumerate()
-                .filter(|(_, operation)| is_row_operation(row, operation))
-                .collect::<Vec<_>>();
-            let Some((_, stock)) = matching.first() else {
-                return Err(blocked());
-            };
-            if stock.kind != GeneralManufacturingKind::Stock || !stock.semantic_inputs.is_empty() {
-                return Err(blocked());
-            }
+            let (matching, frame) = row_stock(row, &self.manufacturing.operations)?;
             let JobStockFrame {
                 origin_mm,
                 axes: stock_axes,
                 dimensions_mm,
                 rectangular,
-            } = job_stock_frame(&stock.machining).ok_or_else(blocked)?;
+            } = frame;
             let stock_shape = if rectangular {
                 "rectangular_prism"
             } else {
@@ -141,7 +121,7 @@ impl GeneralFabricationProjection {
                     }
                 })?;
                 if !paths.insert(path.clone()) || !codes.insert(code.to_owned()) {
-                    return Err(blocked());
+                    return Err(GeneralFabricationError::ExportBlocked);
                 }
                 let resolved = snapshot
                     .resolve_instance_path(path)
@@ -149,7 +129,7 @@ impl GeneralFabricationProjection {
                 if resolved.definition_id != row.definition_id
                     || !is_production_transform(resolved.world_transform)
                 {
-                    return Err(blocked());
+                    return Err(GeneralFabricationError::ExportBlocked);
                 }
                 let operations = matching
                     .iter()
@@ -216,6 +196,40 @@ impl GeneralFabricationProjection {
             "parts": parts, "outputs": outputs,
         }))
     }
+}
+
+/// A row's operations with their index in the projection's operation list.
+pub(super) type RowOperations<'a> = Vec<(usize, &'a GeneralManufacturingOperation)>;
+
+/// The operations that machine `row`, its stock first, and the frame of
+/// that stock. These refusals guard the projection's own consistency, which
+/// the exports a production job runs first already check, so they stay the
+/// general ExportBlocked: PartExportBlocked gives a machine file's reasons
+/// (stock shape, cut reach), not the job's.
+pub(super) fn row_stock<'a>(
+    row: &GeneralBomRow,
+    operations: &'a [GeneralManufacturingOperation],
+) -> Result<(RowOperations<'a>, JobStockFrame), GeneralFabricationError> {
+    let blocked = || GeneralFabricationError::ExportBlocked;
+    if !matches!(row.source, GeneralBodySource::Exact(_))
+        || row.quantity == 0
+        || row.quantity != row.instances.len()
+    {
+        return Err(blocked());
+    }
+    let matching = operations
+        .iter()
+        .enumerate()
+        .filter(|(_, operation)| is_row_operation(row, operation))
+        .collect::<Vec<_>>();
+    let Some((_, stock)) = matching.first() else {
+        return Err(blocked());
+    };
+    if stock.kind != GeneralManufacturingKind::Stock || !stock.semantic_inputs.is_empty() {
+        return Err(blocked());
+    }
+    let frame = job_stock_frame(&stock.machining).ok_or_else(blocked)?;
+    Ok((matching, frame))
 }
 
 /// The frame a production job gives a piece: its blank's axes from the
