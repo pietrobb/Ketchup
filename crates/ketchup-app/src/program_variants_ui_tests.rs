@@ -8,7 +8,8 @@ use live_bridge::variant_window::VariantAction;
 
 type Shell = egui_kittest::Harness<'static, KetchupApp>;
 
-const CABINET: &str = "W = param(\"width\", 600)\nH = param(\"height\", 720)\n\
+const CABINET: &str = "W = param(\"width\", 600, min = 300, max = 2400, doc = \"Outer width\")\n\
+H = param(\"height\", 720)\n\
 box(\"left\", (18, 400, H), material = \"oak\")\n\
 box(\"right\", (18, 400, H), at = (W - 18, 0, 0), material = \"oak\")\n\
 box(\"top\", (W - 36, 400, 18), at = (18, 0, H - 18), material = \"oak\")\n";
@@ -108,6 +109,83 @@ fn set_size(harness: &mut Shell, width: f64, height: f64) {
     settle(harness);
 }
 
+/// Types `text` into the field of parameter `name` and presses Enter.
+fn type_parameter(harness: &mut Shell, name: &str, text: &str) {
+    let field = named(harness, "params-field", name);
+    harness
+        .get_by_role_and_label(Role::TextInput, &field)
+        .focus();
+    harness.run_steps(1);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness
+        .get_by_role_and_label(Role::TextInput, &field)
+        .type_text(text);
+    harness.run_steps(1);
+    harness.key_press(egui::Key::Enter);
+}
+
+fn field_value(harness: &Shell, name: &str) -> Option<String> {
+    let field = named(harness, "params-field", name);
+    let node = harness.get_by_role_and_label(Role::TextInput, &field);
+    node.accesskit_node().value()
+}
+
+#[test]
+fn a_typed_parameter_value_is_the_set_params_apply_and_one_undo_step() {
+    let mut harness = harness();
+    assert_eq!(field_value(&harness, "width").as_deref(), Some("600"));
+    assert_eq!(field_value(&harness, "height").as_deref(), Some("720"));
+    let range = harness.state().catalog.format(
+        "params-range",
+        &BTreeMap::from([("min", "300".to_owned()), ("max", "2400".to_owned())]),
+    );
+    harness.get_by_label(&range);
+
+    // An expression is read like every field; the apply runs on its worker.
+    let undo = harness.state().undo_step_count();
+    type_parameter(&mut harness, "width", "2*500");
+    harness.step();
+    assert_eq!(
+        harness.state().variant_run_is_queued_apply_and_busy(),
+        (true, true),
+        "the value runs as the set_params queued apply and keeps the window busy"
+    );
+    settle(&mut harness);
+    assert_eq!(right_side(harness.state()), (982.0, 720.0));
+    assert_eq!(harness.state().undo_step_count(), undo + 1);
+    assert_eq!(field_value(&harness, "width").as_deref(), Some("1000"));
+    let set = harness.state().catalog.format(
+        "params-set",
+        &BTreeMap::from([("name", "width".to_owned()), ("value", "1000".to_owned())]),
+    );
+    assert_eq!(harness.state().live.variants.outcome, Some(set));
+
+    harness.state_mut().undo();
+    settle(&mut harness);
+    assert_eq!(right_side(harness.state()), (582.0, 720.0));
+    assert_eq!(field_value(&harness, "width").as_deref(), Some("600"));
+}
+
+#[test]
+fn an_unreadable_parameter_value_changes_nothing_and_says_why() {
+    let mut harness = harness();
+    let (stamp, undo) = (
+        harness.state().live_bridge_stamp(),
+        harness.state().undo_step_count(),
+    );
+    type_parameter(&mut harness, "width", "wide");
+    harness.run_steps(2);
+    assert!(!harness.state().live.variants.is_running());
+    settle(&mut harness);
+    assert_eq!(harness.state().live_bridge_stamp(), stamp);
+    assert_eq!(harness.state().undo_step_count(), undo);
+    assert_eq!(right_side(harness.state()), (582.0, 720.0));
+    let unreadable = text(&harness, "value-unreadable");
+    let outcome = harness.state().live.variants.outcome.clone().unwrap();
+    assert!(outcome.contains(&unreadable), "{outcome}");
+    assert_eq!(field_value(&harness, "width").as_deref(), Some("600"));
+}
+
 #[test]
 fn the_dock_saves_uses_and_deletes_variants_without_waiting_for_them() {
     let mut harness = harness();
@@ -181,8 +259,22 @@ fn every_dock_button_waits_while_an_action_runs() {
             })
             .collect::<Vec<_>>()
     };
+    let fields = [
+        named(&harness, "params-field", "width"),
+        named(&harness, "params-field", "height"),
+    ];
+    let fields_disabled = |harness: &Shell| {
+        fields
+            .iter()
+            .map(|label| {
+                let field = harness.get_by_role_and_label(Role::TextInput, label);
+                field.accesskit_node().is_disabled()
+            })
+            .collect::<Vec<_>>()
+    };
     let pending = text(&harness, "variants-pending");
     assert_eq!(disabled(&harness), [false; 5]);
+    assert_eq!(fields_disabled(&harness), [false; 2]);
     assert!(harness.query_by_label(&pending).is_none());
 
     let reply = harness
@@ -190,11 +282,13 @@ fn every_dock_button_waits_while_an_action_runs() {
         .hold_variant_run(VariantAction::Use("600".into()));
     harness.run_steps(3);
     assert_eq!(disabled(&harness), [true; 5]);
+    assert_eq!(fields_disabled(&harness), [true; 2]);
     harness.get_by_label(&pending);
 
     drop(reply);
     settle(&mut harness);
     assert_eq!(disabled(&harness), [false; 5]);
+    assert_eq!(fields_disabled(&harness), [false; 2]);
     assert_eq!(saved(harness.state()), ["1000", "600"]);
 }
 

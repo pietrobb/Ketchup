@@ -1,13 +1,17 @@
-//! The dock's VARIANTS section: the program's saved variants with the one its
+//! The dock's program sections. PROGRAM PARAMETERS: each `param()` with its
+//! value, range and description; a value typed and confirmed with Enter is the
+//! `set_params` apply. VARIANTS: the program's saved variants with the one its
 //! parameters have now, Use and Delete per variant, Save for the current values
 //! and Export of all variants. The program evaluation is asked without
-//! waiting: while it or an action is being computed the section says so and
-//! its buttons wait, never the frame.
+//! waiting: while it or an action is being computed the sections say so and
+//! their fields and buttons wait, never the frame.
 
 use super::*;
+use crate::length_input::{DecimalSeparator, read_length};
 use crate::live_bridge::variant_window::VariantAction;
 use crate::program_evaluation::Lookup;
 use ketchup_application::program_variants::active_variant;
+use ketchup_program::model::Param;
 
 fn values_text(values: &BTreeMap<String, f64>) -> String {
     values
@@ -17,6 +21,15 @@ fn values_text(values: &BTreeMap<String, f64>) -> String {
         .join(", ")
 }
 
+/// A number as the window's fields read it back.
+pub(crate) fn number_text(value: f64, decimal: DecimalSeparator) -> String {
+    let text = value.to_string();
+    match decimal {
+        DecimalSeparator::Comma => text.replace('.', ","),
+        DecimalSeparator::Point => text,
+    }
+}
+
 impl KetchupApp {
     pub(crate) fn show_variants_section(&mut self, ui: &mut egui::Ui) {
         let Some(program) = self.document.current_rule_program().cloned() else {
@@ -24,21 +37,25 @@ impl KetchupApp {
         };
         let evaluation = self.program_evaluations.try_get(&program);
         let planning = matches!(evaluation, Lookup::Pending);
-        let params = match evaluation {
-            Lookup::Ready(Ok(evaluated)) => evaluated.model.params.clone(),
-            _ => Vec::new(),
-        };
+        match evaluation {
+            Lookup::Ready(Ok(evaluated)) => {
+                self.live.variants.params = evaluated.model.params.clone()
+            }
+            Lookup::Pending => {}
+            _ => self.live.variants.params.clear(),
+        }
+        let params = self.live.variants.params.clone();
         if params.is_empty() && program.variants.is_empty() {
             return;
         }
+        let idle = !planning && !self.live.variants.is_running();
+        let mut action = self.show_params(ui, &params, idle);
         ui.separator();
         section_header(ui, self.palette(), &self.catalog.text("dock-variants"));
-        let idle = !planning && !self.live.variants.is_running();
-        if !idle {
+        if !idle && params.is_empty() {
             ui.label(self.catalog.text("variants-pending"));
         }
         let active = active_variant(&program, &params);
-        let mut action = None;
         for (name, values) in &program.variants {
             let row = BTreeMap::from([("name", name.clone()), ("values", values_text(values))]);
             let named = BTreeMap::from([("name", name.clone())]);
@@ -93,5 +110,87 @@ impl KetchupApp {
             }
             self.start_variant_action(ui.ctx(), action);
         }
+    }
+
+    /// One field per parameter; Enter in a field asks for its value. Text that
+    /// is no value changes nothing and says why.
+    fn show_params(
+        &mut self,
+        ui: &mut egui::Ui,
+        params: &[Param],
+        idle: bool,
+    ) -> Option<VariantAction> {
+        if params.is_empty() {
+            return None;
+        }
+        ui.separator();
+        section_header(ui, self.palette(), &self.catalog.text("dock-params"));
+        if !idle {
+            ui.label(self.catalog.text("variants-pending"));
+        }
+        let decimal = self.value_box.decimal;
+        let mut action = None;
+        for param in params {
+            let named = BTreeMap::from([("name", param.name.clone())]);
+            let label = self.catalog.format("params-field", &named);
+            let range = self.range_text(param, decimal);
+            let mut text = match &self.live.variants.draft {
+                Some((name, draft)) if *name == param.name => draft.clone(),
+                _ => number_text(param.value, decimal),
+            };
+            let field = ui
+                .horizontal(|ui| {
+                    ui.label(&param.name);
+                    let field = egui::TextEdit::singleline(&mut text).desired_width(90.0);
+                    let response = ui.add_enabled(idle, field);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, idle, &label)
+                    });
+                    if let Some(range) = range {
+                        ui.label(range);
+                    }
+                    response
+                })
+                .inner;
+            if !param.doc.is_empty() {
+                ui.add(egui::Label::new(egui::RichText::new(&param.doc).weak()).wrap());
+            }
+            if field.has_focus() {
+                self.live.variants.draft = Some((param.name.clone(), text));
+            } else if field.lost_focus() {
+                self.live.variants.draft = None;
+                if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    match read_length(&text, decimal) {
+                        Ok(value) => {
+                            action = Some(VariantAction::SetParam(param.name.clone(), value))
+                        }
+                        Err(refusal) => {
+                            let arguments = BTreeMap::from([
+                                ("name", param.name.clone()),
+                                ("reason", self.catalog.text(refusal.message_key())),
+                            ]);
+                            self.live.variants.outcome =
+                                Some(self.catalog.format("params-refused", &arguments));
+                        }
+                    }
+                }
+            }
+        }
+        action
+    }
+
+    /// The declared bounds of a parameter, if it has any.
+    fn range_text(&self, param: &Param, decimal: DecimalSeparator) -> Option<String> {
+        let number = |value: f64| number_text(value, decimal);
+        let (key, arguments) = match (param.min, param.max) {
+            (Some(min), Some(max)) => (
+                "params-range",
+                vec![("min", number(min)), ("max", number(max))],
+            ),
+            (Some(min), None) => ("params-at-least", vec![("min", number(min))]),
+            (None, Some(max)) => ("params-at-most", vec![("max", number(max))]),
+            (None, None) => return None,
+        };
+        Some(self.catalog.format(key, &arguments.into_iter().collect()))
     }
 }

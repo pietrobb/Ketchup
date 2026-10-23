@@ -13,6 +13,8 @@ pub(crate) enum VariantAction {
     Use(String),
     Delete(String),
     Export(PathBuf),
+    /// One parameter typed in the dock: the `set_params` apply.
+    SetParam(String, f64),
 }
 
 #[derive(Default)]
@@ -22,6 +24,10 @@ pub(crate) struct VariantDock {
     pub(crate) name: String,
     /// How the last action ended.
     pub(crate) outcome: Option<String>,
+    /// The parameter being typed and its text.
+    pub(crate) draft: Option<(String, String)>,
+    /// The parameters of the last evaluation, shown while the next one runs.
+    pub(crate) params: Vec<ketchup_program::model::Param>,
 }
 
 impl VariantDock {
@@ -74,6 +80,19 @@ impl KetchupApp {
                         false,
                         super::program_check::program_request_deadline(),
                     ),
+                    VariantAction::SetParam(name, value) => runner.start_queued_apply_program(
+                        app,
+                        context,
+                        0,
+                        queued.reply,
+                        queued.cancelled,
+                        Request::SetProgramParams {
+                            expected,
+                            params: BTreeMap::from([(name, value)]),
+                        },
+                        false,
+                        super::program_check::program_request_deadline(),
+                    ),
                     VariantAction::Export(path) => {
                         let path = path.display().to_string();
                         let request = Request::ExportProgramVariants {
@@ -113,17 +132,24 @@ impl KetchupApp {
                 return;
             }
             Polled::Answered(action, Ok(result)) => {
-                let (key, name) = match action {
-                    VariantAction::Save(name) => ("variants-saved", name),
-                    VariantAction::Use(name) => ("variants-used", name),
-                    VariantAction::Delete(name) => ("variants-deleted", name),
-                    VariantAction::Export(path) => {
-                        ("variants-exported", path.display().to_string())
+                let (key, arguments) = match action {
+                    VariantAction::Save(name) => ("variants-saved", vec![("name", name)]),
+                    VariantAction::Use(name) => ("variants-used", vec![("name", name)]),
+                    VariantAction::Delete(name) => ("variants-deleted", vec![("name", name)]),
+                    VariantAction::Export(path) => (
+                        "variants-exported",
+                        vec![
+                            ("name", path.display().to_string()),
+                            ("count", result["exported"].to_string()),
+                        ],
+                    ),
+                    VariantAction::SetParam(name, value) => {
+                        let decimal = self.value_box.decimal;
+                        let value = crate::program_variants_ui::number_text(value, decimal);
+                        ("params-set", vec![("name", name), ("value", value)])
                     }
                 };
-                let arguments =
-                    BTreeMap::from([("name", name), ("count", result["exported"].to_string())]);
-                self.catalog.format(key, &arguments)
+                self.catalog.format(key, &arguments.into_iter().collect())
             }
             Polled::Answered(_, Err(refusal)) => rejection_text(&refusal),
             Polled::Disconnected(_) => {
