@@ -457,6 +457,58 @@ fn text_span(y: f64, height: f64) -> [f64; 2] {
 #[test]
 fn a_wrapped_parts_list_row_pushes_the_next_row_down() {
     let long_name = ["Čšťž"; 10].join(" ");
+    let exported = export_parts_list([long_name.as_str(), "Krátky diel"]);
+    let dxf = std::str::from_utf8(exported.dxf()).unwrap();
+    let rows = dxf_texts(dxf, "bom-row-");
+    assert_eq!(
+        rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+        ["bom-row-1", "bom-row-1", "bom-row-1", "bom-row-2"],
+        "the long row takes three lines of its column"
+    );
+    for (index, upper) in rows.iter().enumerate() {
+        for lower in &rows[index + 1..] {
+            let [upper_bottom, _] = text_span(upper.2, upper.3);
+            let [_, lower_top] = text_span(lower.2, lower.3);
+            assert!(
+                upper.1 != lower.1 || lower_top <= upper_bottom,
+                "{} at {} overlaps {} at {}",
+                lower.0,
+                lower.2,
+                upper.0,
+                upper.2
+            );
+        }
+    }
+    let svg = std::str::from_utf8(exported.svg()).unwrap();
+    let row = svg
+        .lines()
+        .find(|line| line.contains("id=\"bom-row-1\""))
+        .unwrap();
+    assert_eq!(row.matches("<tspan").count(), 3, "{row}");
+}
+
+/// A parts-list row is 70 mm wide: a label longer than that continues on the
+/// lines below it instead of running into the next column or off the sheet.
+#[test]
+fn a_parts_list_row_stays_inside_its_column() {
+    let exported = export_parts_list(["Left side panel of the tall kitchen cabinet", "Short part"]);
+    let dxf = std::str::from_utf8(exported.dxf()).unwrap();
+    let rows = dxf_texts(dxf, "bom-row-");
+    assert!(rows.len() > 2, "the long row wraps: {rows:?}");
+    let column_left = rows[0].1;
+    for (id, x, _, height, value) in &rows {
+        let width = value.chars().count() as f64 * 0.7 * height;
+        assert!(
+            x + width <= column_left + 70.0,
+            "{id} '{value}' ends at {} mm, past its 70 mm column",
+            x + width
+        );
+    }
+}
+
+/// The sheet of one front view with a parts list of one part named after each
+/// of `names`, laid out and exported.
+fn export_parts_list(names: [&str; 2]) -> crate::drawing_export::DrawingExportBundle {
     let paths = [1, 2].map(|id| InstancePath::root(OccurrenceId(id)));
     let balloons = [1, 2].map(|id| {
         DrawingBomBalloon::new(
@@ -490,7 +542,7 @@ fn a_wrapped_parts_list_row_pushes_the_next_row_down() {
     .unwrap();
     let mut document = DocumentStore::new();
     let mut commands = Vec::new();
-    for (id, name) in [(1, long_name.as_str()), (2, "Krátky diel")] {
+    for (id, name) in [1, 2].into_iter().zip(names) {
         commands.push(CanonicalCommand::CreateDefinition {
             id: DefinitionId(id),
             name: name.into(),
@@ -543,34 +595,7 @@ fn a_wrapped_parts_list_row_pushes_the_next_row_down() {
         views,
         layout,
     };
-    let exported = crate::drawing_export::export_drawing(&snapshot, &drawing).unwrap();
-    let dxf = std::str::from_utf8(exported.dxf()).unwrap();
-    let rows = dxf_texts(dxf, "bom-row-");
-    assert_eq!(
-        rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
-        ["bom-row-1", "bom-row-1", "bom-row-2"],
-        "the long row needs two R12 strings"
-    );
-    for (index, upper) in rows.iter().enumerate() {
-        for lower in &rows[index + 1..] {
-            let [upper_bottom, _] = text_span(upper.2, upper.3);
-            let [_, lower_top] = text_span(lower.2, lower.3);
-            assert!(
-                upper.1 != lower.1 || lower_top <= upper_bottom,
-                "{} at {} overlaps {} at {}",
-                lower.0,
-                lower.2,
-                upper.0,
-                upper.2
-            );
-        }
-    }
-    let svg = std::str::from_utf8(exported.svg()).unwrap();
-    let row = svg
-        .lines()
-        .find(|line| line.contains("id=\"bom-row-1\""))
-        .unwrap();
-    assert_eq!(row.matches("<tspan").count(), 2, "{row}");
+    crate::drawing_export::export_drawing(&snapshot, &drawing).unwrap()
 }
 
 /// The sheet of `notes` on one front view, laid out and exported.

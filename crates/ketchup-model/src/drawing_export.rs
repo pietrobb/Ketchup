@@ -31,6 +31,10 @@ const GLYPH_WIDTH: f64 = 0.7;
 /// The title-block texts shrink in these steps until they fit its frame; at
 /// the last one a title is 2.4 mm and the other fields 1.8 mm high.
 const TITLE_BLOCK_SCALES: [f64; 5] = [1.0, 0.9, 0.8, 0.7, 0.6];
+/// Text height of a parts-list row.
+const BOM_ROW_HEIGHT_MM: f64 = 3.0;
+/// Width of a parts-list column; its rows keep 3 mm clear of the next one.
+pub(crate) const BOM_COLUMN_WIDTH_MM: f64 = 70.0;
 const COORDINATE_EPSILON_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
 const POINTS_PER_MM: f64 = 72.0 / 25.4;
 const PDF_UNICODE_GLYPHS: &[(char, u8, &str)] = &[
@@ -658,8 +662,8 @@ fn collect_page_content(
         texts.push(PageText {
             id: format!("bom-row-{}", row.position),
             position: row.text_position_mm,
-            lines: text_lines(&row.label, f64::INFINITY),
-            height_mm: 3.0,
+            lines: bom_row_lines(&row.label),
+            height_mm: BOM_ROW_HEIGHT_MM,
             angle_deg: 0.0,
             middle: false,
         });
@@ -1546,6 +1550,12 @@ pub(crate) fn text_lines(value: &str, max_characters: f64) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+/// A parts-list row's label broken into the lines that fit its column.
+pub(crate) fn bom_row_lines(label: &str) -> Vec<String> {
+    let characters = (BOM_COLUMN_WIDTH_MM - 3.0) / (GLYPH_WIDTH * BOM_ROW_HEIGHT_MM);
+    text_lines(label, characters.floor())
 }
 
 fn pdf_text_hex(value: &str) -> Result<String, DrawingExportError> {
