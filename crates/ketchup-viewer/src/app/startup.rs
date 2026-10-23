@@ -59,8 +59,8 @@ impl StartupOpen {
 
     /// Shows what was read in `app`, waiting for it if need be. Gives the
     /// mark of the session it opened, for the [`super::SessionKeeper`], and
-    /// every failure met on the way, which the caller logs; a package that
-    /// does not open leaves the Viewer empty. A session that does not open
+    /// every failure met on the way, which the caller logs; the Viewer shows
+    /// the first. A package that does not open leaves the Viewer empty. A session that does not open
     /// with unsaved comments is held, not overwritten (review 2026-10-21 VW-18).
     pub fn finish(self, app: &mut ViewerApp) -> (Option<SessionMark>, Vec<Rejection>) {
         app.set_loading(false);
@@ -88,6 +88,14 @@ impl StartupOpen {
                 .map(|package| package.and_then(|package| app.show_prepared(package)))
         {
             failures.push(error);
+        }
+        // A phone's log is out of the customer's sight: the Viewer says the
+        // start's model did not open, unless it already warns that a session
+        // with unsaved comments is held (review 2026-10-19 P3).
+        if app.error.is_none()
+            && let Some(first) = failures.first()
+        {
+            app.report(first.clone());
         }
         (mark, failures)
     }

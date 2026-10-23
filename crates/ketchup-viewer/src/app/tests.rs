@@ -1241,6 +1241,40 @@ fn a_startup_reader_that_panics_reports_its_message() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Review 2026-10-19 P3: a start whose model does not open used to be only
+/// logged, out of the customer's sight on a phone; the Viewer now shows it:
+/// a kept session without unsaved comments, an installed package, a reader
+/// that panics.
+#[test]
+fn a_start_whose_model_does_not_open_says_so_in_the_viewer() {
+    let dir = std::env::temp_dir().join(format!(
+        "ketchup-viewer-startup-shown-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let start = |session: Option<&std::path::Path>, package: Option<std::path::PathBuf>| {
+        let mut app = ViewerApp::new(None).with_host_files();
+        let (mark, failures) =
+            StartupOpen::start(&mut app, session.map(Into::into), package).finish(&mut app);
+        assert_eq!((mark, failures.len()), (None, 1), "{failures:?}");
+        let shown = app.error().map(|error| error.to_string());
+        assert_eq!(shown, Some(failures[0].to_string()));
+        assert!(!app.has_unsaved_comments());
+    };
+
+    std::fs::write(dir.join("session.ketchup-view"), b"not a package").unwrap();
+    start(Some(&dir), None);
+
+    let installed = dir.join("model.ketchup-view");
+    std::fs::write(&installed, b"not a package either").unwrap();
+    start(None, Some(installed));
+
+    std::fs::write(dir.join(PANIC_STARTUP_READER), b"").unwrap();
+    start(Some(&dir), None);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Review 2026-10-17 §3 P3: a phone's start reads the kept session, else the
 /// installed package, on a thread of its own, not in the first frame on the
 /// UI thread; meanwhile the Viewer is empty and says the model is loading.
