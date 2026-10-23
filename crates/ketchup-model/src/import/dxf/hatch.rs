@@ -21,6 +21,7 @@
 use super::chain::report_mm;
 use super::*;
 use crate::tolerance::UNDERLAY_ARC_CHORD_MM;
+use crate::underlay::fill::sweep_crossings;
 use crate::underlay::{arc_chord_step, push_segment};
 use ketchup_geometry::linalg::{cross2, dot2};
 
@@ -112,9 +113,12 @@ pub(super) fn read_hatch(
     };
     match drawn {
         Ok((rings, pattern)) => {
-            diagnostics.pattern_pieces_left -= pattern.len();
             fill.rings = rings;
             fill.pattern = pattern;
+            if let Err(reason) = charge(&fill, diagnostics) {
+                skip_hatch(&fill, &reason, fill_bounds(&fill), diagnostics)?;
+                return Ok(None);
+            }
             Ok(Some(fill))
         }
         Err((reason, bounds)) => {
@@ -146,6 +150,11 @@ enum LeftOut {
     TooManyDashes {
         left: usize,
     },
+    /// A solid fill whose filling crosses edges more often than is left of the budget.
+    FillTooLarge {
+        crossings: usize,
+        left: usize,
+    },
 }
 
 impl fmt::Display for LeftOut {
@@ -171,6 +180,11 @@ impl fmt::Display for LeftOut {
                 formatter,
                 "a pattern of more dashes than the {left} left of the drawing's {budget} for \
                  entities"
+            ),
+            Self::FillTooLarge { crossings, left } => write!(
+                formatter,
+                "a solid fill whose filling crosses its edges {crossings} times, more than \
+                 the {left} left of the drawing's {budget} for entities"
             ),
         }
     }
@@ -200,10 +214,8 @@ fn fill_rings(
         Ok(lines) => lines,
         Err(reason) => return Ok(Err(reason)),
     };
-    Ok(
-        pattern_pieces(&rings, &lines, diagnostics.pattern_pieces_left)
-            .map(|pieces| (Vec::new(), pieces)),
-    )
+    Ok(pattern_pieces(&rings, &lines, diagnostics.fill_pieces_left)
+        .map(|pieces| (Vec::new(), pieces)))
 }
 
 /// Reports `fill` left out for `reason`, where `bounds` (in millimetres of the drawing,
@@ -239,8 +251,8 @@ fn skip_hatch(
 }
 
 /// `fills` of a block where an insert on `layer` places it, each point where `place`
-/// puts it; a fill whose dashes the budget has no room for any more is reported and left
-/// out.
+/// puts it; a fill whose dashes or crossings the budget has no room for any more is
+/// reported and left out.
 pub(super) fn place_fills(
     fills: &[OrderedFill],
     layer: &str,
@@ -264,18 +276,36 @@ pub(super) fn place_fills(
         for piece in &mut fill.pattern {
             *piece = [place(piece[0])?, place(piece[1])?];
         }
-        if fill.pattern.len() > diagnostics.pattern_pieces_left {
-            let reason = LeftOut::TooManyDashes {
-                left: diagnostics.pattern_pieces_left,
-            };
-            let bounds = point_bounds(fill.pattern.iter().flatten().copied());
-            skip_hatch(&fill, &reason, bounds, diagnostics)?;
+        if let Err(reason) = charge(&fill, diagnostics) {
+            skip_hatch(&fill, &reason, fill_bounds(&fill), diagnostics)?;
             continue;
         }
-        diagnostics.pattern_pieces_left -= fill.pattern.len();
         placed.push(fill);
     }
     Ok(placed)
+}
+
+/// Takes the dashes of `fill` and the edge crossings of filling it from what is left of
+/// the drawing's budget, or tells why there is no room for them.
+fn charge(fill: &OrderedFill, diagnostics: &mut DiagnosticCounts) -> Result<(), LeftOut> {
+    let left = diagnostics.fill_pieces_left;
+    let crossings = sweep_crossings(fill.rings.iter().map(Vec::as_slice));
+    let pieces = fill.pattern.len().saturating_add(crossings);
+    if pieces > left {
+        return Err(if fill.pattern.is_empty() {
+            LeftOut::FillTooLarge { crossings, left }
+        } else {
+            LeftOut::TooManyDashes { left }
+        });
+    }
+    diagnostics.fill_pieces_left = left - pieces;
+    Ok(())
+}
+
+/// The smallest and largest corner of what `fill` draws.
+fn fill_bounds(fill: &OrderedFill) -> Option<[[f64; 2]; 2]> {
+    let rings = fill.rings.iter().flatten();
+    point_bounds(rings.chain(fill.pattern.iter().flatten()).copied())
 }
 
 /// The smallest and largest corner of `points`.

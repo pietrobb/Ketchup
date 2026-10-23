@@ -411,3 +411,73 @@ fn a_hatch_it_cannot_draw_is_left_out_alone_and_named_where_it_lies() {
         "HATCH, layer shade: a gradient fill, within x 0..1000, y 0..500 mm; handles: G1"
     );
 }
+
+/// A square of 0..40000 mm with `islands` small squares side by side, each a little
+/// higher than the one before: every band between two heights crosses them all, so the
+/// work of filling it grows with the square of its points.
+fn staggered(islands: u32) -> Vec<Vec<[f64; 2]>> {
+    let mut rings = vec![square(0.0, 40_000.0)];
+    for island in 0..islands {
+        let [x, y] = [
+            20.0 + 30.0 * f64::from(island),
+            100.0 + 0.001 * f64::from(island),
+        ];
+        rings.push(vec![
+            [x, y],
+            [x + 10.0, y],
+            [x + 10.0, y + 10.0],
+            [x, y + 10.0],
+        ]);
+    }
+    rings
+}
+
+#[test]
+fn a_solid_fill_of_more_work_than_the_budget_is_left_out_and_named() {
+    let rings = staggered(1000);
+    let paths = rings
+        .iter()
+        .map(Vec::as_slice)
+        .map(line_path)
+        .collect::<Vec<_>>();
+    let underlay = read(
+        "",
+        &[
+            solid("T1", "tiles", "", 0, &paths),
+            solid("S1", "floor", "", 0, &[line_path(&square(0.0, 100.0))]),
+        ]
+        .concat(),
+    );
+    // The small hatch is drawn; the one of 4004 points whose filling crosses its edges
+    // about two million times is not, and the report says where it lies.
+    let [floor] = layer(&underlay, "floor").fills() else {
+        panic!("{:?}", underlay.lines);
+    };
+    assert_eq!(floor.triangles().len(), 2);
+    assert!(!underlay.layers.iter().any(|name| name == "tiles"));
+    let skipped = subjects(&underlay, "dxf.hatch-skipped");
+    let [tiles] = skipped.as_slice() else {
+        panic!("{skipped:?}");
+    };
+    assert!(
+        tiles.starts_with("HATCH, layer tiles: a solid fill whose filling crosses its edges ")
+            && tiles.ends_with(
+                " times, more than the 1000000 left of the drawing's 1000000 for \
+                 entities, within x 0..40000, y 0..40000 mm; handles: T1"
+            ),
+        "{tiles}"
+    );
+}
+
+#[test]
+fn stored_fills_of_more_work_than_the_budget_are_not_read() {
+    let mut builder = ketchup_model::underlay::UnderlayLinesBuilder::default();
+    builder.add_fill("tiles", &staggered(1000));
+    let (_, lines) = builder.finish();
+    assert!(lines.layers()[0].fills()[0].sweep_crossings() > 1_000_000);
+    assert!(matches!(
+        UnderlayLines::decode(&lines.encode()),
+        Err(ketchup_model::underlay::UnderlayLinesError::FillTooLarge(count))
+            if count > 1_000_000
+    ));
+}

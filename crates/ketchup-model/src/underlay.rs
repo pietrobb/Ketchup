@@ -20,6 +20,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use ketchup_geometry::typed_id;
+use ketchup_tolerance::limits;
 
 use crate::document::{CanonicalCommand, CommandBatch, ProfileSegment, Snapshot, TagId, Transform};
 use crate::tolerance::{MAX_COORDINATE_MM, UNDERLAY_ARC_CHORD_MM};
@@ -201,6 +202,8 @@ pub enum UnderlayLinesError {
     InvalidStyle,
     /// The blob holds another number of layers than the underlay names.
     LayerCount { blob: usize, underlay: usize },
+    /// Filling it crosses edges more often than a drawing's entity budget allows.
+    FillTooLarge(usize),
 }
 
 impl fmt::Display for UnderlayLinesError {
@@ -228,6 +231,11 @@ impl fmt::Display for UnderlayLinesError {
             Self::LayerCount { blob, underlay } => write!(
                 formatter,
                 "the underlay lines hold {blob} layers, the underlay names {underlay}"
+            ),
+            Self::FillTooLarge(crossings) => write!(
+                formatter,
+                "filling the underlay crosses its edges {crossings} times, more than {}",
+                limits::DRAWING_ENTITIES
             ),
         }
     }
@@ -529,6 +537,17 @@ impl UnderlayLines {
         }
         if !reader.0.is_empty() {
             return Err(UnderlayLinesError::TrailingBytes);
+        }
+        // An import keeps the work of filling within the drawing's budget; a blob that
+        // needs more was not written by one.
+        let crossings = layers
+            .iter()
+            .flat_map(|layer| &layer.fills)
+            .fold(0_usize, |sum, fill| {
+                sum.saturating_add(fill.sweep_crossings())
+            });
+        if crossings > limits::DRAWING_ENTITIES {
+            return Err(UnderlayLinesError::FillTooLarge(crossings));
         }
         Ok(Self { layers, styles })
     }

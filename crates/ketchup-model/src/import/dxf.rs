@@ -419,9 +419,10 @@ struct DiagnosticCounts {
     /// Why the first entity or block it left out could not be read: the refusal when
     /// nothing readable is left.
     first_skip: Option<DxfImportError>,
-    /// How many more dashes the patterns of hatches may draw, of the drawing's entity
-    /// budget; what a block's own hatches draw counts where an insert places them.
-    pattern_pieces_left: usize,
+    /// How many more dashes of patterns and edge crossings of filling the hatches may take,
+    /// of the drawing's entity budget; what a block's own hatches draw counts where an
+    /// insert places them.
+    fill_pieces_left: usize,
     /// The block being read, as the drawing names it, if any: a report of what it
     /// leaves out names it, whose coordinates it gives.
     block: Option<String>,
@@ -448,7 +449,7 @@ impl DiagnosticCounts {
             code_page: encoding_rs::WINDOWS_1252,
             skipped: BTreeMap::new(),
             first_skip: None,
-            pattern_pieces_left: limits::DRAWING_ENTITIES,
+            fill_pieces_left: limits::DRAWING_ENTITIES,
             block: None,
         }
     }

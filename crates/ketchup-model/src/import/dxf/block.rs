@@ -246,7 +246,7 @@ fn resolve_raw_block<'a>(
     let mut parsed_entities = ParsedEntities::default();
     // What its hatches draw counts where an insert places it, and what it leaves out is
     // reported in its own coordinates, under its name.
-    let pieces_left = resolution.diagnostics.pattern_pieces_left;
+    let pieces_left = resolution.diagnostics.fill_pieces_left;
     let outer = resolution.diagnostics.block.replace(raw.name.clone());
     let parsed = parse_entities(
         &raw.entities,
@@ -256,7 +256,7 @@ fn resolve_raw_block<'a>(
         &mut parsed_entities,
         resolution.diagnostics,
     );
-    resolution.diagnostics.pattern_pieces_left = pieces_left;
+    resolution.diagnostics.fill_pieces_left = pieces_left;
     resolution.diagnostics.block = outer;
     parsed?;
     let reading = resolution.diagnostics.reading;
