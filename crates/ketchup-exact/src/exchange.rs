@@ -54,14 +54,11 @@ pub enum StepXdeManifestError {
 impl std::fmt::Display for StepXdeManifestError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidPath => formatter.write_str("STEP XDE path must not be empty"),
+            // The same manifest describes a STEP and an IGES source.
+            Self::InvalidPath => formatter.write_str("XDE path must not be empty"),
             Self::Reader(diagnostic) => formatter.write_str(diagnostic),
-            Self::Malformed(reason) => {
-                write!(formatter, "STEP XDE manifest is malformed: {reason}")
-            }
-            Self::OutOfEnvelope => {
-                formatter.write_str("STEP XDE manifest exceeds the bounded envelope")
-            }
+            Self::Malformed(reason) => write!(formatter, "XDE manifest is malformed: {reason}"),
+            Self::OutOfEnvelope => formatter.write_str("XDE manifest exceeds the bounded envelope"),
         }
     }
 }

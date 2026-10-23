@@ -1347,3 +1347,31 @@ fn one_step_xde_document_answers_like_a_parse_per_call() {
     assert!(missing.length_unit_name().is_none());
     assert!(missing.part(0).is_err());
 }
+
+// Review 2026-10-19 P3 (and 2026-10-18): reading an IGES source failed with
+// "STEP XDE reader could not read the source".
+#[test]
+fn a_failed_iges_xde_read_names_iges() {
+    let backend = ExactBackend::new();
+    for (document, format, other) in [
+        (
+            backend.open_iges_xde("missing.igs").unwrap(),
+            "IGES",
+            "STEP",
+        ),
+        (
+            backend.open_step_xde("missing.step").unwrap(),
+            "STEP",
+            "IGES",
+        ),
+    ] {
+        let manifest = document.manifest().unwrap_err().to_string();
+        let part = document.part(0).unwrap_err().diagnostic;
+        for message in [manifest, part] {
+            assert!(
+                message.starts_with(format) && !message.contains(other),
+                "{message}"
+            );
+        }
+    }
+}

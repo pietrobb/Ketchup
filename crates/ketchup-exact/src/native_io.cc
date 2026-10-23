@@ -47,7 +47,13 @@ struct StepXdeData {
   std::vector<StepXdeNode> nodes;
   // The STEP file's single length unit, lower case; empty when missing or ambiguous.
   std::string length_unit;
+  // "STEP" or "IGES": the format read, which every failure names.
+  const char* format = "STEP";
 };
+
+std::string xde_error(const StepXdeData& data, const char* what) {
+  return std::string(data.format) + " XDE " + what;
+}
 
 // STEP sources this thread has parsed for an XDE document or a length unit,
 // so a test can prove one parse per request (review 2026-10-17 EX-2).
@@ -154,7 +160,7 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
     ++iges_source_parses;
   }
   if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
-    error = "STEP XDE reader could not read the source";
+    error = xde_error(data, "reader could not read the source");
     return false;
   }
   if constexpr (std::is_same_v<Reader, STEPCAFControl_Reader>) {
@@ -163,13 +169,13 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
     data.length_unit = iges_file_length_unit(reader);
   }
   if (!reader.Transfer(data.document)) {
-    error = "STEP XDE source contains no transferable roots";
+    error = xde_error(data, "source contains no transferable roots");
     return false;
   }
   data.shapes = XCAFDoc_DocumentTool::ShapeTool(data.document->Main());
   data.colors = XCAFDoc_DocumentTool::ColorTool(data.document->Main());
   if (data.shapes.IsNull() || data.colors.IsNull()) {
-    error = "STEP XDE document tools are unavailable";
+    error = xde_error(data, "document tools are unavailable");
     return false;
   }
 
@@ -183,7 +189,7 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
               const gp_Trsf& transform,
               std::size_t depth) {
     if (depth > MAX_STEP_XDE_DEPTH || data.nodes.size() >= MAX_STEP_XDE_NODES) {
-      error = "STEP XDE hierarchy exceeds the bounded envelope";
+      error = xde_error(data, "hierarchy exceeds the bounded envelope");
       return false;
     }
     const bool assembly = XCAFDoc_ShapeTool::IsAssembly(referred);
@@ -193,7 +199,7 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
       const auto [iterator, inserted] = part_indices.emplace(entry, part_indices.size());
       if (inserted) {
         if (data.parts.size() >= MAX_STEP_XDE_NODES) {
-          error = "STEP XDE part count exceeds the bounded envelope";
+          error = xde_error(data, "part count exceeds the bounded envelope");
           return false;
         }
         data.parts.push_back(referred);
@@ -224,13 +230,13 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
 
     const std::string assembly_entry = label_entry(referred);
     if (!active_assemblies.insert(assembly_entry).second) {
-      error = "STEP XDE hierarchy contains an assembly cycle";
+      error = xde_error(data, "hierarchy contains an assembly cycle");
       return false;
     }
     NCollection_Sequence<TDF_Label> components;
     if (!XCAFDoc_ShapeTool::GetComponents(referred, components, false)) {
       active_assemblies.erase(assembly_entry);
-      error = "STEP XDE assembly has no readable components";
+      error = xde_error(data, "assembly has no readable components");
       return false;
     }
     for (int index = 1; index <= components.Length(); ++index) {
@@ -238,7 +244,7 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
       TDF_Label target;
       if (!XCAFDoc_ShapeTool::GetReferredShape(component, target) || target.IsNull()) {
         active_assemblies.erase(assembly_entry);
-        error = "STEP XDE component has no referred definition";
+        error = xde_error(data, "component has no referred definition");
         return false;
       }
       const gp_Trsf local = XCAFDoc_ShapeTool::GetLocation(component).Transformation();
@@ -254,7 +260,7 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
   NCollection_Sequence<TDF_Label> roots;
   data.shapes->GetFreeShapes(roots);
   if (roots.IsEmpty()) {
-    error = "STEP XDE source contains no free shapes";
+    error = xde_error(data, "source contains no free shapes");
     return false;
   }
   for (int index = 1; index <= roots.Length(); ++index) {
@@ -262,7 +268,7 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
     TDF_Label referred = root;
     if (XCAFDoc_ShapeTool::IsReference(root)
         && !XCAFDoc_ShapeTool::GetReferredShape(root, referred)) {
-      error = "STEP XDE root reference is unresolved";
+      error = xde_error(data, "root reference is unresolved");
       return false;
     }
     const gp_Trsf transform = XCAFDoc_ShapeTool::GetLocation(root).Transformation();
@@ -271,7 +277,7 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
     }
   }
   if (data.parts.empty() || data.nodes.empty()) {
-    error = "STEP XDE source contains no supported exact parts";
+    error = xde_error(data, "source contains no supported exact parts");
     return false;
   }
   return true;
@@ -583,11 +589,12 @@ std::string encode_xde_manifest(const StepXdeData& data) {
 std::unique_ptr<NativeOperationResult> xde_part_result(
     const StepXdeData& data, std::uint32_t part_index) {
   if (part_index >= data.parts.size()) {
-    return error_result(STATUS_INVALID_PARAMETER, "STEP XDE part index is outside the manifest");
+    return error_result(
+        STATUS_INVALID_PARAMETER, xde_error(data, "part index is outside the manifest"));
   }
   const TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(data.parts[part_index]);
   if (shape.IsNull()) {
-    return error_result(STATUS_INVALID_SHAPE, "STEP XDE part has no exact shape");
+    return error_result(STATUS_INVALID_SHAPE, xde_error(data, "part has no exact shape"));
   }
   const std::uint32_t solids = count_subshapes(shape, TopAbs_SOLID);
   return success_result(shape, {}, solids >= 2, false, {}, solids == 0);
@@ -610,15 +617,16 @@ const NativeXdeDocument::Impl& NativeXdeDocument::impl() const noexcept { return
 std::unique_ptr<NativeXdeDocument> open_xde_document_native(rust::Str path, bool iges) noexcept {
   try {
     auto impl = std::make_unique<NativeXdeDocument::Impl>();
+    impl->data.format = iges ? "IGES" : "STEP";
     const std::string native_path(path.data(), path.size());
     if (native_path.empty()) {
-      impl->error = "invalid XDE path";
+      impl->error = xde_error(impl->data, "path is invalid");
     } else {
       const bool loaded = iges
           ? load_iges_xde(native_path, impl->data, impl->error)
           : load_step_xde(native_path, impl->data, impl->error);
       if (!loaded && impl->error.empty()) {
-        impl->error = "XDE document could not be loaded";
+        impl->error = xde_error(impl->data, "document could not be loaded");
       }
     }
     return std::make_unique<NativeXdeDocument>(std::move(impl));
@@ -647,7 +655,7 @@ rust::String xde_document_manifest_native(const NativeXdeDocument& document) noe
   } catch (const std::exception& failure) {
     return rust::String("ERR\t" + hex_encode(failure.what()));
   } catch (...) {
-    return rust::String("ERR\t" + hex_encode("unknown STEP XDE exception"));
+    return rust::String("ERR\t" + hex_encode(xde_error(document.impl().data, "exception is unknown")));
   }
 }
 
