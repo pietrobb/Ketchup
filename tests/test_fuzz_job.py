@@ -4,9 +4,14 @@ Review 2026-10-17 §3 P3: two targets only, a corpus thrown away after every run
 build that may rewrite fuzz/Cargo.lock.
 """
 
+import os
 import re
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 FUZZ = ROOT / "fuzz"
@@ -71,6 +76,43 @@ def test_every_target_has_seeds_and_is_run():
         seeds = FUZZ / "seeds" / target
         assert seeds.is_dir() and any(seeds.iterdir()) or f"fuzz/seeds/{target}/" in job, target
     assert "fuzz list" in job, "the job runs every target cargo fuzz lists"
+
+
+def every_target_step():
+    step = next(step for step in fuzz_job().split("\n      - ") if step.startswith("name: every target"))
+    assert "shell:" not in step, "the probe below runs the step the way GitHub does without shell:"
+    return "\n".join(line.removeprefix("          ") for line in step.split("run: |\n", 1)[1].splitlines())
+
+
+def test_every_fuzz_run_in_the_loop_records_its_failure():
+    # Capability review 2026-10-23: under bash -e the first crashing target ended the step,
+    # and no later target was fuzzed while that crash stayed open.
+    body = every_target_step()
+    runs = [line for line in body.splitlines() if " fuzz run " in line]
+    assert runs and all(line.rstrip().endswith('|| failed+=("$target")') for line in runs)
+    assert 'echo "::error::fuzz targets that crashed: ${failed[*]}"' in body and "exit 1" in body
+
+
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="needs a POSIX bash")
+def test_one_crashing_target_does_not_hide_the_others(tmp_path):
+    names = targets()
+    crashing = names[len(names) // 2]
+    cargo = tmp_path / "bin" / "cargo"
+    cargo.parent.mkdir()
+    cargo.write_text(
+        "#!/usr/bin/env bash\n"
+        f"case \"$*\" in\n  *'fuzz list'*) printf '%s\\n' {' '.join(names)} ;;\n"
+        f"  *'fuzz run'*' {crashing} '*) exit 1 ;;\nesac\n",
+        encoding="utf-8",
+    )
+    cargo.chmod(0o755)
+    (tmp_path / "step.sh").write_text(every_target_step() + "\n", encoding="utf-8")
+    env = {**os.environ, "PATH": f"{cargo.parent}{os.pathsep}{os.environ['PATH']}", "NIGHTLY": "x", "EXPLORE": "false", "LIMITS": ""}
+    # GitHub runs a step without shell: as `bash -e {0}`.
+    result = subprocess.run(["bash", "-e", "step.sh"], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 1
+    assert re.findall(r"^::group::(\S+)$", result.stdout, re.MULTILINE) == names
+    assert f"::error::fuzz targets that crashed: {crashing}" in result.stdout
 
 
 def test_the_corpus_is_kept_between_runs():

@@ -381,15 +381,24 @@ jobs:
           cp crates/ketchup-assistant/tests/fixtures/intent_entities.ketchup examples/programs/table.ketchup fuzz/seeds/load/
           cp viewer/samples/kitchen.ketchup-view fuzz/seeds/view_package/
           cp artifacts/blender/garden-studio-colored.glb fuzz/seeds/glb/
+      # A crashing target is recorded and the loop goes on, so one open crash
+      # does not leave every later target unfuzzed; the step fails at the end
+      # and names every target that crashed (capability review 2026-10-23).
       - name: every target
         run: |
           if [ "$EXPLORE" = true ]; then LENGTH=-max_total_time=120; else LENGTH=-runs=0; fi
-          for target in $(cargo "+$NIGHTLY" fuzz list --fuzz-dir fuzz); do
+          targets=$(cargo "+$NIGHTLY" fuzz list --fuzz-dir fuzz)
+          failed=()
+          for target in $targets; do
             echo "::group::$target"
             mkdir -p "fuzz/corpus/$target"
-            cargo "+$NIGHTLY" fuzz run --fuzz-dir fuzz -O "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- $LENGTH $LIMITS
+            cargo "+$NIGHTLY" fuzz run --fuzz-dir fuzz -O "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- $LENGTH $LIMITS || failed+=("$target")
             echo "::endgroup::"
           done
+          if [ ${#failed[@]} -ne 0 ]; then
+            echo "::error::fuzz targets that crashed: ${failed[*]}"
+            exit 1
+          fi
       - name: input of a found crash
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
