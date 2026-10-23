@@ -251,6 +251,12 @@ pub(crate) struct DrawingsState {
     pub(crate) editing: ketchup_manufacturing::title_block::SheetSettings,
     /// The defaults the title block fields showed in the last frame.
     pub(crate) shown_defaults: BTreeMap<ketchup_manufacturing::title_block::TitleField, String>,
+    /// The document's stored settings as the window last read or wrote them:
+    /// their bytes, what the window's fields keep of them, and why they do
+    /// not read. The window reads them again only when the bytes change.
+    pub(crate) seen_bytes: Option<Vec<u8>>,
+    pub(crate) kept: ketchup_manufacturing::title_block::SheetSettings,
+    pub(crate) unreadable: Option<String>,
     /// The document's sheet settings changed since it was opened or saved.
     pub(crate) unsaved: bool,
 }

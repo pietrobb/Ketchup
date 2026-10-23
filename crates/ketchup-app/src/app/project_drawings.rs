@@ -296,16 +296,19 @@ impl KetchupApp {
     /// none are); stored settings that do not read are an error, never
     /// quietly the defaults.
     pub(crate) fn stored_sheet_settings(&self) -> Result<SheetSettings, serde_json::Error> {
+        self.stored_sheet_bytes()
+            .map_or_else(|| Ok(SheetSettings::default()), serde_json::from_slice)
+    }
+
+    /// The stored sheet settings as the document keeps them, unread.
+    fn stored_sheet_bytes(&self) -> Option<&[u8]> {
         self.file
             .container_data
             .extensions()
             .find(|entry| {
                 entry.namespace() == SHEET_NAMESPACE && entry.path() == SHEET_SETTINGS_PATH
             })
-            .map_or_else(
-                || Ok(SheetSettings::default()),
-                |entry| serde_json::from_slice(entry.bytes()),
-            )
+            .map(|entry| entry.bytes())
     }
 
     /// The stored settings with the project, sheet title and date filled in
@@ -339,8 +342,14 @@ impl KetchupApp {
     /// only show their default are left out, so the default is filled in
     /// when a sheet is drawn and never frozen in the document (review
     /// 2026-10-18 UI-12).
-    fn without_title_defaults(&self, mut settings: SheetSettings) -> SheetSettings {
-        let defaults = self.title_defaults();
+    fn without_title_defaults(&self, settings: SheetSettings) -> SheetSettings {
+        Self::without_these_defaults(settings, &self.title_defaults())
+    }
+
+    fn without_these_defaults(
+        mut settings: SheetSettings,
+        defaults: &BTreeMap<TitleField, String>,
+    ) -> SheetSettings {
         settings.title_block.retain(|field, value| {
             !value.trim().is_empty()
                 && TitleField::EDITABLE.contains(field)
@@ -553,14 +562,35 @@ impl KetchupApp {
     }
 
     pub(crate) fn open_project_drawings_window(&mut self) {
+        self.read_sheet_settings_into_window();
+        self.drawings.open = true;
+    }
+
+    /// The window's fields from the document's stored settings, read once.
+    fn read_sheet_settings_into_window(&mut self) {
         self.drawings.editing = self.sheet_settings();
         self.drawings.shown_defaults = self.title_defaults();
-        self.drawings.open = true;
+        self.drawings.kept = self.without_title_defaults(self.drawings.editing.clone());
+        self.note_seen_sheet_settings();
+    }
+
+    /// Remembers the stored settings the window has seen, and why they do
+    /// not read; called when the window reads or writes them.
+    fn note_seen_sheet_settings(&mut self) {
+        self.drawings.seen_bytes = self.stored_sheet_bytes().map(<[u8]>::to_vec);
+        self.drawings.unreadable = self
+            .stored_sheet_settings()
+            .err()
+            .map(|reason| reason.to_string());
     }
 
     pub(crate) fn show_project_drawings_window(&mut self, context: &egui::Context) {
         if !self.drawings.open {
             return;
+        }
+        // Settings the AI wrote, or another document's, replace the fields.
+        if self.stored_sheet_bytes() != self.drawings.seen_bytes.as_deref() {
+            self.read_sheet_settings_into_window();
         }
         let mut open = true;
         let mut export = false;
@@ -577,18 +607,18 @@ impl KetchupApp {
                 value.clone_from(default);
             }
         }
-        self.drawings.shown_defaults = defaults;
+        let unreadable = self.drawings.unreadable.clone();
         egui::Window::new(self.catalog.text("window-project-drawings"))
             .open(&mut open)
             .default_width(460.0)
             .show(context, |ui| {
                 ui.label(self.catalog.text("drawings-window-hint"));
-                if let Err(reason) = self.stored_sheet_settings() {
+                if let Some(reason) = unreadable {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
                         self.catalog.format(
                             "drawings-settings-unreadable-edit",
-                            &BTreeMap::from([("reason", reason.to_string())]),
+                            &BTreeMap::from([("reason", reason)]),
                         ),
                     );
                 }
@@ -690,10 +720,12 @@ impl KetchupApp {
         // Merely opening the window with the filled-in defaults changes
         // nothing, nor does a default that changes; unreadable stored
         // settings are replaced only by an edit.
-        if self.without_title_defaults(editing.clone())
-            != self.stored_sheet_settings().unwrap_or_default()
-        {
+        let kept = Self::without_these_defaults(editing.clone(), &defaults);
+        self.drawings.shown_defaults = defaults;
+        if kept != self.drawings.kept {
             self.store_sheet_settings(editing.clone());
+            self.note_seen_sheet_settings();
+            self.drawings.kept = kept;
         }
         self.drawings.editing = editing;
         if !open {

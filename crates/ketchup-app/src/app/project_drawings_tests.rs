@@ -583,6 +583,74 @@ fn the_title_block_keeps_only_what_the_user_wrote_and_defaults_follow_the_docume
     assert_eq!(stored(harness.state())[&TitleField::Project], "Dom Novák");
 }
 
+/// Review 2026-10-19 P3: the open window read the document's sheet settings
+/// in every frame and wrote its own fields back whenever they differed, so
+/// settings the AI wrote, or those of a document opened meanwhile, were
+/// replaced by the window's in the next frame. The window takes up what
+/// changed in the document and writes only what the user changes in it.
+#[test]
+fn the_open_drawings_window_takes_up_settings_changed_in_the_document() {
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1600.0, 1200.0))
+        .build_state(
+            |context, app: &mut KetchupApp| app.ui(context),
+            KetchupApp::new(),
+        );
+    harness.state_mut().open_project_drawings_window();
+    harness.step();
+    let stored = |app: &KetchupApp| app.stored_sheet_settings().unwrap().title_block;
+
+    // The AI writes a title block field while the window is open.
+    let mut settings = harness.state().stored_sheet_settings().unwrap();
+    settings
+        .title_block
+        .insert(TitleField::Author, "AI".to_owned());
+    harness.state_mut().store_sheet_settings(settings);
+    harness.step();
+    assert_eq!(stored(harness.state())[&TitleField::Author], "AI");
+    assert_eq!(
+        harness.state().drawings.editing.title_block[&TitleField::Author],
+        "AI"
+    );
+
+    // Another document's settings come in with its container.
+    let mut container = ketchup_model::persistence::ContainerData::default();
+    container.set_extension(
+        ketchup_model::persistence::ExtensionEntry::new(
+            "org.ketchup.drawings",
+            "sheet-v1.json",
+            false,
+            br#"{"title_block": {"client": "Novak"}}"#.to_vec(),
+        )
+        .unwrap(),
+    );
+    harness.state_mut().file.container_data = container;
+    harness.step();
+    assert_eq!(
+        stored(harness.state()),
+        BTreeMap::from([(TitleField::Client, "Novak".to_owned())])
+    );
+    let shown = &harness.state().drawings.editing.title_block;
+    assert_eq!(shown[&TitleField::Client], "Novak");
+    assert!(shown.get(&TitleField::Author).is_none_or(String::is_empty));
+
+    // What the user then writes in the window is kept with it.
+    harness
+        .state_mut()
+        .drawings
+        .editing
+        .title_block
+        .insert(TitleField::Author, "Peter".to_owned());
+    harness.step();
+    assert_eq!(
+        stored(harness.state()),
+        BTreeMap::from([
+            (TitleField::Client, "Novak".to_owned()),
+            (TitleField::Author, "Peter".to_owned()),
+        ])
+    );
+}
+
 /// The title block date is the user's: 23:30 UTC on 22 October is already 23 October
 /// in Bratislava (+02:00), and still 22 October in New York (-04:00).
 #[test]
