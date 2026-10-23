@@ -3361,6 +3361,7 @@ impl KetchupApp {
             edges,
             hidden_ghost_corners,
         } = scene;
+        self.prepare_underlay_frame();
         self.record_live_image_scene(
             ui,
             response.rect,
@@ -3370,7 +3371,6 @@ impl KetchupApp {
             scene_plan.clone(),
         );
         self.paint_projected_shadows(painter, response.rect, &viewport_boxes);
-        self.prepare_underlay_frame();
         self.paint_scene_base_layers(painter, response.rect, scene_plan);
 
         self.paint_projected_faces(painter, &faces);

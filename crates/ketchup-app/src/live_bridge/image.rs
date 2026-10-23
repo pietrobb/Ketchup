@@ -434,7 +434,10 @@ impl KetchupApp {
             for entry in &mut shapes {
                 normalize(&mut entry.shape, &mut callbacks);
             }
-            if callbacks > 1 {
+            // paint_scene_base_layers adds one callback for the underlays, one for the scene.
+            let painted_callbacks =
+                usize::from(plan.is_some()) + usize::from(!self.render.underlay_frame.is_empty());
+            if callbacks > painted_callbacks {
                 return Err("unsupported_image_renderer");
             }
             let state = VisualState::read(self)?;

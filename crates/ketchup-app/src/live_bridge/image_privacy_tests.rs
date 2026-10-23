@@ -1001,3 +1001,99 @@ fn pending_native_capture_rejects_exact_registry_replacement_without_document_mu
         before.exact, after.exact
     );
 }
+
+/// An underlay beside the model: the image paints both callbacks, the solid fill in its
+/// own color and its line over the fill and beside it, instead of refusing the second
+/// callback. The harness renders on WARP, where the line once drew nowhere.
+#[test]
+fn the_image_paints_an_underlay_fill_under_its_line_beside_the_model() {
+    let _gpu = gpu_test_guard();
+    let mut h = native_harness(1.0);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("hatched.dxf");
+    std::fs::write(
+        &path,
+        concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            // A red solid square of 60 mm beside the built-in box.
+            "0\nHATCH\n8\nfill\n62\n1\n10\n0\n20\n0\n30\n0\n2\nSOLID\n70\n1\n71\n0\n91\n1\n",
+            "92\n3\n72\n0\n73\n1\n93\n4\n10\n200\n20\n0\n10\n260\n20\n0\n10\n260\n20\n60\n",
+            "10\n200\n20\n60\n97\n0\n75\n0\n76\n1\n98\n0\n",
+            // A blue line across it, from outside it.
+            "0\nLINE\n8\nfill\n62\n5\n10\n190\n20\n30\n30\n0\n11\n270\n21\n30\n31\n0\n",
+            "0\nENDSEC\n0\nEOF\n",
+        ),
+    )
+    .unwrap();
+    let mut bridge = h.state_mut().live.bridge.take().unwrap();
+    let answer = bridge
+        .execute(
+            h.state_mut(),
+            Request::Import {
+                expected: None,
+                path: path.display().to_string(),
+                unit: None,
+                as_underlay: true,
+            },
+            false,
+        )
+        .unwrap();
+    h.state_mut().live.bridge = Some(bridge);
+    assert_eq!(answer["underlay"]["fills"], 1, "{answer}");
+    h.state_mut().selection.clear();
+    h.state_mut().dispatch_command(AppCommand::ViewTop);
+    h.state_mut().dispatch_command(AppCommand::ZoomFit);
+    for _ in 0..10 {
+        h.step();
+    }
+    let rx = queue(&mut h, 61);
+    h.step();
+    assert_eq!(capture(&h).0.callbacks, 2, "the underlay and the scene");
+    render_private_capture(&mut h, "an underlay beside the model");
+    let pixels = readback_pixels(&h, "private underlay pixels");
+    let rect = capture(&h).0.rect;
+    let at = |x: f64, y: f64, z: f64| {
+        let screen = h.state().project_to_screen(crate::Vec3::new(x, y, z), rect);
+        assert!(rect.shrink(4.).contains(screen), "{x},{y} outside the view");
+        (screen.x.floor() as usize, screen.y.floor() as usize)
+    };
+    let rgb = |x: usize, y: usize| {
+        let rgba = pixels.image.pixels[y * pixels.image.size[0] + x].to_array();
+        assert_eq!(rgba[3], 255);
+        [rgba[0], rgba[1], rgba[2]]
+    };
+    // Inside the fill, away from its line and edges: the fill's own red.
+    let (x, y) = at(230., 12., 0.);
+    for dy in y - 2..=y + 2 {
+        for dx in x - 2..=x + 2 {
+            let actual = rgb(dx, dy);
+            assert!(
+                actual
+                    .iter()
+                    .zip([255u8, 0, 0])
+                    .all(|(a, b)| a.abs_diff(b) <= 3),
+                "fill red became {actual:?}"
+            );
+        }
+    }
+    // On the line beside the fill and across it: blue, not the background or the red.
+    for along in [195., 230.] {
+        let (x, y) = at(along, 30., 0.);
+        let column = (y - 2..=y + 2).map(|dy| rgb(x, dy)).collect::<Vec<_>>();
+        assert!(
+            column
+                .iter()
+                .any(|[r, g, b]| *b > 200 && *r < 80 && *g < 80),
+            "no blue line near {x},{y}: {column:?}"
+        );
+    }
+    // The box is still painted by the scene callback.
+    let (x, y) = at(50., 30., 20.);
+    assert!(rgb(x, y).iter().all(|c| *c < 245), "the box is missing");
+    h.state_mut().live.bridge.as_mut().unwrap().image.revoke();
+    assert!(matches!(
+        rx.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    ));
+}
