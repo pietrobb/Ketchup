@@ -149,7 +149,8 @@ fn check_job(
     (ProgramCheckJob::Checking(Box::new(job)), response)
 }
 
-/// Polls like the window's frames until the job answers.
+/// Polls like the window's frames until the job answers, waiting between
+/// polls for the report's own checks, which the answer waits for.
 fn answer(
     app: &mut KetchupApp,
     bridge: &mut LiveBridge,
@@ -162,8 +163,22 @@ fn answer(
         if let Ok(response) = response.try_recv() {
             return response.result.unwrap();
         }
-        assert!(Instant::now() < until, "no answer");
-        std::thread::sleep(Duration::from_millis(5));
+        let Some(ProgramCheckJob::Checking(job)) = &mut bridge.program_check_job else {
+            panic!("the job ended without an answer");
+        };
+        let completion = job.completion.as_mut().expect("the report's checks run");
+        // Their report goes back to the job's next poll; a check thread gone
+        // leaves the channel disconnected, as it was.
+        let (sender, receiver) = mpsc::sync_channel(1);
+        match completion
+            .receiver
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
+        {
+            Ok(report) => sender.send(report).unwrap(),
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("no answer"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {}
+        }
+        completion.receiver = receiver;
     }
 }
 
@@ -236,6 +251,41 @@ fn a_report_left_for_the_exact_check_answers_whole_while_the_check_runs() {
     bridge.supersede_answered_check();
     let (_, report, _, exact) = bridge.program_report.as_ref().unwrap();
     assert_eq!(report, &whole);
+    assert_eq!(
+        exact.as_ref().unwrap()["not_evaluated"][0]["reason"],
+        "exact_check_superseded"
+    );
+}
+
+/// Review #136: a check the next edit ends before the report's own checks
+/// finished stops them, and its report says they did not finish instead of
+/// looking whole.
+#[test]
+fn a_check_superseded_before_its_report_is_whole_stops_its_checks_and_says_so() {
+    let (mut app, mut bridge) = setup();
+    let (mut applied, pending) = applied_before_exact(&mut app, &mut bridge);
+    applied.report = pending;
+    let (_sender, receiver) = mpsc::sync_channel(1);
+    let (job, _response) = check_job(applied, Instant::now(), receiver, false);
+    let ProgramCheckJob::Checking(mut job) = job else {
+        unreachable!()
+    };
+    job.reply = None;
+    job.complete_report(&egui::Context::default());
+    let checks = Arc::clone(&job.completion.as_ref().unwrap().cancelled);
+    bridge.program_check_job = Some(ProgramCheckJob::Checking(job));
+    bridge.supersede_answered_check();
+    assert!(checks.load(Ordering::Acquire));
+    assert!(bridge.program_check_job.is_none());
+    let (_, report, _, exact) = bridge.program_report.as_ref().unwrap();
+    assert!(!report.checks_pending());
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("(superseded:")),
+        "{report:#?}"
+    );
     assert_eq!(
         exact.as_ref().unwrap()["not_evaluated"][0]["reason"],
         "exact_check_superseded"

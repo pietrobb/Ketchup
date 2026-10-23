@@ -213,11 +213,19 @@ const EXACT_CHECK_RUNNING_NEXT: &str = "program action=report with this stamp an
 
 impl LiveBridge {
     /// Ends a check whose apply already answered, so the request that needs the
-    /// window gets it instead of busy.
+    /// window gets it instead of busy. The report's own checks stop with it,
+    /// and a report still waiting for them says they did not finish.
     pub(super) fn supersede_answered_check(&mut self) {
         match self.program_check_job.take() {
-            Some(ProgramCheckJob::Checking(job)) if job.reply.is_none() => {
+            Some(ProgramCheckJob::Checking(mut job)) if job.reply.is_none() => {
                 job.worker_cancelled.store(true, Ordering::Release);
+                job.stop_completion();
+                if job.applied.report.checks_pending() {
+                    job.applied.report.stop_pending_checks(&checks_stopped(
+                        "superseded",
+                        "the next request that edits ended the check before them".to_owned(),
+                    ));
+                }
                 self.program_report = Some((
                     job.applied.stamp,
                     job.applied.report,
