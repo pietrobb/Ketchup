@@ -1264,8 +1264,22 @@ impl KetchupApp {
         WorkRecoveryMutationError<E>,
     > {
         if let Err(error) = self.acquire_work_recovery_lock() {
-            let path = self.file.path.clone().unwrap_or_default();
-            self.report_file_persistence_error("error-save-document", &path, &error);
+            let path = self
+                .checkpoint_target()
+                .map(|(path, _)| path)
+                .unwrap_or_default();
+            // Another window holds this file's crash backup: nothing was saved.
+            if matches!(
+                error,
+                ketchup_model::persistence::FilePersistenceError::ExternalConflict
+            ) {
+                self.digest = self.catalog.format(
+                    "error-edit-file-in-other-window",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+            } else {
+                self.report_file_persistence_error("error-save-document", &path, &error);
+            }
             return Err(WorkRecoveryMutationError::Recovery(error));
         }
         let document_path = self

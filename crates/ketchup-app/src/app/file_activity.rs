@@ -728,7 +728,8 @@ mod tests {
 
     /// Review 2026-10-21 P3 (GUI): a second window editing a file whose unsaved work
     /// another window holds was told why in a fixed English sentence, whatever the
-    /// user's language.
+    /// user's language. Review 2026-10-19 P3 (GUI): it was told that saving failed,
+    /// though nothing was saved; it is told the edit was not made and why.
     #[test]
     fn an_edit_refused_for_another_windows_work_is_told_in_the_users_language() {
         let directory = tempfile::tempdir().unwrap();
@@ -740,8 +741,17 @@ mod tests {
         assert!(second.open_document_path(&path));
         assert!(first.create_box());
         assert!(!second.create_box());
-        let reason = LocaleCatalog::slovak().text("reason-external-conflict");
-        assert!(second.digest.contains(&reason), "{}", second.digest);
+        assert!(!second.is_dirty());
+        let refused = LocaleCatalog::slovak().format(
+            "error-edit-file-in-other-window",
+            &std::collections::BTreeMap::from([("path", path.display().to_string())]),
+        );
+        assert_eq!(second.digest, refused);
+        assert!(
+            !second.digest.contains("nepodarilo uložiť"),
+            "{}",
+            second.digest
+        );
     }
 
     #[test]

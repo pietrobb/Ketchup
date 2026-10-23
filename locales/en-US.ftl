@@ -1308,6 +1308,7 @@ error-startup-folder = “{ $path }” is a folder; open a document in it with F
 error-startup-missing = “{ $path }” does not exist; nothing was opened.
 error-startup-viewer-package = “{ $path }” is a Kečup Viewer package for customers; open it in Kečup Viewer. Kečup opens .ketchup documents.
 error-save-document = Could not save “{ $path }”: { $reason }. The active model remains unsaved.
+error-edit-file-in-other-window = The edit was not made: another Kečup window is editing “{ $path }”, and only one window at a time keeps the crash backup of a file’s unsaved work. Close the other window and open the file here again, or use Save As here to work on a copy.
 digest-tool-active = Tool: { $tool }
 digest-selection-cleared = Selection cleared
 digest-selected-viewport = Selected occurrence of “{ $name }” · { $count } occurrence(s) share this definition
