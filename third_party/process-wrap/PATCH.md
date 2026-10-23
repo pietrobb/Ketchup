@@ -68,8 +68,9 @@ themselves instead (`ketchup-scheduler`, `child_process::exit_with_parent`).
 
 - `src/std/process_group.rs` (`ProcessGroupChild`): `try_wait` observes the leader's exit with
   `waitid(WNOWAIT)` and leaves it a zombie; only `wait` reaps the leader and the rest of the group.
-  After `wait` has reaped the leader, `start_kill` and `signal` do nothing. Two unit tests in the
-  same file. Upstream `try_wait` reaped every process of the group (`waitpid(-pgid)` until `ECHILD`).
+  After `wait` has reaped the leader, `start_kill` and `signal` do nothing. Once the leader has
+  exited, `EPERM` from `killpg` counts as success: macOS refuses to signal a group whose members
+  are all zombies, which Linux allows. Two unit tests in the same file. Upstream `try_wait` reaped every process of the group (`waitpid(-pgid)` until `ECHILD`).
 
 Why: Ketchup's plugin host waits for the plugin and then kills its group so no descendant outlives
 it. With upstream's reaping `try_wait` that kill failed with `ESRCH`, so every successful plugin run
