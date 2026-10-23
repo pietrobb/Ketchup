@@ -1565,7 +1565,10 @@ fn gui_recovery_owner_rejects_second_writer_open_and_save_but_allows_save_as() {
     let second_before = canonical_state(&second);
     assert!(!second.app_mut().create_box());
     assert_eq!(canonical_state(&second), second_before);
-    assert!(digest_starts_like(&second, "error-save-document"));
+    assert!(digest_starts_like(
+        &second,
+        "error-edit-file-in-other-window"
+    ));
     assert!(!second.app_mut().open_document_path(&shared));
     assert!(!first.app_mut().open_document_path(&shared));
     second.click_menu_command("menu-file", AppCommand::Save);
