@@ -65,6 +65,7 @@ fn android_main(android_app: android_activity::AndroidApp) {
                 bars: [0; 4],
                 keyboard: 0,
                 opening: Some(opening),
+                recovering: None,
                 session_dir,
                 session: None,
             }))
@@ -93,6 +94,8 @@ struct AndroidViewer {
     keyboard: i32,
     /// The model the start opens, being read; files wait until it is shown.
     opening: Option<ketchup_viewer::app::StartupOpen>,
+    /// The cut-off saves being put back after the opening; files wait for it.
+    recovering: Option<files::Recovery>,
     /// Private storage, until the kept session is read.
     session_dir: Option<std::path::PathBuf>,
     /// Keeps the opened package and its comments for the next start.
@@ -101,6 +104,13 @@ struct AndroidViewer {
 
 #[cfg(target_os = "android")]
 impl AndroidViewer {
+    /// Reports the cut-off saves once they are put back.
+    fn finish_recovery(&mut self) {
+        if let Some(recovery) = self.recovering.take_if(|recovery| recovery.is_finished()) {
+            self.files.finish_recovery(&mut self.app, recovery);
+        }
+    }
+
     /// Shows the start's model once it is read; then the cut-off saves are
     /// undone, so what they report is not cleared by the opening.
     fn finish_opening(&mut self) {
@@ -118,7 +128,7 @@ impl AndroidViewer {
                 self.app.has_unsaved_comments()
             );
         }
-        self.files.recover_interrupted_saves(&mut self.app);
+        self.recovering = Some(self.files.start_recovery());
         self.session = self
             .session_dir
             .take()
@@ -196,7 +206,8 @@ impl eframe::App for AndroidViewer {
                 .show(ctx, |_| {});
         }
         self.finish_opening();
-        if self.opening.is_some() {
+        self.finish_recovery();
+        if self.opening.is_some() || self.recovering.is_some() {
             self.app.update(ctx, frame);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return;

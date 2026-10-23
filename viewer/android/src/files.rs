@@ -403,14 +403,40 @@ impl Files {
         })
     }
 
-    /// Undoes the saves Android cut off by ending the process (VW-11), and
-    /// tells the customer what was put back or could not be.
-    pub(crate) fn recover_interrupted_saves(&self, app: &mut ViewerApp) {
-        let Some(private) = self.android_app.internal_data_path() else {
-            return;
-        };
-        let open = |mode: &'static str| move |uri: &str| self.open_io(uri, mode);
-        for outcome in recover_interrupted(&private, open("r"), open("wt")) {
+    /// Starts undoing the saves Android cut off by ending the process
+    /// (VW-11) on a thread of its own: putting a document back copies all of
+    /// its earlier bytes, which on the UI thread could hold the screen long
+    /// enough for Android to close the app as not responding. Nothing may
+    /// save until [`Self::finish_recovery`], or recovery could take that
+    /// save's record for a cut-off one.
+    pub(crate) fn start_recovery(&self) -> Recovery {
+        let files = Files::new(self.android_app.clone());
+        Recovery(std::thread::spawn(move || {
+            let Some(private) = files.android_app.internal_data_path() else {
+                return Vec::new();
+            };
+            let open = |mode: &'static str| {
+                let files = &files;
+                move |uri: &str| files.open_io(uri, mode)
+            };
+            let outcomes = recover_interrupted(&private, open("r"), open("wt"));
+            // Also gives back the grants earlier versions kept for every file.
+            files.release_grants_except(&pending_targets(&private));
+            outcomes
+        }))
+    }
+
+    /// Tells the customer what the recovery put back or could not.
+    pub(crate) fn finish_recovery(&self, app: &mut ViewerApp, recovery: Recovery) {
+        let outcomes = recovery.0.join().unwrap_or_else(|_| {
+            app.report(
+                Rejection::new("viewer.android.write", RejectionPhase::Io)
+                    .reason("Putting back the saves Android cut off ended unexpectedly; the next start tries again.")
+                    .fix_hint("Check the files you saved last."),
+            );
+            Vec::new()
+        });
+        for outcome in outcomes {
             let rejection = || Rejection::new("viewer.android.write", RejectionPhase::Io);
             let failed = |target: String| rejection().target(target);
             app.report(match outcome {
@@ -451,8 +477,6 @@ impl Files {
                     .fix_hint("Check the file, and save again if it should hold your comments; Save earlier content as… puts the earlier content where you choose."),
             });
         }
-        // Also gives back the grants earlier versions kept for every file.
-        self.release_grants_except(&pending_targets(&private));
         self.offer_kept(app);
     }
 
@@ -503,6 +527,16 @@ impl Files {
         if let Err(error) = released {
             log::error!("Giving back file grants failed: {error}");
         }
+    }
+}
+
+/// The cut-off saves being put back at the start.
+pub(crate) struct Recovery(std::thread::JoinHandle<Vec<Interrupted>>);
+
+impl Recovery {
+    /// Whether [`Files::finish_recovery`] would not wait.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.0.is_finished()
     }
 }
 
