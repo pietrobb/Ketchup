@@ -152,7 +152,7 @@ impl KetchupApp {
         commands.push(CanonicalCommand::CreateFeature {
             id: workplane,
             definition_id,
-            name: "Rectangle workplane".into(),
+            name: self.catalog.text("model-rectangle-workplane"),
             kind: FeatureKind::Workplane(WorkplaneSpec {
                 support,
                 frame: local_frame,

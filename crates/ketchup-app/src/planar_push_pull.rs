@@ -259,6 +259,7 @@ impl KetchupApp {
             distance / face.local_to_world_scale,
             0.0,
             expression.to_owned(),
+            &self.catalog,
         )?;
         let proposal = if principal == ProposalPrincipal::ManualClient {
             self.prepare_manual_push_pull_proposal(batch.clone())

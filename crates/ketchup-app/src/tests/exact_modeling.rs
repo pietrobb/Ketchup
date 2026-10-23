@@ -2855,6 +2855,43 @@ fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
     assert_eq!(minimum_face.undo_step_count(), undo_steps);
 }
 
+/// Review 2026-10-19 P3: Push/Pull named its features "Extrusion" and "Face
+/// Offset" in every language, so the Slovak feature history showed them in
+/// English. The Pad and its rectangle workplane: `rectangle_context_ui.rs`.
+#[test]
+fn push_pull_names_its_features_in_the_interface_language() {
+    let slovak = LocaleCatalog::slovak();
+    let created_name = |app: &KetchupApp| {
+        let preview = app.tool_preview.get::<EphemeralBoxPreview>().unwrap();
+        let [CanonicalCommand::CreateFeature { name, .. }] = preview.batch.commands() else {
+            panic!("push/pull must create one feature: {:?}", preview.batch);
+        };
+        name.clone()
+    };
+    let mut extrusion = KetchupApp::with_catalog(LocaleCatalog::slovak());
+    assert!(
+        extrusion
+            .complete_rectangle_sketch(Vec3::new(40.0, 25.0, 0.0), Vec3::new(-10.0, -5.0, 0.0))
+    );
+    extrusion.set_push_pull_distance_input("30");
+    assert!(extrusion.start_preview());
+    assert_eq!(
+        created_name(&extrusion),
+        slovak.text("model-default-extrusion")
+    );
+
+    let points = [[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]];
+    let mut offset = planar_push_pull::tests::prism(&points, Transform::identity());
+    offset.catalog = LocaleCatalog::slovak();
+    select_initial_topological(&mut offset, TopologicalElementKind::Face, 2);
+    offset.set_push_pull_distance_input("5");
+    assert!(offset.start_preview());
+    assert_eq!(
+        created_name(&offset),
+        slovak.text("model-face-offset-feature")
+    );
+}
+
 #[test]
 fn push_pull_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     fn prepared_push_pull() -> KetchupApp {

@@ -225,6 +225,7 @@ fn push_pull_uses_the_projected_feature_pair_and_preserves_local_profile_origin(
             50.0,
             150.0,
             "150".to_owned(),
+            &app.catalog,
         )
         .is_none()
     );

@@ -211,3 +211,21 @@ fn a_scale_feature_with_a_factor_of_zero_or_less_or_not_finite_is_refused() {
     assert_eq!(app.canonical_digest(), digest);
     assert!(app.document.apply_batch(&scale([0.0; 3], [2.0; 3])).is_ok());
 }
+
+/// Review 2026-10-19 P3: Scale named its feature "Scale" in every language, so
+/// the Slovak feature history showed it in English.
+#[test]
+fn scale_names_its_feature_in_the_interface_language() {
+    let mut app = KetchupApp::with_catalog(LocaleCatalog::slovak());
+    evaluate_exact(&mut app);
+    app.selection.select_occurrence(PART, false);
+    assert!(app.scale_selected(2.0), "{}", app.action_digest());
+    let names = app
+        .document
+        .current()
+        .features()
+        .filter(|feature| matches!(feature.kind(), FeatureKind::Scale { .. }))
+        .map(|feature| feature.name().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(names, [app.catalog.text("model-scale-feature")]);
+}

@@ -791,7 +791,8 @@ impl KetchupApp {
                 scale_applies(base, BTreeSet::new(), Some(*group_id))
             }
         };
-        let batch = match scale_feature_batch(base, &applies, previous.centre_mm, factors) {
+        let name = self.catalog.text("model-scale-feature");
+        let batch = match scale_feature_batch(base, &applies, previous.centre_mm, factors, &name) {
             Ok(batch) => batch,
             Err(key) => {
                 self.digest = self.catalog.text(key);
@@ -1323,6 +1324,7 @@ impl KetchupApp {
             distance_mm,
             new_extent_mm,
             new_extent.source_token().to_owned(),
+            &self.catalog,
         )?;
         let proposal = if principal == ProposalPrincipal::ManualClient {
             self.prepare_manual_push_pull_proposal(batch.clone())
@@ -2522,7 +2524,8 @@ impl KetchupApp {
         let occurrence_paths = self.selected_instance_paths();
         let applies = scale_applies(&snapshot, occurrence_paths.clone(), group_id);
         let probe = drives.map(|driven| if driven { 2.0 } else { 1.0 });
-        if let Err(key) = scale_feature_batch(&snapshot, &applies, Vec3::ZERO, probe) {
+        let name = self.catalog.text("model-scale-feature");
+        if let Err(key) = scale_feature_batch(&snapshot, &applies, Vec3::ZERO, probe, &name) {
             self.digest = self.catalog.text(key);
             return None;
         }
@@ -2616,13 +2619,15 @@ impl KetchupApp {
         }
         let snapshot = self.document.current();
         let applies = scale_applies(&snapshot, drag.occurrence_paths.clone(), drag.group_id);
-        let batch = match scale_feature_batch(&snapshot, &applies, drag.centre_mm, drag.factors) {
-            Ok(batch) => batch,
-            Err(key) => {
-                self.digest = self.catalog.text(key);
-                return false;
-            }
-        };
+        let name = self.catalog.text("model-scale-feature");
+        let batch =
+            match scale_feature_batch(&snapshot, &applies, drag.centre_mm, drag.factors, &name) {
+                Ok(batch) => batch,
+                Err(key) => {
+                    self.digest = self.catalog.text(key);
+                    return false;
+                }
+            };
         if self.apply_batch_with_work_recovery(&batch).is_err() {
             return false;
         }
@@ -3127,6 +3132,7 @@ pub(crate) fn scale_feature_batch(
     applies: &dyn Fn(&InstancePath) -> bool,
     centre_mm: Vec3,
     world: [f64; 3],
+    name: &str,
 ) -> Result<CommandBatch, &'static str> {
     use ketchup_model::exact_product::{exact_body_terminal_features, producer_exact_graph};
     if !world
@@ -3221,7 +3227,7 @@ pub(crate) fn scale_feature_batch(
             commands.push(CanonicalCommand::CreateFeature {
                 id: FeatureId(next_id),
                 definition_id: part.definition_id,
-                name: "Scale".to_owned(),
+                name: name.to_owned(),
                 kind: FeatureKind::Scale {
                     target,
                     origin_mm,
@@ -3379,6 +3385,7 @@ pub(crate) fn computed_length(mm: f64) -> Option<Dimension> {
         .or_else(|| Dimension::new(mm.to_string(), mm).ok())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn push_pull_batch(
     snapshot: &Snapshot,
     selection: &SelectionId,
@@ -3387,6 +3394,7 @@ pub(crate) fn push_pull_batch(
     distance_mm: f64,
     new_extent_mm: f64,
     source_token: String,
+    catalog: &LocaleCatalog,
 ) -> Option<CommandBatch> {
     let resolved = snapshot
         .resolve_instance_path(&selection.instance_path)
@@ -3441,7 +3449,7 @@ pub(crate) fn push_pull_batch(
             return Some(CommandBatch::new(vec![CanonicalCommand::CreateFeature {
                 id,
                 definition_id: selection.definition_id,
-                name: "Face Offset".to_owned(),
+                name: catalog.text("model-face-offset-feature"),
                 kind: FeatureKind::FaceOffset {
                     target: reference.producer_feature_id,
                     face: FaceRef::from(reference.clone()),
@@ -3502,7 +3510,7 @@ pub(crate) fn push_pull_batch(
         return Some(CommandBatch::new(vec![CanonicalCommand::CreateFeature {
             id,
             definition_id: selection.definition_id,
-            name: "Pad".to_owned(),
+            name: catalog.text("model-pad-feature"),
             kind: FeatureKind::Pad(PadSpec {
                 profile: PadProfile::SketchRegion {
                     sketch: item.profile_feature_id,
@@ -3535,7 +3543,7 @@ pub(crate) fn push_pull_batch(
                 commands.push(CanonicalCommand::CreateFeature {
                     id: extrusion_id,
                     definition_id: selection.definition_id,
-                    name: "Extrusion".to_owned(),
+                    name: catalog.text("model-default-extrusion"),
                     kind: FeatureKind::extrusion(item.profile_feature_id, dimension),
                 });
             }

@@ -5,7 +5,7 @@ use harness::Shell;
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
 use ketchup_application::transforms::world_axis_rotation_transform;
 use ketchup_geometry::sketch::{PrincipalPlane, SketchEntity};
-use ketchup_interaction::Vec3;
+use ketchup_interaction::{LocaleCatalog, Vec3};
 use ketchup_model::{
     document::{
         CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
@@ -269,6 +269,46 @@ fn group_datum_rectangle_creates_a_separate_part_in_parent_space() {
         }
     }
 }
+/// Review 2026-10-19 P3: the rectangle's workplane and the Push/Pull Pad were
+/// named "Rectangle workplane" and "Pad" in every language, so the Slovak
+/// feature history showed them in English.
+#[test]
+fn datum_rectangle_and_its_pad_are_named_in_the_interface_language() {
+    let mut shell = Shell::with_catalog_and_dialogs(
+        LocaleCatalog::slovak(),
+        ScriptedFileDialogs::new().always_discard(),
+    );
+    shell.click_menu_command("menu-file", AppCommand::New);
+    let points = draw(&mut shell, PrincipalPlane::Xz);
+    shell.click_command(AppCommand::Select);
+    let screen = shell
+        .app()
+        .viewport_position((points[0] + points[2]) * 0.5)
+        .unwrap();
+    shell.click_at(screen);
+    shell.press_key(Key::P);
+    shell.type_text("10");
+    shell.press_key(Key::Enter);
+    let snapshot = shell.app().document_snapshot();
+    let name_of = |matches: fn(&FeatureKind) -> bool| {
+        snapshot
+            .features()
+            .filter(|feature| matches(feature.kind()))
+            .map(|feature| feature.name().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        name_of(|kind| matches!(kind, FeatureKind::Workplane(_))),
+        [shell.catalog().text("model-rectangle-workplane")]
+    );
+    assert_eq!(
+        name_of(|kind| matches!(kind, FeatureKind::Pad(_))),
+        [shell.catalog().text("model-pad-feature")],
+        "{}",
+        shell.app().action_digest()
+    );
+}
+
 #[test]
 fn standalone_datum_rectangle_can_be_hovered_and_push_pulled() {
     for plane in [PrincipalPlane::Xz, PrincipalPlane::Yz] {
