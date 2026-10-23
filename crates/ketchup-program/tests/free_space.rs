@@ -29,7 +29,8 @@ fn changed(from: &str, to: &str) -> String {
 }
 
 #[test]
-fn the_house_keeps_its_landings_headroom_stove_space_and_bed_free() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_the_house_keeps_its_landings_headroom_stove_space_and_bed_free() {
     for overrides in [
         &[][..],
         &[("system", 1.0)],
@@ -46,7 +47,8 @@ fn the_house_keeps_its_landings_headroom_stove_space_and_bed_free() {
 }
 
 #[test]
-fn a_window_over_the_bed_is_reported() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_a_window_over_the_bed_is_reported() {
     let source = changed(
         "    (\"east\", \"prízemie východ\"",
         "    (\"east\", \"podkrovie východ\", 1500, 2500, attic + 500, attic + 1500),\n    (\"east\", \"prízemie východ\"",
@@ -61,7 +63,8 @@ fn a_window_over_the_bed_is_reported() {
 }
 
 #[test]
-fn a_stair_ending_at_the_wall_has_no_landing() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_a_stair_ending_at_the_wall_has_no_landing() {
     // The first step 200 mm from the west wall, as the house had it before.
     let found = occupied(&issues(
         &changed("stair_x = WALL + LANDING", "stair_x = WALL + 200"),
@@ -77,7 +80,8 @@ fn a_stair_ending_at_the_wall_has_no_landing() {
 }
 
 #[test]
-fn a_stair_under_the_low_roof_has_no_headroom_at_the_top() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_a_stair_under_the_low_roof_has_no_headroom_at_the_top() {
     // Along the north wall the roof comes down over the upper steps.
     let found = occupied(&issues(
         &changed(
@@ -96,7 +100,8 @@ fn a_stair_under_the_low_roof_has_no_headroom_at_the_top() {
 }
 
 #[test]
-fn something_in_front_of_the_stove_door_is_reported() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_something_in_front_of_the_stove_door_is_reported() {
     let source = changed(
         "no_window_over(bed",
         "box(\"skriňa\", (600, 600, 1800), at = (part_info(stove).max[0] + 400, part_info(stove).min[1], SLAB))\nno_window_over(bed",

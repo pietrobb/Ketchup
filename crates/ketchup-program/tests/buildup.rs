@@ -186,7 +186,8 @@ fn reach_x(model: &ProgramModel, names: &[&str]) -> f64 {
 }
 
 #[test]
-fn the_house_concept_and_construction_come_from_the_same_numbers() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_the_house_concept_and_construction_come_from_the_same_numbers() {
     let model = eval(HOUSE, &[]);
     assert_eq!(errors(&model), Vec::<String>::new());
     let concept = tagged(&model, "koncept");
@@ -338,7 +339,9 @@ fn seat_area(model: &ProgramModel, a: &str, b: &str) -> Option<f64> {
 }
 
 #[test]
-fn the_house_rafters_are_seated_on_a_ridge_beam_and_wall_plates_that_reach_the_overhangs() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_the_house_rafters_are_seated_on_a_ridge_beam_and_wall_plates_that_reach_the_overhangs()
+ {
     const BEAM: &str = "konštrukcia/hrebeňová väznica";
     for (system, pitch) in [(0.0, 40.0_f64), (1.0, 50.0)] {
         let overrides = [("system", system), ("roof_pitch", pitch)]
@@ -400,7 +403,8 @@ fn the_house_rafters_are_seated_on_a_ridge_beam_and_wall_plates_that_reach_the_o
 }
 
 #[test]
-fn the_house_floor_lies_on_the_ground_floor_walls_and_carries_the_attic_walls() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_the_house_floor_lies_on_the_ground_floor_walls_and_carries_the_attic_walls() {
     for (system, studs) in [(0.0, 140.0), (1.0, 160.0)] {
         let overrides: BTreeMap<_, _> = [("system".to_owned(), system)].into_iter().collect();
         let (evaluated, report) =

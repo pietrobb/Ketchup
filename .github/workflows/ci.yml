@@ -66,6 +66,9 @@ jobs:
       - name: Every ignored test runs in some CI step
         if: ${{ !cancelled() }}
         run: python scripts/check_ignored_tests.py
+      - name: Tests of the large house are ignored in every step
+        if: ${{ !cancelled() }}
+        run: python scripts/check_large_house_tests.py
       - name: BTLx schemas from the cache
         if: ${{ !cancelled() }}
         id: btlx
@@ -146,6 +149,11 @@ jobs:
         env:
           RUST_TEST_THREADS: 1
         run: cargo test --locked --release $CRATES --no-fail-fast -- --ignored perf_
+      # The tests of the 750-part house are ignored in every step (AGENTS.md
+      # section 6, scripts/check_large_house_tests.py) and run nightly here.
+      - name: large-house tests
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        run: cargo test --locked $CRATES --no-fail-fast -- --ignored large_house
       # The plugin host's Unix process group lives in the vendored process-wrap
       # (PATCH.md); ketchup-scheduler, which uses it, needs OCCT and is tested
       # on Windows only, so the group's own unit tests run here (review

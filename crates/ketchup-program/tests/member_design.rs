@@ -1212,7 +1212,8 @@ fn an_incomplete_load_reports_the_known_utilization_but_never_passes() {
 }
 
 #[test]
-fn every_member_of_the_house_has_a_utilization_and_passes_once_the_snow_is_given() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_every_member_of_the_house_has_a_utilization_and_passes_once_the_snow_is_given() {
     let with = report(HOUSE, &[("snow_sk", 1.5)]);
     let members = &with.design.members;
     assert_eq!(members.len(), with.loads.members.len());

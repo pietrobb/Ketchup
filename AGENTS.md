@@ -106,6 +106,8 @@ reproduced failure that they catch, or explicit approval by the owner.
   (plain `--include-ignored` would also start the opt-in tests that need Blender, a GPU or
   external fixtures). A test that only needs "some model" uses the small house
   `crates/ketchup-app/tests/fixtures/small-house.star`, not the large one.
+  `scripts/check_large_house_tests.py` fails on a test that reaches `tiny-house.star` and
+  is not ignored this way.
 - Tests check outcomes (finished, cancelled, timed out), not how long something took. A time
   budget lives only in a function named `perf_*`, marked
   `#[ignore = "perf: release timing budget, runs nightly"]`; CI runs them nightly in release
