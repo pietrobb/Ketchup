@@ -226,7 +226,10 @@ fn annotation_dimensions(
         }
     }
     let first = authored.iter().map(|d| d.id).max().unwrap_or(0);
-    if u64::MAX - first < marks.len() as u64 {
+    let room = u64::try_from(marks.len())
+        .ok()
+        .and_then(|count| first.checked_add(count));
+    if room.is_none() {
         return Err(invalid(
             "dimensions",
             "The authored dimension IDs leave no room for the document's dimensions.",

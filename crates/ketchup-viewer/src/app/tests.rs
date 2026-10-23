@@ -216,35 +216,35 @@ fn perspective_is_on_by_default_and_the_switch_holds_for_fit_views_and_scenes() 
         app.camera.as_ref().unwrap().is_perspective(),
         "the orthographic start scene opens in perspective"
     );
-    let mut ui = egui_kittest::Harness::builder()
+    let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(900.0, 600.0))
         .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
-    ui.run();
-    let before = ui.state().camera.clone().unwrap();
-    ui.get_by_label("Perspective").click();
-    ui.run();
-    let camera = ui.state().camera.clone().unwrap();
-    assert!(!ui.state().perspective && !camera.is_perspective());
+    harness.run();
+    let before = harness.state().camera.clone().unwrap();
+    harness.get_by_label("Perspective").click();
+    harness.run();
+    let camera = harness.state().camera.clone().unwrap();
+    assert!(!harness.state().perspective && !camera.is_perspective());
     assert_eq!(
         (camera.center, camera.scale),
         (before.center, before.scale),
         "switching keeps the view"
     );
-    let projection = |ui: &egui_kittest::Harness<'_, ViewerApp>| {
-        ui.state().camera.as_ref().unwrap().is_perspective()
+    let projection = |harness: &egui_kittest::Harness<'_, ViewerApp>| {
+        harness.state().camera.as_ref().unwrap().is_perspective()
     };
     for button in ["Fit", "Front", "Second scene"] {
-        ui.get_by_label(button).click();
-        ui.run();
-        assert!(!projection(&ui), "{button} stays orthographic");
+        harness.get_by_label(button).click();
+        harness.run();
+        assert!(!projection(&harness), "{button} stays orthographic");
     }
-    ui.get_by_label("Perspective").click();
-    ui.run();
-    assert!(projection(&ui));
+    harness.get_by_label("Perspective").click();
+    harness.run();
+    assert!(projection(&harness));
     for button in ["First scene", "Iso", "Fit"] {
-        ui.get_by_label(button).click();
-        ui.run();
-        assert!(projection(&ui), "{button} stays in perspective");
+        harness.get_by_label(button).click();
+        harness.run();
+        assert!(projection(&harness), "{button} stays in perspective");
     }
 }
 
