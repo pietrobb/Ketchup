@@ -15,7 +15,7 @@ import queue
 import subprocess
 import threading
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Optional
 
 PROTOCOL = "ketchup.headless.v1"
 MAX_LINE_BYTES = 4 * 1024 * 1024
@@ -24,10 +24,11 @@ MAX_TIMEOUT_MS = 300_000
 
 
 class HeadlessError(RuntimeError):
-    """Server rejection; code and diagnostic details are preserved unchanged."""
-    def __init__(self, code: str, message: str, details: Any = None):
+    """Server rejection; code, diagnostic details and causes (outermost first) are preserved unchanged."""
+    def __init__(self, code: str, message: str, details: Any = None, causes: Optional[list] = None):
         super().__init__(message)
         self.code, self.message, self.details = code, message, details
+        self.causes = list(causes or [])
 
 
 class TransportError(RuntimeError):
@@ -244,10 +245,12 @@ class Session:
                 if set(response) == {"protocol", "id", "error"}:
                     error = response["error"]
                     if (not isinstance(error, dict) or not {"code", "message"} <= set(error)
-                            or set(error) - {"code", "message", "details"}
-                            or not isinstance(error["code"], str) or not isinstance(error["message"], str)):
+                            or set(error) - {"code", "message", "details", "causes"}
+                            or not isinstance(error["code"], str) or not isinstance(error["message"], str)
+                            or ("causes" in error and (not isinstance(error["causes"], list)
+                                                       or not all(isinstance(cause, str) for cause in error["causes"])))):
                         raise ProtocolError("invalid error envelope")
-                    raise HeadlessError(error["code"], error["message"], error.get("details"))
+                    raise HeadlessError(error["code"], error["message"], error.get("details"), error.get("causes"))
                 if set(response) != {"protocol", "id", "result"} or not isinstance(response["result"], dict):
                     raise ProtocolError("invalid result envelope")
                 return response["result"]

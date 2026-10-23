@@ -526,6 +526,30 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(caught.exception.details, details)
         self.assertFalse(session._closed)
 
+    # MCP-4 (63abfc17): the headless answers an error with the causes behind
+    # it, outermost first; the client refused that envelope as malformed and
+    # closed the session, so every failing save or open broke the session.
+    def test_error_preserves_causes_and_session(self):
+        def answer(req):
+            return (json.dumps({"protocol": PROTOCOL, "id": req["id"], "error":
+                               {"code": "already_exists", "message": "file exists",
+                                "causes": ["layer 2", "layer 3"]}}) + "\n").encode()
+        session = self.session(FakeProcess(answer))
+        with self.assertRaises(HeadlessError) as caught:
+            session.capabilities()
+        self.assertEqual(caught.exception.code, "already_exists")
+        self.assertEqual(caught.exception.causes, ["layer 2", "layer 3"])
+        self.assertFalse(session._closed)
+        for causes in ["layer 2", [1], [None], {}]:
+            with self.subTest(causes=causes):
+                def malformed(req, causes=causes):
+                    return (json.dumps({"protocol": PROTOCOL, "id": req["id"], "error":
+                                       {"code": "x", "message": "y", "causes": causes}}) + "\n").encode()
+                session = self.session(FakeProcess(malformed))
+                with self.assertRaises(ProtocolError):
+                    session.capabilities()
+                self.assertTrue(session._closed)
+
     def test_bad_responses_close(self):
         responses = [b"not json\n", b"{}\n", b'{"protocol":"wrong","id":1,"result":{}}\n',
                      b'{"protocol":"ketchup.headless.v1","id":2,"result":{}}\n',
