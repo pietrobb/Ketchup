@@ -60,6 +60,7 @@ pub async fn start(
             .map(|address| browser_origin_allowed(&window, &address, &origins).map(|()| address))
             .transpose()
     });
+    let origins: Vec<String> = origins.into_iter().map(str::to_owned).collect();
     let unsaved = Rc::new(Cell::new(false));
     guard_unsaved_comments(&window, unsaved.clone());
     let status_canvas = canvas.clone();
@@ -74,7 +75,13 @@ pub async fn start(
                 match shared {
                     Ok(Some(address)) => {
                         let pending = app.begin_open();
-                        fetch_model(pending, address.clone(), inbox.clone(), cc.egui_ctx.clone());
+                        fetch_model(
+                            pending,
+                            address.clone(),
+                            origins,
+                            inbox.clone(),
+                            cc.egui_ctx.clone(),
+                        );
                         model_name = Some(address);
                     }
                     Ok(None) => {}
@@ -273,10 +280,17 @@ fn browser_origin_allowed(
     }
 }
 
-/// Download the shared model; same-origin or CORS-enabled hosts only.
-fn fetch_model(pending: PendingOpen, address: String, inbox: Inbox, ctx: egui::Context) {
+/// Download the shared model; same-origin or CORS-enabled hosts only, and an
+/// answer a redirect brought from outside them is refused.
+fn fetch_model(
+    pending: PendingOpen,
+    address: String,
+    allowed: Vec<String>,
+    inbox: Inbox,
+    ctx: egui::Context,
+) {
     spawn_local(async move {
-        let result = fetch_bytes(&address).await;
+        let result = fetch_bytes(&address, &allowed).await;
         inbox.borrow_mut().push(Incoming::Shared {
             pending,
             address,
@@ -286,7 +300,7 @@ fn fetch_model(pending: PendingOpen, address: String, inbox: Inbox, ctx: egui::C
     });
 }
 
-async fn fetch_bytes(address: &str) -> Result<Vec<u8>, Rejection> {
+async fn fetch_bytes(address: &str, allowed: &[String]) -> Result<Vec<u8>, Rejection> {
     let failed = |detail: JsValue| {
         browser_error("viewer.link.fetch", address, detail)
             .reason("The shared model could not be downloaded.")
@@ -300,6 +314,11 @@ async fn fetch_bytes(address: &str) -> Result<Vec<u8>, Rejection> {
         .map_err(failed)?
         .dyn_into()
         .map_err(failed)?;
+    // fetch follows redirects; the link was checked, the answer's address is
+    // where the bytes came from.
+    let page = window.location().origin().map_err(failed)?;
+    let allowed: Vec<&str> = allowed.iter().map(String::as_str).collect();
+    share::answered_from(&page, &response.url(), &allowed)?;
     if !response.ok() {
         return Err(failed(JsValue::NULL).reason(format!(
             "The server answered {} for the shared model.",

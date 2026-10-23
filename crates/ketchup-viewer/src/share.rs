@@ -48,6 +48,21 @@ pub fn shared_model(query: &str, allowed_origins: &[&str]) -> Result<Option<Stri
     }
 }
 
+/// The shared model's answer came from `response_url`, the address the
+/// browser ended at after following redirects. It must still be the hosting
+/// page's origin (`page_origin`) or one of `allowed_origins`, or a link the
+/// check let through could show a model a redirect fetched from elsewhere.
+pub fn answered_from(
+    page_origin: &str,
+    response_url: &str,
+    allowed_origins: &[&str],
+) -> Result<(), Rejection> {
+    let page = page_origin.trim_end_matches('/');
+    let mut origins = allowed_origins.to_vec();
+    origins.push(page);
+    allowed(response_url, origin_of(response_url), &origins).map(|_| ())
+}
+
 /// The name a download from the Viewer is saved under: the model's file name
 /// without `.ketchup-view`, followed by `suffix` (e.g. `.ketchup-comments`).
 pub fn download_name(model_address: Option<&str>, suffix: &str) -> String {
@@ -247,6 +262,35 @@ mod tests {
         ] {
             let code = shared_model(link, CDN).unwrap_err().code().to_owned();
             assert!(code.starts_with("viewer.link."), "{link}: {code}");
+        }
+    }
+
+    #[test]
+    fn a_redirect_off_the_allowed_origins_is_refused() {
+        let page = "https://shop.example";
+        for url in [
+            "https://shop.example/designs/a.ketchup-view",
+            "https://SHOP.example/a.ketchup-view?v=2",
+            "https://cdn.example.com/a.ketchup-view",
+        ] {
+            assert!(answered_from(page, url, CDN).is_ok(), "{url}");
+        }
+        for url in [
+            "https://evil.example/a.ketchup-view",
+            "http://shop.example/a.ketchup-view",
+            "https://shop.example:8443/a.ketchup-view",
+            "https://cdn.example.com.evil.example/a.ketchup-view",
+            "https://cdn.example.com@evil.example/a.ketchup-view",
+            // An opaque answer has no address to check.
+            "",
+        ] {
+            let refusal = answered_from(page, url, CDN).unwrap_err();
+            let expected = if url.is_empty() || url.contains('@') {
+                "viewer.link.invalid"
+            } else {
+                "viewer.link.origin"
+            };
+            assert_eq!(refusal.code(), expected, "{url}");
         }
     }
 

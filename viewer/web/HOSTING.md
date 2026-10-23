@@ -17,6 +17,8 @@ address on an origin listed in the page's meta tag:
 
 Other origins, `data:`, `javascript:` and `file:` addresses are refused, so a
 crafted link cannot show a foreign model under the manufacturer's address.
+The same holds after redirects: a model whose answer ends on another origin is
+refused with `viewer.link.origin`, so a redirect may only stay on these origins.
 A model on another origin must also be served with
 `Access-Control-Allow-Origin: https://example.com` (CORS); without it the
 browser blocks the download and the Viewer shows `viewer.link.fetch`.
