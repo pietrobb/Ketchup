@@ -683,7 +683,7 @@ impl ProposalBudget {
 
     /// A drawing import is planned by Kečup from the file the user reviewed,
     /// a definition, a profile and an occurrence per profile and the receipt,
-    /// so the plan of a whole house (tens of thousands of profiles) is one
+    /// so the plan of a whole building (tens of thousands of profiles) is one
     /// Undo step and not bound to the per-edit [`Self::HOST_MAX`].
     pub const DRAWING_IMPORT: Self = Self {
         max_commands: 3 * ketchup_tolerance::limits::DRAWING_PROFILES + 1,

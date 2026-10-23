@@ -86,7 +86,7 @@ impl SetFileFormat {
 
 /// The files a set of `sheets` sheets is written to for `path`: the PDF at
 /// `path` itself; a DXF or DWG per sheet beside it, numbered like the sheets,
-/// `house.dxf` as `house-01.dxf`, `house-02.dxf`, …
+/// `plan.dxf` as `plan-01.dxf`, `plan-02.dxf`, …
 pub(crate) fn set_file_paths(path: &Path, format: SetFileFormat, sheets: usize) -> Vec<PathBuf> {
     if format == SetFileFormat::Pdf {
         return vec![path.to_path_buf()];

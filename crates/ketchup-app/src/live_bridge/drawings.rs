@@ -206,7 +206,7 @@ fn export(
     let Some(file_format) = file_format else {
         return Err(failure(
             "invalid_path",
-            "The drawings are written to a local absolute path ending in .pdf (one file of all sheets), or .dxf or .dwg (a file per sheet beside it, numbered: house-01.dxf, house-02.dxf, …); no network share, device or stream.",
+            "The drawings are written to a local absolute path ending in .pdf (one file of all sheets), or .dxf or .dwg (a file per sheet beside it, numbered: plan-01.dxf, plan-02.dxf, …); no network share, device or stream.",
             json!({"path": path}),
         ));
     };

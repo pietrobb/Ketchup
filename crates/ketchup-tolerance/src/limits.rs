@@ -27,7 +27,7 @@ pub const MESH_VERTICES: usize = 100_000;
 pub const MESH_TRIANGLES: usize = 2 * MESH_VERTICES;
 
 /// Most group-code pairs one drawing import (DXF, or the DXF of a DWG) reads, some
-/// 120 MB of DXF text: the project of a house, tens of megabytes, passes; a runaway
+/// 120 MB of DXF text: the project of a building, tens of megabytes, passes; a runaway
 /// file stops.
 pub const DRAWING_PAIRS: usize = 10_000_000;
 

@@ -941,7 +941,7 @@ pub struct Storey {
 /// The storeys of `solids`, lowest first, each cut `above_floor_mm` above its
 /// floor: a floor counts as a storey of its own only above the plan cut of the
 /// storey below it and that far below the model's top, so a landing or a
-/// roof deck is no storey. A model with no such floor is one storey cut
+/// top deck is no storey. A model with no such floor is one storey cut
 /// through its middle; no solid, no storey.
 #[must_use]
 pub fn storeys(solids: &[DrawingSolid], above_floor_mm: f64) -> Vec<Storey> {

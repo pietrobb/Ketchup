@@ -454,7 +454,7 @@ impl KetchupApp {
             .collect()
     }
 
-    /// Each tag with its name, visibility and the row label of the Layers panel: what it
+    /// Each tag with its name, visibility and its row label in the Layers list: what it
     /// holds, parts and, for an underlay's tag, the lines and texts it shows.
     pub(crate) fn tag_rows(&self) -> Vec<(TagId, String, bool, String)> {
         let snapshot = self.document.current();
