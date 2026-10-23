@@ -209,6 +209,49 @@ fn a_file_saved_while_the_sheet_is_projected_is_not_overwritten() {
     assert_eq!(std::fs::read(&pdf).unwrap(), b"saved meanwhile");
 }
 
+/// Review 2026-10-19 P3: the parts list of a sheet exported from a Slovak
+/// window marks the opposite hand and the quantity in Slovak, not English.
+#[test]
+fn a_slovak_window_writes_the_parts_list_in_slovak() {
+    let mut app = KetchupApp::with_catalog(LocaleCatalog::slovak());
+    let mirrored = Transform::from_matrix([
+        -1.0, 0.0, 0.0, 100.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    let ids = crate::drawn_shape::tests::blocks(&mut app, &[Transform::identity(), mirrored]);
+    let grounded = ids
+        .iter()
+        .map(|&id| CanonicalCommand::SetOccurrenceGrounded { id, grounded: true })
+        .collect();
+    app.document
+        .apply_batch(&CommandBatch::new(grounded))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    app.clear_selection();
+    for id in ids {
+        app.selection.occurrences.insert(InstancePath::root(id));
+    }
+    assert!(app.preview_selection_drawing(), "{}", app.action_digest());
+    assert!(app.confirm_assembly_preview());
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let sheet = app.document.current().drawing_sheets().next().unwrap().id();
+
+    let (_, dxf) = app.drawing_sheet_dxf(sheet).unwrap();
+    let dxf = String::from_utf8(dxf).unwrap();
+    let rows: Vec<&str> = dxf
+        .lines()
+        .filter(|line| line.starts_with("1 | ") || line.starts_with("2 | "))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "1 | block | po\\U+010Det 1",
+            "2 | block (zrkadlovo) | po\\U+010Det 1"
+        ],
+        "{dxf}"
+    );
+}
+
 #[test]
 fn a_sheet_titled_by_a_long_slovak_part_name_exports_as_dxf_and_dwg() {
     let note = "Smrekový hranol, brúsený, dvakrát olejovaný; dĺžka ±1 mm, šírka ±0,5 mm, \

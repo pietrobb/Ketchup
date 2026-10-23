@@ -2133,6 +2133,25 @@ pub struct DrawingBomBalloonLayout {
     pub text_position_mm: [f64; 2],
 }
 
+/// The words a parts-list row prints beside its part name and quantity, in
+/// the language of the sheet's reader; English by default.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PartsListWords {
+    /// Follows the name of an opposite-hand part, in parentheses.
+    pub mirrored: String,
+    /// Precedes the quantity.
+    pub quantity: String,
+}
+
+impl Default for PartsListWords {
+    fn default() -> Self {
+        Self {
+            mirrored: "mirrored".to_owned(),
+            quantity: "QTY".to_owned(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrawingBomRowLayout {
     pub position: u32,
@@ -2375,6 +2394,16 @@ pub fn project_orthographic_drawing(
     results: &ExactResultRegistry,
     sheet: &DrawingSheet,
 ) -> Result<OrthographicDrawing, DrawingError> {
+    project_orthographic_drawing_in(snapshot, results, sheet, &PartsListWords::default())
+}
+
+/// The drawing of `sheet` with its parts list worded in `words`.
+pub fn project_orthographic_drawing_in(
+    snapshot: &Snapshot,
+    results: &ExactResultRegistry,
+    sheet: &DrawingSheet,
+    words: &PartsListWords,
+) -> Result<OrthographicDrawing, DrawingError> {
     validate_source(snapshot, sheet.id(), sheet.source())?;
     let instances = source_instances(snapshot, results, sheet.source())?;
     let stable_source_identity = stable_source_identity(sheet.source(), &instances);
@@ -2383,7 +2412,7 @@ pub fn project_orthographic_drawing(
         views.push(project_view(sheet.id(), kind, &instances)?);
     }
     let result_digest = drawing_result_digest(&stable_source_identity, &views);
-    let layout = layout_drawing_sheet(snapshot, sheet, &views)?;
+    let layout = layout_drawing_sheet(snapshot, sheet, &views, words)?;
     Ok(OrthographicDrawing {
         schema: ORTHOGRAPHIC_LINEWORK_SCHEMA_V2,
         sheet_id: sheet.id(),
@@ -3494,6 +3523,7 @@ fn layout_drawing_sheet(
     snapshot: &Snapshot,
     sheet: &DrawingSheet,
     views: &[OrthographicView],
+    words: &PartsListWords,
 ) -> Result<DrawingSheetLayout, DrawingError> {
     let page = sheet.page();
     let [page_width, page_height] = page.dimensions_mm().map(f64::from);
@@ -3610,8 +3640,8 @@ fn layout_drawing_sheet(
         views,
         &view_placements,
         &view_cell_bounds,
-        border_bounds_mm,
-        drawing_min_y,
+        (border_bounds_mm, drawing_min_y),
+        words,
     )?;
     let source_name = if sheet.title_block().is_parametric() || !sheet.notes().is_empty() {
         drawing_source_name(snapshot, sheet.source())?
@@ -4233,8 +4263,8 @@ fn layout_bom_annotations(
     views: &[OrthographicView],
     placements: &[DrawingViewPlacement],
     view_cell_bounds: &[[[f64; 2]; 2]],
-    border_bounds_mm: [[f64; 2]; 2],
-    drawing_min_y: f64,
+    (border_bounds_mm, drawing_min_y): ([[f64; 2]; 2], f64),
+    words: &PartsListWords,
 ) -> Result<(Vec<DrawingBomBalloonLayout>, Vec<DrawingBomRowLayout>), DrawingError> {
     if sheet.bom_balloons().is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -4372,13 +4402,18 @@ fn layout_bom_annotations(
     let mut rows = Vec::with_capacity(positions.len());
     let (mut column, mut row) = (0.0, 0.0);
     for (position, (item, part_name, quantity)) in positions {
-        let hand = if item.mirrored { " (mirrored)" } else { "" };
+        let hand = if item.mirrored {
+            format!(" ({})", words.mirrored)
+        } else {
+            String::new()
+        };
         let material = bom_items.material_name(&item)?.map(str::to_owned);
+        let qty = &words.quantity;
         let label = match &material {
             Some(material) => {
-                format!("{position} | {part_name}{hand} | {material} | QTY {quantity}")
+                format!("{position} | {part_name}{hand} | {material} | {qty} {quantity}")
             }
-            None => format!("{position} | {part_name}{hand} | QTY {quantity}"),
+            None => format!("{position} | {part_name}{hand} | {qty} {quantity}"),
         };
         let line_count = crate::drawing_export::bom_row_lines(&label).len() as f64;
         if line_count > rows_per_column {

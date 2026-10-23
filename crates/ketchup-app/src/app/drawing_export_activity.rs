@@ -76,8 +76,9 @@ impl KetchupApp {
                 }
                 let snapshot = self.document.current();
                 let results = self.exact.results.clone();
+                let words = self.parts_list_words();
                 Box::new(move || {
-                    MadeDrawing::Sheet(drawing_sheet_bytes(&snapshot, &results, id, format))
+                    MadeDrawing::Sheet(drawing_sheet_bytes(&snapshot, &results, &words, id, format))
                 })
             }
         };

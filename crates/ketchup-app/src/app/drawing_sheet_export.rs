@@ -12,7 +12,9 @@ use crate::export_bundle::{
 };
 use crate::*;
 use ketchup_dwg::DwgError;
-use ketchup_model::drawing::{DrawingError, DrawingSheetId, project_orthographic_drawing};
+use ketchup_model::drawing::{
+    DrawingError, DrawingSheetId, PartsListWords, project_orthographic_drawing_in,
+};
 use ketchup_model::drawing_export::{
     DrawingExportError, DxfCurves, SheetAnnotations, export_drawing,
 };
@@ -96,18 +98,20 @@ pub(crate) struct ExportedDrawingSheet {
     pub(crate) bytes: usize,
 }
 
-/// Drawing sheet `id` of `snapshot` as `results` project it, as the bytes of
-/// a `format` file; needs nothing of the window, so it can run on a thread.
+/// Drawing sheet `id` of `snapshot` as `results` project it, its parts list
+/// worded in `words`, as the bytes of a `format` file; needs nothing of the
+/// window, so it can run on a thread.
 pub(crate) fn drawing_sheet_bytes(
     snapshot: &Snapshot,
     results: &ExactResultRegistry,
+    words: &PartsListWords,
     id: DrawingSheetId,
     format: SheetFileFormat,
 ) -> Result<(ExportedDrawingSheet, Vec<u8>), DrawingSheetExportError> {
     let sheet = snapshot
         .drawing_sheet(id)
         .ok_or(DrawingSheetExportError::NotFound(id))?;
-    let drawing = project_orthographic_drawing(snapshot, results, sheet)
+    let drawing = project_orthographic_drawing_in(snapshot, results, sheet, words)
         .map_err(DrawingSheetExportError::Projection)?;
     let bundle = export_drawing(snapshot, &drawing).map_err(DrawingSheetExportError::Export)?;
     let dxf = bundle.dxf().to_vec();
@@ -178,7 +182,21 @@ impl KetchupApp {
         if self.exact.task.is_some() {
             return Err(DrawingSheetExportError::Evaluating);
         }
-        drawing_sheet_bytes(&self.document.current(), &self.exact.results, id, format)
+        drawing_sheet_bytes(
+            &self.document.current(),
+            &self.exact.results,
+            &self.parts_list_words(),
+            id,
+            format,
+        )
+    }
+
+    /// The parts list's words in the window's language.
+    pub(crate) fn parts_list_words(&self) -> PartsListWords {
+        PartsListWords {
+            mirrored: self.catalog.text("drawing-parts-list-mirrored"),
+            quantity: self.catalog.text("drawing-parts-list-quantity"),
+        }
     }
 
     /// Writes drawing sheet `id` as a `format` file to `path`, replacing only

@@ -47,7 +47,7 @@ fn placement(degrees: f64, at: [f64; 3]) -> Transform {
 /// One 100 x 60 x 40 block definition placed once per transform, so more
 /// than one placement makes it a component with copies, with their exact
 /// solids evaluated.
-fn blocks(app: &mut KetchupApp, placements: &[Transform]) -> Vec<OccurrenceId> {
+pub(crate) fn blocks(app: &mut KetchupApp, placements: &[Transform]) -> Vec<OccurrenceId> {
     let ids = place_blocks(app, placements);
     evaluate_exact(app);
     ids
