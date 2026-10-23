@@ -254,7 +254,11 @@ fn resolve_raw_block<'a>(
         assemble_loose_segments(
             parsed_entities.loose,
             reading.max_segments,
-            Some((&parsed_entities.handles, &mut *resolution.diagnostics)),
+            Some((
+                &parsed_entities.handles,
+                &mut *resolution.diagnostics,
+                Some(raw.name.as_str()),
+            )),
         )?
     } else {
         parsed_entities
@@ -267,7 +271,11 @@ fn resolve_raw_block<'a>(
     if reading.chain {
         profiles = without_duplicate_segments(
             profiles,
-            Some((&parsed_entities.handles, &mut *resolution.diagnostics)),
+            Some((
+                &parsed_entities.handles,
+                &mut *resolution.diagnostics,
+                Some(raw.name.as_str()),
+            )),
         )?;
     }
     if profiles.len() > reading.max_profiles {

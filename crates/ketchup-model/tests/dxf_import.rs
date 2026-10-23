@@ -28,7 +28,7 @@ fn assert_second_copy_left_out(entities: &str) {
             diagnostic.code() == "dxf.profile-ambiguous"
                 && diagnostic.count() == 1
                 && diagnostic.subject().is_some_and(|subject| {
-                    subject.contains("(a segment another profile of its layer has)")
+                    subject.contains(": a segment shared with another profile of its layer, ")
                 })
         }),
         "{:#?}",

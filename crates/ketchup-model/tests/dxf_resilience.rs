@@ -325,22 +325,42 @@ fn lines_that_do_not_chain_unambiguously_are_left_out_alone_and_named() {
         .map(|diagnostic| (diagnostic.count(), diagnostic.subject().unwrap()))
         .collect::<Vec<_>>();
     left_out.sort_unstable();
+    // One entry per group: its kind, layer, lines and the rectangle around them, in the
+    // block's coordinates for a group inside a block.
     assert_eq!(
         left_out,
         [
             (
                 1,
-                format!("{ambiguous} (a repeated line); handles: B2").as_str()
+                format!(
+                    "{ambiguous}: a repeated line, layer doubled, 1 line within x 100..110, \
+                     y 0..0 mm; handles: B2"
+                )
+                .as_str()
             ),
             (
                 1,
-                format!("{ambiguous} (a segment another profile of its layer has); handles: P2")
-                    .as_str()
+                format!(
+                    "{ambiguous}: a segment shared with another profile of its layer, layer \
+                     rooms, 4 lines within x 300..310, y 0..10 mm; handles: P2"
+                )
+                .as_str()
             ),
             (
-                6,
-                format!("{ambiguous} (lines that branch); handles: T1, T2, T3, C1, C2, C3")
-                    .as_str()
+                3,
+                format!(
+                    "{ambiguous}: a T-junction (lines that branch), layer block, 3 lines \
+                     within x 0..2000, y 0..1000 mm of block tee; handles: T1, T2, T3"
+                )
+                .as_str()
+            ),
+            (
+                3,
+                format!(
+                    "{ambiguous}: a T-junction (lines that branch), layer branch, 3 lines \
+                     within x 190..210, y 0..10 mm; handles: C1, C2, C3"
+                )
+                .as_str()
             ),
         ]
     );
@@ -360,6 +380,77 @@ fn lines_that_do_not_chain_unambiguously_are_left_out_alone_and_named() {
         inspect_dxf(&only_branch, DxfImportOptions::new(None)),
         Err(DxfImportError::AmbiguousGeometry)
     );
+}
+
+#[test]
+fn a_closed_outline_imports_beside_a_t_junction_on_its_own_and_on_another_layer() {
+    let source = drawing(
+        "",
+        &[
+            // A closed square of four lines on `walls`.
+            line_on("walls", "S1", [0, 0, 1000, 0]),
+            line_on("walls", "S2", [1000, 0, 1000, 1000]),
+            line_on("walls", "S3", [1000, 1000, 0, 1000]),
+            line_on("walls", "S4", [0, 1000, 0, 0]),
+            // A T-junction apart from it on the same layer.
+            line_on("walls", "W1", [2000, 0, 2100, 0]),
+            line_on("walls", "W2", [2100, 0, 2200, 0]),
+            line_on("walls", "W3", [2100, 0, 2100, 100]),
+            // And one on another layer.
+            line_on("other", "O1", [5000, 5000, 5100, 5000]),
+            line_on("other", "O2", [5100, 5000, 5200, 5000]),
+            line_on("other", "O3", [5100, 5000, 5100, 4900]),
+        ]
+        .concat(),
+    );
+    let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
+    assert_eq!(parsed.profiles().len(), 1, "{:#?}", parsed.profiles());
+    let square = &parsed.profiles()[0];
+    assert!(square.closed());
+    assert_eq!(square.layer(), "walls");
+    assert_eq!(square.segments().len(), 4);
+
+    let ambiguous = "DXF line/arc connectivity is branched, duplicated, or otherwise ambiguous";
+    let tee = "a T-junction (lines that branch)";
+    assert_eq!(
+        entry(
+            parsed.diagnostics(),
+            "dxf.profile-ambiguous",
+            &format!("{ambiguous}: {tee}, layer walls")
+        ),
+        (
+            3,
+            format!(
+                "{ambiguous}: {tee}, layer walls, 3 lines within x 2000..2200, y 0..100 mm; \
+                 handles: W1, W2, W3"
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(
+        entry(
+            parsed.diagnostics(),
+            "dxf.profile-ambiguous",
+            &format!("{ambiguous}: {tee}, layer other")
+        ),
+        (
+            3,
+            format!(
+                "{ambiguous}: {tee}, layer other, 3 lines within x 5000..5200, y 4900..5000 mm; \
+                 handles: O1, O2, O3"
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(
+        parsed
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code() == "dxf.profile-ambiguous")
+            .count(),
+        2
+    );
+    assert_eq!(import_profiles(&source), 1);
 }
 
 #[test]
