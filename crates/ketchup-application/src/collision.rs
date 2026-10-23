@@ -1916,6 +1916,87 @@ box('beside', (100, 100, 18), at=(100, 300, 0))";
         assert_eq!(crate::worker_pool::idle_count(), most);
     }
 
+    /// Spread over idle workers, a motion batch comes back in several range
+    /// batches in locality order; every pose still gets its own answer.
+    #[test]
+    fn a_motion_check_spread_over_idle_workers_answers_every_pose() {
+        use ketchup_model::assembly_joint::{AssemblyJointAxis, AssemblyJointKind};
+        let _turn = super::integration_support::file_turn();
+        let path = crate::evaluation::exact_worker_candidates()
+            .into_iter()
+            .find(|path| path.is_file())
+            .expect("native exact worker required");
+        let (most, _) = pair_worker_count(usize::MAX, 0, 0);
+        let cancelled = AtomicBool::new(false);
+        let workers: Vec<_> = (0..most)
+            .map(|_| crate::worker_pool::checkout(Some(&path), &cancelled).unwrap())
+            .collect();
+        for worker in workers {
+            worker.release();
+        }
+        let mut session = crate::DocumentSession::new(crate::SessionSettings::default());
+        let applied = session
+            .apply_rule_program(
+                ketchup_model::document::RuleProgramSource {
+                    variants: Default::default(),
+                    file_name: "motion.star".into(),
+                    source: "box('moving',(2,2,2))\nbox('obstacle',(30,2,2),at=(0,2,0))".into(),
+                    overrides: BTreeMap::new(),
+                },
+                false,
+            )
+            .unwrap();
+        let snapshot = &applied.snapshot;
+        let body = |name: &str| {
+            let occurrence = snapshot
+                .scene_query()
+                .into_iter()
+                .find(|p| {
+                    crate::rule_program_part_name(snapshot, &p.instance_path).as_deref()
+                        == Some(name)
+                })
+                .unwrap();
+            let definition = snapshot.definition(occurrence.definition_id).unwrap();
+            let graph = ExactBRepGraph::from_snapshot(
+                snapshot,
+                definition.id(),
+                *definition.feature_ids().last().unwrap(),
+            )
+            .unwrap();
+            (graph, occurrence.transform)
+        };
+        let (moving, zero_transform) = body("moving");
+        let (obstacle, obstacle_transform) = body("obstacle");
+        let pair = ExactMotionPair {
+            moving,
+            obstacle,
+            zero_transform,
+            obstacle_transform,
+            motion: AssemblyJointKind::Prismatic {
+                axis: AssemblyJointAxis::new([1., 0., 0.], [0.; 3]),
+                limits: None,
+                position_mm: 0.,
+            },
+            from: 0.,
+            to: 20.,
+            tolerance_mm: 0.001,
+            allow_contact: false,
+        };
+        let report = exact_motion_pair_with_worker(
+            &pair,
+            &BTreeMap::new(),
+            Some(path),
+            Duration::from_secs(60),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert_eq!(report["checked_pose_count"], 256, "{report}");
+        assert_eq!(report["state"], "incomplete", "{report}");
+        assert_eq!(
+            report["not_evaluated"][0]["reason"], "motion_query_limit",
+            "{report}"
+        );
+    }
+
     #[test]
     fn pair_failures_report_their_kind_and_keep_the_worker_cause() {
         let spawn = || WorkerError::Spawn("no such file".to_owned());

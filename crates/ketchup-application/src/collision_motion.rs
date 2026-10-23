@@ -172,9 +172,12 @@ pub fn exact_motion_pair_with_worker(
             break;
         }
         let batch: Vec<_> = pending.drain(..pending.len().min(remaining)).collect();
+        // Each pose carries its position: workers may answer ranges of the
+        // batch in any order and in several parts.
         let candidates: Option<Vec<_>> = batch
             .iter()
-            .map(|interval| Some((0, 1, pair.candidate(interval.midpoint())?)))
+            .enumerate()
+            .map(|(pose, interval)| Some((pose, pose, pair.candidate(interval.midpoint())?)))
             .collect();
         let Some(candidates) = candidates else {
             reasons.push(json!({"reason": "invalid_intermediate_motion_pose"}));
@@ -189,28 +192,43 @@ pub fn exact_motion_pair_with_worker(
             pair.tolerance_mm,
             Arc::clone(&worker_cancelled),
         );
-        let result = receive_pair_batch(
-            &receiver,
-            Some(&cancelled),
-            &worker_cancelled,
-            timeout.saturating_sub(started.elapsed()),
-        );
-        let answers = match result
-            .map_err(
-                |error| json!({"reason": "motion_worker_wait_failed", "cause": error.to_string()}),
-            )
-            .and_then(|batch| batch.map_err(|error| error.evidence()))
-        {
-            Ok(answers) => answers,
-            Err(reason) => {
-                worker_cancelled.store(true, Ordering::Release);
-                reasons.push(reason);
-                unresolved.extend(batch.iter().chain(&pending).map(|i| i.json()));
+        let mut answers: Vec<_> = batch.iter().map(|_| None).collect();
+        let mut answered = 0;
+        let mut failure = None;
+        while answered < batch.len() {
+            match receive_pair_batch(
+                &receiver,
+                Some(&cancelled),
+                &worker_cancelled,
+                timeout.saturating_sub(started.elapsed()),
+            ) {
+                Ok(Ok(entries)) => {
+                    for (pose, _, answer) in entries {
+                        if let Some(slot) = answers.get_mut(pose).filter(|slot| slot.is_none()) {
+                            *slot = Some(answer);
+                            answered += 1;
+                        }
+                    }
+                }
+                Ok(Err(error)) => failure = Some(error.evidence()),
+                Err(error) => {
+                    failure = Some(
+                        json!({"reason": "motion_worker_wait_failed", "cause": error.to_string()}),
+                    );
+                }
+            }
+            if failure.is_some() {
                 break;
             }
-        };
-        checked += answers.len();
-        for (interval, (_, _, answer)) in batch.into_iter().zip(answers) {
+        }
+        if let Some(reason) = failure {
+            worker_cancelled.store(true, Ordering::Release);
+            reasons.push(reason);
+            unresolved.extend(batch.iter().chain(&pending).map(|i| i.json()));
+            break;
+        }
+        checked += answered;
+        for (interval, answer) in batch.into_iter().zip(answers.into_iter().flatten()) {
             let answer = match answer {
                 Ok(answer) => answer,
                 // OCCT could not measure this pose: it stays unresolved, the rest go on.
