@@ -1,11 +1,12 @@
 //! `file action=export_drawings`: the project drawings of the visible layers as
-//! a PDF sheet, with the title block and format kept in the document; with
-//! `sheet_id`, a drawing sheet of the document as DXF or DWG.
+//! a numbered set of sheets (a plan per storey, sections, elevations), one PDF
+//! or a DXF or DWG per sheet, with the title block and format kept in the
+//! document; with `sheet_id`, a drawing sheet of the document as DXF or DWG.
 
 use super::{LiveBridge, Request, failed_because, failure};
 use crate::KetchupApp;
 use crate::app::drawing_sheet_export::{DrawingSheetExportError, SheetFileFormat};
-use crate::app::project_drawings::{ProjectDrawingsError, SheetRequest};
+use crate::app::project_drawings::{ProjectDrawingsError, SetFileFormat, SheetRequest};
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
 use ketchup_model::drawing::DrawingSheetId;
@@ -85,11 +86,6 @@ fn sheet_scale(scale: f64) -> Result<u32, &'static str> {
             json!({"drawing_scale": scale}),
         )
     })
-}
-
-fn has_extension(path: &Path, wanted: &str) -> bool {
-    path.extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(wanted))
 }
 
 /// Never replaces a file: no one confirms an overwrite on this path; the
@@ -206,21 +202,17 @@ fn export(
     request: SheetRequest,
 ) -> Result<Value, &'static str> {
     let target = Path::new(path);
-    if has_extension(target, "dxf") || has_extension(target, "dwg") {
-        return Err(failure(
-            "project_sheet_pdf_only",
-            "The project sheet hides back edges by painting nearer faces over them, which DXF and DWG cannot carry, so it is written only as PDF. A drawing sheet of the document is written as .dxf or .dwg with sheet_id.",
-            json!({"path": path}),
-        ));
-    }
-    if !local_absolute_path(path) || !has_extension(target, "pdf") {
+    let file_format = SetFileFormat::of_path(target).filter(|_| local_absolute_path(path));
+    let Some(file_format) = file_format else {
         return Err(failure(
             "invalid_path",
-            "The drawings are written to a local absolute path ending in .pdf (no network share, device or stream).",
+            "The drawings are written to a local absolute path ending in .pdf (one file of all sheets), or .dxf or .dwg (a file per sheet beside it, numbered: house-01.dxf, house-02.dxf, …); no network share, device or stream.",
             json!({"path": path}),
         ));
+    };
+    if file_format == SetFileFormat::Pdf {
+        refuse_existing(path)?;
     }
-    refuse_existing(path)?;
     let format = format.map(sheet_format).transpose()?;
     if app.exact.task.is_some() {
         return Err(failure(
@@ -261,8 +253,8 @@ fn export(
     // The settings stay in the document only with the sheet they were written
     // on, and the sheet only as a new file: one saved at the path while it was
     // projected is kept (review 2026-10-18 MCP-3).
-    let sheet = app
-        .write_project_drawings(target, request, None)
+    let exported = app
+        .write_project_drawings(target, file_format, request, None)
         .map_err(|error| {
             app.store_sheet_settings(previous);
             app.drawings.unsaved = previously_unsaved;
@@ -274,14 +266,34 @@ fn export(
             }
         })?;
     let settings = app.sheet_settings();
+    let set = &exported.set;
+    let sheets = set
+        .sheets
+        .iter()
+        .enumerate()
+        .map(|(index, sheet)| {
+            let file = exported.paths.get(index).or(exported.paths.first());
+            json!({
+                "number": sheet.number,
+                "shows": sheet.kind,
+                "title": sheet.title,
+                "format": sheet.format.name(),
+                "views": sheet.views,
+                "annotations": sheet.annotations,
+                "path": file.map(|file| file.display().to_string()),
+            })
+        })
+        .collect::<Vec<_>>();
     Ok(json!({
         "exported": true,
         "path": path,
-        "format": sheet.format.name(),
-        "scale": format!("1:{}", sheet.scale),
-        "views": sheet.views,
-        "annotations": sheet.annotations,
-        "printed_as_question_mark": sheet.page.printed_as_question_mark(),
+        "file_format": file_format.extension(),
+        "files": exported.paths.iter().map(|file| file.display().to_string()).collect::<Vec<_>>(),
+        "scale": format!("1:{}", set.scale),
+        "sheet_count": set.sheets.len(),
+        "sheets": sheets,
+        "annotations": set.annotations(),
+        "printed_as_question_mark": set.printed_as_question_mark(),
         "format_setting": settings.format.map_or("auto", SheetFormat::name),
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",
@@ -340,6 +352,7 @@ fn drawings_failed(error: ProjectDrawingsError) -> &'static str {
             ),
             json!({"part": part}),
         ),
+        ProjectDrawingsError::Dwg(error) => failed_because("dwg_conversion_failed", error),
         ProjectDrawingsError::Write(error) => failed_because("drawings_write_failed", error),
     }
 }
@@ -436,8 +449,9 @@ mod tests {
         assert!(!target.exists());
 
         let error = app
-            .write_project_drawings(&target, SheetRequest::default(), None)
-            .unwrap_err();
+            .write_project_drawings(&target, SetFileFormat::Pdf, SheetRequest::default(), None)
+            .err()
+            .unwrap();
         assert!(matches!(error, ProjectDrawingsError::SettingsUnreadable(_)));
         assert!(!target.exists());
         assert_eq!(stored(&app), Some(corrupt));
@@ -453,7 +467,13 @@ mod tests {
         std::fs::write(&pdf, b"saved meanwhile").unwrap();
         std::fs::write(&dxf, b"saved meanwhile").unwrap();
         assert!(
-            crate::app::project_drawings::publish_project_drawings(&pdf, b"%PDF-", None).is_err()
+            crate::app::project_drawings::publish_project_drawings(
+                &pdf,
+                SetFileFormat::Pdf,
+                &[b"%PDF-".to_vec()],
+                None
+            )
+            .is_err()
         );
         assert!(
             crate::app::drawing_sheet_export::publish_drawing_sheet(&dxf, b"0\nEOF\n", None)

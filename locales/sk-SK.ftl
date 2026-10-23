@@ -1881,6 +1881,11 @@ file-filter-svg = SVG výkres
 file-filter-pdf = PDF výkres
 file-filter-dwg = DWG výkres (AutoCAD 2018)
 drawings-view-plan = Pôdorys, rez vo výške { $height } mm
+drawings-view-plan-storey = Pôdorys { $storey }. podlažia, rez vo výške { $height } mm
+drawings-sheet-plan = Pôdorys
+drawings-sheet-plan-storey = Pôdorys { $storey }. podlažia
+drawings-sheet-sections = Rezy
+drawings-sheet-elevations = Pohľady
 drawings-view-longitudinal = Pozdĺžny rez
 drawings-view-cross = Priečny rez
 drawings-view-front = Pohľad spredu
@@ -1901,8 +1906,16 @@ drawings-parts-not-evaluated = Viditeľné diely bez presného telesa ({ $count 
 drawings-settings-unreadable = Rohová pečiatka a formát výkresu uložené v dokumente sa nedajú prečítať ({ $reason }); ostávajú, ako sú. Vyplň pečiatku znova v okne Projektové výkresy, tým ich nahradíš.
 drawings-cosmetic-threads-failed = Vymodelované závity dielu { $part } sa nedajú nakresliť podľa ISO 6410 ({ $reason }); výkres by ukázal všetky hrany ich skrutkovíc. Exportuj znova alebo prepni závity na kozmetické.
 drawings-settings-unreadable-edit = Rohová pečiatka uložená v dokumente sa nedá prečítať ({ $reason }). Každá zmena tu ju nahradí.
-digest-exported-project-drawings = Projektové výkresy (pôdorys, rezy a pohľady) na formáte { $format } v mierke 1:{ $scale } boli exportované do { $path }
-digest-exported-project-drawings-question-marks = Projektové výkresy na formáte { $format } v mierke 1:{ $scale } boli exportované do { $path }, ale písmo listu nemá znaky { $characters }: na liste sú vytlačené ako „?“.
+digest-exported-project-drawings = Projektové výkresy ({ $sheets ->
+        [one] { $sheets } list
+        [few] { $sheets } listy
+       *[other] { $sheets } listov
+    } v mierke 1:{ $scale }) boli exportované do { $path }
+digest-exported-project-drawings-question-marks = Projektové výkresy ({ $sheets ->
+        [one] { $sheets } list
+        [few] { $sheets } listy
+       *[other] { $sheets } listov
+    } v mierke 1:{ $scale }) boli exportované do { $path }, ale písmo listov nemá znaky { $characters }: na listoch sú vytlačené ako „?“.
 error-export-project-drawings = Export projektových výkresov do { $path } zlyhal: { $reason }
 digest-exported-drawing-sheet-dxf = Výkresový list { $name } bol exportovaný do { $path } ako DXF
 digest-exported-drawing-sheet-dwg = Výkresový list { $name } bol exportovaný do { $path } ako DWG
@@ -1914,14 +1927,16 @@ drawings-format-auto = Automaticky (najmenší pre 1:{ $scale })
 drawings-coarsest-scale = Mierka automatického formátu
 drawings-plan-cut-height = Rez pôdorysu nad podlahou
 drawings-export-pdf = Exportovať PDF…
+drawings-export-set-dxf = Exportovať DXF (súbor na každý list)…
+drawings-export-set-dwg = Exportovať DWG (súbor na každý list)…
 drawings-document-sheets = Výkresové listy dokumentu
-drawings-document-sheets-hint = Presné pohľady so skrytými hranami vo vlastnej hladine, zapísané ako DXF alebo DWG (AutoCAD 2018). Projektový list vyššie je len PDF: zadné hrany skrýva premaľovaním, čo DXF ani DWG nevie preniesť.
+drawings-document-sheets-hint = Presné pohľady so skrytými hranami vo vlastnej hladine, zapísané ako DXF alebo DWG (AutoCAD 2018).
 drawings-document-sheets-none = Zatiaľ žiadny výkresový list. Vytvorte ho cez Náhľad výkresu z výberu v sekcii ZOSTAVA.
 drawings-export-sheet-dxf = Exportovať DXF…
 drawings-export-sheet-dwg = Exportovať DWG…
 drawing-parts-list-mirrored = zrkadlovo
 drawing-parts-list-quantity = počet
-drawings-default-sheet = Pôdorys, rezy a pohľady
+drawings-default-sheet = Projektové výkresy
 title-field-office = Spracovateľ
 title-field-designer = Zodpovedný projektant
 title-field-author = Vypracoval
@@ -1936,3 +1951,4 @@ title-field-drawing_number = Číslo výkresu
 title-field-job_number = Číslo zákazky
 title-field-scale = Mierka
 title-field-format = Formát
+title-field-sheet = List

@@ -1,31 +1,35 @@
-//! Project drawings of a model: a floor plan cut horizontally, a longitudinal and
-//! a cross section and the four elevations, laid out on one sheet at a common
-//! scale. The parts the cutting plane passes through are filled and outlined
-//! heavily; each view carries its overall dimensions.
+//! Project drawings of a model as a numbered set of sheets at one scale (see
+//! [`drawing_set`]): a floor plan of each storey cut horizontally, a sheet of
+//! the longitudinal and the cross section and a sheet of the four elevations.
+//! The parts the cutting plane passes through are filled and outlined heavily;
+//! each view carries its overall dimensions.
 //!
-//! The sheet is an ISO A format with a frame and a title block in the lower
-//! right corner, written as a vector PDF.
+//! Each sheet is an ISO A format with a frame and a title block in the lower
+//! right corner; the set is written as one vector PDF, and each sheet as a DXF
+//! of its visible lines.
 //!
 //! The input is any set of closed triangulated solids in world millimetres (z up),
 //! so the sheet follows whatever is visible: hiding a layer leaves it out.
 //! Lines behind nearer faces are hidden by painting faces from far to near.
 
-use crate::sheet_pdf::{Anchor, Mark, Page, PdfInfo, Stroke, page_pdf};
-use crate::title_block::{
-    DEFAULT_COARSEST_SCALE, DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, TITLE_BLOCK_MM,
-    TitleBlock, TitleField, TitleValueDoesNotFit, draw_frame_and_title_block, drawing_area,
-};
+use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
+use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area};
 use ketchup_geometry::linalg::{Vec3, cross, dot, normalize_within, sub};
-use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
+use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
 mod annotations;
+mod set;
 mod threads;
+mod visible;
 
 use annotations::PlanAnnotations;
 pub use annotations::{AnnotationCounts, annotation_marks};
 use ketchup_model::annotation::Annotation;
+pub use set::{
+    DrawingSet, DrawingSetOptions, PlanSheet, SetSheet, SheetKind, SheetTitles, drawing_set,
+};
 pub use threads::DrawingThread;
 use threads::ThreadMarks;
 
@@ -78,31 +82,6 @@ impl ProjectView {
     }
 }
 
-/// What the caller decides: view titles, the plan cut, the sheet format and
-/// the title block.
-#[derive(Clone, Debug, Default)]
-pub struct ProjectSheetOptions {
-    pub view_titles: BTreeMap<ProjectView, String>,
-    /// Height of the horizontal plan cut; [`default_plan_cut_z`] when absent.
-    pub plan_cut_z_mm: Option<f64>,
-    /// The sheet format; when absent the smallest one that holds the views at
-    /// `coarsest_scale` or finer.
-    pub format: Option<SheetFormat>,
-    /// The coarsest scale 1:N the automatic format may use;
-    /// [`DEFAULT_COARSEST_SCALE`] when absent.
-    pub coarsest_scale: Option<u32>,
-    /// Captions of the title block cells.
-    pub title_labels: BTreeMap<TitleField, String>,
-    /// The title block values; scale and format are filled in by the sheet.
-    pub title_block: TitleBlock,
-    /// Only the plan, x to the right and y up, rather than all seven views.
-    pub plan_only: bool,
-    /// The scale 1:N every view is drawn at; when absent the sheet picks it.
-    pub scale: Option<u32>,
-    /// The annotations to draw in the plan.
-    pub annotations: Vec<Annotation>,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ViewSummary {
     pub view: ProjectView,
@@ -114,25 +93,6 @@ pub struct ViewSummary {
     pub cut_at_mm: Option<f64>,
     /// Model extent of the view: width and height.
     pub extent_mm: [f64; 2],
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProjectSheet {
-    pub page: Page,
-    /// The sheet scale as 1:`scale`.
-    pub scale: u32,
-    pub format: SheetFormat,
-    pub views: Vec<ViewSummary>,
-    /// The annotations drawn in the plan.
-    pub annotations: AnnotationCounts,
-}
-
-impl ProjectSheet {
-    /// The sheet as a vector PDF with its typeface embedded.
-    #[must_use]
-    pub fn pdf(&self, info: &PdfInfo) -> Vec<u8> {
-        page_pdf(&self.page, info)
-    }
 }
 
 /// Why no sheet could be drawn.
@@ -426,10 +386,45 @@ fn chain_loops(segments: Vec<[[f64; 2]; 2]>) -> Vec<Vec<[f64; 2]>> {
             polyline.push(if key_2d(a) == end { b } else { a });
         }
         if polyline.len() >= 3 {
-            loops.push(polyline);
+            loops.push(without_straight_corners(polyline));
         }
     }
     loops
+}
+
+/// `polyline` without the points it runs straight through (a cut crosses a
+/// flat face in one piece per triangle); a closed one, ending where it
+/// starts, stays closed and may start at another corner.
+fn without_straight_corners(mut polyline: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    let closed = polyline.len() > 3 && key_2d(polyline[0]) == key_2d(polyline[polyline.len() - 1]);
+    if closed {
+        polyline.pop();
+    }
+    let straight = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
+        let (ab, bc) = ([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]);
+        let length = ab[0].hypot(ab[1]) + bc[0].hypot(bc[1]);
+        length > 0.0
+            && (ab[0] * bc[1] - ab[1] * bc[0]).abs() <= HIDDEN_LINE_TOUCH_MM * length
+            && ab[0] * bc[0] + ab[1] * bc[1] >= 0.0
+    };
+    let mut changed = true;
+    while changed && polyline.len() > 3 {
+        changed = false;
+        let count = polyline.len();
+        let ends = if closed { 0..count } else { 1..count - 1 };
+        for index in ends {
+            let (before, after) = ((index + count - 1) % count, (index + 1) % count);
+            if straight(polyline[before], polyline[index], polyline[after]) {
+                polyline.remove(index);
+                changed = true;
+                break;
+            }
+        }
+    }
+    if closed {
+        polyline.push(polyline[0]);
+    }
+    polyline
 }
 
 enum Item {
@@ -674,26 +669,25 @@ const CUT_STROKE_MM: f64 = 0.5;
 const DIMENSION_TEXT_MM: f64 = 2.5;
 const VIEW_TITLE_MM: f64 = 4.0;
 
-/// The view rows: cut views, then elevations.
-fn rows(views: &[DrawnView]) -> [Vec<usize>; 2] {
-    let (cut, elevation): (Vec<usize>, Vec<usize>) =
-        (0..views.len()).partition(|index| views[*index].view.is_cut());
-    [cut, elevation]
+/// The views of one sheet and the rows they are laid out in, top to bottom,
+/// each left to right (indices into `views`).
+struct SheetViews {
+    views: Vec<DrawnView>,
+    rows: Vec<Vec<usize>>,
 }
 
 fn extent(view: &DrawnView) -> [f64; 2] {
     [view.max[0] - view.min[0], view.max[1] - view.min[1]]
 }
 
-/// The largest standard scale at which both rows fit the drawing area of
+/// The finest standard scale at which every row fits the drawing area of
 /// `format` above the title block, if any does.
-fn choose_scale(views: &[DrawnView], format: SheetFormat) -> Option<u32> {
-    SCALES.into_iter().find(|scale| fits(views, format, *scale))
+fn choose_scale(sheet: &SheetViews, format: SheetFormat) -> Option<u32> {
+    SCALES.into_iter().find(|scale| fits(sheet, format, *scale))
 }
 
-/// Whether both rows fit the drawing area of `format` at 1:`scale`.
-fn fits(views: &[DrawnView], format: SheetFormat, scale: u32) -> bool {
-    let rows = rows(views);
+/// Whether every row fits the drawing area of `format` at 1:`scale`.
+fn fits(SheetViews { views, rows }: &SheetViews, format: SheetFormat, scale: u32) -> bool {
     let [[left, top], [right, bottom]] = drawing_area(format);
     let usable_width = right - left;
     let usable_height = bottom - top - TITLE_BLOCK_MM[1];
@@ -715,42 +709,30 @@ fn fits(views: &[DrawnView], format: SheetFormat, scale: u32) -> bool {
     widths_fit && height <= usable_height
 }
 
-/// The requested format at its best scale, or the smallest format that holds
-/// the views at `preferred` or finer (A0 at whatever fits when none does).
-fn choose_layout(
-    views: &[DrawnView],
-    requested: Option<SheetFormat>,
-    preferred: u32,
-) -> (SheetFormat, u32) {
+/// The scale of the requested format, or of the smallest format that holds the
+/// views at `preferred` or finer (A0 at whatever fits when none does).
+fn choose_layout_scale(sheet: &SheetViews, requested: Option<SheetFormat>, preferred: u32) -> u32 {
     let coarsest = SCALES[SCALES.len() - 1];
     if let Some(format) = requested {
-        return (format, choose_scale(views, format).unwrap_or(coarsest));
+        return choose_scale(sheet, format).unwrap_or(coarsest);
     }
     SheetFormat::ALL
         .into_iter()
-        .find_map(|format| {
-            choose_scale(views, format)
-                .filter(|scale| *scale <= preferred)
-                .map(|scale| (format, scale))
-        })
-        .unwrap_or_else(|| {
-            let format = SheetFormat::A0;
-            (format, choose_scale(views, format).unwrap_or(coarsest))
-        })
+        .find_map(|format| choose_scale(sheet, format).filter(|scale| *scale <= preferred))
+        .unwrap_or_else(|| choose_scale(sheet, SheetFormat::A0).unwrap_or(coarsest))
 }
 
 /// The requested format, or the smallest that holds the views at the fixed
 /// `scale`; never a sheet the views run off.
-fn layout_at_scale(
-    views: &[DrawnView],
+fn format_at_scale(
+    sheet: &SheetViews,
     requested: Option<SheetFormat>,
     scale: u32,
-) -> Result<(SheetFormat, u32), ProjectDrawingError> {
+) -> Result<SheetFormat, ProjectDrawingError> {
     requested
         .map_or_else(|| SheetFormat::ALL.to_vec(), |format| vec![format])
         .into_iter()
-        .find(|format| fits(views, *format, scale))
-        .map(|format| (format, scale))
+        .find(|format| fits(sheet, *format, scale))
         .ok_or(ProjectDrawingError::DoesNotFit {
             scale,
             format: requested,
@@ -765,8 +747,17 @@ fn tick(page: &mut Page, [x, y]: [f64; 2]) {
     );
 }
 
-/// Draws one view with its lower-left model corner at `origin` (page mm).
-fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f64; 2], scale: f64) {
+/// Draws one view with its lower-left model corner at `origin` (page mm):
+/// painted far to near, or with `visible` its visible lines alone (no face
+/// fill), as a DXF carries it.
+fn draw_view_on_page(
+    page: &mut Page,
+    view: &DrawnView,
+    title: &str,
+    origin: [f64; 2],
+    scale: f64,
+    visible: Option<&[visible::VisibleLine]>,
+) {
     let at = |point: [f64; 2]| {
         [
             origin[0] + (point[0] - view.min[0]) / scale,
@@ -788,7 +779,12 @@ fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f6
             },
         );
     };
-    for item in &view.items {
+    if let Some(lines) = visible {
+        for line in lines {
+            thread_line(page, &line.points, line.width_mm);
+        }
+    }
+    for item in view.items.iter().filter(|_| visible.is_none()) {
         match item {
             Item::Face { points, color } => page.marks.push(Mark::Fill {
                 loops: vec![points.iter().map(|point| at(*point)).collect()],
@@ -814,7 +810,7 @@ fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f6
             outline: Some(Stroke::solid(CUT_STROKE_MM)),
         });
     }
-    for item in &view.on_cut {
+    for item in view.on_cut.iter().filter(|_| visible.is_none()) {
         if let Item::Thread { points, width_mm } = item {
             thread_line(page, points, *width_mm);
         }
@@ -904,10 +900,10 @@ fn bounds(solids: &[DrawingSolid]) -> Option<(Point, Point)> {
         .then_some((min, max))
 }
 
-/// The floor: the lowest upward-facing horizontal level that carries at least
-/// half of the area of the largest such level, so small tops below a large
-/// deck do not count as the floor.
-fn floor_z(solids: &[DrawingSolid]) -> Option<f64> {
+/// The floors: the upward-facing horizontal levels, lowest first, that carry
+/// at least half of the area of the largest such level, so small tops below a
+/// large deck do not count as a floor.
+fn floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
     let mut levels = BTreeMap::<i64, f64>::new();
     for solid in solids {
         let outward = if winds_inward(solid) { -1.0 } else { 1.0 };
@@ -929,126 +925,55 @@ fn floor_z(solids: &[DrawingSolid]) -> Option<f64> {
     #[allow(clippy::cast_precision_loss)]
     levels
         .into_iter()
-        .find(|(_, area)| *area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL)
+        .filter(|(_, area)| *area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL)
         .map(|(level, _)| level as f64)
+        .collect()
 }
 
-/// The plan cut `above_floor_mm` above the floor, or the middle of a model
-/// with no floor that far below its top.
+/// A storey of the plans: its floor level and the height of its plan cut.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct Storey {
+    /// None for a model with no floor below its top, cut through its middle.
+    pub floor_mm: Option<f64>,
+    pub cut_mm: f64,
+}
+
+/// The storeys of `solids`, lowest first, each cut `above_floor_mm` above its
+/// floor: a floor counts as a storey of its own only above the plan cut of the
+/// storey below it and that far below the model's top, so a landing or a
+/// roof deck is no storey. A model with no such floor is one storey cut
+/// through its middle; no solid, no storey.
+#[must_use]
+pub fn storeys(solids: &[DrawingSolid], above_floor_mm: f64) -> Vec<Storey> {
+    let Some((min, max)) = bounds(solids) else {
+        return Vec::new();
+    };
+    let mut storeys: Vec<Storey> = Vec::new();
+    for floor in floor_levels(solids) {
+        let cut = floor + above_floor_mm;
+        if cut < max[2] && storeys.last().is_none_or(|below| floor > below.cut_mm) {
+            storeys.push(Storey {
+                floor_mm: Some(floor),
+                cut_mm: cut,
+            });
+        }
+    }
+    if storeys.is_empty() {
+        storeys.push(Storey {
+            floor_mm: None,
+            cut_mm: f64::midpoint(min[2], max[2]),
+        });
+    }
+    storeys
+}
+
+/// The plan cut of the lowest storey: `above_floor_mm` above the floor, or the
+/// middle of a model with no floor that far below its top.
 #[must_use]
 pub fn default_plan_cut_z(solids: &[DrawingSolid], above_floor_mm: f64) -> Option<f64> {
-    let (min, max) = bounds(solids)?;
-    let above_floor = floor_z(solids).map(|floor| floor + above_floor_mm);
-    Some(match above_floor {
-        Some(cut) if cut < max[2] => cut,
-        _ => f64::midpoint(min[2], max[2]),
-    })
-}
-
-/// Draws the project sheet of `solids`.
-///
-/// # Errors
-/// [`ProjectDrawingError::Empty`] when there is no triangle and no annotation
-/// to draw; [`ProjectDrawingError::DoesNotFit`] when the views do not fit the
-/// sheet at the scale the options fix.
-pub fn project_sheet(
-    solids: &[DrawingSolid],
-    options: &ProjectSheetOptions,
-) -> Result<ProjectSheet, ProjectDrawingError> {
-    let annotated = annotation_bounds(&options.annotations);
-    let (min, max) = match (bounds(solids), annotated) {
-        (Some((min, max)), Some((low, high))) => (
-            std::array::from_fn(|axis| min[axis].min(low[axis])),
-            std::array::from_fn(|axis| max[axis].max(high[axis])),
-        ),
-        (Some(bounds), None) | (None, Some(bounds)) => bounds,
-        (None, None) => return Err(ProjectDrawingError::Empty),
-    };
-    // A plan of annotations alone cuts nothing: the cut height does not matter.
-    let plan_cut_z = options
-        .plan_cut_z_mm
-        .or_else(|| default_plan_cut_z(solids, f64::from(DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM)))
-        .unwrap_or(max[2]);
-    let edges = solids.iter().map(solid_edges).collect::<Vec<_>>();
-    let views = view_frames(min, max, plan_cut_z, options.plan_only)
-        .into_iter()
-        .filter(|(view, _)| !options.plan_only || *view == ProjectView::Plan)
-        .map(|(view, frame)| {
-            let mut drawn = draw_view(view, frame, solids, &edges);
-            if view == ProjectView::Plan && !options.annotations.is_empty() {
-                drawn.annotate(&frame, &options.annotations);
-            }
-            drawn
-        })
-        .filter(|view| view.min[0].is_finite())
-        .collect::<Vec<_>>();
-    let (format, scale) = match options.scale {
-        Some(scale) => layout_at_scale(&views, options.format, scale)?,
-        None => choose_layout(
-            &views,
-            options.format,
-            options.coarsest_scale.unwrap_or(DEFAULT_COARSEST_SCALE),
-        ),
-    };
-    let title_of = |view: ProjectView| {
-        options
-            .view_titles
-            .get(&view)
-            .cloned()
-            .unwrap_or_else(|| format!("{view:?}"))
-    };
-
-    let mut page = Page {
-        size_mm: format.size_mm(),
-        marks: Vec::new(),
-    };
-    let scale_f = f64::from(scale);
-    let [[area_left, mut top], _] = drawing_area(format);
-    for row in rows(&views) {
-        let row_height = row
-            .iter()
-            .map(|index| extent(&views[*index])[1] / scale_f + 2.0 * VIEW_PAD_MM)
-            .fold(0.0, f64::max);
-        let mut left = area_left;
-        for index in row {
-            let view = &views[index];
-            let [width, height] = extent(view);
-            let origin = [
-                left + VIEW_PAD_MM,
-                top + VIEW_PAD_MM / 2.0 + height / scale_f,
-            ];
-            draw_view_on_page(&mut page, view, &title_of(view.view), origin, scale_f);
-            left += width / scale_f + 2.0 * VIEW_PAD_MM;
-        }
-        top += row_height;
-    }
-    let mut values = options.title_block.clone();
-    values.insert(TitleField::Scale, format!("1:{scale}"));
-    values.insert(TitleField::Format, format.name().to_owned());
-    draw_frame_and_title_block(&mut page, format, &options.title_labels, &values)?;
-
-    let summaries = views
-        .iter()
-        .map(|view| ViewSummary {
-            view: view.view,
-            title: title_of(view.view),
-            cut_solids: view.cuts.len(),
-            cut_at_mm: view.cut_at_mm,
-            extent_mm: extent(view).map(|value| (value * 10.0).round() / 10.0),
-        })
-        .collect();
-    let annotations = views
-        .iter()
-        .find_map(|view| view.annotations.as_ref())
-        .map(|annotations| annotations.counts.clone())
-        .unwrap_or_default();
-    Ok(ProjectSheet {
-        page,
-        scale,
-        format,
-        views: summaries,
-        annotations,
-    })
+    storeys(solids, above_floor_mm)
+        .first()
+        .map(|storey| storey.cut_mm)
 }
 
 fn annotation_bounds(annotations: &[Annotation]) -> Option<(Point, Point)> {
@@ -1223,29 +1148,71 @@ mod tests {
         ]
     }
 
-    fn sheet(plan_cut_z_mm: Option<f64>) -> ProjectSheet {
-        project_sheet(
-            &room(),
-            &ProjectSheetOptions {
-                view_titles: BTreeMap::from([(ProjectView::Plan, "Floor plan".to_owned())]),
-                plan_cut_z_mm,
-                title_labels: BTreeMap::from([(TitleField::Project, "Stavba".to_owned())]),
-                title_block: TitleBlock::from([(TitleField::Project, "Room <A>".to_owned())]),
-                ..ProjectSheetOptions::default()
+    use crate::sheet_pdf::PdfInfo;
+    use crate::title_block::{TitleBlock, TitleField};
+
+    fn plans(storeys: Vec<Storey>) -> Vec<PlanSheet> {
+        storeys
+            .into_iter()
+            .enumerate()
+            .map(|(index, storey)| PlanSheet {
+                storey,
+                view_title: format!("Floor plan {}", index + 1),
+                sheet_title: format!("Plan {}", index + 1),
+            })
+            .collect()
+    }
+
+    fn options(solids: &[DrawingSolid], cut_mm: Option<f64>) -> DrawingSetOptions {
+        let storeys = match cut_mm {
+            Some(cut_mm) => vec![Storey {
+                floor_mm: None,
+                cut_mm,
+            }],
+            None => storeys(solids, 1200.0),
+        };
+        DrawingSetOptions {
+            plans: plans(storeys),
+            sheet_titles: SheetTitles {
+                sections: "Sections".to_owned(),
+                elevations: "Elevations".to_owned(),
             },
-        )
-        .unwrap()
+            title_labels: BTreeMap::from([(TitleField::Project, "Stavba".to_owned())]),
+            title_block: TitleBlock::from([(TitleField::Project, "Room <A>".to_owned())]),
+            ..DrawingSetOptions::default()
+        }
+    }
+
+    fn room_set(cut_mm: Option<f64>) -> DrawingSet {
+        drawing_set(&room(), &options(&room(), cut_mm)).unwrap()
+    }
+
+    fn texts(page: &Page) -> Vec<&str> {
+        page.texts().collect()
+    }
+
+    fn sheet_of(set: &DrawingSet, kind: SheetKind) -> &SetSheet {
+        set.sheets.iter().find(|sheet| sheet.kind == kind).unwrap()
+    }
+
+    fn summary(set: &DrawingSet, view: ProjectView) -> &ViewSummary {
+        set.sheets
+            .iter()
+            .flat_map(|sheet| &sheet.views)
+            .find(|summary| summary.view == view)
+            .unwrap()
     }
 
     /// MF-4: a half millimetre rounds up, as a drawing reads, not to the even neighbour.
     #[test]
     fn overall_dimensions_round_a_half_millimetre_up() {
-        let sheet = project_sheet(
-            &[cuboid("block", [0.0, 0.0, 0.0], [2450.5, 1000.0, 2.5])],
-            &ProjectSheetOptions::default(),
-        )
-        .unwrap();
-        let texts = sheet.page.texts().collect::<Vec<_>>();
+        let block = [cuboid("block", [0.0, 0.0, 0.0], [2450.5, 1000.0, 2.5])];
+        let set = drawing_set(&block, &options(&block, None)).unwrap();
+        let texts = set
+            .sheets
+            .iter()
+            .flat_map(|sheet| sheet.page.texts())
+            .collect::<Vec<_>>();
         assert!(texts.contains(&"2451"), "{texts:?}");
         assert!(texts.contains(&"3"), "{texts:?}");
         assert!(!texts.contains(&"2450"), "{texts:?}");
@@ -1263,74 +1230,121 @@ mod tests {
                 solid
             })
             .collect::<Vec<_>>();
-        let sheet = project_sheet(
-            &lowered,
-            &ProjectSheetOptions {
-                plan_cut_z_mm: Some(-300.0),
-                ..ProjectSheetOptions::default()
-            },
-        )
-        .unwrap();
-        let plan = sheet
-            .views
-            .iter()
-            .find(|summary| summary.view == ProjectView::Plan)
-            .unwrap();
-        assert_eq!(plan.cut_at_mm, Some(-300.0));
+        let set = drawing_set(&lowered, &options(&lowered, Some(-300.0))).unwrap();
+        assert_eq!(summary(&set, ProjectView::Plan).cut_at_mm, Some(-300.0));
+        // Its slab top at -800: the storey is cut 1.2 m above it.
+        assert_eq!(storeys(&lowered, 1200.0)[0].cut_mm, 400.0);
+    }
+
+    /// The room is a set of three sheets at 1:50: its plan, its sections and
+    /// its elevations, numbered 1 / 3 to 3 / 3, each with the frame and the
+    /// title block, saying what it shows.
+    #[test]
+    fn the_set_has_a_plan_a_sections_and_an_elevations_sheet_each_numbered_and_titled() {
+        let set = room_set(Some(1200.0));
+        assert_eq!(set.scale, 50, "a room is drawn at the building scale");
+        assert_eq!(
+            set.sheets
+                .iter()
+                .map(|sheet| (sheet.kind, sheet.number, sheet.title.as_str(), sheet.format))
+                .collect::<Vec<_>>(),
+            [
+                (SheetKind::Plan { storey: 0 }, 1, "Plan 1", SheetFormat::A3),
+                (SheetKind::Sections, 2, "Sections", SheetFormat::A3),
+                (SheetKind::Elevations, 3, "Elevations", SheetFormat::A3),
+            ]
+        );
+        for sheet in &set.sheets {
+            let texts = texts(&sheet.page);
+            let number = format!("{} / 3", sheet.number);
+            for wanted in [
+                sheet.title.as_str(),
+                number.as_str(),
+                "1:50",
+                "A3",
+                "Room <A>",
+                "Stavba",
+            ] {
+                assert!(
+                    texts.contains(&wanted),
+                    "{wanted} on sheet {}: {texts:?}",
+                    sheet.number
+                );
+            }
+            // The frame and the title block in its lower right corner on every
+            // sheet, in its painted and its line drawing alike.
+            for page in [&sheet.page, &sheet.lines] {
+                for (min, max, width_mm) in [
+                    ([20.0, 10.0], [410.0, 287.0], 0.7),
+                    ([230.0, 238.0], [410.0, 287.0], 0.5),
+                ] {
+                    assert!(
+                        page.marks.contains(&Mark::Line {
+                            points: vec![min, [max[0], min[1]], max, [min[0], max[1]]],
+                            closed: true,
+                            stroke: Stroke::solid(width_mm),
+                        }),
+                        "sheet {}",
+                        sheet.number
+                    );
+                }
+            }
+        }
+        let pdf = set.pdf(&PdfInfo::default());
+        assert!(pdf.starts_with(b"%PDF-"));
+        assert_eq!(
+            pdf.windows(b"/Type /Page /".len())
+                .filter(|window| *window == b"/Type /Page /")
+                .count(),
+            3,
+            "a page per sheet"
+        );
     }
 
     #[test]
     fn plan_and_sections_fill_the_parts_the_plane_cuts() {
-        let sheet = sheet(Some(1200.0));
-        let cut = |view| {
-            sheet
-                .views
-                .iter()
-                .find(|summary| summary.view == view)
-                .unwrap()
-        };
-        let plan = cut(ProjectView::Plan);
+        let set = room_set(Some(1200.0));
+        let plan = summary(&set, ProjectView::Plan);
         assert_eq!(plan.cut_solids, 4, "the four walls, not the floor");
         assert_eq!(plan.cut_at_mm, Some(1200.0));
+        assert_eq!(plan.title, "Floor plan 1");
         assert_eq!(
-            cut(ProjectView::LongitudinalSection).cut_at_mm,
+            summary(&set, ProjectView::LongitudinalSection).cut_at_mm,
             Some(1500.0),
             "the room's middle across"
         );
         assert_eq!(plan.extent_mm, [6000.0, 3000.0]);
         // Along the 6 m length: floor plus the two end walls; across: floor and side walls.
-        assert_eq!(cut(ProjectView::LongitudinalSection).cut_solids, 3);
-        assert_eq!(cut(ProjectView::CrossSection).cut_solids, 3);
-        assert_eq!(cut(ProjectView::CrossSection).extent_mm, [3000.0, 2700.0]);
-        assert_eq!(cut(ProjectView::Front).cut_solids, 0);
-        assert_eq!(cut(ProjectView::Front).extent_mm, [6000.0, 2700.0]);
-        assert_eq!(sheet.views.len(), 7);
-        let cut_fills = sheet
-            .page
-            .marks
-            .iter()
-            .filter(|mark| {
-                matches!(mark, Mark::Fill { outline: Some(stroke), .. } if stroke.width_mm == CUT_STROKE_MM)
-            })
-            .count();
-        assert_eq!(cut_fills, 10);
-        let texts = sheet.page.texts().collect::<Vec<_>>();
-        assert!(texts.contains(&"6000"));
-        assert!(texts.contains(&"2700"));
-        assert!(texts.contains(&"Floor plan"));
-        assert!(texts.contains(&"Room <A>"));
-        assert!(texts.contains(&"Stavba"));
-        assert!(texts.contains(&format!("1:{}", sheet.scale).as_str()));
-        assert!(texts.contains(&sheet.format.name()));
-        assert_eq!(sheet.scale, 50, "a room is drawn at the building scale");
         assert_eq!(
-            sheet.format,
-            SheetFormat::A2,
-            "the smallest sheet that holds it at 1:50"
+            summary(&set, ProjectView::LongitudinalSection).cut_solids,
+            3
         );
-        assert_eq!(sheet.page.size_mm, SheetFormat::A2.size_mm());
-        let pdf = sheet.pdf(&PdfInfo::default());
-        assert!(pdf.starts_with(b"%PDF-"));
+        assert_eq!(summary(&set, ProjectView::CrossSection).cut_solids, 3);
+        assert_eq!(
+            summary(&set, ProjectView::CrossSection).extent_mm,
+            [3000.0, 2700.0]
+        );
+        assert_eq!(summary(&set, ProjectView::Front).cut_solids, 0);
+        assert_eq!(
+            summary(&set, ProjectView::Front).extent_mm,
+            [6000.0, 2700.0]
+        );
+        let cut_fills = |sheet: &SetSheet| {
+            sheet
+                .page
+                .marks
+                .iter()
+                .filter(|mark| {
+                    matches!(mark, Mark::Fill { outline: Some(stroke), .. } if stroke.width_mm == CUT_STROKE_MM)
+                })
+                .count()
+        };
+        assert_eq!(cut_fills(sheet_of(&set, SheetKind::Plan { storey: 0 })), 4);
+        assert_eq!(cut_fills(sheet_of(&set, SheetKind::Sections)), 6);
+        assert_eq!(cut_fills(sheet_of(&set, SheetKind::Elevations)), 0);
+        let elevations = texts(&sheet_of(&set, SheetKind::Elevations).page);
+        assert!(elevations.contains(&"6000"));
+        assert!(elevations.contains(&"2700"));
     }
 
     #[test]
@@ -1363,30 +1377,224 @@ mod tests {
         assert_eq!(default_plan_cut_z(&table, 1200.0), Some(20.0));
     }
 
+    /// The room with a second storey on its 200 mm ceiling slab and a flat
+    /// roof slab: two storeys, the roof deck is none.
+    fn two_storeys() -> Vec<DrawingSolid> {
+        let mut house = room();
+        for (name, z) in [("ceiling", 2700.0), ("roof", 5400.0)] {
+            house.push(cuboid(name, [0.0, 0.0, z], [6000.0, 3000.0, z + 200.0]));
+        }
+        for wall in room().into_iter().skip(1) {
+            let mut upper = wall;
+            upper.name.push_str(" upper");
+            for corner in upper.triangles.iter_mut().flatten() {
+                corner[2] += 2700.0;
+            }
+            house.push(upper);
+        }
+        house
+    }
+
     #[test]
-    fn a_coarser_scale_in_the_settings_lets_the_automatic_format_shrink() {
-        let at = |coarsest_scale| {
-            let sheet = project_sheet(
-                &room(),
-                &ProjectSheetOptions {
-                    coarsest_scale,
-                    ..ProjectSheetOptions::default()
+    fn each_storey_has_a_plan_sheet_of_its_own_with_its_annotations() {
+        use ketchup_model::annotation::AnnotationMark;
+        let house = two_storeys();
+        assert_eq!(
+            storeys(&house, 1200.0),
+            [
+                Storey {
+                    floor_mm: Some(200.0),
+                    cut_mm: 1400.0
                 },
-            )
-            .unwrap();
-            (sheet.format, sheet.scale)
+                Storey {
+                    floor_mm: Some(2900.0),
+                    cut_mm: 4100.0
+                },
+            ]
+        );
+        let dimension = |name: &str, z: f64| Annotation {
+            name: name.to_owned(),
+            tags: std::collections::BTreeSet::new(),
+            mark: AnnotationMark::Dimension {
+                from_mm: [0.0, -500.0, z],
+                to_mm: [6000.0, -500.0, z],
+                offset_mm: -500.0,
+                height_mm: 2.5,
+            },
         };
-        assert_eq!(at(None), (SheetFormat::A2, 50));
-        assert_eq!(at(Some(50)), (SheetFormat::A2, 50));
-        assert_eq!(at(Some(100)), (SheetFormat::A3, 100));
+        let mut options = options(&house, None);
+        options.annotations = vec![dimension("ground", 0.0), dimension("upper", 2900.0)];
+        options
+            .title_block
+            .insert(TitleField::Drawing, "Rodinný dom".to_owned());
+        let set = drawing_set(&house, &options).unwrap();
+        assert_eq!(
+            set.sheets
+                .iter()
+                .map(|sheet| (sheet.kind, sheet.number))
+                .collect::<Vec<_>>(),
+            [
+                (SheetKind::Plan { storey: 0 }, 1),
+                (SheetKind::Plan { storey: 1 }, 2),
+                (SheetKind::Sections, 3),
+                (SheetKind::Elevations, 4),
+            ]
+        );
+        let cuts = set.sheets[..2]
+            .iter()
+            .map(|sheet| sheet.views[0].cut_at_mm)
+            .collect::<Vec<_>>();
+        assert_eq!(cuts, [Some(1400.0), Some(4100.0)]);
+        // Each plan draws the dimension of its own storey only.
+        for sheet in &set.sheets[..2] {
+            assert_eq!(sheet.annotations.dimensions, 1, "sheet {}", sheet.number);
+        }
+        assert_eq!(set.annotations().dimensions, 2);
+        for sheet in &set.sheets {
+            let texts = texts(&sheet.page);
+            let title = format!("Rodinný dom – {}", sheet.title);
+            let number = format!("{} / 4", sheet.number);
+            assert!(texts.contains(&title.as_str()), "{texts:?}");
+            assert!(texts.contains(&number.as_str()), "{texts:?}");
+        }
+    }
+
+    #[test]
+    fn every_sheet_is_a_dxf_of_its_visible_lines_with_its_title_block() {
+        let set = room_set(Some(1200.0));
+        let files = set.dxf();
+        assert_eq!(files.len(), 3);
+        for (sheet, dxf) in set.sheets.iter().zip(&files) {
+            let dxf = String::from_utf8(dxf.clone()).unwrap();
+            assert!(dxf.starts_with("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009"));
+            assert!(dxf.contains(&format!("1\n{} / 3\n", sheet.number)), "{dxf}");
+            assert!(dxf.contains(&format!("1\n{}\n", sheet.title)));
+            assert!(dxf.contains("0\nLINE\n8\nPEN-0_18\n"), "the edges");
+            // No face is painted: a fill is only the outline of a cut.
+            assert!(
+                sheet
+                    .lines
+                    .marks
+                    .iter()
+                    .all(|mark| !matches!(mark, Mark::Fill { outline: None, .. })),
+                "sheet {}",
+                sheet.number
+            );
+        }
+        let plan = String::from_utf8(files[0].clone()).unwrap();
+        assert_eq!(
+            plan.matches("0\nLINE\n8\nCUT\n").count(),
+            16,
+            "the four walls the plan cuts, outlined"
+        );
+    }
+
+    /// A box behind a wall is hidden in the front elevation's lines; the part
+    /// of a taller box above the wall shows.
+    #[test]
+    fn the_lines_of_a_view_leave_out_what_nearer_faces_hide() {
+        let wall = cuboid("wall", [0.0, 0.0, 0.0], [4000.0, 200.0, 2500.0]);
+        let hidden = cuboid("hidden", [500.0, 1000.0, 0.0], [1500.0, 2000.0, 1000.0]);
+        let taller = cuboid("taller", [2000.0, 1000.0, 0.0], [3000.0, 2000.0, 3000.0]);
+        let solids = vec![wall, hidden, taller];
+        let edges = solids.iter().map(solid_edges).collect::<Vec<_>>();
+        let (min, max) = bounds(&solids).unwrap();
+        let (view, front) = view_frames(min, max, 1200.0, false)[3];
+        assert_eq!(view, ProjectView::Front);
+        let drawn = draw_view(view, front, &solids, &edges);
+        let painted_inside = drawn.items.iter().any(|item| {
+            matches!(item, Item::Edge([a, b]) if a[0] > 500.0 - 1.0 && b[0] < 1500.0 + 1.0 && a[1] < 1000.0 + 1.0 && b[1] < 1000.0 + 1.0)
+        });
+        assert!(
+            painted_inside,
+            "the PDF paints the hidden box's edges, then the wall over them"
+        );
+        let lines = visible::visible_lines(&drawn);
+        let on = |value: f64, wanted: f64| (value - wanted).abs() < 1e-6;
+        for line in &lines {
+            let [a, b] = [line.points[0], line.points[1]];
+            let wall_outline = (on(a[0], 0.0) && on(b[0], 0.0))
+                || (on(a[0], 4000.0) && on(b[0], 4000.0))
+                || (on(a[1], 0.0) && on(b[1], 0.0))
+                || (on(a[1], 2500.0) && on(b[1], 2500.0));
+            let above_the_wall = a[1] >= 2500.0 - 1e-6 && b[1] >= 2500.0 - 1e-6;
+            assert!(
+                wall_outline || above_the_wall,
+                "{line:?} is hidden behind the wall"
+            );
+        }
+        // The taller box shows its sides above the wall and its top.
+        for x in [2000.0, 3000.0] {
+            assert!(
+                lines.iter().any(|line| on(line.points[0][0], x)
+                    && on(line.points[1][0], x)
+                    && on(line.points[0][1].min(line.points[1][1]), 2500.0)
+                    && on(line.points[0][1].max(line.points[1][1]), 3000.0)),
+                "the side at x = {x} from 2500 to 3000: {lines:?}"
+            );
+        }
+        assert!(
+            lines
+                .iter()
+                .any(|line| on(line.points[0][1], 3000.0) && on(line.points[1][1], 3000.0))
+        );
+        // The bottom edge of the wall, split by depth slabs, is one line again.
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| on(line.points[0][1], 0.0) && on(line.points[1][1], 0.0))
+                .count(),
+            1,
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn every_sheet_is_drawn_at_the_scale_of_the_set_on_the_smallest_format_that_holds_it() {
+        // A 24 m long hall: at 1:50 its plan needs an A2, its two sections side
+        // by side an A1 and its elevations, two of 524 mm in a row, an A0.
+        let hall = [
+            cuboid("floor", [0.0, 0.0, 0.0], [24_000.0, 3000.0, 200.0]),
+            cuboid("south", [0.0, 0.0, 200.0], [24_000.0, 150.0, 2700.0]),
+        ];
+        let set = drawing_set(&hall, &options(&hall, Some(1200.0))).unwrap();
+        assert_eq!(set.scale, 50);
+        let formats = set
+            .sheets
+            .iter()
+            .map(|sheet| (sheet.kind, sheet.format))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            formats,
+            [
+                (SheetKind::Plan { storey: 0 }, SheetFormat::A2),
+                (SheetKind::Sections, SheetFormat::A1),
+                (SheetKind::Elevations, SheetFormat::A0),
+            ]
+        );
+        // Allowed 1:100, the sections fit an A3 only at 1:100, so the whole
+        // set is drawn at 1:100 and the elevations shrink to an A1.
+        let mut coarser = options(&hall, Some(1200.0));
+        coarser.coarsest_scale = Some(100);
+        let coarser = drawing_set(&hall, &coarser).unwrap();
+        assert_eq!(coarser.scale, 100);
+        assert_eq!(
+            coarser
+                .sheets
+                .iter()
+                .map(|sheet| sheet.format)
+                .collect::<Vec<_>>(),
+            [SheetFormat::A3, SheetFormat::A3, SheetFormat::A1]
+        );
     }
 
     #[test]
     fn a_plan_cut_above_everything_shows_the_roofless_room_from_above() {
-        let sheet = sheet(Some(5000.0));
-        assert_eq!(sheet.views[0].cut_solids, 0);
-        assert_eq!(sheet.views[0].extent_mm, [6000.0, 3000.0]);
-        let edges = sheet
+        let set = room_set(Some(5000.0));
+        let plan = summary(&set, ProjectView::Plan);
+        assert_eq!(plan.cut_solids, 0);
+        assert_eq!(plan.extent_mm, [6000.0, 3000.0]);
+        let edges = set.sheets[0]
             .page
             .marks
             .iter()
@@ -1409,73 +1617,89 @@ mod tests {
         assert!((area - 6000.0 * 150.0).abs() < 1.0, "{area}");
     }
 
-    /// The room on A2 at 1:50, worked out by hand. The frame starts 20 mm from
-    /// the left and 10 mm from the top and every view is padded by 22 mm, so
-    /// the plan's 6000 mm run from x = 42 to 42 + 6000/50 = 162 and its
-    /// 3000 mm from y = 21 to 21 + 60 = 81; the width line lies 8 mm below,
-    /// the height line 8 mm to the left. The cross section starts after the
-    /// plan and the longitudinal section, 20 + 2 × (120 + 44) + 22 = 370, and
-    /// is 3000/50 = 60 wide and 2700/50 = 54 high. The elevations start below
-    /// the cut row, 10 + 60 + 44 = 114.
+    /// The plan sheet of the room on A3 at 1:50, worked out by hand. The frame
+    /// starts 20 mm from the left and 10 mm from the top and every view is
+    /// padded by 22 mm, so the plan's 6000 mm run from x = 42 to 42 + 6000/50 =
+    /// 162 and its 3000 mm from y = 21 to 21 + 60 = 81; the width line lies
+    /// 8 mm below, the height line 8 mm to the left. On the sections sheet the
+    /// cross section starts after the longitudinal one, 20 + 120 + 44 + 22 =
+    /// 206, and is 3000/50 = 60 wide and 2700/50 = 54 high.
     #[test]
     fn dimension_lines_and_the_title_block_sit_where_the_scale_puts_them() {
-        let sheet = sheet(Some(1200.0));
-        assert_eq!((sheet.format, sheet.scale), (SheetFormat::A2, 50));
-        let ticks = sheet
-            .page
-            .marks
-            .iter()
-            .filter_map(|mark| match mark {
-                Mark::Line { points, stroke, .. } if stroke.width_mm == 0.35 => Some([
-                    f64::midpoint(points[0][0], points[1][0]),
-                    f64::midpoint(points[0][1], points[1][1]),
-                ]),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let text_at = |text: &str, at: [f64; 2]| {
-            sheet.page.marks.iter().any(|mark| {
+        let set = room_set(Some(1200.0));
+        let ticks = |page: &Page| {
+            page.marks
+                .iter()
+                .filter_map(|mark| match mark {
+                    Mark::Line { points, stroke, .. } if stroke.width_mm == 0.35 => Some([
+                        f64::midpoint(points[0][0], points[1][0]),
+                        f64::midpoint(points[0][1], points[1][1]),
+                    ]),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let text_at = |page: &Page, text: &str, at: [f64; 2]| {
+            page.marks.iter().any(|mark| {
                 matches!(mark, Mark::Text { text: t, at: a, .. }
                     if t == text && (a[0] - at[0]).abs() < 1e-9 && (a[1] - at[1]).abs() < 1e-9)
             })
         };
-        let plan = [[42.0, 89.0], [162.0, 89.0], [34.0, 81.0], [34.0, 21.0]];
-        let cross = [[370.0, 83.0], [430.0, 83.0], [362.0, 75.0], [362.0, 21.0]];
-        let front = [[42.0, 187.0], [162.0, 187.0], [34.0, 179.0], [34.0, 125.0]];
-        for tick in plan.iter().chain(&cross).chain(&front) {
-            assert!(
-                ticks
-                    .iter()
-                    .any(|t| (t[0] - tick[0]).abs() < 1e-9 && (t[1] - tick[1]).abs() < 1e-9),
-                "no tick at {tick:?} in {ticks:?}"
-            );
+        let plan = &set.sheets[0].page;
+        let sections = &set.sheets[1].page;
+        for (page, wanted) in [
+            (
+                plan,
+                [[42.0, 89.0], [162.0, 89.0], [34.0, 81.0], [34.0, 21.0]],
+            ),
+            (
+                sections,
+                [[206.0, 83.0], [266.0, 83.0], [198.0, 75.0], [198.0, 21.0]],
+            ),
+        ] {
+            let ticks = ticks(page);
+            for tick in wanted {
+                assert!(
+                    ticks
+                        .iter()
+                        .any(|t| (t[0] - tick[0]).abs() < 1e-9 && (t[1] - tick[1]).abs() < 1e-9),
+                    "no tick at {tick:?} in {ticks:?}"
+                );
+            }
         }
         // Each value sits over the middle of its line, 1 mm clear of it.
-        assert!(text_at("6000", [102.0, 88.0]));
-        assert!(text_at("3000", [33.0, 51.0]));
-        assert!(text_at("3000", [400.0, 82.0]));
-        assert!(text_at("2700", [361.0, 48.0]));
-        // Frame inside the 20/10 mm margins of the 594 × 420 sheet, the
-        // 180 × 49 title block in its lower right corner, the scale in its cell.
-        let rect = |min: [f64; 2], max: [f64; 2], width_mm: f64| {
-            sheet.page.marks.contains(&Mark::Line {
-                points: vec![min, [max[0], min[1]], max, [min[0], max[1]]],
-                closed: true,
-                stroke: Stroke::solid(width_mm),
-            })
-        };
-        assert!(rect([20.0, 10.0], [584.0, 410.0], 0.7));
-        assert!(rect([404.0, 361.0], [584.0, 410.0], 0.5));
-        assert!(rect([469.0, 401.0], [499.0, 410.0], 0.25), "the scale cell");
-        assert!(sheet.page.marks.iter().any(|mark| matches!(mark,
-            Mark::Text { text, at, .. } if text == "1:50" && (at[0] - 470.5).abs() < 1e-9)));
+        assert!(text_at(plan, "6000", [102.0, 88.0]));
+        assert!(text_at(plan, "3000", [33.0, 51.0]));
+        assert!(text_at(sections, "3000", [236.0, 82.0]));
+        assert!(text_at(sections, "2700", [197.0, 48.0]));
+        // The scale and the sheet number in their cells of the 180 × 49 title
+        // block in the lower right corner of the 420 × 297 sheet.
+        assert!(plan.marks.contains(&Mark::Line {
+            points: vec![
+                [295.0, 278.0],
+                [325.0, 278.0],
+                [325.0, 287.0],
+                [295.0, 287.0]
+            ],
+            closed: true,
+            stroke: Stroke::solid(0.25),
+        }));
+        assert!(plan.marks.iter().any(|mark| matches!(mark,
+            Mark::Text { text, at, .. } if text == "1:50" && (at[0] - 296.5).abs() < 1e-9)));
+        assert!(plan.marks.iter().any(|mark| matches!(mark,
+            Mark::Text { text, at, .. } if text == "1 / 3" && (at[0] - 346.5).abs() < 1e-9)));
     }
 
     #[test]
     fn nothing_visible_is_an_error() {
         assert_eq!(
-            project_sheet(&[], &ProjectSheetOptions::default()),
+            drawing_set(&[], &options(&[], Some(0.0))),
             Err(ProjectDrawingError::Empty)
+        );
+        assert_eq!(
+            drawing_set(&room(), &DrawingSetOptions::default()),
+            Err(ProjectDrawingError::Empty),
+            "no plan asked for"
         );
     }
 
@@ -1527,10 +1751,8 @@ mod tests {
         plan
     }
 
-    fn text_at<'a>(sheet: &'a ProjectSheet, wanted: &str) -> Vec<&'a [f64; 2]> {
-        sheet
-            .page
-            .marks
+    fn text_at<'a>(page: &'a Page, wanted: &str) -> Vec<&'a [f64; 2]> {
+        page.marks
             .iter()
             .filter_map(|mark| match mark {
                 Mark::Text { text, at, .. } if text == wanted => Some(at),
@@ -1542,14 +1764,16 @@ mod tests {
     #[test]
     fn a_plan_of_its_own_draws_its_annotations_at_the_scale_it_is_given() {
         let marker = cuboid("marker", [-100.0, -100.0, 5.0], [100.0, 100.0, 10.0]);
-        let options = ProjectSheetOptions {
+        let options = DrawingSetOptions {
             plan_only: true,
             scale: Some(250),
             annotations: anchor_plan(),
-            ..ProjectSheetOptions::default()
+            ..options(std::slice::from_ref(&marker), None)
         };
-        let sheet = project_sheet(std::slice::from_ref(&marker), &options).unwrap();
-        assert_eq!(sheet.scale, 250);
+        let set = drawing_set(std::slice::from_ref(&marker), &options).unwrap();
+        assert_eq!(set.scale, 250);
+        assert_eq!(set.sheets.len(), 1, "the plan alone");
+        let sheet = &set.sheets[0];
         assert_eq!(
             sheet.views.iter().map(|view| view.view).collect::<Vec<_>>(),
             [ProjectView::Plan]
@@ -1566,7 +1790,7 @@ mod tests {
         // Every number at its point: 5 m apart is 20 mm at 1:250.
         let numbers = (1..=8)
             .map(|index| {
-                let found = text_at(&sheet, &format!("S-{index:02}"));
+                let found = text_at(&sheet.page, &format!("S-{index:02}"));
                 assert_eq!(found.len(), 1, "S-{index:02}");
                 *found[0]
             })
@@ -1576,26 +1800,35 @@ mod tests {
             assert!((pair[1][1] - pair[0][1]).abs() < 1e-9, "{pair:?}");
         }
         // Seven measured values, each centred between its two points and below them.
-        let values = text_at(&sheet, "5000");
+        let values = text_at(&sheet.page, "5000");
         assert_eq!(values.len(), 7, "{values:?}");
         for (value, pair) in values.iter().zip(numbers.windows(2)) {
             assert!((value[0] - f64::midpoint(pair[0][0], pair[1][0])).abs() < 1e-9);
             assert!(value[1] > pair[0][1], "below the points on the sheet");
         }
         // The overall dimensions measure the marker, not the annotations.
-        assert_eq!(text_at(&sheet, "200").len(), 2);
-        assert!(text_at(&sheet, "35000").is_empty());
+        assert_eq!(text_at(&sheet.page, "200").len(), 2);
+        assert!(text_at(&sheet.page, "35000").is_empty());
+        // The DXF carries the same annotations.
+        assert_eq!(text_at(&sheet.lines, "5000").len(), 7);
 
-        let annotations_alone = project_sheet(&[], &options).unwrap();
-        assert_eq!(annotations_alone.annotations, sheet.annotations);
-        assert_eq!(text_at(&annotations_alone, "5000").len(), 7);
+        let annotations_alone = DrawingSetOptions {
+            plans: plans(vec![Storey {
+                floor_mm: None,
+                cut_mm: 0.0,
+            }]),
+            ..options.clone()
+        };
+        let alone = drawing_set(&[], &annotations_alone).unwrap();
+        assert_eq!(alone.sheets[0].annotations, sheet.annotations);
+        assert_eq!(text_at(&alone.sheets[0].page, "5000").len(), 7);
 
-        let too_fine = ProjectSheetOptions {
+        let too_fine = DrawingSetOptions {
             scale: Some(10),
             ..options
         };
         assert_eq!(
-            project_sheet(&[marker], &too_fine),
+            drawing_set(&[marker], &too_fine),
             Err(ProjectDrawingError::DoesNotFit {
                 scale: 10,
                 format: None

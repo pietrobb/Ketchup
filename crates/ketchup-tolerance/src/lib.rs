@@ -83,6 +83,10 @@ pub const UNDERLAY_ARC_CHORD_MM: f64 = 0.1;
 pub const UNDERLAY_MAX_SCALE: f64 = 10_000.0;
 /// The shortest drawing dimension, in mm: two points closer than this give it no direction.
 pub const MIN_DIMENSION_MM: f64 = 0.001;
+/// How close a drawn edge may come to the boundary of a nearer face in a projected view
+/// and still lie on it, in model mm: such an edge stays visible in a drawing's DXF, as
+/// its stroke does in the painted PDF. Mesh coordinates agree far closer than this.
+pub const HIDDEN_LINE_TOUCH_MM: f64 = 0.001;
 /// Smallest angular sampling step for a material boundary, in radians.
 pub const BOUNDARY_MIN_ANGLE_RAD: f64 = 0.001;
 /// Angle between the normals of two display triangles sharing a non-edge side, in

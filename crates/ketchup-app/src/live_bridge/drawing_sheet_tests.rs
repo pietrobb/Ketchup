@@ -1,6 +1,6 @@
 //! `file action=export_drawings` with `sheet_id`: a drawing sheet of the
-//! document is written as the DXF of its exact projection, the project sheet
-//! is refused as DXF by name, and no export changes the document. Exact
+//! document is written as the DXF of its exact projection, the project
+//! drawings as a DXF per sheet, and no export changes the document. Exact
 //! circles the views face are CIRCLE and ARC entities, not their lines. A
 //! `.dwg` path gets that DXF as an AutoCAD 2018 DWG.
 
@@ -124,7 +124,7 @@ fn a_drawing_sheet_is_written_as_the_dxf_of_its_exact_projection() {
 }
 
 #[test]
-fn the_project_sheet_as_dxf_and_wrong_sheet_requests_are_refused_by_name() {
+fn wrong_sheet_requests_are_refused_by_name() {
     let (mut app, mut bridge) = setup();
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let (stamp, undo, bytes) = (app.live_bridge_stamp(), app.undo_step_count(), saved(&app));
@@ -134,8 +134,7 @@ fn the_project_sheet_as_dxf_and_wrong_sheet_requests_are_refused_by_name() {
     std::fs::write(&existing, b"user file").unwrap();
 
     for (path, extra, code) in [
-        (file("house.dxf"), json!({}), "project_sheet_pdf_only"),
-        (file("house.dwg"), json!({}), "project_sheet_pdf_only"),
+        (file("house.txt"), json!({}), "invalid_path"),
         (
             file("missing.dxf"),
             json!({"sheet_id": id + 1}),
@@ -169,6 +168,81 @@ fn the_project_sheet_as_dxf_and_wrong_sheet_requests_are_refused_by_name() {
     assert_eq!(app.live_bridge_stamp(), stamp);
     assert_eq!(app.undo_step_count(), undo);
     assert_eq!(saved(&app), bytes);
+}
+
+/// The project drawings as DXF are a file per sheet beside the path,
+/// numbered, each with the title block saying which sheet of how many it is;
+/// as DWG the same sheets in AutoCAD 2018. A sheet file already there refuses
+/// the set and leaves nothing of it behind.
+#[test]
+fn the_project_drawings_are_written_as_a_dxf_or_dwg_per_sheet() {
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let (stamp, undo) = (app.live_bridge_stamp(), app.undo_step_count());
+    let directory = tempfile::tempdir().unwrap();
+    let file = |name: &str| directory.path().join(name);
+
+    let exported = bridge
+        .execute(
+            &mut app,
+            export_drawings(&file("house.dxf"), json!({})),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(exported["file_format"], "dxf", "{exported}");
+    // A block is one storey: its plan, the sections and the elevations.
+    assert_eq!(exported["sheet_count"], 3, "{exported}");
+    for (index, shows) in ["plan", "sections", "elevations"].into_iter().enumerate() {
+        let number = index + 1;
+        let path = file(&format!("house-{number:02}.dxf"));
+        let sheet = &exported["sheets"][index];
+        assert_eq!(sheet["number"], number);
+        assert_eq!(sheet["shows"]["kind"], shows, "{sheet}");
+        assert_eq!(sheet["path"], path.display().to_string());
+        assert_eq!(exported["files"][index], path.display().to_string());
+        let dxf = std::fs::read_to_string(&path).unwrap();
+        assert!(dxf.contains("$ACADVER\n1\nAC1009"));
+        assert!(
+            dxf.contains(&format!("\n1\n{number} / 3\n")),
+            "sheet {number}"
+        );
+        assert!(
+            dxf.contains("0\nLINE\n8\nPEN-"),
+            "sheet {number} draws lines"
+        );
+    }
+    assert!(!file("house.dxf").exists());
+
+    let exported = bridge
+        .execute(
+            &mut app,
+            export_drawings(&file("house.dwg"), json!({})),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(exported["sheet_count"], 3, "{exported}");
+    for number in 1..=3 {
+        let dwg = std::fs::read(file(&format!("house-{number:02}.dwg"))).unwrap();
+        assert!(dwg.starts_with(b"AC1032"), "sheet {number}");
+    }
+
+    std::fs::write(file("taken-02.dxf"), b"user file").unwrap();
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            export_drawings(&file("taken.dxf"), json!({})),
+            false
+        ),
+        Err("drawings_write_failed")
+    );
+    assert!(
+        !file("taken-01.dxf").exists(),
+        "the set is written whole or not at all"
+    );
+    assert!(!file("taken-03.dxf").exists());
+    assert_eq!(std::fs::read(file("taken-02.dxf")).unwrap(), b"user file");
+    assert_eq!(app.live_bridge_stamp(), stamp, "an export is no edit");
+    assert_eq!(app.undo_step_count(), undo);
 }
 
 /// One DXF entity: its type, layer, numeric codes and KETCHUP id.

@@ -380,22 +380,23 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
         .execute(&mut app, drawings(&target, true, Some(250.0), None), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     assert_eq!(written["scale"], "1:250");
-    assert_eq!(written["format"], "A3");
-    assert_eq!(written["views"].as_array().unwrap().len(), 1);
-    assert_eq!(written["views"][0]["view"], "plan");
+    assert_eq!(written["sheet_count"], 1, "{written}");
+    assert_eq!(written["sheets"][0]["format"], "A3");
+    assert_eq!(written["sheets"][0]["views"].as_array().unwrap().len(), 1);
+    assert_eq!(written["sheets"][0]["views"][0]["view"], "plan");
     assert_eq!(written["annotations"]["texts"], 2);
     assert_eq!(written["annotations"]["dimensions"], 1);
     assert!(std::fs::read(&target).unwrap().starts_with(b"%PDF"));
-    let sheet = app
+    let set = app
         .project_drawings_job_for(crate::app::project_drawings::SheetRequest {
             plan_only: true,
             scale: Some(250),
         })
         .unwrap()
-        .render()
+        .render(crate::app::project_drawings::SetFileFormat::Pdf)
         .unwrap()
         .0;
-    let texts = sheet.page.texts().collect::<Vec<_>>();
+    let texts = set.sheets[0].page.texts().collect::<Vec<_>>();
     for wanted in ["S-01", "S-02", "5000"] {
         assert!(texts.contains(&wanted), "{wanted} not in {texts:?}");
     }

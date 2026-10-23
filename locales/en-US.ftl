@@ -1955,6 +1955,11 @@ file-filter-svg = SVG drawing
 file-filter-pdf = PDF drawing
 file-filter-dwg = DWG drawing (AutoCAD 2018)
 drawings-view-plan = Floor plan, cut at { $height } mm
+drawings-view-plan-storey = Floor plan of storey { $storey }, cut at { $height } mm
+drawings-sheet-plan = Floor plan
+drawings-sheet-plan-storey = Floor plan of storey { $storey }
+drawings-sheet-sections = Sections
+drawings-sheet-elevations = Elevations
 drawings-view-longitudinal = Longitudinal section
 drawings-view-cross = Cross section
 drawings-view-front = Front elevation
@@ -1977,8 +1982,14 @@ drawings-parts-not-evaluated = { $count ->
 drawings-settings-unreadable = The title block and sheet format stored in the document cannot be read ({ $reason }); they are kept as they are. Fill in the title block again in Project drawings to replace them.
 drawings-cosmetic-threads-failed = The modelled threads of { $part } cannot be drawn by ISO 6410 ({ $reason }); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic.
 drawings-settings-unreadable-edit = The title block stored in the document cannot be read ({ $reason }). Any change made here replaces it.
-digest-exported-project-drawings = Project drawings (floor plan, sections and elevations) on { $format } at 1:{ $scale } were exported to { $path }
-digest-exported-project-drawings-question-marks = Project drawings on { $format } at 1:{ $scale } were exported to { $path }, but the sheet typeface lacks the characters { $characters }: the sheet prints them as "?".
+digest-exported-project-drawings = Project drawings ({ $sheets ->
+        [one] { $sheets } sheet
+       *[other] { $sheets } sheets
+    } at 1:{ $scale }) were exported to { $path }
+digest-exported-project-drawings-question-marks = Project drawings ({ $sheets ->
+        [one] { $sheets } sheet
+       *[other] { $sheets } sheets
+    } at 1:{ $scale }) were exported to { $path }, but the sheet typeface lacks the characters { $characters }: the sheets print them as "?".
 error-export-project-drawings = Project drawings export to { $path } failed: { $reason }
 digest-exported-drawing-sheet-dxf = Drawing sheet { $name } was exported to { $path } as DXF
 digest-exported-drawing-sheet-dwg = Drawing sheet { $name } was exported to { $path } as DWG
@@ -1990,14 +2001,16 @@ drawings-format-auto = Automatic (smallest for 1:{ $scale })
 drawings-coarsest-scale = Scale of the automatic format
 drawings-plan-cut-height = Plan cut above the floor
 drawings-export-pdf = Export PDF…
+drawings-export-set-dxf = Export DXF (a file per sheet)…
+drawings-export-set-dwg = Export DWG (a file per sheet)…
 drawings-document-sheets = Drawing sheets of the document
-drawings-document-sheets-hint = Exact views with hidden edges on their own layer, written as DXF or as DWG (AutoCAD 2018). The project sheet above is PDF only: it hides back edges by painting over them, which DXF and DWG cannot carry.
+drawings-document-sheets-hint = Exact views with hidden edges on their own layer, written as DXF or as DWG (AutoCAD 2018).
 drawings-document-sheets-none = No drawing sheet yet. Make one with Preview drawing from selection in the ASSEMBLY section.
 drawings-export-sheet-dxf = Export DXF…
 drawings-export-sheet-dwg = Export DWG…
 drawing-parts-list-mirrored = mirrored
 drawing-parts-list-quantity = QTY
-drawings-default-sheet = Floor plan, sections and elevations
+drawings-default-sheet = Project drawings
 title-field-office = Prepared by
 title-field-designer = Responsible designer
 title-field-author = Drawn by
@@ -2012,3 +2025,4 @@ title-field-drawing_number = Drawing no.
 title-field-job_number = Job no.
 title-field-scale = Scale
 title-field-format = Format
+title-field-sheet = Sheet

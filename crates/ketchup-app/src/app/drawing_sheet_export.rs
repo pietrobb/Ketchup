@@ -3,9 +3,8 @@
 //! `ketchup_model::drawing_export`, hidden edges on their own HIDDEN layer,
 //! circles the views face as exact CIRCLE and ARC entities. The DWG is that
 //! same DXF converted by `ketchup-dwg` to AutoCAD 2018 (AC1032).
-//! The project sheet (`project_drawings.rs`) stays PDF only: it
-//! hides back edges by painting nearer faces over them, which DXF cannot carry,
-//! so its DXF would show every back edge as a visible line.
+//! The project drawings (`project_drawings.rs`) are a set of sheets; their
+//! DXF is each sheet's visible lines, made apart from this projection.
 
 use crate::export_bundle::{
     ExportTransactionError, export_target_sha256, write_export_artifact_if_unchanged,

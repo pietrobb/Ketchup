@@ -1,4 +1,4 @@
-//! The project PDF and a drawing sheet's DXF or DWG from the drawings window:
+//! The project drawing set and a drawing sheet's DXF or DWG from the drawings window:
 //! the projection, hidden-line removal and file bytes are made on a thread, so
 //! the window keeps painting and the file activity indication can cancel; the
 //! file is written when they come back, so a cancelled export writes nothing
@@ -9,23 +9,24 @@ use super::drawing_sheet_export::{
     drawing_sheet_target, publish_drawing_sheet,
 };
 use super::project_drawings::{
-    ProjectDrawingsError, project_drawings_target, publish_project_drawings,
+    ExportedSet, ProjectDrawingsError, SetFileFormat, project_drawings_target,
+    publish_project_drawings, set_export_key,
 };
 use crate::*;
-use ketchup_manufacturing::project_drawings::ProjectSheet;
+use ketchup_manufacturing::project_drawings::DrawingSet;
 use ketchup_model::drawing::DrawingSheetId;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 /// Which drawing is exported.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DrawingExport {
-    Project,
+    Project(SetFileFormat),
     Sheet(DrawingSheetId, SheetFileFormat),
 }
 
 /// What the thread made: the drawing and the bytes of its file.
 pub(crate) enum MadeDrawing {
-    Project(Result<(ProjectSheet, Vec<u8>), ProjectDrawingsError>),
+    Project(Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError>),
     Sheet(Result<(ExportedDrawingSheet, Vec<u8>), DrawingSheetExportError>),
 }
 
@@ -44,7 +45,7 @@ impl DrawingExportTask {
     /// The key of the window's button that started it.
     pub(crate) fn label_key(&self) -> &'static str {
         match self.export {
-            DrawingExport::Project => "drawings-export-pdf",
+            DrawingExport::Project(format) => set_export_key(format),
             DrawingExport::Sheet(_, SheetFileFormat::Dxf) => "drawings-export-sheet-dxf",
             DrawingExport::Sheet(_, SheetFileFormat::Dwg) => "drawings-export-sheet-dwg",
         }
@@ -61,8 +62,8 @@ impl KetchupApp {
         context: &egui::Context,
     ) {
         let work: DrawingWork = match export {
-            DrawingExport::Project => match self.project_drawings_job() {
-                Ok(job) => Box::new(move || MadeDrawing::Project(job.render())),
+            DrawingExport::Project(format) => match self.project_drawings_job() {
+                Ok(job) => Box::new(move || MadeDrawing::Project(job.render(format))),
                 Err(error) => {
                     self.report_project_drawings(&path, &Err(error));
                     return;
@@ -93,7 +94,7 @@ impl KetchupApp {
         work: DrawingWork,
     ) {
         let replacing = match export {
-            DrawingExport::Project => project_drawings_target(&path)
+            DrawingExport::Project(_) => project_drawings_target(&path)
                 .map_err(|error| self.report_project_drawings(&path, &Err(error))),
             DrawingExport::Sheet(_, format) => drawing_sheet_target(&path)
                 .map_err(|error| self.report_drawing_sheet(&path, format, &Err(error))),
@@ -141,14 +142,14 @@ impl KetchupApp {
             .expect("polled export");
         let ended = || std::io::Error::other("the drawing export ended unexpectedly");
         match (task.export, made) {
-            (DrawingExport::Project, made) => {
+            (DrawingExport::Project(format), made) => {
                 let result = match made {
                     Some(MadeDrawing::Project(result)) => result,
                     _ => Err(ProjectDrawingsError::Write(ended())),
                 }
-                .and_then(|(sheet, pdf)| {
-                    publish_project_drawings(&task.path, &pdf, task.replacing.as_deref())
-                        .map(|()| sheet)
+                .and_then(|(set, files)| {
+                    publish_project_drawings(&task.path, format, &files, task.replacing.as_deref())
+                        .map(|paths| ExportedSet { set, paths })
                 });
                 self.report_project_drawings(&task.path, &result);
             }

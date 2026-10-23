@@ -1,7 +1,8 @@
 //! File > Drawings in the window: a drawing sheet of the document exports as
-//! DXF or DWG from its own row, the project sheet still exports as PDF, and
-//! none of them changes the document.
+//! DXF or DWG from its own row, the project drawings as PDF, and none of them
+//! changes the document.
 use crate::app::drawing_sheet_export::SheetFileFormat;
+use crate::app::project_drawings::SetFileFormat;
 use crate::*;
 use egui_kittest::kittest::Queryable as _;
 use ketchup_model::document::InstancePath;
@@ -128,13 +129,13 @@ fn a_drawing_export_keeps_the_window_painting_and_escape_cancels_it_without_writ
     let (made, done) = std::sync::mpsc::channel::<()>();
     let context = harness.ctx.clone();
     harness.state_mut().queue_drawing_export(
-        DrawingExport::Project,
+        DrawingExport::Project(SetFileFormat::Pdf),
         pdf.clone(),
         &context,
         Box::new(move || {
             gate.recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap();
-            let drawing = job.render();
+            let drawing = job.render(SetFileFormat::Pdf);
             made.send(()).unwrap();
             MadeDrawing::Project(drawing)
         }),
@@ -186,13 +187,13 @@ fn a_file_saved_while_the_sheet_is_projected_is_not_overwritten() {
     let context = egui::Context::default();
     let (release, gate) = std::sync::mpsc::channel::<()>();
     app.queue_drawing_export(
-        DrawingExport::Project,
+        DrawingExport::Project(SetFileFormat::Pdf),
         pdf.clone(),
         &context,
         Box::new(move || {
             gate.recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap();
-            MadeDrawing::Project(job.render())
+            MadeDrawing::Project(job.render(SetFileFormat::Pdf))
         }),
     );
     std::fs::write(&pdf, b"saved meanwhile").unwrap();

@@ -5,7 +5,7 @@ use crate::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// A field of the title block. `Scale` and `Format` come from the sheet itself.
+/// A field of the title block. `Scale`, `Format` and `Sheet` come from the sheet itself.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TitleField {
@@ -28,6 +28,8 @@ pub enum TitleField {
     JobNumber,
     Scale,
     Format,
+    /// The sheet's number in its set, "n / N".
+    Sheet,
 }
 
 impl TitleField {
@@ -64,6 +66,7 @@ impl TitleField {
             Self::JobNumber => "job_number",
             Self::Scale => "scale",
             Self::Format => "format",
+            Self::Sheet => "sheet",
         }
     }
 }
@@ -199,8 +202,9 @@ const ROWS: [(f64, &[Cell]); 5] = [
             (TitleField::Stage, 30.0, false),
             (TitleField::Date, 35.0, false),
             (TitleField::Scale, 30.0, true),
-            (TitleField::Format, 25.0, false),
-            (TitleField::JobNumber, 60.0, false),
+            (TitleField::Format, 20.0, false),
+            (TitleField::Sheet, 20.0, false),
+            (TitleField::JobNumber, 45.0, false),
         ],
     ),
 ];

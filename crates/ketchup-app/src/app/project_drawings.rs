@@ -1,16 +1,18 @@
-//! Project drawings of what is visible: floor plan, sections and elevations on
-//! one ISO A sheet with a frame and a title block, written as a vector PDF and
-//! drawn from the exact solids. Hidden layers are left out, so turning off the
-//! concept layer draws the construction. The title block and the sheet format
-//! are kept in the document.
+//! Project drawings of what is visible as a numbered set of sheets: a floor
+//! plan of each storey, the sections and the elevations, each sheet an ISO A
+//! format with a frame and a title block, drawn from the exact solids. The set
+//! is written as one vector PDF, or each sheet as a DXF or a DWG of its
+//! visible lines. Hidden layers are left out, so turning off the concept
+//! layer draws the construction. The title block and the sheet format are kept
+//! in the document.
 
 use crate::app::drawing_export_activity::DrawingExport;
 use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
 use ketchup_application::threads::{CosmeticThreadBodyError, ThreadCylinder, cosmetic_thread_body};
 use ketchup_manufacturing::project_drawings::{
-    DrawingSolid, DrawingThread, ProjectDrawingError, ProjectSheet, ProjectSheetOptions,
-    ProjectView, SCALES, default_plan_cut_z, project_sheet,
+    DrawingSet, DrawingSetOptions, DrawingSolid, DrawingThread, PlanSheet, ProjectDrawingError,
+    ProjectView, SCALES, SheetTitles, Storey, drawing_set, storeys,
 };
 use ketchup_manufacturing::sheet_pdf::PdfInfo;
 use ketchup_manufacturing::title_block::{
@@ -40,57 +42,148 @@ pub(crate) enum ProjectDrawingsError {
     /// The named part's modelled threads could not be made cosmetic for the
     /// sheet, which would otherwise draw every edge of their helices.
     CosmeticThreads(String, CosmeticThreadBodyError),
+    /// A sheet's DXF did not convert to DWG.
+    Dwg(ketchup_dwg::DwgError),
     Write(std::io::Error),
 }
 
-/// What a client asks of one project sheet beyond the settings the document
-/// keeps: the plan alone, and a fixed scale 1:N.
+/// What a client asks of the set beyond the settings the document keeps: the
+/// plans alone, and a fixed scale 1:N.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SheetRequest {
     pub(crate) plan_only: bool,
     pub(crate) scale: Option<u32>,
 }
 
-/// The visible solids, the sheet options and the PDF's document information:
-/// everything the project sheet is drawn from.
+/// What the set is written as: one PDF of all sheets, or a DXF or a DWG
+/// (AutoCAD 2018) of each sheet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SetFileFormat {
+    Pdf,
+    Dxf,
+    Dwg,
+}
+
+impl SetFileFormat {
+    pub(crate) const ALL: [Self; 3] = [Self::Pdf, Self::Dxf, Self::Dwg];
+
+    pub(crate) const fn extension(self) -> &'static str {
+        match self {
+            Self::Pdf => "pdf",
+            Self::Dxf => "dxf",
+            Self::Dwg => "dwg",
+        }
+    }
+
+    /// The format a path's extension names, in any letter case.
+    pub(crate) fn of_path(path: &Path) -> Option<Self> {
+        let extension = path.extension()?;
+        Self::ALL
+            .into_iter()
+            .find(|format| extension.eq_ignore_ascii_case(format.extension()))
+    }
+}
+
+/// The files a set of `sheets` sheets is written to for `path`: the PDF at
+/// `path` itself; a DXF or DWG per sheet beside it, numbered like the sheets,
+/// `house.dxf` as `house-01.dxf`, `house-02.dxf`, …
+pub(crate) fn set_file_paths(path: &Path, format: SetFileFormat, sheets: usize) -> Vec<PathBuf> {
+    if format == SetFileFormat::Pdf {
+        return vec![path.to_path_buf()];
+    }
+    let stem = path
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    let digits = sheets.to_string().len().max(2);
+    (1..=sheets)
+        .map(|number| {
+            path.with_file_name(format!("{stem}-{number:0digits$}.{}", format.extension()))
+        })
+        .collect()
+}
+
+/// The visible solids, the set's options and the PDF's document information:
+/// everything the drawing set is drawn from.
 pub(crate) struct ProjectDrawingsJob {
     solids: Vec<DrawingSolid>,
-    options: ProjectSheetOptions,
+    options: DrawingSetOptions,
     info: PdfInfo,
 }
 
 impl ProjectDrawingsJob {
     /// Projects the solids and removes the hidden lines.
-    fn sheet(&self) -> Result<ProjectSheet, ProjectDrawingsError> {
-        project_sheet(&self.solids, &self.options).map_err(ProjectDrawingsError::Drawing)
+    fn set(&self) -> Result<DrawingSet, ProjectDrawingsError> {
+        drawing_set(&self.solids, &self.options).map_err(ProjectDrawingsError::Drawing)
     }
 
-    /// The sheet and its PDF.
-    pub(crate) fn render(&self) -> Result<(ProjectSheet, Vec<u8>), ProjectDrawingsError> {
-        let sheet = self.sheet()?;
-        let pdf = sheet.pdf(&self.info);
-        Ok((sheet, pdf))
+    /// The set and the bytes of its files: one PDF, or a DXF or DWG per sheet.
+    pub(crate) fn render(
+        &self,
+        format: SetFileFormat,
+    ) -> Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError> {
+        let set = self.set()?;
+        let files = match format {
+            SetFileFormat::Pdf => vec![set.pdf(&self.info)],
+            SetFileFormat::Dxf => set.dxf(),
+            SetFileFormat::Dwg => set
+                .dxf()
+                .iter()
+                .map(|dxf| ketchup_dwg::dxf_to_dwg(dxf).map_err(ProjectDrawingsError::Dwg))
+                .collect::<Result<_, _>>()?,
+        };
+        Ok((set, files))
     }
 }
 
-/// Writes `pdf` to `path` through a temporary file and a rename: a failed
-/// write never leaves a half-written sheet, and a link at `path` is replaced,
-/// not followed. `replacing` is the SHA-256 of the file the export may
-/// replace, taken before the sheet was drawn (None: no file may be there), so
-/// a file saved at `path` while it was drawn is never overwritten.
+/// What was written: the set and the files, in sheet order.
+pub(crate) struct ExportedSet {
+    pub(crate) set: DrawingSet,
+    pub(crate) paths: Vec<PathBuf>,
+}
+
+/// Writes the set's `files` for `path`, each through a temporary file and a
+/// rename, so a failed write never leaves a half-written sheet and a link is
+/// replaced, not followed. The PDF may replace only the file whose SHA-256 is
+/// `replacing` (None: no file may be there), so a file saved at `path` while
+/// the set was drawn is never overwritten; a sheet's DXF or DWG is written
+/// only as a new file. When one file cannot be written, those this export
+/// wrote are removed again: a set is written whole or not at all.
 pub(crate) fn publish_project_drawings(
     path: &Path,
-    pdf: &[u8],
+    format: SetFileFormat,
+    files: &[Vec<u8>],
     replacing: Option<&str>,
-) -> Result<(), ProjectDrawingsError> {
-    crate::export_bundle::write_export_artifact_if_unchanged(path, pdf, replacing)
-        .map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))
+) -> Result<Vec<PathBuf>, ProjectDrawingsError> {
+    let paths = set_file_paths(path, format, files.len());
+    let replacing = replacing.filter(|_| format == SetFileFormat::Pdf);
+    let mut written = Vec::with_capacity(paths.len());
+    for (target, bytes) in paths.iter().zip(files) {
+        if let Err(error) =
+            crate::export_bundle::write_export_artifact_if_unchanged(target, bytes, replacing)
+        {
+            for done in &written {
+                let _ = std::fs::remove_file(done);
+            }
+            return Err(ProjectDrawingsError::Write(std::io::Error::other(error)));
+        }
+        written.push(target.clone());
+    }
+    Ok(paths)
 }
 
 /// The SHA-256 of the file at `path` an export started now may replace.
 pub(crate) fn project_drawings_target(path: &Path) -> Result<Option<String>, ProjectDrawingsError> {
     crate::export_bundle::export_target_sha256(path)
         .map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))
+}
+
+/// The key of the window's button that exports the set as `format`.
+pub(crate) const fn set_export_key(format: SetFileFormat) -> &'static str {
+    match format {
+        SetFileFormat::Pdf => "drawings-export-pdf",
+        SetFileFormat::Dxf => "drawings-export-set-dxf",
+        SetFileFormat::Dwg => "drawings-export-set-dwg",
+    }
 }
 
 /// The first few names of parts left out of the sheet, then how many more.
@@ -384,7 +477,7 @@ impl KetchupApp {
     fn title_labels(&self) -> BTreeMap<TitleField, String> {
         TitleField::EDITABLE
             .into_iter()
-            .chain([TitleField::Scale, TitleField::Format])
+            .chain([TitleField::Scale, TitleField::Format, TitleField::Sheet])
             .map(|field| {
                 (
                     field,
@@ -394,20 +487,46 @@ impl KetchupApp {
             .collect()
     }
 
-    /// The sheet of the visible exact solids with the document's title block.
+    /// The set of the visible exact solids with the document's title block.
     #[cfg(test)]
-    pub(crate) fn project_drawings(&self) -> Result<ProjectSheet, ProjectDrawingsError> {
-        self.project_drawings_job()?.sheet()
+    pub(crate) fn project_drawings(&self) -> Result<DrawingSet, ProjectDrawingsError> {
+        self.project_drawings_job()?.set()
     }
 
-    /// What the project sheet is drawn from, taken from the window; the
+    /// What the drawing set is drawn from, taken from the window; the
     /// projection itself needs nothing of it.
     pub(crate) fn project_drawings_job(&self) -> Result<ProjectDrawingsJob, ProjectDrawingsError> {
         self.project_drawings_job_for(SheetRequest::default())
     }
 
-    /// The job of the sheet `request` asks for: the whole sheet or the plan
-    /// alone, at the scale it fixes or the one the sheet picks.
+    /// The plan sheet of each storey, titled in the window's language: by
+    /// the height of its cut, and by its storey when there are several.
+    fn plan_sheets(&self, storeys: Vec<Storey>) -> Vec<PlanSheet> {
+        let several = storeys.len() > 1;
+        storeys
+            .into_iter()
+            .enumerate()
+            .map(|(index, storey)| {
+                let arguments = BTreeMap::from([
+                    ("height", format!("{:.0}", storey.cut_mm)),
+                    ("storey", (index + 1).to_string()),
+                ]);
+                let (view, sheet) = if several {
+                    ("drawings-view-plan-storey", "drawings-sheet-plan-storey")
+                } else {
+                    ("drawings-view-plan", "drawings-sheet-plan")
+                };
+                PlanSheet {
+                    storey,
+                    view_title: self.catalog.format(view, &arguments),
+                    sheet_title: self.catalog.format(sheet, &arguments),
+                }
+            })
+            .collect()
+    }
+
+    /// The job of the set `request` asks for: all sheets or the plans alone,
+    /// at the scale it fixes or the one the set picks.
     pub(crate) fn project_drawings_job_for(
         &self,
         request: SheetRequest,
@@ -423,18 +542,23 @@ impl KetchupApp {
             .cloned()
             .collect::<Vec<_>>();
         let settings = self.sheet_settings();
+        let mut storeys = storeys(&solids, settings.plan_cut_above_floor_mm());
         // A plan of annotations alone cuts nothing; its cut is at the floor.
-        let cut = default_plan_cut_z(&solids, settings.plan_cut_above_floor_mm())
-            .or_else(|| (solids.is_empty() && !annotations.is_empty()).then_some(0.0))
-            .ok_or(ProjectDrawingsError::Drawing(ProjectDrawingError::Empty))?;
+        if storeys.is_empty() && !annotations.is_empty() {
+            storeys.push(Storey {
+                floor_mm: None,
+                cut_mm: 0.0,
+            });
+        }
+        if storeys.is_empty() {
+            return Err(ProjectDrawingsError::Drawing(ProjectDrawingError::Empty));
+        }
         let view_titles = ProjectView::ALL
             .into_iter()
+            .filter(|view| *view != ProjectView::Plan)
             .map(|view| {
                 let title = match view {
-                    ProjectView::Plan => self.catalog.format(
-                        "drawings-view-plan",
-                        &BTreeMap::from([("height", format!("{cut:.0}"))]),
-                    ),
+                    ProjectView::Plan => String::new(),
                     ProjectView::LongitudinalSection => {
                         self.catalog.text("drawings-view-longitudinal")
                     }
@@ -465,9 +589,13 @@ impl KetchupApp {
         };
         Ok(ProjectDrawingsJob {
             solids,
-            options: ProjectSheetOptions {
+            options: DrawingSetOptions {
+                plans: self.plan_sheets(storeys),
+                sheet_titles: SheetTitles {
+                    sections: self.catalog.text("drawings-sheet-sections"),
+                    elevations: self.catalog.text("drawings-sheet-elevations"),
+                },
                 view_titles,
-                plan_cut_z_mm: Some(cut),
                 format: settings.format,
                 coarsest_scale: Some(settings.coarsest_scale()),
                 title_labels: self.title_labels(),
@@ -525,27 +653,32 @@ impl KetchupApp {
                 "drawings-cosmetic-threads-failed",
                 &BTreeMap::from([("part", part.clone()), ("reason", cause.to_string())]),
             ),
+            ProjectDrawingsError::Dwg(error) => error.to_string(),
             ProjectDrawingsError::Write(error) => error.to_string(),
         }
     }
 
-    /// Writes the project drawings of what is visible as a one-sheet PDF,
-    /// replacing only the file whose SHA-256 is `replacing` (None: only a new file).
+    /// Writes the drawing set of what is visible as `format` for `path`, the
+    /// PDF replacing only the file whose SHA-256 is `replacing` (None: only a
+    /// new file), a sheet's DXF or DWG only as a new file.
     pub(crate) fn write_project_drawings(
         &self,
         path: &Path,
+        format: SetFileFormat,
         request: SheetRequest,
         replacing: Option<&str>,
-    ) -> Result<ProjectSheet, ProjectDrawingsError> {
-        let (sheet, pdf) = self.project_drawings_job_for(request)?.render()?;
-        publish_project_drawings(path, &pdf, replacing)?;
-        Ok(sheet)
+    ) -> Result<ExportedSet, ProjectDrawingsError> {
+        let (set, files) = self.project_drawings_job_for(request)?.render(format)?;
+        let paths = publish_project_drawings(path, format, &files, replacing)?;
+        Ok(ExportedSet { set, paths })
     }
 
-    /// Writes the project drawings as PDF and reports it in the digest.
+    /// Writes the drawing set as the format `path` names (PDF when it names
+    /// none) and reports it in the digest.
     pub fn export_project_drawings_to(&mut self, path: &Path) -> bool {
+        let format = SetFileFormat::of_path(path).unwrap_or(SetFileFormat::Pdf);
         let result = project_drawings_target(path).and_then(|replacing| {
-            self.write_project_drawings(path, SheetRequest::default(), replacing.as_deref())
+            self.write_project_drawings(path, format, SheetRequest::default(), replacing.as_deref())
         });
         self.report_project_drawings(path, &result);
         result.is_ok()
@@ -554,16 +687,20 @@ impl KetchupApp {
     pub(crate) fn report_project_drawings(
         &mut self,
         path: &Path,
-        result: &Result<ProjectSheet, ProjectDrawingsError>,
+        result: &Result<ExportedSet, ProjectDrawingsError>,
     ) {
-        let path = path.display().to_string();
+        let shown = |paths: &[PathBuf]| match paths {
+            [one] => one.display().to_string(),
+            [first, .., last] => format!("{} … {}", first.display(), last.display()),
+            [] => path.display().to_string(),
+        };
         self.digest = match result {
-            Ok(sheet) => {
-                let missing = sheet.page.printed_as_question_mark();
+            Ok(ExportedSet { set, paths }) => {
+                let missing = set.printed_as_question_mark();
                 let mut arguments = BTreeMap::from([
-                    ("path", path),
-                    ("scale", sheet.scale.to_string()),
-                    ("format", sheet.format.name().to_owned()),
+                    ("path", shown(paths)),
+                    ("scale", set.scale.to_string()),
+                    ("sheets", set.sheets.len().to_string()),
                 ]);
                 let key = if missing.is_empty() {
                     "digest-exported-project-drawings"
@@ -576,7 +713,7 @@ impl KetchupApp {
             Err(error) => self.catalog.format(
                 "error-export-project-drawings",
                 &BTreeMap::from([
-                    ("path", path),
+                    ("path", path.display().to_string()),
                     ("reason", self.project_drawings_error_text(error)),
                 ]),
             ),
@@ -615,7 +752,7 @@ impl KetchupApp {
             self.read_sheet_settings_into_window();
         }
         let mut open = true;
-        let mut export = false;
+        let mut export = None;
         let mut export_sheet = None;
         let mut editing = std::mem::take(&mut self.drawings.editing);
         // A field still showing its default follows it when the default
@@ -710,12 +847,16 @@ impl KetchupApp {
                         }
                     });
                 ui.separator();
-                if ui
-                    .button(self.catalog.text("drawings-export-pdf"))
-                    .clicked()
-                {
-                    export = true;
-                }
+                ui.horizontal(|ui| {
+                    for format in SetFileFormat::ALL {
+                        if ui
+                            .button(self.catalog.text(set_export_key(format)))
+                            .clicked()
+                        {
+                            export = Some(format);
+                        }
+                    }
+                });
                 ui.separator();
                 ui.strong(self.catalog.text("drawings-document-sheets"));
                 ui.label(self.catalog.text("drawings-document-sheets-hint"));
@@ -755,8 +896,10 @@ impl KetchupApp {
         }
         // Projected and hidden lines removed on a thread behind the file
         // activity indication, which can cancel it (review 2026-10-18 UI-11).
-        if export && let Some(path) = self.choose_export_path("pdf") {
-            self.start_drawing_export(DrawingExport::Project, path, context);
+        if let Some(format) = export
+            && let Some(path) = self.choose_export_path(format.extension())
+        {
+            self.start_drawing_export(DrawingExport::Project(format), path, context);
         }
         if let Some((id, format)) = export_sheet
             && let Some(path) = self.choose_export_path(format.extension())

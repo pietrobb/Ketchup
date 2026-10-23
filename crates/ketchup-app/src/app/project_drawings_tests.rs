@@ -1,19 +1,36 @@
-//! Project drawings of the timber-frame house: the sheet carries the floor plan,
-//! both sections and four elevations with a title block, follows the visible
-//! layers and is written as PDF.
+//! Project drawings of the timber-frame house: the set carries the floor plan,
+//! both sections and four elevations with a title block on every sheet,
+//! follows the visible layers and is written as PDF.
 use crate::app::project_drawings::ProjectDrawingsError;
 use crate::tests::shell::step_until;
 use crate::*;
-use ketchup_manufacturing::project_drawings::{ProjectSheet, ProjectView};
+use ketchup_manufacturing::project_drawings::{DrawingSet, ProjectView, ViewSummary};
+use ketchup_manufacturing::sheet_pdf::Mark;
 use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
 use std::time::Duration;
 
 const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star");
 
-fn cut_solids(sheet: &ProjectSheet, view: ProjectView) -> usize {
-    sheet
-        .views
+/// The views of every sheet of the set.
+fn views(set: &DrawingSet) -> impl Iterator<Item = &ViewSummary> {
+    set.sheets.iter().flat_map(|sheet| &sheet.views)
+}
+
+/// The marks of every sheet of the set.
+fn marks(set: &DrawingSet) -> impl Iterator<Item = &Mark> {
+    set.sheets.iter().flat_map(|sheet| &sheet.page.marks)
+}
+
+/// The texts of every sheet of the set.
+fn texts(set: &DrawingSet) -> Vec<&str> {
+    set.sheets
         .iter()
+        .flat_map(|sheet| sheet.page.texts())
+        .collect()
+}
+
+fn cut_solids(set: &DrawingSet, view: ProjectView) -> usize {
+    views(set)
         .find(|summary| summary.view == view)
         .map_or(0, |summary| summary.cut_solids)
 }
@@ -193,10 +210,8 @@ fn the_plan_cut_height_and_the_automatic_scale_follow_the_sheet_settings() {
         ))
         .unwrap();
     crate::drawn_shape::tests::evaluate_exact(&mut app);
-    let plan_cut = |sheet: &ProjectSheet| {
-        sheet
-            .views
-            .iter()
+    let plan_cut = |set: &DrawingSet| {
+        views(set)
             .find(|summary| summary.view == ProjectView::Plan)
             .and_then(|summary| summary.cut_at_mm)
     };
@@ -216,7 +231,11 @@ fn the_plan_cut_height_and_the_automatic_scale_follow_the_sheet_settings() {
     let set = app.project_drawings().unwrap();
     assert_eq!(plan_cut(&set), Some(900.0));
     assert!(set.scale > 50 && set.scale <= 100, "{}", set.scale);
-    assert!(set.format <= default.format, "{:?}", set.format);
+    assert!(
+        set.sheets[0].format <= default.sheets[0].format,
+        "{:?}",
+        set.sheets[0].format
+    );
 }
 
 #[test]
@@ -249,17 +268,26 @@ fn large_house_the_house_sheet_has_plan_sections_and_elevations_of_the_visible_l
     );
 
     let concept = harness.state().project_drawings().unwrap();
-    assert_eq!(concept.views.len(), ProjectView::ALL.len());
-    let texts = concept.page.texts().collect::<Vec<_>>();
+    for view in ProjectView::ALL {
+        assert!(
+            views(&concept).any(|summary| summary.view == view),
+            "{view:?} missing"
+        );
+    }
+    let texts = texts(&concept);
     for key in [
         "drawings-view-longitudinal",
         "drawings-view-cross",
         "drawings-view-front",
-        "drawings-default-sheet",
+        "drawings-sheet-sections",
+        "drawings-sheet-elevations",
         "title-field-client",
     ] {
         let title = harness.state().catalog.text(key);
-        assert!(texts.contains(&title.as_str()), "{key} missing");
+        assert!(
+            texts.iter().any(|text| text.contains(title.as_str())),
+            "{key} missing"
+        );
     }
     assert!(
         texts.contains(&"tiny-house.star"),
@@ -312,10 +340,17 @@ fn large_house_the_house_sheet_has_plan_sections_and_elevations_of_the_visible_l
     std::fs::remove_file(&path).ok();
     assert!(written.starts_with(b"%PDF-"));
     assert!(written.windows(10).any(|window| window == b"/FontFile2"));
-    let sheet = app.project_drawings().unwrap();
-    assert_eq!(sheet.format, SheetFormat::A0);
-    assert!(sheet.page.texts().any(|text| text == "Ján Novák"));
-    assert!(app.digest.contains("A0"), "{}", app.digest);
+    let set = app.project_drawings().unwrap();
+    for sheet in &set.sheets {
+        assert_eq!(sheet.format, SheetFormat::A0);
+        assert!(sheet.page.texts().any(|text| text == "Ján Novák"));
+        assert!(sheet.page.texts().any(|text| text == "A0"));
+    }
+    assert!(
+        app.digest.contains(&path.display().to_string()),
+        "{}",
+        app.digest
+    );
 }
 
 /// A plate tapped M8 from its top and an M8 × 40 bolt lying along x.
@@ -362,13 +397,10 @@ fn tapped_holes_and_bolts_are_drawn_with_their_threads() {
     assert!((bolt.major_diameter_mm - 8.0).abs() < 1e-9);
     assert!((bolt.root_diameter_mm - (8.0 - 1.226_869 * 1.25)).abs() < 1e-9);
 
-    let sheet = app.project_drawings().unwrap();
-    let thin = sheet
-        .page
-        .marks
-        .iter()
+    let set = app.project_drawings().unwrap();
+    let thin = marks(&set)
         .filter(|mark| {
-            matches!(mark, ketchup_manufacturing::sheet_pdf::Mark::Line { stroke, .. }
+            matches!(mark, Mark::Line { stroke, .. }
                 if (stroke.width_mm - 0.13).abs() < 1e-9)
         })
         .count();
@@ -408,11 +440,9 @@ fn in_groove(
         .count()
 }
 
-/// The 0.18 mm lines of a sheet (the solids' edges) and its filled faces.
-fn edge_lines_and_faces(sheet: &ProjectSheet) -> [usize; 2] {
-    use ketchup_manufacturing::sheet_pdf::Mark;
-    let count =
-        |wanted: fn(&Mark) -> bool| sheet.page.marks.iter().filter(|mark| wanted(mark)).count();
+/// The 0.18 mm lines of a set (the solids' edges) and its filled faces.
+fn edge_lines_and_faces(set: &DrawingSet) -> [usize; 2] {
+    let count = |wanted: fn(&Mark) -> bool| marks(set).filter(|mark| wanted(mark)).count();
     [
         count(
             |mark| matches!(mark, Mark::Line { stroke, .. } if (stroke.width_mm - 0.18).abs() < 1e-9),
@@ -426,7 +456,9 @@ fn edge_lines_and_faces(sheet: &ProjectSheet) -> [usize; 2] {
 /// modes, while the modelled bodies' own triangles carry the grooves.
 #[test]
 fn modelled_threads_draw_the_same_sheet_as_cosmetic_ones_without_helix_edges() {
-    use ketchup_manufacturing::project_drawings::{ProjectSheetOptions, project_sheet};
+    use ketchup_manufacturing::project_drawings::{
+        DrawingSetOptions, PlanSheet, drawing_set, storeys,
+    };
     let mut app = KetchupApp::new();
     let program = ketchup_model::document::RuleProgramSource {
         variants: Default::default(),
@@ -498,8 +530,8 @@ fn modelled_threads_draw_the_same_sheet_as_cosmetic_ones_without_helix_edges() {
     assert!(
         cosmetic == modeled,
         "the modelled sheet differs: {} vs {} marks, {:?} vs {:?} edge lines and faces",
-        cosmetic.page.marks.len(),
-        modeled.page.marks.len(),
+        marks(&cosmetic).count(),
+        marks(&modeled).count(),
         edge_lines_and_faces(&cosmetic),
         edge_lines_and_faces(&modeled)
     );
@@ -507,11 +539,20 @@ fn modelled_threads_draw_the_same_sheet_as_cosmetic_ones_without_helix_edges() {
     assert!(cosmetic.pdf(&info) == modeled.pdf(&info), "the PDFs differ");
     // Drawn from the grooved bodies, the sheet would carry the helix: its
     // edges and the facets of its flanks.
-    let options = ProjectSheetOptions::default();
-    let [plain_edges, plain_faces] =
-        edge_lines_and_faces(&project_sheet(&drawn, &options).unwrap());
+    let options = DrawingSetOptions {
+        plans: storeys(&drawn, 1200.0)
+            .into_iter()
+            .map(|storey| PlanSheet {
+                storey,
+                view_title: String::new(),
+                sheet_title: String::new(),
+            })
+            .collect(),
+        ..DrawingSetOptions::default()
+    };
+    let [plain_edges, plain_faces] = edge_lines_and_faces(&drawing_set(&drawn, &options).unwrap());
     let [helix_edges, helix_faces] =
-        edge_lines_and_faces(&project_sheet(&grooved, &options).unwrap());
+        edge_lines_and_faces(&drawing_set(&grooved, &options).unwrap());
     assert!(
         helix_edges > plain_edges && helix_faces > 2 * plain_faces,
         "edges {helix_edges} vs {plain_edges}, faces {helix_faces} vs {plain_faces}"

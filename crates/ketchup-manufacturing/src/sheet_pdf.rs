@@ -425,24 +425,29 @@ fn to_unicode(glyphs: &BTreeMap<u16, char>) -> String {
     cmap
 }
 
-/// The page as a one-page PDF with the sheet typeface embedded.
+/// The pages as one PDF, a page each in their order, with the sheet typeface
+/// embedded once.
 #[must_use]
-pub fn page_pdf(page: &Page, info: &PdfInfo) -> Vec<u8> {
+pub fn pages_pdf(pages: &[&Page], info: &PdfInfo) -> Vec<u8> {
     let font = SheetFont::standard();
-    let [width, height] = page.size_mm;
-    let mut content = ContentWriter {
-        font,
-        height,
-        out: format!("{0} 0 0 {0} 0 0 cm\n1 J 1 j\n", number(POINTS_PER_MM)),
-        state: State::default(),
-        glyphs: BTreeMap::new(),
-    };
-    for mark in &page.marks {
-        content.mark(mark);
+    let mut glyphs = BTreeMap::new();
+    let mut streams = Vec::with_capacity(pages.len());
+    for page in pages {
+        let mut content = ContentWriter {
+            font,
+            height: page.size_mm[1],
+            out: format!("{0} 0 0 {0} 0 0 cm\n1 J 1 j\n", number(POINTS_PER_MM)),
+            state: State::default(),
+            glyphs: std::mem::take(&mut glyphs),
+        };
+        for mark in &page.marks {
+            content.mark(mark);
+        }
+        glyphs = content.glyphs;
+        streams.push(content.out);
     }
     let name = font.postscript_name();
-    let widths = content
-        .glyphs
+    let widths = glyphs
         .keys()
         .map(|glyph| {
             #[allow(clippy::cast_possible_truncation)]
@@ -453,7 +458,7 @@ pub fn page_pdf(page: &Page, info: &PdfInfo) -> Vec<u8> {
         .join(" ");
     let bbox = font.face.global_bounding_box();
     let descriptor = format!(
-        "<< /Type /FontDescriptor /FontName /{name} /Flags 32 /FontBBox [{} {} {} {}] /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 8 0 R >>",
+        "<< /Type /FontDescriptor /FontName /{name} /Flags 32 /FontBBox [{} {} {} {}] /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 6 0 R >>",
         font.per_mille(bbox.x_min),
         font.per_mille(bbox.y_min),
         font.per_mille(bbox.x_max),
@@ -462,27 +467,27 @@ pub fn page_pdf(page: &Page, info: &PdfInfo) -> Vec<u8> {
         font.per_mille(font.face.descender()),
         font.per_mille(font.face.capital_height().unwrap_or(700)),
     );
-    let objects: Vec<Vec<u8>> = vec![
+    // Objects 1–8 are the catalog, the page tree, the font, its information
+    // and the document information; then a page and its content per page.
+    let first_page = 9;
+    let kids = (0..pages.len())
+        .map(|index| format!("{} 0 R", first_page + 2 * index))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut objects: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        format!("<< /Type /Pages /Kids [{kids}] /Count {} >>", pages.len()).into_bytes(),
         format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-            number(width * POINTS_PER_MM),
-            number(height * POINTS_PER_MM)
-        )
-        .into_bytes(),
-        stream("", content.out.as_bytes()),
-        format!(
-            "<< /Type /Font /Subtype /Type0 /BaseFont /{name} /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 9 0 R >>"
+            "<< /Type /Font /Subtype /Type0 /BaseFont /{name} /Encoding /Identity-H /DescendantFonts [4 0 R] /ToUnicode 7 0 R >>"
         )
         .into_bytes(),
         format!(
-            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 7 0 R /DW 500 /W [{widths}] /CIDToGIDMap /Identity >>"
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 5 0 R /DW 500 /W [{widths}] /CIDToGIDMap /Identity >>"
         )
         .into_bytes(),
         descriptor.into_bytes(),
         stream(&format!("/Length1 {}", font.data.len()), font.data),
-        stream("", to_unicode(&content.glyphs).as_bytes()),
+        stream("", to_unicode(&glyphs).as_bytes()),
         format!(
             "<< /Title {} /Author {} /Subject {} /Creator (Ketchup) /Producer (Ketchup) >>",
             pdf_text(&info.title),
@@ -491,6 +496,19 @@ pub fn page_pdf(page: &Page, info: &PdfInfo) -> Vec<u8> {
         )
         .into_bytes(),
     ];
+    for (index, (page, content)) in pages.iter().zip(&streams).enumerate() {
+        let [width, height] = page.size_mm;
+        objects.push(
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+                number(width * POINTS_PER_MM),
+                number(height * POINTS_PER_MM),
+                first_page + 2 * index + 1
+            )
+            .into_bytes(),
+        );
+        objects.push(stream("", content.as_bytes()));
+    }
     let mut pdf = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec();
     let mut offsets = Vec::with_capacity(objects.len());
     for (index, object) in objects.iter().enumerate() {
@@ -506,7 +524,7 @@ pub fn page_pdf(page: &Page, info: &PdfInfo) -> Vec<u8> {
     }
     let _ = write!(
         table,
-        "trailer\n<< /Size {} /Root 1 0 R /Info 10 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+        "trailer\n<< /Size {} /Root 1 0 R /Info 8 0 R >>\nstartxref\n{xref}\n%%EOF\n",
         objects.len() + 1
     );
     pdf.extend_from_slice(table.as_bytes());
@@ -578,15 +596,31 @@ mod tests {
             color: [200, 100, 50],
             outline: Some(Stroke::solid(0.5)),
         });
-        let pdf = page_pdf(&page, &PdfInfo::default());
+        let mut second = Page {
+            size_mm: [594.0, 420.0],
+            marks: Vec::new(),
+        };
+        second.text([20.0, 20.0], "Rez A–A", 3.5, Anchor::Start);
+        let pdf = pages_pdf(&[&page, &second], &PdfInfo::default());
         let find = |needle: &[u8]| {
             pdf.windows(needle.len())
                 .rposition(|window| window == needle)
         };
+        let count = |needle: &[u8]| {
+            pdf.windows(needle.len())
+                .filter(|window| *window == needle)
+                .count()
+        };
         assert!(pdf.starts_with(b"%PDF-1.7"));
-        assert!(find(b"/FontFile2 8 0 R").is_some());
-        assert!(find(b"/Subtype /CIDFontType2").is_some());
+        assert!(find(b"/FontFile2 6 0 R").is_some());
+        assert_eq!(
+            count(b"/Subtype /CIDFontType2"),
+            1,
+            "the font is embedded once"
+        );
+        assert!(find(b"/Kids [9 0 R 11 0 R] /Count 2").is_some());
         assert!(find(b"/MediaBox [0 0 1190.551 841.89]").is_some());
+        assert!(find(b"/MediaBox [0 0 1683.78 1190.551]").is_some());
         // The cross-reference table points at each object.
         let xref = find(b"\nxref\n").expect("the PDF has a cross-reference table") + 1;
         let tail = String::from_utf8_lossy(&pdf[xref..]).into_owned();
@@ -595,7 +629,7 @@ mod tests {
             .next()
             .and_then(|line| line.parse::<usize>().ok());
         assert_eq!(start, Some(xref));
-        for (index, line) in tail.lines().skip(3).take(10).enumerate() {
+        for (index, line) in tail.lines().skip(3).take(12).enumerate() {
             let offset = line[..10].parse::<usize>().expect("an offset");
             let header = format!("{} 0 obj", index + 1);
             assert!(pdf[offset..].starts_with(header.as_bytes()), "{line}");
