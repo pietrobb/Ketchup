@@ -55,8 +55,8 @@ pub(crate) fn evaluated_body(
 }
 
 impl KetchupApp {
-    /// Starts the worker for `graphs`; the previous background evaluation it
-    /// replaces is cancelled. Answers false after reporting why it could not start.
+    /// Starts the worker for `graphs`; the previous feature history evaluation
+    /// it replaces is cancelled. Answers false after reporting why it could not start.
     pub(crate) fn start_feature_history_exact(
         &mut self,
         graphs: Vec<ExactBRepGraph>,
@@ -85,9 +85,7 @@ impl KetchupApp {
                 return false;
             }
         };
-        if let Some(task) = self.exact.task.take() {
-            task.cancelled.store(true, Ordering::Release);
-        }
+        // The scene's own evaluation goes on: this task starts its own worker.
         let bodies = u32::try_from(graphs.len().max(1)).unwrap_or(u32::MAX);
         let deadline = EXACT_BODY_DEADLINE.saturating_mul(bodies);
         let spawned = BackgroundTask::spawn(
@@ -283,5 +281,33 @@ mod tests {
             Ok(bodies) => assert_eq!(bodies.len(), 1),
             Err(error) => panic!("{error}"),
         }
+    }
+
+    /// Review 2026-10-19 P3 (and 2026-10-18): starting the feature history's
+    /// evaluation, which has its own worker, cancelled the scene's, and the scene
+    /// was not evaluated again for that revision.
+    #[test]
+    fn the_feature_history_evaluation_leaves_the_scene_evaluation_running() {
+        let mut app = KetchupApp::new();
+        let worker = exact_worker_executable();
+        app.headless_force_exact_worker_path(&worker);
+        app.exact.task = Some(ketchup_application::evaluation::start_exact_evaluation(
+            app.document.current(),
+            &app.file.container_data,
+            &app.exact.results,
+            &app.exact.topology_results,
+            Some(worker),
+            || {},
+        ));
+        assert!(app.start_feature_history_exact(
+            Vec::new(),
+            FeatureHistoryExactPurpose::ReplacementPreview
+        ));
+        let scene = app
+            .exact
+            .task
+            .as_ref()
+            .expect("the scene evaluation is kept");
+        assert!(!scene.cancelled.load(Ordering::Acquire));
     }
 }
