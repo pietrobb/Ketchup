@@ -589,10 +589,25 @@ impl KetchupApp {
     fn apply_typed_move(&mut self) -> bool {
         let value = self.value_box.input.trim();
         if value.starts_with(['x', 'X', '*', '×', '/']) {
+            let limit = MAX_CAD_GENERATED_OCCURRENCES.to_string();
             let Some((mode, count)) = parse_move_copy_array(value, self.value_box.decimal) else {
-                self.digest = self.catalog.text("digest-copy-array-invalid");
+                self.digest = self.catalog.format(
+                    "digest-copy-array-invalid",
+                    &BTreeMap::from([("limit", limit)]),
+                );
                 return false;
             };
+            // The limit counts every new part, so ×N repeats each selected part N times.
+            if let Some((_, previous)) = self.current_move_copy_correction() {
+                let copies = count.saturating_mul(previous.source_occurrence_ids.len());
+                if copies > MAX_CAD_GENERATED_OCCURRENCES {
+                    self.digest = self.catalog.format(
+                        "digest-copy-array-limit-exceeded",
+                        &BTreeMap::from([("copies", copies.to_string()), ("limit", limit)]),
+                    );
+                    return false;
+                }
+            }
             if self.apply_current_move_copy_array(mode, count) {
                 return true;
             }
@@ -773,9 +788,9 @@ fn parse_move_copy_array(
         (MoveCopyArrayMode::Divide, trimmed.strip_prefix('/')?)
     };
     let count = crate::length_input::read_whole::<usize>(count, decimal).ok()?;
-    (1..=MAX_CAD_GENERATED_OCCURRENCES)
-        .contains(&count)
-        .then_some((mode, count))
+    // The limit is checked against the number of new parts, which the
+    // caller knows.
+    (count >= 1).then_some((mode, count))
 }
 
 /// A typed Move value: a distance along the pinned axis, a vector, or a

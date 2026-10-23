@@ -1066,6 +1066,62 @@ fn move_copy_array_rejects_stale_or_invalid_modifiers_without_mutation() {
     assert_eq!(app.document.visible_undo_steps(), undo_steps);
 }
 
+// Review 2026-10-19 P3 (GUI): too many copies said "copy an object with Move
+// first" (or named a limit of 10,000) instead of the real limit.
+#[test]
+fn move_copy_array_over_the_limit_names_the_limit() {
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
+    app.dispatch_command(AppCommand::Move);
+    assert!(app.copy_selected(Vec3::new(30.0, 0.0, 0.0)));
+    let digest = app.canonical_digest();
+    let undo_steps = app.document.visible_undo_steps();
+    let limit = MAX_CAD_GENERATED_OCCURRENCES;
+
+    // Two selected parts: half the limit plus one already makes too many.
+    let count = limit / 2 + 1;
+    app.value_box.input = format!("x{count}");
+    assert!(!app.apply_value_input());
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.document.visible_undo_steps(), undo_steps);
+    assert_eq!(
+        app.digest,
+        app.catalog.format(
+            "digest-copy-array-limit-exceeded",
+            &BTreeMap::from([
+                ("copies", (count * 2).to_string()),
+                ("limit", limit.to_string()),
+            ]),
+        )
+    );
+
+    app.value_box.input = format!("x{}", limit + 1);
+    assert!(!app.apply_value_input());
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(
+        app.digest,
+        app.catalog.format(
+            "digest-copy-array-limit-exceeded",
+            &BTreeMap::from([
+                ("copies", ((limit + 1) * 2).to_string()),
+                ("limit", limit.to_string()),
+            ]),
+        )
+    );
+
+    app.value_box.input = "x0".to_owned();
+    assert!(!app.apply_value_input());
+    assert_eq!(
+        app.digest,
+        app.catalog.format(
+            "digest-copy-array-invalid",
+            &BTreeMap::from([("limit", limit.to_string())]),
+        )
+    );
+}
+
 #[test]
 fn move_ctrl_is_a_persistent_copy_toggle_during_an_active_gesture() {
     let mut app = KetchupApp::new();
