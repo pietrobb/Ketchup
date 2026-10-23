@@ -72,10 +72,12 @@ const UNDERLAY_READING: DxfReading = DxfReading {
 };
 
 mod block;
+mod code_page;
 mod style;
 mod text;
 mod underlay;
 use block::{BlockDefinition, parse_blocks};
+use code_page::{code_page_encoding, code_page_name, dxf_source_text};
 use style::EntityStyle;
 use text::OrderedText;
 pub use underlay::{DxfUnderlay, read_dxf_underlay, read_dxf_underlay_from};
@@ -584,9 +586,17 @@ fn read_dxf(
     options: DxfImportOptions,
     reading: DxfReading,
 ) -> Result<ReadDxf, DxfImportError> {
-    let text = dxf_source_text(source)?;
+    let (text, code_page) = dxf_source_text(source)?;
     let pairs = parse_pairs(&text, reading.max_pairs)?;
     let (sections, mut diagnostics) = parse_sections(&pairs, reading)?;
+    if let Some(code_page) = code_page {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Info,
+            "dxf.text-code-page",
+            Some(code_page),
+            1,
+        )?;
+    }
     let header = sections.get("HEADER").map(Vec::as_slice).unwrap_or(&[]);
     let (units, insbase_mm) = parse_header(header, options, &mut diagnostics)?;
     diagnostics.hidden_layers = hidden_layers(
@@ -748,54 +758,6 @@ fn next_id(ids: impl Iterator<Item = u64>) -> Result<u64, DxfImportPlanError> {
         .checked_add(1)
         .filter(|id| *id != 0)
         .ok_or(DxfImportPlanError::IdSpaceExhausted)
-}
-
-/// The text of a DXF file. DXF 2007 and later are UTF-8; an older file is
-/// written in the Windows code page its `$DWGCODEPAGE` header names, so a
-/// file that is not UTF-8 is read in that code page when it is older than
-/// 2007 and names one.
-fn dxf_source_text(source: &[u8]) -> Result<std::borrow::Cow<'_, str>, DxfImportError> {
-    if source.is_empty() {
-        return Err(DxfImportError::Empty);
-    }
-    if let Ok(text) = std::str::from_utf8(source) {
-        return Ok(std::borrow::Cow::Borrowed(text));
-    }
-    let header_value = |variable: &[u8]| {
-        let mut lines = source.split(|byte| *byte == b'\n').map(<[u8]>::trim_ascii);
-        lines.position(|line| line == variable)?;
-        lines.nth(1)
-    };
-    let encoding = header_value(b"$ACADVER")
-        .is_none_or(|version| version < b"AC1021".as_slice())
-        .then(|| header_value(b"$DWGCODEPAGE"))
-        .flatten()
-        .and_then(code_page_encoding)
-        .ok_or(DxfImportError::NonAscii)?;
-    encoding
-        .decode_without_bom_handling_and_without_replacement(source)
-        .ok_or(DxfImportError::NonAscii)
-}
-
-/// The encoding of an AutoCAD `$DWGCODEPAGE` name such as `ANSI_1250`.
-fn code_page_encoding(name: &[u8]) -> Option<&'static encoding_rs::Encoding> {
-    let number = name
-        .get(..5)
-        .filter(|prefix| prefix.eq_ignore_ascii_case(b"ANSI_"))
-        .and(name.get(5..))?;
-    match number {
-        b"874" | b"1250" | b"1251" | b"1252" | b"1253" | b"1254" | b"1255" | b"1256" | b"1257"
-        | b"1258" => {
-            let mut label = b"windows-".to_vec();
-            label.extend_from_slice(number);
-            encoding_rs::Encoding::for_label(&label)
-        }
-        b"932" => Some(encoding_rs::SHIFT_JIS),
-        b"936" => Some(encoding_rs::GBK),
-        b"949" => Some(encoding_rs::EUC_KR),
-        b"950" => Some(encoding_rs::BIG5),
-        _ => None,
-    }
 }
 
 fn parse_pairs(text: &str, max_pairs: usize) -> Result<Vec<DxfPair<'_>>, DxfImportError> {

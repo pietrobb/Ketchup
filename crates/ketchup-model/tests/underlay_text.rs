@@ -54,6 +54,36 @@ fn a_numbered_special_character_is_read_in_the_drawings_code_page() {
     assert_eq!(text("", "%%128 5"), "€ 5");
 }
 
+/// Review 2026-10-19 P3: an underlay read in the code page its pre-2007 drawing names
+/// says which, as the profile import does; a UTF-8 drawing names none.
+#[test]
+fn an_underlay_read_in_a_code_page_names_it() {
+    let source = |layer: &[u8]| {
+        let mut source = b"0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$DWGCODEPAGE\n3\nansi_1250\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n".to_vec();
+        source.extend_from_slice(layer);
+        source.extend_from_slice(b"\n10\n0\n20\n0\n11\n100\n21\n0\n0\nENDSEC\n0\nEOF\n");
+        source
+    };
+    // "Stĺp" in Windows-1250: ĺ = 0xE5.
+    let underlay = read_dxf_underlay(&source(b"St\xE5p"), DxfImportOptions::new(None)).unwrap();
+    assert_eq!(underlay.layers, ["Stĺp"]);
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page", Some("ANSI_1250")),
+        Some(1)
+    );
+    let underlay =
+        read_dxf_underlay(&source("Stĺp".as_bytes()), DxfImportOptions::new(None)).unwrap();
+    assert_eq!(underlay.layers, ["Stĺp"]);
+    assert!(
+        underlay
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code() != "dxf.text-code-page"),
+        "{:?}",
+        underlay.diagnostics
+    );
+}
+
 const BLOCKS: &str = concat!(
     // A door: its leaf and its number, on layer 0, so on the layer of its insert.
     "0\nBLOCK\n8\n0\n2\ndoor\n70\n0\n10\n0\n20\n0\n",

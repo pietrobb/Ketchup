@@ -48,8 +48,17 @@ pub fn read_dxf_underlay_from(
     options: DxfImportOptions,
 ) -> Result<DxfUnderlay, DxfImportError> {
     let _any_coordinate = AnyFiniteCoordinate::new();
-    let encoding = text_encoding(&mut source)?;
+    let code_page = text_encoding(&mut source)?;
+    let encoding = code_page.as_ref().map(|(encoding, _)| *encoding);
     let mut diagnostics = DiagnosticCounts::new(UNDERLAY_READING);
+    if let Some((_, name)) = code_page {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Info,
+            "dxf.text-code-page",
+            Some(name),
+            1,
+        )?;
+    }
     let sections = read_sections(PairReader::new(&mut source, encoding)?, &mut diagnostics)?;
     let header = sections.header.pairs();
     let (units, _) = parse_header(&header, options, &mut diagnostics)?;
@@ -327,11 +336,11 @@ fn read_sections(
 }
 
 /// The encoding of `source`'s text, as the profile import decides it for the whole file:
-/// UTF-8 when all of it is, otherwise the Windows code page its `$DWGCODEPAGE` names when
-/// it is older than DXF 2007.
+/// UTF-8 (`None`) when all of it is, otherwise the Windows code page its `$DWGCODEPAGE`
+/// names when it is older than DXF 2007, with that name.
 fn text_encoding(
     source: &mut (impl BufRead + Seek),
-) -> Result<Option<&'static encoding_rs::Encoding>, DxfImportError> {
+) -> Result<Option<(&'static encoding_rs::Encoding, String)>, DxfImportError> {
     source.seek(SeekFrom::Start(0)).map_err(read_error)?;
     let mut line = Vec::new();
     let (mut utf8, mut empty) = (true, true);
@@ -356,7 +365,7 @@ fn text_encoding(
         .is_none_or(|version| version.as_slice() < b"AC1021".as_slice())
         .then_some(code_page.value)
         .flatten()
-        .and_then(|name| code_page_encoding(&name))
+        .and_then(|name| Some((code_page_encoding(&name)?, code_page_name(&name))))
         .map(Some)
         .ok_or(DxfImportError::NonAscii)
 }

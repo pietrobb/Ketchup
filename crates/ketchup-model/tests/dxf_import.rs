@@ -3381,13 +3381,33 @@ fn a_pre_2007_dxf_is_read_in_the_code_page_it_declares() {
         source
     };
     let options = DxfImportOptions::new(None);
+    // Review 2026-10-19 P3: the report names the code page the file was read in, so a
+    // wrong declaration can be told apart from wrong names in the drawing.
+    let code_page = |parsed: &ketchup_model::import::ParsedDxf| {
+        parsed
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code() == "dxf.text-code-page")
+            .map(|diagnostic| (diagnostic.subject().map(str::to_owned), diagnostic.count()))
+            .collect::<Vec<_>>()
+    };
 
     let parsed = inspect_dxf(&file("AC1015", Some("ANSI_1250")), options).unwrap();
     assert_eq!(parsed.layers(), ["Pôdorys", "Stĺp"]);
     assert_eq!(parsed.profiles().len(), 2);
+    assert_eq!(code_page(&parsed), [(Some("ANSI_1250".to_owned()), 1)]);
     // The code page name is matched as AutoCAD writes it, in either case.
     let parsed = inspect_dxf(&file("AC1009", Some("ansi_1250")), options).unwrap();
     assert_eq!(parsed.layers(), ["Pôdorys", "Stĺp"]);
+    assert_eq!(code_page(&parsed), [(Some("ANSI_1250".to_owned()), 1)]);
+    // A UTF-8 file is read as UTF-8 whatever it declares: no code page was used.
+    let mut utf8 = header("AC1015", Some("ANSI_1250"));
+    utf8.extend_from_slice(b"0\nSECTION\n2\nENTITIES\n");
+    utf8.extend(square("Pôdorys".as_bytes(), 0));
+    utf8.extend_from_slice(b"0\nENDSEC\n0\nEOF\n");
+    let parsed = inspect_dxf(&utf8, options).unwrap();
+    assert_eq!(parsed.layers(), ["Pôdorys"]);
+    assert_eq!(code_page(&parsed), []);
 
     // Without a code page the bytes cannot be read, and a 2007+ file is UTF-8
     // whatever it declares: both are still refused rather than guessed.
