@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
+    # Defaults to [workspace.package] version in Cargo.toml; any other is refused.
     [string]$Version,
     [string]$OutputDir,
     [string]$BinaryDir,
@@ -20,6 +20,13 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+. (Join-Path $PSScriptRoot "WorkspaceVersion.ps1")
+$workspaceVersion = Get-WorkspaceVersion $repoRoot
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = $workspaceVersion
+} elseif ($Version -cne $workspaceVersion) {
+    throw "-Version $Version is not $workspaceVersion, the version in Cargo.toml that the programs report; change [workspace.package] version there instead."
+}
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
     $OutputDir = Join-Path $repoRoot "artifacts\release\$Version"
 }

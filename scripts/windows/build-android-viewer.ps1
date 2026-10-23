@@ -66,7 +66,11 @@ if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
 
 $unsigned = Join-Path $targetDir "unsigned.apk"
 $aligned = Join-Path $targetDir "aligned.apk"
-& (Join-Path $buildTools.FullName "aapt2.exe") link -o $unsigned -I $androidJar --manifest (Join-Path $root "viewer\android\AndroidManifest.xml")
+# The manifest states no version: the APK gets the one in Cargo.toml.
+. (Join-Path $PSScriptRoot "WorkspaceVersion.ps1")
+$version = Get-WorkspaceVersion $root
+$versionCode = Get-AndroidVersionCode $version
+& (Join-Path $buildTools.FullName "aapt2.exe") link -o $unsigned -I $androidJar --manifest (Join-Path $root "viewer\android\AndroidManifest.xml") --version-name $version --version-code $versionCode
 if ($LASTEXITCODE -ne 0) { throw "aapt2 link failed" }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::Open($unsigned, "Update")
