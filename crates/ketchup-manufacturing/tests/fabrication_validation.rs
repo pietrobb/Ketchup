@@ -2234,10 +2234,14 @@ fn production_adapters_share_saved_codes_and_are_opt_in() {
         "m17-circular-drill-result",
         GRAPH_BOOLEAN,
     );
-    assert!(
+    // A piece without a code is named, not refused as a blocked export.
+    assert_eq!(
         missing_projection
             .production_job(&missing_snapshot, &[])
-            .is_err()
+            .err(),
+        Some(GeneralFabricationError::PartWithoutProductionCode {
+            part: "Timber with circular drilling".to_owned()
+        })
     );
     assert!(
         missing_projection

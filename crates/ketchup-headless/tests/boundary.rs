@@ -881,6 +881,36 @@ fn resizing_and_moving_programmed_pockets_keeps_identity_and_history() {
     );
 }
 
+/// Review 2026-10-19 P3: a production job refused for a piece without a
+/// production code names that piece and what to do, instead of the generic
+/// "fabrication export is incomplete, stale, invalid, ..." of every refusal.
+#[test]
+fn a_production_job_names_the_piece_without_a_production_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shelf.ketchup");
+    let source = "shelf = board('shelf', (600, 300, 18))\n\
+                  hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 10)\n";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":source})),
+        request(2, "save", json!({"path":path.to_str().unwrap()})),
+        request(
+            3,
+            "production_job",
+            json!({"adapters":[],"timeout_ms":120000}),
+        ),
+    ]);
+    for response in &responses[..2] {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    let error = &responses[2]["error"];
+    assert_eq!(error["code"], "production_blocked", "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains("part \"shelf\" has no production code"),
+        "{message}"
+    );
+}
+
 #[test]
 fn updated_pocket_evaluates_as_exact_geometry() {
     let source =

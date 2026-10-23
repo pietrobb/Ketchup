@@ -95,11 +95,17 @@ impl GeneralFabricationProjection {
             .iter()
             .filter(|row| ShopFormat::ProductionJob.writes(row.item_kind))
         {
+            let part = snapshot
+                .definition(row.definition_id)
+                .ok_or(GeneralFabricationError::ExportBlocked)?
+                .name();
+            // A refusal of this row names its part, so the user knows what to check.
+            let blocked = || GeneralFabricationError::ExportBlocked.at_part(part);
             let GeneralBodySource::Exact(_) = &row.source else {
-                return Err(GeneralFabricationError::ExportBlocked);
+                return Err(blocked());
             };
             if row.quantity == 0 || row.quantity != row.instances.len() {
-                return Err(GeneralFabricationError::ExportBlocked);
+                return Err(blocked());
             }
             let matching = self
                 .manufacturing
@@ -109,17 +115,17 @@ impl GeneralFabricationProjection {
                 .filter(|(_, operation)| is_row_operation(row, operation))
                 .collect::<Vec<_>>();
             let Some((_, stock)) = matching.first() else {
-                return Err(GeneralFabricationError::ExportBlocked);
+                return Err(blocked());
             };
             if stock.kind != GeneralManufacturingKind::Stock || !stock.semantic_inputs.is_empty() {
-                return Err(GeneralFabricationError::ExportBlocked);
+                return Err(blocked());
             }
             let JobStockFrame {
                 origin_mm,
                 axes: stock_axes,
                 dimensions_mm,
                 rectangular,
-            } = job_stock_frame(&stock.machining).ok_or(GeneralFabricationError::ExportBlocked)?;
+            } = job_stock_frame(&stock.machining).ok_or_else(blocked)?;
             let stock_shape = if rectangular {
                 "rectangular_prism"
             } else {
@@ -129,11 +135,13 @@ impl GeneralFabricationProjection {
                 matched_operations.insert(*index);
             }
             for path in &row.instances {
-                let code = snapshot
-                    .production_code(path)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let code = snapshot.production_code(path).ok_or_else(|| {
+                    GeneralFabricationError::PartWithoutProductionCode {
+                        part: part.to_owned(),
+                    }
+                })?;
                 if !paths.insert(path.clone()) || !codes.insert(code.to_owned()) {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(blocked());
                 }
                 let resolved = snapshot
                     .resolve_instance_path(path)
@@ -141,11 +149,8 @@ impl GeneralFabricationProjection {
                 if resolved.definition_id != row.definition_id
                     || !is_production_transform(resolved.world_transform)
                 {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(blocked());
                 }
-                let definition = snapshot
-                    .definition(row.definition_id)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
                 let operations = matching
                     .iter()
                     .map(|(_, operation)| {
@@ -178,7 +183,7 @@ impl GeneralFabricationProjection {
                 parts.push(json!({
                     "instance_path": instance_path_value(path),
                     "definition_id": row.definition_id.0,
-                    "code": code, "name": definition.name(),
+                    "code": code, "name": part,
                     "material_key": row.material_key,
                     "dimensions_mm": dimensions_mm,
                     "stock_frame": {"origin_mm": origin_mm, "axes": stock_axes},

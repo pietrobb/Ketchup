@@ -164,12 +164,7 @@ impl Server {
                     instance.instance_path,
                     tolerance,
                 )
-                .map_err(|error| {
-                    Error::new(
-                        "production_blocked",
-                        format!("exact body unavailable: {error:?}"),
-                    )
-                })
+                .map_err(|error| Error::caused_by("production_blocked", &error))
             })
             .collect::<Result<Vec<_>>>()?;
         let remaining = budget
@@ -206,12 +201,7 @@ impl Server {
         };
         let mut job = projection
             .production_job(&snapshot, &adapters)
-            .map_err(|error| {
-                Error::new(
-                    "production_blocked",
-                    format!("{error}; check assigned codes and adapter capabilities"),
-                )
-            })?;
+            .map_err(|error| Error::caused_by("production_blocked", &error))?;
         if started.elapsed() > budget {
             return Err(Error::new(
                 "production_blocked",
