@@ -1,5 +1,16 @@
 use process_wrap::std::ChildWrapper;
 use std::io;
+use std::process::Command;
+
+/// The process id of the process that started a worker.
+const PARENT_PID: &str = "KETCHUP_WORKER_PARENT_PID";
+
+/// Names this process as the parent the worker `command` starts must not
+/// outlive, also when this process dies before the worker calls
+/// [`exit_with_parent`].
+pub(crate) fn watched_by_this_process(command: &mut Command) {
+    command.env(PARENT_PID, std::process::id().to_string());
+}
 
 pub(crate) fn terminate(child: &mut dyn ChildWrapper) -> io::Result<()> {
     // Preserve the wrapper: on Windows this terminates the entire Job Object.
@@ -17,12 +28,17 @@ pub(crate) fn terminate(child: &mut dyn ChildWrapper) -> io::Result<()> {
 /// the middle of a request: the worker sees its input close only between
 /// requests (review 2026-10-17 EX-7). On Windows the parent's kill-on-close
 /// job object ends it. A thread rather than `PR_SET_PDEATHSIG`, which follows
-/// the spawning thread, and a pooled worker outlives that.
+/// the spawning thread, and a pooled worker outlives that. The parent is the
+/// one [`watched_by_this_process`] named: one that died before this call has
+/// already handed the worker to another process (review 2026-10-19 P3).
 pub(crate) fn exit_with_parent() {
     #[cfg(unix)]
     {
         use std::os::unix::process::parent_id;
-        let parent = parent_id();
+        let parent = std::env::var(PARENT_PID)
+            .ok()
+            .and_then(|pid| pid.parse().ok())
+            .unwrap_or_else(parent_id);
         std::thread::spawn(move || {
             while parent_id() == parent {
                 std::thread::sleep(std::time::Duration::from_millis(250));
@@ -114,5 +130,84 @@ mod unix_tests {
             "the exit cleanup ran"
         );
         assert_eq!(output.status.signal(), Some(9), "{:?}", output.status);
+    }
+
+    fn test_process(name: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            &format!("child_process::unix_tests::{name}"),
+            "--ignored",
+            "--nocapture",
+        ]);
+        command
+    }
+
+    #[test]
+    #[ignore = "child process of the test below"]
+    fn worker_watching_only_after_its_parent_died() {
+        // Its stdin, the test's pipe, closes once the test has reaped the parent.
+        let _ = std::io::read_to_string(std::io::stdin());
+        super::exit_with_parent();
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[test]
+    #[ignore = "child process of the test below"]
+    fn parent_exiting_right_after_starting_its_worker() {
+        let mut command = test_process("worker_watching_only_after_its_parent_died");
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        super::watched_by_this_process(&mut command);
+        println!("WORKER_PID {}", command.spawn().unwrap().id());
+    }
+
+    // A zombie has ended; only its new parent's wait is missing.
+    #[cfg(target_os = "linux")]
+    fn process_is_running(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit(')')
+                .next()
+                .is_some_and(|state| !state.trim_start().starts_with('Z'))
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_worker_ends_when_its_parent_died_before_it_watched() {
+        let mut parent = test_process("parent_exiting_right_after_starting_its_worker")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let worker_stdin = parent.stdin.take().unwrap();
+        // Read to the end: a closed pipe would fail the parent's last line.
+        let output = std::io::read_to_string(parent.stdout.take().unwrap()).unwrap();
+        let worker_pid: u32 = output
+            .lines()
+            .find_map(|line| line.strip_prefix("WORKER_PID "))
+            .expect("parent reported its worker")
+            .parse()
+            .unwrap();
+        assert!(parent.wait().unwrap().success());
+        drop(worker_stdin);
+        let _ = Command::new("timeout")
+            .args([
+                "5",
+                "tail",
+                &format!("--pid={worker_pid}"),
+                "-f",
+                "/dev/null",
+            ])
+            .output();
+        let survived = process_is_running(worker_pid);
+        if survived {
+            let _ = Command::new("kill")
+                .args(["-9", &worker_pid.to_string()])
+                .output();
+        }
+        assert!(!survived, "worker {worker_pid} outlived its parent by 5 s");
     }
 }

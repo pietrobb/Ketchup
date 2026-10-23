@@ -202,6 +202,20 @@ fn workers_and_plugins_start_without_a_console_window_inside_their_job() {
     }
 }
 
+// The worker compares its parent with this pid, not with the parent it finds
+// when it starts watching: by then a dead parent has been replaced.
+#[test]
+fn worker_commands_name_the_process_that_starts_them() {
+    let worker = limited_worker_command(Command::new("ketchup-exact-worker"), None);
+    let parent = worker
+        .command()
+        .get_envs()
+        .find(|(name, _)| *name == "KETCHUP_WORKER_PARENT_PID")
+        .and_then(|(_, value)| value);
+    let this_process = std::process::id().to_string();
+    assert_eq!(parent, Some(std::ffi::OsStr::new(&this_process)));
+}
+
 #[cfg(windows)]
 fn process_is_running(pid: u32) -> bool {
     let output = Command::new("tasklist")

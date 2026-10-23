@@ -861,7 +861,8 @@ fn spawn_limited_worker_command(
     limited_worker_command(command, memory_limit).spawn()
 }
 
-fn limited_worker_command(command: Command, memory_limit: Option<usize>) -> CommandWrap {
+fn limited_worker_command(mut command: Command, memory_limit: Option<usize>) -> CommandWrap {
+    child_process::watched_by_this_process(&mut command);
     let mut command = CommandWrap::from(command);
     // KillOnDrop makes the job kill-on-close: the worker dies with this process even when
     // it crashes or is killed mid-request, instead of outliving it as an orphan.
