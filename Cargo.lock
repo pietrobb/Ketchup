@@ -2567,6 +2567,7 @@ dependencies = [
  "ketchup-model",
  "ketchup-program",
  "ketchup-test-env",
+ "nix 0.31.3",
  "process-wrap",
  "serde",
  "serde_json",
