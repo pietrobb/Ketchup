@@ -43,7 +43,7 @@ foreach ($abi in $Abi) {
     Set-Item "env:CC_$($triple.Replace('-', '_'))" (Join-Path $clangDir "$triple`28-clang.cmd")
     Set-Item "env:AR_$($triple.Replace('-', '_'))" (Join-Path $clangDir "llvm-ar.exe")
     & rustup target add $triple | Out-Null
-    $cargoArgs = @("build", "-p", "ketchup-viewer-android", "--target", $triple, "--manifest-path", (Join-Path $root "Cargo.toml"))
+    $cargoArgs = @("build", "--locked", "-p", "ketchup-viewer-android", "--target", $triple, "--manifest-path", (Join-Path $root "Cargo.toml"))
     if ($Release) { $cargoArgs += "--release" }
     & cargo @cargoArgs
     if ($LASTEXITCODE -ne 0) { throw "Rust build for $abi failed" }

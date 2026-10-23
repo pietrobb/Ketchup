@@ -22,7 +22,7 @@ if (-not $bindgen -or ((& wasm-bindgen --version) -notmatch [regex]::Escape($bin
 
 $env:CARGO_TARGET_DIR = Join-Path $root "target\wasm"
 & rustup target add wasm32-unknown-unknown | Out-Null
-& cargo build -p ketchup-viewer-web --target wasm32-unknown-unknown --release --manifest-path (Join-Path $root "Cargo.toml")
+& cargo build --locked -p ketchup-viewer-web --target wasm32-unknown-unknown --release --manifest-path (Join-Path $root "Cargo.toml")
 if ($LASTEXITCODE -ne 0) { throw "WebAssembly build failed" }
 
 [void](New-Item $OutputDir -ItemType Directory -Force)
