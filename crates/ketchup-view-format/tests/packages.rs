@@ -226,49 +226,64 @@ fn renderer_decode_borrows_shared_buffers_and_composes_out_of_order_nodes() {
     assert_eq!(edge.indices().collect::<Vec<_>>(), [0, 1]);
 }
 
+/// Asserts that `result` is refused by the check it is meant to reach: the
+/// rejection names `target`, and `detail` appears in its reason or causes.
+/// A bare `is_err()` would also pass when an earlier, unrelated check refuses.
+#[track_caller]
+fn assert_refused<T>(result: Result<T, ketchup_rejection::Rejection>, target: &str, detail: &str) {
+    let Err(rejection) = result else {
+        panic!("accepted; expected a refusal at {target} ({detail})");
+    };
+    let explanation = format!(
+        "{} {}",
+        rejection.reason_text(),
+        rejection.causes().join(" ")
+    );
+    assert!(
+        rejection.code() == "viewer.package.invalid"
+            && rejection.target_name() == target
+            && explanation.contains(detail),
+        "expected {target} ({detail}), got {} at {}: {explanation}",
+        rejection.code(),
+        rejection.target_name()
+    );
+}
+
 #[test]
 fn renderer_decode_revalidates_mutated_public_package_fields() {
     let (mut manifest, mut doc, binary) = fixture();
     manifest.occurrences[0].glb_node = usize::MAX;
-    assert!(
-        Package {
-            manifest,
-            glb: encode_glb(&doc, &binary)
-        }
-        .geometry()
-        .is_err()
+    let package = Package {
+        manifest,
+        glb: encode_glb(&doc, &binary),
+    };
+    assert_refused(
+        package.geometry(),
+        "occurrences.glb_node",
+        "Missing geometry node",
     );
     let (manifest, _, _) = fixture();
     doc["buffers"][0]["uri"] = json!("file:///private/model.bin");
-    assert!(
-        Package {
-            manifest: manifest.clone(),
-            glb: encode_glb(&doc, &binary)
-        }
-        .geometry()
-        .is_err()
-    );
+    let package = Package {
+        manifest: manifest.clone(),
+        glb: encode_glb(&doc, &binary),
+    };
+    assert_refused(package.geometry(), "glb.json", "`uri`");
     doc["buffers"][0].as_object_mut().unwrap().remove("uri");
     doc["accessors"][0]["count"] = json!(u32::MAX);
-    assert!(
-        Package {
-            manifest: manifest.clone(),
-            glb: encode_glb(&doc, &binary)
-        }
-        .geometry()
-        .is_err()
-    );
+    let package = Package {
+        manifest: manifest.clone(),
+        glb: encode_glb(&doc, &binary),
+    };
+    assert_refused(package.geometry(), "glb.accessors", "processing limit");
     doc["accessors"][0]["count"] = json!(3);
     let mut invalid = binary;
     invalid[..4].copy_from_slice(&f32::NAN.to_le_bytes());
-    assert!(
-        Package {
-            manifest,
-            glb: encode_glb(&doc, &invalid)
-        }
-        .geometry()
-        .is_err()
-    );
+    let package = Package {
+        manifest,
+        glb: encode_glb(&doc, &invalid),
+    };
+    assert_refused(package.geometry(), "glb.positions", "Non-finite");
 }
 
 #[test]
@@ -386,73 +401,165 @@ fn corrupt_truncated_oversized_and_unknown_envelopes_are_refused() {
         manifest,
         glb: encode_glb(&doc, &binary),
     });
+    // The 53-byte header: magic and version, the manifest and GLB lengths, the checksum.
     for len in 0..original.len() {
-        assert!(Package::read(&original[..len]).is_err(), "truncation {len}");
+        let (target, detail) = if len < 53 {
+            ("header", "header is incomplete")
+        } else {
+            ("payload", "payload is truncated")
+        };
+        assert_refused(Package::read(&original[..len]), target, detail);
     }
-    for index in [0, 11, 21, original.len() - 1] {
+    for (index, target, detail) in [
+        (0, "version", "magic or version"),
+        (11, "version", "magic or version"),
+        (21, "checksum", "damaged"),
+        (original.len() - 1, "checksum", "damaged"),
+    ] {
         let mut damaged = original.clone();
         damaged[index] ^= 0x80;
-        assert!(Package::read(damaged.as_slice()).is_err());
+        assert_refused(Package::read(damaged.as_slice()), target, detail);
     }
     let mut trailing = original.clone();
     trailing.push(0);
-    assert!(Package::read(trailing.as_slice()).is_err());
+    assert_refused(
+        Package::read(trailing.as_slice()),
+        "payload",
+        "Trailing data",
+    );
     let mut oversized = original[..53].to_vec();
     oversized[13..17].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert!(Package::read(oversized.as_slice()).is_err());
+    assert_refused(
+        Package::read(oversized.as_slice()),
+        "manifest",
+        "package limit",
+    );
     oversized = original[..53].to_vec();
     oversized[17..21].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert!(Package::read(oversized.as_slice()).is_err());
+    assert_refused(Package::read(oversized.as_slice()), "glb", "package limit");
 }
 
 #[test]
 fn source_references_finite_numbers_and_program_fields_are_checked() {
     let (manifest, doc, binary) = fixture();
     let glb = encode_glb(&doc, &binary);
-    for mutate in [
-        (|m: &mut Manifest| m.occurrences[0].definition_id = 99) as fn(&mut Manifest),
-        |m| m.occurrences[0].glb_node = 99,
-        |m| {
-            m.occurrences[0]
-                .attributes
-                .insert("bad\0key".into(), "value".into());
-        },
-        |m| {
-            m.occurrences[0]
-                .attributes
-                .insert("key".into(), "v".repeat(65_537));
-        },
-        |m| {
-            m.occurrences[0].attributes = (0..1_025)
-                .map(|i| (format!("key{i}"), "v".into()))
-                .collect();
-        },
-        |m| m.occurrences[0].path.root_occurrence_id = 99,
-        |m| m.scenes[0].hidden = vec![path(99)],
-        |m| m.scenes[0].visible_dimensions = vec![99],
-        |m| m.start_scene = Some(99),
-        |m| m.dimensions[0].from.occurrence = Some(path(99)),
-        |m| m.scenes[0].camera.eye_mm[0] = f64::NAN,
-        |m| {
-            m.scenes[0].camera.projection = Projection::Perspective {
-                short_fov_radians: 0.8,
-                lens_shift_short: [f64::NAN, 0.0],
-            }
-        },
-        |m| {
-            m.scenes[0].camera.projection = Projection::Perspective {
-                short_fov_radians: 0.8,
-                lens_shift_short: [0.0, 1e10],
-            }
-        },
-        |m| m.source.canonical_digest = "b".repeat(16),
-        |m| m.definitions.push(m.definitions[0].clone()),
-        |m| {
-            let mut same_name = m.definitions[0].clone();
-            same_name.id = 2;
-            m.definitions.push(same_name);
-            m.occurrences[0].definition_id = 2;
-        },
+    // Each mutation names the check that must refuse it. JSON cannot carry NaN
+    // (serde writes null), so a read refuses NaN as a malformed manifest while
+    // a write reaches the finite-number check.
+    let unchecked = ("", "");
+    for (mutate, (read_target, read_detail), (write_target, write_detail)) in [
+        (
+            (|m: &mut Manifest| m.occurrences[0].definition_id = 99) as fn(&mut Manifest),
+            ("occurrences", "missing definition"),
+            unchecked,
+        ),
+        (
+            |m| m.occurrences[0].glb_node = 99,
+            ("occurrences.glb_node", "Missing geometry node"),
+            unchecked,
+        ),
+        (
+            |m| {
+                m.occurrences[0]
+                    .attributes
+                    .insert("bad\0key".into(), "value".into());
+            },
+            ("text", "NUL"),
+            unchecked,
+        ),
+        (
+            |m| {
+                m.occurrences[0]
+                    .attributes
+                    .insert("key".into(), "v".repeat(65_537));
+            },
+            ("text", "length limit"),
+            unchecked,
+        ),
+        (
+            |m| {
+                m.occurrences[0].attributes = (0..1_025)
+                    .map(|i| (format!("key{i}"), "v".into()))
+                    .collect();
+            },
+            ("attributes", "too many attributes"),
+            unchecked,
+        ),
+        (
+            |m| m.occurrences[0].path.root_occurrence_id = 99,
+            ("occurrences.path", "GLB ancestry"),
+            unchecked,
+        ),
+        (
+            |m| m.scenes[0].hidden = vec![path(99)],
+            ("scenes.references", "missing occurrence"),
+            unchecked,
+        ),
+        (
+            |m| m.scenes[0].visible_dimensions = vec![99],
+            ("scenes.references", "dimension"),
+            unchecked,
+        ),
+        (
+            |m| m.start_scene = Some(99),
+            ("start_scene", "starting scene is missing"),
+            unchecked,
+        ),
+        (
+            |m| m.dimensions[0].from.occurrence = Some(path(99)),
+            ("dimensions.anchor", "missing occurrence"),
+            unchecked,
+        ),
+        (
+            |m| m.scenes[0].camera.eye_mm[0] = f64::NAN,
+            ("manifest", "null"),
+            ("number", "finite"),
+        ),
+        (
+            |m| {
+                m.scenes[0].camera.projection = Projection::Perspective {
+                    short_fov_radians: 0.8,
+                    lens_shift_short: [f64::NAN, 0.0],
+                }
+            },
+            ("manifest", "null"),
+            ("number", "finite"),
+        ),
+        (
+            |m| {
+                m.scenes[0].camera.projection = Projection::Perspective {
+                    short_fov_radians: 0.8,
+                    lens_shift_short: [0.0, 1e10],
+                }
+            },
+            ("number", "±1e9 mm"),
+            unchecked,
+        ),
+        (
+            |m| m.source.canonical_digest = "b".repeat(16),
+            ("source", "does not match the geometry"),
+            unchecked,
+        ),
+        (
+            |m| m.definitions.push(m.definitions[0].clone()),
+            ("definitions", "unique"),
+            unchecked,
+        ),
+        (
+            // A second definition under the same name does not stand in for the
+            // one the GLB node was exported from.
+            |m| {
+                let mut same_name = m.definitions[0].clone();
+                same_name.id = 2;
+                m.definitions.push(same_name);
+                m.occurrences[0].definition_id = 2;
+            },
+            (
+                "occurrences.definition_id",
+                "does not match its GLB occurrence",
+            ),
+            unchecked,
+        ),
     ] {
         let mut invalid = manifest.clone();
         mutate(&mut invalid);
@@ -460,51 +567,93 @@ fn source_references_finite_numbers_and_program_fields_are_checked() {
             &serde_json::to_vec(&invalid).expect("hostile manifest"),
             &glb,
         );
-        assert!(Package::read(wire.as_slice()).is_err());
-        assert!(
-            Package {
-                manifest: invalid,
-                glb: glb.clone()
-            }
-            .write(Vec::new())
-            .is_err()
-        );
+        assert_refused(Package::read(wire.as_slice()), read_target, read_detail);
+        let (write_target, write_detail) = if write_target.is_empty() {
+            (read_target, read_detail)
+        } else {
+            (write_target, write_detail)
+        };
+        let package = Package {
+            manifest: invalid,
+            glb: glb.clone(),
+        };
+        assert_refused(package.write(Vec::new()), write_target, write_detail);
     }
     let mut json = serde_json::to_value(&manifest).expect("manifest");
     json["program"] = json!("load external file");
     let invalid = raw_package(&serde_json::to_vec(&json).expect("json"), &glb);
-    assert!(Package::read(invalid.as_slice()).is_err());
+    assert_refused(Package::read(invalid.as_slice()), "manifest", "`program`");
 }
 
 #[test]
 fn glb_rejects_external_resources_overflow_indices_nan_and_hierarchy_cycles() {
     let (manifest, doc, binary) = fixture();
     let json = serde_json::to_vec(&manifest).expect("manifest");
-    for mutate in [
-        (|v: &mut Value| v["buffers"][0]["uri"] = json!("file:///private.bin")) as fn(&mut Value),
-        |v| v["images"] = json!([{"uri":"https://example.invalid/image"}]),
-        |v| v["extensionsRequired"] = json!(["unknown"]),
-        |v| v["asset"]["extras"]["program"] = json!("executable input"),
-        |v| v["nodes"][0]["extras"]["uri"] = json!("file:///private.bin"),
-        |v| v["accessors"][0]["count"] = json!(u64::MAX),
-        |v| v["bufferViews"][0]["byteOffset"] = json!(u64::MAX),
-        |v| v["meshes"][0]["primitives"][0]["indices"] = json!(99),
-        |v| {
-            v["nodes"][0]["children"] = json!([1]);
-            v["nodes"][1]["children"] = json!([0]);
-            v["scenes"][0]["nodes"] = json!([]);
-        },
+    for (mutate, target, detail) in [
+        (
+            (|v: &mut Value| v["buffers"][0]["uri"] = json!("file:///private.bin"))
+                as fn(&mut Value),
+            "glb.json",
+            "`uri`",
+        ),
+        (
+            |v| v["images"] = json!([{"uri":"https://example.invalid/image"}]),
+            "glb.json",
+            "`images`",
+        ),
+        (
+            |v| v["extensionsRequired"] = json!(["unknown"]),
+            "glb.json",
+            "`extensionsRequired`",
+        ),
+        (
+            |v| v["asset"]["extras"]["program"] = json!("executable input"),
+            "glb.asset.extras",
+            "source identity and units",
+        ),
+        (
+            |v| v["nodes"][0]["extras"]["uri"] = json!("file:///private.bin"),
+            "glb.nodes.extras",
+            "source metadata",
+        ),
+        (
+            |v| v["accessors"][0]["count"] = json!(u64::MAX),
+            "glb.accessors",
+            "processing limit",
+        ),
+        (
+            |v| v["bufferViews"][0]["byteOffset"] = json!(u64::MAX),
+            "glb.bufferViews",
+            "buffer range",
+        ),
+        (
+            |v| v["meshes"][0]["primitives"][0]["indices"] = json!(99),
+            "glb.primitive",
+            "index accessor",
+        ),
+        (
+            |v| {
+                v["nodes"][0]["children"] = json!([1]);
+                v["nodes"][1]["children"] = json!([0]);
+                v["scenes"][0]["nodes"] = json!([]);
+            },
+            "glb.nodes",
+            "cycle",
+        ),
     ] {
         let mut invalid = doc.clone();
         mutate(&mut invalid);
         let encoded = raw_package(&json, &encode_glb(&invalid, &binary));
-        assert!(Package::read(encoded.as_slice()).is_err());
+        assert_refused(Package::read(encoded.as_slice()), target, detail);
     }
-    for (offset, value) in [(0, f32::NAN.to_le_bytes()), (36, 99_u32.to_le_bytes())] {
+    for (offset, value, target, detail) in [
+        (0, f32::NAN.to_le_bytes(), "glb.positions", "Non-finite"),
+        (36, 99_u32.to_le_bytes(), "glb.indices", "missing vertex"),
+    ] {
         let mut invalid = binary.clone();
         invalid[offset..offset + 4].copy_from_slice(&value);
         let encoded = raw_package(&json, &encode_glb(&doc, &invalid));
-        assert!(Package::read(encoded.as_slice()).is_err());
+        assert_refused(Package::read(encoded.as_slice()), target, detail);
     }
 }
 

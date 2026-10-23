@@ -19,6 +19,7 @@ sha2 = "0.10.9"
 [dev-dependencies]
 ketchup-manufacturing = { path = "../ketchup-manufacturing" }
 ketchup-model = { path = "../ketchup-model", features = ["testing"] }
+ketchup-rejection = { path = "../ketchup-rejection" }
 
 [lints]
 workspace = true
