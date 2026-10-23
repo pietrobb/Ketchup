@@ -365,6 +365,7 @@ fn key_event(chord: &egui::KeyboardShortcut) -> egui::Event {
 mod cad_edit;
 mod drawing;
 mod exact_modeling;
+mod import_framing;
 mod interchange;
 mod organization;
 mod scale_feature;

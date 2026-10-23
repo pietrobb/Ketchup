@@ -130,6 +130,24 @@ impl LayerLines {
     pub fn segment_count(&self) -> usize {
         self.points_mm.len() - self.ends.len()
     }
+
+    /// The smallest and largest corner of its points and text anchors, or `None` without
+    /// any.
+    #[must_use]
+    pub fn bounds_mm(&self) -> Option<[[f64; 2]; 2]> {
+        point_bounds(self.points_and_anchors())
+    }
+}
+
+/// The smallest and largest corner of `points`, or `None` without points.
+fn point_bounds(mut points: impl Iterator<Item = [f64; 2]>) -> Option<[[f64; 2]; 2]> {
+    let first = points.next()?;
+    Some(points.fold([first, first], |[low, high], point| {
+        [
+            [low[0].min(point[0]), low[1].min(point[1])],
+            [high[0].max(point[0]), high[1].max(point[1])],
+        ]
+    }))
 }
 
 /// The versions of the blob, read all: lines only (1); each layer's texts after its points
@@ -237,14 +255,11 @@ impl UnderlayLines {
     /// The smallest and largest corner of every point, or `None` without points.
     #[must_use]
     pub fn bounds_mm(&self) -> Option<[[f64; 2]; 2]> {
-        let mut points = self.layers.iter().flat_map(|layer| &layer.points_mm);
-        let first = *points.next()?;
-        Some(points.fold([first, first], |[low, high], point| {
-            [
-                [low[0].min(point[0]), low[1].min(point[1])],
-                [high[0].max(point[0]), high[1].max(point[1])],
-            ]
-        }))
+        point_bounds(
+            self.layers
+                .iter()
+                .flat_map(|layer| layer.points_mm.iter().copied()),
+        )
     }
 
     /// Moves lines that leave the canonical ±1,000 m envelope near the origin, so that a

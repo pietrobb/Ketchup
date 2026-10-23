@@ -15,9 +15,18 @@ use ketchup_application::program_isolation::{
 use ketchup_model::underlay::placement::{UnderlayFit, UnderlayFitError, plan_underlay_fit};
 use ketchup_model::underlay::snap::UnderlaySnapIndex;
 use ketchup_model::underlay::{
-    UnderlayId, UnderlayLines, UnderlayPlanError, plan_underlay, plan_underlay_removal,
+    LayerLines, Underlay, UnderlayId, UnderlayLines, UnderlayPlanError, plan_underlay,
+    plan_underlay_removal,
 };
 use ketchup_program::CancelToken;
+
+/// Per layer of an underlay's lines, in their own millimetres, the box of its points and
+/// text anchors; `None` for a layer that draws nothing.
+pub(crate) type UnderlayExtent = Arc<[Option<[[f64; 2]; 2]>]>;
+
+fn underlay_extent(lines: &UnderlayLines) -> UnderlayExtent {
+    lines.layers().iter().map(LayerLines::bounds_mm).collect()
+}
 
 /// A drawing read as an underlay, not yet added to the document.
 pub(crate) struct ReadUnderlay {
@@ -253,6 +262,11 @@ impl KetchupApp {
             .underlay_snaps
             .get_mut()
             .insert(key, UnderlaySnapSlot::Ready(read.snaps));
+        self.render
+            .underlay_extents
+            .get_mut()
+            .insert(key, underlay_extent(&read.lines));
+        self.frame_after_import();
         self.digest = self.catalog.format(
             "digest-imported-underlay",
             &BTreeMap::from([
@@ -395,6 +409,10 @@ impl KetchupApp {
                 });
                 let geometry = Arc::new(UnderlayGeometry::new(key, &lines));
                 self.render.underlays.insert(key, Arc::clone(&geometry));
+                self.render
+                    .underlay_extents
+                    .get_mut()
+                    .insert(key, underlay_extent(&lines));
                 self.build_underlay_snap_index(key, lines);
                 geometry
             };
@@ -430,6 +448,52 @@ impl KetchupApp {
             .underlay_snaps
             .get_mut()
             .retain(|key, _| named(key));
+        self.render
+            .underlay_extents
+            .get_mut()
+            .retain(|key, _| named(key));
         draws
+    }
+
+    /// The world box of what every shown underlay draws on its shown layers, where it is
+    /// placed: one `(origin, size)` per underlay, as [`Self::active_frame_bounds`] takes it.
+    pub(crate) fn shown_underlay_bounds(&self, snapshot: &Snapshot) -> Vec<(Vec3, Vec3)> {
+        let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
+        snapshot
+            .underlays()
+            .filter(|underlay| shown(underlay.tag))
+            .filter_map(|underlay| {
+                let extent = self.cached_underlay_extent(underlay)?;
+                let corners = underlay
+                    .layers
+                    .iter()
+                    .zip(extent.iter())
+                    .filter(|(layer, _)| shown(layer.tag))
+                    .filter_map(|(_, bounds)| *bounds)
+                    .flat_map(|[low, high]| {
+                        [[low[0], low[1]], [high[0], low[1]], [low[0], high[1]], high]
+                    })
+                    .map(|[x, y]| transform_model_point(underlay.placement, Vec3::new(x, y, 0.0)));
+                let [minimum, maximum] = bounds_of(corners)?;
+                Some((minimum, maximum - minimum))
+            })
+            .collect()
+    }
+
+    /// The layer bounds of `underlay`'s lines, decoded from the document's blob the first
+    /// time; `None` while the document holds no readable blob of them.
+    fn cached_underlay_extent(&self, underlay: &Underlay) -> Option<UnderlayExtent> {
+        let key = underlay.lines_sha256;
+        if let Some(extent) = self.render.underlay_extents.borrow().get(&key) {
+            return Some(Arc::clone(extent));
+        }
+        let blobs = self.file.container_data.blobs();
+        let lines = UnderlayLines::decode(blobs.get(&underlay.lines_blob())?).ok()?;
+        let extent = underlay_extent(&lines);
+        self.render
+            .underlay_extents
+            .borrow_mut()
+            .insert(key, Arc::clone(&extent));
+        Some(extent)
     }
 }

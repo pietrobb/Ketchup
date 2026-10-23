@@ -312,6 +312,9 @@ pub(crate) struct RenderState {
     /// The snap indexes of the underlays' lines, by the SHA-256 of their blob.
     pub(crate) underlay_snaps:
         RefCell<BTreeMap<[u8; 32], crate::app::underlay_snapping::UnderlaySnapSlot>>,
+    /// The bounds of each layer of the underlays' lines, by the SHA-256 of their blob: what
+    /// framing the view takes of them.
+    pub(crate) underlay_extents: RefCell<BTreeMap<[u8; 32], crate::app::underlay::UnderlayExtent>>,
     /// What the viewport paints of them this frame.
     pub(crate) underlay_frame: Vec<crate::renderer::underlay::UnderlayDraw>,
     pub(crate) wgpu_target_format: Option<eframe::wgpu::TextureFormat>,

@@ -1213,7 +1213,9 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
     // The move goes through a real viewport drag: a drag ends its preview in the
     // same frame that commits the revision, so the scene plan is rebuilt at the
     // moment the carried-forward products are still bound to the old revision.
-    let offset = Vec3::new(40.0, 0.0, 0.0);
+    // The import frames the body, so both moves stay within a fraction of its size
+    // to keep it on screen.
+    let offset = Vec3::new(span * 0.3, 0.0, 0.0);
     shell.click_command(AppCommand::Move);
     let from = shell.app().project_to_screen(interaction_point, viewport);
     let to = shell

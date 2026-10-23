@@ -351,6 +351,7 @@ impl KetchupApp {
                 });
             bounds.push((minimum, maximum - minimum));
         }
+        bounds.extend(self.shown_underlay_bounds(&snapshot));
         if let Some(cache) = self.hover.projection_cache.borrow().as_ref() {
             let _ = cache.frame_bounds.set(bounds.clone());
         }
@@ -634,11 +635,12 @@ impl KetchupApp {
         ));
     }
 
-    /// Restore the isometric home orientation and frame every visible occurrence.
+    /// Restore the isometric home orientation and frame every visible occurrence and shown
+    /// underlay.
     pub fn home_view(&mut self) {
         self.look_isometric();
         let bounds = self.active_frame_bounds();
-        let count = bounds.len();
+        let count = self.framed_occurrences(&bounds);
         if !self.frame_bounds(&bounds) {
             self.camera.target_z = 10.0;
             self.camera.pan = Vec2::ZERO;
@@ -669,17 +671,37 @@ impl KetchupApp {
         );
     }
 
-    /// Frame every visible occurrence in the viewport laid out by the last frame.
+    /// Frame every visible occurrence and the shown lines of every shown underlay in the
+    /// viewport laid out by the last frame.
     pub fn zoom_fit(&mut self) {
         self.camera.zoom_fit_pending_quiet = false;
         let bounds = self.active_frame_bounds();
-        let count = bounds.len();
+        let count = self.framed_occurrences(&bounds);
         self.camera.zoom_fit_pending = !self.frame_bounds(&bounds);
         if !self.camera.zoom_fit_pending {
             self.digest = self.catalog.format(
                 "digest-zoom-fit",
                 &BTreeMap::from([("count", count.to_string())]),
             );
+        }
+    }
+
+    /// How many of `bounds`, as [`Self::active_frame_bounds`] gives them, are occurrences:
+    /// the underlays come after them.
+    fn framed_occurrences(&self, bounds: &[(Vec3, Vec3)]) -> usize {
+        let underlays = self.shown_underlay_bounds(&self.document.current()).len();
+        bounds.len().saturating_sub(underlays)
+    }
+
+    /// After an import, frames everything the document shows, the import with it, without
+    /// changing the viewing direction; without a laid-out viewport yet, on its first frame.
+    pub(crate) fn frame_after_import(&mut self) {
+        let bounds = self.active_frame_bounds();
+        if self.frame_bounds(&bounds) {
+            self.refresh_camera_distance();
+        } else if self.camera.viewport_rect.is_none() {
+            self.camera.zoom_fit_pending = true;
+            self.camera.zoom_fit_pending_quiet = true;
         }
     }
 

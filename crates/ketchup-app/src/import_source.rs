@@ -174,7 +174,7 @@ impl std::error::Error for ImportError {
 
 impl KetchupApp {
     /// Reports one finished import in the action digest; a refusal names its typed reason.
-    /// The result is passed on.
+    /// After an import the view frames the whole document. The result is passed on.
     pub(crate) fn report_import_outcome(
         &mut self,
         source: &ImportSourcePlan<impl Sized>,
@@ -182,6 +182,7 @@ impl KetchupApp {
     ) -> Result<(), ImportError> {
         match &result {
             Ok(()) => {
+                self.frame_after_import();
                 self.digest = self.catalog.format(
                     &format!("digest-imported-{}", import_catalog_key(source.format)),
                     &BTreeMap::from([("path", source.path.display().to_string())]),
