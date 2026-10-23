@@ -217,7 +217,7 @@ value at once; another value in `attributes=` stops the export, which names it.
 
 The file is split into topics by `#@topic id: title` lines (`basics`,
 `placement`, `profiles`, `machining`, `joinery`, `fasteners`, `intent`, `annotations`, `space`, `buildup`,
-`loads`, `member_check`, `validation`, `report`). Each
+`openings`, `loads`, `member_check`, `validation`, `report`). Each
 topic holds the comments that document its builtins and the helpers that
 belong to it, so an AI reads the index and then only the topics it needs;
 concise topic answers contain signatures, rules and a short example; helper code is

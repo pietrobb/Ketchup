@@ -21,6 +21,7 @@ mod member_design;
 mod member_loads;
 mod member_orientation;
 mod motion;
+mod openings;
 mod opposing_holes;
 mod profile_arcs;
 mod program;

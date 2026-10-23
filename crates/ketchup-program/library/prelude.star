@@ -1957,7 +1957,9 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     published rating of that hanger, else CONNECTOR_RATINGS gives it or none. anchor={"to": part, "fastener": name, "spacing": 1000,
 #     "edge": 300, "min_edge": 80} anchors every bottom plate to `to` (a slab) with at least two anchors;
 #     a plate too short to keep them min_edge from its ends is a program_condition_failed error.
-#     openings: [(u, v, width, height), ...] in panel coordinates, apart along u.
+#     openings: [(u, v, width, height), ...] in panel coordinates, apart along u, or
+#     window()/door() results (topic openings): each one in this panel's wall and storey
+#     becomes its opening here, the others are left out.
 #     Pieces are "<name>/<layer>", "<name>/<layer>/stud 3", ... with `tags` plus their
 #     layer's tags. Only extrusions, no booleans: every piece is rebuilt from the numbers.
 #     Fabrication role (FABRICATION_ROLE): plates, studs, noggins, headers and sills of a
@@ -2068,7 +2070,15 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         return vec_add(vec_add(origin, vec_scale(along, u)), vec_add(vec_scale(up, v), vec_scale(out, o)))
     if length <= 0:
         fail("buildup(%s): length must be positive, got %s" % (name, length))
-    holes = [tuple([float(x) for x in o]) for o in openings]
+    holes = []
+    for o in openings:
+        if type(o) == "struct":
+            # A window() or door(): its opening in this panel, if it lies in it.
+            offsets = [sum([l["thickness"] for l in layers[:k]]) for k in range(len(layers) + 1)]
+            top_v = max([max([p[1] for p in _outline(name, length, height, top, s)]) for s in offsets[:-1]] + [0.0])
+            o = _opening_in(name, o, origin, along, up, out, offsets[-1], top_v)
+        if o != None:
+            holes.append(tuple([float(x) for x in o]))
     for i in range(len(holes)):
         ou, ov, ow, oh = holes[i]
         if ow <= 0 or oh <= 0 or ou < 0 or ov < 0 or ou + ow > length + 0.001:
@@ -2327,6 +2337,143 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 piece("%s/infill %d" % (label, k + 1), bays[k], offset, thickness, layer["infill"], layer.get("infill_color"), fill_tags, fill_role)
         offset += thickness
     return group(name, pieces)
+
+#@topic openings: Windows and doors: one definition gives the wall opening, its cut and its parts
+#
+#   window(name, origin, along, up, wall, u, v, width, height, frame=(80, 78), inset=None,
+#          glass=24, material="wood", color=, fill_material="insulating glass", fill_color=,
+#          tags=[], cut=None)  -> opening
+#   door(name, origin, along, up, wall, u, v, width, height, frame=(80, 78), inset=None,
+#        leaf=40, threshold=20, material="wood", color=, fill_material="wood", fill_color=,
+#        tags=[], cut=None)  -> opening
+#     The opening is u .. u + width, v .. v + height in the plane of a wall's inside face,
+#     spanned from world point `origin` by `along` and `up` as in buildup(); the wall is
+#     `wall` mm thick outward along along x up. A frame of section `frame` = (width, depth)
+#     lines the opening, its inner face `inset` mm out from the inside face (default: in
+#     the middle of the wall). A window holds a pane `glass` thick in the middle of the
+#     frame; a door has a threshold `threshold` high in place of the bottom frame piece and
+#     a leaf `leaf` thick, and stands on its floor at v = 0.
+#     Parts "<name>/frame top", "frame bottom", "frame left", "frame right" and "glass"
+#     (a door: "frame head", "threshold", "frame left", "frame right" and "leaf"), tagged
+#     `tags` plus "window" or "door": no_window_over() finds the windows by that tag.
+#     The result is one value: .name, .kind ("window" or "door"), .parts, .tool and the
+#     numbers above (.origin, .along, .up, .out, .wall, .u, .v, .width, .height).
+#       buildup(openings=[...]) takes it as it is: a build-up in the same wall and storey
+#       gets it as its opening in its own panel coordinates; a build-up in another wall,
+#       or wholly above or below the opening, leaves it out.
+#       .tool is a tool body through the whole wall; cut=part subtracts it from that plain
+#       wall body (a concept wall), the cut named like the opening.
+#     Refused with the reason: a frame that leaves no room inside the opening or does not
+#     fit in the wall, a door not at v = 0, an opening reaching outside the wall in cut=.
+# Example: a window and a door in a wall facing -y, inside face at y = 200, 200 mm thick
+#   wall = box("wall", (4000, 200, 2600), material = "timber frame")
+#   win = window("win", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 2200, 900, 1200, 1250, cut = wall)
+#   entry = door("entry", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 600, 0, 900, 2100, cut = wall)
+#   buildup("wall frame", (0, 200, 0), (1, 0, 0), (0, 0, 1), 4000, LAYERS, height = 2600,
+#           openings = [win, entry])
+
+_FRAME_COLOR = (240, 240, 236)
+_GLASS_COLOR = (150, 200, 230)
+_LEAF_COLOR = (150, 100, 60)
+
+def _wall_opening(kind, name, origin, along, up, wall, u, v, width, height, tags, cut, pieces):
+    """The parts, tool and checks shared by window() and door(); `pieces` are
+    (label, u0, v0, u1, v1, inset, depth, material, color) in the opening's plane."""
+    along = vec_scale(along, 1.0 / vec_length(along))
+    up = vec_sub(up, vec_scale(along, _dot(up, along)))
+    if vec_length(up) < 0.001:
+        fail("%s(%s): up must not run along `along`" % (kind, name))
+    up = vec_scale(up, 1.0 / vec_length(up))
+    out = _cross(along, up)
+    if width <= 0 or height <= 0 or wall <= 0:
+        fail("%s(%s): width, height and wall must be positive, got %s, %s and %s" %
+             (kind, name, fmt_mm(width), fmt_mm(height), fmt_mm(wall)))
+
+    def slab(label, u0, v0, u1, v1, at, thickness, material, color, tool = False):
+        part = extrude("%s/%s" % (name, label), profile = [[p[0], p[1]] for p in _rect(u0, v0, u1, v1)],
+                       distance = thickness, material = material, color = color, tool = tool,
+                       tags = None if tool else _names(tags) + [kind])
+        return place(part, origin = vec_add(origin, vec_scale(out, at)), z = out, x = along)
+
+    tool = slab("opening", u, v, u + width, v + height, -1, wall + 2, None, None, tool = True)
+    if cut != None:
+        info = part_info(cut)
+        for du, dv in ((0, 0), (width, 0), (width, height), (0, height)):
+            p = vec_add(vec_add(origin, vec_scale(along, u + du)), vec_add(vec_scale(up, v + dv), vec_scale(out, wall / 2.0)))
+            if any([p[k] < info.min[k] - 0.5 or p[k] > info.max[k] + 0.5 for k in range(3)]):
+                fail("%s(%s): the opening u = %s..%s, v = %s..%s reaches outside the wall %s" %
+                     (kind, name, fmt_mm(u), fmt_mm(u + width), fmt_mm(v), fmt_mm(v + height), info.name))
+        subtract(cut, tool, name = name)
+    parts = [slab(*piece) for piece in pieces]
+    return struct(name = name, kind = kind, parts = parts, tool = tool, origin = origin, along = along, up = up,
+                  out = out, wall = float(wall), u = float(u), v = float(v), width = float(width), height = float(height))
+
+def _frame_fit(kind, name, wall, frame, inset):
+    """(frame width, frame depth, inset) after checking that the frame fits in the wall."""
+    fw, fd = float(frame[0]), float(frame[1])
+    inset = (wall - fd) / 2.0 if inset == None else float(inset)
+    if fw <= 0 or fd <= 0 or inset < 0 or inset + fd > wall + 0.001:
+        fail("%s(%s): a frame %s mm deep, %s mm out from the inside face, does not fit in the %s mm wall" %
+             (kind, name, fmt_mm(fd), fmt_mm(inset), fmt_mm(wall)))
+    return fw, fd, inset
+
+def window(name, origin, along, up, wall, u, v, width, height, frame = (80, 78), inset = None, glass = 24,
+           material = "wood", color = _FRAME_COLOR, fill_material = "insulating glass", fill_color = _GLASS_COLOR,
+           tags = [], cut = None):
+    """A window: frame and pane in a wall opening; see topic openings."""
+    fw, fd, inset = _frame_fit("window", name, wall, frame, inset)
+    if width - 2 * fw < 1 or height - 2 * fw < 1:
+        fail("window(%s): a %s x %s mm opening leaves no room inside its %s mm frame" %
+             (name, fmt_mm(width), fmt_mm(height), fmt_mm(fw)))
+    if glass <= 0 or glass > fd:
+        fail("window(%s): the pane must be thinner than the %s mm frame, got %s mm" % (name, fmt_mm(fd), fmt_mm(glass)))
+    u1, v1 = u + width, v + height
+    return _wall_opening("window", name, origin, along, up, wall, u, v, width, height, tags, cut, [
+        ("frame bottom", u, v, u1, v + fw, inset, fd, material, color),
+        ("frame top", u, v1 - fw, u1, v1, inset, fd, material, color),
+        ("frame left", u, v + fw, u + fw, v1 - fw, inset, fd, material, color),
+        ("frame right", u1 - fw, v + fw, u1, v1 - fw, inset, fd, material, color),
+        ("glass", u + fw, v + fw, u1 - fw, v1 - fw, inset + (fd - glass) / 2.0, glass, fill_material, fill_color),
+    ])
+
+def door(name, origin, along, up, wall, u, v, width, height, frame = (80, 78), inset = None, leaf = 40, threshold = 20,
+         material = "wood", color = _FRAME_COLOR, fill_material = "wood", fill_color = _LEAF_COLOR,
+         tags = [], cut = None):
+    """A door: frame, threshold and leaf in a wall opening on the floor; see topic openings."""
+    if abs(v) > 0.001:
+        fail("door(%s): a door stands on its floor at v = 0 of its wall, got v = %s" % (name, fmt_mm(v)))
+    fw, fd, inset = _frame_fit("door", name, wall, frame, inset)
+    if threshold <= 0 or width - 2 * fw < 1 or height - fw - threshold < 1:
+        fail("door(%s): a %s x %s mm opening leaves no room inside its %s mm frame and %s mm threshold" %
+             (name, fmt_mm(width), fmt_mm(height), fmt_mm(fw), fmt_mm(threshold)))
+    if leaf <= 0 or leaf > fd:
+        fail("door(%s): the leaf must be thinner than the %s mm frame, got %s mm" % (name, fmt_mm(fd), fmt_mm(leaf)))
+    u1, v1 = u + width, v + height
+    return _wall_opening("door", name, origin, along, up, wall, u, v, width, height, tags, cut, [
+        ("threshold", u, v, u1, v + threshold, inset, fd, material, color),
+        ("frame head", u, v1 - fw, u1, v1, inset, fd, material, color),
+        ("frame left", u, v + threshold, u + fw, v1 - fw, inset, fd, material, color),
+        ("frame right", u1 - fw, v + threshold, u1, v1 - fw, inset, fd, material, color),
+        ("leaf", u + fw, v + threshold, u1 - fw, v1 - fw, inset + (fd - leaf) / 2.0, leaf, fill_material, fill_color),
+    ])
+
+def _opening_in(name, o, origin, along, up, out, depth, top_v):
+    """The (u, v, width, height) of window()/door() `o` in buildup `name`'s panel, or
+    None when it lies in another wall or wholly above or below the panel."""
+    if abs(abs(_dot(o.out, out)) - 1) > 0.000001:
+        fail("buildup(%s): %s %s does not lie in the plane of the panel" % (name, o.kind, o.name))
+    s0 = _dot(vec_sub(o.origin, origin), out)
+    s1 = s0 + _dot(o.out, out) * o.wall
+    if min(s0, s1) >= depth - 0.001 or max(s0, s1) <= 0.001:
+        return None
+    us, vs = [], []
+    for du, dv in ((0, 0), (o.width, 0), (o.width, o.height), (0, o.height)):
+        p = vec_sub(vec_add(o.origin, vec_add(vec_scale(o.along, o.u + du), vec_scale(o.up, o.v + dv))), origin)
+        us.append(_dot(p, along))
+        vs.append(_dot(p, up))
+    if max(vs) <= 0.001 or min(vs) >= top_v - 0.001:
+        return None
+    return (min(us), min(vs), max(us) - min(us), max(vs) - min(vs))
 
 #@topic loads: Self weight, imposed and snow loads on load-path members
 #
