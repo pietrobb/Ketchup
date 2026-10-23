@@ -487,6 +487,252 @@ fn pseudo_locale_expands_visible_text_without_rewriting_arguments() {
     assert_eq!(pseudo.text("key-f1"), "[!! F1 !!]");
 }
 
+fn counted(catalog: &LocaleCatalog, key: &str, count: &str) -> String {
+    catalog.format(
+        key,
+        &std::collections::BTreeMap::from([("count", count.to_owned())]),
+    )
+}
+
+#[test]
+fn a_placeholder_value_is_inserted_once_and_never_read_as_a_placeholder() {
+    let catalog = LocaleCatalog::parse("renamed = Renamed { $name } in { $path }").unwrap();
+    let rendered = catalog.format(
+        "renamed",
+        &std::collections::BTreeMap::from([
+            ("name", "{ $path }".to_owned()),
+            ("path", "C:\\plans\\house.ketchup".to_owned()),
+        ]),
+    );
+
+    assert_eq!(rendered, "Renamed { $path } in C:\\plans\\house.ketchup");
+}
+
+#[test]
+fn a_select_takes_the_variant_of_its_number_and_else_its_default() {
+    let catalog = LocaleCatalog::parse(
+        "parts = Deleted { $count ->\n    [0] no parts\n    [one] { $count } part\n   *[other] { $count } parts\n} · 1 undo step",
+    )
+    .unwrap();
+
+    assert_eq!(
+        counted(&catalog, "parts", "0"),
+        "Deleted no parts · 1 undo step"
+    );
+    assert_eq!(
+        counted(&catalog, "parts", "1"),
+        "Deleted 1 part · 1 undo step"
+    );
+    assert_eq!(
+        counted(&catalog, "parts", "2"),
+        "Deleted 2 parts · 1 undo step"
+    );
+    assert_eq!(
+        counted(&catalog, "parts", "many"),
+        "Deleted many parts · 1 undo step"
+    );
+    for malformed in [
+        "parts = { $count ->\n    [one] a part\n}",
+        "parts = { $count ->\n   *[other] parts",
+        "parts = { $count ->\n   *[one] a part\n   *[other] parts\n}",
+    ] {
+        assert_eq!(
+            LocaleCatalog::parse(malformed),
+            Err(InteractionError::InvalidLocaleResource),
+            "{malformed}"
+        );
+    }
+}
+
+#[test]
+fn a_select_may_also_close_on_an_indented_line() {
+    let catalog = LocaleCatalog::parse(
+        "parts = Deleted { $count ->\n    [one] { $count } part\n   *[other] { $count } parts\n    } · 1 undo step\nnext = Next",
+    )
+    .unwrap();
+
+    assert_eq!(
+        counted(&catalog, "parts", "1"),
+        "Deleted 1 part · 1 undo step"
+    );
+    assert_eq!(
+        counted(&catalog, "parts", "3"),
+        "Deleted 3 parts · 1 undo step"
+    );
+    assert_eq!(counted(&catalog, "next", "3"), "Next");
+}
+
+#[test]
+fn only_a_brace_that_closes_an_open_select_continues_a_message() {
+    for invalid in [
+        // A line that starts with an identifier begins a new message, so the
+        // select above it is never closed.
+        "parts = { $count ->\n   *[other] parts\nnext = }",
+        "parts = Plain text\n}",
+        "parts = { $count ->\n   *[other] parts\n}\n}",
+    ] {
+        assert_eq!(
+            LocaleCatalog::parse(invalid),
+            Err(InteractionError::InvalidLocaleResource),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn counted_messages_take_the_plural_form_of_their_language() {
+    let english = LocaleCatalog::english();
+    let slovak = LocaleCatalog::slovak();
+
+    assert_eq!(
+        counted(&english, "digest-deleted", "1"),
+        "Deleted 1 occurrence · 1 undo step"
+    );
+    assert_eq!(
+        counted(&english, "digest-deleted", "3"),
+        "Deleted 3 occurrences · 1 undo step"
+    );
+    assert_eq!(
+        counted(&slovak, "viewport-context-shared", "2"),
+        "Zdieľaný komponent · 2 inštancie · zmeny ovplyvnia všetky"
+    );
+    assert_eq!(
+        counted(&slovak, "viewport-context-shared", "5"),
+        "Zdieľaný komponent · 5 inštancií · zmeny ovplyvnia všetky"
+    );
+    for (count, expected) in [
+        ("1", "Vybraný 1 výskyt bez tagu"),
+        ("3", "Vybrané 3 výskyty bez tagu"),
+        ("5", "Vybraných 5 výskytov bez tagu"),
+    ] {
+        assert_eq!(
+            counted(&slovak, "digest-selected-untagged", count),
+            expected
+        );
+    }
+}
+
+fn rendered(catalog: &LocaleCatalog, key: &str, arguments: &[(&'static str, &str)]) -> String {
+    catalog.format(
+        key,
+        &arguments
+            .iter()
+            .map(|(name, value)| (*name, (*value).to_owned()))
+            .collect(),
+    )
+}
+
+#[test]
+fn every_count_inside_an_inflected_phrase_takes_its_plural_form() {
+    let english = LocaleCatalog::english();
+    let slovak = LocaleCatalog::slovak();
+    let column = [("name", "Stĺp")];
+
+    for (count, expected) in [
+        ("1", "Vybraný jediný výskyt „Stĺp“"),
+        ("2", "Vybrané všetky 2 výskyty „Stĺp“"),
+        ("5", "Vybraných všetkých 5 výskytov „Stĺp“"),
+    ] {
+        let arguments = [column[0], ("count", count)];
+        assert_eq!(
+            rendered(&slovak, "digest-selected-definition", &arguments),
+            expected
+        );
+    }
+    for (count, expected) in [
+        ("1", "Selected the only occurrence of “Stĺp”"),
+        ("2", "Selected all 2 occurrences of “Stĺp”"),
+    ] {
+        let arguments = [column[0], ("count", count)];
+        assert_eq!(
+            rendered(&english, "digest-selected-definition", &arguments),
+            expected
+        );
+    }
+    for (count, expected) in [
+        ("1", "Jedinečný komponent · 1 inštancia"),
+        ("2", "Jedinečný komponent · 2 inštancie"),
+        ("5", "Jedinečný komponent · 5 inštancií"),
+    ] {
+        assert_eq!(counted(&slovak, "viewport-context-unique", count), expected);
+    }
+    for (dof, expected) in [
+        ("1", "zostáva 1 stupeň voľnosti"),
+        ("2", "zostávajú 2 stupne voľnosti"),
+        ("5", "zostáva 5 stupňov voľnosti"),
+    ] {
+        let arguments = [("entities", "e1"), ("dof", dof)];
+        assert_eq!(
+            rendered(
+                &slovak,
+                "feature-history-sketch-diagnostic-under",
+                &arguments
+            ),
+            format!("Náčrt je nedourčený: na entitách e1 {expected}")
+        );
+    }
+    for (sides, expected) in [("4", "4 strany"), ("6", "6 strán")] {
+        let arguments = [("sides", sides)];
+        assert_eq!(
+            rendered(&slovak, "digest-polygon-sides", &arguments),
+            format!("Ďalší mnohouholník: {expected}")
+        );
+    }
+    for (total, expected) in [("1", "z 1 výskytu"), ("3", "z 3 výskytov")] {
+        let arguments = [("hidden", "0"), ("total", total)];
+        assert_eq!(
+            rendered(&slovak, "tags-visibility", &arguments),
+            format!("skrytých 0 {expected}")
+        );
+    }
+    for (count, expected) in [
+        ("1", "presné: 1 aktuálne teleso / 1 stabilná referencia"),
+        ("3", "presné: 3 aktuálne telesá / 3 stabilné referencie"),
+        ("5", "presné: 5 aktuálnych telies / 5 stabilných referencií"),
+    ] {
+        let arguments = [("bodies", count), ("refs", count)];
+        assert_eq!(
+            rendered(&slovak, "status-exact-current", &arguments),
+            expected
+        );
+    }
+    assert_eq!(
+        rendered(
+            &english,
+            "status-exact-current",
+            &[("bodies", "1"), ("refs", "1")]
+        ),
+        "exact: 1 current body / 1 stable ref"
+    );
+    for (key, one) in [
+        (
+            "selection-mass-more-missing",
+            "…and 1 more part without mass",
+        ),
+        ("digest-selected-all", "Selected 1 occurrence"),
+        ("digest-selected-all-tagged", "Selected 1 tagged occurrence"),
+        ("viewport-context-unique", "Unique component · 1 instance"),
+    ] {
+        assert_eq!(counted(&english, key, "1"), one);
+    }
+    for (key, one) in [
+        ("digest-selected-group", "Selected group “Stĺp” · 1 member"),
+        ("outliner-group", "▸ Stĺp    1 member"),
+        ("tags-row", "Stĺp (1 occurrence)"),
+    ] {
+        let arguments = [column[0], ("count", "1")];
+        assert_eq!(rendered(&english, key, &arguments), one);
+    }
+    assert_eq!(
+        rendered(
+            &english,
+            "drawings-parts-not-evaluated",
+            &[("count", "1"), ("parts", "Stĺp")]
+        ),
+        "1 visible part has no exact solid, so the sheet would leave it out: Stĺp. Fix or hide it, or wait until the model is evaluated."
+    );
+}
+
 #[test]
 fn every_narrow_ui_string_is_resolved_from_the_english_resource() {
     let catalog = LocaleCatalog::english();

@@ -405,7 +405,7 @@ fn dimensions_panel_creates_categories_and_assigns_independent_values_in_one_und
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run();
-    for expected in ["DIMENSIONS", "Interior (1 occurrences)"] {
+    for expected in ["DIMENSIONS", "Interior (1 occurrence)"] {
         assert!(
             harness
                 .query_all_by(|node| {

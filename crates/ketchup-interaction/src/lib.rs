@@ -2,6 +2,7 @@
 
 pub mod exact_projection;
 pub mod face_intent;
+mod locale_pattern;
 pub mod mesh_projection;
 pub mod profile_surface;
 pub mod projection;
@@ -18,6 +19,7 @@ use ketchup_model::document::{
     ProposalCommitError, ProposalPrepareError, Revision, Snapshot,
 };
 use ketchup_model::tolerance::ROUNDING;
+use locale_pattern::PluralRules;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -938,14 +940,39 @@ pub struct CommittedPreview {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocaleCatalog {
     messages: BTreeMap<String, String>,
+    plurals: PluralRules,
 }
 
 impl LocaleCatalog {
+    /// Reads `key = value` lines. An indented line continues the message above
+    /// it, as in Fluent, which a select over a count spans:
+    /// `{ $count ->` / `[one] …` / `*[other] …` / `}`. The closing `}` may also
+    /// start its line when it closes a select left open above; any other line
+    /// begins a new message. English plural rules.
     pub fn parse(resource: &str) -> Result<Self, InteractionError> {
-        let mut messages = BTreeMap::new();
+        let mut messages = BTreeMap::<String, String>::new();
+        let mut last_key: Option<String> = None;
         for raw_line in resource.lines() {
             let line = raw_line.trim();
-            if line.is_empty() || line.starts_with('#') {
+            if line.is_empty() {
+                continue;
+            }
+            if line.starts_with('#') {
+                last_key = None;
+                continue;
+            }
+            let closes_open_select = raw_line.starts_with('}')
+                && last_key
+                    .as_ref()
+                    .and_then(|key| messages.get(key))
+                    .is_some_and(|value| locale_pattern::ends_inside_select(value));
+            if raw_line.starts_with([' ', '\t']) || closes_open_select {
+                let value = last_key
+                    .as_ref()
+                    .and_then(|key| messages.get_mut(key))
+                    .ok_or(InteractionError::InvalidLocaleResource)?;
+                value.push('\n');
+                value.push_str(line);
                 continue;
             }
             let (key, value) = line
@@ -959,8 +986,18 @@ impl LocaleCatalog {
             {
                 return Err(InteractionError::InvalidLocaleResource);
             }
+            last_key = Some(key.to_owned());
         }
-        Ok(Self { messages })
+        if !messages
+            .values()
+            .all(|value| locale_pattern::is_well_formed(value))
+        {
+            return Err(InteractionError::InvalidLocaleResource);
+        }
+        Ok(Self {
+            messages,
+            plurals: PluralRules::English,
+        })
     }
 
     #[must_use]
@@ -971,8 +1008,11 @@ impl LocaleCatalog {
 
     #[must_use]
     pub fn slovak() -> Self {
-        let catalog = Self::parse(include_str!("../../../locales/sk-SK.ftl"))
-            .expect("the embedded Slovak locale must be valid");
+        let catalog = Self {
+            plurals: PluralRules::Slovak,
+            ..Self::parse(include_str!("../../../locales/sk-SK.ftl"))
+                .expect("the embedded Slovak locale must be valid")
+        };
         catalog
             .validate_complete_against(&Self::english())
             .expect("the embedded Slovak locale must match the complete English key set");
@@ -981,12 +1021,16 @@ impl LocaleCatalog {
 
     #[must_use]
     pub fn pseudo() -> Self {
-        let messages = Self::english()
+        let english = Self::english();
+        let messages = english
             .messages
             .into_iter()
             .map(|(key, value)| (key, pseudo_localize(&value)))
             .collect();
-        Self { messages }
+        Self {
+            messages,
+            plurals: english.plurals,
+        }
     }
 
     pub fn validate_complete_against(&self, reference: &Self) -> Result<(), InteractionError> {
@@ -1019,17 +1063,14 @@ impl LocaleCatalog {
         self.messages.contains_key(key)
     }
 
+    /// The message for `key` with its arguments in place, in one pass, and the
+    /// variant of each select its count's plural category or value names.
     #[must_use]
     pub fn format(&self, key: &str, arguments: &BTreeMap<&str, String>) -> String {
-        let mut value = self
-            .messages
-            .get(key)
-            .cloned()
-            .unwrap_or_else(|| format!("[{key}]"));
-        for (name, replacement) in arguments {
-            value = value.replace(&format!("{{ ${name} }}"), replacement);
-        }
-        value
+        self.messages.get(key).map_or_else(
+            || format!("[{key}]"),
+            |value| locale_pattern::render(value, arguments, self.plurals),
+        )
     }
 }
 

@@ -157,7 +157,11 @@ part-authoring-fastener-dimensions = Priemer spojovacieho prvku, výška zdroja 
 part-authoring-preview = Zobraziť náhľad aktuálneho kroku
 part-authoring-confirm = Potvrdiť návrh tvorenia
 part-authoring-cancel = Zrušiť návrh tvorenia
-part-authoring-preview-summary = Pozorovací náhľad: { $count } kanonických príkazov; dokument sa nezmenil.
+part-authoring-preview-summary = Pozorovací náhľad: { $count ->
+        [one] { $count } kanonický príkaz
+        [few] { $count } kanonické príkazy
+       *[other] { $count } kanonických príkazov
+    }; dokument sa nezmenil.
 part-authoring-preview-ready = Návrh parametrického tvorenia je pripravený; potvrďte alebo zrušte
 part-authoring-invalid = Požiadavka tvorenia bola odmietnutá; rozmery, zdrojový stav alebo presná podpora sú neplatné
 part-authoring-complete = Platňa, kapsa, zdieľaný zdroj a kompatibilná cieľová definícia sú vytvorené
@@ -186,7 +190,11 @@ assembly-occurrence-name = Názov výskytu
 assembly-preview-insert = Náhľad vloženia výskytu
 assembly-preview-selection-drawing = Náhľad výkresu z výberu
 assembly-selection-drawing-part-name = Výkres: { $name }
-assembly-selection-drawing-name = Výkres výberu ({ $count } výskytov)
+assembly-selection-drawing-name = Výkres výberu ({ $count ->
+        [one] { $count } výskyt
+        [few] { $count } výskyty
+       *[other] { $count } výskytov
+    })
 assembly-preview-capstone = Náhľad ohraničenej záverečnej zostavy
 assembly-preview-capstone-drawing = Náhľad výkresu Spredu/Zhora/Sprava
 assembly-capstone-drawing-name = Záverečná zostava
@@ -427,7 +435,11 @@ feature-history-sketch-constraint-label = Väzba { $id }
 feature-history-preview-add-horizontal-constraint = Náhľad pridania horizontálnej väzby
 feature-history-preview-replace-constraint = Náhľad nahradenia horizontálnou/vertikálnou väzbou
 feature-history-preview-delete-constraint = Náhľad odstránenia väzby
-feature-history-sketch-diagnostic-under = Náčrt je nedourčený: na entitách { $entities } zostáva { $dof } stupňov voľnosti
+feature-history-sketch-diagnostic-under = Náčrt je nedourčený: na entitách { $entities } { $dof ->
+        [one] zostáva { $dof } stupeň
+        [few] zostávajú { $dof } stupne
+       *[other] zostáva { $dof } stupňov
+    } voľnosti
 feature-history-sketch-diagnostic-fully = Náčrt je úplne určený
 feature-history-sketch-diagnostic-conflicting = Náčrt má konfliktné väzby { $constraints } na entitách { $entities }
 feature-history-exact-value = Presná hodnota
@@ -671,7 +683,11 @@ file-import-underlay = Importovať DXF/DWG ako podklad…
 dialog-import-dxf-title = Skontrolovať ohraničený import DXF
 dialog-import-dxf-source = Zdroj: { $path }
 dialog-import-dxf-dwg = Načítané zo súboru DWG (verzia { $version }) cez jeho prevod do DXF.
-dialog-import-dxf-dwg-skipped = Čítačka DWG nevedela dekódovať { $count } záznamov typu { $record }; do importu sa nedostanú.
+dialog-import-dxf-dwg-skipped = Čítačka DWG nevedela dekódovať { $count ->
+        [one] { $count } záznam typu { $record }; do importu sa nedostane.
+        [few] { $count } záznamy typu { $record }; do importu sa nedostanú.
+       *[other] { $count } záznamov typu { $record }; do importu sa nedostanú.
+    }
 dialog-import-dxf-summary = Canonical profily: { $profiles } · zdrojové vrstvy: { $layers }
 dialog-import-dxf-origin = Súradnice WCS XY sa zachovajú; INSBASE sa iba uvedie ako metadáta a nikdy sa potichu nepoužije.
 dialog-import-dxf-layers = Vrstvy: { $layers }
@@ -909,7 +925,10 @@ dialog-assign-tag-tag = Tag
 dialog-assign-tag-untagged = Bez tagu
 dialog-assign-tag-confirm = Priradiť
 dialog-assign-tag-cancel = Zrušiť
-digest-assigned-tag = Tag „{ $tag }“ bol priradený { $count } výskytom
+digest-assigned-tag = Tag „{ $tag }“ bol priradený { $count ->
+        [one] { $count } výskytu
+       *[other] { $count } výskytom
+    }
 dialog-replace-component-title = Nahradiť komponent
 dialog-replace-component-definition = Náhradná definícia
 dialog-replace-component-confirm = Nahradiť
@@ -1053,7 +1072,11 @@ validators-no-confirmed-findings = Vo vyhodnotenej časti nie sú potvrdené ná
 validators-title = VALIDÁTORY
 validators-run = Spustiť vybrané validátory
 validators-not-run = Validátory zatiaľ neboli spustené na tomto dokumente.
-validators-summary = Výsledok: { $state } — { $count } nálezov (revízia { $revision })
+validators-summary = Výsledok: { $state } — { $count ->
+        [one] { $count } nález
+        [few] { $count } nálezy
+       *[other] { $count } nálezov
+    } (revízia { $revision })
 validators-incomplete = Dôkaz je neúplný — neznáme alebo nedostupné kontroly nie sú potvrdené kolízie ani dôkaz, že model je bez kolízií.
 validators-not-evaluated = { $validator }: nevyhodnotené ({ $reason })
 validators-no-findings = Žiadne nálezy.
@@ -1145,19 +1168,31 @@ dimensions-empty = Najprv vytvorte dimenziu a jej prvú kategóriu.
 dimensions-active = Aktívna dimenzia
 dimensions-new-category = Nová kategória
 dimensions-add-category = Pridať
-dimensions-category-row = { $category } ({ $count } výskytov)
+dimensions-category-row = { $category } ({ $count ->
+        [one] { $count } výskyt
+        [few] { $count } výskyty
+       *[other] { $count } výskytov
+    })
 dimensions-assign-selection = Priradiť výber
 dimensions-clear-selection = Zrušiť priradenie výberu v tejto dimenzii
 dimensions-unassigned = Nezaradené
 digest-created-dimension = Vytvorená dimenzia „{ $dimension }“ s kategóriou „{ $category }“
 digest-added-dimension-category = Kategória „{ $category }“ pridaná do dimenzie „{ $dimension }“
-digest-assigned-dimension-category = Dimenzia „{ $dimension }“ nastavená na „{ $category }“ pre { $count } výskytov
+digest-assigned-dimension-category = Dimenzia „{ $dimension }“ nastavená na „{ $category }“ pre { $count ->
+        [one] { $count } výskyt
+        [few] { $count } výskyty
+       *[other] { $count } výskytov
+    }
 help-shortcuts = Klávesové skratky
 help-about = O Kečupe
 window-material-takeoff = Výkaz materiálu
 takeoff-no-program = Výkaz materiálu potrebuje dokument vytvorený programom.
 takeoff-summary = Započítaných { $counted } viditeľných dielov, { $excluded } na vypnutých vrstvách vynechaných; { $exact } s presným objemom telesa.
-takeoff-outside-program = { $count } viditeľných dielov nevytvoril program (kreslené alebo importované), výkaz ich nezapočítava.
+takeoff-outside-program = { $count ->
+        [one] { $count } viditeľný diel nevytvoril program (kreslený alebo importovaný), výkaz ho nezapočítava.
+        [few] { $count } viditeľné diely nevytvoril program (kreslené alebo importované), výkaz ich nezapočítava.
+       *[other] { $count } viditeľných dielov nevytvoril program (kreslené alebo importované), výkaz ich nezapočítava.
+    }
 takeoff-export-csv = Exportovať CSV…
 takeoff-export-cut-list-csv = Kusovník CSV…
 takeoff-export-cut-list-xlsx = Kusovník XLSX…
@@ -1316,10 +1351,18 @@ error-save-document = „{ $path }“ sa nepodarilo uložiť: { $reason }. Aktí
 error-edit-file-in-other-window = Úprava sa nevykonala: „{ $path }“ upravuje iné okno Kečupu a zálohu neuloženej práce pre prípad pádu vedie naraz len jedno okno. Zatvorte iné okno a súbor tu otvorte znova, alebo tu použite Uložiť ako a pracujte na kópii.
 digest-tool-active = Nástroj: { $tool }
 digest-selection-cleared = Výber bol zrušený
-digest-selected-viewport = Vybraný výskyt „{ $name }“ · túto definíciu zdieľa { $count } výskytov
+digest-selected-viewport = Vybraný výskyt „{ $name }“ · túto definíciu { $count ->
+        [one] zdieľa { $count } výskyt
+        [few] zdieľajú { $count } výskyty
+       *[other] zdieľa { $count } výskytov
+    }
 digest-overlap-choice = Prekrytie { $index } z { $count }
 digest-selected-outliner = Vybrané { $name }
-digest-selected-definition = Vybraných všetkých { $count } výskytov „{ $name }“
+digest-selected-definition = { $count ->
+        [one] Vybraný jediný výskyt
+        [few] Vybrané všetky { $count } výskyty
+       *[other] Vybraných všetkých { $count } výskytov
+    } „{ $name }“
 digest-selected-all = Vybraných výskytov: { $count }
 digest-inverted-selection = Obrátený výber · vybraných výskytov: { $count }
 digest-selected-group = Vybraná skupina „{ $name }“ · členov: { $count }
@@ -1327,7 +1370,11 @@ digest-entered-group-context = Úprava skupiny · vonkajšie objekty sú izolova
 digest-entered-component-context = Úprava definície komponentu · zdieľané výskyty ju nasledujú
 digest-exited-edit-context = Opustený jeden kontext úprav
 digest-grouped = Zoskupených výskytov: { $count }, bez posunu · 1 krok späť
-digest-ungrouped = Skupina rozložená na { $count } položiek bez posunu · 1 krok späť
+digest-ungrouped = Skupina rozložená na { $count ->
+        [one] { $count } položku
+        [few] { $count } položky
+       *[other] { $count } položiek
+    } bez posunu · 1 krok späť
 digest-made-component = Komponent „{ $name }“ je pripravený · zdieľaných výskytov: { $count }
 digest-made-unique = Vytvorené jedinečné — nová definícia, ostatné výskyty nezmenené · 1 krok späť
 digest-undo = Späť — vrátená jedna dávka príkazov
@@ -1343,12 +1390,20 @@ digest-line-closed = Uzavretý čiarový profil s { $count } segmentmi — pripr
 digest-exact-circle = Presný kruh R { $radius } mm — potom použite Tlačiť/ťahať · 1 krok späť
 digest-exact-arc = Presný oblúk so vzopätím { $bulge } mm — potom použite Tlačiť/ťahať · 1 krok späť
 digest-exact-polygon = Presný { $sides }-uholník R { $radius } mm — potom použite Tlačiť/ťahať · 1 krok späť
-digest-polygon-sides = Ďalší mnohouholník: { $sides } strán
+digest-polygon-sides = Ďalší mnohouholník: { $sides ->
+        [one] { $sides } strana
+        [few] { $sides } strany
+       *[other] { $sides } strán
+    }
 digest-polygon-invalid-sides = Mnohouholník potrebuje celý počet strán od 3 do { $max }
 digest-sketch-invalid-length = Napíšte dĺžku väčšiu ako nula, napríklad 25, 2,5 cm alebo 600+2*18
 digest-rectangle-invalid-size = Napíšte šírku a hĺbku ako dve dĺžky väčšie ako nula, napríklad 80;60 alebo 8 cm x 6 cm
 digest-exact-ellipse = Presná elipsa s poloosami { $radius_x } × { $radius_y } mm — potom použite Tlačiť/ťahať · 1 krok späť
-digest-exact-spline = Presný uzavretý spline cez { $count } bodov — potom použite Tlačiť/ťahať · 1 krok späť
+digest-exact-spline = Presný uzavretý spline cez { $count ->
+        [one] { $count } bod
+        [few] { $count } body
+       *[other] { $count } bodov
+    } — potom použite Tlačiť/ťahať · 1 krok späť
 digest-mirror-created = Zrkadlové kópie pridané · 1 krok späť
 digest-mirror-selection-required = Najprv vyberte diely na zrkadlenie
 digest-mirror-face-required = Ukážte na stenu, podľa ktorej sa zrkadlí
@@ -1423,15 +1478,31 @@ digest-move-live = Posun { $distance } mm · { $vector }
 digest-copy-live = Kópia { $distance } mm · { $vector } · zdieľaná definícia
 digest-move-committed = Posunuté o { $distance } mm · iba transformácia výskytu · 1 krok späť
 digest-copy-committed = Skopírované o { $distance } mm · rovnaká definícia, nový výskyt · 1 krok späť
-digest-copy-array-multiplied = Pole kópií — { $count } kópií v pôvodnom vektore · 1 krok späť
-digest-copy-array-divided = Pole kópií — úsek rozdelený na { $count } rovnakých intervalov · 1 krok späť
+digest-copy-array-multiplied = Pole kópií — { $count ->
+        [one] { $count } kópia
+        [few] { $count } kópie
+       *[other] { $count } kópií
+    } v pôvodnom vektore · 1 krok späť
+digest-copy-array-divided = Pole kópií — úsek rozdelený na { $count ->
+        [one] { $count } rovnaký interval
+        [few] { $count } rovnaké intervaly
+       *[other] { $count } rovnakých intervalov
+    } · 1 krok späť
 digest-copy-array-invalid = Počet kópií musí byť celé číslo od 1 do { $limit }
 digest-copy-array-limit-exceeded = { $copies } nových kópií prekračuje limit { $limit }
 digest-copy-array-unavailable = Najprv skopírujte objekt cez Move a potom zadajte ×N alebo /N bez zmeny modelu či výberu
 digest-align-live = Náhľad zarovnania — { $axis } { $mode } · iba transformácia výskytu
 digest-align-committed = Výskyt presne zarovnaný · zdieľaná definícia nezmenená · 1 krok späť
-digest-distribute-live = Náhľad rozostavenia — { $count } výskytov · rozstup stredov { $spacing } mm na osi { $axis }
-digest-distribute-gaps-live = Náhľad rozostavenia — { $count } výskytov · rovnaké medzery { $spacing } mm na osi { $axis }
+digest-distribute-live = Náhľad rozostavenia — { $count ->
+        [one] { $count } výskyt
+        [few] { $count } výskyty
+       *[other] { $count } výskytov
+    } · rozstup stredov { $spacing } mm na osi { $axis }
+digest-distribute-gaps-live = Náhľad rozostavenia — { $count ->
+        [one] { $count } výskyt
+        [few] { $count } výskyty
+       *[other] { $count } výskytov
+    } · rovnaké medzery { $spacing } mm na osi { $axis }
 digest-distribute-committed = Výskyty presne rozostavené · zdieľané definície nezmenené · 1 krok späť
 digest-linear-pattern-live = Náhľad lineárneho vzoru — spolu { $count } · { $spacing } mm na osi { $axis } · zdieľaná definícia
 digest-linear-pattern-committed = Lineárny vzor presne potvrdený · zdieľaná definícia nezmenená · 1 krok späť
@@ -1578,8 +1649,16 @@ viewport-context-root = Model
 viewport-exact-progress = Počítam geometriu { $done } / { $total }
 viewport-context-outside = Model · mimo skupiny
 viewport-context-inside = ÚPRAVA · { $path } · úroveň { $depth }
-viewport-context-shared = Zdieľaný komponent · { $count } inštancie · zmeny ovplyvnia všetky
-viewport-context-unique = Jedinečný komponent · { $count } inštancia
+viewport-context-shared = Zdieľaný komponent · { $count ->
+        [one] { $count } inštancia
+        [few] { $count } inštancie
+       *[other] { $count } inštancií
+    } · zmeny ovplyvnia všetky
+viewport-context-unique = Jedinečný komponent · { $count ->
+        [one] { $count } inštancia
+        [few] { $count } inštancie
+       *[other] { $count } inštancií
+    }
 viewport-context-up = O úroveň vyššie
 viewport-next-target = Ďalší cieľ
 viewport-snap-origin = Počiatok [0, 0, 0]
@@ -1641,7 +1720,10 @@ outliner-instance = { $visibility }  { $name }
 outliner-instance-grouped = { $visibility }  { $name }    · Skupina { $group }
 visibility-shown = zobrazené
 visibility-hidden = skryté
-tags-visibility = skrytých { $hidden } z { $total } výskytov
+tags-visibility = skrytých { $hidden } z { $total ->
+        [one] { $total } výskytu
+       *[other] { $total } výskytov
+    }
 tags-create = Nový tag…
 tags-create-from-selection = Nový tag z výberu…
 dialog-create-tag-title = Nový tag
@@ -1651,7 +1733,11 @@ dialog-create-tag-confirm = Vytvoriť
 dialog-create-tag-from-selection-confirm = Vytvoriť a priradiť
 dialog-create-tag-cancel = Zrušiť
 digest-created-tag = Tag „{ $name }“ bol vytvorený
-digest-created-tag-from-selection = Tag „{ $name }“ bol vytvorený pre { $count } vybraných výskytov
+digest-created-tag-from-selection = Tag „{ $name }“ bol vytvorený pre { $count ->
+        [one] { $count } vybraný výskyt
+        [few] { $count } vybrané výskyty
+       *[other] { $count } vybraných výskytov
+    }
 tags-row = { $name } (výskytov: { $count })
 tags-select = Vybrať všetky s tagom „{ $name }“
 tags-assign-selection = Priradiť výber k tagu „{ $name }“
@@ -1667,23 +1753,46 @@ tags-select-all-tagged = Vybrať všetky s ľubovoľným tagom
 tags-hide-selection = Skryť tagy výberu
 tags-show-selection = Zobraziť tagy výberu
 tags-invert-selection = Prevrátiť tagy výberu
-digest-selected-tag = Vybraných { $count } výskytov s tagom „{ $name }“
-digest-selected-untagged = Vybraných { $count } výskytov bez tagu
-digest-removed-selected-tag = Tag „{ $tag }“ bol odobratý z { $count } vybraných výskytov
+digest-selected-tag = { $count ->
+        [one] Vybraný { $count } výskyt
+        [few] Vybrané { $count } výskyty
+       *[other] Vybraných { $count } výskytov
+    } s tagom „{ $name }“
+digest-selected-untagged = { $count ->
+        [one] Vybraný { $count } výskyt
+        [few] Vybrané { $count } výskyty
+       *[other] Vybraných { $count } výskytov
+    } bez tagu
+digest-removed-selected-tag = Tag „{ $tag }“ bol odobratý z { $count ->
+        [one] { $count } vybraného výskytu
+       *[other] { $count } vybraných výskytov
+    }
 tags-clear = Odobrať tag zo všetkých výskytov „{ $name }“
 dialog-clear-tag-title = Odobrať priradenia tagu
-dialog-clear-tag-message = Odobrať tag „{ $name }“ z { $count } výskytov?
+dialog-clear-tag-message = Odobrať tag „{ $name }“ z { $count ->
+        [one] { $count } výskytu
+       *[other] { $count } výskytov
+    }?
 dialog-clear-tag-confirm = Odobrať zo všetkých
 dialog-clear-tag-cancel = Zrušiť
-digest-cleared-tag = Tag „{ $name }“ bol odobratý z { $count } výskytov
+digest-cleared-tag = Tag „{ $name }“ bol odobratý z { $count ->
+        [one] { $count } výskytu
+       *[other] { $count } výskytov
+    }
 tags-delete = Odstrániť { $name }
 dialog-delete-tag-title = Odstrániť tag
 dialog-delete-tag-message = Odstrániť nepoužívaný tag „{ $name }“?
-dialog-delete-used-tag-message = Odobrať tag „{ $name }“ z { $count } výskytov a odstrániť ho?
+dialog-delete-used-tag-message = Odobrať tag „{ $name }“ z { $count ->
+        [one] { $count } výskytu
+       *[other] { $count } výskytov
+    } a odstrániť ho?
 dialog-delete-tag-confirm = Odstrániť tag
 dialog-delete-tag-cancel = Zrušiť
 digest-deleted-tag = Tag „{ $name }“ bol odstránený
-digest-deleted-used-tag = Tag „{ $name }“ bol odobratý z { $count } výskytov a odstránený
+digest-deleted-used-tag = Tag „{ $name }“ bol odobratý z { $count ->
+        [one] { $count } výskytu
+       *[other] { $count } výskytov
+    } a odstránený
 tags-rename = Premenovať { $name }
 dialog-rename-tag-title = Premenovať tag
 dialog-rename-tag-name = Názov
@@ -1717,9 +1826,19 @@ section-azimuth = Otočenie
 section-elevation = Sklon
 digest-section-shown = Rezová rovina v { $offset } mm
 digest-section-hidden = Rez zatvorený
-digest-all-tags-visibility = Stav { $count } tagov bol nastavený na: { $visibility }
-digest-inverted-tags-visibility = Viditeľnosť bola prevrátená pre { $count } tagov
-digest-isolated-tag = Tag „{ $name }“ bol izolovaný zmenou { $count } tagov
+digest-all-tags-visibility = Stav { $count ->
+        [one] { $count } tagu
+       *[other] { $count } tagov
+    } bol nastavený na: { $visibility }
+digest-inverted-tags-visibility = Viditeľnosť bola prevrátená pre { $count ->
+        [one] { $count } tag
+        [few] { $count } tagy
+       *[other] { $count } tagov
+    }
+digest-isolated-tag = Tag „{ $name }“ bol izolovaný zmenou { $count ->
+        [one] { $count } tagu
+       *[other] { $count } tagov
+    }
 digest-isolated-selected-tags = Izolovaných tagov výberu: { $tags }; zmenených tagov: { $count }
 digest-selected-matching-tags = Vybraných výskytov so zhodnými tagmi: { $count }; tagov výberu: { $tags }
 digest-selected-all-tagged = Vybraných označených výskytov: { $count }
@@ -1740,7 +1859,15 @@ status-snap-off = prichytávanie vypnuté
 status-grid = mriežka { $step } mm
 status-grid-hidden = mriežka skrytá
 status-refs-guaranteed = A0 referencie: zaručené
-status-exact-current = presné: { $bodies } aktuálnych telies / { $refs } stabilných referencií
+status-exact-current = presné: { $bodies ->
+        [one] { $bodies } aktuálne teleso
+        [few] { $bodies } aktuálne telesá
+       *[other] { $bodies } aktuálnych telies
+    } / { $refs ->
+        [one] { $refs } stabilná referencia
+        [few] { $refs } stabilné referencie
+       *[other] { $refs } stabilných referencií
+    }
 status-exact-unavailable = presné: nedostupné (náhradné zobrazenie)
 file-export-project-drawings = Výkresy (PDF, DXF, DWG)…
 file-filter-svg = SVG výkres

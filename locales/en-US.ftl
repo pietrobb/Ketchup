@@ -157,7 +157,10 @@ part-authoring-fastener-dimensions = Fastener diameter, source height, target he
 part-authoring-preview = Preview current authoring step
 part-authoring-confirm = Confirm authoring proposal
 part-authoring-cancel = Cancel authoring proposal
-part-authoring-preview-summary = Observational preview: { $count } canonical commands; the document is unchanged.
+part-authoring-preview-summary = Observational preview: { $count ->
+        [one] { $count } canonical command
+       *[other] { $count } canonical commands
+    }; the document is unchanged.
 part-authoring-preview-ready = Parametric authoring proposal ready; confirm or cancel
 part-authoring-invalid = Authoring request refused; dimensions, source state, or exact support are invalid
 part-authoring-complete = Plate, Pocket, reused source and compatible target definitions are authored
@@ -186,7 +189,10 @@ assembly-occurrence-name = Occurrence name
 assembly-preview-insert = Preview occurrence insertion
 assembly-preview-selection-drawing = Preview drawing from selection
 assembly-selection-drawing-part-name = { $name } drawing
-assembly-selection-drawing-name = Selection drawing ({ $count } occurrences)
+assembly-selection-drawing-name = Selection drawing ({ $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    })
 assembly-preview-capstone = Preview bounded capstone assembly
 assembly-preview-capstone-drawing = Preview Front/Top/Right capstone drawing
 assembly-capstone-drawing-name = Capstone assembly
@@ -427,7 +433,10 @@ feature-history-sketch-constraint-label = Constraint { $id }
 feature-history-preview-add-horizontal-constraint = Preview add horizontal constraint
 feature-history-preview-replace-constraint = Preview replace with horizontal/vertical constraint
 feature-history-preview-delete-constraint = Preview delete constraint
-feature-history-sketch-diagnostic-under = Sketch is under-constrained: { $dof } DOF remain on entities { $entities }
+feature-history-sketch-diagnostic-under = Sketch is under-constrained: { $dof ->
+        [one] { $dof } DOF remains
+       *[other] { $dof } DOF remain
+    } on entities { $entities }
 feature-history-sketch-diagnostic-fully = Sketch is fully constrained
 feature-history-sketch-diagnostic-conflicting = Sketch has conflicting constraints { $constraints } on entities { $entities }
 feature-history-exact-value = Exact value
@@ -576,7 +585,10 @@ selection-mass-unknown = Mass: cannot be determined
 selection-mass-centre = Centre of mass: X { $x }, Y { $y }, Z { $z } mm
 selection-mass-inertia = Principal moments of inertia: { $moments } kg·m²
 selection-mass-missing = Without mass: { $name } – { $reason }
-selection-mass-more-missing = …and { $count } more parts without mass
+selection-mass-more-missing = …and { $count ->
+        [one] { $count } more part
+       *[other] { $count } more parts
+    } without mass
 view-shaded = Shaded
 view-wireframe = Wireframe
 view-monochrome = Monochrome
@@ -671,7 +683,10 @@ file-import-underlay = Import DXF/DWG as underlay…
 dialog-import-dxf-title = Review bounded DXF import
 dialog-import-dxf-source = Source: { $path }
 dialog-import-dxf-dwg = Read from a DWG file (version { $version }) through its DXF conversion.
-dialog-import-dxf-dwg-skipped = The DWG reader could not decode { $count } { $record } records; they are left out of the import.
+dialog-import-dxf-dwg-skipped = The DWG reader could not decode { $count ->
+        [one] { $count } { $record } record; it is left out of the import.
+       *[other] { $count } { $record } records; they are left out of the import.
+    }
 dialog-import-dxf-summary = Canonical profiles: { $profiles } · source layers: { $layers }
 dialog-import-dxf-origin = WCS XY coordinates are preserved; INSBASE is reported as metadata and is never silently applied.
 dialog-import-dxf-layers = Layers: { $layers }
@@ -771,7 +786,10 @@ file-filter-viewer-comments = Viewer comments or commented Viewer package
 viewer-received-comments-title = Customer comments
 viewer-received-comment-anonymous = Customer
 viewer-received-comment-changed = Model changed since export
-viewer-received-comment-missing = { $count } commented part(s) no longer in the model
+viewer-received-comment-missing = { $count ->
+        [one] { $count } commented part
+       *[other] { $count } commented parts
+    } no longer in the model
 digest-viewer-comments-opened = Comments opened: { $added } new, { $updated } updated, { $unchanged } already listed
 digest-viewer-comments-opened-changed = Comments opened: { $added } new, { $updated } updated, { $unchanged } already listed. The model changed since that export; check marked parts.
 digest-viewer-comments-failed = Comments not opened: { $reason }
@@ -909,7 +927,10 @@ dialog-assign-tag-tag = Tag
 dialog-assign-tag-untagged = Untagged
 dialog-assign-tag-confirm = Assign
 dialog-assign-tag-cancel = Cancel
-digest-assigned-tag = Assigned “{ $tag }” to { $count } occurrence(s)
+digest-assigned-tag = Assigned “{ $tag }” to { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    }
 dialog-replace-component-title = Replace component
 dialog-replace-component-definition = Replacement definition
 dialog-replace-component-confirm = Replace
@@ -1053,7 +1074,10 @@ validators-no-confirmed-findings = No confirmed findings in the evaluated portio
 validators-title = VALIDATORS
 validators-run = Run selected validators
 validators-not-run = No validator has been run on this document yet.
-validators-summary = Result: { $state } — { $count } findings (revision { $revision })
+validators-summary = Result: { $state } — { $count ->
+        [one] { $count } finding
+       *[other] { $count } findings
+    } (revision { $revision })
 validators-incomplete = The evidence is incomplete — unknown or unavailable checks are not confirmed collisions and do not prove the model is collision-free.
 validators-not-evaluated = { $validator }: not evaluated ({ $reason })
 validators-no-findings = No findings.
@@ -1145,19 +1169,28 @@ dimensions-empty = Create a dimension and its first category to begin.
 dimensions-active = Active dimension
 dimensions-new-category = New category
 dimensions-add-category = Add
-dimensions-category-row = { $category } ({ $count } occurrences)
+dimensions-category-row = { $category } ({ $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    })
 dimensions-assign-selection = Assign selection
 dimensions-clear-selection = Clear selection in this dimension
 dimensions-unassigned = Unassigned
 digest-created-dimension = Created dimension “{ $dimension }” with category “{ $category }”
 digest-added-dimension-category = Added “{ $category }” to dimension “{ $dimension }”
-digest-assigned-dimension-category = Set “{ $dimension }” to “{ $category }” for { $count } occurrence(s)
+digest-assigned-dimension-category = Set “{ $dimension }” to “{ $category }” for { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    }
 help-shortcuts = Keyboard shortcuts
 help-about = About Ketchup
 window-material-takeoff = Material takeoff
 takeoff-no-program = The material takeoff needs a document made by a program.
 takeoff-summary = { $counted } visible parts counted, { $excluded } on hidden layers left out; { $exact } with exact solid volume.
-takeoff-outside-program = { $count } visible parts were not made by the program (drawn or imported) and are not counted.
+takeoff-outside-program = { $count ->
+        [one] { $count } visible part was not made by the program (drawn or imported) and is not counted.
+       *[other] { $count } visible parts were not made by the program (drawn or imported) and are not counted.
+    }
 takeoff-export-csv = Export CSV…
 takeoff-export-cut-list-csv = Cut list CSV…
 takeoff-export-cut-list-xlsx = Cut list XLSX…
@@ -1316,30 +1349,63 @@ error-save-document = Could not save “{ $path }”: { $reason }. The active mo
 error-edit-file-in-other-window = The edit was not made: another Kečup window is editing “{ $path }”, and only one window at a time keeps the crash backup of a file’s unsaved work. Close the other window and open the file here again, or use Save As here to work on a copy.
 digest-tool-active = Tool: { $tool }
 digest-selection-cleared = Selection cleared
-digest-selected-viewport = Selected occurrence of “{ $name }” · { $count } occurrence(s) share this definition
+digest-selected-viewport = Selected occurrence of “{ $name }” · { $count ->
+        [one] { $count } occurrence shares
+       *[other] { $count } occurrences share
+    } this definition
 digest-overlap-choice = Overlap { $index } of { $count }
 digest-selected-outliner = Selected { $name }
-digest-selected-definition = Selected all { $count } occurrences of “{ $name }”
-digest-selected-all = Selected { $count } occurrences
-digest-inverted-selection = Inverted selection · { $count } occurrence(s) selected
-digest-selected-group = Selected group “{ $name }” · { $count } members
+digest-selected-definition = { $count ->
+        [one] Selected the only occurrence
+       *[other] Selected all { $count } occurrences
+    } of “{ $name }”
+digest-selected-all = Selected { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    }
+digest-inverted-selection = Inverted selection · { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } selected
+digest-selected-group = Selected group “{ $name }” · { $count ->
+        [one] { $count } member
+       *[other] { $count } members
+    }
 digest-entered-group-context = Editing group · outside objects are isolated
 digest-entered-component-context = Editing component definition · shared occurrences follow
 digest-exited-edit-context = Exited one edit context
-digest-grouped = Grouped { $count } occurrences without moving them · 1 undo step
-digest-ungrouped = Exploded { $count } items without moving them · 1 undo step
-digest-made-component = Component “{ $name }” ready · { $count } shared occurrence(s)
+digest-grouped = Grouped { $count ->
+        [one] { $count } occurrence without moving it
+       *[other] { $count } occurrences without moving them
+    } · 1 undo step
+digest-ungrouped = Exploded { $count ->
+        [one] { $count } item
+       *[other] { $count } items
+    } without moving them · 1 undo step
+digest-made-component = Component “{ $name }” ready · { $count ->
+        [one] { $count } shared occurrence
+       *[other] { $count } shared occurrences
+    }
 digest-made-unique = Made unique — new definition, other occurrences untouched · 1 undo step
 digest-undo = Undo — one command batch reverted
 digest-redo = Redo
 digest-annotation-picked = Annotation { $name }: { $text }
 digest-annotation-line-picked = Drawn line { $name }
-digest-deleted = Deleted { $count } occurrence(s) · 1 undo step
-digest-purged-unused = Purged { $count } unused definition(s) · 1 undo step
+digest-deleted = Deleted { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } · 1 undo step
+digest-purged-unused = Purged { $count ->
+        [one] { $count } unused definition
+       *[other] { $count } unused definitions
+    } · 1 undo step
 digest-cancelled = Cancelled
 digest-exact-rectangle = Exact rectangle { $width } × { $depth } mm — Push/Pull it next
 digest-exact-line = Exact open line { $length } mm · 1 undo step
-digest-line-closed = Closed line profile with { $count } segments — ready for Push/Pull · 1 undo step
+digest-line-closed = Closed line profile with { $count ->
+        [one] { $count } segment
+       *[other] { $count } segments
+    } — ready for Push/Pull · 1 undo step
 digest-exact-circle = Exact circle R { $radius } mm — Push/Pull it next · 1 undo step
 digest-exact-arc = Exact arc with { $bulge } mm bulge — Push/Pull it next · 1 undo step
 digest-exact-polygon = Exact { $sides }-sided polygon R { $radius } mm — Push/Pull it next · 1 undo step
@@ -1348,7 +1414,10 @@ digest-polygon-invalid-sides = A polygon needs a whole number of sides from 3 to
 digest-sketch-invalid-length = Type a length greater than zero, such as 25, 2.5 cm or 600+2*18
 digest-rectangle-invalid-size = Type the width and depth as two lengths greater than zero, such as 80;60 or 8 cm x 6 cm
 digest-exact-ellipse = Exact ellipse { $radius_x } × { $radius_y } mm half-axes — Push/Pull it next · 1 undo step
-digest-exact-spline = Exact closed spline through { $count } points — Push/Pull it next · 1 undo step
+digest-exact-spline = Exact closed spline through { $count ->
+        [one] { $count } point
+       *[other] { $count } points
+    } — Push/Pull it next · 1 undo step
 digest-mirror-created = Mirrored copies added · 1 undo step
 digest-mirror-selection-required = Select the parts to mirror first
 digest-mirror-face-required = Point at the face to mirror across
@@ -1411,7 +1480,10 @@ digest-solid-union-kept-committed = Union committed · tool kept · 1 undo step
 digest-solid-intersect-committed = Intersect committed · tool consumed · 1 undo step
 digest-solid-intersect-kept-committed = Intersect committed · tool kept · 1 undo step
 digest-solid-split-committed = Split committed · splitter preserved · 1 undo step
-digest-push-pull-live = Push/Pull { $distance } — resulting height { $height } mm · { $count } occurrence(s) follow
+digest-push-pull-live = Push/Pull { $distance } — resulting height { $height } mm · { $count ->
+        [one] { $count } occurrence follows
+       *[other] { $count } occurrences follow
+    }
 digest-push-pull-profile-live = Smart Push/Pull { $distance } — resulting profile extent { $extent } mm
 digest-push-pull-committed-height = Committed — Push/Pull { $distance }; height { $height } mm · 1 undo step
 digest-push-pull-committed-profile = Committed — profile edge { $distance } · 1 undo step
@@ -1423,15 +1495,27 @@ digest-move-live = Move { $distance } mm · { $vector }
 digest-copy-live = Copy { $distance } mm · { $vector } · shared definition
 digest-move-committed = Moved { $distance } mm · occurrence transform only · 1 undo step
 digest-copy-committed = Copied { $distance } mm · same definition, new occurrence · 1 undo step
-digest-copy-array-multiplied = Copy array — { $count } copies along the original vector · 1 undo step
-digest-copy-array-divided = Copy array — span divided into { $count } equal intervals · 1 undo step
+digest-copy-array-multiplied = Copy array — { $count ->
+        [one] { $count } copy
+       *[other] { $count } copies
+    } along the original vector · 1 undo step
+digest-copy-array-divided = Copy array — span divided into { $count ->
+        [one] { $count } equal interval
+       *[other] { $count } equal intervals
+    } · 1 undo step
 digest-copy-array-invalid = Copy array count must be a whole number from 1 to { $limit }
 digest-copy-array-limit-exceeded = { $copies } new copies exceed the limit of { $limit }
 digest-copy-array-unavailable = Copy an object with Move first, then enter ×N or /N before changing the model or selection
 digest-align-live = Align preview — { $axis } { $mode } · occurrence transform only
 digest-align-committed = Aligned occurrence exactly · shared definition untouched · 1 undo step
-digest-distribute-live = Distribution preview — { $count } occurrences · { $spacing } mm center spacing on { $axis }
-digest-distribute-gaps-live = Distribution preview — { $count } occurrences · { $spacing } mm equal gaps on { $axis }
+digest-distribute-live = Distribution preview — { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } · { $spacing } mm center spacing on { $axis }
+digest-distribute-gaps-live = Distribution preview — { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } · { $spacing } mm equal gaps on { $axis }
 digest-distribute-committed = Distributed occurrences exactly · shared definitions untouched · 1 undo step
 digest-linear-pattern-live = Linear pattern preview — { $count } total · { $spacing } mm on { $axis } · shared definition
 digest-linear-pattern-committed = Linear pattern committed exactly · shared definition untouched · 1 undo step
@@ -1469,11 +1553,23 @@ digest-scale-refused-no-solid = Only parts with an exact solid can be scaled
 digest-scale-refused-thread = The part has a tapped hole or a modelled thread, and a scaled thread is no longer its standard size (M6 would not be M6); remove the thread or make it cosmetic first
 digest-scale-refused-sheet-metal = The part is sheet metal: its flat pattern and bend table come from its thickness, bends and radii, which a scale would not change; edit those instead
 digest-scale-refused-shear = Along this axis the turned part would be sheared; scale it evenly or along an axis the part is aligned with
-digest-copied-to-clipboard = Copied { $count } occurrence(s) to the clipboard
-digest-cut-to-clipboard = Cut { $count } occurrence(s) to the clipboard · 1 undo step
-digest-pasted-from-clipboard = Pasted { $count } shared occurrence(s) · 1 undo step
+digest-copied-to-clipboard = Copied { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } to the clipboard
+digest-cut-to-clipboard = Cut { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } to the clipboard · 1 undo step
+digest-pasted-from-clipboard = Pasted { $count ->
+        [one] { $count } shared occurrence
+       *[other] { $count } shared occurrences
+    } · 1 undo step
 digest-clipboard-holds-other-content = The clipboard holds something copied elsewhere; nothing was pasted. Copy the parts again to paste them.
-digest-duplicated-selection = Duplicated { $count } shared occurrence(s) · 1 undo step
+digest-duplicated-selection = Duplicated { $count ->
+        [one] { $count } shared occurrence
+       *[other] { $count } shared occurrences
+    } · 1 undo step
 digest-exact-move-applied = Exact move applied — { $value }
 digest-nothing-to-apply = Nothing to apply the value to
 digest-measure-live = Measuring { $distance } mm · { $vector }
@@ -1488,17 +1584,44 @@ digest-underlay-selected = Underlay { $name } selected: Move and Rotate place it
 digest-underlay-edit-failed = The underlay was not moved: { $reason }
 error-underlay-copy = an underlay is placed, not copied
 digest-measure-edge = Edge length { $length } mm · reading only, no undo step
-digest-hidden = Hid { $count } occurrence(s) · 1 undo step
-digest-delete-hidden-selected = Nothing deleted: { $count } selected occurrence(s) are hidden — show them or deselect them first
-digest-hidden-others = Hid { $count } unselected occurrence(s) · 1 undo step
-digest-unhidden = Unhid { $count } occurrence(s) · 1 undo step
-digest-unhidden-all = Unhid all { $count } hidden occurrence(s) · 1 undo step
-digest-home-view = Home view — { $count } occurrence(s) framed
+digest-hidden = Hid { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } · 1 undo step
+digest-delete-hidden-selected = Nothing deleted: { $count ->
+        [one] { $count } selected occurrence is hidden — show it or deselect it first
+       *[other] { $count } selected occurrences are hidden — show them or deselect them first
+    }
+digest-hidden-others = Hid { $count ->
+        [one] { $count } unselected occurrence
+       *[other] { $count } unselected occurrences
+    } · 1 undo step
+digest-unhidden = Unhid { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } · 1 undo step
+digest-unhidden-all = Unhid { $count ->
+        [one] the { $count } hidden occurrence
+       *[other] all { $count } hidden occurrences
+    } · 1 undo step
+digest-home-view = Home view — { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } framed
 digest-previous-view = Restored the previous view
 digest-view-changed = View: { $view }
-digest-zoom-fit = Zoom fit — { $count } occurrence(s) framed
-digest-zoom-selection = Zoom selection — { $count } selected occurrence(s) framed
-digest-center-selection = Centered { $count } selected occurrence(s)
+digest-zoom-fit = Zoom fit — { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } framed
+digest-zoom-selection = Zoom selection — { $count ->
+        [one] { $count } selected occurrence
+       *[other] { $count } selected occurrences
+    } framed
+digest-center-selection = Centered { $count ->
+        [one] { $count } selected occurrence
+       *[other] { $count } selected occurrences
+    }
 digest-zoom-window = Zoomed to the selected window
 digest-zoom-in = Zoomed in
 digest-zoom-out = Zoomed out
@@ -1578,8 +1701,14 @@ viewport-context-root = Model
 viewport-exact-progress = Computing geometry { $done } / { $total }
 viewport-context-outside = Model · outside groups
 viewport-context-inside = EDITING · { $path } · level { $depth }
-viewport-context-shared = Shared component · { $count } instances · edits affect all
-viewport-context-unique = Unique component · { $count } instance
+viewport-context-shared = Shared component · { $count ->
+        [one] { $count } instance
+       *[other] { $count } instances
+    } · edits affect all
+viewport-context-unique = Unique component · { $count ->
+        [one] { $count } instance
+       *[other] { $count } instances
+    }
 viewport-context-up = Up one level
 viewport-next-target = Next target
 viewport-snap-origin = Origin [0, 0, 0]
@@ -1633,7 +1762,10 @@ value-placeholder = type exact value
 value-length-preview = = { $value } mm
 value-comma-not-decimal = A comma is no decimal separator here: write 12.5, and separate values with ; x or : (80;60)
 value-unreadable = not a number, length or expression
-outliner-group = ▸ { $name }    { $count } members
+outliner-group = ▸ { $name }    { $count ->
+        [one] { $count } member
+       *[other] { $count } members
+    }
 outliner-object = { $visibility }  { $name }    { $dimensions } mm
 outliner-object-grouped = { $visibility }  { $name }    { $dimensions } mm    · Group { $group }
 outliner-component = { $name }    { $count }×    { $dimensions } mm
@@ -1641,7 +1773,10 @@ outliner-instance = { $visibility }  { $name }
 outliner-instance-grouped = { $visibility }  { $name }    · Group { $group }
 visibility-shown = shown
 visibility-hidden = hidden
-tags-visibility = { $hidden } hidden of { $total } occurrences
+tags-visibility = { $hidden } hidden of { $total ->
+        [one] { $total } occurrence
+       *[other] { $total } occurrences
+    }
 tags-create = New tag…
 tags-create-from-selection = New tag from selection…
 dialog-create-tag-title = New tag
@@ -1651,8 +1786,14 @@ dialog-create-tag-confirm = Create
 dialog-create-tag-from-selection-confirm = Create and assign
 dialog-create-tag-cancel = Cancel
 digest-created-tag = Created tag “{ $name }”
-digest-created-tag-from-selection = Created tag “{ $name }” for { $count } selected occurrence(s)
-tags-row = { $name } ({ $count } occurrences)
+digest-created-tag-from-selection = Created tag “{ $name }” for { $count ->
+        [one] { $count } selected occurrence
+       *[other] { $count } selected occurrences
+    }
+tags-row = { $name } ({ $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    })
 tags-select = Select all tagged “{ $name }”
 tags-assign-selection = Assign selection to “{ $name }”
 tags-remove-selection = Untag “{ $name }”
@@ -1667,23 +1808,44 @@ tags-select-all-tagged = Select all tagged
 tags-hide-selection = Hide selected tags
 tags-show-selection = Show selected tags
 tags-invert-selection = Invert selected tags
-digest-selected-tag = Selected { $count } occurrences tagged “{ $name }”
-digest-selected-untagged = Selected { $count } untagged occurrences
-digest-removed-selected-tag = Removed “{ $tag }” from { $count } selected occurrence(s)
+digest-selected-tag = Selected { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } tagged “{ $name }”
+digest-selected-untagged = Selected { $count ->
+        [one] { $count } untagged occurrence
+       *[other] { $count } untagged occurrences
+    }
+digest-removed-selected-tag = Removed “{ $tag }” from { $count ->
+        [one] { $count } selected occurrence
+       *[other] { $count } selected occurrences
+    }
 tags-clear = Remove tag from all “{ $name }” occurrences
 dialog-clear-tag-title = Remove tag assignments
-dialog-clear-tag-message = Remove tag “{ $name }” from { $count } occurrences?
+dialog-clear-tag-message = Remove tag “{ $name }” from { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    }?
 dialog-clear-tag-confirm = Remove from all
 dialog-clear-tag-cancel = Cancel
-digest-cleared-tag = Removed tag “{ $name }” from { $count } occurrences
+digest-cleared-tag = Removed tag “{ $name }” from { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    }
 tags-delete = Delete { $name }
 dialog-delete-tag-title = Delete tag
 dialog-delete-tag-message = Delete unused tag “{ $name }”?
-dialog-delete-used-tag-message = Remove “{ $name }” from { $count } occurrences and delete the tag?
+dialog-delete-used-tag-message = Remove “{ $name }” from { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } and delete the tag?
 dialog-delete-tag-confirm = Delete tag
 dialog-delete-tag-cancel = Cancel
 digest-deleted-tag = Deleted tag “{ $name }”
-digest-deleted-used-tag = Removed “{ $name }” from { $count } occurrences and deleted the tag
+digest-deleted-used-tag = Removed “{ $name }” from { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } and deleted the tag
 tags-rename = Rename { $name }
 dialog-rename-tag-title = Rename tag
 dialog-rename-tag-name = Name
@@ -1717,15 +1879,48 @@ section-azimuth = Turn
 section-elevation = Tilt
 digest-section-shown = Section plane at { $offset } mm
 digest-section-hidden = Section closed
-digest-all-tags-visibility = Set { $count } tags to { $visibility }
-digest-inverted-tags-visibility = Inverted visibility for { $count } tags
-digest-isolated-tag = Isolated “{ $name }” by updating { $count } tags
-digest-isolated-selected-tags = Isolated { $tags } selected tag(s) by updating { $count } tags
-digest-selected-matching-tags = Selected { $count } occurrences across { $tags } selected tag(s)
-digest-selected-all-tagged = Selected { $count } tagged occurrences
-digest-hidden-selected-tags = Hid { $count } of { $tags } selected tag(s)
-digest-shown-selected-tags = Showed { $count } of { $tags } selected tag(s)
-digest-inverted-selected-tags = Inverted { $count } selected tag(s)
+digest-all-tags-visibility = Set { $count ->
+        [one] { $count } tag
+       *[other] { $count } tags
+    } to { $visibility }
+digest-inverted-tags-visibility = Inverted visibility for { $count ->
+        [one] { $count } tag
+       *[other] { $count } tags
+    }
+digest-isolated-tag = Isolated “{ $name }” by updating { $count ->
+        [one] { $count } tag
+       *[other] { $count } tags
+    }
+digest-isolated-selected-tags = Isolated { $tags ->
+        [one] { $tags } selected tag
+       *[other] { $tags } selected tags
+    } by updating { $count ->
+        [one] { $count } tag
+       *[other] { $count } tags
+    }
+digest-selected-matching-tags = Selected { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    } across { $tags ->
+        [one] { $tags } selected tag
+       *[other] { $tags } selected tags
+    }
+digest-selected-all-tagged = Selected { $count ->
+        [one] { $count } tagged occurrence
+       *[other] { $count } tagged occurrences
+    }
+digest-hidden-selected-tags = Hid { $count } of { $tags ->
+        [one] { $tags } selected tag
+       *[other] { $tags } selected tags
+    }
+digest-shown-selected-tags = Showed { $count } of { $tags ->
+        [one] { $tags } selected tag
+       *[other] { $tags } selected tags
+    }
+digest-inverted-selected-tags = Inverted { $count ->
+        [one] { $count } selected tag
+       *[other] { $count } selected tags
+    }
 model-hide = Hide
 model-hide-others = Hide others
 model-unhide = Unhide
@@ -1740,7 +1935,13 @@ status-snap-off = snap off
 status-grid = grid { $step } mm
 status-grid-hidden = grid hidden
 status-refs-guaranteed = A0 refs: guaranteed
-status-exact-current = exact: { $bodies } current bodies / { $refs } stable refs
+status-exact-current = exact: { $bodies ->
+        [one] { $bodies } current body
+       *[other] { $bodies } current bodies
+    } / { $refs ->
+        [one] { $refs } stable ref
+       *[other] { $refs } stable refs
+    }
 status-exact-unavailable = exact: unavailable (proxy view)
 file-export-project-drawings = Drawings (PDF, DXF, DWG)…
 file-filter-svg = SVG drawing
@@ -1755,7 +1956,10 @@ drawings-view-left = Left elevation
 drawings-view-right = Right elevation
 drawings-unavailable = There are no visible exact solids to draw yet; wait until the model is evaluated.
 drawings-do-not-fit = At 1:{ $scale } the views do not fit an { $format } sheet; choose a coarser scale or a larger format.
-drawings-parts-not-evaluated = { $count } visible parts have no exact solid, so the sheet would leave them out: { $parts }. Fix or hide them, or wait until the model is evaluated.
+drawings-parts-not-evaluated = { $count ->
+        [one] { $count } visible part has no exact solid, so the sheet would leave it out: { $parts }. Fix or hide it, or wait
+       *[other] { $count } visible parts have no exact solid, so the sheet would leave them out: { $parts }. Fix or hide them, or wait
+    } until the model is evaluated.
 drawings-settings-unreadable = The title block and sheet format stored in the document cannot be read ({ $reason }); they are kept as they are. Fill in the title block again in Project drawings to replace them.
 drawings-cosmetic-threads-failed = The modelled threads of { $part } cannot be drawn by ISO 6410 ({ $reason }); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic.
 drawings-settings-unreadable-edit = The title block stored in the document cannot be read ({ $reason }). Any change made here replaces it.

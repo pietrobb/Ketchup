@@ -818,7 +818,7 @@ fn shared_definition_push_pull_previews_each_occurrence_and_explains_impact() {
     assert_eq!(rendered[1].origin_mm, Vec3::new(250.0, 0.0, 0.0));
     assert_eq!(rendered[0].size_mm.z, 80.0);
     assert_eq!(rendered[1].size_mm.z, 80.0);
-    assert!(app.digest.contains("2 occurrence(s) follow"));
+    assert!(app.digest.contains("2 occurrences follow"));
 
     app.cancel_preview();
     app.selection.select_exact(
