@@ -42,6 +42,22 @@ def test_counts_the_viewer_crates_too(tmp_path):
     }
 
 
+def test_counts_spaced_and_park_timeout_sleeps(tmp_path):
+    # Review 2026-10-19 P3: `sleep (` and `park_timeout` waited for a fixed time unseen.
+    write(
+        tmp_path,
+        "crates/a/tests/flow.rs",
+        "fn t() {\n"
+        "    std::thread::sleep (TICK);\n"
+        "    std::thread::park_timeout(TICK);\n"
+        "    thread::park_timeout_ms(5);\n"
+        "    std::thread::sleep_ms(5);\n"
+        "    let asleep = sleeper(1);\n"
+        "}\n",
+    )
+    assert checker.current_counts(tmp_path) == {"crates/a/tests/flow.rs": 4}
+
+
 def test_counts_the_sleep_calls_of_python_tests(tmp_path):
     # Review 2026-10-21 P3: Python tests were not scanned. A sleep named in a string is not
     # a call, and a script outside the tests is not counted.

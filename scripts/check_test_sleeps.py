@@ -22,7 +22,9 @@ from check_tolerance_literals import TEST_MODULE  # noqa: E402  (a Rust file's u
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "scripts" / "test_sleeps_baseline.txt"
-SLEEP = re.compile(r"\bsleep\(")
+# `thread::park_timeout` sleeps as well when nothing unparks the thread; a space before
+# the parenthesis is still a call (review 2026-10-19 P3).
+SLEEP = re.compile(r"\b(?:sleep|sleep_ms|park_timeout|park_timeout_ms)\s*\(")
 
 
 def is_test_file(relative: Path) -> bool:
