@@ -454,17 +454,46 @@ impl KetchupApp {
             .collect()
     }
 
-    pub(crate) fn tag_rows(&self) -> Vec<(TagId, String, bool, usize)> {
+    /// Each tag with its name, visibility and the row label of the Layers panel: what it
+    /// holds, parts and, for an underlay's tag, the lines and texts it shows.
+    pub(crate) fn tag_rows(&self) -> Vec<(TagId, String, bool, String)> {
         let snapshot = self.document.current();
+        let drawn = self.underlay_counts_by_tag(&snapshot);
         snapshot
             .tags()
             .map(|tag| {
-                (
-                    tag.id(),
-                    tag.name().to_owned(),
-                    tag.visible(),
-                    snapshot.occurrences_with_tag(tag.id()).count(),
-                )
+                let name = tag.name().to_owned();
+                let occurrences = snapshot.occurrences_with_tag(tag.id()).count();
+                let count = |key: &str, count: usize| {
+                    self.catalog
+                        .format(key, &BTreeMap::from([("count", count.to_string())]))
+                };
+                let label = match drawn.get(&tag.id()) {
+                    None => self.catalog.format(
+                        "tags-row",
+                        &BTreeMap::from([
+                            ("name", name.clone()),
+                            ("count", occurrences.to_string()),
+                        ]),
+                    ),
+                    Some(&[lines, texts]) => {
+                        let mut counts = vec![count("tags-count-lines", lines)];
+                        if texts > 0 {
+                            counts.push(count("tags-count-texts", texts));
+                        }
+                        if occurrences > 0 {
+                            counts.push(count("tags-count-occurrences", occurrences));
+                        }
+                        self.catalog.format(
+                            "tags-row-underlay",
+                            &BTreeMap::from([
+                                ("name", name.clone()),
+                                ("counts", counts.join(", ")),
+                            ]),
+                        )
+                    }
+                };
+                (tag.id(), name, tag.visible(), label)
             })
             .collect()
     }

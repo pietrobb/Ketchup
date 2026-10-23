@@ -1797,6 +1797,19 @@ tags-row = { $name } ({ $count ->
         [one] { $count } occurrence
        *[other] { $count } occurrences
     })
+tags-row-underlay = { $name } ({ $counts })
+tags-count-lines = { $count ->
+        [one] { $count } line
+       *[other] { $count } lines
+    }
+tags-count-texts = { $count ->
+        [one] { $count } text
+       *[other] { $count } texts
+    }
+tags-count-occurrences = { $count ->
+        [one] { $count } occurrence
+       *[other] { $count } occurrences
+    }
 tags-select = Select all tagged “{ $name }”
 tags-assign-selection = Assign selection to “{ $name }”
 tags-remove-selection = Untag “{ $name }”

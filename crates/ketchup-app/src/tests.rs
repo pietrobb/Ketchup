@@ -373,5 +373,6 @@ mod scaled_placement;
 pub(crate) mod shell;
 mod tool_gesture;
 mod transform;
+mod underlay_layer_rows;
 mod viewer_comments;
 mod viewport;

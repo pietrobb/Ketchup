@@ -288,11 +288,7 @@ impl KetchupApp {
                 ]),
             ));
             let active_scene = self.active_scene_from(&snapshot, Some(&scene));
-            for (id, name, mut visible, count) in self.tag_rows() {
-                let label = self.catalog.format(
-                    "tags-row",
-                    &BTreeMap::from([("name", name.clone()), ("count", count.to_string())]),
-                );
+            for (id, name, mut visible, label) in self.tag_rows() {
                 ui.horizontal_wrapped(|ui| {
                     if ui.checkbox(&mut visible, label).changed() {
                         self.set_tag_visibility(id, visible);

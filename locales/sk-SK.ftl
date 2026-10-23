@@ -1742,6 +1742,10 @@ digest-created-tag-from-selection = Tag „{ $name }“ bol vytvorený pre { $co
        *[other] { $count } vybraných výskytov
     }
 tags-row = { $name } (výskytov: { $count })
+tags-row-underlay = { $name } ({ $counts })
+tags-count-lines = čiar: { $count }
+tags-count-texts = textov: { $count }
+tags-count-occurrences = výskytov: { $count }
 tags-select = Vybrať všetky s tagom „{ $name }“
 tags-assign-selection = Priradiť výber k tagu „{ $name }“
 tags-remove-selection = Odobrať „{ $name }“

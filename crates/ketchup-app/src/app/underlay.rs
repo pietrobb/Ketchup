@@ -20,12 +20,29 @@ use ketchup_model::underlay::{
 };
 use ketchup_program::CancelToken;
 
-/// Per layer of an underlay's lines, in their own millimetres, the box of its points and
-/// text anchors; `None` for a layer that draws nothing.
-pub(crate) type UnderlayExtent = Arc<[Option<[[f64; 2]; 2]>]>;
+/// What one layer of an underlay's lines draws: the box of its points and text anchors in
+/// their own millimetres (`None` for a layer that draws nothing), its straight lines and
+/// its texts.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LayerExtent {
+    bounds_mm: Option<[[f64; 2]; 2]>,
+    lines: usize,
+    texts: usize,
+}
+
+/// One [`LayerExtent`] per layer of an underlay's lines.
+pub(crate) type UnderlayExtent = Arc<[LayerExtent]>;
 
 fn underlay_extent(lines: &UnderlayLines) -> UnderlayExtent {
-    lines.layers().iter().map(LayerLines::bounds_mm).collect()
+    lines
+        .layers()
+        .iter()
+        .map(|layer: &LayerLines| LayerExtent {
+            bounds_mm: layer.bounds_mm(),
+            lines: layer.segment_count(),
+            texts: layer.texts().len(),
+        })
+        .collect()
 }
 
 /// A drawing read as an underlay, not yet added to the document.
@@ -469,7 +486,7 @@ impl KetchupApp {
                     .iter()
                     .zip(extent.iter())
                     .filter(|(layer, _)| shown(layer.tag))
-                    .filter_map(|(_, bounds)| *bounds)
+                    .filter_map(|(_, layer)| layer.bounds_mm)
                     .flat_map(|[low, high]| {
                         [[low[0], low[1]], [high[0], low[1]], [low[0], high[1]], high]
                     })
@@ -480,7 +497,31 @@ impl KetchupApp {
             .collect()
     }
 
-    /// The layer bounds of `underlay`'s lines, decoded from the document's blob the first
+    /// The straight lines and texts of every underlay a tag shows, by tag: an underlay's
+    /// own tag counts all its layers, a layer's tag that layer. A tag without underlay
+    /// content is absent.
+    pub(crate) fn underlay_counts_by_tag(
+        &self,
+        snapshot: &Snapshot,
+    ) -> BTreeMap<TagId, [usize; 2]> {
+        let mut counts = BTreeMap::<TagId, [usize; 2]>::new();
+        for underlay in snapshot.underlays() {
+            let Some(extent) = self.cached_underlay_extent(underlay) else {
+                continue;
+            };
+            for (layer, drawn) in underlay.layers.iter().zip(extent.iter()) {
+                for tag in [underlay.tag, layer.tag] {
+                    let count = counts.entry(tag).or_default();
+                    count[0] += drawn.lines;
+                    count[1] += drawn.texts;
+                }
+            }
+        }
+        counts.retain(|_, count| *count != [0, 0]);
+        counts
+    }
+
+    /// The layer extents of `underlay`'s lines, decoded from the document's blob the first
     /// time; `None` while the document holds no readable blob of them.
     fn cached_underlay_extent(&self, underlay: &Underlay) -> Option<UnderlayExtent> {
         let key = underlay.lines_sha256;
