@@ -261,6 +261,64 @@ fn a_drawer_with_walls_thin_against_its_size_is_checked_on_its_exact_solid() {
     assert!(kinds(&report).is_empty(), "{:#?}", report.issues);
 }
 
+/// Review #136: a refine the worker refuses (here no time is left) keeps the
+/// report's own issues; a report that left them for the exact check lists them
+/// first, so both answer with the same issues, relations and summary.
+#[test]
+fn a_refused_refine_answers_with_the_issues_the_report_left_for_it() {
+    use ketchup_application::program_isolation::{CheckDeadline, report_program_before_exact};
+    let source = "t = extrude(\"t\", profile = [(0, 0), (100, 0), (0, 100)], distance = 20)\n\
+                  c = box(\"c\", (20, 20, 20), at = (70, 70, 0))\n\
+                  d = box(\"d\", (20, 20, 20), at = (0, 0, 20))\n\
+                  e = box(\"e\", (5, 5, 5), at = (0, 0, 300))\n";
+    let mut session = DocumentSession::new(SessionSettings::default());
+    let applied = session
+        .apply_rule_program(
+            RuleProgramSource {
+                variants: Default::default(),
+                file_name: "left.star".to_owned(),
+                source: source.to_owned(),
+                overrides: Default::default(),
+            },
+            false,
+        )
+        .unwrap();
+    let evaluated = ketchup_program::evaluate("left.star", source, &Default::default()).unwrap();
+    let cancel = ketchup_program::CancelToken::default();
+    let pending = report_program_before_exact(
+        &evaluated,
+        CheckDeadline::after(Duration::from_secs(120)),
+        &cancel,
+    )
+    .unwrap();
+    assert!(pending.checks_pending());
+    assert!(
+        !applied.report.relations.is_empty() && applied.report.issues.len() > pending.issues.len(),
+        "{:#?}",
+        applied.report
+    );
+    let answer = (
+        serde_json::json!({"complete": true, "not_evaluated": [], "checked_pair_count": 0}),
+        Default::default(),
+    );
+    let refused = |mut report: ketchup_program::Report| {
+        let (summary, _) = ketchup_application::apply_exact_pairs(
+            &mut report,
+            &applied.model,
+            ketchup_program::ExactShapes::default(),
+            &answer,
+            CheckDeadline::after(Duration::ZERO),
+            &cancel,
+        );
+        (report, summary)
+    };
+    let (today, today_summary) = refused(applied.report.clone());
+    let (left, left_summary) = refused(pending);
+    assert_eq!(today_summary["state"], "incomplete", "{today_summary}");
+    assert_eq!(left, today);
+    assert_eq!(left_summary, today_summary);
+}
+
 #[test]
 fn a_part_inside_the_empty_corner_of_a_triangle_is_cleared() {
     // The cube sits in the corner the triangle leaves empty; the boxes overlap.

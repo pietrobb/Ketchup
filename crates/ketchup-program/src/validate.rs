@@ -925,6 +925,15 @@ pub fn validate_with(model: &ProgramModel, exact: &ExactShapes) -> Vec<Issue> {
     validate_with_faces(model, exact, &mut ContactFaces::default())
 }
 
+/// Only the collision check of [`validate`], on the boxes: the issues an exact
+/// check settles.
+pub(crate) fn collisions_only(model: &ProgramModel) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    collisions(model, &ExactShapes::default(), &mut issues);
+    issues.sort_by_key(|issue| issue.severity);
+    issues
+}
+
 /// [`validate_with`] measuring contacts into `faces`, which the loads reuse.
 pub(crate) fn validate_with_faces<'a>(
     model: &'a ProgramModel,

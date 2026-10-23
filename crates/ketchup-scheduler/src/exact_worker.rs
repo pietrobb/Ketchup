@@ -178,6 +178,7 @@ fn handle_request(
         // Programs and DWG files go to ketchup-program-worker.
         WorkerRequest::EvaluateProgram(_)
         | WorkerRequest::ReportProgram(_)
+        | WorkerRequest::ReportBeforeExact(_)
         | WorkerRequest::RefineReport(_)
         | WorkerRequest::ConvertDwg(_)
         | WorkerRequest::ReadUnderlay(_) => Err(WorkerFailure::invalid_request()),

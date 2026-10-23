@@ -99,6 +99,9 @@ pub struct Report {
     /// The program lines of every part, to name the lines of later issues.
     #[serde(skip)]
     part_sources: BTreeMap<String, Vec<SourceLines>>,
+    /// Made by [`report_before_exact`]: only the collisions are listed yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    checks_pending: bool,
 }
 
 /// How many issues (errors among them) and relations a whole report holds,
@@ -155,6 +158,7 @@ impl Report {
             unused_overrides: evaluated.unused_overrides.clone(),
             truncated: None,
             part_sources: evaluated.part_sources.clone(),
+            checks_pending: false,
         };
         report.set_issues(vec![Issue {
             severity: Severity::Warning,
@@ -184,6 +188,36 @@ impl Report {
         );
         self.relations = refined.relations;
         self.truncated = refined.truncated;
+        self.checks_pending = false;
+        self.set_issues(issues);
+    }
+
+    /// Whether this report lists only its collisions ([`report_before_exact`]):
+    /// before it is published without the exact check that re-derives its
+    /// issues and relations, [`Self::apply_refined`] has to give them the
+    /// result of [`refine`] without exact answers.
+    #[must_use]
+    pub fn checks_pending(&self) -> bool {
+        self.checks_pending
+    }
+
+    /// The checks [`report_before_exact`] left out did not finish: the report
+    /// keeps its collisions, joints and loads, and says what is missing.
+    pub fn stop_pending_checks(&mut self, stopped: &ProgramError) {
+        self.checks_pending = false;
+        let mut issues = std::mem::take(&mut self.issues);
+        issues.push(Issue {
+            severity: Severity::Warning,
+            kind: CHECKS_UNVERIFIED,
+            parts: Vec::new(),
+            message: format!(
+                "The checks of the program did not finish ({}: {}); the edit was applied, and its collisions, joints and loads were checked, but no relation and no other issue.",
+                stopped.code, stopped.message
+            ),
+            where_mm: None,
+            hint: "Ask for the report again, or check fewer parts at a time.".to_owned(),
+            source_lines: Vec::new(),
+        });
         self.set_issues(issues);
     }
 
@@ -338,7 +372,37 @@ pub fn report(evaluated: &Evaluated) -> Report {
         unused_overrides: evaluated.unused_overrides.clone(),
         truncated: None,
         part_sources: evaluated.part_sources.clone(),
+        checks_pending: false,
     }
+}
+
+/// [`report`] of an edit whose exact check follows and re-derives every issue
+/// and relation anyway: it lists only the collisions on the boxes, which say
+/// what that check cleared, and no relation. Its joints, loads and the rest
+/// are those of [`report`]. Published without the exact check, it needs
+/// [`refine`] without exact answers first ([`Report::checks_pending`]).
+#[must_use]
+pub fn report_before_exact(evaluated: &Evaluated) -> Report {
+    let loads = loads::loads(&evaluated.model);
+    let mut report = Report {
+        ok: true,
+        errors: 0,
+        warnings: 0,
+        issues: Vec::new(),
+        relations: Vec::new(),
+        params: evaluated.model.params.clone(),
+        bom: bom(&evaluated.model),
+        joints: joint_check::joint_checks(&evaluated.model, &loads),
+        design: member_check::member_checks(&evaluated.model, &loads),
+        loads,
+        log: evaluated.log.clone(),
+        unused_overrides: evaluated.unused_overrides.clone(),
+        truncated: None,
+        part_sources: evaluated.part_sources.clone(),
+        checks_pending: true,
+    };
+    report.set_issues(validate::collisions_only(&evaluated.model));
+    report
 }
 
 /// Names on every issue the program lines that define its parts, in order and

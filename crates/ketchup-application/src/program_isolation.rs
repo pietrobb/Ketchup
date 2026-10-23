@@ -16,6 +16,7 @@ pub use ketchup_scheduler::underlay_reading::UnderlayReadError;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Mutex;
+use std::time::Duration;
 
 /// Idle workers kept for the next request; more run only while requests overlap.
 const MAX_IDLE_WORKERS: usize = 2;
@@ -82,6 +83,55 @@ pub fn report_program(
             location: None,
         })
     })
+}
+
+/// [`ketchup_program::report_before_exact`] in a program worker, like
+/// [`report_program`].
+///
+/// # Errors
+/// As [`report_program`].
+pub fn report_program_before_exact(
+    evaluated: &Evaluated,
+    deadline: CheckDeadline,
+    cancel: &CancelToken,
+) -> Result<Report, ProgramError> {
+    with_worker(|worker| worker.report_before_exact(evaluated, deadline, cancel)).unwrap_or_else(
+        |error| {
+            Err(ProgramError {
+                code: "worker_failed",
+                message: format!("programs cannot be checked: {error}"),
+                location: None,
+            })
+        },
+    )
+}
+
+/// The least time the checks a report left for its exact check get when it is
+/// published without that check, however little of its deadline is left.
+pub const PENDING_CHECKS_TIME: Duration = Duration::from_secs(5);
+
+/// Runs the checks [`report_program_before_exact`] left out, for a report that
+/// is published without the exact check that re-derives its issues and
+/// relations: it then lists the same ones [`report_program`] does. Checks that
+/// do not finish leave a report that says so.
+pub fn complete_pending_checks(
+    report: &mut Report,
+    model: &ProgramModel,
+    deadline: CheckDeadline,
+    cancel: &CancelToken,
+) {
+    if !report.checks_pending() {
+        return;
+    }
+    let deadline = if deadline.remaining() >= PENDING_CHECKS_TIME {
+        deadline
+    } else {
+        CheckDeadline::after(PENDING_CHECKS_TIME)
+    };
+    match refine_report(model, &ExactShapes::default(), deadline, cancel) {
+        Ok(refined) => report.apply_refined(refined),
+        Err(stopped) => report.stop_pending_checks(&stopped),
+    }
 }
 
 /// [`ketchup_program::refine`] in a program worker, under the limits of a

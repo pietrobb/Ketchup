@@ -668,13 +668,19 @@ impl ExactWorkerClient {
         }
     }
 
+    /// `before_exact` asks for the report of an edit whose exact check follows.
     pub(crate) fn report_program(
         &mut self,
         input: EvaluatedProgram,
+        before_exact: bool,
         cancelled: &AtomicBool,
         timeout: Duration,
     ) -> Result<ReportOutcome, WorkerError> {
-        let request = WorkerRequest::ReportProgram(Box::new(input));
+        let request = if before_exact {
+            WorkerRequest::ReportBeforeExact(Box::new(input))
+        } else {
+            WorkerRequest::ReportProgram(Box::new(input))
+        };
         match self.call(&request, cancelled, timeout)? {
             WorkerReply::Report(outcome) => Ok(*outcome),
             reply => self.unexpected(reply),
@@ -876,6 +882,7 @@ impl ExactWorkerClient {
             WorkerRequest::ConvertDwg(_)
             | WorkerRequest::EvaluateProgram(_)
             | WorkerRequest::ReportProgram(_)
+            | WorkerRequest::ReportBeforeExact(_)
             | WorkerRequest::RefineReport(_)
             | WorkerRequest::ReadUnderlay(_) => ANY_FRAME_BYTES,
             _ => MAX_REQUEST_FRAME_BYTES,

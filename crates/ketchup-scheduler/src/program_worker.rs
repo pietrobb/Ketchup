@@ -287,10 +287,33 @@ impl ProgramWorker {
         deadline: CheckDeadline,
         cancel: &CancelToken,
     ) -> Result<Report, ProgramError> {
+        self.report_of(evaluated, false, deadline, cancel)
+    }
+
+    /// [`ketchup_program::report_before_exact`] in the worker, like [`Self::report`].
+    ///
+    /// # Errors
+    /// As [`Self::report`].
+    pub fn report_before_exact(
+        &mut self,
+        evaluated: &Evaluated,
+        deadline: CheckDeadline,
+        cancel: &CancelToken,
+    ) -> Result<Report, ProgramError> {
+        self.report_of(evaluated, true, deadline, cancel)
+    }
+
+    fn report_of(
+        &mut self,
+        evaluated: &Evaluated,
+        before_exact: bool,
+        deadline: CheckDeadline,
+        cancel: &CancelToken,
+    ) -> Result<Report, ProgramError> {
         let input = evaluated.clone().into();
         let outcome = self
             .call_by(deadline, cancel, |client, time| {
-                client.report_program(input, cancel.flag(), time)
+                client.report_program(input, before_exact, cancel.flag(), time)
             })
             .map_err(Stopped::report_error)?;
         match outcome {
@@ -469,6 +492,10 @@ pub fn run_stdio() {
             }
             Frame::Message(WorkerRequest::ReportProgram(input)) => {
                 let report = ketchup_program::report(&Evaluated::from(*input));
+                WorkerReply::Report(Box::new(ReportOutcome::Reported(Box::new(report))))
+            }
+            Frame::Message(WorkerRequest::ReportBeforeExact(input)) => {
+                let report = ketchup_program::report_before_exact(&Evaluated::from(*input));
                 WorkerReply::Report(Box::new(ReportOutcome::Reported(Box::new(report))))
             }
             Frame::Message(WorkerRequest::RefineReport(input)) => {

@@ -131,6 +131,10 @@ pub enum WorkerRequest {
     /// materials). Only the program worker gets it: on a large model this costs
     /// far more than the evaluation and has no bound of its own (review PRG-1).
     ReportProgram(Box<EvaluatedProgram>),
+    /// The report of an edit whose exact check follows: only the collisions,
+    /// which say what that check cleared, not the issues and relations it
+    /// re-derives anyway.
+    ReportBeforeExact(Box<EvaluatedProgram>),
     /// Re-derives a report's issues and relations with exact answers: it costs
     /// as much as the checks of the report (review 2026-10-15 N-4).
     RefineReport(Box<RefineInput>),

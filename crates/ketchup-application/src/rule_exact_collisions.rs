@@ -1,6 +1,6 @@
 //! Exact collision and distance answers for applied program solids.
 use crate::collision::{CollisionScope, ExactPairFacts, scoped_exact_pairs_with_worker};
-use crate::program_isolation::{CheckDeadline, refine_report};
+use crate::program_isolation::{CheckDeadline, complete_pending_checks, refine_report};
 use ketchup_model::document::{InstancePath, Snapshot};
 use ketchup_model::persistence::ContainerData;
 use ketchup_program::{
@@ -78,6 +78,8 @@ pub fn apply_exact_pairs(
         Ok(refined) => report.apply_refined(refined),
         Err(error) => {
             complete = false;
+            // The report keeps its own issues, so it needs those it left for this check.
+            complete_pending_checks(report, model, deadline, cancel);
             let refused = json!({ "reason": error.code, "detail": error.message });
             match not_evaluated.as_array_mut() {
                 Some(reasons) => reasons.insert(0, refused),

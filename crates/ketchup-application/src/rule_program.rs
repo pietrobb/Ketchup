@@ -143,6 +143,21 @@ impl RuleProgramPlan {
         )
         .unwrap_or_else(|stopped| Report::unfinished(&self.evaluated, &stopped))
     }
+
+    /// [`Self::report`] of an edit whose exact check follows, which re-derives
+    /// the issues and relations: only its collisions are listed
+    /// ([`ketchup_program::report_before_exact`]), and
+    /// [`crate::program_isolation::complete_pending_checks`] lists the rest
+    /// when the report is published without that check.
+    #[must_use]
+    pub fn report_before_exact(&self, deadline: crate::program_isolation::CheckDeadline) -> Report {
+        crate::program_isolation::report_program_before_exact(
+            &self.evaluated,
+            deadline,
+            &ketchup_program::CancelToken::default(),
+        )
+        .unwrap_or_else(|stopped| Report::unfinished(&self.evaluated, &stopped))
+    }
 }
 
 /// Plans how `source` updates `document`. This is the one reconciliation path shared by the

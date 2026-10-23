@@ -25,6 +25,7 @@ mod opposing_holes;
 mod profile_arcs;
 mod program;
 mod relations;
+mod report_before_exact;
 mod report_material;
 mod revolve_bounds;
 mod support;

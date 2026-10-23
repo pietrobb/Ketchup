@@ -8,21 +8,30 @@ mod failure_tests;
 mod tests;
 use super::*;
 use crate::program_edit::ProgramEdit;
-use ketchup_application::program_isolation::CheckDeadline;
+use ketchup_application::program_isolation::{CheckDeadline, complete_pending_checks};
 use ketchup_application::{ExactBaseline, RuleProgramApplyError, RuleProgramPlan};
 use ketchup_model::document::RuleProgramSource;
 use ketchup_program::{ProgramModel, Report, exact_candidates};
 
 /// Plans the program and lists its report, both off the UI thread when queued.
 /// `deadline` is the request's: its exact check gets only what the report left,
-/// applied or only checked alike, so both reach the same verdict.
+/// applied or only checked alike, so both reach the same verdict. When an exact
+/// check follows (`exact_follows` and the model has candidates), it re-derives
+/// the issues and relations, so the report lists only the collisions it
+/// settles; [`complete_pending_checks`] lists the rest wherever the report is
+/// published without that check.
 fn plan_with_report(
     document: &DocumentStore,
     source: &RuleProgramSource,
     deadline: CheckDeadline,
+    exact_follows: bool,
 ) -> Result<(RuleProgramPlan, Report), RuleProgramApplyError> {
     let plan = ketchup_application::plan_rule_program(document, source)?;
-    let report = plan.report(deadline);
+    let report = if exact_follows && !exact_candidates(&plan.evaluated.model).is_empty() {
+        plan.report_before_exact(deadline)
+    } else {
+        plan.report(deadline)
+    };
     Ok((plan, report))
 }
 
@@ -105,6 +114,92 @@ pub(super) struct ExactCheckJob {
     time: Duration,
     applied: AppliedProgram,
     receiver: mpsc::Receiver<(Report, Option<Value>, Option<ExactBaseline>)>,
+    /// The verdict reached without the check's issues, published once the
+    /// report's own checks have run.
+    verdict: Option<Value>,
+    /// Those checks, run when the report is published without the exact
+    /// check's issues ([`complete_pending_checks`]).
+    completion: Option<PendingChecks>,
+}
+
+/// The checks a report left for its exact check, running off the UI thread.
+pub(super) struct PendingChecks {
+    cancelled: Arc<AtomicBool>,
+    receiver: mpsc::Receiver<Report>,
+}
+
+impl ExactCheckJob {
+    /// Starts the checks the report left for the exact check; the deadline
+    /// left of the request bounds them, or [`PENDING_CHECKS_TIME`] when less
+    /// is left.
+    ///
+    /// [`PENDING_CHECKS_TIME`]: ketchup_application::program_isolation::PENDING_CHECKS_TIME
+    fn complete_report(&mut self, context: &egui::Context) {
+        let mut report = self.applied.report.clone();
+        let model = self.applied.model.clone();
+        let deadline = CheckDeadline::after(self.time.saturating_sub(self.started.elapsed()));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel = ketchup_program::CancelToken::from(Arc::clone(&cancelled));
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let repaint = context.clone();
+        let spawn = std::thread::Builder::new()
+            .name("ketchup-live-program-report".into())
+            .spawn(move || {
+                complete_pending_checks(&mut report, &model, deadline, &cancel);
+                let _ = sender.try_send(report);
+                repaint.request_repaint();
+            });
+        match spawn {
+            Ok(_) => {
+                self.completion = Some(PendingChecks {
+                    cancelled,
+                    receiver,
+                })
+            }
+            Err(error) => self.applied.report.stop_pending_checks(&checks_stopped(
+                "job_worker_unavailable",
+                format!("could not start the program checks: {error}"),
+            )),
+        }
+    }
+
+    /// Takes the report of [`Self::complete_report`] when it is there.
+    fn poll_completion(&mut self) {
+        let Some(completion) = &self.completion else {
+            return;
+        };
+        let report = match completion.receiver.try_recv() {
+            Ok(report) => report,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let mut report = self.applied.report.clone();
+                report.stop_pending_checks(&checks_stopped(
+                    "program_worker_disconnected",
+                    "the program checks stopped before returning a result".to_owned(),
+                ));
+                report
+            }
+        };
+        self.completion = None;
+        // The exact check may have re-derived the issues meanwhile.
+        if self.applied.report.checks_pending() {
+            self.applied.report = report;
+        }
+    }
+
+    fn stop_completion(&mut self) {
+        if let Some(completion) = self.completion.take() {
+            completion.cancelled.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn checks_stopped(code: &'static str, message: String) -> ketchup_program::ProgramError {
+    ketchup_program::ProgramError {
+        code,
+        message,
+        location: None,
+    }
 }
 
 fn unfinished(reason: &str) -> Value {
@@ -197,7 +292,8 @@ impl LiveBridge {
     ) -> Result<AppliedProgram, &'static str> {
         let (source, replace) = Self::program_source(app, request, ui_busy, cancelled)?;
         let before = app.live_bridge_stamp();
-        let planned = plan_with_report(&app.document, &source, program_request_deadline())
+        // This path answers without an exact check.
+        let planned = plan_with_report(&app.document, &source, program_request_deadline(), false)
             .map_err(program_failure)?;
         self.publish_program(app, source, replace, planned, &before, cancelled)
     }
@@ -286,7 +382,7 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-live-program-plan".into())
             .spawn(move || {
-                let result = plan_with_report(&document, &worker_source, deadline);
+                let result = plan_with_report(&document, &worker_source, deadline, true);
                 let _ = sender.try_send(result);
                 repaint.request_repaint();
             });
@@ -410,13 +506,23 @@ impl LiveBridge {
                 let _ = sender.try_send((report, exact, next));
                 repaint.request_repaint();
             });
-        if spawn.is_err() {
-            Self::reply(
-                app,
-                id,
-                &reply,
-                Ok(applied.result(Some(unfinished("job_worker_unavailable")))),
-            );
+        if let Err(error) = spawn {
+            let mut applied = applied;
+            if applied.report.checks_pending() {
+                // No thread for the report's own checks either.
+                applied.report.stop_pending_checks(&checks_stopped(
+                    "job_worker_unavailable",
+                    format!("could not start the program checks: {error}"),
+                ));
+                self.program_report = Some((
+                    applied.stamp.clone(),
+                    applied.report.clone(),
+                    "apply_report",
+                    None,
+                ));
+            }
+            let exact = unfinished("job_worker_unavailable");
+            Self::reply(app, id, &reply, Ok(applied.result(Some(exact))));
             return;
         }
         self.program_check_job = Some(ProgramCheckJob::Checking(Box::new(ExactCheckJob {
@@ -428,6 +534,8 @@ impl LiveBridge {
             time: deadline.remaining(),
             applied,
             receiver,
+            verdict: None,
+            completion: None,
         })));
         context.request_repaint_after(Duration::from_millis(10));
     }
@@ -479,26 +587,43 @@ impl LiveBridge {
                 return;
             }
         };
-        let exact = if job.cancelled.load(Ordering::Acquire) {
-            job.worker_cancelled.store(true, Ordering::Release);
-            Some(unfinished("request_cancelled"))
-        } else if job.started.elapsed() > job.time + PROGRAM_EXACT_GRACE {
-            job.worker_cancelled.store(true, Ordering::Release);
-            Some(unfinished("exact_collision_timeout"))
+        job.poll_completion();
+        if job.verdict.is_none() {
+            job.verdict = if job.cancelled.load(Ordering::Acquire) {
+                job.worker_cancelled.store(true, Ordering::Release);
+                Some(unfinished("request_cancelled"))
+            } else if job.started.elapsed() > job.time + PROGRAM_EXACT_GRACE {
+                job.worker_cancelled.store(true, Ordering::Release);
+                Some(unfinished("exact_collision_timeout"))
+            } else {
+                match job.receiver.try_recv() {
+                    Ok((report, exact, next)) => {
+                        job.applied.report = report;
+                        self.exact_baseline = next.map(Arc::new);
+                        Some(exact.unwrap_or_else(|| unfinished("exact_result_missing")))
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Some(unfinished("exact_collision_worker_disconnected"))
+                    }
+                    Err(mpsc::TryRecvError::Empty) => None,
+                }
+            };
+        }
+        let running = job.reply.is_some() && job.started.elapsed() >= PROGRAM_EXACT_RUNNING_AFTER;
+        // Published without the exact check's issues, the report needs its own.
+        if job.applied.report.checks_pending()
+            && (job.verdict.is_some() || running)
+            && job.completion.is_none()
+        {
+            job.complete_report(context);
+        }
+        let exact = if job.applied.report.checks_pending() {
+            None
         } else {
-            match job.receiver.try_recv() {
-                Ok((report, exact, next)) => {
-                    job.applied.report = report;
-                    self.exact_baseline = next.map(Arc::new);
-                    Some(exact.unwrap_or_else(|| unfinished("exact_result_missing")))
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    Some(unfinished("exact_collision_worker_disconnected"))
-                }
-                Err(mpsc::TryRecvError::Empty) => None,
-            }
+            job.verdict.take()
         };
         if let Some(exact) = exact {
+            job.stop_completion();
             self.program_report = Some((
                 job.applied.stamp.clone(),
                 job.applied.report.clone(),
@@ -510,7 +635,8 @@ impl LiveBridge {
             }
             context.request_repaint();
         } else {
-            if job.started.elapsed() >= PROGRAM_EXACT_RUNNING_AFTER
+            if running
+                && !job.applied.report.checks_pending()
                 && let Some(reply) = job.reply.take()
             {
                 let mut running = unfinished("exact_check_running");

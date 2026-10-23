@@ -22,6 +22,7 @@ fn cancelled_or_replaced_document_never_publishes_a_finished_plan() {
             &app.document.fork_for_planning(),
             &source,
             CheckDeadline::start(),
+            true,
         )
         .unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -105,6 +106,7 @@ fn client_eof_while_program_plan_is_pending_prevents_publication() {
         &app.document.fork_for_planning(),
         &source,
         CheckDeadline::start(),
+        true,
     )
     .unwrap();
     sender.send(Ok(plan)).unwrap();
