@@ -2,7 +2,7 @@
 //! page millimetres (origin top left, y down), written with an embedded
 //! TrueType font so every letter, Slovak diacritics included, prints as drawn.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::sync::OnceLock;
 
@@ -99,6 +99,19 @@ impl Page {
             Mark::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
+    }
+
+    /// The characters of the page's texts the sheet typeface lacks, each once,
+    /// in code point order: the PDF prints every one of them as "?".
+    #[must_use]
+    pub fn printed_as_question_mark(&self) -> Vec<char> {
+        let font = SheetFont::standard();
+        self.texts()
+            .flat_map(str::chars)
+            .filter(|character| font.face.glyph_index(*character).is_none())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 }
 

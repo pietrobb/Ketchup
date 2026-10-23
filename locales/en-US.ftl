@@ -1971,6 +1971,7 @@ drawings-settings-unreadable = The title block and sheet format stored in the do
 drawings-cosmetic-threads-failed = The modelled threads of { $part } cannot be drawn by ISO 6410 ({ $reason }); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic.
 drawings-settings-unreadable-edit = The title block stored in the document cannot be read ({ $reason }). Any change made here replaces it.
 digest-exported-project-drawings = Project drawings (floor plan, sections and elevations) on { $format } at 1:{ $scale } were exported to { $path }
+digest-exported-project-drawings-question-marks = Project drawings on { $format } at 1:{ $scale } were exported to { $path }, but the sheet typeface lacks the characters { $characters }: the sheet prints them as "?".
 error-export-project-drawings = Project drawings export to { $path } failed: { $reason }
 digest-exported-drawing-sheet-dxf = Drawing sheet { $name } was exported to { $path } as DXF
 digest-exported-drawing-sheet-dwg = Drawing sheet { $name } was exported to { $path } as DWG

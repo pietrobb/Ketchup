@@ -444,3 +444,50 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
         Err("invalid_params")
     );
 }
+
+/// A letter the sheet's typeface lacks prints as "?": the client and the
+/// window's digest name every such letter, from the plan and the title block,
+/// so a sheet does not go to production with question marks nobody was told of.
+#[test]
+fn a_sheet_names_the_letters_it_prints_as_question_marks() {
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "text('S-01', 'S-01 漢', at=(0, 0), height_mm=3.5, tags='plan')\n".into(),
+        overrides: None,
+        file_name: Some("plan.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let target = directory.path().join("plan.pdf");
+    let written = bridge
+        .execute(
+            &mut app,
+            Request::ExportDrawings {
+                expected: None,
+                path: target.display().to_string(),
+                sheet_id: None,
+                format: None,
+                title_block: BTreeMap::from([(
+                    ketchup_manufacturing::title_block::TitleField::Project,
+                    "Dom 東".to_owned(),
+                )]),
+                plan_only: true,
+                drawing_scale: Some(250.0),
+            },
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["printed_as_question_mark"], json!(["東", "漢"]));
+
+    let window_sheet = directory.path().join("window.pdf");
+    assert!(
+        app.export_project_drawings_to(&window_sheet),
+        "{}",
+        app.action_digest()
+    );
+    let digest = app.action_digest();
+    assert!(digest.contains("東") && digest.contains("漢"), "{digest}");
+}

@@ -558,14 +558,21 @@ impl KetchupApp {
     ) {
         let path = path.display().to_string();
         self.digest = match result {
-            Ok(sheet) => self.catalog.format(
-                "digest-exported-project-drawings",
-                &BTreeMap::from([
+            Ok(sheet) => {
+                let missing = sheet.page.printed_as_question_mark();
+                let mut arguments = BTreeMap::from([
                     ("path", path),
                     ("scale", sheet.scale.to_string()),
                     ("format", sheet.format.name().to_owned()),
-                ]),
-            ),
+                ]);
+                let key = if missing.is_empty() {
+                    "digest-exported-project-drawings"
+                } else {
+                    arguments.insert("characters", missing.iter().collect());
+                    "digest-exported-project-drawings-question-marks"
+                };
+                self.catalog.format(key, &arguments)
+            }
             Err(error) => self.catalog.format(
                 "error-export-project-drawings",
                 &BTreeMap::from([

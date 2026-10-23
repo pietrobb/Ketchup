@@ -281,6 +281,7 @@ fn export(
         "scale": format!("1:{}", sheet.scale),
         "views": sheet.views,
         "annotations": sheet.annotations,
+        "printed_as_question_mark": sheet.page.printed_as_question_mark(),
         "format_setting": settings.format.map_or("auto", SheetFormat::name),
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",

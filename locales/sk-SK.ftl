@@ -1895,6 +1895,7 @@ drawings-settings-unreadable = Rohová pečiatka a formát výkresu uložené v 
 drawings-cosmetic-threads-failed = Vymodelované závity dielu { $part } sa nedajú nakresliť podľa ISO 6410 ({ $reason }); výkres by ukázal všetky hrany ich skrutkovíc. Exportuj znova alebo prepni závity na kozmetické.
 drawings-settings-unreadable-edit = Rohová pečiatka uložená v dokumente sa nedá prečítať ({ $reason }). Každá zmena tu ju nahradí.
 digest-exported-project-drawings = Projektové výkresy (pôdorys, rezy a pohľady) na formáte { $format } v mierke 1:{ $scale } boli exportované do { $path }
+digest-exported-project-drawings-question-marks = Projektové výkresy na formáte { $format } v mierke 1:{ $scale } boli exportované do { $path }, ale písmo listu nemá znaky { $characters }: na liste sú vytlačené ako „?“.
 error-export-project-drawings = Export projektových výkresov do { $path } zlyhal: { $reason }
 digest-exported-drawing-sheet-dxf = Výkresový list { $name } bol exportovaný do { $path } ako DXF
 digest-exported-drawing-sheet-dwg = Výkresový list { $name } bol exportovaný do { $path } ako DWG
