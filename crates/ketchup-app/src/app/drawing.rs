@@ -3142,7 +3142,8 @@ impl KetchupApp {
         });
         // A value begun this frame takes every key typed with it: on a slow
         // frame "1m" arrives at once, and its "m" must not pick Move. No plain
-        // key binds a digit, a decimal separator or a minus. In the Hole tool
+        // key binds a digit, a decimal separator, a sign or an opening bracket,
+        // so "(1+2)*10" and "+5" begin a value as "10" does. In the Hole tool
         // a typed "M" starts a thread size ("M8 12") the same way.
         let hole = self.active_tool == ActiveTool::Hole;
         let starts_value = !typing
@@ -3156,7 +3157,7 @@ impl KetchupApp {
                     })
                     .is_some_and(|first| {
                         first.is_ascii_digit()
-                            || matches!(first, '.' | ',' | '-')
+                            || matches!(first, '.' | ',' | '-' | '+' | '(')
                             || (hole && matches!(first, 'M' | 'm'))
                     })
             });
@@ -3198,7 +3199,7 @@ impl KetchupApp {
                         egui::Event::Text(text)
                             if starts_value
                                 || text.chars().all(|character| {
-                                    "0123456789.,-;xX*×/ ".contains(character)
+                                    "0123456789.,-+();xX*×/ ".contains(character)
                                 }) =>
                         {
                             Some(text.as_str())

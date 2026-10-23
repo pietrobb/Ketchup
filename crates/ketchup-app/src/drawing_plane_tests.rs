@@ -357,6 +357,32 @@ fn a_unit_letter_typed_with_its_number_in_one_frame_stays_in_the_value() {
     assert_eq!(harness.state().active_tool, ActiveTool::Move);
 }
 
+/// Review 2026-10-19 P3 (GUI): the value grammar takes "(1+2)*10" and "+5",
+/// but on the canvas a value could not begin with "(" or "+": neither opened
+/// the value field, so the rest was typed into nothing.
+#[test]
+fn a_value_typed_on_the_canvas_can_begin_with_a_bracket_or_a_plus() {
+    for (first, rest) in [("(", "1+2)*10"), ("+", "5")] {
+        let mut app = KetchupApp::new();
+        app.dispatch_command(AppCommand::Rectangle);
+        let mut harness = shell(app);
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text(first.into()));
+        harness.step();
+        harness.step();
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text(rest.into()));
+        harness.step();
+        harness.step();
+        assert_eq!(harness.state().active_tool, ActiveTool::Rectangle);
+        assert_eq!(harness.state().value_input(), format!("{first}{rest}"));
+    }
+}
+
 #[test]
 fn drawing_plane_axis_keys_do_not_steal_foreign_text_focus() {
     let mut app = KetchupApp::new();
