@@ -6,8 +6,11 @@
 //! tags that show them; its lines are one blob of the document's container
 //! ([`UnderlayLines::encode`]), shared by every revision, so an Undo history does not copy
 //! them. The texts of a layer travel with its lines; snapping only meets the lines. Each
-//! polyline and text names the style it is drawn in ([`style::LineStyle`]).
+//! polyline and text names the style it is drawn in ([`style::LineStyle`]). The areas a
+//! drawing paints solid are fills of a layer ([`fill::UnderlayFill`]), drawn under its
+//! lines.
 
+pub mod fill;
 pub mod placement;
 pub mod snap;
 pub mod style;
@@ -20,6 +23,7 @@ use ketchup_geometry::typed_id;
 
 use crate::document::{CanonicalCommand, CommandBatch, ProfileSegment, Snapshot, TagId, Transform};
 use crate::tolerance::{MAX_COORDINATE_MM, UNDERLAY_ARC_CHORD_MM};
+use fill::UnderlayFill;
 use style::LineStyle;
 use text::UnderlayText;
 
@@ -87,7 +91,7 @@ pub struct UnderlayLines {
 }
 
 /// The polylines of one layer: their points one after another, where each ends and its
-/// style; and the layer's texts.
+/// style; and the layer's texts and fills.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayerLines {
     points_mm: Vec<[f64; 2]>,
@@ -96,6 +100,7 @@ pub struct LayerLines {
     /// The index of each polyline's style in [`UnderlayLines::style`].
     styles: Vec<u32>,
     texts: Vec<UnderlayText>,
+    fills: Vec<UnderlayFill>,
 }
 
 impl LayerLines {
@@ -103,14 +108,21 @@ impl LayerLines {
         &self.texts
     }
 
+    /// The areas it paints solid, drawn under its lines.
+    pub fn fills(&self) -> &[UnderlayFill] {
+        &self.fills
+    }
+
     /// Every polyline with the index of its style.
     pub fn styled_polylines(&self) -> impl Iterator<Item = (u32, &[[f64; 2]])> {
         self.styles.iter().copied().zip(self.polylines())
     }
 
+    /// The points of its lines and fills and the anchors of its texts.
     fn points_and_anchors(&self) -> impl Iterator<Item = [f64; 2]> + '_ {
         let anchors = self.texts.iter().map(|text| text.anchor_mm);
-        self.points_mm.iter().copied().chain(anchors)
+        let fills = self.fills.iter().flat_map(|fill| fill.points_mm.iter());
+        self.points_mm.iter().chain(fills).copied().chain(anchors)
     }
 
     pub fn polylines(&self) -> impl Iterator<Item = &[[f64; 2]]> {
@@ -131,8 +143,8 @@ impl LayerLines {
         self.points_mm.len() - self.ends.len()
     }
 
-    /// The smallest and largest corner of its points and text anchors, or `None` without
-    /// any.
+    /// The smallest and largest corner of its points, its fills' and its text anchors, or
+    /// `None` without any.
     #[must_use]
     pub fn bounds_mm(&self) -> Option<[[f64; 2]; 2]> {
         point_bounds(self.points_and_anchors())
@@ -152,8 +164,15 @@ fn point_bounds(mut points: impl Iterator<Item = [f64; 2]>) -> Option<[[f64; 2];
 
 /// The versions of the blob, read all: lines only (1); each layer's texts after its points
 /// (2); the styles first, and the style of each polyline and text (3); the bytes of 3
-/// deflated after their length (4, written).
-const MAGICS: [&[u8; 8]; 4] = [b"KUNDRLY1", b"KUNDRLY2", b"KUNDRLY3", b"KUNDRLY4"];
+/// deflated after their length (4, written without fills); and of 3 with each layer's
+/// fills after its texts (5, written with fills).
+const MAGICS: [&[u8; 8]; 5] = [
+    b"KUNDRLY1",
+    b"KUNDRLY2",
+    b"KUNDRLY3",
+    b"KUNDRLY4",
+    b"KUNDRLY5",
+];
 
 /// The deflate level of a written blob: the default, which keeps a 12 MB drawing to a
 /// third of its bytes in about a third of a second.
@@ -252,14 +271,19 @@ impl UnderlayLines {
         self.layers.iter().map(|layer| layer.texts.len()).sum()
     }
 
-    /// The smallest and largest corner of every point, or `None` without points.
+    #[must_use]
+    pub fn fill_count(&self) -> usize {
+        self.layers.iter().map(|layer| layer.fills.len()).sum()
+    }
+
+    /// The smallest and largest corner of every point of its lines and fills, or `None`
+    /// without points.
     #[must_use]
     pub fn bounds_mm(&self) -> Option<[[f64; 2]; 2]> {
-        point_bounds(
-            self.layers
-                .iter()
-                .flat_map(|layer| layer.points_mm.iter().copied()),
-        )
+        point_bounds(self.layers.iter().flat_map(|layer| {
+            let fills = layer.fills.iter().flat_map(|fill| fill.points_mm.iter());
+            layer.points_mm.iter().chain(fills).copied()
+        }))
     }
 
     /// Moves lines that leave the canonical ±1,000 m envelope near the origin, so that a
@@ -292,15 +316,24 @@ impl UnderlayLines {
             // `+ 0.0` makes a -0.0 of a median just below zero 0.0.
             (*median / 1000.0).round() * 1000.0 + 0.0
         });
-        let before = (self.segment_count(), self.text_count());
+        let before = (self.segment_count(), self.text_count(), self.fill_count());
         for layer in &mut self.layers {
             let mut kept = LayerLines {
                 texts: std::mem::take(&mut layer.texts),
+                fills: std::mem::take(&mut layer.fills),
                 ..LayerLines::default()
             };
             kept.texts.retain_mut(|text| {
                 text.anchor_mm = [0, 1].map(|axis| text.anchor_mm[axis] - offset_mm[axis]);
                 inside(&text.anchor_mm)
+            });
+            // A fill with a point outside is left out whole: what is left of it would
+            // paint another area.
+            kept.fills.retain_mut(|fill| {
+                for point in &mut fill.points_mm {
+                    *point = [point[0] - offset_mm[0], point[1] - offset_mm[1]];
+                }
+                fill.points_mm.iter().all(inside)
             });
             for (style, polyline) in layer.styled_polylines() {
                 // A point outside ends the polyline; the pieces on both sides of it are
@@ -322,26 +355,31 @@ impl UnderlayLines {
             offset_mm,
             segments_outside: before.0 - self.segment_count(),
             texts_outside: before.1 - self.text_count(),
+            fills_outside: before.2 - self.fill_count(),
         }
     }
 
     /// The bytes of the container blob: the length of the body, then the body deflated
     /// (zlib) — little-endian counts, ends, coordinates and style indices, the styles
-    /// before the layers.
+    /// before the layers. Lines without fills are written as version 4, which a reader
+    /// that knows no fills reads too.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let body = self.encode_body();
+        let with_fills = self.fill_count() > 0;
+        let body = self.encode_body(with_fills);
         let deflated = miniz_oxide::deflate::compress_to_vec_zlib(&body, DEFLATE_LEVEL);
-        let mut bytes = Vec::with_capacity(MAGICS[3].len() + 8 + deflated.len());
-        bytes.extend_from_slice(MAGICS[3]);
+        let magic = MAGICS[if with_fills { 4 } else { 3 }];
+        let mut bytes = Vec::with_capacity(magic.len() + 8 + deflated.len());
+        bytes.extend_from_slice(magic);
         let length = u64::try_from(body.len()).expect("a blob's length fits u64");
         bytes.extend_from_slice(&length.to_le_bytes());
         bytes.extend_from_slice(&deflated);
         bytes
     }
 
-    /// The bytes version 3 wrote after its magic.
-    fn encode_body(&self) -> Vec<u8> {
+    /// The bytes version 3 wrote after its magic, and `with_fills` each layer's fills
+    /// after its texts.
+    fn encode_body(&self, with_fills: bool) -> Vec<u8> {
         let capacity = 8 + self
             .layers
             .iter()
@@ -369,6 +407,12 @@ impl UnderlayLines {
             push_count(&mut bytes, layer.texts.len());
             for text in &layer.texts {
                 text.encode(&mut bytes);
+            }
+            if with_fills {
+                push_count(&mut bytes, layer.fills.len());
+                for fill in &layer.fills {
+                    fill.encode(&mut bytes);
+                }
             }
         }
         bytes
@@ -402,7 +446,8 @@ impl UnderlayLines {
         if body.len() != length {
             return Err(UnderlayLinesError::Truncated);
         }
-        Self::decode_body(3, &body)
+        // Version 4 deflates the body of 3; 5 that of 3 with fills.
+        Self::decode_body(if version == 4 { 3 } else { version }, &body)
     }
 
     /// The bytes after the magic of `version`, uncompressed.
@@ -461,9 +506,16 @@ impl UnderlayLines {
                     texts.push(UnderlayText::decode(&mut reader, version >= 3)?);
                 }
             }
+            let mut fills = Vec::new();
+            if version >= 5 {
+                for _ in 0..reader.count()? {
+                    fills.push(UnderlayFill::decode(&mut reader)?);
+                }
+            }
             let mut indices = polyline_styles
                 .iter()
-                .chain(texts.iter().map(|text| &text.style));
+                .chain(texts.iter().map(|text| &text.style))
+                .chain(fills.iter().map(|fill| &fill.style));
             if !indices.all(|style| named(*style)) {
                 return Err(UnderlayLinesError::InvalidStyle);
             }
@@ -472,6 +524,7 @@ impl UnderlayLines {
                 ends,
                 styles: polyline_styles,
                 texts,
+                fills,
             });
         }
         if !reader.0.is_empty() {
@@ -489,6 +542,8 @@ pub struct MovedNearOrigin {
     pub segments_outside: usize,
     /// Texts whose anchor even moved leaves the envelope.
     pub texts_outside: usize,
+    /// Fills of which a point even moved leaves the envelope.
+    pub fills_outside: usize,
 }
 
 fn push_count(bytes: &mut Vec<u8>, count: usize) {
@@ -603,6 +658,28 @@ impl UnderlayLinesBuilder {
                 std::slice::from_ref(segment),
                 self.style,
             );
+        }
+    }
+
+    /// Adds straight pieces of `layer` that each stay a polyline of their own, as the
+    /// dashes of a hatch's pattern do.
+    pub fn add_pieces(&mut self, layer: &str, pieces: &[[[f64; 2]; 2]]) {
+        let index = self.layer_index(layer);
+        let lines = &mut self.layers[index];
+        for piece in pieces {
+            lines.points_mm.extend_from_slice(piece);
+            lines.ends.push(lines.points_mm.len());
+            lines.styles.push(self.style);
+        }
+    }
+
+    /// Adds a fill of `layer`: what lies inside an odd number of `rings`, each closed and
+    /// of at least three points.
+    pub fn add_fill(&mut self, layer: &str, rings: &[Vec<[f64; 2]>]) {
+        let index = self.layer_index(layer);
+        let fill = UnderlayFill::new(self.style, rings);
+        if !fill.ends.is_empty() {
+            self.layers[index].fills.push(fill);
         }
     }
 
@@ -760,7 +837,7 @@ fn push_oriented(points: &mut Vec<[f64; 2]>, piece: &[[f64; 2]], reversed: bool,
 /// The angle an arc of `radius` turns by from chord to chord at most: its chords stay
 /// within [`UNDERLAY_ARC_CHORD_MM`] of it, and a whole circle has at most
 /// [`MAX_CIRCLE_CHORDS`] of them.
-fn arc_chord_step(radius: f64) -> f64 {
+pub(crate) fn arc_chord_step(radius: f64) -> f64 {
     let tau = std::f64::consts::TAU;
     let step = if radius > UNDERLAY_ARC_CHORD_MM {
         2.0 * (1.0 - UNDERLAY_ARC_CHORD_MM / radius).acos()
@@ -771,7 +848,7 @@ fn arc_chord_step(radius: f64) -> f64 {
 }
 
 /// Appends the points after the start of `segment`.
-fn push_segment(points: &mut Vec<[f64; 2]>, segment: &ProfileSegment) {
+pub(crate) fn push_segment(points: &mut Vec<[f64; 2]>, segment: &ProfileSegment) {
     match segment {
         ProfileSegment::Line { end_mm, .. } => points.push(*end_mm),
         ProfileSegment::CircularArc {

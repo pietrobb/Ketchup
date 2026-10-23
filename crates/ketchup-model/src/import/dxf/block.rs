@@ -8,6 +8,8 @@ pub(super) struct BlockDefinition {
     pub(super) base_mm: [f64; 2],
     pub(super) profiles: Vec<OrderedProfile>,
     pub(super) texts: Vec<OrderedText>,
+    /// Read for an underlay only.
+    pub(super) fills: Vec<OrderedFill>,
     /// An xref or a block of one, not loaded: its inserts are named in the report.
     pub(super) xref: bool,
     /// The xrefs it places, its own blocks' among them, by name with how often: each
@@ -17,7 +19,7 @@ pub(super) struct BlockDefinition {
 
 impl BlockDefinition {
     pub(super) fn is_empty(&self) -> bool {
-        self.profiles.is_empty() && self.texts.is_empty()
+        self.profiles.is_empty() && self.texts.is_empty() && self.fills.is_empty()
     }
 }
 
@@ -224,6 +226,7 @@ fn resolve_raw_block<'a>(
                 base_mm: raw.base_mm,
                 profiles: Vec::new(),
                 texts: Vec::new(),
+                fills: Vec::new(),
                 xref: true,
                 xrefs: BTreeMap::new(),
             },
@@ -241,14 +244,21 @@ fn resolve_raw_block<'a>(
     }
 
     let mut parsed_entities = ParsedEntities::default();
-    parse_entities(
+    // What its hatches draw counts where an insert places it, and what it leaves out is
+    // reported in its own coordinates, under its name.
+    let pieces_left = resolution.diagnostics.pattern_pieces_left;
+    let outer = resolution.diagnostics.block.replace(raw.name.clone());
+    let parsed = parse_entities(
         &raw.entities,
         units,
         Some(resolution.blocks),
         resolution.entity_count,
         &mut parsed_entities,
         resolution.diagnostics,
-    )?;
+    );
+    resolution.diagnostics.pattern_pieces_left = pieces_left;
+    resolution.diagnostics.block = outer;
+    parsed?;
     let reading = resolution.diagnostics.reading;
     let mut profiles = if reading.chain {
         assemble_loose_segments(
@@ -287,6 +297,7 @@ fn resolve_raw_block<'a>(
             base_mm: raw.base_mm,
             profiles,
             texts: parsed_entities.texts,
+            fills: parsed_entities.fills,
             xref: false,
             xrefs: parsed_entities.xrefs,
         },

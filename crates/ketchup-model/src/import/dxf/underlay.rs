@@ -1,6 +1,7 @@
 //! A DXF drawing read as an underlay: every line, arc and curve it draws, by layer, as
-//! polylines, without making profiles of them, and its texts, each in the color, linetype
-//! and lineweight the drawing gives it ([`super::style`]), seen from above: heights,
+//! polylines, without making profiles of them, its texts and its hatches
+//! ([`super::hatch`]), each in the color, linetype and lineweight the drawing gives it
+//! ([`super::style`]), seen from above: heights,
 //! elevations and thicknesses are dropped and counted once. An entity it cannot read is
 //! left out and counted in the report. A drawing whose coordinates leave the canonical
 //! envelope, such as one in national grid coordinates, is moved near the origin by an
@@ -12,6 +13,7 @@
 //! the lines. Memory grows with the lines kept, not with the size of the file.
 
 use super::*;
+use crate::underlay::style::LineStyle;
 use crate::underlay::{UnderlayLines, UnderlayLinesBuilder};
 use std::io::{BufRead, Seek, SeekFrom};
 use std::ops::Range;
@@ -102,6 +104,17 @@ pub fn read_dxf_underlay_from(
             builder.set_style(&styles.line_style(&text.style, &text.layer, diagnostics)?);
             builder.add_text(&text.layer, text.text);
         }
+        for fill in &parsed.fills {
+            // A hatch is painted, and its pattern drawn, continuous: its own dashes
+            // are the pattern's.
+            let style = styles.line_style(&fill.style, &fill.layer, diagnostics)?;
+            builder.set_style(&LineStyle {
+                pattern_mm: Vec::new(),
+                ..style
+            });
+            builder.add_fill(&fill.layer, &fill.rings);
+            builder.add_pieces(&fill.layer, &fill.pattern);
+        }
         layers.append(&mut parsed.layers);
         entity.clear();
         Ok::<_, DxfImportError>(())
@@ -154,6 +167,7 @@ pub fn read_dxf_underlay_from(
     for (code, outside) in [
         ("dxf.lines-outside-envelope", moved.segments_outside),
         ("dxf.texts-outside-envelope", moved.texts_outside),
+        ("dxf.fills-outside-envelope", moved.fills_outside),
     ] {
         if outside > 0 {
             diagnostics.add(
@@ -164,7 +178,7 @@ pub fn read_dxf_underlay_from(
             )?;
         }
     }
-    if lines.segment_count() == 0 && lines.text_count() == 0 {
+    if lines.segment_count() == 0 && lines.text_count() == 0 && lines.fill_count() == 0 {
         return Err(diagnostics.nothing_left());
     }
     let diagnostics = finish_report(diagnostics, &layers, units, offset_mm)?;

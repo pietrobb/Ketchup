@@ -68,6 +68,7 @@ impl ReadUnderlay {
             "layers_total": read.layers.len(),
             "lines": read.segments,
             "texts": read.texts,
+            "fills": self.lines.fill_count(),
             "polylines": self.lines.layers().iter().map(|layer| layer.polylines().count()).sum::<usize>(),
             "units": read.units,
             "offset_mm": read.offset_mm,

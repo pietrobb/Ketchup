@@ -299,3 +299,81 @@ fn a_dwg_drawing_leaves_out_its_paper_space_and_invisible_entities() {
     assert_eq!(counted("dxf.entity-paper-space"), 1);
     assert_eq!(counted("dxf.entity-invisible"), 1);
 }
+
+/// A solid hatch with an island and a hatch of its own pattern lines come through the
+/// DWG bridge as an underlay paints and draws them read from the DXF itself.
+#[test]
+fn a_dwg_drawing_keeps_its_solid_and_patterned_hatches_in_an_underlay() {
+    use ketchup_model::import::{DxfImportOptions, DxfUnderlay, read_dxf_underlay};
+    let hatched = LAYERED_DRAWING_DXF.replace(
+        "0\nENDSEC\n0\nEOF\n",
+        concat!(
+            // Solid, red ByLayer: a square of 40 mm with a square island of 20 mm.
+            "0\nHATCH\n8\ncut\n10\n0\n20\n0\n30\n0\n2\nSOLID\n70\n1\n71\n0\n91\n2\n",
+            "92\n3\n72\n0\n73\n1\n93\n4\n10\n0\n20\n20\n10\n40\n20\n20\n10\n40\n20\n60\n",
+            "10\n0\n20\n60\n97\n0\n",
+            "92\n2\n72\n0\n73\n1\n93\n4\n10\n10\n20\n30\n10\n30\n20\n30\n10\n30\n20\n50\n",
+            "10\n10\n20\n50\n97\n0\n",
+            "75\n0\n76\n1\n98\n0\n",
+            // Lines at 45° 2 mm apart, of 1 mm dashes, in a square edge path of 20 mm.
+            "0\nHATCH\n8\nholes\n10\n0\n20\n0\n30\n0\n2\nMINE\n70\n0\n71\n0\n91\n1\n",
+            "92\n1\n93\n4\n72\n1\n10\n100\n20\n0\n11\n120\n21\n0\n",
+            "72\n1\n10\n120\n20\n0\n11\n120\n21\n20\n72\n1\n10\n120\n20\n20\n11\n100\n21\n20\n",
+            "72\n1\n10\n100\n20\n20\n11\n100\n21\n0\n97\n0\n",
+            "75\n0\n76\n1\n52\n45\n41\n1\n77\n0\n78\n1\n",
+            "53\n45\n43\n0\n44\n0\n45\n-1.4142135623730951\n46\n1.4142135623730951\n",
+            "79\n2\n49\n1\n49\n-1\n98\n0\n",
+            "0\nENDSEC\n0\nEOF\n",
+        ),
+    );
+    let read = |dxf: &[u8]| read_dxf_underlay(dxf, DxfImportOptions::new(None)).unwrap();
+    // Per layer: the area its fills paint, their color, and how many lines it draws.
+    let drawn = |underlay: &DxfUnderlay| {
+        underlay
+            .layers
+            .iter()
+            .zip(underlay.lines.layers())
+            .map(|(name, layer)| {
+                let area = layer
+                    .fills()
+                    .iter()
+                    .flat_map(|fill| fill.triangles())
+                    .map(|[a, b, c]| {
+                        ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.0
+                    })
+                    .sum::<f64>();
+                let colors = layer
+                    .fills()
+                    .iter()
+                    .map(|fill| underlay.lines.style(fill.style()).color)
+                    .collect::<Vec<_>>();
+                (
+                    name.clone(),
+                    (area * 1e6).round() / 1e6,
+                    colors,
+                    layer.segment_count(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let direct = read(hatched.as_bytes());
+    let dwg = ketchup_dwg::dxf_to_dwg(hatched.as_bytes()).unwrap();
+    let bridged = read(&ketchup_dwg::dwg_to_dxf(&dwg, usize::MAX).unwrap().dxf);
+    let cut = drawn(&direct)
+        .into_iter()
+        .find(|(name, ..)| name == "cut")
+        .unwrap();
+    assert_eq!(
+        (cut.1, cut.2.as_slice()),
+        (1200.0, &[Some([255, 0, 0])][..])
+    );
+    assert_eq!(drawn(&bridged), drawn(&direct));
+    let skipped = |underlay: &DxfUnderlay| {
+        underlay
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code() == "dxf.hatch-skipped")
+            .count()
+    };
+    assert_eq!((skipped(&direct), skipped(&bridged)), (0, 0));
+}

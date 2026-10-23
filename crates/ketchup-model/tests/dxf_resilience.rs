@@ -261,7 +261,7 @@ fn a_drawing_of_valid_and_faulty_entities_keeps_the_valid_and_names_twenty_fault
     );
     assert_eq!(import_profiles(&source), 3);
 
-    // An underlay keeps the hatch's lines too and reports the rest alike.
+    // An underlay reports the rest alike; the hatch of no area is left out there too.
     let underlay = read_dxf_underlay(&source, DxfImportOptions::new(None)).unwrap();
     assert_eq!(
         entry(&underlay.diagnostics, "dxf.entity-unreadable", "CIRCLE"),
@@ -275,6 +275,11 @@ fn a_drawing_of_valid_and_faulty_entities_keeps_the_valid_and_names_twenty_fault
         )
         .0,
         1
+    );
+    assert_eq!(
+        entry(&underlay.diagnostics, "dxf.hatch-skipped", "HATCH").1,
+        "HATCH, layer fill: a boundary that encloses no area, within x 0..4000, y 1000..1000 \
+         mm; handles: 5A"
     );
     assert!(underlay.lines.segment_count() > 5);
 }

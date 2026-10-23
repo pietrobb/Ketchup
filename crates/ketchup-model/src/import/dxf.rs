@@ -49,6 +49,9 @@ struct DxfReading {
     /// Reads the colors, linetypes and lineweights of entities and layers instead of
     /// reporting them ignored.
     styles: bool,
+    /// Reads a hatch as the area it paints or the pattern it draws there
+    /// ([`hatch::read_hatch`]), not as the profiles of its boundary.
+    fills: bool,
 }
 
 const PROFILE_READING: DxfReading = DxfReading {
@@ -59,6 +62,7 @@ const PROFILE_READING: DxfReading = DxfReading {
     chain: true,
     texts: false,
     styles: false,
+    fills: false,
 };
 
 /// No limit, yet small enough that the `+ 1` of a check cannot overflow.
@@ -72,17 +76,20 @@ const UNDERLAY_READING: DxfReading = DxfReading {
     chain: false,
     texts: true,
     styles: true,
+    fills: true,
 };
 
 mod block;
 mod chain;
 mod code_page;
+mod hatch;
 mod style;
 mod text;
 mod underlay;
 use block::{BlockDefinition, parse_blocks};
 use chain::{assemble_loose_segments, point_key, without_duplicate_segments};
 use code_page::{code_page_encoding, code_page_name, dxf_source_text};
+use hatch::OrderedFill;
 use style::EntityStyle;
 use text::OrderedText;
 pub use underlay::{DxfUnderlay, read_dxf_underlay, read_dxf_underlay_from};
@@ -412,6 +419,12 @@ struct DiagnosticCounts {
     /// Why the first entity or block it left out could not be read: the refusal when
     /// nothing readable is left.
     first_skip: Option<DxfImportError>,
+    /// How many more dashes the patterns of hatches may draw, of the drawing's entity
+    /// budget; what a block's own hatches draw counts where an insert places them.
+    pattern_pieces_left: usize,
+    /// The block being read, as the drawing names it, if any: a report of what it
+    /// leaves out names it, whose coordinates it gives.
+    block: Option<String>,
 }
 
 /// Entities or blocks left out for one reason: how many, and the handles or names of the
@@ -435,6 +448,8 @@ impl DiagnosticCounts {
             code_page: encoding_rs::WINDOWS_1252,
             skipped: BTreeMap::new(),
             first_skip: None,
+            pattern_pieces_left: limits::DRAWING_ENTITIES,
+            block: None,
         }
     }
 
@@ -596,11 +611,21 @@ struct ParsedEntities {
     explicit_profiles: Vec<OrderedProfile>,
     layers: BTreeSet<String>,
     texts: Vec<OrderedText>,
+    /// Read for an underlay only.
+    fills: Vec<OrderedFill>,
     /// The xrefs it would place, by name, with how often: counted in the report only where
     /// the drawing itself places them, so an xref in a block counts once per insert of it.
     xrefs: BTreeMap<String, u32>,
     /// The handle (group 5) of each entity read here that has one, by its ordinal.
     handles: BTreeMap<usize, String>,
+}
+
+/// What an insert or a dimension places of its block.
+#[derive(Default)]
+struct Placed {
+    profiles: Vec<OrderedProfile>,
+    texts: Vec<OrderedText>,
+    fills: Vec<OrderedFill>,
 }
 
 impl ParsedEntities {
@@ -624,12 +649,29 @@ impl ParsedEntities {
         }
     }
 
-    /// How many lines, profiles and texts it holds.
-    fn counts(&self) -> [usize; 3] {
+    fn push_placed(&mut self, placed: Placed) {
+        for profile in placed.profiles {
+            self.layers.insert(profile.layer.clone());
+            self.explicit_profiles.push(profile);
+        }
+        self.push_texts(placed.texts);
+        self.push_fills(placed.fills);
+    }
+
+    fn push_fills(&mut self, fills: impl IntoIterator<Item = OrderedFill>) {
+        for fill in fills {
+            self.layers.insert(fill.layer.clone());
+            self.fills.push(fill);
+        }
+    }
+
+    /// How many lines, profiles, texts and fills it holds.
+    fn counts(&self) -> [usize; 4] {
         [
             self.loose.len(),
             self.explicit_profiles.len(),
             self.texts.len(),
+            self.fills.len(),
         ]
     }
 
@@ -637,7 +679,7 @@ impl ParsedEntities {
     /// what an insert placed from its block at `scale` takes the insert's style ByBlock.
     fn restyle(
         &mut self,
-        counts: [usize; 3],
+        counts: [usize; 4],
         record: &[DxfPair<'_>],
         placed_at: Option<f64>,
     ) -> Result<(), DxfImportError> {
@@ -658,6 +700,9 @@ impl ParsedEntities {
         self.texts[counts[2]..]
             .iter_mut()
             .for_each(|text| restyle(&mut text.style));
+        self.fills[counts[3]..]
+            .iter_mut()
+            .for_each(|fill| restyle(&mut fill.style));
         Ok(())
     }
 }
@@ -1218,6 +1263,10 @@ fn parse_entities(
                         output.explicit_profiles.push(profile);
                     }
                 }
+                "HATCH" if diagnostics.reading.fills => {
+                    let fill = hatch::read_hatch(record, units, handle.as_deref(), diagnostics)?;
+                    output.push_fills(fill);
+                }
                 "HATCH" => {
                     for profile in parse_hatch(record, units, ordinal, diagnostics)? {
                         output.layers.insert(profile.layer.clone());
@@ -1264,7 +1313,7 @@ fn parse_entities(
                         diagnostics,
                     )?;
                     let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
-                    let (mut profiles, mut texts) = parse_insert(
+                    let mut placed = parse_insert(
                         record,
                         units,
                         profile_ordinal,
@@ -1273,24 +1322,14 @@ fn parse_entities(
                         &mut output.xrefs,
                         diagnostics,
                     )?;
-                    texts.append(&mut attributes);
-                    place_on_frozen_layer(record, diagnostics, &mut profiles, &mut texts)?;
-                    for profile in profiles {
-                        output.layers.insert(profile.layer.clone());
-                        output.explicit_profiles.push(profile);
-                    }
-                    output.push_texts(texts);
+                    placed.texts.append(&mut attributes);
+                    output.push_placed(place_on_frozen_layer(record, diagnostics, placed)?);
                 }
                 "DIMENSION" => {
                     let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
-                    let (mut profiles, mut texts) =
+                    let placed =
                         parse_dimension(record, units, ordinal, block_definitions, diagnostics)?;
-                    place_on_frozen_layer(record, diagnostics, &mut profiles, &mut texts)?;
-                    for profile in profiles {
-                        output.layers.insert(profile.layer.clone());
-                        output.explicit_profiles.push(profile);
-                    }
-                    output.push_texts(texts);
+                    output.push_placed(place_on_frozen_layer(record, diagnostics, placed)?);
                 }
                 "TEXT" | "MTEXT" | "ATTDEF" if diagnostics.reading.texts => {
                     output.push_texts(text::parse_text(&kind, record, units, diagnostics)?);
@@ -1418,22 +1457,20 @@ fn hidden_layers(tables: &[DxfPair<'_>], turned_off: bool) -> BTreeSet<String> {
 fn place_on_frozen_layer(
     record: &[DxfPair<'_>],
     diagnostics: &DiagnosticCounts,
-    profiles: &mut [OrderedProfile],
-    texts: &mut [OrderedText],
-) -> Result<(), DxfImportError> {
+    mut placed: Placed,
+) -> Result<Placed, DxfImportError> {
     let layer = parse_layer(record)?;
     if diagnostics
         .frozen_layers
         .contains(&layer.to_ascii_uppercase())
     {
-        for profile in profiles {
-            profile.layer.clone_from(&layer);
-        }
-        for text in texts {
-            text.layer.clone_from(&layer);
+        let layers = placed.profiles.iter_mut().map(|profile| &mut profile.layer);
+        let layers = layers.chain(placed.texts.iter_mut().map(|text| &mut text.layer));
+        for own in layers.chain(placed.fills.iter_mut().map(|fill| &mut fill.layer)) {
+            own.clone_from(&layer);
         }
     }
-    Ok(())
+    Ok(placed)
 }
 
 /// Steps over what follows an entity left out up to its SEQEND: the
@@ -3213,7 +3250,7 @@ fn parse_dimension(
     ordinal: usize,
     blocks: &BTreeMap<String, BlockDefinition>,
     diagnostics: &mut DiagnosticCounts,
-) -> Result<(Vec<OrderedProfile>, Vec<OrderedText>), DxfImportError> {
+) -> Result<Placed, DxfImportError> {
     let layer = parse_layer(record)?;
     ensure_planar(record)?;
     report_ignored_groups(
@@ -3243,7 +3280,7 @@ fn parse_dimension(
             Some(("blocks", name)),
             Some(DxfImportError::InvalidBlock),
         )?;
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(Placed::default());
     };
     if block.base_mm != [0.0, 0.0] {
         return Err(DxfImportError::InvalidBlock);
@@ -3309,7 +3346,14 @@ fn parse_dimension(
         0.0,
         1.0,
     )?;
-    Ok((profiles, texts))
+    let moved =
+        |point: [f64; 2]| place_point(point, [0.0, 0.0], clone_offset_mm, [1.0, 1.0], 0.0, 1.0);
+    let fills = hatch::place_fills(&block.fills, &layer, moved, diagnostics)?;
+    Ok(Placed {
+        profiles,
+        texts,
+        fills,
+    })
 }
 
 fn add_xrefs<'a>(
@@ -3330,7 +3374,7 @@ fn parse_insert(
     entity_count: &mut usize,
     xrefs: &mut BTreeMap<String, u32>,
     diagnostics: &mut DiagnosticCounts,
-) -> Result<(Vec<OrderedProfile>, Vec<OrderedText>), DxfImportError> {
+) -> Result<Placed, DxfImportError> {
     let layer = parse_layer(record)?;
     let mirrored = ensure_planar_ocs(record)?;
     report_ignored_groups(
@@ -3347,7 +3391,7 @@ fn parse_insert(
         .ok_or(DxfImportError::InvalidBlock)?;
     if block.xref {
         add_xrefs(xrefs, [(name, 1)]);
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(Placed::default());
     }
     add_xrefs(
         xrefs,
@@ -3359,7 +3403,7 @@ fn parse_insert(
     if block.is_empty() {
         // An empty block, or one holding only counted xrefs, places nothing;
         // it does not refuse the rest of the drawing.
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(Placed::default());
     }
     // In an object coordinate system with extrusion (0, 0, -1) the insert is the
     // mirror image of its upright one: its x axis is world -x, so it is placed at -x,
@@ -3428,6 +3472,7 @@ fn parse_insert(
     let (rotation_sin, rotation_cos) = deterministic_sin_cos_degrees(rotation_degrees);
     let mut profiles = Vec::with_capacity(expanded_profile_count);
     let mut texts = Vec::new();
+    let mut fills = Vec::new();
     for row in 0..row_count {
         for column in 0..column_count {
             let array_offset_mm = [
@@ -3480,6 +3525,17 @@ fn parse_insert(
                 rotation_sin,
                 rotation_cos,
             )?);
+            let place = |point: [f64; 2]| {
+                let scale = [scale_x, scale_y];
+                let (sin, cos) = (rotation_sin, rotation_cos);
+                place_point(point, block.base_mm, array_insertion_mm, scale, sin, cos)
+            };
+            fills.append(&mut hatch::place_fills(
+                &block.fills,
+                &layer,
+                place,
+                diagnostics,
+            )?);
         }
     }
     diagnostics.add(
@@ -3489,7 +3545,11 @@ fn parse_insert(
         u32::try_from(placement_count)
             .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyEntities)?,
     )?;
-    Ok((profiles, texts))
+    Ok(Placed {
+        profiles,
+        texts,
+        fills,
+    })
 }
 
 fn parse_insert_attributes(

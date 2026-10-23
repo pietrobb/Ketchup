@@ -213,7 +213,7 @@ fn leave_out<'s>(
 }
 
 /// `value` in millimetres to a thousandth, without trailing zeros.
-fn report_mm(value: f64) -> String {
+pub(super) fn report_mm(value: f64) -> String {
     let text = format!("{value:.3}");
     let text = text.trim_end_matches('0').trim_end_matches('.');
     if text == "-0" { "0" } else { text }.to_owned()

@@ -1,7 +1,8 @@
-//! Underlays on the GPU, uploaded once: the segments of an underlay as instances of a quad,
-//! drawn per visible layer as wide as its lineweight in its color and dash pattern, and the
-//! letters of its texts as instances of the outlines of the glyphs they use (see
-//! [`letters`]) in their color. A buffer larger than the device allows is split in pieces.
+//! Underlays on the GPU, uploaded once: the fills of an underlay as triangles in their
+//! color, under the segments of the layer, drawn as instances of a quad per visible layer as
+//! wide as its lineweight in its color and dash pattern, and the letters of its texts as
+//! instances of the outlines of the glyphs they use (see [`letters`]) in their color. A
+//! buffer larger than the device allows is split in pieces.
 //! They are painted over the ground grid and under the model. A camera frame rewrites the
 //! camera and chooses how each cell of letters is drawn; showing or hiding a layer only
 //! changes which segment ranges are drawn and which layers' letters the GPU keeps.
@@ -27,6 +28,27 @@ const PX_PER_WEIGHT_MM: f32 = 96.0 / 25.4;
 const SEGMENT_STRIDE: u64 = 40;
 /// Bytes of one [`GpuStyle`] on the GPU.
 const STYLE_STRIDE: usize = 32;
+/// Bytes of one corner of a [`FillTriangle`] on the GPU.
+const FILL_VERTEX_STRIDE: u64 = 20;
+
+/// A triangle of a fill: its corners, and the index of the fill's style.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FillTriangle {
+    corners: [SplitPoint; 3],
+    style: u32,
+}
+
+impl FillTriangle {
+    /// Its three corners, each with the style.
+    fn write(&self, bytes: &mut Vec<u8>) {
+        for corner in &self.corners {
+            for value in corner.high.iter().chain(&corner.low) {
+                bytes.extend(value.to_ne_bytes());
+            }
+            bytes.extend(self.style.to_ne_bytes());
+        }
+    }
+}
 
 /// A straight piece of a polyline: its ends, how far along its polyline it starts, in
 /// millimetres, where its dash pattern starts, and the index of its style.
@@ -102,6 +124,10 @@ pub struct UnderlayGeometry {
     segments: Vec<Segment>,
     /// The range of each layer's segments, in the order of the underlay's layers.
     layers: Vec<Range<u32>>,
+    /// The triangles of every fill.
+    fills: Vec<FillTriangle>,
+    /// The range of each layer's fill triangles.
+    fill_layers: Vec<Range<u32>>,
     styles: Vec<GpuStyle>,
     /// The dash, gap and dot lengths of every style's pattern, in millimetres.
     patterns: Vec<f32>,
@@ -116,7 +142,18 @@ impl UnderlayGeometry {
         let gpu = |value: f64| single_precision([value, 0.0, 0.0])[0];
         let mut segments = Vec::with_capacity(lines.segment_count());
         let mut layers = Vec::with_capacity(lines.layers().len());
+        let mut fills = Vec::new();
+        let mut fill_layers = Vec::with_capacity(lines.layers().len());
         for layer in lines.layers() {
+            let first_fill = vertex_index(fills.len());
+            for fill in layer.fills() {
+                let style = fill.style();
+                fills.extend(fill.triangles().into_iter().map(|corners| FillTriangle {
+                    corners: corners.map(SplitPoint::new),
+                    style,
+                }));
+            }
+            fill_layers.push(first_fill..vertex_index(fills.len()));
             let first = vertex_index(segments.len());
             for (style, polyline) in layer.styled_polylines() {
                 let mut from_mm = 0.0;
@@ -145,13 +182,18 @@ impl UnderlayGeometry {
         }
         let mut layer_vertices = layers
             .iter()
-            .map(|range| u64::from(range.end - range.start) * 6)
+            .zip(&fill_layers)
+            .map(|(range, fill)| {
+                u64::from(range.end - range.start) * 6 + u64::from(fill.end - fill.start) * 3
+            })
             .collect::<Vec<_>>();
         let letters = Letters::new(lines, &mut layer_vertices);
         Self {
             key,
             segments,
             layers,
+            fills,
+            fill_layers,
             styles,
             patterns,
             letters,
@@ -181,8 +223,14 @@ impl UnderlayGeometry {
         self.letters.instances.len()
     }
 
+    /// The triangles its fills are drawn as.
+    #[must_use]
+    pub fn fill_triangle_count(&self) -> usize {
+        self.fills.len()
+    }
+
     fn is_empty(&self) -> bool {
-        self.segments.is_empty() && self.letters.instances.is_empty()
+        self.segments.is_empty() && self.letters.instances.is_empty() && self.fills.is_empty()
     }
 }
 
@@ -351,6 +399,7 @@ fn cells_drawn<'a>(
 
 /// One underlay on the GPU.
 struct Uploaded {
+    fills: Vec<Chunk>,
     segments: Vec<Chunk>,
     outlines: Option<wgpu::Buffer>,
     instances: Vec<Chunk>,
@@ -365,6 +414,7 @@ struct Uploaded {
 
 /// The GPU state of the underlays, kept in the paint callback resources.
 pub struct GpuUnderlayRenderer {
+    fills_pipeline: wgpu::RenderPipeline,
     lines_pipeline: wgpu::RenderPipeline,
     letters_pipeline: wgpu::RenderPipeline,
     strokes_pipeline: wgpu::RenderPipeline,
@@ -466,6 +516,7 @@ impl GpuUnderlayRenderer {
             0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Float32,
             5 => Uint32
         ];
+        let corner = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Uint32];
         let point = wgpu::vertex_attr_array![0 => Float32x2];
         let instance = wgpu::vertex_attr_array![
             1 => Float32x2, 7 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Uint32,
@@ -481,6 +532,16 @@ impl GpuUnderlayRenderer {
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &instance,
         };
+        let fills_pipeline = pipeline(
+            "Ketchup underlay fills pipeline",
+            ("vs_fill", "fs_letter"),
+            wgpu::PrimitiveTopology::TriangleList,
+            &[wgpu::VertexBufferLayout {
+                array_stride: FILL_VERTEX_STRIDE,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &corner,
+            }],
+        );
         let lines_pipeline = pipeline(
             "Ketchup underlay lines pipeline",
             ("vs_line", "fs_line"),
@@ -504,6 +565,7 @@ impl GpuUnderlayRenderer {
             &[instance_buffer],
         );
         Self {
+            fills_pipeline,
             lines_pipeline,
             letters_pipeline,
             strokes_pipeline,
@@ -645,6 +707,13 @@ impl GpuUnderlayRenderer {
                 .collect::<Vec<_>>(),
         });
         Uploaded {
+            fills: upload_chunked(
+                device,
+                "Ketchup underlay fills",
+                &geometry.fills,
+                FILL_VERTEX_STRIDE * 3,
+                FillTriangle::write,
+            ),
             segments: upload_chunked(
                 device,
                 "Ketchup underlay segments",
@@ -678,8 +747,26 @@ impl GpuUnderlayRenderer {
                     Some((draw, placement, self.uploaded.get(&draw.geometry.key)?))
                 })
         };
-        pass.set_pipeline(&self.lines_pipeline);
+        // Fills first, under the lines.
+        pass.set_pipeline(&self.fills_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
+        for (draw, placement, uploaded) in drawn() {
+            pass.set_bind_group(1, &uploaded.group, &[]);
+            pass.set_bind_group(2, placement, &[]);
+            for chunk in &uploaded.fills {
+                pass.set_vertex_buffer(0, chunk.buffer.slice(..));
+                for range in draw
+                    .visible
+                    .iter()
+                    .filter_map(|&layer| draw.geometry.fill_layers.get(layer))
+                {
+                    if let Some(local) = local_range(range, chunk.first, chunk.count) {
+                        pass.draw(local.start * 3..local.end * 3, 0..1);
+                    }
+                }
+            }
+        }
+        pass.set_pipeline(&self.lines_pipeline);
         for (draw, placement, uploaded) in drawn() {
             pass.set_bind_group(1, &uploaded.group, &[]);
             pass.set_bind_group(2, placement, &[]);
@@ -913,6 +1000,20 @@ fn vs_line(
     return drawn;
 }
 
+// A corner of a triangle of a fill.
+@vertex
+fn vs_fill(
+    @location(0) high: vec2<f32>,
+    @location(1) low: vec2<f32>,
+    @location(2) style: u32,
+) -> Drawn {
+    var drawn: Drawn;
+    drawn.style = style;
+    drawn.along_mm = 0.0;
+    drawn.position = to_clip(from_eye(high, low));
+    return drawn;
+}
+
 fn color_of(style: Style) -> vec4<f32> {
     return select(style.color, underlay.color, style.color.a == 0.0);
 }
@@ -982,7 +1083,7 @@ fn vs_stroke(
     return letter_point(origin + x_axis * advance * f32(end), layer, style);
 }
 
-// A text takes the color of its style, never its pattern.
+// A text and a fill take the color of their style, never its pattern.
 @fragment
 fn fs_letter(drawn: Drawn) -> @location(0) vec4<f32> {
     return color_of(styles[drawn.style]);
@@ -1122,6 +1223,35 @@ mod tests {
             let cpu = app.project(world(end), rect);
             assert!((gpu - cpu).length() < 0.05, "{gpu:?} {cpu:?}");
         }
+    }
+
+    #[test]
+    fn a_fill_is_triangles_of_its_layer_in_its_style_under_its_lines() {
+        let mut builder = UnderlayLinesBuilder::default();
+        builder.add_loose(
+            "walls",
+            &ProfileSegment::Line {
+                start_mm: [0.0, 0.0],
+                end_mm: [1000.0, 0.0],
+            },
+        );
+        builder.set_style(&LineStyle {
+            color: Some([200, 30, 30]),
+            weight_hmm: 0,
+            pattern_mm: Vec::new(),
+        });
+        let square = |low: f64, high: f64| vec![[low, low], [high, low], [high, high], [low, high]];
+        builder.add_fill("fills", &[square(0.0, 100.0), square(40.0, 60.0)]);
+        let (names, lines) = builder.finish();
+        assert_eq!(names, ["walls", "fills"]);
+        let geometry = UnderlayGeometry::new([6; 32], &lines);
+        // A square with a hole: three bands, the middle one of two trapezoids.
+        assert_eq!(geometry.fill_triangle_count(), 8);
+        assert_eq!(geometry.fill_layers, [0..0, 0..8]);
+        assert!(geometry.fills.iter().all(|triangle| triangle.style == 1));
+        assert_eq!(geometry.styles[1].color, linear_rgba([200, 30, 30]));
+        assert_eq!(geometry.layer_vertices(1), 24);
+        assert_eq!(geometry.layer_vertices(0), 6);
     }
 
     #[test]
