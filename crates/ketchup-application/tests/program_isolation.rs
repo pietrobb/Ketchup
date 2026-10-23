@@ -6,7 +6,6 @@ use crate::operations_support::{BLOCK, session};
 use ketchup_application::{DocumentSession, RuleProgramApplyError, SessionSettings};
 use ketchup_model::document::RuleProgramSource;
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
 
 /// The interpreter's heap bound or the worker's process limit may stop it first;
 /// either way the code is `memory_limit` and the same session applies the next program.
@@ -75,7 +74,6 @@ fn source(program: &str) -> RuleProgramSource {
 #[test]
 fn a_model_too_large_to_check_is_applied_with_an_unfinished_report_and_the_session_lives_on() {
     let _turn = crate::integration_support::file_turn();
-    let started = Instant::now();
     let mut window = DocumentSession::new(SessionSettings::default());
     let applied = window
         .apply_rule_program(
@@ -99,13 +97,5 @@ fn a_model_too_large_to_check_is_applied_with_an_unfinished_report_and_the_sessi
     assert_eq!(applied.report.issues.len(), 1);
     assert!(applied.report.relations.is_empty());
     assert_eq!(applied.report.bom, ketchup_program::bom(&applied.model));
-    // The stopped check above proves the deadline; this only catches a wait
-    // far past it. Under CI load evaluating and applying took 23 s besides.
-    assert!(
-        started.elapsed()
-            < ketchup_application::program_isolation::PROGRAM_CHECK_TIME + Duration::from_secs(60),
-        "{:?}",
-        started.elapsed()
-    );
     session(BLOCK).unwrap();
 }

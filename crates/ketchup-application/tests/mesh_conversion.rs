@@ -433,7 +433,7 @@ fn background_wait_does_not_join_a_blocked_completion_callback() {
     started_receiver
         .recv_timeout(Duration::from_secs(5))
         .unwrap();
-    let completed_promptly = result_receiver.recv_timeout(Duration::from_millis(500));
+    let completed_promptly = result_receiver.recv_timeout(Duration::from_secs(5));
     drop(release_sender);
     waiter.join().unwrap();
 

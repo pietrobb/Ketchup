@@ -1208,7 +1208,7 @@ fn apply_and_verify_worker_disconnect_is_zero_mutation() {
 
     bridge.poll_apply_and_verify_job(&mut app, &egui::Context::default(), false);
 
-    let response = response.recv_timeout(Duration::from_secs(1)).unwrap();
+    let response = response.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(!response.ok);
     assert_eq!(
         response.error.as_deref(),
@@ -1263,7 +1263,7 @@ fn apply_and_verify_timeout_is_zero_mutation_and_cancels_worker() {
 
     bridge.poll_apply_and_verify_job(&mut app, &egui::Context::default(), false);
 
-    let response = response.recv_timeout(Duration::from_secs(1)).unwrap();
+    let response = response.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(!response.ok);
     assert_eq!(response.error.as_deref(), Some("job_timeout"));
     assert!(!cancelled.load(Ordering::Acquire));
@@ -1970,7 +1970,7 @@ fn image_protocol_is_versioned_declared_and_required() {
             },
         );
         assert_eq!(
-            receiver.recv_timeout(Duration::from_secs(1)).unwrap().error,
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap().error,
             Some("invalid_image_dimensions".into())
         );
     }

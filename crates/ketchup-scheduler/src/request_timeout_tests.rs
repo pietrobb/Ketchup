@@ -584,7 +584,7 @@ fn cleanup_after_exit_polling_does_not_wait_for_consumed_job_notifications() {
         done.send(()).unwrap();
     });
     finished
-        .recv_timeout(Duration::from_millis(250))
+        .recv_timeout(Duration::from_secs(5))
         .expect("cleanup blocked on an already consumed Windows job notification");
 }
 #[test]

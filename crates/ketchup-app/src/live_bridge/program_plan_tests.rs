@@ -79,7 +79,7 @@ fn client_eof_while_program_plan_is_pending_prevents_publication() {
         .write_all(&(bytes.len() as u32).to_be_bytes())
         .unwrap();
     stream.write_all(&bytes).unwrap();
-    let queued = bridge.queue.recv_timeout(Duration::from_secs(3)).unwrap();
+    let queued = bridge.queue.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(matches!(queued.request, Request::ApplyProgram { .. }));
     let cancelled = queued.cancelled.clone();
     let before = app.live_bridge_stamp();

@@ -68,7 +68,7 @@ fn sweep(harness: &mut Harness<'_, KetchupApp>, from: Vec3, to: Vec3) -> (Pos2, 
 }
 
 /// Presses at `from`, drags to `to` and releases; every frame is timed.
-fn drag(harness: &mut Harness<'_, KetchupApp>, from: Vec3, to: Vec3, what: &str) {
+fn perf_drag(harness: &mut Harness<'_, KetchupApp>, from: Vec3, to: Vec3, what: &str) {
     let revision = harness.state().document_revision();
     move_to(harness, from + Vec3::new(5.0, 5.0, 0.0));
     let (screen, _) = move_to(harness, from);
@@ -81,7 +81,7 @@ fn drag(harness: &mut Harness<'_, KetchupApp>, from: Vec3, to: Vec3, what: &str)
 }
 
 /// A click whose press and release are both timed frames.
-fn timed_click(harness: &mut Harness<'_, KetchupApp>, at: Vec3, what: &str) {
+fn perf_timed_click(harness: &mut Harness<'_, KetchupApp>, at: Vec3, what: &str) {
     let (screen, hover) = move_to(harness, at);
     let press = button(harness, screen, true);
     perf_frames_within_budget(what, &[hover, press]);
@@ -120,7 +120,7 @@ fn perf_house_moving_a_box_beside_the_house_stays_interactive() {
     let mut harness = house_with_box();
     tool(&mut harness, AppCommand::Move);
     let top = centre() + Vec3::new(0.0, 0.0, TOP);
-    drag(&mut harness, top, top + Vec3::new(400.0, 0.0, 0.0), "Move");
+    perf_drag(&mut harness, top, top + Vec3::new(400.0, 0.0, 0.0), "Move");
 }
 
 #[test]
@@ -149,9 +149,9 @@ fn perf_house_rotating_a_box_beside_the_house_stays_interactive() {
     tool(&mut harness, AppCommand::Rotate);
     let pivot = centre() + Vec3::new(0.0, 0.0, TOP);
     let revision = harness.state().document_revision();
-    timed_click(&mut harness, pivot, "Rotate pivot");
+    perf_timed_click(&mut harness, pivot, "Rotate pivot");
     let reference = pivot + Vec3::new(300.0, 0.0, 0.0);
-    timed_click(&mut harness, reference, "Rotate reference");
+    perf_timed_click(&mut harness, reference, "Rotate reference");
     let (last, frames) = sweep(&mut harness, reference, pivot + Vec3::new(0.0, 300.0, 0.0));
     perf_frames_within_budget("Rotate", &frames);
     let press = button(&mut harness, last, true);
@@ -168,7 +168,7 @@ fn perf_house_filleting_a_box_edge_beside_the_house_stays_interactive() {
     tool(&mut harness, AppCommand::Select);
     let revision = harness.state().document_revision();
     let edge = Vec3::new(START.x, centre().y, TOP);
-    timed_click(&mut harness, edge, "edge select");
+    perf_timed_click(&mut harness, edge, "edge select");
     let started = Instant::now();
     tool(&mut harness, AppCommand::Fillet);
     perf_release_within_budget("Fillet start", started.elapsed());

@@ -3984,7 +3984,9 @@ mod tests {
                 sync_parent_directory,
             )
         });
-        let second_passed_comparison = compared_rx.recv_timeout(Duration::from_millis(250)).is_ok();
+        let second_was_held = compared_rx
+            .recv_timeout(Duration::from_millis(250))
+            .is_err();
         release_tx.send(()).unwrap();
 
         assert!(first.join().unwrap().is_ok());
@@ -3993,7 +3995,7 @@ mod tests {
             Err(FilePersistenceError::ExternalConflict)
         ));
         assert!(
-            !second_passed_comparison,
+            second_was_held,
             "a second stale writer passed identity comparison before the first writer replaced the file"
         );
         assert_eq!(fs::read(path).unwrap(), first_bytes);
@@ -4107,13 +4109,15 @@ mod tests {
                 sync_parent_directory,
             )
         });
-        let save_passed_comparison = compared_rx.recv_timeout(Duration::from_millis(250)).is_ok();
+        let save_was_held = compared_rx
+            .recv_timeout(Duration::from_millis(250))
+            .is_err();
         release_tx.send(()).unwrap();
 
         assert!(recovery.join().unwrap().is_ok());
         assert!(save.join().unwrap().is_ok());
         assert!(
-            !save_passed_comparison,
+            save_was_held,
             "a save passed identity comparison while work recovery was still being published"
         );
     }

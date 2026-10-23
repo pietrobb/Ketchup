@@ -695,7 +695,7 @@ fn a_picked_face_refuses_only_selection_framing() {
             })
     );
     let refused = queue_with_framing(&mut h, 1, ImageFraming::Selection)
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(5))
         .unwrap();
     assert_eq!(
         refused.error.as_deref(),

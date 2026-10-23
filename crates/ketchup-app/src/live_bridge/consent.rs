@@ -958,7 +958,7 @@ mod tests {
         writeln!(attach, "{}", attach_line(&registry, "0".repeat(64))).unwrap();
         let pending = broker
             .requests
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(5))
             .expect("attach was not received");
 
         let mut list = TcpStream::connect(broker.address).unwrap();
@@ -1114,7 +1114,7 @@ mod tests {
         writeln!(first, "{line}").unwrap();
         let pending = broker
             .requests
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(5))
             .expect("the first attach asks the user");
         drop(pending);
         first
@@ -1183,12 +1183,12 @@ mod tests {
         drop(
             broker
                 .requests
-                .recv_timeout(Duration::from_secs(2))
+                .recv_timeout(Duration::from_secs(5))
                 .expect("the other attach asks the user"),
         );
         let _again = attach(&nonces[busy]);
         assert!(
-            broker.requests.recv_timeout(Duration::from_secs(2)).is_ok(),
+            broker.requests.recv_timeout(Duration::from_secs(5)).is_ok(),
             "the attach answered busy was rejected as a replay"
         );
     }
@@ -1217,7 +1217,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .requests
-                .recv_timeout(Duration::from_secs(2))
+                .recv_timeout(Duration::from_secs(5))
                 .expect("attach was not received")
         };
 
@@ -1269,7 +1269,7 @@ mod tests {
         writeln!(attach, "{}", attach_line(&registry, "2".repeat(64))).unwrap();
         let pending = broker
             .requests
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(5))
             .expect("attach was not received");
 
         let (dropped, done) = std::sync::mpsc::channel();

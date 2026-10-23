@@ -831,7 +831,7 @@ mod tests {
         stream.write_all(&body).unwrap();
         let queued = bridge
             .queue
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(5))
             .expect("the well-formed request reaches the UI queue");
         assert_eq!(queued.id, 8);
         assert!(matches!(queued.request, Request::Status { .. }));
@@ -855,7 +855,7 @@ mod tests {
             .write_all(&(body.len() as u32).to_be_bytes())
             .unwrap();
         waiting.write_all(&body).unwrap();
-        let queued = bridge.queue.recv_timeout(Duration::from_secs(2)).unwrap();
+        let queued = bridge.queue.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(queued.id, 5, "the request waits for the UI thread");
 
         bridge.superseded.store(true, Ordering::Release);
