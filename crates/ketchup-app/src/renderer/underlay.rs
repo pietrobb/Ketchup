@@ -30,6 +30,10 @@ const SEGMENT_STRIDE: u64 = 40;
 const STYLE_STRIDE: usize = 32;
 /// Bytes of one corner of a [`FillTriangle`] on the GPU.
 const FILL_VERTEX_STRIDE: u64 = 20;
+/// Bytes of the underlay's color and viewport on the GPU.
+const UNIFORM_BYTES: u64 = 32;
+/// Bytes of a draw's placement ([`LinesView::bytes`]) on the GPU.
+const PLACEMENT_BYTES: u64 = 80;
 
 /// A triangle of a fill: its corners, and the index of the fill's style.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -439,32 +443,49 @@ impl GpuUnderlayRenderer {
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Ketchup underlay color and viewport"),
-            size: 32,
+            size: UNIFORM_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
+        let entry = |binding: u32, ty: wgpu::BufferBindingType, bytes: Option<u64>| {
+            wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty,
+                    has_dynamic_offset: false,
+                    min_binding_size: bytes.and_then(wgpu::BufferSize::new),
+                },
+                count: None,
+            }
         };
+        // Each uniform's layout names its size. Two equal layouts in one pipeline layout
+        // left the first group reading zeros on WARP (D3D12 software): no line was wider
+        // than nothing.
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Ketchup underlay bind group layout"),
-            entries: &[entry(0, wgpu::BufferBindingType::Uniform)],
+            entries: &[entry(
+                0,
+                wgpu::BufferBindingType::Uniform,
+                Some(UNIFORM_BYTES),
+            )],
         });
         let placement_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Ketchup underlay placement layout"),
-            entries: &[entry(0, wgpu::BufferBindingType::Uniform)],
+            entries: &[entry(
+                0,
+                wgpu::BufferBindingType::Uniform,
+                Some(PLACEMENT_BYTES),
+            )],
         });
         let storage = wgpu::BufferBindingType::Storage { read_only: true };
         let underlay_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Ketchup underlay layers and styles layout"),
-            entries: &[entry(0, storage), entry(1, storage), entry(2, storage)],
+            entries: &[
+                entry(0, storage, None),
+                entry(1, storage, None),
+                entry(2, storage, None),
+            ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Ketchup underlay bind group"),
@@ -602,7 +623,7 @@ impl GpuUnderlayRenderer {
         while self.placements.len() < draws.len() {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Ketchup underlay lines to clip"),
-                size: 80,
+                size: PLACEMENT_BYTES,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
