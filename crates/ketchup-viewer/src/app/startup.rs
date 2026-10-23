@@ -35,7 +35,7 @@ impl StartupOpen {
         let kept_in = session_dir.clone();
         let handle = std::thread::spawn(move || {
             #[cfg(test)]
-            super::tests::hold_startup_reader();
+            super::tests::hold_startup_reader(session_dir.as_deref());
             let session = session_dir.as_deref().map_or(Ok(None), KeptSession::read);
             let package = match &session {
                 Ok(Some(_)) => None,
@@ -65,8 +65,8 @@ impl StartupOpen {
     pub fn finish(self, app: &mut ViewerApp) -> (Option<SessionMark>, Vec<Rejection>) {
         app.set_loading(false);
         let mut failures = Vec::new();
-        let started = self.handle.join().unwrap_or_else(|_| Started {
-            session: Err(startup_error()),
+        let started = self.handle.join().unwrap_or_else(|panic| Started {
+            session: Err(startup_error(panic.as_ref())),
             package: None,
         });
         let mark = match started.session.and_then(|kept| match kept {
@@ -93,8 +93,17 @@ impl StartupOpen {
     }
 }
 
-fn startup_error() -> Rejection {
+/// The reader's panic, with its message: on a phone nothing else shows it
+/// (review 2026-10-19 P3).
+fn startup_error(panic: &(dyn std::any::Any + Send)) -> Rejection {
+    let message = panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("the panic carried no message");
     Rejection::new("viewer.startup", ketchup_rejection::RejectionPhase::Io)
-        .reason("Reading the model kept from the last start ended unexpectedly.")
+        .reason(format!(
+            "Reading the model kept from the last start ended unexpectedly ({message})."
+        ))
         .fix_hint("Open the model again.")
 }

@@ -1202,12 +1202,43 @@ fn comments_made_while_the_package_is_written_survive_the_end_of_the_process() {
 /// startup reader from reading.
 static STARTUP_READER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-pub(crate) fn hold_startup_reader() {
+/// A file that makes the startup reader of the session folder holding it panic.
+const PANIC_STARTUP_READER: &str = "panic-startup-reader";
+
+pub(crate) fn hold_startup_reader(session_dir: Option<&std::path::Path>) {
     drop(
         STARTUP_READER
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
+    if session_dir.is_some_and(|dir| dir.join(PANIC_STARTUP_READER).exists()) {
+        panic!("the test made the startup reader panic");
+    }
+}
+
+/// Review 2026-10-19 P3: a startup reader that panics is reported with the
+/// panic's message, in the text a phone logs, not only as ended unexpectedly.
+#[test]
+fn a_startup_reader_that_panics_reports_its_message() {
+    let dir = std::env::temp_dir().join(format!(
+        "ketchup-viewer-startup-panic-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(PANIC_STARTUP_READER), b"").unwrap();
+    let mut app = ViewerApp::new(None);
+    let (mark, failures) = StartupOpen::start(&mut app, Some(dir.clone()), None).finish(&mut app);
+    assert_eq!((mark, failures.len()), (None, 1));
+    assert_eq!(failures[0].code(), "viewer.startup");
+    assert!(
+        failures[0]
+            .to_string()
+            .contains("(the test made the startup reader panic)"),
+        "{failures:?}"
+    );
+    assert!(!app.loading);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// Review 2026-10-17 §3 P3: a phone's start reads the kept session, else the
