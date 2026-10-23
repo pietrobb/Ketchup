@@ -243,6 +243,48 @@ window(\"stair\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 100, 1200, 400, 800, c
 }
 
 #[test]
+fn a_door_keeps_the_space_its_leaf_swings_through_clear() {
+    // The leaf is 740 wide (x 680..1420); inside the room is y > 200, outside y < 0.
+    let things = "
+box(\"cupboard\", (400, 300, 1800), at = (800, 400, 0))
+box(\"bench\", (400, 300, 450), at = (800, -600, 0))
+box(\"shelf\", (400, 300, 1800), at = (1500, 300, 0))
+";
+    let occupied = |swing: &str| {
+        let source = format!(
+            "wall = box(\"wall\", (4000, 200, 2600))
+door(\"entry\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 600, 0, 900, 2100, cut = wall, swing = \"{swing}\")
+{things}"
+        );
+        let (_, issues) = evaluate(&source);
+        let found: Vec<_> = issues
+            .iter()
+            .filter(|issue| issue.kind == "free_space_occupied")
+            .map(|issue| {
+                assert_eq!(issue.severity, Severity::Error);
+                assert!(issue.hint.contains("hang the door"), "{}", issue.hint);
+                issue.message.clone()
+            })
+            .collect();
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.kind != "free_space_unverified"),
+            "{issues:?}"
+        );
+        found
+    };
+    assert_eq!(
+        occupied("in"),
+        ["cupboard reaches into the free space entry/swing space (400 x 300 x 1800 mm)"]
+    );
+    assert_eq!(
+        occupied("out"),
+        ["bench reaches into the free space entry/swing space (400 x 300 x 450 mm)"]
+    );
+}
+
+#[test]
 fn bad_windows_and_doors_name_the_problem() {
     let wall = "wall = box(\"wall\", (4000, 200, 2600))\n";
     for (call, message) in [
@@ -277,6 +319,10 @@ fn bad_windows_and_doors_name_the_problem() {
         (
             "door(\"d\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 100, 0, 900, 2100, designation = \" \")",
             "designation must be a text",
+        ),
+        (
+            "door(\"d\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 100, 0, 900, 2100, swing = \"left\")",
+            "swing must be \"in\" or \"out\"",
         ),
         (
             "buildup(\"floor\", (0, 0, 0), (1, 0, 0), (0, 1, 0), 4000, [{\"name\": \"a\", \"thickness\": 20}], height = 3000,

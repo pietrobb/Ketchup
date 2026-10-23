@@ -2346,7 +2346,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
 #          tags=[], cut=None, designation="window {width} x {height}")  -> opening
 #   door(name, origin, along, up, wall, u, v, width, height, frame=(80, 78), inset=None,
 #        leaf=40, threshold=20, material="wood", color=, fill_material="wood", fill_color=,
-#        tags=[], cut=None, designation="door {width} x {height}")  -> opening
+#        tags=[], cut=None, designation="door {width} x {height}", swing="in")  -> opening
 #     The opening is u .. u + width, v .. v + height in the plane of a wall's inside face,
 #     spanned from world point `origin` by `along` and `up` as in buildup(); the wall is
 #     `wall` mm thick outward along along x up. A frame of section `frame` = (width, depth)
@@ -2361,6 +2361,10 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
 #     {width} and {height} replaced by the opening's size (designation="okno {width} × {height}"
 #     in the program's own words), and bought_item = name, so report section hardware counts
 #     each opening once under its designation; none of its parts is in the cut list.
+#     A door keeps the space its leaf swings through clear (keep_clear, see topic space):
+#     as wide and high as the leaf and as deep as it is wide, from the inside face into
+#     the room (swing="in") or from the outside face (swing="out"); a part standing
+#     there is a free_space_occupied error "<name>/swing space".
 #     The result is one value: .name, .kind ("window" or "door"), .parts, .tool and the
 #     numbers above (.origin, .along, .up, .out, .wall, .u, .v, .width, .height).
 #       buildup(openings=[...]) takes it as it is: a build-up in the same wall and storey
@@ -2370,7 +2374,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
 #       wall body (a concept wall), the cut named like the opening.
 #     Refused with the reason: a frame that leaves no room inside the opening or does not
 #     fit in the wall, a door not at v = 0, an opening reaching outside the wall in cut=,
-#     a designation that is no text or empty.
+#     a designation that is no text or empty, a swing other than "in" or "out".
 # Example: a window and a door in a wall facing -y, inside face at y = 200, 200 mm thick
 #   wall = box("wall", (4000, 200, 2600), material = "timber frame")
 #   win = window("win", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 2200, 900, 1200, 1250, cut = wall)
@@ -2382,9 +2386,10 @@ _FRAME_COLOR = (240, 240, 236)
 _GLASS_COLOR = (150, 200, 230)
 _LEAF_COLOR = (150, 100, 60)
 
-def _wall_opening(kind, name, origin, along, up, wall, u, v, width, height, tags, cut, designation, pieces):
+def _wall_opening(kind, name, origin, along, up, wall, u, v, width, height, tags, cut, designation, pieces, space = None):
     """The parts, tool and checks shared by window() and door(); `pieces` are
-    (label, u0, v0, u1, v1, inset, depth, material, color) in the opening's plane."""
+    (label, u0, v0, u1, v1, inset, depth, material, color) in the opening's plane,
+    `space` (label, u0, v0, u1, v1, inset, depth, hint) a zone kept clear of other parts."""
     along = vec_scale(along, 1.0 / vec_length(along))
     up = vec_sub(up, vec_scale(along, _dot(up, along)))
     if vec_length(up) < 0.001:
@@ -2419,6 +2424,10 @@ def _wall_opening(kind, name, origin, along, up, wall, u, v, width, height, tags
                      (kind, name, fmt_mm(u), fmt_mm(u + width), fmt_mm(v), fmt_mm(v + height), info.name))
         subtract(cut, tool, name = name)
     parts = [slab(*piece) for piece in pieces]
+    if space != None:
+        label, u0, v0, u1, v1, at, depth, hint = space
+        zone = slab(label, u0, v0, u1, v1, at, depth, None, None, tool = True)
+        keep_clear(zone, name = "%s/%s" % (name, label), ignore = parts, hint = hint)
     return struct(name = name, kind = kind, parts = parts, tool = tool, origin = origin, along = along, up = up,
                   out = out, wall = float(wall), u = float(u), v = float(v), width = float(width), height = float(height))
 
@@ -2452,8 +2461,10 @@ def window(name, origin, along, up, wall, u, v, width, height, frame = (80, 78),
 
 def door(name, origin, along, up, wall, u, v, width, height, frame = (80, 78), inset = None, leaf = 40, threshold = 20,
          material = "wood", color = _FRAME_COLOR, fill_material = "wood", fill_color = _LEAF_COLOR,
-         tags = [], cut = None, designation = "door {width} x {height}"):
+         tags = [], cut = None, designation = "door {width} x {height}", swing = "in"):
     """A door: frame, threshold and leaf in a wall opening on the floor; see topic openings."""
+    if swing not in ("in", "out"):
+        fail("door(%s): swing must be \"in\" or \"out\", got %r" % (name, swing))
     if abs(v) > 0.001:
         fail("door(%s): a door stands on its floor at v = 0 of its wall, got v = %s" % (name, fmt_mm(v)))
     fw, fd, inset = _frame_fit("door", name, wall, frame, inset)
@@ -2463,7 +2474,11 @@ def door(name, origin, along, up, wall, u, v, width, height, frame = (80, 78), i
     if leaf <= 0 or leaf > fd:
         fail("door(%s): the leaf must be thinner than the %s mm frame, got %s mm" % (name, fmt_mm(fd), fmt_mm(leaf)))
     u1, v1 = u + width, v + height
-    return _wall_opening("door", name, origin, along, up, wall, u, v, width, height, tags, cut, designation, [
+    swept = width - 2 * fw
+    space = ("swing space", u + fw, v, u1 - fw, v1 - fw, -swept if swing == "in" else wall, swept,
+             "Keep the %s mm the leaf of door %s swings through free (%s): move what stands there, or hang the door to open the other way." %
+             (fmt_mm(swept), name, "inside" if swing == "in" else "outside"))
+    return _wall_opening("door", name, origin, along, up, wall, u, v, width, height, tags, cut, designation, space = space, pieces = [
         ("threshold", u, v, u1, v + threshold, inset, fd, material, color),
         ("frame head", u, v1 - fw, u1, v1, inset, fd, material, color),
         ("frame left", u, v + threshold, u + fw, v1 - fw, inset, fd, material, color),
