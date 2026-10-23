@@ -17,6 +17,7 @@ use ketchup_program::source_edit::{
     self, CreatingCall, number_literal, point_literal, quote, written, written_point,
 };
 use ketchup_program::{Evaluated, ProgramFeatureKind, ProgramModel};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
@@ -87,8 +88,33 @@ pub fn rewrite_rule_program_parts(
     source: &RuleProgramSource,
     changes: &[(String, PartChange)],
 ) -> Result<Option<RuleProgramSource>, RuleProgramApplyError> {
+    Ok(rewrite_rule_program_parts_from(source, None, changes)?.map(|rewritten| rewritten.source))
+}
+
+/// A program rewritten by [`rewrite_rule_program_parts_from`], with the
+/// evaluation that checked it.
+pub struct RewrittenProgram {
+    pub source: RuleProgramSource,
+    pub evaluated: Evaluated,
+}
+
+/// [`rewrite_rule_program_parts`] that starts from `current`, the evaluation
+/// of `source` the caller holds (evaluated here when `None`), and keeps the
+/// evaluation of the rewritten program: on a house each evaluation costs as
+/// much as the rest of the edit.
+///
+/// # Errors
+/// As [`rewrite_rule_program_parts`].
+pub fn rewrite_rule_program_parts_from(
+    source: &RuleProgramSource,
+    current: Option<&Evaluated>,
+    changes: &[(String, PartChange)],
+) -> Result<Option<RewrittenProgram>, RuleProgramApplyError> {
     let mut source = source.clone();
-    let mut evaluated = evaluate(&source)?;
+    let mut evaluated = match current {
+        Some(current) => Cow::Borrowed(current),
+        None => Cow::Owned(evaluate(&source)?),
+    };
     // A name an earlier change of the batch gives (a rename, a mirrored
     // copy) is a part of the program by the time its change comes.
     let mut parts = (evaluated.model.parts.iter())
@@ -120,10 +146,10 @@ pub fn rewrite_rule_program_parts(
     let mut document_names = BTreeMap::<String, String>::new();
     // Many parts moved alike are written and checked in one evaluation, not
     // two or three for each part (review 2026-10-19 WB-6).
-    if let Some(moved) =
+    if let Some((source, evaluated)) =
         crate::program_part_edit::transformed_at_once(&source, &evaluated, changes)?
     {
-        return Ok(Some(moved));
+        return Ok(Some(RewrittenProgram { source, evaluated }));
     }
     for (name, change) in changes {
         let edit = Edit {
@@ -176,13 +202,16 @@ pub fn rewrite_rule_program_parts(
             }));
         }
         source = rewritten;
-        evaluated = after;
+        evaluated = Cow::Owned(after);
     }
     // Every part deleted: a program cannot be empty, and what is left of it (a
     // comment, a param()) makes nothing, so the edit is committed as it is and
     // the window says no part is left.
     let makes_nothing = evaluated.model.parts.is_empty() && evaluated.model.instances.is_empty();
-    Ok((!makes_nothing).then_some(source))
+    Ok((!makes_nothing).then(|| RewrittenProgram {
+        source,
+        evaluated: evaluated.into_owned(),
+    }))
 }
 
 /// What the program must make after a change, from what it made before.

@@ -38,6 +38,7 @@ impl KetchupApp {
     /// unchanged part's identity. The program report is not computed here:
     /// on a large model it takes far longer than the edit. A document no program owns is replaced only
     /// when it is empty, or when `replace` is set and nothing is unsaved.
+    #[cfg(test)]
     pub(crate) fn apply_program_source(
         &mut self,
         source: RuleProgramSource,

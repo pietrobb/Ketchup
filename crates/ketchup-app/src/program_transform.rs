@@ -4,9 +4,11 @@
 //! back in one step.
 use super::*;
 use crate::transform_operation::TransformTarget;
-use ketchup_application::PartChange;
+use ketchup_application::{PartChange, RewrittenProgram};
 use ketchup_assistant::sidecar::AssistantCadRotation;
 use ketchup_model::document::RuleProgramSource;
+use ketchup_program::Evaluated;
+use std::sync::Arc;
 
 impl KetchupApp {
     /// Commits a batch of the editor that deletes, recolours or renames
@@ -38,14 +40,29 @@ impl KetchupApp {
         program: &RuleProgramSource,
         changes: &[(String, PartChange)],
     ) -> Option<Result<(), Rejection>> {
-        let rewritten = rewrite_parts(program, changes).transpose()?;
-        Some(rewritten.and_then(|source| self.publish_program_source(source)))
+        let current = self.program_evaluations.kept(program);
+        let rewritten = rewrite_parts(program, current.as_deref(), changes).transpose()?;
+        Some(rewritten.and_then(|rewritten| self.publish_rewritten(rewritten, current)))
     }
 
-    fn publish_program_source(&mut self, source: RuleProgramSource) -> Result<(), Rejection> {
-        self.apply_program_source(source, false)
-            .map(|_| ())
-            .map_err(|error| error.rejection())
+    /// Publishes `rewritten` over the document's program, whose evaluation
+    /// the caller passes as `current` when it holds it: the edit evaluates
+    /// neither program again.
+    fn publish_rewritten(
+        &mut self,
+        rewritten: RewrittenProgram,
+        current: Option<Arc<Evaluated>>,
+    ) -> Result<(), Rejection> {
+        let RewrittenProgram { source, evaluated } = rewritten;
+        ketchup_application::plan_rule_program_from(
+            &self.document,
+            &source,
+            evaluated,
+            current.as_deref(),
+        )
+        .and_then(|plan| self.publish_program_plan(source, false, Vec::new(), plan))
+        .map(|_| ())
+        .map_err(|error| error.rejection())
     }
 
     /// `None` when no program owns the document or the edit moves something
@@ -68,6 +85,7 @@ impl KetchupApp {
             )
             .reason("the edit to correct is no longer the last one")));
         }
+        let mut current = None;
         let rewritten = self
             .document
             .current_rule_program()
@@ -75,9 +93,16 @@ impl KetchupApp {
                 Rejection::new("program.transform_correction", RejectionPhase::Planning)
                     .reason("the program did not own the document before the edit to correct")
             })
-            .and_then(|program| rewrite_parts(program, &transformed(&parts, world_edit)));
+            .and_then(|program| {
+                current = self.program_evaluations.kept(program);
+                rewrite_parts(
+                    program,
+                    current.as_deref(),
+                    &transformed(&parts, world_edit),
+                )
+            });
         let result = match rewritten {
-            Ok(Some(rewritten)) => self.publish_program_source(rewritten),
+            Ok(Some(rewritten)) => self.publish_rewritten(rewritten, current),
             // Not parts the program makes: the edit is committed as it is.
             Ok(None) if !replace_last => return None,
             Ok(None) => Err(Rejection::new(
@@ -106,6 +131,7 @@ impl KetchupApp {
         if program.operations.is_empty() {
             return None;
         }
+        let mut current = self.program_evaluations.kept(&source);
         let snapshot = self.document.current();
         // Names of the parts, and of the copies earlier mirrors of this
         // program make, that a new copy may not take.
@@ -138,7 +164,11 @@ impl KetchupApp {
                     world_motion(*translation_mm, rotation.as_ref())
                         .map_err(|error| failed("program.transform", error))
                         .and_then(|world_edit| {
-                            rewrite_parts(&source, &transformed(&parts, world_edit))
+                            rewrite_parts(
+                                &source,
+                                current.as_deref(),
+                                &transformed(&parts, world_edit),
+                            )
                         })
                 }
                 AssistantCadEditOperation::Delete { .. }
@@ -149,7 +179,7 @@ impl KetchupApp {
                         Err(rejection) => return Some(Err(rejection)),
                     };
                     let changes = part_changes(&snapshot, batch.commands())?;
-                    rewrite_parts(&source, &changes)
+                    rewrite_parts(&source, current.as_deref(), &changes)
                 }
                 AssistantCadEditOperation::Mirror {
                     selector: AssistantCadEntitySelector::Occurrences { occurrence_ids },
@@ -178,12 +208,15 @@ impl KetchupApp {
                             Some((name, change))
                         })
                         .collect::<Option<Vec<_>>>()?;
-                    rewrite_parts(&source, &changes)
+                    rewrite_parts(&source, current.as_deref(), &changes)
                 }
                 _ => return None,
             };
             match rewritten {
-                Ok(Some(rewritten)) => source = rewritten,
+                Ok(Some(rewritten)) => {
+                    source = rewritten.source;
+                    current = Some(Arc::new(rewritten.evaluated));
+                }
                 // Not parts the program makes: the edit is planned as it is.
                 Ok(None) => return None,
                 Err(rejection) => return Some(Err(rejection)),
@@ -273,9 +306,10 @@ fn part_changes(
 
 fn rewrite_parts(
     source: &RuleProgramSource,
+    current: Option<&Evaluated>,
     changes: &[(String, PartChange)],
-) -> Result<Option<RuleProgramSource>, Rejection> {
-    ketchup_application::rewrite_rule_program_parts(source, changes)
+) -> Result<Option<RewrittenProgram>, Rejection> {
+    ketchup_application::rewrite_rule_program_parts_from(source, current, changes)
         .map_err(|error| error.rejection())
 }
 

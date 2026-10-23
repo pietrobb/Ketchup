@@ -91,6 +91,16 @@ impl ProgramEvaluations {
         }
     }
 
+    /// The kept evaluation of `source`, when it evaluated; nothing is started
+    /// or waited for.
+    pub(crate) fn kept(&self, source: &RuleProgramSource) -> Option<Arc<Evaluated>> {
+        self.poll();
+        match self.ready.borrow().as_ref() {
+            Some((ready, Ok(evaluated))) if alike(ready, source) => Some(evaluated.clone()),
+            _ => None,
+        }
+    }
+
     /// The evaluation of `source`, waiting for it when it is still running.
     /// Only for answers owed in the same call (a live-bridge request, the
     /// built-in assistant); tools driven by the pointer or a key use

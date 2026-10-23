@@ -173,10 +173,44 @@ pub fn plan_rule_program_by(
     deadline: crate::program_isolation::CheckDeadline,
 ) -> Result<RuleProgramPlan, RuleProgramApplyError> {
     let evaluated = evaluate_by(source, deadline)?;
+    plan_evaluated(document, source, evaluated, None, deadline)
+}
+
+/// [`plan_rule_program`] of `source` the caller already evaluated as
+/// `evaluated`, with `current` the evaluation of the document's program when
+/// the caller holds it: a window edit of a house then evaluates it once.
+///
+/// # Errors
+/// As [`plan_rule_program`].
+pub fn plan_rule_program_from(
+    document: &DocumentStore,
+    source: &RuleProgramSource,
+    evaluated: ketchup_program::Evaluated,
+    current: Option<&ketchup_program::Evaluated>,
+) -> Result<RuleProgramPlan, RuleProgramApplyError> {
+    plan_evaluated(
+        document,
+        source,
+        evaluated,
+        current,
+        crate::program_isolation::CheckDeadline::start(),
+    )
+}
+
+fn plan_evaluated(
+    document: &DocumentStore,
+    source: &RuleProgramSource,
+    evaluated: ketchup_program::Evaluated,
+    current_evaluated: Option<&ketchup_program::Evaluated>,
+    deadline: crate::program_isolation::CheckDeadline,
+) -> Result<RuleProgramPlan, RuleProgramApplyError> {
     let change = match document.current_rule_program() {
         Some(current) if current == source => RuleProgramChange::Unchanged,
         Some(current) => {
-            let old = evaluate_by(current, deadline)?;
+            let old = match current_evaluated {
+                Some(old) => std::borrow::Cow::Borrowed(old),
+                None => std::borrow::Cow::Owned(evaluate_by(current, deadline)?),
+            };
             let reference = evaluated.reference_model();
             let mut baseline = document.fork_for_planning();
             let mut commands =
@@ -348,10 +382,24 @@ fn feature_level_changes(
 ) -> Option<Vec<CanonicalCommand>> {
     let mut commands = Vec::new();
     let new_parts = new.parts_by_name();
+    // By name, the first of a name as a scan finds it.
+    let mut occurrences = std::collections::BTreeMap::new();
+    for occurrence in snapshot.occurrences() {
+        occurrences.entry(occurrence.name()).or_insert(occurrence);
+    }
     for before in &old.parts {
         let Some(&after) = new_parts.get(before.name.as_str()) else {
             continue;
         };
+        // A part the program makes as before needs no command; on a house
+        // that is nearly every part of an edit.
+        if after == before {
+            let occurrence = occurrences.get(before.name.as_str())?;
+            if occurrence.transform() != Transform::from_matrix(before.transform_matrix()).ok()? {
+                return None;
+            }
+            continue;
+        }
         let mut comparable = after.clone();
         comparable.at_mm = before.at_mm;
         comparable.grounded = before.grounded;
@@ -372,7 +420,7 @@ fn feature_level_changes(
         {
             return None;
         }
-        let occurrence = snapshot.occurrences().find(|o| o.name() == before.name)?;
+        let occurrence = occurrences.get(before.name.as_str())?;
         if occurrence.transform() != Transform::from_matrix(before.transform_matrix()).ok()? {
             return None;
         }
@@ -498,14 +546,13 @@ fn replacement_batch(
 pub(crate) fn evaluate(
     source: &RuleProgramSource,
 ) -> Result<ketchup_program::Evaluated, RuleProgramApplyError> {
-    #[cfg(test)]
-    EVALUATIONS.set(EVALUATIONS.get() + 1);
     evaluate_by(source, crate::program_isolation::CheckDeadline::start())
 }
 
 #[cfg(test)]
 thread_local! {
-    /// How many times [`evaluate`] ran on this thread, for tests of its cost.
+    /// How many times a program was evaluated on this thread, for tests of
+    /// its cost.
     pub(crate) static EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -513,6 +560,8 @@ fn evaluate_by(
     source: &RuleProgramSource,
     deadline: crate::program_isolation::CheckDeadline,
 ) -> Result<ketchup_program::Evaluated, RuleProgramApplyError> {
+    #[cfg(test)]
+    EVALUATIONS.set(EVALUATIONS.get() + 1);
     crate::program_isolation::evaluate_program_by(
         &source.file_name,
         &source.source,
@@ -806,6 +855,66 @@ mod tests {
     use super::*;
     use crate::SessionSettings;
     use std::collections::BTreeMap;
+
+    /// Turning a part of a large program in the window cost four evaluations
+    /// of the whole program (the edit and its plan each evaluated the program
+    /// before and after it): 370 ms on the timber-frame house. From the
+    /// evaluation the window keeps, only the turned program is evaluated, and
+    /// the plan is the one evaluating both again makes.
+    #[test]
+    fn a_turn_written_into_the_program_is_planned_from_one_evaluation() {
+        let program = RuleProgramSource {
+            variants: Default::default(),
+            file_name: "model.star".to_owned(),
+            source: "box(\"a\", (100, 60, 40))\nbox(\"b\", (10, 10, 10), at=(300, 0, 0))\n"
+                .to_owned(),
+            overrides: Default::default(),
+        };
+        let mut session = DocumentSession::new(SessionSettings::default());
+        session.apply_rule_program(program.clone(), false).unwrap();
+        let current = evaluate(&program).unwrap();
+        let turn = crate::transforms::world_axis_rotation_transform(
+            ketchup_interaction::Vec3::new(50.0, 30.0, 0.0),
+            ketchup_interaction::Vec3::new(0.0, 0.0, 1.0),
+            90.0,
+        )
+        .unwrap();
+
+        let before = EVALUATIONS.get();
+        let turned = crate::rewrite_rule_program_parts_from(
+            &program,
+            Some(&current),
+            &[("a".to_owned(), crate::PartChange::Transform(turn))],
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            turned.source.source.contains("rotate(\"a\""),
+            "{}",
+            turned.source.source
+        );
+        let plan = plan_rule_program_from(
+            session.document_store(),
+            &turned.source,
+            turned.evaluated,
+            Some(&current),
+        )
+        .unwrap();
+        assert_eq!(
+            EVALUATIONS.get() - before,
+            1,
+            "only the turned program is evaluated"
+        );
+
+        let again = plan_rule_program(session.document_store(), &turned.source).unwrap();
+        let commands = |change: &RuleProgramChange| match change {
+            RuleProgramChange::Incremental(batch) => batch.commands().to_vec(),
+            other => panic!("not an edit in place: {other:?}"),
+        };
+        assert_eq!(commands(&plan.change), commands(&again.change));
+        assert_eq!(commands(&plan.change).len(), 1, "{:?}", plan.change);
+        assert_eq!(plan.evaluated.model, again.evaluated.model);
+    }
 
     fn source(width: f64) -> RuleProgramSource {
         RuleProgramSource {

@@ -199,11 +199,12 @@ impl Edit<'_> {
 /// `None` when `changes` are not several transforms, or what the program
 /// makes is not each part placed as asked and everything else as before: the
 /// caller then writes the parts one by one, which says which part failed.
+/// With the program, the evaluation that checked it.
 pub(crate) fn transformed_at_once(
     source: &RuleProgramSource,
     evaluated: &Evaluated,
     changes: &[(String, PartChange)],
-) -> Result<Option<RuleProgramSource>, RuleProgramApplyError> {
+) -> Result<Option<(RuleProgramSource, Evaluated)>, RuleProgramApplyError> {
     if changes.len() < 2 {
         return Ok(None);
     }
@@ -265,11 +266,13 @@ pub(crate) fn transformed_at_once(
         for (bytes, text) in literals {
             rewritten.source.replace_range(bytes, &text);
         }
-        if evaluate(&rewritten).is_ok_and(|after| after.model == by_lines.model) {
-            return Ok(Some(rewritten));
+        if let Ok(after) = evaluate(&rewritten)
+            && after.model == by_lines.model
+        {
+            return Ok(Some((rewritten, after)));
         }
     }
-    Ok(Some(appended))
+    Ok(Some((appended, by_lines)))
 }
 
 /// Every part of `placed` stands at its frame in `after`, its size kept, and
