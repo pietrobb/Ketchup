@@ -1197,6 +1197,9 @@ pub(crate) struct LiveBridge {
     apply_and_verify_job: Option<ApplyAndVerifyJob>,
     program_check_job: Option<program_check::ProgramCheckJob>,
     program_report: Option<(Stamp, ketchup_program::Report, &'static str, Option<Value>)>,
+    /// The last complete exact check of an applied program: the next apply
+    /// measures again only the pairs its change can have touched.
+    exact_baseline: Option<Arc<ketchup_application::ExactBaseline>>,
     #[cfg(test)]
     apply_and_verify_fault: Option<ApplyAndVerifyFault>,
     batch_jobs: VecDeque<BatchJob>,

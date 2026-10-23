@@ -63,7 +63,8 @@ pub use program_part_change::{
     PartChange, RewrittenProgram, rewrite_rule_program_parts, rewrite_rule_program_parts_from,
 };
 pub use rule_exact_collisions::{
-    apply_exact_pairs, verify_rule_program_all, verify_rule_program_exact,
+    ExactBaseline, ProgramEdit, apply_exact_pairs, verify_rule_program_all,
+    verify_rule_program_exact, verify_rule_program_exact_since,
 };
 pub use rule_groups::plan_rule_model_batch;
 pub use rule_instances::{made_parts, rule_program_part_name};

@@ -9,7 +9,7 @@ mod tests;
 use super::*;
 use crate::program_edit::ProgramEdit;
 use ketchup_application::program_isolation::CheckDeadline;
-use ketchup_application::{RuleProgramApplyError, RuleProgramPlan};
+use ketchup_application::{ExactBaseline, RuleProgramApplyError, RuleProgramPlan};
 use ketchup_model::document::RuleProgramSource;
 use ketchup_program::{ProgramModel, Report, exact_candidates};
 
@@ -104,7 +104,7 @@ pub(super) struct ExactCheckJob {
     /// What the request's deadline left when the check started.
     time: Duration,
     applied: AppliedProgram,
-    receiver: mpsc::Receiver<(Report, Option<Value>)>,
+    receiver: mpsc::Receiver<(Report, Option<Value>, Option<ExactBaseline>)>,
 }
 
 fn unfinished(reason: &str) -> Value {
@@ -381,18 +381,25 @@ impl LiveBridge {
         }
         let mut report = applied.report.clone();
         let model = applied.model.clone();
+        let base = applied.before.clone();
         let snapshot = applied.after.clone();
         let container = app.file.container_data.clone();
         let worker_path = Self::worker_path(app);
         let worker_cancelled = Arc::new(AtomicBool::new(false));
         let thread_cancelled = Arc::clone(&worker_cancelled);
+        let baseline = self.exact_baseline.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         let repaint = context.clone();
         let spawn = std::thread::Builder::new()
             .name("ketchup-live-program-check".into())
             .spawn(move || {
-                let exact = ketchup_application::verify_rule_program_exact(
-                    &snapshot,
+                let edit = ketchup_application::ProgramEdit {
+                    baseline: baseline.as_deref(),
+                    before: &base,
+                    after: &snapshot,
+                };
+                let (exact, next) = ketchup_application::verify_rule_program_exact_since(
+                    edit,
                     &model,
                     &mut report,
                     &container,
@@ -400,7 +407,7 @@ impl LiveBridge {
                     deadline,
                     thread_cancelled,
                 );
-                let _ = sender.try_send((report, exact));
+                let _ = sender.try_send((report, exact, next));
                 repaint.request_repaint();
             });
         if spawn.is_err() {
@@ -480,8 +487,9 @@ impl LiveBridge {
             Some(unfinished("exact_collision_timeout"))
         } else {
             match job.receiver.try_recv() {
-                Ok((report, exact)) => {
+                Ok((report, exact, next)) => {
                     job.applied.report = report;
+                    self.exact_baseline = next.map(Arc::new);
                     Some(exact.unwrap_or_else(|| unfinished("exact_result_missing")))
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {

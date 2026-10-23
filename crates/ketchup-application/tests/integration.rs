@@ -15,6 +15,7 @@ mod group_connectivity;
 mod house_collision;
 mod house_panel_validation;
 mod house_project_collision;
+mod incremental_exact;
 mod joint_operations;
 mod mesh_conversion;
 mod model_query;

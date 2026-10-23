@@ -148,6 +148,7 @@ fn assemble(
         apply_and_verify_job: None,
         program_check_job: None,
         program_report: None,
+        exact_baseline: None,
         #[cfg(test)]
         apply_and_verify_fault: None,
         batch_jobs: VecDeque::new(),

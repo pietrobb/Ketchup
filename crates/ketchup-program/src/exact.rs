@@ -130,6 +130,37 @@ impl ExactShapes {
         self.against.extend(against);
     }
 
+    /// What these answers still say once some parts changed: the answers
+    /// between two parts of `unchanged`, and the parts of `kept` checked
+    /// against every part of `against`. A part of `kept` must be unchanged
+    /// and further than the contact tolerance from every part that changed,
+    /// so its pairs with those are apart.
+    #[must_use]
+    pub fn kept(
+        &self,
+        unchanged: &BTreeSet<String>,
+        kept: &BTreeSet<String>,
+        against: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            pairs: self
+                .pairs
+                .iter()
+                .filter(|((a, b), _)| unchanged.contains(a) && unchanged.contains(b))
+                .map(|(names, pair)| (names.clone(), *pair))
+                .collect(),
+            checked: self.checked.intersection(kept).cloned().collect(),
+            against: against.into_iter().collect(),
+        }
+    }
+
+    /// Adds the answers and checked parts of `other`; its answers win.
+    pub fn extend(&mut self, other: Self) {
+        self.pairs.extend(other.pairs);
+        self.checked.extend(other.checked);
+        self.against.extend(other.against);
+    }
+
     /// The exact answer for a pair, or `None` when it was not measured.
     #[must_use]
     pub fn pair(&self, a: &str, b: &str) -> Option<ExactPair> {
@@ -233,4 +264,36 @@ pub fn exact_candidates(model: &ProgramModel) -> BTreeSet<String> {
         }
     }
     names
+}
+
+/// The candidates a check has to measure again after the parts of `changed`
+/// changed since a complete check of the parts of `unchanged`: those not
+/// unchanged, and those within the contact tolerance of a changed part. The
+/// pairs of the others are between unchanged parts or apart, as
+/// [`exact_candidates`] decides apart.
+#[must_use]
+pub fn rechecked(
+    model: &ProgramModel,
+    candidates: &BTreeSet<String>,
+    unchanged: &BTreeSet<String>,
+    changed: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let changed: Vec<_> = changed
+        .iter()
+        .filter_map(|name| model.part(name))
+        .map(Part::obb)
+        .collect();
+    candidates
+        .iter()
+        .filter(|name| {
+            !unchanged.contains(*name)
+                || model.part(name).is_some_and(|part| {
+                    let obb = part.obb();
+                    changed
+                        .iter()
+                        .any(|other| obb.separation(other) <= CONTACT_FIT_MM)
+                })
+        })
+        .cloned()
+        .collect()
 }

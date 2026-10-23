@@ -28,7 +28,7 @@ fn a_late_exact_check_answers_incomplete_then_pages_its_verdict() {
         bridge.program_report_page(app, stamp.clone(), ReportSection::Issues, 0, 50)
     };
     assert_eq!(page(&mut bridge, &app), Err("busy"));
-    sender.send((report, Some(verdict.clone()))).unwrap();
+    sender.send((report, Some(verdict.clone()), None)).unwrap();
     bridge.poll_program_check_job(&mut app, &context);
     let paged = page(&mut bridge, &app).unwrap();
     assert_eq!(paged["exact_collisions"], verdict);
@@ -126,7 +126,7 @@ fn missing_exact_result_and_worker_failure_never_claim_verified_or_revert_the_ed
         let (reply, response) = mpsc::sync_channel(1);
         let (sender, receiver) = mpsc::sync_channel(1);
         if missing {
-            sender.send((applied.report.clone(), None)).unwrap();
+            sender.send((applied.report.clone(), None, None)).unwrap();
         }
         drop(sender);
         bridge.program_check_job = Some(ProgramCheckJob::Checking(Box::new(ExactCheckJob {
