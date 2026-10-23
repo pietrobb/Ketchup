@@ -12,6 +12,9 @@ param(
     [string]$AzureSigningDlibPath,
     # A real .ketchup-view exported by Kecup; the installed Viewer must open it.
     [string]$ViewerSmokePackage,
+    # Folder with the examples README.md links to a release download (tiny-house.ketchup);
+    # with it the release also gets Ketchup-<version>-Examples.zip (build-examples-zip.ps1).
+    [string]$DownloadedExamples,
     [switch]$Sign,
     [switch]$SkipBuild
 )
@@ -144,6 +147,14 @@ if (Test-Path $OutputDir) {
     [void](New-Item $OutputDir -ItemType Directory)
 }
 [void](New-Item $payloadDir -ItemType Directory)
+# Before the build, so a missing download fails at once.
+$examplesPath = Join-Path $OutputDir "Ketchup-$Version-Examples.zip"
+if ([string]::IsNullOrWhiteSpace($DownloadedExamples)) {
+    Write-Warning "Examples zip skipped: pass -DownloadedExamples with the files README.md links to a release download."
+} else {
+    & (Join-Path $PSScriptRoot "build-examples-zip.ps1") -OutputDir $OutputDir -DownloadedExamples $DownloadedExamples -Version $Version
+    Assert-Leaf $examplesPath "examples archive"
+}
 
 if (-not $SkipBuild) {
     Push-Location $repoRoot
@@ -547,9 +558,13 @@ $checksums = @(
     "$((Get-Sha256 $zipPath))  $([IO.Path]::GetFileName($zipPath))",
     "$((Get-Sha256 $packageManifestPath))  payload/package-manifest.json"
 )
+if (-not [string]::IsNullOrWhiteSpace($DownloadedExamples)) {
+    $checksums += "$((Get-Sha256 $examplesPath))  $([IO.Path]::GetFileName($examplesPath))"
+}
 Write-Utf8 (Join-Path $OutputDir "SHA256SUMS.txt") (($checksums -join "`r`n") + "`r`n")
 
 $signingResult = if ($Sign) { "AEON-signed payload and installer, " } else { "" }
 Write-Host "PASS: ${signingResult}portable archive, third-party notices, exact payload hashes, worker handshake, headless build identity, document and Viewer file associations, and uninstall smoke test."
 Write-Host "Installer: $setupPath"
 Write-Host "Portable:  $zipPath"
+if (-not [string]::IsNullOrWhiteSpace($DownloadedExamples)) { Write-Host "Examples:  $examplesPath" }
