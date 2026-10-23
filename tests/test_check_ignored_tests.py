@@ -21,6 +21,9 @@ jobs:
       - name: houses
         run: cargo test --locked --release -p beta -- --ignored houses:: large_house
       # - run: cargo test -p alpha -- --ignored forgotten
+      - name: switched off
+        if: false
+        run: cargo test -p alpha -- --ignored forgotten
 """
 
 SOURCE = """
@@ -39,6 +42,13 @@ fn forgotten() {}
 #[test]
 #[ignore = "run in a child process by the next test"]
 fn child() {}
+
+#[test]
+fn starts_the_child() { test_process("frames::tests::child"); }
+
+#[test]
+#[ignore = "flaky under load, its subprocess times out"]
+fn only_mentions_a_subprocess() {}
 
 #[test]
 #[ignore = "perf: release timing budget, hardware GPU"]
@@ -62,11 +72,18 @@ def test_an_ignored_test_no_step_runs_is_reported(tmp_path):
     tests = checker.ignored_tests(tmp_path)
     assert ("alpha", "frames::tests::perf_frame", "perf: release timing budget, runs nightly") in tests
     assert ("beta", "houses::whole", "release-only") in tests
-    assert checker.unrun_tests(tests, checker.ignored_runs([checker.without_comments(WORKFLOW)])) == [
+    started = checker.started_by_tests(tmp_path)
+    assert ("alpha", "child") in started
+    runs = checker.ignored_runs([checker.without_comments(WORKFLOW)])
+    assert checker.unrun_tests(tests, runs, started) == [
         "alpha frames::tests::perf_needs_a_document: ignored, but no CI step runs it; add it to a nightly step or delete it",
         "alpha frames::tests::forgotten: ignored, but no CI step runs it; add it to a nightly step or delete it",
+        "alpha frames::tests::only_mentions_a_subprocess: ignored as a child process, but no test of alpha names it "
+        "to start it; start it from a test or run it in a CI step",
         "beta other::whole: ignored, but no CI step runs it; add it to a nightly step or delete it",
     ]
+    # The same child, when no test of its crate starts it, is reported too.
+    assert "alpha frames::tests::child" in " ".join(checker.unrun_tests(tests, runs))
 
 
 def test_every_ignored_test_of_the_repository_runs_in_ci():
