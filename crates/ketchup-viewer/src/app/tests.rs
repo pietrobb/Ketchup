@@ -103,6 +103,15 @@ fn native_viewport_shows_the_rendered_model_at_its_projected_position() {
 
 #[test]
 fn scene_dimensions_are_drawn_where_they_project_and_switch_off() {
+    // The dimension lies on the plane through the scene target, which the
+    // projection switch keeps, so both projections draw it in the same place.
+    // Off that plane perspective enlarges it around the center and it can
+    // leave the view.
+    scene_dimensions_drawn(false);
+    scene_dimensions_drawn(true);
+}
+
+fn scene_dimensions_drawn(perspective: bool) {
     use ketchup_view_format::{Anchor, Dimension, LengthUnit};
     let mut package = scene_package();
     let world = |point_mm| Anchor {
@@ -124,8 +133,8 @@ fn scene_dimensions_are_drawn_where_they_project_and_switch_off() {
         },
         Dimension {
             id: 2,
-            from: world([85.0, 203.0, 320.0]),
-            to: world([110.0, 203.0, 320.0]),
+            from: world([85.0, 203.0, 309.0]),
+            to: world([110.0, 203.0, 309.0]),
             label_offset_mm: [0.0, -4.0, 0.0],
             value_mm: 25.0,
             display_unit: LengthUnit::Millimetre,
@@ -144,6 +153,14 @@ fn scene_dimensions_are_drawn_where_they_project_and_switch_off() {
         .renderer(renderer)
         .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
     ui.run();
+    if !perspective {
+        ui.get_by_label("Perspective").click();
+        ui.run();
+    }
+    assert_eq!(
+        ui.state().camera.as_ref().unwrap().is_perspective(),
+        perspective
+    );
     let shown = ui.render().unwrap();
     let rect = ui.get_by_label("Model view").rect();
     let model = ui.state().model.as_ref().unwrap();
@@ -155,13 +172,17 @@ fn scene_dimensions_are_drawn_where_they_project_and_switch_off() {
     );
     let camera = ui.state().camera.as_ref().unwrap();
     let aspect = rect.width() / rect.height();
-    let corners = [[85.0, 203.0, 320.0], [110.0, 199.0, 320.0]].map(|point| {
+    let corners = [[85.0, 203.0, 309.0], [110.0, 199.0, 309.0]].map(|point| {
         let p = camera.project(point, aspect);
         egui::pos2(
             rect.left() + (p[0] + 1.0) * 0.5 * rect.width(),
             rect.top() + (1.0 - p[1]) * 0.5 * rect.height(),
         )
     });
+    assert!(
+        corners.iter().all(|corner| rect.contains(*corner)),
+        "the whole dimension is in view (perspective {perspective}): {corners:?} in {rect:?}"
+    );
     let drawn = egui::Rect::from_two_pos(corners[0], corners[1]).expand(30.0);
     ui.get_by_label("Show dimensions").click();
     ui.run();
@@ -181,8 +202,50 @@ fn scene_dimensions_are_drawn_where_they_project_and_switch_off() {
     }
     assert!(
         changed > 200,
-        "the dimension and its label are drawn: {changed}"
+        "the dimension and its label are drawn (perspective {perspective}): {changed}"
     );
+}
+
+#[test]
+fn perspective_is_on_by_default_and_the_switch_holds_for_fit_views_and_scenes() {
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).unwrap();
+    let mut app = ViewerApp::new(None).with_language(Language::ENGLISH);
+    app.open(bytes.as_slice()).unwrap();
+    assert!(
+        app.camera.as_ref().unwrap().is_perspective(),
+        "the orthographic start scene opens in perspective"
+    );
+    let mut ui = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 600.0))
+        .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
+    ui.run();
+    let before = ui.state().camera.clone().unwrap();
+    ui.get_by_label("Perspective").click();
+    ui.run();
+    let camera = ui.state().camera.clone().unwrap();
+    assert!(!ui.state().perspective && !camera.is_perspective());
+    assert_eq!(
+        (camera.center, camera.scale),
+        (before.center, before.scale),
+        "switching keeps the view"
+    );
+    let projection = |ui: &egui_kittest::Harness<'_, ViewerApp>| {
+        ui.state().camera.as_ref().unwrap().is_perspective()
+    };
+    for button in ["Fit", "Front", "Second scene"] {
+        ui.get_by_label(button).click();
+        ui.run();
+        assert!(!projection(&ui), "{button} stays orthographic");
+    }
+    ui.get_by_label("Perspective").click();
+    ui.run();
+    assert!(projection(&ui));
+    for button in ["First scene", "Iso", "Fit"] {
+        ui.get_by_label(button).click();
+        ui.run();
+        assert!(projection(&ui), "{button} stays in perspective");
+    }
 }
 
 #[test]

@@ -62,6 +62,9 @@ pub struct ViewerApp {
     guides: bool,
     /// The customer's "Show dimensions" switch over the scene's dimensions.
     dimensions: bool,
+    /// The customer's "Perspective" switch, on by default: every view shown,
+    /// a scene's or a comment's too, uses this projection.
+    perspective: bool,
     /// Comments on the opened package.
     review: Option<Review>,
     /// `Some` while the Measure tool is on; never saved anywhere.
@@ -108,6 +111,7 @@ impl ViewerApp {
             section: None,
             guides: true,
             dimensions: true,
+            perspective: true,
             review: None,
             measure: None,
             error: None,
@@ -215,6 +219,12 @@ impl ViewerApp {
         self.language.text(key)
     }
 
+    /// Show `camera` in the projection the customer chose.
+    fn show_camera(&mut self, mut camera: Camera) {
+        camera.set_perspective(self.perspective);
+        self.camera = Some(camera);
+    }
+
     /// Back to the active scene's visibility; viewer-only, the package is unchanged.
     fn restore_scene_visibility(&mut self) {
         if let Some(model) = &self.model {
@@ -272,7 +282,7 @@ impl ViewerApp {
         self.model = Some(model);
         self.review = Some(review);
         self.renderer = renderer;
-        self.camera = Some(camera);
+        self.show_camera(camera);
         self.scene = scene;
         self.selected = None;
         self.measure = None;
@@ -318,10 +328,10 @@ impl ViewerApp {
         };
         let scene = &model.manifest().scenes[index];
         let camera = Camera::from_scene(model, &scene.camera)?;
-        self.camera = Some(camera);
         self.visible = visibility(model, Some(index));
         self.style = scene.style.clone();
         self.section = scene.section.clone();
+        self.show_camera(camera);
         self.scene = Some(index);
         if self.selected.is_some_and(|i| !self.visible[i]) {
             self.selected = None;
@@ -360,6 +370,12 @@ impl ViewerApp {
                 camera.standard(model, view);
             }
         }
+        let perspective = self.t("viewer-perspective");
+        if ui.checkbox(&mut self.perspective, perspective).changed()
+            && let Some(camera) = &mut self.camera
+        {
+            camera.set_perspective(self.perspective);
+        }
         let guides = self.t("viewer-guides");
         ui.checkbox(&mut self.guides, guides);
         if self.model.is_some() {
@@ -391,7 +407,8 @@ impl ViewerApp {
                 if ui.button(self.t("viewer-fit")).clicked()
                     && let Some(model) = &self.model
                 {
-                    self.camera = Some(Camera::fit(model));
+                    let fitted = Camera::fit(model);
+                    self.show_camera(fitted);
                 }
                 self.measure_switch(ui);
                 // On a phone the views and switches fold into one menu, so the
@@ -563,6 +580,7 @@ impl ViewerApp {
         // Two quick clicks while measuring are two points, not a fit.
         if response.double_clicked() && self.measure.is_none() {
             *camera = Camera::fit(model);
+            camera.set_perspective(self.perspective);
         }
         let aspect = rect.width().max(1.0) / rect.height().max(1.0);
         let touch = ui.input(egui::InputState::multi_touch);
@@ -755,9 +773,9 @@ impl ViewerApp {
             .selected
             .as_ref()
             .and_then(|path| occurrences.iter().position(|o| &o.path == path));
-        self.camera = Some(camera);
-        self.scene = None;
         review.active = Some(id);
+        self.show_camera(camera);
+        self.scene = None;
         Ok(())
     }
 

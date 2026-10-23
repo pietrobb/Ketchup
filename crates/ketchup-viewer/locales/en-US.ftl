@@ -26,6 +26,7 @@ viewer-view-back = Back
 viewer-view-left = Left
 viewer-view-right = Right
 viewer-view-top = Top
+viewer-perspective = Perspective
 viewer-guides = Axes and grid
 viewer-dimensions = Show dimensions
 viewer-measure = Measure

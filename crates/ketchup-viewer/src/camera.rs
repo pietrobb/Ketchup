@@ -34,6 +34,9 @@ impl StandardView {
 const ORBIT_RADIANS_PER_PX: f32 = 0.006;
 /// Just short of straight up or down, where the turntable would flip.
 const MAX_PITCH: f32 = 1.55;
+/// The perspective lens over the shorter viewport side, about 46°: a normal
+/// lens that neither flattens nor distorts a room-sized model.
+pub const DEFAULT_SHORT_FOV: f32 = 0.8;
 
 /// Where the pointer ray first meets a face: the body, which of its mesh's
 /// triangle primitives and which triangle in it, and the world point.
@@ -225,6 +228,32 @@ impl Camera {
         self.center = fitted.center;
         self.radius = fitted.radius;
         self.scale = fitted.scale;
+    }
+
+    /// Whether the view is in perspective.
+    pub fn is_perspective(&self) -> bool {
+        self.short_fov.is_some()
+    }
+
+    /// Perspective with [`DEFAULT_SHORT_FOV`] (`true`) or orthographic. The
+    /// plane through the center facing the viewer keeps what it shows, so
+    /// the view does not jump: same center, same span, and a scene's lens
+    /// shift becomes a move of the center when the shift goes away.
+    pub fn set_perspective(&mut self, perspective: bool) {
+        if perspective == self.is_perspective() {
+            return;
+        }
+        if perspective {
+            self.short_fov = Some(DEFAULT_SHORT_FOV);
+            return;
+        }
+        let (_, right, up) = self.basis();
+        for i in 0..3 {
+            self.center[i] -=
+                2.0 * self.scale * (right[i] * self.lens_shift[0] + up[i] * self.lens_shift[1]);
+        }
+        self.lens_shift = [0.0; 2];
+        self.short_fov = None;
     }
 
     /// View direction, screen right and screen up, with roll applied.
@@ -601,6 +630,65 @@ mod tests {
             ..source
         };
         assert!(Camera::from_scene(&model, &source).is_err());
+    }
+
+    #[test]
+    fn switching_the_projection_keeps_the_view_and_picking_works_in_both() {
+        let model = Model::from_package(crate::app::tests::scene_package()).expect("model");
+        let shifted = ketchup_view_format::Camera {
+            projection: Projection::Perspective {
+                short_fov_radians: 0.5,
+                lens_shift_short: [0.2, -0.1],
+            },
+            ..model.manifest().scenes[0].camera.clone()
+        };
+        let fitted = Camera::fit(&model);
+        for start in [
+            fitted,
+            Camera::from_scene(&model, &shifted).expect("camera"),
+        ] {
+            let mut camera = start.clone();
+            for perspective in [!start.is_perspective(), start.is_perspective()] {
+                let before = camera.clone();
+                camera.set_perspective(perspective);
+                assert_eq!(camera.is_perspective(), perspective);
+                assert_eq!(camera.scale, before.scale, "same span");
+                for aspect in [0.5, 1.0, 2.0] {
+                    // Points on the plane through the center stay where they were.
+                    for ndc in [[0.0, 0.0], [0.6, -0.4], [-0.3, 0.5]] {
+                        let point = before.point_on_view_plane(ndc, aspect);
+                        let shown =
+                            camera.project(point.map(|v| v.to_f32().expect("point")), aspect);
+                        assert!(
+                            (shown[0] - ndc[0]).abs() < 1e-4 && (shown[1] - ndc[1]).abs() < 1e-4,
+                            "{perspective}: {ndc:?} -> {shown:?}"
+                        );
+                    }
+                    // What the previous projection picked is picked again, at the same point.
+                    let at = before.project([88.0, 208.0, 314.0], aspect);
+                    let (_, seen) = before
+                        .pick_point(&model, [at[0], at[1]], aspect, &[true, false], None)
+                        .expect("pick before");
+                    let at = camera.project(seen.map(|v| v.to_f32().expect("hit")), aspect);
+                    let (picked, hit) = camera
+                        .pick_point(&model, [at[0], at[1]], aspect, &[true, false], None)
+                        .expect("pick after");
+                    assert_eq!(picked, 0);
+                    assert!(
+                        (Vec3::from(hit) - Vec3::from(seen)).length() < 0.01,
+                        "{perspective}: picked {hit:?}, before {seen:?}"
+                    );
+                }
+            }
+        }
+        let mut camera = Camera::fit(&model);
+        camera.set_perspective(true);
+        assert_eq!(camera.short_fov, Some(DEFAULT_SHORT_FOV));
+        camera.standard(&model, StandardView::Front);
+        assert!(
+            camera.is_perspective(),
+            "standard views keep the projection"
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ viewer-view-back = Zozadu
 viewer-view-left = Zľava
 viewer-view-right = Sprava
 viewer-view-top = Zhora
+viewer-perspective = Perspektíva
 viewer-guides = Osi a mriežka
 viewer-dimensions = Zobraziť kóty
 viewer-measure = Zmerať
