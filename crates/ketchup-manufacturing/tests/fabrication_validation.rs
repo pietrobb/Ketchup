@@ -1969,6 +1969,55 @@ fn a_made_part_without_a_known_fabrication_role_is_named_not_left_out() {
     );
 }
 
+/// Review 2026-10-19 P3: a shown part that is only a sketch has no body, so
+/// there is nothing to make of it. It used to be refused as a part with a body
+/// but no fabrication role.
+#[test]
+fn a_shown_sketch_without_a_fabrication_role_is_not_refused() {
+    const SKETCH_DEFINITION: DefinitionId = DefinitionId(990);
+    const SKETCH_PROFILE: FeatureId = FeatureId(991);
+    const SKETCH_OCCURRENCE: OccurrenceId = OccurrenceId(992);
+    let mut document = circular_drill_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: SKETCH_DEFINITION,
+                name: "Layout sketch".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH_PROFILE,
+                definition_id: SKETCH_DEFINITION,
+                name: "outline".to_owned(),
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [300.0, 0.0], [300.0, 200.0]]),
+            },
+            occurrence(SKETCH_OCCURRENCE, SKETCH_DEFINITION, 500.0),
+            // One made part needs no clearance case.
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: GRAPH_RIGHT,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let registry = ExactResultRegistry::accept(
+        &snapshot,
+        [Arc::new(ExactBodyPackage::from(graph_package_for(
+            &snapshot,
+            "m17-circular-drill-result",
+            GRAPH_BOOLEAN,
+        )))],
+    )
+    .unwrap();
+    let tolerance = TolerancePolicy::default();
+    let report = general_report(&snapshot, &[], tolerance);
+    let shown = project_shown(&snapshot, &registry, &[], &report, tolerance).unwrap();
+    assert_eq!(shown.bom.rows.len(), 1);
+    assert_eq!(
+        shown.bom.rows[0].instances,
+        [InstancePath::root(GRAPH_LEFT)]
+    );
+}
+
 #[test]
 fn production_preserves_proper_rotations_and_translations() {
     for linear in [

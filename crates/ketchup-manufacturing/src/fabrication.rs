@@ -2533,9 +2533,16 @@ pub fn project_general_fabrication(
                     role: role.clone(),
                 });
             }
+            // A part that is only sketches has no body, so nothing would be made of it.
             None if snapshot
                 .definition(occurrence.definition_id)
-                .is_some_and(|definition| !definition.feature_ids().is_empty()) =>
+                .is_some_and(|definition| {
+                    definition.feature_ids().iter().any(|feature_id| {
+                        snapshot
+                            .feature(*feature_id)
+                            .is_some_and(|feature| feature.kind().produces_body())
+                    })
+                }) =>
             {
                 return Err(GeneralFabricationError::PartWithoutFabricationRole { part: part() });
             }
