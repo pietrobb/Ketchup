@@ -24,7 +24,8 @@ fn source(text: &str) -> RuleProgramSource {
     }
 }
 
-/// The summary, the issues and the next baseline of one exact check.
+/// The summary, the issues with the relations, and the next baseline of one
+/// exact check.
 fn check(
     baseline: Option<&ExactBaseline>,
     base: &Snapshot,
@@ -47,7 +48,8 @@ fn check(
     );
     let summary = summary.expect("the house has exact candidates");
     assert_eq!(summary["state"], "verified", "{summary:#}");
-    (summary, serde_json::to_value(&report.issues).unwrap(), next)
+    let answer = serde_json::to_value((&report.issues, &report.relations)).unwrap();
+    (summary, answer, next)
 }
 
 #[test]

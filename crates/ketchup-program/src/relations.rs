@@ -16,6 +16,24 @@ use std::collections::HashSet;
 /// Parts closer than this are listed with their clearance.
 pub const GAP_LIMIT_MM: f64 = 20.0;
 
+/// How far beyond [`GAP_LIMIT_MM`] the world bounds of two parts must lie
+/// apart before their boxes go unmeasured; every pair nearer than that is
+/// measured on its boxes, so rounding never drops a pair at the limit.
+const BOUNDS_MARGIN_MM: f64 = 1.0;
+
+type Bounds = ([f64; 3], [f64; 3]);
+
+/// Whether the world bounds of two parts lie further apart than the gap
+/// limit and its margin. Each box lies inside its world bounds, so the boxes
+/// then lie further apart than the gap limit too.
+fn bounds_beyond_gap_limit(a: &Bounds, b: &Bounds) -> bool {
+    let distance = (0..3)
+        .map(|i| (a.0[i] - b.1[i]).max(b.0[i] - a.1[i]).max(0.0).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    distance > GAP_LIMIT_MM + BOUNDS_MARGIN_MM
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
@@ -220,10 +238,20 @@ fn relate<'a>(
     a: &'a Part,
     b: &'a Part,
     joint: Option<&str>,
+    bounds: Option<[&Bounds; 2]>,
     faces: &mut ContactFaces<'a>,
 ) -> Option<Relation> {
     let (oa, ob) = (a.obb(), b.obb());
     let (direction, separation) = oa.separating_axis(&ob);
+    // Apart boxes without a joint further than the gap limit are dropped
+    // below before anything reads the pair's exact answer; bounds that far
+    // apart settle that without measuring the boxes.
+    if separation > CONTACT_FIT_MM
+        && joint.is_none()
+        && bounds.is_some_and(|[ba, bb]| bounds_beyond_gap_limit(ba, bb))
+    {
+        return None;
+    }
     let mut relation = Relation {
         parts: [a.name.clone(), b.name.clone()],
         kind: RelationKind::Gap,
@@ -339,6 +367,17 @@ pub fn relations_with(
     issues: &[Issue],
     exact: &ExactShapes,
 ) -> Vec<Relation> {
+    relations_by_bounds(model, issues, exact, true)
+}
+
+/// [`relations_with`]; without `skip_by_bounds` every candidate pair apart
+/// is measured on its boxes, as a reference for tests.
+fn relations_by_bounds(
+    model: &ProgramModel,
+    issues: &[Issue],
+    exact: &ExactShapes,
+    skip_by_bounds: bool,
+) -> Vec<Relation> {
     let parts = &model.parts;
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
     let mut order: Vec<usize> = (0..parts.len()).collect();
@@ -372,8 +411,9 @@ pub fn relations_with(
         .into_iter()
         .filter(|(a, b)| a != b)
         .filter_map(|(a, b)| {
+            let pair_bounds = skip_by_bounds.then(|| [&bounds[a], &bounds[b]]);
             let (a, b) = (&parts[a], &parts[b]);
-            relate(model, exact, a, b, joint_of(a, b), &mut faces)
+            relate(model, exact, a, b, joint_of(a, b), pair_bounds, &mut faces)
         })
         .collect();
     sync_with_issues(&mut relations, issues);
@@ -408,3 +448,7 @@ pub fn sync_with_issues(relations: &mut [Relation], issues: &[Issue]) {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "relations_tests.rs"]
+mod tests;
