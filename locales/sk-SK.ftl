@@ -1210,6 +1210,7 @@ action-deselect = Zrušiť výber
 action-select-all = Vybrať všetko
 action-invert-selection = Obrátiť výber
 key-delete = Del
+key-backspace = Backspace
 key-escape = Esc
 key-f1 = F1
 key-home = Home

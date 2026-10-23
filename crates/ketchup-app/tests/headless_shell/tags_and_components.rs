@@ -1,5 +1,22 @@
 use super::*;
 
+/// Review 2026-10-19 (P3): a MacBook keyboard has no Delete key; its key
+/// labelled "delete" sends Backspace, which deleted nothing.
+#[test]
+fn backspace_deletes_the_selection_like_delete() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    assert!(shell.app().command_is_enabled(AppCommand::Delete));
+    let revision = shell.app().document_revision();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.press_key(Key::Backspace);
+
+    assert_eq!(shell.app().occurrence_count(), 0);
+    assert_eq!(shell.app().document_revision(), revision + 1);
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+}
+
 #[test]
 fn delete_is_localized_atomic_group_aware_and_context_bound() {
     for catalog in [

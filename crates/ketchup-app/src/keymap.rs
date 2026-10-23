@@ -97,7 +97,11 @@ pub(crate) const KEYMAP: &[Binding] = &[
     on_canvas(AppCommand::InvertSelection, &[chord(CTRL, Key::I)]),
     on_canvas(AppCommand::Ungroup, &[chord(CTRL_SHIFT, Key::G)]),
     on_canvas(AppCommand::Group, &[chord(CTRL, Key::G)]),
-    on_canvas(AppCommand::Delete, &[chord(NONE, Key::Delete)]),
+    // A MacBook has no Delete key; its "delete" key sends Backspace.
+    on_canvas(
+        AppCommand::Delete,
+        &[chord(NONE, Key::Delete), chord(NONE, Key::Backspace)],
+    ),
     on_canvas(AppCommand::Select, &[chord(NONE, Key::Space)]),
     on_canvas(AppCommand::Line, &[chord(NONE, Key::L)]),
     on_canvas(AppCommand::Rectangle, &[chord(NONE, Key::R)]),

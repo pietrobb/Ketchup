@@ -1210,6 +1210,7 @@ action-deselect = Deselect
 action-select-all = Select all
 action-invert-selection = Invert selection
 key-delete = Del
+key-backspace = Backspace
 key-escape = Esc
 key-f1 = F1
 key-home = Home
