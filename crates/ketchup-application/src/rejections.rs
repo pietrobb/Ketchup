@@ -738,6 +738,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Connect again only if the user wants this client back, then read inspect action=status before changing anything.",
     ),
     entry(
+        "title_value_does_not_fit",
+        Validation,
+        "title_block",
+        "A title block value does not fit its cell even in lines of 1.6 mm; it is never cut short, so nothing was written. The details name the field, the lines the cell holds and how many characters of the value they hold.",
+        "Shorten that title_block value to the characters that fit, then export again.",
+    ),
+    entry(
         "unauthorized",
         Request,
         "token",

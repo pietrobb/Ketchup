@@ -494,6 +494,21 @@ impl KetchupApp {
                     ]),
                 )
             }
+            ProjectDrawingsError::Drawing(ProjectDrawingError::TitleValueDoesNotFit(error)) => {
+                self.catalog.format(
+                    "drawings-title-value-does-not-fit",
+                    &BTreeMap::from([
+                        (
+                            "field",
+                            self.catalog
+                                .text(&format!("title-field-{}", error.field.key())),
+                        ),
+                        ("lines", error.lines.to_string()),
+                        ("characters", error.characters.to_string()),
+                        ("length", error.length.to_string()),
+                    ]),
+                )
+            }
             ProjectDrawingsError::NotEvaluated(parts) => self.catalog.format(
                 "drawings-parts-not-evaluated",
                 &BTreeMap::from([

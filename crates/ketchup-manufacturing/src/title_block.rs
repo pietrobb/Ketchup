@@ -206,24 +206,135 @@ const ROWS: [(f64, &[Cell]); 5] = [
 ];
 
 const LABEL_MM: f64 = 1.6;
+/// The smallest value height, and the step it shrinks by, in tenths of a millimetre.
+const SMALLEST_VALUE_TENTHS: u32 = 16;
+/// Baseline to baseline of a wrapped value, per millimetre of its height.
+const LINE_PITCH: f64 = 1.5;
+/// What a cell keeps free of value lines: the label above them and a margin below.
+const VALUE_MARGINS_MM: f64 = 3.8;
 
-/// Text no wider than `room`: the height shrinks to fit, down to `LABEL_MM`.
-fn fitted_height(font: &SheetFont, text: &str, height: f64, room: f64) -> f64 {
-    let width = font.width_mm(text, height);
-    if width <= room {
-        height
-    } else {
-        (height * room / width).max(LABEL_MM)
+/// A title block value that does not fit its cell even in lines of the
+/// smallest height: the export would lose part of it, so it is refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TitleValueDoesNotFit {
+    pub field: TitleField,
+    /// The lines of the smallest height the cell holds.
+    pub lines: usize,
+    /// The characters of the value those lines hold.
+    pub characters: usize,
+    /// The characters of the whole value.
+    pub length: usize,
+}
+
+impl std::fmt::Display for TitleValueDoesNotFit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "the title block value {} does not fit its cell: {} lines of {LABEL_MM} mm hold {} of its {} characters",
+            self.field.key(),
+            self.lines,
+            self.characters,
+            self.length
+        )
     }
 }
 
+impl std::error::Error for TitleValueDoesNotFit {}
+
+/// How many lines of `height` a cell `cell_height` high holds below its label.
+fn lines_in_cell(cell_height: f64, height: f64) -> usize {
+    let room = cell_height - VALUE_MARGINS_MM;
+    let mut lines = 0;
+    let mut block = height;
+    while block <= room {
+        lines += 1;
+        block += LINE_PITCH * height;
+    }
+    lines
+}
+
+/// `text` broken at spaces into lines no wider than `room`; a word wider than
+/// `room` on its own is broken between its characters.
+fn wrap(font: &SheetFont, text: &str, height: f64, room: f64) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let joined = if line.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{line} {word}")
+        };
+        if font.width_mm(&joined, height) <= room {
+            line = joined;
+            continue;
+        }
+        if !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        for character in word.chars() {
+            line.push(character);
+            if line.chars().count() > 1 && font.width_mm(&line, height) > room {
+                line.pop();
+                lines.push(std::mem::replace(&mut line, character.to_string()));
+            }
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// The lines of `value` and their height in a cell `width` × `cell_height`:
+/// the largest height from `wanted_tenths` down at which the whole value fits,
+/// on one line when it can.
+fn fit_value(
+    font: &SheetFont,
+    field: TitleField,
+    value: &str,
+    wanted_tenths: u32,
+    [width, cell_height]: [f64; 2],
+) -> Result<(Vec<String>, f64), TitleValueDoesNotFit> {
+    let room = width - 3.0;
+    for tenths in (SMALLEST_VALUE_TENTHS..=wanted_tenths).rev() {
+        let height = f64::from(tenths) / 10.0;
+        let capacity = lines_in_cell(cell_height, height);
+        if capacity == 0 {
+            continue;
+        }
+        if font.width_mm(value, height) <= room {
+            return Ok((vec![value.to_owned()], height));
+        }
+        let lines = wrap(font, value, height, room);
+        if lines.len() <= capacity {
+            return Ok((lines, height));
+        }
+    }
+    let smallest = f64::from(SMALLEST_VALUE_TENTHS) / 10.0;
+    let lines = lines_in_cell(cell_height, smallest);
+    Err(TitleValueDoesNotFit {
+        field,
+        lines,
+        characters: wrap(font, value, smallest, room)
+            .iter()
+            .take(lines)
+            .map(|line| line.chars().count())
+            .sum(),
+        length: value.chars().count(),
+    })
+}
+
 /// Draws the sheet frame and the title block with `labels` and `values`.
+///
+/// # Errors
+/// [`TitleValueDoesNotFit`] when a value does not fit its cell even in lines
+/// of the smallest height; it is never cut short.
 pub fn draw_frame_and_title_block(
     page: &mut Page,
     format: SheetFormat,
     labels: &BTreeMap<TitleField, String>,
     values: &TitleBlock,
-) {
+) -> Result<(), TitleValueDoesNotFit> {
     let font = SheetFont::standard();
     let [[left, top], [right, bottom]] = drawing_area(format);
     page.rect([left, top], [right, bottom], Stroke::solid(0.7));
@@ -237,26 +348,40 @@ pub fn draw_frame_and_title_block(
             if let Some(label) = labels.get(field) {
                 page.text([x + 1.2, y + 2.4], label, LABEL_MM, Anchor::Start);
             }
-            if let Some(value) = values.get(field).filter(|value| !value.trim().is_empty()) {
-                let wanted = match (prominent, height > 10.0) {
-                    (true, true) => 4.5,
-                    (true, false) => 3.0,
-                    (false, _) => 2.5,
+            if let Some(value) = values
+                .get(field)
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            {
+                let wanted_tenths = match (prominent, height > 10.0) {
+                    (true, true) => 45,
+                    (true, false) => 30,
+                    (false, _) => 25,
                 };
-                let size = fitted_height(font, value, wanted, width - 3.0);
-                page.marks.push(Mark::Text {
-                    at: [x + 1.5, y + height - (height - 2.4 - size) / 2.0 - 0.6],
-                    text: value.trim().to_owned(),
-                    height_mm: size,
-                    anchor: Anchor::Start,
-                    angle_deg: 0.0,
-                    bold: *prominent,
-                });
+                let (lines, size) =
+                    fit_value(font, *field, value, wanted_tenths, [*width, height])?;
+                // The block of lines sits in the middle of the cell below its label.
+                let pitch = LINE_PITCH * size;
+                let block = size + lines.iter().skip(1).map(|_| pitch).sum::<f64>();
+                let last = y + height - (height - 2.4 - block) / 2.0 - 0.6;
+                let mut baseline = last - (block - size);
+                for line in lines {
+                    page.marks.push(Mark::Text {
+                        at: [x + 1.5, baseline],
+                        text: line,
+                        height_mm: size,
+                        anchor: Anchor::Start,
+                        angle_deg: 0.0,
+                        bold: *prominent,
+                    });
+                    baseline += pitch;
+                }
             }
             x += width;
         }
         y += height;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -273,26 +398,82 @@ mod tests {
         assert!((height - TITLE_BLOCK_MM[1]).abs() < 1e-9);
     }
 
+    /// The value lines written into the title block: text, baseline and height.
+    fn value_lines(page: &Page) -> Vec<(String, [f64; 2], f64)> {
+        page.marks
+            .iter()
+            .filter_map(|mark| match mark {
+                Mark::Text {
+                    text,
+                    at,
+                    height_mm,
+                    ..
+                } => Some((text.clone(), *at, *height_mm)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The Project cell of an A3 sheet: its left, top, right and bottom edge.
+    fn project_cell() -> [f64; 4] {
+        let [_, [right, bottom]] = drawing_area(SheetFormat::A3);
+        let left = right - TITLE_BLOCK_MM[0];
+        let top = bottom - TITLE_BLOCK_MM[1] + 18.0;
+        [left, top, left + 95.0, top + 9.0]
+    }
+
     #[test]
     fn a_long_value_shrinks_to_fit_its_cell() {
         let mut page = Page {
             size_mm: SheetFormat::A3.size_mm(),
             marks: Vec::new(),
         };
-        let long = "Rodinný dom s podkrovím a garážou, prístavba a nadstavba".repeat(2);
+        // Two lines of 1.6 mm hold it; one line of 1.6 mm does not.
+        let long = "Rodinný dom s podkrovím a garážou, prístavba a nadstavba ".repeat(2);
         let values = TitleBlock::from([(TitleField::Project, long.clone())]);
-        draw_frame_and_title_block(&mut page, SheetFormat::A3, &BTreeMap::new(), &values);
+        draw_frame_and_title_block(&mut page, SheetFormat::A3, &BTreeMap::new(), &values)
+            .expect("the project fits in lines");
         let font = SheetFont::standard();
-        let fitted = page
-            .marks
+        let [left, top, right, bottom] = project_cell();
+        assert!(
+            font.width_mm(long.trim(), LABEL_MM) > right - left,
+            "on one line even the smallest height overflows the cell"
+        );
+        let lines = value_lines(&page);
+        assert!(lines.len() > 1, "the project is wrapped: {lines:?}");
+        for (text, [x, baseline], height) in &lines {
+            assert!(*height >= LABEL_MM, "{text:?} is {height} mm high");
+            assert!(
+                *x >= left && x + font.width_mm(text, *height) <= right,
+                "{text:?}"
+            );
+            assert!(
+                baseline - height >= top + 2.4 && *baseline <= bottom,
+                "{text:?}"
+            );
+        }
+        let written: Vec<&str> = lines
             .iter()
-            .find_map(|mark| match mark {
-                Mark::Text {
-                    text, height_mm, ..
-                } if *text == long => Some(*height_mm),
-                _ => None,
-            })
-            .expect("the project is written");
-        assert!(font.width_mm(&long, fitted) <= 92.0 || fitted <= LABEL_MM);
+            .flat_map(|(text, _, _)| text.split_whitespace())
+            .collect();
+        assert_eq!(written, long.split_whitespace().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_value_too_long_even_for_the_smallest_lines_is_refused_not_cut_short() {
+        let mut page = Page {
+            size_mm: SheetFormat::A3.size_mm(),
+            marks: Vec::new(),
+        };
+        let long = "Rodinný dom s podkrovím a garážou, prístavba a nadstavba ".repeat(8);
+        let values = TitleBlock::from([(TitleField::Project, long.clone())]);
+        let refused =
+            draw_frame_and_title_block(&mut page, SheetFormat::A3, &BTreeMap::new(), &values)
+                .expect_err("the project cannot be written whole");
+        assert_eq!(refused.field, TitleField::Project);
+        assert_eq!(refused.lines, 2, "a 9 mm row holds two lines of 1.6 mm");
+        assert_eq!(refused.length, long.trim().chars().count());
+        assert!(refused.characters > 0 && refused.characters < refused.length);
+        assert!(refused.to_string().contains("project"), "{refused}");
     }
 }

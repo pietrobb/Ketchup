@@ -1882,6 +1882,14 @@ drawings-view-left = Pohľad zľava
 drawings-view-right = Pohľad sprava
 drawings-unavailable = Zatiaľ nie sú viditeľné žiadne presné telesá na kreslenie; počkaj, kým sa model vyhodnotí.
 drawings-do-not-fit = V mierke 1:{ $scale } sa pohľady nezmestia na hárok { $format }; zvoľ hrubšiu mierku alebo väčší formát.
+drawings-title-value-does-not-fit = Hodnota poľa „{ $field }“ sa do bunky pečiatky nezmestí ani písmom 1,6 mm: { $lines ->
+        [one] na { $lines } riadku
+       *[other] na { $lines } riadkoch
+    } { $characters ->
+        [one] sa zmestí { $characters } znak
+        [few] sa zmestia { $characters } znaky
+       *[other] sa zmestí { $characters } znakov
+    } z { $length }. Skráť ju; hodnota sa nikdy neoreže.
 drawings-parts-not-evaluated = Viditeľné diely bez presného telesa ({ $count }) by vo výkrese chýbali: { $parts }. Oprav ich alebo skry, prípadne počkaj, kým sa model vyhodnotí.
 drawings-settings-unreadable = Rohová pečiatka a formát výkresu uložené v dokumente sa nedajú prečítať ({ $reason }); ostávajú, ako sú. Vyplň pečiatku znova v okne Projektové výkresy, tým ich nahradíš.
 drawings-cosmetic-threads-failed = Vymodelované závity dielu { $part } sa nedajú nakresliť podľa ISO 6410 ({ $reason }); výkres by ukázal všetky hrany ich skrutkovíc. Exportuj znova alebo prepni závity na kozmetické.

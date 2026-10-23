@@ -13,7 +13,7 @@
 use crate::sheet_pdf::{Anchor, Mark, Page, PdfInfo, Stroke, page_pdf};
 use crate::title_block::{
     DEFAULT_COARSEST_SCALE, DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, TITLE_BLOCK_MM,
-    TitleBlock, TitleField, draw_frame_and_title_block, drawing_area,
+    TitleBlock, TitleField, TitleValueDoesNotFit, draw_frame_and_title_block, drawing_area,
 };
 use ketchup_geometry::linalg::{Vec3, cross, dot, normalize_within, sub};
 use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
@@ -146,6 +146,14 @@ pub enum ProjectDrawingError {
         scale: u32,
         format: Option<SheetFormat>,
     },
+    /// A title block value would be cut short.
+    TitleValueDoesNotFit(TitleValueDoesNotFit),
+}
+
+impl From<TitleValueDoesNotFit> for ProjectDrawingError {
+    fn from(error: TitleValueDoesNotFit) -> Self {
+        Self::TitleValueDoesNotFit(error)
+    }
 }
 
 impl std::fmt::Display for ProjectDrawingError {
@@ -162,6 +170,7 @@ impl std::fmt::Display for ProjectDrawingError {
                     |format| format!("an {} sheet", format.name())
                 )
             ),
+            Self::TitleValueDoesNotFit(error) => error.fmt(formatter),
         }
     }
 }
@@ -1016,7 +1025,7 @@ pub fn project_sheet(
     let mut values = options.title_block.clone();
     values.insert(TitleField::Scale, format!("1:{scale}"));
     values.insert(TitleField::Format, format.name().to_owned());
-    draw_frame_and_title_block(&mut page, format, &options.title_labels, &values);
+    draw_frame_and_title_block(&mut page, format, &options.title_labels, &values)?;
 
     let summaries = views
         .iter()

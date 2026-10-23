@@ -300,6 +300,20 @@ fn drawings_failed(error: ProjectDrawingsError) -> &'static str {
             format!("{error}; choose a coarser drawing_scale or a larger format."),
             json!({}),
         ),
+        ProjectDrawingsError::Drawing(
+            ketchup_manufacturing::project_drawings::ProjectDrawingError::TitleValueDoesNotFit(
+                error,
+            ),
+        ) => failure(
+            "title_value_does_not_fit",
+            format!("{error}. Shorten the value; it is never cut short."),
+            json!({
+                "field": error.field.key(),
+                "lines": error.lines,
+                "characters_that_fit": error.characters,
+                "length": error.length,
+            }),
+        ),
         ProjectDrawingsError::Drawing(error) => failed_because("drawings_unavailable", error),
         ProjectDrawingsError::NotEvaluated(parts) => failure(
             "drawings_unavailable",
@@ -473,5 +487,27 @@ mod tests {
                 "{cause} not in {details}"
             );
         }
+    }
+
+    /// Review 2026-10-19 P3: a title block value too long for its cell is
+    /// refused with the field and what fits, not cut short.
+    #[test]
+    fn a_title_value_too_long_for_its_cell_answers_with_the_field_and_what_fits() {
+        let refused = ketchup_manufacturing::title_block::TitleValueDoesNotFit {
+            field: ketchup_manufacturing::title_block::TitleField::DrawingNumber,
+            lines: 4,
+            characters: 96,
+            length: 240,
+        };
+        assert_eq!(
+            drawings_failed(ProjectDrawingsError::Drawing(refused.into())),
+            "title_value_does_not_fit"
+        );
+        let answer = crate::live_bridge::take_error_details().unwrap_or_default();
+        let details = &answer["details"];
+        assert_eq!(details["field"], "drawing_number", "{answer}");
+        assert_eq!(details["lines"], 4, "{answer}");
+        assert_eq!(details["characters_that_fit"], 96, "{answer}");
+        assert_eq!(details["length"], 240, "{answer}");
     }
 }

@@ -99,6 +99,50 @@ fn every_visible_body_is_drawn_and_a_part_without_its_exact_solid_stops_the_shee
     assert_eq!(drawn(&app, "wall B"), 1);
 }
 
+/// Review 2026-10-19 P3: a drawing number too long for its corner cell ran
+/// out of the title block. It stops the export, naming the field and what
+/// fits in the window's language, and is never cut short.
+#[test]
+fn a_title_value_too_long_for_its_cell_stops_the_export_and_says_what_fits() {
+    let mut app = KetchupApp::with_catalog(LocaleCatalog::slovak());
+    add_box(&mut app, 903, "wall", 0.0);
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let mut settings = app.sheet_settings();
+    settings
+        .title_block
+        .insert(TitleField::DrawingNumber, "D-2026-".repeat(40));
+    app.store_sheet_settings(settings);
+    let error = app.project_drawings().unwrap_err();
+    let ProjectDrawingsError::Drawing(
+        ketchup_manufacturing::project_drawings::ProjectDrawingError::TitleValueDoesNotFit(refused),
+    ) = &error
+    else {
+        panic!("the drawing number must not be drawn past its cell: {error:?}");
+    };
+    assert_eq!(refused.field, TitleField::DrawingNumber);
+    assert_eq!(refused.lines, 4, "a 13 mm row holds four lines of 1.6 mm");
+    assert_eq!(refused.length, 280);
+    let text = app.project_drawings_error_text(&error);
+    for wanted in [
+        app.catalog.text("title-field-drawing_number"),
+        format!(
+            "na 4 riadkoch sa zmestí {} znakov z 280",
+            refused.characters
+        ),
+    ] {
+        assert!(text.contains(&wanted), "{wanted:?} not in {text:?}");
+    }
+    let path = std::env::temp_dir().join(format!(
+        "ketchup-drawings-long-title-{}.pdf",
+        std::process::id()
+    ));
+    assert!(!app.export_project_drawings_to(&path));
+    assert!(
+        !path.exists(),
+        "no sheet is written with the value cut short"
+    );
+}
+
 /// P3-V: a visible part whose bodies cannot be told apart (two independent
 /// extrusions both ending in its one body) stops the sheet, naming the part;
 /// it was left off the sheet without a word.

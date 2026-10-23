@@ -1956,6 +1956,13 @@ drawings-view-left = Left elevation
 drawings-view-right = Right elevation
 drawings-unavailable = There are no visible exact solids to draw yet; wait until the model is evaluated.
 drawings-do-not-fit = At 1:{ $scale } the views do not fit an { $format } sheet; choose a coarser scale or a larger format.
+drawings-title-value-does-not-fit = The { $field } value does not fit its title block cell even at 1.6 mm: { $lines ->
+        [one] { $lines } line holds
+       *[other] { $lines } lines hold
+    } { $characters ->
+        [one] { $characters } character
+       *[other] { $characters } characters
+    } of { $length }. Shorten it; the value is never cut short.
 drawings-parts-not-evaluated = { $count ->
         [one] { $count } visible part has no exact solid, so the sheet would leave it out: { $parts }. Fix or hide it, or wait
        *[other] { $count } visible parts have no exact solid, so the sheet would leave them out: { $parts }. Fix or hide them, or wait
