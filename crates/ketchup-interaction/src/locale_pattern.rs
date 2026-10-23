@@ -57,6 +57,16 @@ enum Fault {
     Malformed,
 }
 
+impl Fault {
+    /// The fault of a variant's own text. That text has already ended, so a
+    /// select it leaves open can no longer be closed by a following line.
+    fn inside_variant(self) -> Self {
+        match self {
+            Self::Open | Self::Malformed => Self::Malformed,
+        }
+    }
+}
+
 /// Whether `pattern` parses: every select has variants, exactly one default
 /// and its closing brace.
 pub(crate) fn is_well_formed(pattern: &str) -> bool {
@@ -206,7 +216,7 @@ fn select<'a>(selector: &'a str, mut rest: &'a str) -> Result<(Element<'a>, &'a 
             return Err(Fault::Malformed);
         }
         let end = variant_end(after_key).ok_or(Fault::Open)?;
-        let elements = parse(after_key[..end].trim()).map_err(|_| Fault::Malformed)?;
+        let elements = parse(after_key[..end].trim()).map_err(Fault::inside_variant)?;
         variants.push((key, elements));
         rest = &after_key[end..];
     }
