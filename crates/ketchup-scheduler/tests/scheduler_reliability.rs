@@ -97,19 +97,29 @@ fn exercise_proposal_race() -> usize {
     ))
 }
 
+/// Crashes a worker `CRASH_RECOVERY_RUNS` times and counts the runs where the crash
+/// was not seen: the worker's exit must be observed, the same client must then report
+/// the worker lost at once (the error after which a supervisor starts a new one), not
+/// answer or wait out a timeout, and a new worker must answer. The document cannot be
+/// damaged by a crash: it never reaches the worker's process (review 2026-10-19 P3).
 fn exercise_crash_recovery() -> usize {
-    let document = seed_document();
-    let committed_digest = document.current().canonical_digest();
-    let mut damage = 0;
+    let mut unnoticed = 0;
     for _ in 0..CRASH_RECOVERY_RUNS {
         let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
         worker.ping().unwrap();
         worker.crash().unwrap();
-        if document.current().canonical_digest() != committed_digest {
-            damage += 1;
+        if !matches!(
+            worker.ping(),
+            Err(WorkerError::Transport(_)
+                | WorkerError::WorkerExited
+                | WorkerError::MalformedTransport(_))
+        ) {
+            unnoticed += 1;
         }
     }
-    damage
+    let mut next = ExactWorkerClient::spawn(worker_path()).unwrap();
+    next.ping().unwrap();
+    unnoticed
 }
 
 fn exercise_exception_transport() -> usize {
@@ -124,19 +134,15 @@ fn exercise_exception_transport() -> usize {
     crossed
 }
 
-/// Cancels `count` running jobs, each leaving the committed revision as it was, and
-/// returns how long each cancellation took in milliseconds.
+/// Cancels `count` running jobs and returns how long each cancellation took in
+/// milliseconds.
 fn cancel_running_jobs(count: usize) -> Vec<f64> {
-    let document = seed_document();
-    let committed_digest = document.current().canonical_digest();
     (0..count)
         .map(|_| {
             let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
             worker.begin_killable_job(Duration::from_secs(2)).unwrap();
             std::thread::sleep(Duration::from_millis(2));
-            let took = worker.cancel().unwrap();
-            assert_eq!(document.current().canonical_digest(), committed_digest);
-            milliseconds(took)
+            milliseconds(worker.cancel().unwrap())
         })
         .collect()
 }
