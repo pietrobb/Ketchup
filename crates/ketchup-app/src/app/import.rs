@@ -190,7 +190,7 @@ impl KetchupApp {
         .map_err(|error| source.failed(error))?;
         let proposal = self
             .document
-            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+            .prepare_proposal_with_context(batch, ProposalContext::drawing_import())
             .map_err(|error| source.failed(error))?;
         Ok(DxfImportPreviewPlan {
             source,

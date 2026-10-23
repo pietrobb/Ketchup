@@ -26,6 +26,17 @@ pub const MESH_VERTICES: usize = 100_000;
 /// Most triangles in one mesh, including a tessellated display mesh.
 pub const MESH_TRIANGLES: usize = 2 * MESH_VERTICES;
 
+/// Most group-code pairs one drawing import (DXF, or the DXF of a DWG) reads, some
+/// 120 MB of DXF text: the project of a house, tens of megabytes, passes; a runaway
+/// file stops.
+pub const DRAWING_PAIRS: usize = 10_000_000;
+
+/// Most entities one drawing import reads, those placed by block inserts included.
+pub const DRAWING_ENTITIES: usize = 1_000_000;
+
+/// Most profiles one drawing import makes, all in one Undo step.
+pub const DRAWING_PROFILES: usize = 50_000;
+
 /// Most steps in one instance path (nesting depth of definitions).
 pub const INSTANCE_PATH_STEPS: usize = 256;
 

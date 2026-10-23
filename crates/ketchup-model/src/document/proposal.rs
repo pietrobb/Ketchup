@@ -942,6 +942,7 @@ pub(super) fn validate_proposal_budget(
 ) -> Result<(), ProposalPrepareError> {
     let host = ProposalBudget::HOST_MAX;
     if requested != ProposalBudget::RULE_PROGRAM
+        && requested != ProposalBudget::DRAWING_IMPORT
         && (requested.max_commands > host.max_commands
             || requested.max_read_dependencies > host.max_read_dependencies
             || requested.max_write_targets > host.max_write_targets)

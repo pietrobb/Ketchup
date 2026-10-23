@@ -151,7 +151,9 @@ fn a_long_dwg_read_shows_its_estimated_progress_and_cancel_stops_it() {
 
 /// A DWG drawing whose DXF has more group-code pairs than a drawing import reads is
 /// refused in the worker, so the window never reads its whole DXF only to refuse it
-/// on the pair count (review 2026-10-21 P3; Levoca's DXF is 134 MB, 8.7 million pairs).
+/// on the pair count (review 2026-10-21 P3). A file past the import's own limit
+/// ([`ketchup_model::import::MAX_DXF_PAIRS`], some 120 MB of DXF) is too large for a
+/// test, so the worker is given a smaller one.
 #[test]
 fn a_dwg_with_more_pairs_than_an_import_reads_is_refused_before_the_window_reads_its_dxf() {
     let mut dxf = String::from("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n");
@@ -162,9 +164,11 @@ fn a_dwg_with_more_pairs_than_an_import_reads_is_refused_before_the_window_reads
     }
     dxf.push_str("0\nENDSEC\n0\nEOF\n");
     let dwg = ketchup_dwg::dxf_to_dwg(dxf.as_bytes()).unwrap();
-    let Err(error) =
-        crate::app::dwg_import::read_dwg(&dwg, &ketchup_program::CancelToken::default())
-    else {
+    let Err(error) = ketchup_application::program_isolation::convert_dwg(
+        &dwg,
+        100_000,
+        &ketchup_program::CancelToken::default(),
+    ) else {
         panic!("the window read the DXF of a drawing an import refuses on its pairs");
     };
     let message = error.to_string();

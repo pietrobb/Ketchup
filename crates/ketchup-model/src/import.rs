@@ -13,6 +13,9 @@ use crate::graph::sha256_bytes;
 pub const IMPORT_RECEIPT_SCHEMA_V1: &str = "ketchup.import-receipt.v1";
 pub const MAX_IMPORT_DIAGNOSTICS: usize = 1_024;
 pub const MAX_IMPORT_OUTPUTS: usize = 1_024;
+/// What one receipt lists: the definition, profile and occurrence of every profile of
+/// the largest drawing import; the other formats stay within [`MAX_IMPORT_OUTPUTS`].
+pub const MAX_IMPORT_RECEIPT_OUTPUTS: usize = 3 * dxf::MAX_DXF_PROFILES;
 
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
@@ -265,7 +268,7 @@ impl ImportReceipt {
             return Err(ImportContractError::DiagnosticsNotCanonical);
         }
         if self.outputs.is_empty()
-            || self.outputs.len() > MAX_IMPORT_OUTPUTS
+            || self.outputs.len() > MAX_IMPORT_RECEIPT_OUTPUTS
             || self.outputs.windows(2).any(|pair| pair[0] >= pair[1])
             || self.outputs.iter().any(|output| match output {
                 ImportOutputRef::Definition(id) => id.0 == 0,

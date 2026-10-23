@@ -681,6 +681,16 @@ impl ProposalBudget {
         max_write_targets: 200_000,
     };
 
+    /// A drawing import is planned by Kečup from the file the user reviewed,
+    /// a definition, a profile and an occurrence per profile and the receipt,
+    /// so the plan of a whole house (tens of thousands of profiles) is one
+    /// Undo step and not bound to the per-edit [`Self::HOST_MAX`].
+    pub const DRAWING_IMPORT: Self = Self {
+        max_commands: 3 * ketchup_tolerance::limits::DRAWING_PROFILES + 1,
+        max_read_dependencies: 12 * ketchup_tolerance::limits::DRAWING_PROFILES,
+        max_write_targets: 12 * ketchup_tolerance::limits::DRAWING_PROFILES,
+    };
+
     pub const M7A_SINGLE_CHANGE: Self = Self {
         max_commands: 1,
         max_read_dependencies: 64,
@@ -872,6 +882,15 @@ impl ProposalContext {
         Self {
             requested_budget: ProposalBudget::RULE_PROGRAM,
             ..Self::local_assistant_model()
+        }
+    }
+
+    /// A reviewed drawing import, with its own budget.
+    #[must_use]
+    pub fn drawing_import() -> Self {
+        Self {
+            requested_budget: ProposalBudget::DRAWING_IMPORT,
+            ..Self::canonical_preview()
         }
     }
 

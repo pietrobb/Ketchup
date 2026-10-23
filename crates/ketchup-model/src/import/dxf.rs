@@ -1,5 +1,6 @@
 use crate::tolerance::{ACCUMULATED_ROUNDING, MAX_COORDINATE_MM, ROUNDING};
 use ketchup_geometry::linalg::cross2;
+use ketchup_tolerance::limits;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
@@ -19,9 +20,13 @@ pub const DXF_PARSER_VERSION: &str = "29";
 const MAX_DXF_LINE_BYTES: usize = 512;
 /// The most group-code pairs a drawing import reads; a DWG conversion with more is
 /// refused in the worker, before the window reads its DXF.
-pub const MAX_DXF_PAIRS: usize = 100_000;
-const MAX_DXF_ENTITIES: usize = 10_000;
-const MAX_DXF_PROFILES: usize = (ProposalBudget::HOST_MAX.max_commands - 1) / 3;
+pub const MAX_DXF_PAIRS: usize = limits::DRAWING_PAIRS;
+/// Entities read, those placed by block inserts included.
+pub const MAX_DXF_ENTITIES: usize = limits::DRAWING_ENTITIES;
+/// Profiles one import makes: three commands each and the receipt fit the import's own
+/// budget, [`ProposalBudget::DRAWING_IMPORT`], not that of one edit.
+pub const MAX_DXF_PROFILES: usize = limits::DRAWING_PROFILES;
+const _: () = assert!(3 * MAX_DXF_PROFILES < ProposalBudget::DRAWING_IMPORT.max_commands);
 const MAX_DXF_SEGMENTS_PER_PROFILE: usize = 1_024;
 const MAX_DXF_BLOCK_DEPTH: usize = 32;
 const DXF_GEOMETRY_EPSILON_MM: f64 = ROUNDING;
@@ -228,10 +233,24 @@ impl fmt::Display for DxfImportError {
             Self::Read(failure) => {
                 return write!(formatter, "the DXF could not be read on: {}", failure.0);
             }
+            Self::TooManyPairs => {
+                return write!(
+                    formatter,
+                    "DXF exceeds the {MAX_DXF_PAIRS} group-code pair limit"
+                );
+            }
+            Self::TooManyEntities => {
+                return write!(formatter, "DXF exceeds the {MAX_DXF_ENTITIES} entity limit");
+            }
+            Self::TooManyProfiles => {
+                return write!(
+                    formatter,
+                    "DXF exceeds the {MAX_DXF_PROFILES} profile limit of one import"
+                );
+            }
             Self::Empty => "DXF source is empty",
             Self::NonAscii => "DXF must be UTF-8 text, or older than DXF 2007 and in the Windows code page its $DWGCODEPAGE names; binary DXF is unsupported",
             Self::LineTooLong => "DXF contains a line longer than 512 bytes",
-            Self::TooManyPairs => "DXF exceeds the 100,000 group-code pair limit",
             Self::MalformedPairs => "DXF group-code/value pairs are malformed",
             Self::MalformedSections => "DXF SECTION/ENDSEC/EOF structure is malformed",
             Self::MissingEntitiesSection => "DXF has no ENTITIES section",
@@ -260,8 +279,6 @@ impl fmt::Display for DxfImportError {
             Self::UnsupportedInsertTransform => {
                 "DXF INSERT uses unsupported zero, non-uniform curved, or Z scaling"
             }
-            Self::TooManyEntities => "DXF exceeds the 10,000 entity limit",
-            Self::TooManyProfiles => "DXF exceeds the bounded 170 canonical profile limit",
             Self::TooManySegments => "one DXF chain exceeds the 1,024 segment limit",
             Self::AmbiguousGeometry => {
                 "DXF line/arc connectivity is branched, duplicated, or otherwise ambiguous"
@@ -541,15 +558,9 @@ pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf
     if profiles.len() > MAX_DXF_PROFILES {
         return Err(DxfImportError::TooManyProfiles);
     }
+    // Two equal profiles of a layer share every segment, so this also refuses them, in
+    // one pass over the segments instead of comparing every pair of profiles.
     reject_duplicate_segments(&profiles)?;
-    for left in 0..profiles.len() {
-        if profiles[left + 1..]
-            .iter()
-            .any(|right| profiles_are_duplicate(&profiles[left], right))
-        {
-            return Err(DxfImportError::AmbiguousGeometry);
-        }
-    }
     profiles.sort_by(|left, right| {
         (left.layer.as_str(), left.ordinal).cmp(&(right.layer.as_str(), right.ordinal))
     });
@@ -761,37 +772,38 @@ fn next_id(ids: impl Iterator<Item = u64>) -> Result<u64, DxfImportPlanError> {
 }
 
 fn parse_pairs(text: &str, max_pairs: usize) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
-    // Refused on the pair count as it is reached, so a large file holds no more lines than
-    // the count allows.
+    // The lines are counted and measured first and refused on the pair count as it is
+    // reached, so a large file is never held as a list of its lines, only as its pairs.
     let max_lines = max_pairs.saturating_mul(2).saturating_add(1);
-    let mut lines = Vec::new();
+    let mut line_count = 0_usize;
     for line in text.lines() {
         if line.len() > MAX_DXF_LINE_BYTES {
             return Err(DxfImportError::LineTooLong);
         }
-        if lines.len() > max_lines {
+        if line_count > max_lines {
             return Err(DxfImportError::TooManyPairs);
         }
-        lines.push(line);
+        line_count += 1;
     }
-    if lines.len() % 2 != 0 {
+    if !line_count.is_multiple_of(2) {
         return Err(DxfImportError::MalformedPairs);
     }
-    if lines.len() / 2 > max_pairs {
+    if line_count / 2 > max_pairs {
         return Err(DxfImportError::TooManyPairs);
     }
-    lines
-        .chunks_exact(2)
-        .map(|pair| {
-            let code = parse_integer::<i16>(pair[0].trim())?;
-            Ok(DxfPair {
-                code,
-                value: pair[1].trim(),
-            })
-        })
+    let mut pairs = Vec::with_capacity(line_count / 2);
+    let mut lines = text.lines();
+    while let (Some(code), Some(value)) = (lines.next(), lines.next()) {
+        let code = parse_integer::<i16>(code.trim())?;
         // Group 999 is a comment and may stand anywhere.
-        .filter(|pair| !matches!(pair, Ok(DxfPair { code: 999, .. })))
-        .collect()
+        if code != 999 {
+            pairs.push(DxfPair {
+                code,
+                value: value.trim(),
+            });
+        }
+    }
+    Ok(pairs)
 }
 
 fn parse_sections<'a>(
@@ -3138,7 +3150,7 @@ fn parse_insert(
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<(Vec<OrderedProfile>, Vec<OrderedText>), DxfImportError> {
     let layer = parse_layer(record)?;
-    ensure_planar(record)?;
+    let mirrored = ensure_planar_ocs(record)?;
     report_ignored_groups(
         "INSERT",
         record,
@@ -3167,13 +3179,20 @@ fn parse_insert(
         // it does not refuse the rest of the drawing.
         return Ok((Vec::new(), Vec::new()));
     }
-    let scale_x = parse_optional_number(record, 41)?.unwrap_or(1.0);
+    // In an object coordinate system with extrusion (0, 0, -1) the insert is the
+    // mirror image of its upright one: its x axis is world -x, so it is placed at -x,
+    // turned the other way, its x scale and its column spacing reversed.
+    // `0.0 - x` and not `-x`, so that 0 stays +0 and joins bit for bit.
+    let flip = |value: f64| if mirrored { 0.0 - value } else { value };
+    let scale_x = flip(parse_optional_number(record, 41)?.unwrap_or(1.0));
     let scale_y = parse_optional_number(record, 42)?.unwrap_or(1.0);
+    // The block is planar, so its z scale (a uniform 3D scale, as Revit writes) leaves it
+    // in the plane; only a zero one collapses it.
     let scale_z = parse_optional_number(record, 43)?.unwrap_or(1.0);
-    let rotation_degrees = parse_optional_number(record, 50)?.unwrap_or(0.0);
+    let rotation_degrees = flip(parse_optional_number(record, 50)?.unwrap_or(0.0));
     let column_count = parse_optional_i64(record, 70)?.unwrap_or(1);
     let row_count = parse_optional_i64(record, 71)?.unwrap_or(1);
-    if scale_x == 0.0 || scale_y == 0.0 || scale_z != 1.0 || column_count <= 0 || row_count <= 0 {
+    if scale_x == 0.0 || scale_y == 0.0 || scale_z == 0.0 || column_count <= 0 || row_count <= 0 {
         return Err(DxfImportError::UnsupportedInsertTransform);
     }
     let column_count = usize::try_from(column_count)
@@ -3188,7 +3207,7 @@ fn parse_insert(
     }
     let unit_scale = units.millimetres_per_unit();
     let column_spacing_mm = scale_coordinate(
-        parse_optional_number(record, 44)?.unwrap_or(0.0),
+        flip(parse_optional_number(record, 44)?.unwrap_or(0.0)),
         unit_scale,
     )?;
     let row_spacing_mm = scale_coordinate(
@@ -3222,7 +3241,8 @@ fn parse_insert(
     if *entity_count > diagnostics.reading.max_entities {
         return Err(DxfImportError::TooManyEntities);
     }
-    let insertion_mm = parse_xy(record, 10, 20, unit_scale)?;
+    let [insertion_x, insertion_y] = parse_xy(record, 10, 20, unit_scale)?;
+    let insertion_mm = [flip(insertion_x), insertion_y];
     let (rotation_sin, rotation_cos) = deterministic_sin_cos_degrees(rotation_degrees);
     let mut profiles = Vec::with_capacity(expanded_profile_count);
     let mut texts = Vec::new();
@@ -4140,15 +4160,33 @@ fn parse_optional_text<'a>(
     Ok(value)
 }
 
+/// The key of a block name: in capitals, each `\U+XXXX` read as its character (a DXF
+/// older than 2007 writes so a character outside its code page, `Profondit\U+00E0`).
+/// No other backslash, no slash and no control character belongs in a name.
 fn block_name_key(name: &str) -> Result<String, DxfImportError> {
-    if name.is_empty()
+    let mut key = String::with_capacity(name.len());
+    let mut rest = name;
+    while let Some(at) = rest.find('\\') {
+        key.push_str(&rest[..at]);
+        let character = rest[at + 1..]
+            .strip_prefix("U+")
+            .and_then(|code| code.get(..4))
+            .filter(|hex| hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .and_then(char::from_u32)
+            .ok_or(DxfImportError::InvalidBlock)?;
+        key.push(character);
+        rest = &rest[at + "\\U+XXXX".len()..];
+    }
+    key.push_str(rest);
+    if key.is_empty()
         || name.len() > 255
-        || name.chars().any(char::is_control)
-        || name.contains(['/', '\\'])
+        || key.chars().any(char::is_control)
+        || key.contains(['/', '\\'])
     {
         return Err(DxfImportError::InvalidBlock);
     }
-    Ok(name.to_ascii_uppercase())
+    Ok(key.to_ascii_uppercase())
 }
 
 fn parse_layer(record: &[DxfPair<'_>]) -> Result<String, DxfImportError> {
@@ -4859,35 +4897,6 @@ fn undirected_segment_key(segment: &ProfileSegment) -> UndirectedSegmentKey {
             UndirectedSegmentKey::Spline(points)
         }
     }
-}
-
-fn profiles_are_duplicate(left: &OrderedProfile, right: &OrderedProfile) -> bool {
-    if left.layer != right.layer
-        || left.closed != right.closed
-        || left.segments.len() != right.segments.len()
-    {
-        return false;
-    }
-    let reversed = right
-        .segments
-        .iter()
-        .rev()
-        .map(reverse_segment)
-        .collect::<Vec<_>>();
-    if left.closed {
-        cyclic_segments_equal(&left.segments, &right.segments)
-            || cyclic_segments_equal(&left.segments, &reversed)
-    } else {
-        left.segments == right.segments || left.segments == reversed
-    }
-}
-
-fn cyclic_segments_equal(left: &[ProfileSegment], right: &[ProfileSegment]) -> bool {
-    (0..right.len()).any(|offset| {
-        left.iter()
-            .enumerate()
-            .all(|(index, segment)| segment == &right[(index + offset) % right.len()])
-    })
 }
 
 fn point_key(point: [f64; 2]) -> [u64; 2] {

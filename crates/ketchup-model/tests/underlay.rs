@@ -33,8 +33,8 @@ fn read(entities: &str) -> ketchup_model::import::DxfUnderlay {
 
 #[test]
 fn a_drawing_past_every_profile_limit_reads_whole_and_by_layer() {
-    // 12,000 lines on two layers: past the 10,000 entities, ~170 profiles and 1,024
-    // segments a profile import keeps to.
+    // 12,000 lines on two layers, the walls one chain past the 1,024 segments a
+    // profile import keeps to.
     let mut entities = String::new();
     for index in 0..6_000 {
         let x = f64::from(index);

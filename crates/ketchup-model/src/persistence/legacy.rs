@@ -65,7 +65,7 @@ use crate::graph::{
 use crate::import::{
     ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit,
     ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
-    MAX_IMPORT_DIAGNOSTICS, MAX_IMPORT_OUTPUTS,
+    MAX_IMPORT_DIAGNOSTICS, MAX_IMPORT_OUTPUTS, MAX_IMPORT_RECEIPT_OUTPUTS,
 };
 use crate::mechanical_contract::{
     MECHANICAL_CONDITION_SCHEMA_V1, MECHANICAL_INTERFACE_SCHEMA_V1, MechanicalAxisAlignment,
@@ -1459,7 +1459,7 @@ fn read_import_receipt(
         );
     }
     let mut outputs = Vec::new();
-    for _ in 0..reader.count_with_limit(MAX_IMPORT_OUTPUTS)? {
+    for _ in 0..reader.count_with_limit(MAX_IMPORT_RECEIPT_OUTPUTS)? {
         outputs.push(match reader.u8()? {
             1 => ImportOutputRef::Definition(DefinitionId(reader.u64()?)),
             2 => ImportOutputRef::Feature(FeatureId(reader.u64()?)),

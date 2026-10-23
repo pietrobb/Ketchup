@@ -1,8 +1,10 @@
-use ketchup_model::document::{DocumentStore, FeatureKind, ProfileSegment};
+use ketchup_model::document::{
+    DocumentStore, FeatureKind, ProfileSegment, ProposalContext, ProposalPrepareError,
+};
 use ketchup_model::graph::sha256_bytes;
 use ketchup_model::import::{
     DxfImportError, DxfImportOptions, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit,
-    ImportUnitAuthority, inspect_dxf, plan_dxf_import,
+    ImportUnitAuthority, MAX_DXF_ENTITIES, MAX_DXF_PROFILES, inspect_dxf, plan_dxf_import,
 };
 use ketchup_model::persistence;
 
@@ -677,16 +679,17 @@ fn invalid_or_ambiguous_mesh_metadata_and_topology_fail_closed() {
 
 #[test]
 fn mesh_exterior_profiles_respect_the_global_profile_budget() {
-    let mut entity = String::from("0\nMESH\n71\n2\n72\n0\n91\n0\n92\n513\n");
-    for index in 0..171 {
+    let faces = MAX_DXF_PROFILES + 1;
+    let mut entity = format!("0\nMESH\n71\n2\n72\n0\n91\n0\n92\n{}\n", 3 * faces);
+    for index in 0..faces {
         let x = index * 10;
         entity.push_str(&format!(
             "10\n{x}\n20\n0\n30\n0\n10\n{}\n20\n0\n30\n0\n10\n{x}\n20\n1\n30\n0\n",
             x + 1
         ));
     }
-    entity.push_str("93\n684\n");
-    for index in 0..171 {
+    entity.push_str(&format!("93\n{}\n", 4 * faces));
+    for index in 0..faces {
         let first = index * 3;
         entity.push_str(&format!(
             "90\n3\n90\n{first}\n90\n{}\n90\n{}\n",
@@ -915,7 +918,8 @@ fn invalid_or_ambiguous_legacy_polygon_mesh_metadata_and_geometry_fail_closed() 
 #[test]
 fn legacy_polygon_mesh_exterior_profiles_respect_the_global_profile_budget() {
     let mut entities = String::new();
-    for index in 0..86 {
+    // Two exterior profiles each.
+    for index in 0..MAX_DXF_PROFILES / 2 + 1 {
         let x = index * 10;
         entities.push_str(&format!(
             "0\nPOLYLINE\n8\ngrids\n66\n1\n70\n17\n71\n3\n72\n2\n\
@@ -1081,26 +1085,37 @@ fn invalid_or_ambiguous_legacy_polyface_metadata_and_topology_fail_closed() {
 
 #[test]
 fn legacy_polyface_exterior_profiles_respect_the_global_profile_budget() {
-    let mut entity = String::from("0\nPOLYLINE\n66\n1\n70\n64\n71\n513\n72\n171\n");
-    for index in 0..171 {
-        let x = index * 10;
-        entity.push_str(&format!(
-            "0\nVERTEX\n70\n192\n10\n{x}\n20\n0\n30\n0\n0\nVERTEX\n70\n192\n10\n{}\n20\n0\n30\n0\n0\nVERTEX\n70\n192\n10\n{x}\n20\n1\n30\n0\n",
-            x + 1
+    // A polyface indexes its vertices in 16 bits, so the budget is passed by several:
+    // each within the index range, together over the profile limit.
+    let faces = 10_000;
+    let mut entities = String::new();
+    for mesh in 0..MAX_DXF_PROFILES / faces + 1 {
+        entities.push_str(&format!(
+            "0\nPOLYLINE\n66\n1\n70\n64\n71\n{}\n72\n{faces}\n",
+            3 * faces
         ));
+        for index in 0..faces {
+            let x = index * 10;
+            let y = mesh * 10;
+            entities.push_str(&format!(
+                "0\nVERTEX\n70\n192\n10\n{x}\n20\n{y}\n30\n0\n0\nVERTEX\n70\n192\n10\n{}\n20\n{y}\n30\n0\n0\nVERTEX\n70\n192\n10\n{x}\n20\n{}\n30\n0\n",
+                x + 1,
+                y + 1
+            ));
+        }
+        for index in 0..faces {
+            let first = index * 3 + 1;
+            entities.push_str(&format!(
+                "0\nVERTEX\n70\n128\n71\n{first}\n72\n{}\n73\n{}\n",
+                first + 1,
+                first + 2
+            ));
+        }
+        entities.push_str("0\nSEQEND\n");
     }
-    for index in 0..171 {
-        let first = index * 3 + 1;
-        entity.push_str(&format!(
-            "0\nVERTEX\n70\n128\n71\n{first}\n72\n{}\n73\n{}\n",
-            first + 1,
-            first + 2
-        ));
-    }
-    entity.push_str("0\nSEQEND\n");
 
     assert_eq!(
-        inspect_dxf(&dxf(Some(4), &entity), DxfImportOptions::new(None)),
+        inspect_dxf(&dxf(Some(4), &entities), DxfImportOptions::new(None)),
         Err(DxfImportError::TooManyProfiles)
     );
 }
@@ -1609,16 +1624,17 @@ fn multi_boundary_hatches_fail_closed_on_invalid_envelopes_duplicates_and_unsupp
             DxfImportError::MalformedPairs,
         ),
         (
-            "0\nHATCH\n70\n1\n71\n0\n91\n171\n",
-            DxfImportError::TooManyProfiles,
-        ),
-        (
             "0\nHATCH\n70\n1\n71\n0\n91\n2\n92\n3\n72\n0\n73\n1\n93\n3\n10\n0\n20\n0\n10\n2\n20\n0\n10\n0\n20\n2\n97\n0\n92\n2\n72\n0\n73\n1\n93\n3\n10\n0\n20\n0\n10\n2\n20\n0\n10\n0\n20\n2\n97\n0\n",
             DxfImportError::AmbiguousGeometry,
         ),
     ] {
         assert_eq!(inspect_dxf(&dxf(Some(4), entity), options), Err(expected));
     }
+    let too_many_paths = format!("0\nHATCH\n70\n1\n71\n0\n91\n{}\n", MAX_DXF_PROFILES + 1);
+    assert_eq!(
+        inspect_dxf(&dxf(Some(4), &too_many_paths), options),
+        Err(DxfImportError::TooManyProfiles)
+    );
 
     let source = dxf(
         Some(4),
@@ -2500,7 +2516,7 @@ fn insert_attribute_children_share_the_global_entity_budget() {
         "0\nENDBLK\n"
     );
     let mut entities = String::from("0\nINSERT\n2\npart\n10\n0\n20\n0\n66\n1\n");
-    for _ in 0..9_996 {
+    for _ in 0..MAX_DXF_ENTITIES - 4 {
         entities.push_str("0\nATTRIB\n2\nTAG\n1\nvalue\n");
     }
     entities.push_str("0\nSEQEND\n");
@@ -2914,6 +2930,76 @@ fn cyclic_or_excessively_deep_nested_block_graphs_fail_closed() {
     );
 }
 
+/// What a house plan exported from Revit holds: inserts scaled alike in all three axes,
+/// inserts mirrored by their extrusion (0, 0, -1), and block names with a character
+/// outside the code page written as `\U+XXXX`.
+#[test]
+fn uniformly_scaled_mirrored_and_escaped_block_inserts_are_placed() {
+    let options = DxfImportOptions::new(None);
+    let line_block = concat!(
+        "0\nBLOCK\n2\nProfondit\\U+00E0 600\n70\n0\n10\n0\n20\n0\n",
+        "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n1\n21\n0\n",
+        "0\nENDBLK\n"
+    );
+    let ends = |insert: &str| {
+        let parsed = inspect_dxf(&dxf_with_blocks(4, line_block, insert), options).unwrap();
+        let [profile] = parsed.profiles() else {
+            panic!("one placed line: {:?}", parsed.profiles())
+        };
+        let [segment] = profile.segments() else {
+            panic!("one segment")
+        };
+        let mut ends = [segment.start_mm(), segment.end_mm()];
+        ends.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        ends
+    };
+    // The escaped name is the block's; a uniform 3D scale is its scale in plan.
+    assert_eq!(
+        ends("0\nINSERT\n2\nPROFONDIT\\U+00E0 600\n10\n10\n20\n5\n41\n2\n42\n2\n43\n2\n"),
+        [[10.0, 5.0], [12.0, 5.0]]
+    );
+    // Mirrored: placed in the object coordinate system, whose x axis is world -x.
+    assert_eq!(
+        ends("0\nINSERT\n2\nProfondit\\U+00E0 600\n10\n10\n20\n5\n230\n-1\n"),
+        [[-11.0, 5.0], [-10.0, 5.0]]
+    );
+    let turned = ends("0\nINSERT\n2\nProfondit\\U+00E0 600\n10\n10\n20\n5\n50\n90\n230\n-1\n");
+    for (found, expected) in turned.iter().zip([[-10.0, 5.0], [-10.0, 6.0]]) {
+        assert!(
+            (found[0] - expected[0]).abs() < 1e-9 && (found[1] - expected[1]).abs() < 1e-9,
+            "{turned:?}"
+        );
+    }
+    // A mirrored arc in a mirrored insert lands where the mirrored arc itself does.
+    let arc = "0\nARC\n8\n0\n10\n3\n20\n4\n40\n1\n50\n0\n51\n90\n230\n-1\n";
+    let arc_block = format!(
+        "0\nBLOCK\n2\narc\n70\n0\n10\n0\n20\n0\n{}0\nENDBLK\n",
+        arc.replace("230\n-1\n", "")
+    );
+    let placed = inspect_dxf(
+        &dxf_with_blocks(4, &arc_block, "0\nINSERT\n2\narc\n10\n0\n20\n0\n230\n-1\n"),
+        options,
+    )
+    .unwrap();
+    let drawn = inspect_dxf(&dxf(Some(4), arc), options).unwrap();
+    assert_eq!(
+        placed.profiles()[0].segments(),
+        drawn.profiles()[0].segments()
+    );
+    // A backslash that starts no character is still refused.
+    assert_eq!(
+        inspect_dxf(
+            &dxf_with_blocks(
+                4,
+                &line_block.replace("\\U+00E0", "\\x"),
+                "0\nINSERT\n2\nProfondit\\x 600\n10\n0\n20\n0\n"
+            ),
+            options
+        ),
+        Err(DxfImportError::InvalidBlock)
+    );
+}
+
 #[test]
 fn invalid_or_unsupported_block_inserts_fail_closed() {
     let valid_block = concat!(
@@ -2945,7 +3031,7 @@ fn invalid_or_unsupported_block_inserts_fail_closed() {
         ),
         (
             valid_block,
-            "0\nINSERT\n2\npart\n10\n0\n20\n0\n43\n2\n",
+            "0\nINSERT\n2\npart\n10\n0\n20\n0\n43\n0\n",
             DxfImportError::UnsupportedInsertTransform,
         ),
         (
@@ -2957,16 +3043,6 @@ fn invalid_or_unsupported_block_inserts_fail_closed() {
             valid_block,
             "0\nINSERT\n2\npart\n10\n0\n20\n0\n70\n0\n44\n1\n",
             DxfImportError::UnsupportedInsertTransform,
-        ),
-        (
-            valid_block,
-            "0\nINSERT\n2\npart\n10\n0\n20\n0\n70\n171\n44\n1\n",
-            DxfImportError::TooManyProfiles,
-        ),
-        (
-            valid_block,
-            "0\nINSERT\n2\npart\n10\n0\n20\n0\n70\n10001\n44\n1\n",
-            DxfImportError::TooManyEntities,
         ),
         (
             valid_block,
@@ -3009,6 +3085,26 @@ fn invalid_or_unsupported_block_inserts_fail_closed() {
             Err(expected)
         );
     }
+    // An array's column and row counts are 16-bit: their product passes the limits.
+    for (columns, rows, expected) in [
+        (
+            1_000,
+            MAX_DXF_PROFILES / 1_000 + 1,
+            DxfImportError::TooManyProfiles,
+        ),
+        (
+            1_001,
+            MAX_DXF_ENTITIES / 1_001 + 1,
+            DxfImportError::TooManyEntities,
+        ),
+    ] {
+        let array =
+            format!("0\nINSERT\n2\npart\n10\n0\n20\n0\n70\n{columns}\n71\n{rows}\n44\n1\n45\n1\n");
+        assert_eq!(
+            inspect_dxf(&dxf_with_blocks(4, valid_block, &array), options),
+            Err(expected)
+        );
+    }
 
     let duplicate = format!("{valid_block}{}", valid_block.replace("part", "PART"));
     assert_eq!(
@@ -3035,7 +3131,7 @@ fn invalid_or_unsupported_block_inserts_fail_closed() {
 #[test]
 fn block_and_entity_streams_share_one_global_entity_budget() {
     let mut blocks = String::new();
-    for index in 0..5_000 {
+    for index in 0..MAX_DXF_ENTITIES / 2 {
         blocks.push_str(&format!(
             "0\nBLOCK\n2\nempty-{index}\n70\n0\n10\n0\n20\n0\n0\nENDBLK\n"
         ));
@@ -3070,14 +3166,18 @@ fn many_inserts_of_a_full_block_are_refused_before_comparing_their_profiles() {
     );
 }
 
-/// The entity limit admits ten thousand separate lines, each its own profile.
-/// Joining them into profiles looked for the next seed and the open ends of
-/// every profile among all segments, so the file took tens of seconds before
-/// it was refused for its profile count (a fuzzed 171 KB DXF ran past 5 s on CI).
+/// The entity limit admits more separate lines than the profile limit, each its
+/// own profile. Joining them into profiles looked for the next seed and the open
+/// ends of every profile among all segments, so the file took tens of seconds
+/// before it was refused for its profile count (a fuzzed 171 KB DXF ran past 5 s
+/// on CI).
 #[test]
-fn ten_thousand_separate_lines_are_refused_without_quadratic_joining() {
+fn separate_lines_past_the_profile_limit_are_refused_without_quadratic_joining() {
     assert_eq!(
-        inspect_dxf(&disconnected_lines(10_000), DxfImportOptions::new(None)),
+        inspect_dxf(
+            &disconnected_lines(MAX_DXF_PROFILES + 1),
+            DxfImportOptions::new(None)
+        ),
         Err(DxfImportError::TooManyProfiles)
     );
 }
@@ -3093,7 +3193,7 @@ fn perf_large_drawings_are_refused_in_seconds() {
             10,
         ),
         (
-            ten_thousand_separate_lines_are_refused_without_quadratic_joining,
+            separate_lines_past_the_profile_limit_are_refused_without_quadratic_joining,
             5,
         ),
     ] {
@@ -3525,25 +3625,52 @@ fn loose_line_arc_joins_are_bounded_deterministic_and_fail_on_ambiguity() {
     );
 }
 
+/// A drawing import has a budget of its own: the most profiles one import makes
+/// are one Undo step, far past what one edit may change.
+#[test]
+fn the_largest_drawing_import_is_one_undo_step_beyond_the_edit_budget() {
+    let mut document = DocumentStore::new();
+    let before = document.current().canonical_digest();
+    let options = DxfImportOptions::new(None);
+    let batch = plan_dxf_import(
+        &document.current(),
+        &disconnected_lines(MAX_DXF_PROFILES),
+        "maximum-profiles.dxf",
+        options,
+    )
+    .unwrap();
+    assert!(matches!(
+        document.prepare_proposal_with_context(batch.clone(), ProposalContext::canonical_preview()),
+        Err(ProposalPrepareError::RequestedBudgetExceeded { .. })
+    ));
+    let proposal = document
+        .prepare_proposal_with_context(batch, ProposalContext::drawing_import())
+        .unwrap();
+    document.commit_verified_proposal(&proposal).unwrap();
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(document.current().occurrences().count(), MAX_DXF_PROFILES);
+    let committed = document.current();
+    let receipt = committed.import_receipts().next().unwrap();
+    assert_eq!(receipt.outputs().len(), 3 * MAX_DXF_PROFILES);
+    let reopened = persistence::load(&persistence::save(&committed)).unwrap();
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        committed.canonical_digest()
+    );
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(
+        inspect_dxf(&disconnected_lines(MAX_DXF_PROFILES + 1), options),
+        Err(DxfImportError::TooManyProfiles)
+    );
+}
+
 #[test]
 fn dxf_plan_is_deterministic_one_step_undoable_and_persistent() {
     let source = supported_fixture();
     let mut document = DocumentStore::new();
     let before = document.current().canonical_digest();
     let options = DxfImportOptions::new(None);
-    let maximum_profiles = disconnected_lines(170);
-    let maximum_batch = plan_dxf_import(
-        &document.current(),
-        &maximum_profiles,
-        "maximum-profiles.dxf",
-        options,
-    )
-    .unwrap();
-    document.prepare_proposal(maximum_batch).unwrap();
-    assert_eq!(
-        inspect_dxf(&disconnected_lines(171), options),
-        Err(DxfImportError::TooManyProfiles)
-    );
 
     let batch = plan_dxf_import(&document.current(), &source, "profiles.dxf", options).unwrap();
     let repeated = plan_dxf_import(&document.current(), &source, "profiles.dxf", options).unwrap();
