@@ -91,3 +91,17 @@ fn underlay_snap_reaches_the_window_with_its_points_and_radius() {
         json!({"method":"underlay_snap", "point_mm":[120.5, -3], "to_mm":[300, 40], "radius_mm":25, "underlay_id":2})
     );
 }
+
+#[test]
+fn underlay_objects_reaches_the_window_with_its_filter_and_page() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let arguments = json!({"action":"underlay_objects", "object_kind":"INSERT", "block":"door", "within_mm":[[0, 0], [10, 10]], "limit":20, "offset":40});
+    let result = call(&mut tools, "inspect", arguments);
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"underlay_objects", "object_kind":"INSERT", "block":"door", "within_mm":[[0, 0], [10, 10]], "limit":20, "offset":40})
+    );
+}

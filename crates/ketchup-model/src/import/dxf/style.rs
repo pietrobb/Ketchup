@@ -48,7 +48,13 @@ pub(super) struct EntityStyle {
     scale: f64,
     /// A scale it gives that is none, drawn at 1 and reported.
     invalid_scale: Option<f64>,
+    /// The object of the drawing that drew it ([`super::objects`]): an index into the
+    /// objects of what was read with it, [`UNCLAIMED`] until its entity is read.
+    pub(super) object: u32,
 }
+
+/// The object of what no entity has claimed yet.
+pub(super) const UNCLAIMED: u32 = u32::MAX;
 
 impl Default for EntityStyle {
     fn default() -> Self {
@@ -58,6 +64,7 @@ impl Default for EntityStyle {
             weight: Named::ByLayer,
             scale: 1.0,
             invalid_scale: None,
+            object: UNCLAIMED,
         }
     }
 }
@@ -91,6 +98,7 @@ impl EntityStyle {
             weight,
             scale: if valid { scale } else { 1.0 },
             invalid_scale: (!valid).then_some(scale),
+            object: UNCLAIMED,
         })
     }
 
@@ -111,6 +119,7 @@ impl EntityStyle {
             weight: of(&self.weight, &style.weight, layer),
             scale: self.scale * scale,
             invalid_scale: self.invalid_scale,
+            object: self.object,
         }
     }
 

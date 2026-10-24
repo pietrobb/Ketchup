@@ -1,0 +1,632 @@
+//! Closed regions of an underlay's lines: the areas that straight pieces enclose, found
+//! the way a person finds them on paper. Pieces are split where they cross or where one
+//! ends on another (within a tolerance), pieces with a loose end are left out, and each
+//! face of what remains is a region with its outline, the holes other closed figures cut
+//! in it, and its area. Nothing is assumed of what the lines draw: a room, a parcel and a
+//! cut-out are found alike.
+
+use std::collections::HashMap;
+
+use ketchup_geometry::linalg::{cross2, dot2};
+use ketchup_tolerance::ROUNDING;
+
+/// The most pieces one search takes: past it the caller narrows the layers or the box.
+pub const MAX_REGION_SEGMENTS: usize = 200_000;
+/// How near line ends join unless a search names its own distance, in document mm.
+pub const DEFAULT_JOIN_MM: f64 = ketchup_tolerance::UNDERLAY_JOIN_MM;
+/// The farthest join distance a search takes: past it, distinct lines merge.
+pub const MAX_JOIN_MM: f64 = 1_000.0;
+/// The most crossings one search splits pieces at.
+pub const MAX_REGION_CROSSINGS: usize = 2_000_000;
+
+/// One closed region: an outline counterclockwise and holes clockwise, in the
+/// millimetres of the pieces it was found in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Region {
+    pub outline: Vec<[f64; 2]>,
+    pub holes: Vec<Vec<[f64; 2]>>,
+    /// Inside the outline and outside its holes.
+    pub area_mm2: f64,
+    pub bounds: [[f64; 2]; 2],
+}
+
+impl Region {
+    /// Whether `point` lies inside it: inside its outline and in none of its holes.
+    #[must_use]
+    pub fn contains(&self, point: [f64; 2]) -> bool {
+        in_box(self.bounds, point)
+            && super::objects::ring_contains(&self.outline, point)
+            && !self
+                .holes
+                .iter()
+                .any(|hole| super::objects::ring_contains(hole, point))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionError {
+    TooManySegments { count: usize, limit: usize },
+    TooManyCrossings { limit: usize },
+}
+
+impl std::fmt::Display for RegionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooManySegments { count, limit } => write!(
+                formatter,
+                "{count} straight pieces are more than the {limit} one search takes"
+            ),
+            Self::TooManyCrossings { limit } => {
+                write!(formatter, "the pieces cross more than {limit} times")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RegionError {}
+
+/// The regions the straight pieces `segments` enclose, ends and crossings closer than
+/// `tolerance_mm` taken as one point, largest first.
+///
+/// # Errors
+/// More pieces than [`MAX_REGION_SEGMENTS`] or crossings than [`MAX_REGION_CROSSINGS`].
+pub fn find_regions(
+    segments: &[[[f64; 2]; 2]],
+    tolerance_mm: f64,
+) -> Result<Vec<Region>, RegionError> {
+    if segments.len() > MAX_REGION_SEGMENTS {
+        return Err(RegionError::TooManySegments {
+            count: segments.len(),
+            limit: MAX_REGION_SEGMENTS,
+        });
+    }
+    let tolerance = tolerance_mm.max(ketchup_tolerance::APPROXIMATION);
+    let segments = segments
+        .iter()
+        .copied()
+        .filter(|[a, b]| (b[0] - a[0]).hypot(b[1] - a[1]) > tolerance)
+        .collect::<Vec<_>>();
+    let cuts = cuts(&segments, tolerance)?;
+    let mut vertices = Vertices::new(tolerance);
+    let mut edges = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (segment, mut at) in segments.iter().zip(cuts) {
+        at.push(0.0);
+        at.push(1.0);
+        at.sort_by(f64::total_cmp);
+        let ids = at
+            .iter()
+            .map(|t| vertices.id(lerp(segment[0], segment[1], *t)))
+            .collect::<Vec<_>>();
+        for pair in ids.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if a != b && seen.insert((a.min(b), a.max(b))) {
+                edges.push([a, b]);
+            }
+        }
+    }
+    let points = vertices.points;
+    let edges = without_loose_ends(points.len(), edges);
+    Ok(faces(&points, &edges))
+}
+
+fn lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+}
+
+fn in_box(bounds: [[f64; 2]; 2], point: [f64; 2]) -> bool {
+    point[0] >= bounds[0][0]
+        && point[0] <= bounds[1][0]
+        && point[1] >= bounds[0][1]
+        && point[1] <= bounds[1][1]
+}
+
+/// Points closer than the tolerance merged into one vertex.
+struct Vertices {
+    cell: f64,
+    points: Vec<[f64; 2]>,
+    grid: HashMap<Cell, Vec<usize>>,
+}
+
+impl Vertices {
+    fn new(tolerance: f64) -> Self {
+        Self {
+            cell: tolerance,
+            points: Vec::new(),
+            grid: HashMap::new(),
+        }
+    }
+
+    fn id(&mut self, point: [f64; 2]) -> usize {
+        let [x, y] = point.map(|value| cell_of(value, self.cell));
+        for dx in [-1.0, 0.0, 1.0] {
+            for dy in [-1.0, 0.0, 1.0] {
+                for id in self.grid.get(&cell(x + dx, y + dy)).into_iter().flatten() {
+                    let other = self.points[*id];
+                    if (other[0] - point[0]).hypot(other[1] - point[1]) <= self.cell {
+                        return *id;
+                    }
+                }
+            }
+        }
+        self.points.push(point);
+        let id = self.points.len() - 1;
+        self.grid.entry(cell(x, y)).or_default().push(id);
+        id
+    }
+}
+
+/// A grid cell by the bits of its whole-number column and row.
+type Cell = [u64; 2];
+
+/// The whole number of cells of size `cell` below `value`, as a float.
+fn cell_of(value: f64, cell: f64) -> f64 {
+    // `+ 0.0` makes a -0.0 the 0.0 cell.
+    (value / cell).floor() + 0.0
+}
+
+fn cell(column: f64, row: f64) -> Cell {
+    [(column + 0.0).to_bits(), (row + 0.0).to_bits()]
+}
+
+/// Every cell from `low` to `high`, columns and rows whole numbers.
+fn cells(low: [f64; 2], high: [f64; 2], mut found: impl FnMut(Cell)) {
+    let mut column = low[0];
+    while column <= high[0] {
+        let mut row = low[1];
+        while row <= high[1] {
+            found(cell(column, row));
+            row += 1.0;
+        }
+        column += 1.0;
+    }
+}
+
+/// How many cells [`cells`] gives from `low` to `high`, saturating.
+fn box_cells(low: [f64; 2], high: [f64; 2]) -> usize {
+    let side = |axis: usize| {
+        let mut count = 0usize;
+        let mut at = low[axis];
+        while at <= high[axis] && count <= MAX_REGION_CROSSINGS {
+            count += 1;
+            at += 1.0;
+        }
+        count
+    };
+    side(0).saturating_mul(side(1))
+}
+
+fn count_f64(count: usize) -> f64 {
+    f64::from(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
+/// For each segment, the parameters along it where another crosses or touches it.
+fn cuts(segments: &[[[f64; 2]; 2]], tolerance: f64) -> Result<Vec<Vec<f64>>, RegionError> {
+    let mut cuts = vec![Vec::new(); segments.len()];
+    if segments.len() < 2 {
+        return Ok(cuts);
+    }
+    let boxes = segments
+        .iter()
+        .map(|[a, b]| {
+            [
+                [a[0].min(b[0]) - tolerance, a[1].min(b[1]) - tolerance],
+                [a[0].max(b[0]) + tolerance, a[1].max(b[1]) + tolerance],
+            ]
+        })
+        .collect::<Vec<_>>();
+    let mut extent = boxes[0];
+    for [low, high] in &boxes {
+        extent[0] = [extent[0][0].min(low[0]), extent[0][1].min(low[1])];
+        extent[1] = [extent[1][0].max(high[0]), extent[1][1].max(high[1])];
+    }
+    let span = (extent[1][0] - extent[0][0]).max(extent[1][1] - extent[0][1]);
+    let per_side = count_f64(segments.len()).sqrt().max(1.0);
+    let size = (span / per_side).max(tolerance * 4.0);
+    let mut grid: HashMap<Cell, Vec<usize>> = HashMap::new();
+    let mut registered = 0usize;
+    for (index, [low, high]) in boxes.iter().enumerate() {
+        let (from, to) = (
+            low.map(|v| cell_of(v, size)),
+            high.map(|v| cell_of(v, size)),
+        );
+        // Long slanted pieces cover many cells: as many as the crossings allowed.
+        registered += box_cells(from, to);
+        if registered > MAX_REGION_CROSSINGS {
+            return Err(RegionError::TooManyCrossings {
+                limit: MAX_REGION_CROSSINGS,
+            });
+        }
+        cells(from, to, |key| grid.entry(key).or_default().push(index));
+    }
+    let mut keys = grid.keys().copied().collect::<Vec<_>>();
+    keys.sort_unstable();
+    let mut crossings = 0;
+    for key in keys {
+        let members = &grid[&key];
+        for (position, &i) in members.iter().enumerate() {
+            for &j in &members[position + 1..] {
+                let (a, b) = (boxes[i], boxes[j]);
+                let overlap_low = [a[0][0].max(b[0][0]), a[0][1].max(b[0][1])];
+                if overlap_low[0] > a[1][0].min(b[1][0]) || overlap_low[1] > a[1][1].min(b[1][1]) {
+                    continue;
+                }
+                // Each pair once: in the cell holding the low corner of their overlap.
+                if cell(cell_of(overlap_low[0], size), cell_of(overlap_low[1], size)) != key {
+                    continue;
+                }
+                for (t, u) in meet(segments[i], segments[j], tolerance) {
+                    cuts[i].push(t);
+                    cuts[j].push(u);
+                    crossings += 1;
+                }
+                if crossings > MAX_REGION_CROSSINGS {
+                    return Err(RegionError::TooManyCrossings {
+                        limit: MAX_REGION_CROSSINGS,
+                    });
+                }
+            }
+        }
+    }
+    Ok(cuts)
+}
+
+/// Where two segments meet, as parameters along each: a crossing, an end on the other,
+/// or the ends of their overlap when they run along each other.
+fn meet(p: [[f64; 2]; 2], q: [[f64; 2]; 2], tolerance: f64) -> Vec<(f64, f64)> {
+    let r = [p[1][0] - p[0][0], p[1][1] - p[0][1]];
+    let s = [q[1][0] - q[0][0], q[1][1] - q[0][1]];
+    let (r_len, s_len) = (r[0].hypot(r[1]), s[0].hypot(s[1]));
+    let along = |point: [f64; 2], start: [f64; 2], dir: [f64; 2], len: f64| {
+        let t = dot2([point[0] - start[0], point[1] - start[1]], dir) / (len * len);
+        let foot = [start[0] + dir[0] * t, start[1] + dir[1] * t];
+        (t, (point[0] - foot[0]).hypot(point[1] - foot[1]))
+    };
+    let within = |t: f64, len: f64| t >= -tolerance / len && t <= 1.0 + tolerance / len;
+    let cross = cross2(r, s);
+    let mut found = Vec::new();
+    if cross.abs() > ketchup_tolerance::NEGLIGIBLE * r_len * s_len {
+        let d = [q[0][0] - p[0][0], q[0][1] - p[0][1]];
+        let t = cross2(d, s) / cross;
+        let u = cross2(d, r) / cross;
+        if within(t, r_len) && within(u, s_len) {
+            found.push((t.clamp(0.0, 1.0), u.clamp(0.0, 1.0)));
+        }
+        return found;
+    }
+    // Parallel: each end lying on the other splits it there.
+    for (end, u) in [(q[0], 0.0), (q[1], 1.0)] {
+        let (t, off) = along(end, p[0], r, r_len);
+        if off <= tolerance && within(t, r_len) {
+            found.push((t.clamp(0.0, 1.0), u));
+        }
+    }
+    for (end, t) in [(p[0], 0.0), (p[1], 1.0)] {
+        let (u, off) = along(end, q[0], s, s_len);
+        if off <= tolerance && within(u, s_len) {
+            found.push((t, u.clamp(0.0, 1.0)));
+        }
+    }
+    found
+}
+
+/// The edges left once every edge with an end no other edge meets is taken away, again
+/// until none is left.
+fn without_loose_ends(vertex_count: usize, edges: Vec<[usize; 2]>) -> Vec<[usize; 2]> {
+    let mut degree = vec![0usize; vertex_count];
+    for [a, b] in &edges {
+        degree[*a] += 1;
+        degree[*b] += 1;
+    }
+    let mut touching = vec![Vec::new(); vertex_count];
+    for (index, [a, b]) in edges.iter().enumerate() {
+        touching[*a].push(index);
+        touching[*b].push(index);
+    }
+    let mut alive = vec![true; edges.len()];
+    let mut loose = (0..vertex_count)
+        .filter(|vertex| degree[*vertex] == 1)
+        .collect::<Vec<_>>();
+    while let Some(vertex) = loose.pop() {
+        for &edge in &touching[vertex] {
+            if !alive[edge] {
+                continue;
+            }
+            alive[edge] = false;
+            for end in edges[edge] {
+                degree[end] -= 1;
+                if degree[end] == 1 {
+                    loose.push(end);
+                }
+            }
+        }
+    }
+    edges
+        .into_iter()
+        .zip(alive)
+        .filter_map(|(edge, alive)| alive.then_some(edge))
+        .collect()
+}
+
+fn signed_area(ring: &[[f64; 2]]) -> f64 {
+    ring.iter()
+        .zip(ring.iter().cycle().skip(1))
+        .map(|(a, b)| a[0] * b[1] - b[0] * a[1])
+        .sum::<f64>()
+        / 2.0
+}
+
+fn bounds_of(ring: &[[f64; 2]]) -> [[f64; 2]; 2] {
+    let mut bounds = [ring[0], ring[0]];
+    for point in ring {
+        bounds[0] = [bounds[0][0].min(point[0]), bounds[0][1].min(point[1])];
+        bounds[1] = [bounds[1][0].max(point[0]), bounds[1][1].max(point[1])];
+    }
+    bounds
+}
+
+/// The bounded faces of the plane graph of `edges`, each with the outer boundaries of the
+/// other closed figures inside it as holes.
+fn faces(points: &[[f64; 2]], edges: &[[usize; 2]]) -> Vec<Region> {
+    // Half-edges 2k (a→b) and 2k+1 (b→a), each vertex's outgoing ones counterclockwise.
+    let mut outgoing = vec![Vec::new(); points.len()];
+    for (index, [a, b]) in edges.iter().enumerate() {
+        outgoing[*a].push(2 * index);
+        outgoing[*b].push(2 * index + 1);
+    }
+    let ends = |half: usize| {
+        let [a, b] = edges[half / 2];
+        if half.is_multiple_of(2) {
+            (a, b)
+        } else {
+            (b, a)
+        }
+    };
+    let angle = |half: usize| {
+        let (from, to) = ends(half);
+        (points[to][1] - points[from][1]).atan2(points[to][0] - points[from][0])
+    };
+    let mut slot = vec![0; edges.len() * 2];
+    for list in &mut outgoing {
+        list.sort_by(|a, b| angle(*a).total_cmp(&angle(*b)));
+        for (position, half) in list.iter().enumerate() {
+            slot[*half] = position;
+        }
+    }
+    // The connected figure of each vertex, so a figure is never its own hole.
+    let mut figure = (0..points.len()).collect::<Vec<_>>();
+    fn root(figure: &mut [usize], mut vertex: usize) -> usize {
+        while figure[vertex] != vertex {
+            figure[vertex] = figure[figure[vertex]];
+            vertex = figure[vertex];
+        }
+        vertex
+    }
+    for [a, b] in edges {
+        let (ra, rb) = (root(&mut figure, *a), root(&mut figure, *b));
+        figure[ra] = rb;
+    }
+    let mut visited = vec![false; edges.len() * 2];
+    let mut bounded = Vec::new();
+    let mut outer = Vec::new();
+    for start in 0..edges.len() * 2 {
+        if visited[start] {
+            continue;
+        }
+        let mut ring = Vec::new();
+        let mut half = start;
+        while !visited[half] {
+            visited[half] = true;
+            let (from, to) = ends(half);
+            ring.push(points[from]);
+            // Arrived at `to`: the next edge clockwise from the way back keeps the face
+            // on the left.
+            let back = half ^ 1;
+            let list = &outgoing[to];
+            half = list[(slot[back] + list.len() - 1) % list.len()];
+        }
+        let area = signed_area(&ring);
+        let owner = root(&mut figure, ends(start).0);
+        if area > 0.0 {
+            bounded.push((ring, area, owner));
+        } else if area < 0.0 {
+            outer.push((ring, -area, owner));
+        }
+    }
+    let mut regions = bounded
+        .iter()
+        .map(|(ring, area, _)| Region {
+            bounds: bounds_of(ring),
+            outline: ring.clone(),
+            holes: Vec::new(),
+            area_mm2: *area,
+        })
+        .collect::<Vec<_>>();
+    for (ring, area, owner) in outer {
+        let probe = ring[0];
+        let around = bounded
+            .iter()
+            .enumerate()
+            .filter(|(index, (outline, _, figure))| {
+                *figure != owner
+                    && in_box(regions[*index].bounds, probe)
+                    && super::objects::ring_contains(outline, probe)
+            })
+            .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
+            .map(|(index, _)| index);
+        if let Some(index) = around {
+            let mut hole = ring;
+            hole.reverse();
+            regions[index].holes.push(hole);
+            regions[index].area_mm2 -= area;
+        }
+    }
+    regions.sort_by(|a, b| b.area_mm2.total_cmp(&a.area_mm2));
+    regions
+}
+
+/// Pieces that run side by side: `a` and `b` index the segments, `gap_mm` is how far
+/// apart they lie and `overlap_mm` how long they run alongside each other.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParallelPair {
+    pub a: usize,
+    pub b: usize,
+    pub gap_mm: f64,
+    pub overlap_mm: f64,
+}
+
+/// The pairs of `segments` within `angle_deg` of parallel, `min_gap_mm` to `max_gap_mm`
+/// apart and alongside each other for at least `min_overlap_mm`, at most `limit` of them
+/// in segment order.
+#[must_use]
+pub fn parallel_pairs(
+    segments: &[[[f64; 2]; 2]],
+    min_gap_mm: f64,
+    max_gap_mm: f64,
+    angle_deg: f64,
+    min_overlap_mm: f64,
+    limit: usize,
+) -> Vec<ParallelPair> {
+    let cos_limit = angle_deg.to_radians().cos();
+    let reach = max_gap_mm.max(0.0);
+    let boxes = segments
+        .iter()
+        .map(|[a, b]| {
+            [
+                [a[0].min(b[0]) - reach, a[1].min(b[1]) - reach],
+                [a[0].max(b[0]) + reach, a[1].max(b[1]) + reach],
+            ]
+        })
+        .collect::<Vec<_>>();
+    let size = (reach * 4.0).max(100.0);
+    let mut grid: HashMap<Cell, Vec<usize>> = HashMap::new();
+    for (index, [a, b]) in segments.iter().enumerate() {
+        let low = [a[0].min(b[0]), a[1].min(b[1])].map(|v| cell_of(v, size));
+        let high = [a[0].max(b[0]), a[1].max(b[1])].map(|v| cell_of(v, size));
+        cells(low, high, |key| grid.entry(key).or_default().push(index));
+    }
+    let mut pairs = Vec::new();
+    for (i, [a0, a1]) in segments.iter().enumerate() {
+        let d = [a1[0] - a0[0], a1[1] - a0[1]];
+        let len = d[0].hypot(d[1]);
+        if len < min_overlap_mm.max(ROUNDING) {
+            continue;
+        }
+        let unit = [d[0] / len, d[1] / len];
+        let [low, high] = boxes[i];
+        let (from, to) = (
+            low.map(|v| cell_of(v, size)),
+            high.map(|v| cell_of(v, size)),
+        );
+        let mut near = Vec::new();
+        cells(from, to, |key| {
+            near.extend(
+                grid.get(&key)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|j| *j > i),
+            );
+        });
+        near.sort_unstable();
+        near.dedup();
+        for j in near {
+            let [b0, b1] = segments[j];
+            let e = [b1[0] - b0[0], b1[1] - b0[1]];
+            let e_len = e[0].hypot(e[1]);
+            if e_len < ROUNDING || dot2(unit, e).abs() / e_len < cos_limit {
+                continue;
+            }
+            let project = |point: [f64; 2]| {
+                let v = [point[0] - a0[0], point[1] - a0[1]];
+                (dot2(v, unit), cross2(unit, v))
+            };
+            let ((s0, n0), (s1, n1)) = (project(b0), project(b1));
+            let gap = f64::midpoint(n0, n1).abs();
+            if n0.signum() != n1.signum() && n0.abs() > ROUNDING && n1.abs() > ROUNDING {
+                continue;
+            }
+            let overlap = s0.max(s1).min(len) - s0.min(s1).max(0.0);
+            if gap >= min_gap_mm && gap <= max_gap_mm && overlap >= min_overlap_mm {
+                pairs.push(ParallelPair {
+                    a: i,
+                    b: j,
+                    gap_mm: gap,
+                    overlap_mm: overlap,
+                });
+                if pairs.len() >= limit {
+                    return pairs;
+                }
+            }
+        }
+    }
+    pairs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn square(low: f64, high: f64) -> Vec<[[f64; 2]; 2]> {
+        let c = [[low, low], [high, low], [high, high], [low, high]];
+        (0..4).map(|i| [c[i], c[(i + 1) % 4]]).collect()
+    }
+
+    #[test]
+    fn two_rooms_split_by_a_wall_ending_on_the_outline_and_an_island() {
+        let mut lines = square(0.0, 100.0);
+        // A wall from the bottom to the top at x = 40, its ends on the outline.
+        lines.push([[40.0, 0.0], [40.0, 100.0]]);
+        // A pillar in the right room, and a loose line that encloses nothing.
+        lines.extend(square(60.0, 70.0));
+        lines.push([[10.0, 10.0], [20.0, 20.0]]);
+        let regions = find_regions(&lines, 0.01).unwrap();
+        let areas = regions
+            .iter()
+            .map(|r| r.area_mm2.round())
+            .collect::<Vec<_>>();
+        assert_eq!(areas, [5_900.0, 4_000.0, 100.0]);
+        assert_eq!(regions[0].holes.len(), 1);
+        assert!(regions[0].contains([80.0, 50.0]));
+        assert!(!regions[0].contains([65.0, 65.0]), "in the pillar");
+        assert!(regions[1].contains([15.0, 50.0]));
+    }
+
+    #[test]
+    fn crossing_lines_close_a_region_and_near_misses_join_within_the_tolerance() {
+        // A # pattern: the middle square closes where the lines cross.
+        let lines = [
+            [[0.0, 10.0], [30.0, 10.0]],
+            [[0.0, 20.0], [30.0, 20.0]],
+            [[10.0, 0.0], [10.0, 30.0]],
+            [[20.0, 0.0], [20.0, 30.0]],
+        ];
+        let regions = find_regions(&lines, 0.01).unwrap();
+        assert_eq!(regions.len(), 1);
+        assert!((regions[0].area_mm2 - 100.0).abs() < 1e-9);
+        // A square whose corner misses by 0.5 mm closes with a 1 mm tolerance only.
+        let mut open = square(0.0, 10.0);
+        open[3] = [[0.0, 10.0], [0.0, 0.5]];
+        assert!(find_regions(&open, 0.1).unwrap().is_empty());
+        assert_eq!(find_regions(&open, 1.0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn walls_drawn_as_two_lines_pair_at_their_thickness() {
+        let lines = [
+            [[0.0, 0.0], [5_000.0, 0.0]],
+            [[0.0, 300.0], [5_000.0, 300.0]],
+            // A shorter one 150 apart alongside the first for 1 m.
+            [[4_000.0, -150.0], [6_000.0, -150.0]],
+            // Across: never a pair.
+            [[100.0, -500.0], [100.0, 500.0]],
+        ];
+        let pairs = parallel_pairs(&lines, 50.0, 400.0, 2.0, 500.0, 100);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!((pairs[0].a, pairs[0].b), (0, 1));
+        assert!((pairs[0].gap_mm - 300.0).abs() < 1e-9);
+        assert!((pairs[0].overlap_mm - 5_000.0).abs() < 1e-9);
+        assert_eq!((pairs[1].a, pairs[1].b), (0, 2));
+        assert!((pairs[1].overlap_mm - 1_000.0).abs() < 1e-9);
+    }
+}

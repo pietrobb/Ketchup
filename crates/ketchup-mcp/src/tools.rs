@@ -361,6 +361,9 @@ impl Tools {
                 "measure",
                 "mass",
                 "underlay_snap",
+                "underlay_objects",
+                "underlay_regions",
+                "underlay_parallel",
             ],
         )?;
         match action.as_str() {

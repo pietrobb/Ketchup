@@ -47,7 +47,8 @@ struct DxfReading {
     /// Reads texts and attributes instead of reporting them unsupported or dropped.
     texts: bool,
     /// Reads the colors, linetypes and lineweights of entities and layers instead of
-    /// reporting them ignored.
+    /// reporting them ignored, and keeps each entity, and what a dimension measures, as an
+    /// object ([`objects`]).
     styles: bool,
     /// Reads a hatch as the area it paints or the pattern it draws there
     /// ([`hatch::read_hatch`]), not as the profiles of its boundary.
@@ -83,6 +84,7 @@ mod block;
 mod chain;
 mod code_page;
 mod hatch;
+mod objects;
 mod style;
 mod text;
 mod underlay;
@@ -619,14 +621,19 @@ struct ParsedEntities {
     xrefs: BTreeMap<String, u32>,
     /// The handle (group 5) of each entity read here that has one, by its ordinal.
     handles: BTreeMap<usize, String>,
+    /// Read for an underlay only: the entities read here and what they placed.
+    objects: Vec<objects::SourceObject>,
+    /// Where the last insert or dimension placed its block, until its object takes it.
+    placement: Option<crate::underlay::objects::Affine>,
 }
 
-/// What an insert or a dimension places of its block.
+/// What an insert or a dimension places of its block, and where (the first of an array).
 #[derive(Default)]
 struct Placed {
     profiles: Vec<OrderedProfile>,
     texts: Vec<OrderedText>,
     fills: Vec<OrderedFill>,
+    placement: Option<crate::underlay::objects::Affine>,
 }
 
 impl ParsedEntities {
@@ -651,6 +658,7 @@ impl ParsedEntities {
     }
 
     fn push_placed(&mut self, placed: Placed) {
+        self.placement = placed.placement;
         for profile in placed.profiles {
             self.layers.insert(profile.layer.clone());
             self.explicit_profiles.push(profile);
@@ -1369,6 +1377,7 @@ fn parse_entities(
                     _ => None,
                 };
                 output.restyle(counts, record, placed_at)?;
+                objects::claim(output, counts, &kind, &pairs[start..index], blocks, units)?;
             }
             Ok(())
         })();
@@ -3326,12 +3335,14 @@ fn parse_dimension(
             })
         })
         .collect::<Result<Vec<_>, DxfImportError>>()?;
-    diagnostics.add(
-        ImportDiagnosticSeverity::Warning,
-        "dxf.dimension-semantics-dropped",
-        Some(name.to_owned()),
-        1,
-    )?;
+    if !diagnostics.reading.styles {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Warning,
+            "dxf.dimension-semantics-dropped",
+            Some(name.to_owned()),
+            1,
+        )?;
+    }
     diagnostics.add(
         ImportDiagnosticSeverity::Info,
         "dxf.dimension-graphics",
@@ -3354,6 +3365,13 @@ fn parse_dimension(
         profiles,
         texts,
         fills,
+        placement: Some(objects::placement(
+            [0.0; 2],
+            clone_offset_mm,
+            [1.0; 2],
+            0.0,
+            1.0,
+        )),
     })
 }
 
@@ -3546,10 +3564,18 @@ fn parse_insert(
         u32::try_from(placement_count)
             .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyEntities)?,
     )?;
+    let scale = [scale_x, scale_y];
     Ok(Placed {
         profiles,
         texts,
         fills,
+        placement: Some(objects::placement(
+            block.base_mm,
+            insertion_mm,
+            scale,
+            rotation_sin,
+            rotation_cos,
+        )),
     })
 }
 

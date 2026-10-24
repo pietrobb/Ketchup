@@ -52,6 +52,7 @@ mod suffix_suppress_resume_verifier;
 mod topology_identity;
 mod underlay;
 mod underlay_fill;
+mod underlay_objects;
 mod underlay_snap;
 mod underlay_style;
 mod underlay_text;

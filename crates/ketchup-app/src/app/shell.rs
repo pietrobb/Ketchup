@@ -247,6 +247,7 @@ impl KetchupApp {
                 underlays: BTreeMap::new(),
                 underlay_snaps: RefCell::new(BTreeMap::new()),
                 underlay_extents: RefCell::new(BTreeMap::new()),
+                underlay_lines: RefCell::new(BTreeMap::new()),
                 underlay_frame: Vec::new(),
                 wgpu_target_format: None,
                 wgpu_device: None,

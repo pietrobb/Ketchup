@@ -315,6 +315,10 @@ pub(crate) struct RenderState {
     /// The bounds of each layer of the underlays' lines, by the SHA-256 of their blob: what
     /// framing the view takes of them.
     pub(crate) underlay_extents: RefCell<BTreeMap<[u8; 32], crate::app::underlay::UnderlayExtent>>,
+    /// The decoded lines and objects of the underlays the bridge was asked about, by the
+    /// SHA-256 of their blob.
+    pub(crate) underlay_lines:
+        RefCell<BTreeMap<[u8; 32], Arc<ketchup_model::underlay::UnderlayLines>>>,
     /// What the viewport paints of them this frame.
     pub(crate) underlay_frame: Vec<crate::renderer::underlay::UnderlayDraw>,
     pub(crate) wgpu_target_format: Option<eframe::wgpu::TextureFormat>,

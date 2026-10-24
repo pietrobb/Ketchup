@@ -505,9 +505,10 @@ fn lines_decode_as_they_were_encoded_and_damaged_bytes_are_refused() {
     );
 }
 
-/// The lines are kept deflated (KUNDRLY4): a grid of 4,000 lines takes well under half
-/// its 16 bytes a point. A blob saved before, uncompressed (KUNDRLY3 and older), still
-/// reads, so a document saved with an underlay keeps opening with it.
+/// The lines are kept deflated with their objects (KUNDRLY6): a grid of 4,000 lines takes
+/// well under half its 16 bytes a point. A blob saved before, uncompressed (KUNDRLY3 and
+/// older), still reads, without objects, so a document saved with an underlay keeps
+/// opening with it.
 #[test]
 fn lines_are_kept_compressed_and_blobs_saved_before_still_read() {
     let mut entities = String::new();
@@ -522,7 +523,8 @@ fn lines_are_kept_compressed_and_blobs_saved_before_still_read() {
         .polylines()
         .map(<[_]>::len)
         .sum::<usize>();
-    assert!(bytes.starts_with(b"KUNDRLY4"));
+    assert!(bytes.starts_with(b"KUNDRLY6"));
+    assert_eq!(underlay.lines.objects().objects.len(), 4_000);
     assert!(
         bytes.len() * 2 < points * 16,
         "{} bytes for {points} points",
@@ -543,7 +545,12 @@ fn lines_are_kept_compressed_and_blobs_saved_before_still_read() {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
     let wall = read(&line("walls", [0.0, 0.0], [1000.0, 0.0])).lines;
-    assert_eq!(UnderlayLines::decode(&SAVED_3).unwrap(), wall);
+    let saved = UnderlayLines::decode(&SAVED_3).unwrap();
+    assert_eq!(
+        (saved.layers(), saved.styles()),
+        (wall.layers(), wall.styles())
+    );
+    assert!(saved.objects().is_empty());
     // The same line as KUNDRLY1 wrote it: one layer of one polyline of two points.
     let mut saved_1 = b"KUNDRLY1".to_vec();
     for count in [1_u32, 1, 2, 2] {

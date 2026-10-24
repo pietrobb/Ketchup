@@ -15,6 +15,9 @@ pub(super) struct BlockDefinition {
     /// The xrefs it places, its own blocks' among them, by name with how often: each
     /// insert of it counts them once more.
     pub(super) xrefs: BTreeMap<String, u32>,
+    /// Read for an underlay only: its entities, in its own coordinates; the objects of its
+    /// profiles, texts and fills index them.
+    pub(super) objects: Vec<super::objects::SourceObject>,
 }
 
 impl BlockDefinition {
@@ -229,6 +232,7 @@ fn resolve_raw_block<'a>(
                 fills: Vec::new(),
                 xref: true,
                 xrefs: BTreeMap::new(),
+                objects: Vec::new(),
             },
         );
         return Ok(());
@@ -300,6 +304,7 @@ fn resolve_raw_block<'a>(
             fills: parsed_entities.fills,
             xref: false,
             xrefs: parsed_entities.xrefs,
+            objects: parsed_entities.objects,
         },
     );
     Ok(())

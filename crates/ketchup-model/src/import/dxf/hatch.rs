@@ -36,6 +36,8 @@ pub(super) struct OrderedFill {
     pub(super) rings: Vec<Vec<[f64; 2]>>,
     /// The dashes of its pattern, clipped to its area.
     pub(super) pattern: Vec<[[f64; 2]; 2]>,
+    /// The rings that bound its area, painted or not, until its object takes them.
+    pub(super) outline: Vec<Vec<[f64; 2]>>,
 }
 
 /// The groups of a HATCH an underlay reads: its boundary, style, pattern and gradient.
@@ -82,6 +84,7 @@ pub(super) fn read_hatch(
         handle: handle.unwrap_or_default().to_owned(),
         rings: Vec::new(),
         pattern: Vec::new(),
+        outline: Vec::new(),
     };
     let scale = units.millimetres_per_unit();
     let drawn = match hatch_rings(record, units, &fill.layer, diagnostics) {
@@ -90,6 +93,10 @@ pub(super) fn read_hatch(
             // as the drawing mirrors the hatch.
             let flip = |[x, y]: [f64; 2]| if mirrored { [0.0 - x, y] } else { [x, y] };
             let bounds = point_bounds(rings.iter().flatten().copied().map(flip));
+            fill.outline = rings
+                .iter()
+                .map(|ring| ring.iter().copied().map(flip).collect())
+                .collect();
             match fill_rings(record, rings, scale, diagnostics) {
                 Ok(drawn) => drawn
                     .map(|(mut rings, mut pattern)| {

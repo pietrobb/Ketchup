@@ -77,6 +77,9 @@ pub const LOAD_AT_SUPPORT_MM: f64 = 0.5;
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
 /// The largest distance between an underlay's arc and the chords drawn for it, in mm.
 pub const UNDERLAY_ARC_CHORD_MM: f64 = 0.1;
+/// How near, in document mm, a line end of an underlay lies to another line to join it,
+/// unless a question names its own: a drafter's snap gap, well under any drawn thickness.
+pub const UNDERLAY_JOIN_MM: f64 = 1.0;
 /// The most an underlay's placement scales it, up or down: room for a drawing read in the
 /// wrong unit (a foot or a metre taken for a millimetre), not for a unit mix-up of points
 /// picked a billion times apart.

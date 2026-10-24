@@ -230,6 +230,9 @@ fn has_effect(request: &Request) -> bool {
         | Request::ValidateProgram { .. }
         | Request::SavedViews { .. }
         | Request::UnderlaySnap { .. }
+        | Request::UnderlayObjects { .. }
+        | Request::UnderlayRegions { .. }
+        | Request::UnderlayParallel { .. }
         | Request::Image(_) => false,
         Request::WorksetCreate { .. }
         | Request::BatchJobStart { .. }

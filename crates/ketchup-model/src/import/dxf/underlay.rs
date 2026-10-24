@@ -92,19 +92,38 @@ pub fn read_dxf_underlay_from(
             diagnostics,
         )?;
         parsed.report_xrefs(diagnostics)?;
+        // The objects read here are numbered after those of the entities before.
+        let first = builder.object_count();
+        for object in parsed.objects.drain(..) {
+            let parent = object.parent.map(|parent| object_index(first, parent));
+            builder.add_object(
+                object.kind,
+                object.handle,
+                &object.layer,
+                parent,
+                object.detail,
+            );
+        }
+        let object = |style: &super::style::EntityStyle| {
+            (style.object != super::style::UNCLAIMED).then(|| object_index(first, style.object))
+        };
         for loose in &parsed.loose {
+            builder.set_object(object(&loose.style));
             builder.set_style(&styles.line_style(&loose.style, &loose.layer, diagnostics)?);
             builder.add_loose(&loose.layer, &loose.segment);
         }
         for profile in &parsed.explicit_profiles {
+            builder.set_object(object(&profile.style));
             builder.set_style(&styles.line_style(&profile.style, &profile.layer, diagnostics)?);
             builder.add(&profile.layer, &profile.segments);
         }
         for text in parsed.texts.drain(..) {
+            builder.set_object(object(&text.style));
             builder.set_style(&styles.line_style(&text.style, &text.layer, diagnostics)?);
             builder.add_text(&text.layer, text.text);
         }
         for fill in &parsed.fills {
+            builder.set_object(object(&fill.style));
             // A hatch is painted, and its pattern drawn, continuous: its own dashes
             // are the pattern's.
             let style = styles.line_style(&fill.style, &fill.layer, diagnostics)?;
@@ -198,6 +217,14 @@ pub fn read_dxf_underlay_from(
     })
 }
 
+/// The underlay's index of the object `local` of an entity whose objects start at `first`.
+fn object_index(first: usize, local: u32) -> u32 {
+    usize::try_from(local)
+        .ok()
+        .and_then(|local| u32::try_from(first + local).ok())
+        .expect("an underlay count fits the blob's u32")
+}
+
 /// Group codes and values, the values in one text so a section or an entity costs a
 /// few allocations, not one per value.
 #[derive(Default)]
@@ -220,7 +247,7 @@ impl PairBuffer {
     /// [`Self::push`] of an entity seen from above: an underlay is a plan, so a Z
     /// coordinate (groups 30-37), an elevation (38) or a thickness (39) is read as 0,
     /// as a surveyed drawing in national grid coordinates carries one on nearly every
-    /// line. An extrusion direction other than ±Z is still refused by the entity.
+    /// line. An extrusion direction other than Â±Z is still refused by the entity.
     fn push_flat(&mut self, code: i16, value: &str) {
         // The vertices and attributes that follow an entity are part of it.
         let follows = ["VERTEX", "ATTRIB", "SEQEND"]

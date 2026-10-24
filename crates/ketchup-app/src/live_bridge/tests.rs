@@ -58,6 +58,8 @@ mod product_integration;
 pub(super) mod program_access;
 #[path = "program_tests.rs"]
 mod program_edit;
+#[path = "underlay_objects_tests.rs"]
+mod underlay_objects;
 #[test]
 fn z6_named_views_are_orthographic_and_iso_keeps_positive_z_up() {
     let (mut app, mut bridge) = setup();

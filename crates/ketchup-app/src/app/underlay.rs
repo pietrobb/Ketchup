@@ -470,6 +470,10 @@ impl KetchupApp {
             .underlay_extents
             .get_mut()
             .retain(|key, _| named(key));
+        self.render
+            .underlay_lines
+            .get_mut()
+            .retain(|key, _| named(key));
         draws
     }
 
@@ -520,6 +524,22 @@ impl KetchupApp {
         }
         counts.retain(|_, count| *count != [0, 0]);
         counts
+    }
+
+    /// The lines and objects of `underlay`, decoded from the document's blob the first
+    /// time; `None` while the document holds no readable blob of them.
+    pub(crate) fn cached_underlay_lines(&self, underlay: &Underlay) -> Option<Arc<UnderlayLines>> {
+        let key = underlay.lines_sha256;
+        if let Some(lines) = self.render.underlay_lines.borrow().get(&key) {
+            return Some(Arc::clone(lines));
+        }
+        let blobs = self.file.container_data.blobs();
+        let lines = Arc::new(UnderlayLines::decode(blobs.get(&underlay.lines_blob())?).ok()?);
+        self.render
+            .underlay_lines
+            .borrow_mut()
+            .insert(key, Arc::clone(&lines));
+        Some(lines)
     }
 
     /// The layer extents of `underlay`'s lines, decoded from the document's blob the first
