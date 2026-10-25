@@ -749,3 +749,54 @@ fn the_drawing_date_is_the_date_on_the_users_clock() {
     // A minute after midnight UTC on 1 January is still New Year's Eve west of it.
     assert_eq!(date_at(1_798_761_660, -3_600), "31. 12. 2026");
 }
+
+/// Review 2026-10-24 MF-27: a set's DXF sheets were written only as new
+/// files, so exporting the set again under the same name always failed.
+#[test]
+fn a_set_exported_again_under_its_name_replaces_the_sheets_it_wrote() {
+    use crate::app::project_drawings::{
+        SetFileFormat, project_drawings_targets, publish_project_drawings,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("plan.dxf");
+    let sheet = |number: u8| directory.path().join(format!("plan-0{number}.dxf"));
+    let read = |number| std::fs::read(sheet(number)).unwrap();
+    let publish = |files: [&[u8]; 2]| {
+        let targets = project_drawings_targets(&path, SetFileFormat::Dxf).unwrap();
+        let files = files.map(<[u8]>::to_vec);
+        publish_project_drawings(&path, SetFileFormat::Dxf, &files, &targets).map(|_| targets)
+    };
+    // Files named like no sheet of this set are not taken for one.
+    for other in ["plan-1.dxf", "plan-ab.dxf", "planx-01.dxf", "plan-01.pdf"] {
+        std::fs::write(directory.path().join(other), b"other").unwrap();
+    }
+    assert!(publish([b"first 1", b"first 2"]).unwrap().is_empty());
+
+    let replaced = publish([b"second 1", b"second 2"]).unwrap();
+    assert_eq!(
+        replaced.keys().cloned().collect::<Vec<_>>(),
+        [sheet(1), sheet(2)]
+    );
+    assert_eq!(
+        (read(1), read(2)),
+        (b"second 1".to_vec(), b"second 2".to_vec())
+    );
+
+    // A sheet saved meanwhile is kept, and the one the export had already
+    // replaced gets its bytes back: the set is written whole or not at all.
+    let targets = project_drawings_targets(&path, SetFileFormat::Dxf).unwrap();
+    std::fs::write(sheet(2), b"saved meanwhile").unwrap();
+    assert!(
+        publish_project_drawings(
+            &path,
+            SetFileFormat::Dxf,
+            &[b"third 1".to_vec(), b"third 2".to_vec()],
+            &targets
+        )
+        .is_err()
+    );
+    assert_eq!(
+        (read(1), read(2)),
+        (b"second 1".to_vec(), b"saved meanwhile".to_vec())
+    );
+}

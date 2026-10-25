@@ -9,7 +9,7 @@ use super::drawing_sheet_export::{
     drawing_sheet_target, publish_drawing_sheet,
 };
 use super::project_drawings::{
-    ExportedSet, ProjectDrawingsError, SetFileFormat, project_drawings_target,
+    ExportedSet, ProjectDrawingsError, SetFileFormat, SetTargets, project_drawings_targets,
     publish_project_drawings, set_export_key,
 };
 use crate::*;
@@ -35,9 +35,9 @@ type DrawingWork = Box<dyn FnOnce() -> MadeDrawing + Send>;
 pub(crate) struct DrawingExportTask {
     export: DrawingExport,
     path: PathBuf,
-    /// The SHA-256 of the file the user chose to replace, taken when the
-    /// export started; a file saved there meanwhile is not overwritten.
-    replacing: Option<String>,
+    /// The SHA-256 of each file the export may replace, taken when it
+    /// started; a file saved there meanwhile is not overwritten.
+    replacing: SetTargets,
     receiver: Receiver<MadeDrawing>,
 }
 
@@ -94,9 +94,15 @@ impl KetchupApp {
         work: DrawingWork,
     ) {
         let replacing = match export {
-            DrawingExport::Project(_) => project_drawings_target(&path)
+            DrawingExport::Project(format) => project_drawings_targets(&path, format)
                 .map_err(|error| self.report_project_drawings(&path, &Err(error))),
             DrawingExport::Sheet(_, format) => drawing_sheet_target(&path)
+                .map(|sha256| {
+                    sha256
+                        .map(|sha256| (path.clone(), sha256))
+                        .into_iter()
+                        .collect()
+                })
                 .map_err(|error| self.report_drawing_sheet(&path, format, &Err(error))),
         };
         let Ok(replacing) = replacing else {
@@ -148,7 +154,7 @@ impl KetchupApp {
                     _ => Err(ProjectDrawingsError::Write(ended())),
                 }
                 .and_then(|(set, files)| {
-                    publish_project_drawings(&task.path, format, &files, task.replacing.as_deref())
+                    publish_project_drawings(&task.path, format, &files, &task.replacing)
                         .map(|paths| ExportedSet { set, paths })
                 });
                 self.report_project_drawings(&task.path, &result);
@@ -164,8 +170,8 @@ impl KetchupApp {
                     )),
                 }
                 .and_then(|(exported, bytes)| {
-                    publish_drawing_sheet(&task.path, &bytes, task.replacing.as_deref())
-                        .map(|()| exported)
+                    let replacing = task.replacing.get(&task.path).map(String::as_str);
+                    publish_drawing_sheet(&task.path, &bytes, replacing).map(|()| exported)
                 });
                 self.report_drawing_sheet(&task.path, format, &result);
             }

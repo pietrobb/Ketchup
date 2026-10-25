@@ -254,7 +254,7 @@ fn export(
     // on, and the sheet only as a new file: one saved at the path while it was
     // projected is kept (review 2026-10-18 MCP-3).
     let exported = app
-        .write_project_drawings(target, file_format, request, None)
+        .write_project_drawings(target, file_format, request, &Default::default())
         .map_err(|error| {
             app.store_sheet_settings(previous);
             app.drawings.unsaved = previously_unsaved;
@@ -449,7 +449,12 @@ mod tests {
         assert!(!target.exists());
 
         let error = app
-            .write_project_drawings(&target, SetFileFormat::Pdf, SheetRequest::default(), None)
+            .write_project_drawings(
+                &target,
+                SetFileFormat::Pdf,
+                SheetRequest::default(),
+                &Default::default(),
+            )
             .err()
             .unwrap();
         assert!(matches!(error, ProjectDrawingsError::SettingsUnreadable(_)));
@@ -471,7 +476,7 @@ mod tests {
                 &pdf,
                 SetFileFormat::Pdf,
                 &[b"%PDF-".to_vec()],
-                None
+                &Default::default()
             )
             .is_err()
         );
