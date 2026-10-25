@@ -17,7 +17,15 @@ use super::{
 
 pub const DXF_PARSER_ID: &str = "ketchup-dxf";
 pub const DXF_PARSER_VERSION: &str = "30";
-const MAX_DXF_LINE_BYTES: usize = 512;
+/// The longest string a DXF group holds (AutoCAD 2007 and later), in characters: an
+/// MTEXT piece of 250 CJK characters is 750 bytes of UTF-8.
+const MAX_DXF_LINE_CHARS: usize = 2049;
+/// No encoding a DXF uses takes more than four bytes for a character.
+const MAX_DXF_LINE_BYTES: usize = 4 * MAX_DXF_LINE_CHARS;
+
+fn too_long(line: &str) -> bool {
+    line.len() > MAX_DXF_LINE_CHARS && line.chars().count() > MAX_DXF_LINE_CHARS
+}
 /// The most group-code pairs a drawing import reads; a DWG conversion with more is
 /// refused in the worker, before the window reads its DXF.
 pub const MAX_DXF_PAIRS: usize = limits::DRAWING_PAIRS;
@@ -306,7 +314,7 @@ impl fmt::Display for DxfImportError {
             }
             Self::Empty => "DXF source is empty",
             Self::NonAscii => "DXF must be UTF-8 text, or older than DXF 2007 and in the Windows code page its $DWGCODEPAGE names; binary DXF is unsupported",
-            Self::LineTooLong => "DXF contains a line longer than 512 bytes",
+            Self::LineTooLong => "DXF contains a line longer than 2049 characters",
             Self::MalformedPairs => "DXF group-code/value pairs are malformed",
             Self::MalformedSections => "DXF SECTION/ENDSEC/EOF structure is malformed",
             Self::MissingEntitiesSection => "DXF has no ENTITIES section",
@@ -1045,7 +1053,7 @@ fn parse_pairs(text: &str, max_pairs: usize) -> Result<Vec<DxfPair<'_>>, DxfImpo
     let max_lines = max_pairs.saturating_mul(2).saturating_add(1);
     let mut line_count = 0_usize;
     for line in text.lines() {
-        if line.len() > MAX_DXF_LINE_BYTES {
+        if too_long(line) {
             return Err(DxfImportError::LineTooLong);
         }
         if line_count > max_lines {

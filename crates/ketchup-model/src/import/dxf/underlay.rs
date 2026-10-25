@@ -503,7 +503,7 @@ impl<R: BufRead> PairReader<'_, R> {
                 .decode_without_bom_handling_and_without_replacement(&self.line)
                 .ok_or(DxfImportError::NonAscii)?,
         );
-        if text.len() > MAX_DXF_LINE_BYTES {
+        if too_long(text) {
             return Err(DxfImportError::LineTooLong);
         }
         Ok(true)

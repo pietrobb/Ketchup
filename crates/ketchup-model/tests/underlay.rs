@@ -125,7 +125,7 @@ fn a_drawing_read_line_by_line_keeps_entities_that_wait_for_their_seqend_whole()
 
 #[test]
 fn a_line_too_long_or_a_missing_end_of_file_is_refused_while_reading() {
-    let long = dxf(&line(&"x".repeat(600), [0.0, 0.0], [1.0, 0.0]));
+    let long = dxf(&line(&"x".repeat(2050), [0.0, 0.0], [1.0, 0.0]));
     assert_eq!(
         read_dxf_underlay(&long, DxfImportOptions::new(None)),
         Err(DxfImportError::LineTooLong)
@@ -136,6 +136,22 @@ fn a_line_too_long_or_a_missing_end_of_file_is_refused_while_reading() {
         read_dxf_underlay(cut, DxfImportOptions::new(None)),
         Err(DxfImportError::MalformedSections)
     );
+}
+
+#[test]
+fn a_text_line_of_250_wide_characters_is_read_whole() {
+    // An MTEXT is cut every 250 characters; in CJK that is 750 bytes of UTF-8.
+    let piece = "漢".repeat(250);
+    let entities = format!("0\nMTEXT\n8\nnotes\n10\n0\n20\n0\n40\n2\n3\n{piece}\n1\n字\n");
+    let underlay = read(&entities);
+    let text = &underlay.lines.layers()[0].texts()[0];
+    assert_eq!(text.text, format!("{piece}字"));
+    // The longest string a DXF group holds is 2049 characters.
+    let long = dxf(&format!(
+        "0\nTEXT\n8\nnotes\n10\n0\n20\n0\n40\n2\n1\n{}\n",
+        "é".repeat(2049)
+    ));
+    assert!(read_dxf_underlay(&long, DxfImportOptions::new(None)).is_ok());
 }
 
 #[test]

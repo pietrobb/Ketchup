@@ -3388,6 +3388,21 @@ fn decimetres_kilometres_miles_and_yards_and_a_byte_order_mark_are_read() {
     assert_eq!(parsed.profiles()[0].segments()[0].end_mm(), [1.0, 0.0]);
 }
 
+/// Review 2026-10-24 UL-29: a line was capped at 512 bytes, so a text of 250 CJK
+/// characters (750 bytes of UTF-8) refused the whole drawing.
+#[test]
+fn a_text_of_250_wide_characters_does_not_refuse_the_drawing() {
+    let text = "漢".repeat(250);
+    let source = dxf(
+        Some(4),
+        &format!(
+            "0\nTEXT\n8\n0\n10\n0\n20\n0\n40\n2\n1\n{text}\n0\nLINE\n8\n0\n10\n0\n20\n0\n11\n1\n21\n0\n"
+        ),
+    );
+    let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
+    assert_eq!(parsed.profiles()[0].segments()[0].end_mm(), [1.0, 0.0]);
+}
+
 #[test]
 fn unreadable_values_name_the_value_and_the_parser_reason() {
     let options = || DxfImportOptions::new(Some(ImportLengthUnit::Millimetre));
