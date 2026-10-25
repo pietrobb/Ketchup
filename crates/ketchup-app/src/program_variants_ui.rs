@@ -21,9 +21,14 @@ fn values_text(values: &BTreeMap<String, f64>) -> String {
         .join(", ")
 }
 
-/// A number as the window's fields read it back.
+/// A number as the window's fields read it back, with at most six decimals, so a third
+/// shows as `0.333333`, not with the noise of its binary fraction (review 2026-10-24 UI-29).
 pub(crate) fn number_text(value: f64, decimal: DecimalSeparator) -> String {
-    let text = value.to_string();
+    let rounded = format!("{value:.6}");
+    let text = match rounded.trim_end_matches('0').trim_end_matches('.') {
+        "-0" => "0".to_owned(),
+        text => text.to_owned(),
+    };
     match decimal {
         DecimalSeparator::Comma => text.replace('.', ","),
         DecimalSeparator::Point => text,
@@ -135,17 +140,22 @@ impl KetchupApp {
             let named = BTreeMap::from([("name", param.name.clone())]);
             let label = self.catalog.format("params-field", &named);
             let range = self.range_text(param, decimal);
-            let mut text = match &self.live.variants.draft {
-                Some((name, draft)) if *name == param.name => draft.clone(),
-                _ => number_text(param.value, decimal),
+            let shown = number_text(param.value, decimal);
+            let drafted = match &self.live.variants.draft {
+                Some((name, draft)) if *name == param.name => Some(draft.clone()),
+                _ => None,
             };
+            // The field being typed in stays while the dock waits, so its text is not
+            // lost (review 2026-10-24 UI-29); the others wait.
+            let enabled = idle || drafted.is_some();
+            let mut text = drafted.clone().unwrap_or_else(|| shown.clone());
             let field = ui
                 .horizontal(|ui| {
                     ui.label(&param.name);
                     let field = egui::TextEdit::singleline(&mut text).desired_width(90.0);
-                    let response = ui.add_enabled(idle, field);
+                    let response = ui.add_enabled(enabled, field);
                     response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, idle, &label)
+                        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, enabled, &label)
                     });
                     if let Some(range) = range {
                         ui.label(range);
@@ -156,19 +166,20 @@ impl KetchupApp {
             if !param.doc.is_empty() {
                 ui.add(egui::Label::new(egui::RichText::new(&param.doc).weak()).wrap());
             }
+            // Text confirmed while the dock waited, set once it is free.
+            let queued = drafted.is_some() && !field.has_focus() && !field.lost_focus();
             if field.has_focus() {
                 self.live.variants.draft = Some((param.name.clone(), text));
-            } else if field.lost_focus() {
-                self.live.variants.draft = None;
+            } else if field.lost_focus() || (queued && idle) {
                 // Enter, or leaving a changed field, sets the value; Escape
                 // leaves it (review 2026-10-24 WB-27).
-                let (enter, escape) = ui.input(|input| {
-                    (
-                        input.key_pressed(egui::Key::Enter),
-                        input.key_pressed(egui::Key::Escape),
-                    )
-                });
-                if enter || (!escape && text != number_text(param.value, decimal)) {
+                let escape = !queued && ui.input(|input| input.key_pressed(egui::Key::Escape));
+                if !escape && !idle {
+                    self.live.variants.draft = Some((param.name.clone(), text));
+                    continue;
+                }
+                self.live.variants.draft = None;
+                if !escape && text != shown {
                     let read = if param.plain {
                         read_number(&text, decimal)
                     } else {

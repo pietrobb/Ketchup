@@ -244,6 +244,58 @@ fn a_value_is_set_when_its_field_loses_focus_and_a_count_takes_no_unit() {
     assert_eq!(field_value(&harness, "shelves").as_deref(), Some("3"));
 }
 
+/// Review 2026-10-24 UI-29: an evaluation or action that began while a value was being
+/// typed turned the field off, and the typed text was lost; a third of a metre read
+/// `333.3333333333333`. The field being typed in stays, its text is set once the window
+/// is free, and a value shows with at most six decimals.
+#[test]
+fn a_value_typed_while_the_dock_waits_is_kept_and_set_when_it_is_free() {
+    let mut harness = harness();
+    let field = named(&harness, "params-field", "width");
+    harness
+        .get_by_role_and_label(Role::TextInput, &field)
+        .focus();
+    harness.run_steps(1);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness
+        .get_by_role_and_label(Role::TextInput, &field)
+        .type_text("800");
+    harness.run_steps(1);
+
+    let reply = harness
+        .state_mut()
+        .hold_variant_run(VariantAction::Use("none".into()));
+    harness.run_steps(3);
+    let typed = harness.get_by_role_and_label(Role::TextInput, &field);
+    assert!(
+        !typed.accesskit_node().is_disabled(),
+        "the typed field stays"
+    );
+    assert_eq!(field_value(&harness, "width").as_deref(), Some("800"));
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(2);
+    assert_eq!(field_value(&harness, "width").as_deref(), Some("800"));
+
+    drop(reply);
+    settle(&mut harness);
+    settle(&mut harness);
+    assert_eq!(right_side(harness.state()), (782.0, 720.0));
+
+    set_size(&mut harness, 1000.0 / 3.0 + 300.0, 720.0);
+    assert_eq!(
+        field_value(&harness, "width").as_deref(),
+        Some("633.333333")
+    );
+    let undo = harness.state().undo_step_count();
+    type_parameter(&mut harness, "width", "633.333333");
+    settle(&mut harness);
+    assert_eq!(
+        harness.state().undo_step_count(),
+        undo,
+        "Enter on the value as shown keeps it"
+    );
+}
+
 #[test]
 fn the_dock_saves_uses_and_deletes_variants_without_waiting_for_them() {
     let mut harness = harness();
