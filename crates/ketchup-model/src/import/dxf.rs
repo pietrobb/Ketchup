@@ -1152,9 +1152,13 @@ fn parse_header(
                 0 => None,
                 1 => Some(ImportLengthUnit::Inch),
                 2 => Some(ImportLengthUnit::Foot),
+                3 => Some(ImportLengthUnit::Mile),
                 4 => Some(ImportLengthUnit::Millimetre),
                 5 => Some(ImportLengthUnit::Centimetre),
                 6 => Some(ImportLengthUnit::Metre),
+                7 => Some(ImportLengthUnit::Kilometre),
+                10 => Some(ImportLengthUnit::Yard),
+                14 => Some(ImportLengthUnit::Decimetre),
                 _ => return Err(DxfImportError::UnsupportedUnits),
             }
         }
@@ -4981,5 +4985,9 @@ const fn unit_name(unit: ImportLengthUnit) -> &'static str {
         ImportLengthUnit::Metre => "metre",
         ImportLengthUnit::Inch => "inch",
         ImportLengthUnit::Foot => "foot",
+        ImportLengthUnit::Decimetre => "decimetre",
+        ImportLengthUnit::Kilometre => "kilometre",
+        ImportLengthUnit::Yard => "yard",
+        ImportLengthUnit::Mile => "mile",
     }
 }

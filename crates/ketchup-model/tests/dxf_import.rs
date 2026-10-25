@@ -3304,6 +3304,38 @@ fn unitless_files_require_review_and_scale_user_units_before_validation() {
     assert_eq!(parsed.profiles()[0].segments()[0].end_mm(), [25.4, 0.0]);
 }
 
+/// Review 2026-10-24 UL-27: decimetres, kilometres, miles and yards, and a UTF-8 file
+/// that starts with a byte order mark, refused the whole drawing.
+#[test]
+fn decimetres_kilometres_miles_and_yards_and_a_byte_order_mark_are_read() {
+    for (insunits, length, unit, mm) in [
+        (14, "1", ImportLengthUnit::Decimetre, 100.0),
+        (7, "0.001", ImportLengthUnit::Kilometre, 1_000.0),
+        (3, "0.001", ImportLengthUnit::Mile, 1_609.344),
+        (10, "1", ImportLengthUnit::Yard, 914.4),
+    ] {
+        let source = dxf(
+            Some(insunits),
+            &format!("0\nLINE\n8\n0\n10\n0\n20\n0\n11\n{length}\n21\n0\n"),
+        );
+        let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
+        assert_eq!(parsed.units().source_unit(), unit);
+        assert_eq!(
+            parsed.units().authority(),
+            ImportUnitAuthority::FileDeclared
+        );
+        let end = parsed.profiles()[0].segments()[0].end_mm();
+        assert!(
+            (end[0] - mm).abs() < 1e-9 && end[1] == 0.0,
+            "{unit:?}: {end:?}"
+        );
+    }
+    let mut marked = b"\xEF\xBB\xBF".to_vec();
+    marked.extend(dxf(Some(4), "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n1\n21\n0\n"));
+    let parsed = inspect_dxf(&marked, DxfImportOptions::new(None)).unwrap();
+    assert_eq!(parsed.profiles()[0].segments()[0].end_mm(), [1.0, 0.0]);
+}
+
 #[test]
 fn unreadable_values_name_the_value_and_the_parser_reason() {
     let options = || DxfImportOptions::new(Some(ImportLengthUnit::Millimetre));

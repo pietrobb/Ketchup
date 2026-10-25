@@ -631,6 +631,10 @@ impl KetchupApp {
                         ImportLengthUnit::Metre => "unit-metre",
                         ImportLengthUnit::Inch => "unit-inch",
                         ImportLengthUnit::Foot => "unit-foot",
+                        ImportLengthUnit::Decimetre => "unit-decimetre",
+                        ImportLengthUnit::Kilometre => "unit-kilometre",
+                        ImportLengthUnit::Yard => "unit-yard",
+                        ImportLengthUnit::Mile => "unit-mile",
                     };
                     ui.label(self.catalog.format(
                         "dialog-import-dxf-file-units",

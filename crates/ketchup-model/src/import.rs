@@ -54,6 +54,10 @@ pub enum ImportLengthUnit {
     Metre,
     Inch,
     Foot,
+    Decimetre,
+    Kilometre,
+    Yard,
+    Mile,
 }
 
 impl ImportLengthUnit {
@@ -65,6 +69,10 @@ impl ImportLengthUnit {
             Self::Metre => 1_000.0,
             Self::Inch => 25.4,
             Self::Foot => 304.8,
+            Self::Decimetre => 100.0,
+            Self::Kilometre => 1_000_000.0,
+            Self::Yard => 914.4,
+            Self::Mile => 1_609_344.0,
         }
     }
 }

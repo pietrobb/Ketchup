@@ -781,6 +781,10 @@ impl DigestV3 {
             ImportLengthUnit::Metre => 3,
             ImportLengthUnit::Inch => 4,
             ImportLengthUnit::Foot => 5,
+            ImportLengthUnit::Decimetre => 6,
+            ImportLengthUnit::Kilometre => 7,
+            ImportLengthUnit::Yard => 8,
+            ImportLengthUnit::Mile => 9,
         });
         self.byte(match receipt.units().authority() {
             ImportUnitAuthority::FileDeclared => 1,
