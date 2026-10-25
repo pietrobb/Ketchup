@@ -791,6 +791,135 @@ fn rounded(loads: &Loads) -> Loads {
         .collect()
 }
 
+/// Own loads: the weight of the parts in scope and the area loads on them,
+/// part by part, with what is missing to know them.
+fn own_loads(model: &ProgramModel, frames: &[Frame]) -> (Vec<Vec<Patch>>, Vec<BTreeSet<String>>) {
+    let parts = &model.parts;
+    let mut patches: Vec<Vec<Patch>> = parts.iter().map(|_| Vec::new()).collect();
+    let mut missing: Vec<BTreeSet<String>> = parts.iter().map(|_| BTreeSet::new()).collect();
+    for (item, part) in parts.iter().enumerate() {
+        let whole = |loads_n: Loads, source: &str| Patch {
+            from_mm: 0.0,
+            to_mm: frames[item].length,
+            loads_n,
+            source: source.to_owned(),
+            footprint: Vec::new(),
+        };
+        if !part.tags.is_disjoint(&model.weight_scope) {
+            let material = part.material.as_deref().unwrap_or("");
+            match model.material_weights.get(material) {
+                Some(weight) => {
+                    let kg = weight.kg_m3.map_or_else(
+                        || weight.kg_m2.unwrap_or(0.0) * slab_area_m2(part),
+                        |kg_m3| kg_m3 * volume_m3(part),
+                    );
+                    let loads = Loads::from([("permanent".to_owned(), kg * GRAVITY)]);
+                    patches[item].push(whole(loads, "own weight"));
+                }
+                None => {
+                    missing[item]
+                        .insert(format!("the weight of material {material:?} is not known"));
+                }
+            }
+        }
+        for load in &model.area_loads {
+            if part.tags.is_disjoint(&load.on) {
+                continue;
+            }
+            let area = upward_area_m2(part, load.projected);
+            if area <= 0.0 {
+                continue;
+            }
+            match load.kn_m2 {
+                Some(kn_m2) => {
+                    let loads = Loads::from([(load.kind.clone(), kn_m2 * 1000.0 * area)]);
+                    patches[item].push(whole(loads, &load.name));
+                }
+                None => {
+                    missing[item].insert(format!("{} ({}) has no value", load.name, load.kind));
+                }
+            }
+        }
+    }
+    (patches, missing)
+}
+
+/// Why a member over `list` tips: over the supports it lifts off (`lifted`),
+/// or over its one support when it lifts off none.
+fn tipping(list: &[Support], lifted: &[bool], parts: &[Part]) -> String {
+    let names: Vec<&str> = list
+        .iter()
+        .zip(lifted)
+        .filter(|(_, lifted)| **lifted)
+        .map(|(support, _)| parts[support.supporter].name.as_str())
+        .collect();
+    if names.is_empty() {
+        let mut on: Vec<&str> = list
+            .iter()
+            .map(|support| parts[support.supporter].name.as_str())
+            .collect();
+        on.dedup();
+        format!(
+            "it rests on {} alone and tips over it: its load acts beside the bearing and no joint takes a moment",
+            on.join(", ")
+        )
+    } else {
+        format!(
+            "it lifts off {} and tips over its last support (EQU 0.9 G + 1.5 Q): no joint holds it down",
+            names.join(", ")
+        )
+    }
+}
+
+/// Why `part`'s load goes nowhere: it rests on nothing, and what it `touches`
+/// from the side or below holds nothing without a joint.
+fn unsupported(part: &Part, touches: &BTreeSet<usize>, parts: &[Part]) -> String {
+    let mut reason = format!("{} rests on nothing that carries it", part.name);
+    if !touches.is_empty() {
+        let names: Vec<&str> = touches
+            .iter()
+            .map(|other| parts[*other].name.as_str())
+            .collect();
+        reason.push_str(&format!(
+            "; it only touches {} from the side or below, which holds nothing without a joint",
+            names.join(", ")
+        ));
+    }
+    reason
+}
+
+/// What a member carries in all, its patches and reactions rounded for the report.
+fn member_load(
+    part: &Part,
+    frame: &Frame,
+    patches: &[Patch],
+    reactions: Vec<Reaction>,
+    missing: BTreeSet<String>,
+) -> MemberLoad {
+    let mut total = Loads::new();
+    for patch in patches {
+        add(&mut total, &patch.loads_n, 1.0);
+    }
+    MemberLoad {
+        part: part.name.clone(),
+        length_mm: round(frame.length),
+        axis: frame.axis.map(|v| (v * 1e6).round() / 1e6 + 0.0),
+        loads_n: rounded(&total),
+        patches: patches
+            .iter()
+            .map(|patch| Patch {
+                from_mm: round(patch.from_mm),
+                to_mm: round(patch.to_mm),
+                loads_n: rounded(&patch.loads_n),
+                source: patch.source.clone(),
+                footprint: Vec::new(),
+            })
+            .collect(),
+        reactions,
+        missing: missing.into_iter().collect(),
+    }
+}
+
 /// Loads on every load-path member, when the program declares weights or area loads.
 #[must_use]
 pub fn loads(model: &ProgramModel) -> LoadReport {
@@ -944,53 +1073,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
         })
         .collect();
 
-    // Own loads: weight of the parts in scope and the area loads on them.
-    let mut patches: Vec<Vec<Patch>> = parts.iter().map(|_| Vec::new()).collect();
-    let mut missing: Vec<BTreeSet<String>> = parts.iter().map(|_| BTreeSet::new()).collect();
-    for (item, part) in parts.iter().enumerate() {
-        let whole = |loads_n: Loads, source: &str| Patch {
-            from_mm: 0.0,
-            to_mm: frames[item].length,
-            loads_n,
-            source: source.to_owned(),
-            footprint: Vec::new(),
-        };
-        if !part.tags.is_disjoint(&model.weight_scope) {
-            let material = part.material.as_deref().unwrap_or("");
-            match model.material_weights.get(material) {
-                Some(weight) => {
-                    let kg = weight.kg_m3.map_or_else(
-                        || weight.kg_m2.unwrap_or(0.0) * slab_area_m2(part),
-                        |kg_m3| kg_m3 * volume_m3(part),
-                    );
-                    let loads = Loads::from([("permanent".to_owned(), kg * GRAVITY)]);
-                    patches[item].push(whole(loads, "own weight"));
-                }
-                None => {
-                    missing[item]
-                        .insert(format!("the weight of material {material:?} is not known"));
-                }
-            }
-        }
-        for load in &model.area_loads {
-            if part.tags.is_disjoint(&load.on) {
-                continue;
-            }
-            let area = upward_area_m2(part, load.projected);
-            if area <= 0.0 {
-                continue;
-            }
-            match load.kn_m2 {
-                Some(kn_m2) => {
-                    let loads = Loads::from([(load.kind.clone(), kn_m2 * 1000.0 * area)]);
-                    patches[item].push(whole(loads, &load.name));
-                }
-                None => {
-                    missing[item].insert(format!("{} ({}) has no value", load.name, load.kind));
-                }
-            }
-        }
-    }
+    let (mut patches, mut missing) = own_loads(model, &frames);
 
     // Pass the loads down, each part after everything it carries.
     let mut pending = vec![0usize; parts.len()];
@@ -1012,17 +1095,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                     .iter()
                     .any(|p| p.loads_n.values().any(|v| *v > 0.0))
             {
-                let mut reason = format!("{} rests on nothing that carries it", parts[item].name);
-                if !touches[item].is_empty() {
-                    let names: Vec<&str> = touches[item]
-                        .iter()
-                        .map(|other| parts[*other].name.as_str())
-                        .collect();
-                    reason.push_str(&format!(
-                        "; it only touches {} from the side or below, which holds nothing without a joint",
-                        names.join(", ")
-                    ));
-                }
+                let reason = unsupported(&parts[item], &touches[item], parts);
                 if !member[item] {
                     report
                         .unassigned
@@ -1051,28 +1124,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
             let axis = frames[item].axis;
             let shares = beam_shares(&patches[item], &ranges, &held, axis[0].hypot(axis[1]));
             if shares.tips {
-                let names: Vec<&str> = list
-                    .iter()
-                    .zip(&shares.lifted)
-                    .filter(|(_, lifted)| **lifted)
-                    .map(|(support, _)| parts[support.supporter].name.as_str())
-                    .collect();
-                missing[item].insert(if names.is_empty() {
-                    let mut on: Vec<&str> = list
-                        .iter()
-                        .map(|support| parts[support.supporter].name.as_str())
-                        .collect();
-                    on.dedup();
-                    format!(
-                        "it rests on {} alone and tips over it: its load acts beside the bearing and no joint takes a moment",
-                        on.join(", ")
-                    )
-                } else {
-                    format!(
-                        "it lifts off {} and tips over its last support (EQU 0.9 G + 1.5 Q): no joint holds it down",
-                        names.join(", ")
-                    )
-                });
+                missing[item].insert(tipping(list, &shares.lifted, parts));
             }
             lifted = shares.lifted;
             tension = shares.tension;
@@ -1174,28 +1226,13 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
         if !done[item] {
             reasons.insert("the parts it carries lean on each other in a loop".to_owned());
         }
-        let mut total = Loads::new();
-        for patch in &patches[item] {
-            add(&mut total, &patch.loads_n, 1.0);
-        }
-        report.members.push(MemberLoad {
-            part: part.name.clone(),
-            length_mm: round(frames[item].length),
-            axis: frames[item].axis.map(|v| (v * 1e6).round() / 1e6 + 0.0),
-            loads_n: rounded(&total),
-            patches: patches[item]
-                .iter()
-                .map(|patch| Patch {
-                    from_mm: round(patch.from_mm),
-                    to_mm: round(patch.to_mm),
-                    loads_n: rounded(&patch.loads_n),
-                    source: patch.source.clone(),
-                    footprint: Vec::new(),
-                })
-                .collect(),
-            reactions: std::mem::take(&mut reactions[item]),
-            missing: reasons.into_iter().collect(),
-        });
+        report.members.push(member_load(
+            part,
+            &frames[item],
+            &patches[item],
+            std::mem::take(&mut reactions[item]),
+            reasons,
+        ));
     }
     report
 }

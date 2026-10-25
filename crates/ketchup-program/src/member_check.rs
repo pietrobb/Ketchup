@@ -1406,16 +1406,22 @@ impl Design<'_> {
     }
 }
 
-fn beam_checks(
-    load: &MemberLoad,
-    shape: &Shape,
-    design: &Design,
-    uls: &[Combination],
-    sls: &[(Combination, Loads)],
-) -> (Vec<Check>, bool, Vec<String>) {
-    let class = design.class;
-    let lever = horizontal(load.axis);
-    let cos_t = horizontal(shape.grain);
+/// Where a beam is held and how its loads are laid on it: the bearings,
+/// merged where closer than the member is deep, the supports of the
+/// continuous beam over them, and each load component with its kind and
+/// the moments it makes over the supports.
+struct Layout {
+    zones: Vec<Zone>,
+    bearings: usize,
+    supports: Vec<f64>,
+    /// Whether the stretch after each support lies on a long bearing.
+    bedded: Vec<bool>,
+    kinds: Vec<usize>,
+    components: Vec<Vec<Piece>>,
+    support_moments: Vec<Vec<f64>>,
+}
+
+fn layout(load: &MemberLoad, shape: &Shape) -> Layout {
     let per_kind: Vec<Vec<(f64, f64, f64)>> = LOAD_KINDS
         .iter()
         .map(|kind| {
@@ -1492,6 +1498,36 @@ fn beam_checks(
             .map(|pieces| continuous_span::solve(&supports, &bedded, pieces).moments)
             .collect()
     };
+    Layout {
+        zones,
+        bearings: bearings.len(),
+        supports,
+        bedded,
+        kinds,
+        components,
+        support_moments,
+    }
+}
+
+fn beam_checks(
+    load: &MemberLoad,
+    shape: &Shape,
+    design: &Design,
+    uls: &[Combination],
+    sls: &[(Combination, Loads)],
+) -> (Vec<Check>, bool, Vec<String>) {
+    let class = design.class;
+    let lever = horizontal(load.axis);
+    let cos_t = horizontal(shape.grain);
+    let Layout {
+        zones,
+        bearings,
+        supports,
+        bedded,
+        kinds,
+        components,
+        support_moments,
+    } = layout(load, shape);
     let no_moments = vec![[0.0; 2]; components.len()];
     // Each segment is checked evenly along it and either side of every place
     // its section changes, on the section there.
@@ -1550,9 +1586,8 @@ fn beam_checks(
             ));
         }
     }
-    let spans_checked =
-        bearings.len() < 2 || segments.iter().any(|(seg, _)| seg.kind == Kind::Span);
-    let (b, h) = (shape.b, shape.h);
+    let spans_checked = bearings < 2 || segments.iter().any(|(seg, _)| seg.kind == Kind::Span);
+    let h = shape.h;
     // kh is of the member's depth (EC5 3.2(3)), not of a notched section's.
     let kh = if class.glulam {
         (600.0 / h).powf(0.1).clamp(1.0, 1.1)
@@ -1657,10 +1692,29 @@ fn beam_checks(
         .into_iter()
         .filter_map(|best| best.0)
         .collect();
+    let (at_bearings, mut unchecked) = bearing_checks(load, shape, design, uls, &zones);
+    checks.extend(at_bearings);
+    unchecked.extend(tension_notch(shape, &segments, &zones, uls, &kinds));
+    (checks, spans_checked, unchecked)
+}
+
+/// Shear at notched bearings (6.5.2) and compression perpendicular to the
+/// grain on the faces the member bears on (6.1.5), bearing by bearing; and
+/// why a notch is not checked.
+fn bearing_checks(
+    load: &MemberLoad,
+    shape: &Shape,
+    design: &Design,
+    uls: &[Combination],
+    zones: &[Zone],
+) -> (Vec<Check>, Vec<String>) {
+    let class = design.class;
+    let (b, h) = (shape.b, shape.h);
+    let cos_t = horizontal(shape.grain);
     let mut notch = Best(None);
     let mut bearing = Best(None);
     let mut unchecked = Vec::new();
-    for zone in &zones {
+    for zone in zones {
         let names = zone.names(load);
         let reaction = zone.total(load, false);
         // Notched bearings (6.5.2).
@@ -1712,10 +1766,7 @@ fn beam_checks(
             }
         }
     }
-    checks.extend(notch.0);
-    checks.extend(bearing.0);
-    unchecked.extend(tension_notch(shape, &segments, &zones, uls, &kinds));
-    (checks, spans_checked, unchecked)
+    (notch.0.into_iter().chain(bearing.0).collect(), unchecked)
 }
 
 /// EN 1995-1-1 6.5.1(2): the stress concentration at a change in depth may be
