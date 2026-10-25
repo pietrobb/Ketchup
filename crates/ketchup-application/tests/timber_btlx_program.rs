@@ -330,6 +330,19 @@ fn a_board_drilled_from_below_is_turned_over_and_one_drilled_from_both_faces_is_
         both.contains("\"shelf\" is drilled into both its top and its bottom face"),
         "{both}"
     );
+    // Review 2026-10-24 MF-26: a pocket milled into the top beside a hole
+    // drilled into the bottom is the same two-face part.
+    let pocket_and_hole = woodwop_programs(
+        &mut worker,
+        "shelf = board('shelf', (600, 300, 18))\n\
+         pocket(shelf, 'z+', rect = (40, 40, 140, 100), depth = 5)\n\
+         hole(shelf, 'z-', at = (300, 150), diameter = 8, depth = 5)\n",
+    )
+    .expect_err("refused");
+    assert!(
+        pocket_and_hole.contains("\"shelf\" is drilled into both its top and its bottom face"),
+        "{pocket_and_hole}"
+    );
 }
 
 /// Review 2026-10-24 MF-20: a production job and its own woodWOP program agree
