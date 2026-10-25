@@ -840,10 +840,12 @@ fn verify_exact_worker_identity(
     Ok(guarded)
 }
 
-/// Memory the exact worker may commit: half of this computer's, so a hostile or huge
-/// STEP or IGES file stops the worker instead of exhausting the system and the window
-/// with it. 4 GiB when the system does not say how much it has. On macOS, which accepts
-/// `RLIMIT_AS` without enforcing it, this is no limit yet.
+/// Memory the exact workers of one request may commit: half of this computer's, so a
+/// hostile or huge STEP or IGES file stops the worker instead of exhausting the system
+/// and the window with it. Workers running side by side share it
+/// ([`ExactWorkerSupervisor::spawn_sharing`]). 4 GiB when the system does not say how
+/// much it has. On macOS, which accepts `RLIMIT_AS` without enforcing it, this is no
+/// limit yet.
 pub fn exact_worker_memory_bytes() -> usize {
     static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *BYTES.get_or_init(|| {
@@ -917,6 +919,18 @@ impl ExactWorkerSupervisor {
         executable: impl AsRef<Path>,
         cancelled: &AtomicBool,
     ) -> Result<Self, WorkerError> {
+        Self::spawn_sharing(executable, 1, cancelled)
+    }
+
+    /// A worker that is one of `workers` running side by side for one request: it may
+    /// commit that share of [`exact_worker_memory_bytes`], so together they stay within
+    /// what one worker alone may (review 2026-10-24 EX-20). It keeps the share when it
+    /// is restarted.
+    pub fn spawn_sharing(
+        executable: impl AsRef<Path>,
+        workers: usize,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, WorkerError> {
         if cancelled.load(Ordering::Acquire) {
             return Err(WorkerError::Cancelled);
         }
@@ -926,7 +940,8 @@ impl ExactWorkerSupervisor {
             guarded.sha256.clone(),
             guarded.stamp,
         );
-        let client = Self::spawn_client(guarded, cancelled)?;
+        let memory_limit = exact_worker_memory_bytes() / workers.max(1);
+        let client = Self::spawn_client(guarded, memory_limit, cancelled)?;
         Ok(Self {
             executable,
             executable_sha256,
@@ -947,9 +962,15 @@ impl ExactWorkerSupervisor {
         self.client.is_alive() && executable_unchanged(&self.executable, self.executable_stamp)
     }
 
+    /// Bytes the worker may commit before it is stopped.
+    pub fn memory_limit(&self) -> usize {
+        self.client.memory_limit
+    }
+
     fn spawn_verified_client(
         executable: &Path,
         executable_sha256: &str,
+        memory_limit: usize,
         cancelled: &AtomicBool,
     ) -> Result<ExactWorkerClient, WorkerError> {
         if cancelled.load(Ordering::Acquire) {
@@ -957,18 +978,20 @@ impl ExactWorkerSupervisor {
         }
         Self::spawn_client(
             verify_exact_worker_identity(executable, executable_sha256)?,
+            memory_limit,
             cancelled,
         )
     }
 
     fn spawn_client(
         executable: GuardedExactWorker,
+        memory_limit: usize,
         cancelled: &AtomicBool,
     ) -> Result<ExactWorkerClient, WorkerError> {
         if cancelled.load(Ordering::Acquire) {
             return Err(WorkerError::Cancelled);
         }
-        let mut client = ExactWorkerClient::spawn_guarded(executable)?;
+        let mut client = ExactWorkerClient::spawn_guarded_with(executable, memory_limit)?;
         client.ensure_not_cancelled(cancelled)?;
         client.ping_with_cancellation(cancelled)?;
         Ok(client)
@@ -994,6 +1017,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.inspect_step_xde_request_with_cancellation(
@@ -1031,6 +1055,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.inspect_step_part_request_with_cancellation(
@@ -1062,6 +1087,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.inspect_step_part_request_with_cancellation(
@@ -1095,6 +1121,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.inspect_iges_xde_request_with_cancellation(
@@ -1132,6 +1159,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.inspect_iges_part_request_with_cancellation(
@@ -1166,6 +1194,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.inspect_iges_part_request_with_cancellation(
@@ -1218,6 +1247,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.tessellate_iges_part_request_with_cancellation(
@@ -1255,6 +1285,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.tessellate_iges_part_request_with_cancellation(
@@ -1294,6 +1325,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.convert_step_to_iges_request_with_cancellation(
@@ -1331,6 +1363,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.tessellate_step_part_request_with_cancellation(
@@ -1370,6 +1403,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.tessellate_step_part_request_with_cancellation(
@@ -1520,6 +1554,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client
@@ -1575,6 +1610,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.volume_mesh_exact_brep_graph_with_cancellation(
@@ -1776,6 +1812,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.evaluate_exact_brep_graph_with_cancellation(
@@ -1879,6 +1916,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.tessellate_exact_brep_graph_with_cancellation(
@@ -2002,6 +2040,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     &NEVER_CANCELLED,
                 )?;
                 self.client.export_exact_brep_graph_step_with_cancellation(
@@ -2190,6 +2229,7 @@ impl ExactWorkerSupervisor {
                     self.client = Self::spawn_verified_client(
                         &self.executable,
                         &self.executable_sha256,
+                        self.client.memory_limit,
                         cancelled,
                     )?;
                     match package {
@@ -2275,6 +2315,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
                     &self.executable_sha256,
+                    self.client.memory_limit,
                     cancelled,
                 )?;
                 self.client.assemble_step_model_request_with_cancellation(

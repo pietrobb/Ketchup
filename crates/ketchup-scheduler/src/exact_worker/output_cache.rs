@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 pub(super) const MAX_CACHED_GRAPH_OUTPUTS: usize = 512;
-/// The worker has no memory limit of its own, so the kept outputs stop here.
+/// The kept outputs stop here, a quarter of the least a worker running beside others may
+/// commit (`ketchup-application`'s `MIN_WORKER_BYTES`), so they leave it room to work.
 pub(super) const MAX_CACHED_GRAPH_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 
 pub(super) struct OutputCache<T> {

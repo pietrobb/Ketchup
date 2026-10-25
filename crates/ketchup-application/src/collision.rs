@@ -668,7 +668,7 @@ fn send_exact_pair_batches(
                 // Only an already running worker joins; the first one always works.
                 let idle_only = idle_only && worker > 0;
                 let idle = idle_only
-                    .then(|| crate::worker_pool::checkout_idle(path))
+                    .then(|| crate::worker_pool::checkout_idle(path, workers))
                     .flatten();
                 let claimed = if idle_only && idle.is_none() {
                     None
@@ -678,7 +678,7 @@ fn send_exact_pair_batches(
                 if let Some((range, range_tx)) = claimed {
                     let checked_out = match idle {
                         Some(supervisor) => Ok(supervisor),
-                        None => crate::worker_pool::checkout(path, cancelled),
+                        None => crate::worker_pool::checkout_sharing(path, workers, cancelled),
                     };
                     match checked_out {
                         Ok(mut supervisor) => {
@@ -1914,6 +1914,38 @@ box('beside', (100, 100, 18), at=(100, 300, 0))";
             worker.release();
         }
         assert_eq!(crate::worker_pool::idle_count(), most);
+    }
+
+    /// Review 2026-10-24 EX-20: each of the up to twelve workers a pair check runs side
+    /// by side could commit half the computer's memory.
+    #[test]
+    fn the_workers_of_one_pair_check_share_one_workers_memory() {
+        let _turn = super::integration_support::file_turn();
+        let path = crate::evaluation::exact_worker_candidates()
+            .into_iter()
+            .find(|path| path.is_file())
+            .expect("native exact worker required");
+        let budget = ketchup_scheduler::exact_worker_memory_bytes();
+        let (most, _) = pair_worker_count(usize::MAX, 0, 0);
+        let cancelled = AtomicBool::new(false);
+        let workers: Vec<_> = (0..most)
+            .map(|_| crate::worker_pool::checkout_sharing(Some(&path), most, &cancelled).unwrap())
+            .collect();
+        let committed: usize = workers.iter().map(|worker| worker.memory_limit()).sum();
+        assert!(
+            committed <= budget,
+            "{most} workers may commit {committed} of {budget}"
+        );
+        for worker in workers {
+            worker.release();
+        }
+        // They stay warm for the next check of as many, and a request of one worker
+        // gets the whole budget instead of one of their shares.
+        let again = crate::worker_pool::checkout_idle(Some(&path), most).unwrap();
+        assert!(again.memory_limit() <= budget / most);
+        again.release();
+        let alone = crate::worker_pool::checkout(Some(&path), &cancelled).unwrap();
+        assert_eq!(alone.memory_limit(), budget);
     }
 
     /// Spread over idle workers, a motion batch comes back in several range
