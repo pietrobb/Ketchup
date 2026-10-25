@@ -162,6 +162,8 @@ fn a_click_picks_an_annotation_and_its_tag_hides_it() {
 
     // A click beside every annotation lets it go and selects the part under it,
     // also as the second click of a double click that began on the annotation.
+    click(&mut harness, plate);
+    assert_eq!(harness.state().picked_annotation_name(), None);
     harness.run_steps(60);
     click(
         &mut harness,
@@ -195,4 +197,36 @@ fn a_click_picks_an_annotation_and_its_tag_hides_it() {
     click(&mut harness, plate);
     click(&mut harness, plate);
     assert_eq!(harness.state().edit_context_depth(), 1);
+}
+
+/// Review 2026-10-24 UI-26: an annotation is picked before the part under it and keeps
+/// its size on screen, so zoomed out over a plan full of labels no wall could be picked.
+/// A second click on the picked label picks the part under it.
+#[test]
+fn a_click_on_the_picked_annotation_picks_the_part_under_it() {
+    let mut harness = shell();
+    for _ in 0..4 {
+        harness.state_mut().dispatch_command(AppCommand::ZoomOut);
+    }
+    harness.step();
+    let (_, baseline, height) = text_of(&drawn(&harness), "S-05");
+    let label = baseline + egui::vec2(height / 2.0, -height / 3.0);
+    click(&mut harness, label);
+    assert_eq!(harness.state().picked_annotation_name(), Some("S-05"));
+    assert!(harness.state().selected_instance_paths().is_empty());
+
+    harness.run_steps(60);
+    click(&mut harness, label);
+    assert_eq!(harness.state().picked_annotation_name(), None);
+    assert_eq!(
+        harness.state().selected_instance_paths().len(),
+        1,
+        "the plate"
+    );
+    assert_eq!(harness.state().edit_context_depth(), 0);
+
+    // The next click on it picks it again.
+    harness.run_steps(60);
+    click(&mut harness, label);
+    assert_eq!(harness.state().picked_annotation_name(), Some("S-05"));
 }

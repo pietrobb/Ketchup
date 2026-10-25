@@ -2,7 +2,8 @@
 //! the value the document measured, leaders and drawn lines, laid out by the same
 //! marks the plan sheet draws. Their points follow the model; their text and the
 //! marks of a dimension keep one size on screen at every zoom. A click on one picks
-//! it; it stays no part, so the part selection is empty while it is picked.
+//! it; it stays no part, so the part selection is empty while it is picked. A click on
+//! the picked one picks what lies under it.
 
 use crate::renderer::single_precision;
 use crate::*;
@@ -130,20 +131,26 @@ impl KetchupApp {
 
     /// Picks the shown annotation under `pointer`, the last drawn first, as it is
     /// drawn on top; a click beside every annotation lets go of the picked one.
-    /// Whether one was picked.
+    /// A click on the picked one goes through to what lies under it: the next annotation
+    /// there, then the part, so a wall under labels that keep their size on screen as the
+    /// plan is zoomed out is still picked (review 2026-10-24 UI-26). Whether one was picked.
     pub(crate) fn pick_annotation_at(
         &mut self,
         context: &egui::Context,
         pointer: Pos2,
         rect: Rect,
     ) -> bool {
-        let Some(name) = self
+        let under: Vec<String> = self
             .drawn_annotations(context, rect)
             .into_iter()
             .rev()
-            .find(|drawn| drawn.reaches(pointer))
+            .filter(|drawn| drawn.reaches(pointer))
             .map(|drawn| drawn.name)
-        else {
+            .collect();
+        let picked = self
+            .picked_annotation_name()
+            .and_then(|picked| under.iter().position(|name| name == picked));
+        let Some(name) = under.get(picked.map_or(0, |at| at + 1)).cloned() else {
             self.picked_annotation = None;
             return false;
         };
