@@ -247,7 +247,7 @@ pub fn export_drawing(
 ) -> Result<DrawingExportBundle, DrawingExportError> {
     let sheet = validate_contract(snapshot, drawing)?;
     let (mut lines, mut texts) = collect_page_content(drawing)?;
-    let (annotations, marks) = annotations::draw_sheet_annotations(snapshot, drawing);
+    let (annotations, marks) = annotations::draw_sheet_annotations(snapshot, sheet, drawing);
     // The sheet's own lines and texts come first; the DXF writes the
     // annotations' apart, on the layers of their tags.
     let (sheet_lines, sheet_texts) = (lines.len(), texts.len());

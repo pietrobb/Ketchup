@@ -1,5 +1,6 @@
-//! The plan's annotations on a drawing sheet: every top view draws the shown
-//! annotations of the document where they lie, at the scale of that view.
+//! The plan's annotations on a drawing sheet: on a sheet that draws its parts
+//! where they lie, every top view draws the shown annotations of the document
+//! where they lie, at the scale of that view and inside its cell.
 //! Text heights and the marks of a dimension (ticks, extension lines, the
 //! arrowhead of a leader) are millimetres on paper. The page runs y up. In the
 //! DXF each annotation lies on the layer of its tag, and a dimension is a
@@ -9,7 +10,7 @@ use super::layers::R12Layers;
 use super::{LINE_SPACING, LineStyle, PageLine, PageText, bounds_contains, page_point, view_scale};
 use crate::annotation::{Annotation, AnnotationMark, DimensionLayout, dimension_text};
 use crate::document::Snapshot;
-use crate::drawing::{OrthographicDrawing, OrthographicViewKind};
+use crate::drawing::{DrawingSheet, DrawingSource, OrthographicDrawing, OrthographicViewKind};
 use crate::tolerance::{MIN_DIMENSION_MM, ROUNDING};
 
 /// On paper: the gap between a measured point and its extension line, how far
@@ -42,12 +43,13 @@ pub struct SheetAnnotations {
     pub dimensions: usize,
     pub leaders: usize,
     pub lines: usize,
-    /// Shown annotations of a sheet without a top view: it has no plan to draw
-    /// them in.
+    /// Shown annotations of a sheet without a top view, or of one part drawn
+    /// in its own frame: it has no plan to draw them in.
     pub without_plan_view: usize,
     /// Dimensions measured straight up or down: they have no length in plan.
     pub outside_plan: usize,
-    /// Annotations that would reach past the sheet's border, left out whole.
+    /// Annotations that would reach past the top view's cell of the sheet,
+    /// into another view or off the sheet; left out whole.
     pub off_sheet: Vec<String>,
 }
 
@@ -69,9 +71,11 @@ pub(super) struct SheetDimension {
     pub(super) value: String,
 }
 
-/// The shown annotations drawn into every top view of `drawing`.
+/// The shown annotations drawn into every top view of `drawing`, when its sheet
+/// draws its parts where they lie in the plan.
 pub(super) fn draw_sheet_annotations(
     snapshot: &Snapshot,
+    sheet: &DrawingSheet,
     drawing: &OrthographicDrawing,
 ) -> (SheetAnnotations, Vec<SheetMark>) {
     let shown: Vec<&Annotation> = snapshot
@@ -87,7 +91,8 @@ pub(super) fn draw_sheet_annotations(
         .zip(&drawing.layout.view_placements)
         .filter(|(view, _)| view.kind == OrthographicViewKind::Top)
         .collect();
-    if plans.is_empty() {
+    // A sheet of one part draws it in the part's own frame, not the plan's.
+    if plans.is_empty() || matches!(sheet.source(), DrawingSource::Definition(_)) {
         counts.without_plan_view = shown.len();
         return (counts, drawn);
     }
@@ -113,7 +118,7 @@ pub(super) fn draw_sheet_annotations(
                 counts.outside_plan += 1;
                 continue;
             }
-            if !marks.inside(drawing.layout.border_bounds_mm) {
+            if !marks.inside(placement.cell_bounds_mm) {
                 if !counts.off_sheet.contains(&annotation.name) {
                     counts.off_sheet.push(annotation.name.clone());
                 }

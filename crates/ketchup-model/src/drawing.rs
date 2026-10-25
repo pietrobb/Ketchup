@@ -2056,6 +2056,9 @@ pub struct DrawingViewPlacement {
     pub stable_view_id: String,
     pub origin_mm: [f64; 2],
     pub page_bounds_mm: [[f64; 2]; 2],
+    /// The cell of the sheet the view is centred in; what is drawn into the
+    /// view stays inside it.
+    pub cell_bounds_mm: [[f64; 2]; 2],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3597,6 +3600,7 @@ fn layout_drawing_sheet(
             stable_view_id: view.stable_view_id.clone(),
             origin_mm,
             page_bounds_mm,
+            cell_bounds_mm: [cell_min, cell_max],
         });
     }
     let linear_dimensions = layout_linear_dimensions(

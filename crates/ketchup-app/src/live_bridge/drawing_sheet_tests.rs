@@ -28,18 +28,47 @@ fn summary(app: &mut KetchupApp, bridge: &mut LiveBridge) -> Value {
 /// The first part of the new document drawn on a sheet by MCP `create_drawing`,
 /// found through the summary.
 fn sheet_of_the_block(app: &mut KetchupApp, bridge: &mut LiveBridge) -> u64 {
+    sheet_of_parts(app, bridge, 1)
+}
+
+/// The first `parts` parts of the new document drawn together on one sheet:
+/// with more than one, the sheet draws them where they lie in the plan.
+fn sheet_of_parts(app: &mut KetchupApp, bridge: &mut LiveBridge, parts: usize) -> u64 {
     evaluate_exact(app);
-    let root = app.document.current().occurrences().next().unwrap().id();
-    let instance_paths = vec![AssistantInstancePath {
-        root_occurrence_id: root.0,
-        steps: Vec::new(),
-    }];
+    let instance_paths = app
+        .document
+        .current()
+        .occurrences()
+        .take(parts)
+        .map(|occurrence| AssistantInstancePath {
+            root_occurrence_id: occurrence.id().0,
+            steps: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(instance_paths.len(), parts);
+    if parts > 1 {
+        // Several parts are drawn as one rigid assembly: grounded, they stay put.
+        let occurrence_ids = instance_paths
+            .iter()
+            .map(|path| path.root_occurrence_id)
+            .collect();
+        let grounded = edit(AssistantCadEditOperation::SetGrounded {
+            selector: AssistantCadEntitySelector::Occurrences { occurrence_ids },
+            grounded: true,
+        });
+        bridge
+            .execute(app, grounded, false)
+            .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+        evaluate_exact(app);
+    }
     let name = "Block".to_owned();
     let created = edit(AssistantCadEditOperation::CreateDrawing {
         name,
         instance_paths,
     });
-    let created = bridge.execute(app, created, false).unwrap();
+    let created = bridge
+        .execute(app, created, false)
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
     assert_eq!(created["published"], true, "{created}");
     evaluate_exact(app);
     let listed = summary(app, bridge);
@@ -674,7 +703,7 @@ fn assert_the_dwg_carries_the_dxf(
     assert_eq!(texts(&back), texts(dxf));
 }
 
-/// A sheet's top view draws the plan's shown annotations where they lie: the
+/// The top view of a sheet of several parts draws the plan's shown annotations where they lie: the
 /// texts at their points, each dimension with the value Kečup measured centred
 /// above its line, and the leader. A dimension straight up has no length in
 /// plan and one text off the sheet is named; hidden, they leave the sheet.
@@ -684,6 +713,7 @@ fn a_drawing_sheet_draws_the_plan_annotations_in_its_top_view() {
     let program = Request::ApplyProgram {
         expected: None,
         source: "box('slab', (6000, 3000, 200), at=(0, 0, -200))\n\
+                 box('post', (200, 200, 2000), at=(5800, 2800, 0))\n\
                  points = [(0, 0), (3000, 0), (6000, 0)]\n\
                  for i, p in enumerate(points):\n    \
                  text('P' + str(i + 1), 'P' + str(i + 1), at=p, height_mm=3.5, tags='plan')\n\
@@ -699,7 +729,7 @@ fn a_drawing_sheet_draws_the_plan_annotations_in_its_top_view() {
     bridge
         .execute(&mut app, program, false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
-    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let id = sheet_of_parts(&mut app, &mut bridge, 2);
     let directory = tempfile::tempdir().unwrap();
     let export = |app: &mut KetchupApp, bridge: &mut LiveBridge, name: &str| {
         let path = directory.path().join(name);
@@ -813,6 +843,104 @@ fn a_drawing_sheet_draws_the_plan_annotations_in_its_top_view() {
     assert_eq!(exported["annotations"]["texts"], 0, "{exported}");
     assert_eq!(exported["annotations"]["dimensions"], 0);
     assert!(!written.contains("annotation-"));
+}
+
+/// Review 2026-10-24 MF-22: the plan's annotations were drawn into every top
+/// view in the plan's coordinates. A sheet of one part draws it in the part's
+/// own frame, so a slab placed at (5000, 4000) got its texts moved by that
+/// much; such a sheet now draws none and counts them. On a sheet of parts drawn
+/// where they lie, an annotation landing in another view is left out and named.
+#[test]
+fn plan_annotations_are_drawn_only_in_a_plan_view_and_inside_it() {
+    let parts = "box('slab', (6000, 3000, 200), at=(5000, 4000, -200))\n\
+                 box('post', (200, 200, 2000), at=(10800, 6800, 0))\n\
+                 text('P1', 'P1', at=(5000, 4000), tags='plan')\n";
+    let directory = tempfile::tempdir().unwrap();
+    let exports = std::cell::Cell::new(0);
+    let sheet = |source: String, parts: usize| {
+        exports.set(exports.get() + 1);
+        let (mut app, mut bridge) = setup();
+        let program = Request::ApplyProgram {
+            expected: None,
+            source,
+            overrides: None,
+            file_name: Some("plan.star".into()),
+            replace_document: true,
+        };
+        bridge
+            .execute(&mut app, program, false)
+            .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+        let id = sheet_of_parts(&mut app, &mut bridge, parts);
+        let path = directory.path().join(format!("plan-{}.dxf", exports.get()));
+        let exported = bridge
+            .execute(
+                &mut app,
+                export_drawings(&path, json!({"sheet_id": id})),
+                false,
+            )
+            .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+        let written = entities(&std::fs::read_to_string(&path).unwrap());
+        let snapshot = app.document.current();
+        let sheet = snapshot.drawing_sheet(DrawingSheetId(id)).unwrap();
+        let drawing = project_orthographic_drawing(&snapshot, &app.exact.results, sheet).unwrap();
+        (exported["annotations"].clone(), written, drawing)
+    };
+    let counts = |texts: usize, without_plan_view: usize, off_sheet: &[&str]| {
+        json!({"texts": texts, "dimensions": 0, "leaders": 0, "lines": 0,
+               "without_plan_view": without_plan_view, "outside_plan": 0,
+               "off_sheet": off_sheet, "off_sheet_count": off_sheet.len()})
+    };
+
+    // The slab alone, in its own frame: the sheet has no plan to draw P1 in.
+    let (annotations, written, _) = sheet(parts.to_owned(), 1);
+    assert_eq!(annotations, counts(0, 1, &[]));
+    assert!(text_free(&written, "P1"));
+
+    // Both parts, where they lie: P1 is drawn at its point of the plan.
+    let (annotations, written, drawing) = sheet(parts.to_owned(), 2);
+    assert_eq!(annotations, counts(1, 0, &[]));
+    let top = drawing
+        .views
+        .iter()
+        .position(|view| view.kind == ketchup_model::drawing::OrthographicViewKind::Top)
+        .unwrap();
+    let (view, plan) = (&drawing.views[top], &drawing.layout.view_placements[top]);
+    let scale = (plan.page_bounds_mm[1][0] - plan.page_bounds_mm[0][0])
+        / (view.bounds_mm[1][0] - view.bounds_mm[0][0]);
+    let [label] = written
+        .iter()
+        .filter(|entity| entity.kind == "TEXT" && entity.id == "annotation-P1")
+        .collect::<Vec<_>>()
+        .try_into()
+        .ok()
+        .unwrap();
+    for (axis, (code, world)) in [(10, 5000.0), (20, 4000.0)].into_iter().enumerate() {
+        let expected = plan.origin_mm[axis] + world * scale;
+        assert!(
+            (label.codes[&code] - expected).abs() < 0.01,
+            "{:?}",
+            label.codes
+        );
+    }
+
+    // A text whose point of the plan lands in the middle of another view.
+    let other = drawing
+        .layout
+        .view_placements
+        .iter()
+        .find(|placement| placement.kind != plan.kind)
+        .unwrap();
+    let stray = [0, 1].map(|axis| {
+        let middle = f64::midpoint(other.page_bounds_mm[0][axis], other.page_bounds_mm[1][axis]);
+        (middle - plan.origin_mm[axis]) / scale
+    });
+    let source = format!(
+        "{parts}text('stray', 'stray', at=({:.3}, {:.3}), tags='plan')\n",
+        stray[0], stray[1]
+    );
+    let (annotations, written, _) = sheet(source, 2);
+    assert_eq!(annotations, counts(1, 0, &["stray"]));
+    assert!(text_free(&written, "stray") && !text_free(&written, "P1"));
 }
 
 fn text_free(entities: &[Entity], id: &str) -> bool {
