@@ -199,6 +199,15 @@ const MAGICS: [&[u8; 8]; 6] = [
 /// third of its bytes in about a third of a second.
 const DEFLATE_LEVEL: u8 = 6;
 
+/// How many times its deflated bytes a blob's body may be. Underlay lines deflate to
+/// about a third; deflate itself allows about a thousand times, which a hostile blob
+/// would use to ask for gigabytes.
+const MAX_INFLATION: usize = 128;
+
+fn inflates_plausibly(body: usize, deflated: usize) -> bool {
+    body <= deflated.saturating_mul(MAX_INFLATION)
+}
+
 /// Why the bytes of a container blob are not underlay lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UnderlayLinesError {
@@ -206,6 +215,8 @@ pub enum UnderlayLinesError {
     NotUnderlayLines,
     /// The deflated bytes cannot be inflated, or inflate past the length they declare.
     Inflate(miniz_oxide::inflate::TINFLStatus),
+    /// The length declared is more than [`MAX_INFLATION`] times the deflated bytes.
+    Inflated { length: usize, deflated: usize },
     /// The bytes end before the counts they declare.
     Truncated,
     /// Bytes are left over after the last layer.
@@ -239,6 +250,10 @@ impl fmt::Display for UnderlayLinesError {
                     "the compressed underlay lines are damaged ({status:?})"
                 )
             }
+            Self::Inflated { length, deflated } => write!(
+                formatter,
+                "the underlay lines declare {length} bytes, more than {MAX_INFLATION} times their {deflated} compressed bytes; the file is damaged"
+            ),
             Self::Truncated => formatter.write_str("the underlay lines end too early"),
             Self::TrailingBytes => formatter.write_str("bytes follow the last underlay layer"),
             Self::InvalidPolyline => {
@@ -448,7 +463,12 @@ impl UnderlayLines {
         if with_objects {
             self.objects.encode(&mut body);
         }
-        let deflated = miniz_oxide::deflate::compress_to_vec_zlib(&body, DEFLATE_LEVEL);
+        let mut deflated = miniz_oxide::deflate::compress_to_vec_zlib(&body, DEFLATE_LEVEL);
+        if !inflates_plausibly(body.len(), deflated.len()) {
+            // Stored, as `decode` refuses a body more than [`MAX_INFLATION`] times its
+            // deflated bytes.
+            deflated = miniz_oxide::deflate::compress_to_vec_zlib(&body, 0);
+        }
         let magic = MAGICS[match (with_objects, with_fills) {
             (true, _) => 5,
             (false, true) => 4,
@@ -520,7 +540,15 @@ impl UnderlayLines {
         let length = usize::try_from(u64::from_le_bytes(*length))
             .map_err(|_: std::num::TryFromIntError| UnderlayLinesError::Truncated)?;
         // Inflated no further than the length declared, so a damaged or hostile blob
-        // allocates no more than it says it holds.
+        // allocates no more than it says it holds; and a length far past what its
+        // bytes could hold is refused before anything is inflated, so a blob of a few
+        // MB cannot ask for gigabytes (review 2026-10-24 MD-22).
+        if !inflates_plausibly(length, deflated.len()) {
+            return Err(UnderlayLinesError::Inflated {
+                length,
+                deflated: deflated.len(),
+            });
+        }
         let body = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(deflated, length)
             .map_err(|error| match error.status {
                 miniz_oxide::inflate::TINFLStatus::FailedCannotMakeProgress => {

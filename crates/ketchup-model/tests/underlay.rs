@@ -505,6 +505,31 @@ fn lines_decode_as_they_were_encoded_and_damaged_bytes_are_refused() {
     );
 }
 
+/// Review 2026-10-24 MD-22: a blob whose declared length is far more than its deflated
+/// bytes could plausibly hold is refused before it is inflated, so a few MB in a
+/// `.ketchup` cannot make the window allocate gigabytes. What `encode` writes for lines
+/// that compress that well still reads.
+#[test]
+fn a_blob_that_would_inflate_a_thousandfold_is_refused_before_inflating() {
+    let zeros = vec![0_u8; 16 << 20];
+    let deflated = miniz_oxide::deflate::compress_to_vec_zlib(&zeros, 6);
+    assert!(deflated.len() * 500 < zeros.len());
+    let mut bomb = b"KUNDRLY6".to_vec();
+    bomb.extend_from_slice(&u64::try_from(zeros.len()).unwrap().to_le_bytes());
+    bomb.extend_from_slice(&deflated);
+    assert!(matches!(
+        UnderlayLines::decode(&bomb),
+        Err(UnderlayLinesError::Inflated { length, .. }) if length == zeros.len()
+    ));
+
+    let mut entities = String::new();
+    for _ in 0..20_000 {
+        entities.push_str(&line("walls", [0.0, 0.0], [1000.0, 0.0]));
+    }
+    let lines = read(&entities).lines;
+    assert_eq!(UnderlayLines::decode(&lines.encode()).unwrap(), lines);
+}
+
 /// The lines are kept deflated with their objects (KUNDRLY6): a grid of 4,000 lines takes
 /// well under half its 16 bytes a point. A blob saved before, uncompressed (KUNDRLY3 and
 /// older), still reads, without objects, so a document saved with an underlay keeps
