@@ -6,7 +6,7 @@
 //! another line still uses.
 use crate::RuleProgramApplyError;
 use crate::program_part_edit::{refused, refused_at};
-use crate::program_part_lines::{on_users_lines, refusal_on_users_lines};
+use crate::program_part_lines::{UsersLines, on_users_lines, refusal_on_users_lines};
 use crate::rule_program::evaluate;
 use ketchup_model::document::{RuleProgramSource, Transform};
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM};
@@ -156,6 +156,8 @@ pub fn rewrite_rule_program_parts_from(
     if let Some(coloured) = coloured_at_once(&source, &evaluated, changes)? {
         return Ok(Some(coloured));
     }
+    // Where each line of `source` is in the user's program.
+    let mut lines = UsersLines::of(&users.source);
     for (name, change) in changes {
         let edit = Edit {
             source: &source,
@@ -164,7 +166,8 @@ pub fn rewrite_rule_program_parts_from(
         };
         // Refused on the lines of the program the earlier changes left, told
         // on the user's.
-        let on_users = |error: RuleProgramApplyError| refusal_on_users_lines(error, &source, users);
+        let on_users =
+            |error: RuleProgramApplyError| refusal_on_users_lines(error, &source, users, &lines);
         let mut checked = None;
         let (rewritten, expected) = match change {
             PartChange::Delete => edit.delete().map_err(on_users)?,
@@ -202,8 +205,10 @@ pub fn rewrite_rule_program_parts_from(
         let after = match checked {
             Some(after) => after,
             None => evaluate(&rewritten).map_err(|error| {
-                (expected.kept_lines(&source).map(on_users))
-                    .unwrap_or_else(|| on_users_lines(error, &rewritten, users))
+                (expected.kept_lines(&source).map(on_users)).unwrap_or_else(|| {
+                    let written = lines.after(&source.source, &rewritten.source);
+                    on_users_lines(error, &rewritten, users, &written)
+                })
             })?,
         };
         if !expected.holds(&evaluated.model, &after.model) {
@@ -221,6 +226,7 @@ pub fn rewrite_rule_program_parts_from(
                 }
             })));
         }
+        lines = lines.after(&source.source, &rewritten.source);
         source = rewritten;
         evaluated = Cow::Owned(after);
     }
@@ -271,7 +277,10 @@ fn coloured_at_once(
         return Ok(None);
     }
     let rewritten = with_edits(source, edits);
-    let after = evaluate(&rewritten).map_err(|error| on_users_lines(error, &rewritten, source))?;
+    let after = evaluate(&rewritten).map_err(|error| {
+        let lines = UsersLines::of_edit(&source.source, &rewritten.source);
+        on_users_lines(error, &rewritten, source, &lines)
+    })?;
     let mut expected = evaluated.model.clone();
     for part in &mut expected.parts {
         if let Some(color) = colours.get(part.name.as_str()) {
