@@ -400,6 +400,32 @@ fn a_production_job_turns_its_stock_frame_over_as_its_woodwop_program() {
     }
 }
 
+/// Review 2026-10-24 MF-21: the BOM wrote a board's rows in the BTLx order of
+/// a timber member, so a cabinet side 18 × 560 × 720 was L 720, W 18, H 560
+/// and its thickness stood in the width column. A board is listed longest
+/// first and thinnest last, as a cut list states it; a member keeps the BTLx
+/// order.
+#[test]
+fn the_bom_lists_a_board_by_length_width_and_thickness() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let snapshot = apply(&format!(
+        "side = board('side', (18, 560, 720))\n\
+         beam = box('beam', (60, 140, 3000), {ROLE})\n\
+         place(beam, origin = (2000, 0, 0), z = (0, 0, 1), x = (1, 0, 0))\n"
+    ));
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let bom = String::from_utf8(projection.bom_export(&snapshot).unwrap()).unwrap();
+    assert!(
+        bom.contains("length_mm=720;width_mm=560;height_mm=18;material=board"),
+        "{bom}"
+    );
+    assert!(
+        bom.contains("length_mm=3000;width_mm=60;height_mm=140;"),
+        "{bom}"
+    );
+}
+
 /// MF-19: the cabinet and the table, both doweled from below or from inside,
 /// are each part one woodWOP program.
 #[test]

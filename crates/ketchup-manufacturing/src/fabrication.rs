@@ -123,6 +123,27 @@ impl PieceDimensions {
         let length = stock_length_axis(extents);
         std::array::from_fn(|axis| extents[(length + axis) % 3])
     }
+
+    /// Length, width and thickness of a cut piece: its extents from the
+    /// longest to the shortest, as a cut list states them (review 2026-10-24
+    /// MF-21).
+    #[must_use]
+    pub fn cut_mm(self) -> [f64; 3] {
+        let mut extents = [self.length_mm, self.width_mm, self.height_mm];
+        extents.sort_by(|left, right| right.total_cmp(left));
+        extents
+    }
+
+    /// The columns of a BOM row of `kind`: a timber member in the BTLx order,
+    /// every other piece as a cut list.
+    #[must_use]
+    pub fn bom_mm(self, kind: GeneralBomItemKind) -> [f64; 3] {
+        if kind == GeneralBomItemKind::Timber {
+            self.stock_mm()
+        } else {
+            self.cut_mm()
+        }
+    }
 }
 
 /// The definition axis a blank's length runs along: z, along which a member is
@@ -828,7 +849,7 @@ impl GeneralFabricationProjection {
             self.bom.envelope.result_digest
         );
         for row in &self.bom.rows {
-            let [length_mm, width_mm, height_mm] = row.dimensions.stock_mm();
+            let [length_mm, width_mm, height_mm] = row.dimensions.bom_mm(row.item_kind);
             output.push_str(&format!(
                 "row={};position={};definition={};kind={};quantity={};length_mm={};width_mm={};height_mm={};material={};evidence={}\n",
                 row.stable_row_id,
