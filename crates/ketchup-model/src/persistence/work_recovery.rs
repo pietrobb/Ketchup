@@ -116,7 +116,8 @@ impl WorkRecoveryLock {
     /// A lock file that cannot be written in a folder that takes files (another user's
     /// on a shared drive, one marked read-only by an unpacked archive) is locked through
     /// a read-only handle instead, so a session holding it still keeps this one out
-    /// (review 2026-10-24 UI-21).
+    /// (review 2026-10-24 UI-21). Where no lock can be taken through such a handle,
+    /// the file opens without a checkpoint as well.
     pub fn acquire_unless_read_only(path: &Path) -> Result<Option<Self>, FilePersistenceError> {
         let denied = match Self::acquire(path) {
             Err(FilePersistenceError::Io(error))
@@ -132,22 +133,31 @@ impl WorkRecoveryLock {
         let mut lock_path = path.as_os_str().to_os_string();
         lock_path.push(".work-recovery-lock");
         let held = match fs::File::open(lock_path) {
-            Ok(file) => match file.try_lock() {
-                Ok(()) => Some(Self { _file: file }),
+            Ok(file) => match read_handle_lock(&file) {
+                Ok(()) => Some(Some(Self { _file: file })),
                 Err(std::fs::TryLockError::WouldBlock) => {
                     return Err(FilePersistenceError::ExternalConflict);
                 }
-                Err(std::fs::TryLockError::Error(error)) => {
-                    return Err(FilePersistenceError::Io(error));
-                }
+                // A Linux NFS client locks only a file opened for writing (EBADF).
+                Err(std::fs::TryLockError::Error(_)) => Some(None),
             },
             Err(_) => None,
         };
         if !folder_takes_files(path) {
             return Ok(None);
         }
-        held.map(Some).ok_or(FilePersistenceError::Io(denied))
+        held.ok_or(FilePersistenceError::Io(denied))
     }
+}
+
+fn read_handle_lock(file: &fs::File) -> Result<(), std::fs::TryLockError> {
+    #[cfg(feature = "testing")]
+    if READ_HANDLE_LOCK_FAILS.get() {
+        return Err(std::fs::TryLockError::Error(io::Error::from_raw_os_error(
+            9,
+        )));
+    }
+    file.try_lock()
 }
 
 /// Checks the observed checkpoint while the caller holds its WorkRecoveryLock.
@@ -336,6 +346,21 @@ fn folder_takes_files(path: &Path) -> bool {
 thread_local! {
     pub(super) static FAIL_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static READ_ONLY_FOLDER: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static READ_HANDLE_LOCK_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `operation` with a lock through a read-only handle failing on this thread, as
+/// on a Linux NFS client, which locks only a file opened for writing (EBADF).
+#[cfg(feature = "testing")]
+pub fn headless_with_read_handle_lock_failure<T>(operation: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            READ_HANDLE_LOCK_FAILS.set(self.0);
+        }
+    }
+    let _reset = Reset(READ_HANDLE_LOCK_FAILS.replace(true));
+    operation()
 }
 
 /// Runs `operation` with `folder` taking no new file on this thread, as a read-only share

@@ -2991,3 +2991,35 @@ fn a_read_only_lock_file_in_a_writable_folder_still_locks_the_file() {
     permissions.set_readonly(false);
     std::fs::set_permissions(&lock, permissions).unwrap();
 }
+
+/// A Linux NFS client locks only a file opened for writing, so another user's lock
+/// file it cannot write cannot be locked through a read-only handle either. The file
+/// then opens without a checkpoint, from a read-only mount as from a writable share,
+/// instead of failing to open (review 2026-10-24 UI-21, capability review run 303).
+#[test]
+fn a_lock_file_that_cannot_be_locked_read_only_opens_the_file_without_a_checkpoint() {
+    use ketchup_model::persistence::WorkRecoveryLock;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("shared.ketchup");
+    let mut lock = path.as_os_str().to_owned();
+    lock.push(".work-recovery-lock");
+    std::fs::write(&lock, b"").unwrap();
+    let mut permissions = std::fs::metadata(&lock).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&lock, permissions.clone()).unwrap();
+
+    let writable_share = persistence::headless_with_read_handle_lock_failure(|| {
+        WorkRecoveryLock::acquire_unless_read_only(&path)
+    });
+    assert!(matches!(writable_share, Ok(None)), "{writable_share:?}");
+    let read_only_mount = persistence::headless_with_read_handle_lock_failure(|| {
+        persistence::headless_with_read_only_folder(directory.path(), || {
+            WorkRecoveryLock::acquire_unless_read_only(&path)
+        })
+    });
+    assert!(matches!(read_only_mount, Ok(None)), "{read_only_mount:?}");
+
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&lock, permissions).unwrap();
+}
