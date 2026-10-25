@@ -83,6 +83,25 @@ fn a_part_of_a_loop_or_of_a_function_is_refused_with_the_line_to_change() {
     );
 }
 
+/// Review 2026-10-24 WB-23: a copy from its own `mirrored()` line took the
+/// source's `box()` line as the call creating it, so deleting it said "a
+/// changed too" and renaming it was refused as a name used elsewhere.
+#[test]
+fn a_mirrored_copy_is_deleted_and_renamed_on_its_own_line() {
+    let source = "box(\"a\", (10, 20, 30), at=(100, 0, 0))\n\
+                  mirrored(\"a\", \"a mirrored\", point=(0, 0, 0), normal=(1, 0, 0))\n";
+    let deleted = change(source, "a mirrored", PartChange::Delete);
+    assert_eq!(deleted.source, "box(\"a\", (10, 20, 30), at=(100, 0, 0))\n");
+    let renamed = change(source, "a mirrored", PartChange::Rename("b".to_owned()));
+    let after = model(&renamed);
+    assert!(after.part("b").is_some(), "{}", renamed.source);
+    assert_eq!(after.part("a"), model(&program(source)).part("a"));
+    let coloured = change(source, "a mirrored", PartChange::Color(Some([1, 2, 3])));
+    let after = model(&coloured);
+    assert_eq!(after.part("a mirrored").unwrap().color, Some([1, 2, 3]));
+    assert_eq!(after.part("a").unwrap().color, None, "{}", coloured.source);
+}
+
 #[test]
 fn colour_is_added_changed_and_removed_in_the_creating_call() {
     let coloured = change(TWO, "b", PartChange::Color(Some([200, 10, 0])));

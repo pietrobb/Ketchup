@@ -770,9 +770,9 @@ def circular_pattern(part, count, axis = (0, 0, 1), center = (0, 0, 0), angle = 
         copies.append(rotate(other, axis = axis, angle = step * i, pivot = center))
     return copies
 
-def mirrored(part, name, point, normal):
+def mirrored(part, name, point, normal, color = None):
     """A new part `name`: the mirror image of `part` across the world plane
-    through `point` with direction `normal`."""
+    through `point` with direction `normal`, in its own `color` if given."""
     info = part_info(part)
     length = vec_length(normal)
     if length <= 0:
@@ -785,7 +785,7 @@ def mirrored(part, name, point, normal):
     axes[k] = vec_scale(flipped, -1)
     middle = (info.local_min[k] + info.local_max[k]) / 2.0
     origin = vec_add(vec_add(reflect(vec_sub(info.at, point)), point), vec_scale(flipped, 2 * middle))
-    other = copy(part, name)
+    other = copy(part, name, color = color)
     mirror(other, axis = "xyz"[k])
     return place(other, origin = origin, z = axes[2], x = axes[0])
 

@@ -16,7 +16,7 @@ use ketchup_program::model::{
 use ketchup_program::source_edit::{
     self, CreatingCall, number_literal, point_literal, quote, written, written_point,
 };
-use ketchup_program::{Evaluated, ProgramFeatureKind, ProgramModel};
+use ketchup_program::{Evaluated, ProgramFeatureKind, ProgramModel, SourceLines};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -617,7 +617,18 @@ impl Edit<'_> {
 
     pub(crate) fn found_call(&self) -> Option<CreatingCall> {
         let recorded = self.evaluated.part_sources.get(self.name)?;
-        source_edit::creating_call(&self.source.file_name, self.text(), recorded)
+        // A copy is made by its own line, not by the one that made its source
+        // (review 2026-10-24 WB-23).
+        let inherited = self.inherited();
+        let own: Vec<_> = (recorded.iter())
+            .filter(|lines| !inherited.contains(lines))
+            .copied()
+            .collect();
+        source_edit::creating_call(&self.source.file_name, self.text(), &own)
+    }
+
+    fn inherited(&self) -> &[SourceLines] {
+        (self.evaluated.inherited_sources.get(self.name)).map_or(&[], Vec::as_slice)
     }
 
     /// The call that makes the part on its own, outside loops and the
@@ -677,7 +688,9 @@ impl Edit<'_> {
         };
         let mut removed = vec![statement];
         for lines in &self.evaluated.part_sources[self.name] {
-            if *lines == call.lines {
+            // The lines that made a copy's source stay with the source
+            // (review 2026-10-24 WB-23).
+            if *lines == call.lines || self.inherited().contains(lines) {
                 continue;
             }
             if let Some((other, _)) = self
@@ -822,7 +835,14 @@ impl Edit<'_> {
             ));
         }
         let call = self.creating_call(doing)?;
-        let Some(made) = call.name else {
+        // The literal of the call that is the part's name: the second one of
+        // `mirrored("a", "a mirrored", ...)` (review 2026-10-24 WB-23).
+        let literals = source_edit::string_literals(&self.source.file_name, self.text(), self.name);
+        let named = literals
+            .iter()
+            .map(|(bytes, _)| bytes.clone())
+            .find(|bytes| call.bytes.start <= bytes.start && bytes.end <= call.bytes.end);
+        let Some(made) = named else {
             return Err(self.refused_on(
                 call.lines.first,
                 "program_part_computed_name",
@@ -836,9 +856,7 @@ impl Edit<'_> {
         // parameter or a text that reads the same stays as it is.
         let mut edits = vec![(made.clone(), quote(new))];
         let mut kept = Vec::new();
-        for (bytes, line) in
-            source_edit::string_literals(&self.source.file_name, self.text(), self.name)
-        {
+        for (bytes, line) in literals {
             if bytes == made {
                 continue;
             }

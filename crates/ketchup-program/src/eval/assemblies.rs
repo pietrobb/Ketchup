@@ -224,13 +224,16 @@ pub(super) fn validate(model: &ProgramModel) -> anyhow::Result<()> {
 
 #[starlark_module]
 pub(super) fn builtins(builder: &mut GlobalsBuilder) {
-    /// Copies geometry and the part's explicit support anchor, not joints or contacts.
+    /// Copies geometry and the part's explicit support anchor, not joints or
+    /// contacts; `color=` gives the copy a colour of its own.
     fn copy<'v>(
         #[starlark(require = pos)] part: Value<'v>,
         #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] color: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
+        let color = Look::read(None, color, None, None, false, heap)?.color;
         let source = part_name(part, heap)?;
         check_part_name(name)?;
         let state = state(eval)?;
@@ -249,12 +252,11 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         if let Some(item) = copy.attributes.get_mut("bought_item") {
             *item = copied_item(item, &source, name);
         }
-        let copy = insert_part(&state, copy, tool)?;
-        {
-            let mut sources = state.part_sources.borrow_mut();
-            let lines = sources.get(&source).cloned().unwrap_or_default();
-            sources.entry(name.to_owned()).or_default().extend(lines);
+        if color.is_some() {
+            copy.color = color;
         }
+        let copy = insert_part(&state, copy, tool)?;
+        state.inherit_sources(&source, name);
         record_source(eval, &state, &[name]);
         Ok(part_value(&copy, heap))
     }
@@ -433,10 +435,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         }
         for (original, part) in component.parts.iter().zip(&parts) {
             check_part_name(&part.name)?;
-            let mut sources = state.part_sources.borrow_mut();
-            let lines = sources.get(&original.name).cloned().unwrap_or_default();
-            sources.entry(part.name.clone()).or_default().extend(lines);
-            drop(sources);
+            state.inherit_sources(&original.name, &part.name);
             record_source(eval, &state, &[&part.name]);
         }
         let bodies = parts.iter().map(super::boolean_bodies).sum();

@@ -122,6 +122,9 @@ struct State {
     model: RefCell<ProgramModel>,
     log: RefCell<Vec<String>>,
     part_sources: RefCell<BTreeMap<String, BTreeSet<SourceLines>>>,
+    /// The lines of the part a copy or instance was made from, kept apart
+    /// from its own: its own line creates it (review 2026-10-24 WB-23).
+    inherited_sources: RefCell<BTreeMap<String, BTreeSet<SourceLines>>>,
     faces: face_cache::FaceCache,
     /// Every part, tool and group name so far, and the group each member
     /// joined. Names only grow during an evaluation, so the uniqueness checks
@@ -142,6 +145,19 @@ enum Named {
 }
 
 impl State {
+    /// Part `to`, made from `from`, inherits the lines that made `from`.
+    fn inherit_sources(&self, from: &str, to: &str) {
+        let mut lines = self
+            .part_sources
+            .borrow()
+            .get(from)
+            .cloned()
+            .unwrap_or_default();
+        let mut inherited = self.inherited_sources.borrow_mut();
+        lines.extend(inherited.get(from).into_iter().flatten().copied());
+        inherited.entry(to.to_owned()).or_default().extend(lines);
+    }
+
     fn name_taken(&self, name: &str) -> bool {
         self.names.borrow().contains_key(name)
     }
@@ -242,6 +258,10 @@ pub struct Evaluated {
     pub unused_overrides: Vec<String>,
     /// Program lines that created or changed each part, keyed by part name.
     pub part_sources: BTreeMap<String, Vec<SourceLines>>,
+    /// Of a copy's or instance's `part_sources`, the lines that made the part
+    /// it was made from; the rest are its own (review 2026-10-24 WB-23).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub inherited_sources: BTreeMap<String, Vec<SourceLines>>,
 }
 
 impl Evaluated {
@@ -1641,7 +1661,11 @@ fn boolean_builtins(builder: &mut GlobalsBuilder) {
             .retain(|part| part.name != joined);
         let mut sources = state.part_sources.borrow_mut();
         if let Some(lines) = sources.remove(&joined) {
-            sources.entry(target).or_default().extend(lines);
+            sources.entry(target.clone()).or_default().extend(lines);
+        }
+        let mut inherited = state.inherited_sources.borrow_mut();
+        if let Some(lines) = inherited.remove(&joined) {
+            inherited.entry(target).or_default().extend(lines);
         }
         Ok(result)
     }
@@ -2706,11 +2730,22 @@ fn evaluate_bounded(
         .filter(|name| !model.params.iter().any(|param| &param.name == *name))
         .cloned()
         .collect();
-    let part_sources = state
-        .part_sources
+    let own = state.part_sources.into_inner();
+    let inherited_sources: BTreeMap<String, Vec<SourceLines>> = (state.inherited_sources)
         .into_inner()
         .into_iter()
-        .map(|(part, lines)| (part, lines.into_iter().collect()))
+        .filter_map(|(part, lines)| {
+            let mine = own.get(&part)?;
+            let lines: Vec<_> = lines.difference(mine).copied().collect();
+            (!lines.is_empty()).then_some((part, lines))
+        })
+        .collect();
+    let part_sources = own
+        .into_iter()
+        .map(|(part, mut lines)| {
+            lines.extend(inherited_sources.get(&part).into_iter().flatten().copied());
+            (part, lines.into_iter().collect())
+        })
         .collect();
     let (model, reference_model) = if model.motions.is_empty() {
         (model, None)
@@ -2725,6 +2760,7 @@ fn evaluate_bounded(
         log: state.log.into_inner(),
         unused_overrides,
         part_sources,
+        inherited_sources,
     })
 }
 

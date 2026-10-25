@@ -441,6 +441,8 @@ pub struct EvaluatedProgram {
     log: Vec<String>,
     unused_overrides: Vec<String>,
     part_sources: BTreeMap<String, Vec<SourceLines>>,
+    #[serde(default)]
+    inherited_sources: BTreeMap<String, Vec<SourceLines>>,
 }
 
 impl From<Evaluated> for EvaluatedProgram {
@@ -451,6 +453,7 @@ impl From<Evaluated> for EvaluatedProgram {
             log: evaluated.log,
             unused_overrides: evaluated.unused_overrides,
             part_sources: evaluated.part_sources,
+            inherited_sources: evaluated.inherited_sources,
         }
     }
 }
@@ -463,6 +466,7 @@ impl From<EvaluatedProgram> for Evaluated {
             log: program.log,
             unused_overrides: program.unused_overrides,
             part_sources: program.part_sources,
+            inherited_sources: program.inherited_sources,
         }
     }
 }
