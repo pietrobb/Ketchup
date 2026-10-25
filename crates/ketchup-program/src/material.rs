@@ -139,7 +139,10 @@ impl Part {
 }
 
 /// Distance from `entry` along unit `inward` to where the line first leaves
-/// `material`, looked for up to `limit`.
+/// `material`, looked for up to `limit`. A line that starts in a recess of
+/// the entry face, as the rim of a hole reaching a groove in the face it is
+/// drilled from, is followed from the recess's floor: the drill meets
+/// material there, not 0 mm in (review 2026-10-24 PG-23).
 fn leaves(
     material: &impl Fn([f64; 3]) -> bool,
     entry: [f64; 3],
@@ -151,6 +154,18 @@ fn leaves(
     // is 18 mm, not 17.99999999999.
     let round = |mm: f64| (mm * 1.0e6).round() / 1.0e6;
     let mut inside = 0.0;
+    // Just past the face, so that a skin thinner than a step still counts.
+    if !material(CONTACT_FIT_MM) {
+        loop {
+            inside += STEP_MM;
+            if inside > limit {
+                return round(limit);
+            }
+            if material(inside) {
+                break;
+            }
+        }
+    }
     loop {
         let next = inside + STEP_MM;
         if next > limit {

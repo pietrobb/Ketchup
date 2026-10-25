@@ -65,6 +65,29 @@ groove(side, \"x+\", along = \"z\", width = 6, depth = 10, offset = 100)
     assert_eq!(kinds(&hole(93.5)), Vec::<&str>::new());
 }
 
+/// PG-23 (review 2026-10-24): a 12 mm hole at y = 96 whose rim reaches a
+/// 4 mm deep groove at y = 100..106 in the face it is drilled from goes into
+/// the groove's floor there, 14 mm of material, not 0 mm.
+#[test]
+fn a_hole_whose_rim_reaches_a_groove_in_its_entry_face_measures_the_material_past_the_groove() {
+    let side = "\
+side = board(\"side\", (18, 300, 600))
+groove(side, \"x-\", along = \"z\", width = 6, depth = 4, offset = 100)
+";
+    let hole = |depth: f64| {
+        eval(&format!(
+            "{side}hole(side, \"x-\", world = (0, 96, 300), diameter = 12, depth = {depth})\n"
+        ))
+    };
+    assert_eq!(kinds(&hole(10.0)), Vec::<&str>::new());
+    // 18 mm deep it leaves the board on the axis, past the groove too.
+    assert!(
+        kinds(&hole(18.0)).contains(&"hole_breaks_through"),
+        "{:?}",
+        kinds(&hole(18.0))
+    );
+}
+
 /// Dowels into the 18 mm leg of an L profile leave the rest behind them in
 /// the leg, not in the whole 100 mm the L reaches across.
 #[test]
