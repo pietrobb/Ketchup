@@ -1945,7 +1945,8 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     A layer is a dict {"name", "thickness", "material", "color", "tags"}. A sheet layer
 #     is cut into pieces around the openings. A framed layer adds "spacing" (stud
 #     centres in mm), "stud" (stud width, default 60), "header" (depth of the headers
-#     over openings in a wall, default the stud width) and optionally "infill" (material
+#     over openings in a wall, default the stud width, which a warning then names as sized
+#     by nothing) and optionally "infill" (material
 #     between the studs; "infill_color", "infill_tags"): a bottom plate, a top plate
 #     following the outline, studs at `spacing`, a stud on each side of every opening
 #     with a header above and a sill under it, and infill in every bay.
@@ -2306,15 +2307,25 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                     count += 1
                     piece("%s/noggin %d" % (label, count), _rect(studs[k] + stud - depth, lo, studs[k + 1] + depth, hi),
                           offset, thickness, material, color, nog_tags, role)
-        beams = []
+        beams, headers, widest = [], [], 0.0
         for k in range(len(holes)):
             ou, ov, ow, oh = holes[k]
             if spans[k] != None:
                 a, b, low, high = spans[k]
                 beams.append(piece("%s/header %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags, role))
+                headers.append(beams[-1])
+                widest = max(widest, ow)
             if sills[k] != None:
                 a, b, low, high = sills[k]
                 beams.append(piece("%s/sill %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags, role))
+        # The default header depth is the stud width, which nothing sized for the
+        # opening under it (review 2026-10-24 PG-26).
+        if upright and headers and "header" not in layer:
+            check(False, ("buildup(%s): layer %s gives no header depth, so the headers over its openings, " +
+                          "up to %s mm wide, are %s mm deep, its stud width, which nothing sized for them") %
+                         (name, label, fmt_mm(widest), fmt_mm(head)),
+                  parts = headers, severity = "warning",
+                  hint = "Give the layer \"header\": the depth its widest opening needs, and check it with load_path() and timber_design().")
         # In a floor or roof the headers hang on hangers from the joists beside the
         # opening, and the joists cut short by the opening hang on the headers.
         hanger = layer.get("hanger")

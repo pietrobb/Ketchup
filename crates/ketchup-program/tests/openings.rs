@@ -207,6 +207,37 @@ buildup(\"floor\", (0, 200, 0), (1, 0, 0), (0, 1, 0), 3900, LAYERS, height = 360
     }
 }
 
+/// PG-26 (review 2026-10-24): a wall frame without "header" puts a header as
+/// deep as its 60 mm studs over a 1500 mm window; without timber_design()
+/// nothing said so. A warning names it; a header depth given is taken as
+/// sized.
+#[test]
+fn a_wall_frame_without_a_header_depth_warns_that_its_headers_are_sized_by_nothing() {
+    let warnings = |layers: &str| {
+        let source = format!(
+            "{layers}
+win = window(\"win\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 1000, 900, 1500, 1250)
+buildup(\"wall\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 3800, LAYERS, height = 2600, openings = [win])"
+        );
+        let (_, issues) = evaluate(&source);
+        assert_eq!(errors(&issues), Vec::<String>::new());
+        issues
+            .into_iter()
+            .filter(|issue| issue.severity == Severity::Warning)
+            .map(|issue| (issue.message, issue.parts))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        warnings(LAYERS),
+        [(
+            "buildup(wall): layer frame gives no header depth, so the headers over its openings, up to 1500 mm wide, are 60 mm deep, its stud width, which nothing sized for them".to_owned(),
+            vec!["wall/frame/header 1".to_owned()],
+        )]
+    );
+    let sized = LAYERS.replace("\"spacing\": 625", "\"spacing\": 625, \"header\": 200");
+    assert_eq!(warnings(&sized), []);
+}
+
 #[test]
 fn no_window_over_finds_a_window_without_naming_its_tag() {
     let source = format!(
