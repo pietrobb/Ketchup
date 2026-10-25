@@ -834,7 +834,11 @@ fn a_length_of_zero_or_less_is_refused_and_the_program_stays() {
         "{PADDED}push_pull(\"a\", face=\"z-\", distance=15, name=\"Lower\")\n"
     ));
     let refusal = set_length(&pushed, 10.0).expect_err("refused");
-    assert!(refusal.to_string().contains("-5 mm long"), "{refusal}");
+    assert!(
+        refusal.to_string().contains("-5 mm long")
+            && refusal.to_string().contains("the Push/Pull on line 3;"),
+        "{refusal}"
+    );
     // A pull of 15 below makes the extrusion 25 for a part 10 long.
     let pulled = program(&format!(
         "{PADDED}push_pull(\"a\", face=\"z-\", distance=-15, name=\"Lower\")\n"
@@ -1061,6 +1065,35 @@ fn many_parts_moved_alike_are_written_and_checked_at_once() {
     assert_eq!(after.part("p11").unwrap().at_mm, [225.0, 0.0, 0.0]);
 }
 
+/// Review 2026-10-19 WB-6 (rest in review 2026-10-24): one part moved by its
+/// literal `at=` was evaluated three times, the program it wrote once more after
+/// the check that had already made it.
+#[test]
+fn one_part_moved_by_its_literal_costs_two_evaluations() {
+    let source = program(TWO);
+    let current = evaluate(&source).unwrap();
+    let shift = Transform::from_translation(0.0, 5.0, 0.0).unwrap();
+    let before = crate::rule_program::EVALUATIONS.get();
+    let moved = rewrite_rule_program_parts_from(
+        &source,
+        Some(&current),
+        &[("b".to_owned(), PartChange::Transform(shift))],
+    )
+    .unwrap()
+    .unwrap();
+    let used = crate::rule_program::EVALUATIONS.get() - before;
+    assert_eq!(used, 2);
+    assert!(
+        moved.source.source.contains("at=(50, 5, 0)"),
+        "{}",
+        moved.source.source
+    );
+    assert_eq!(
+        moved.evaluated.model.part("b").unwrap().at_mm,
+        [50.0, 5.0, 0.0]
+    );
+}
+
 /// Review 2026-10-19 (program writing) and 2026-10-21 (GUI): a Push/Pull distance or a
 /// fillet or chamfer amount the window computed is written to the nanometre, as every
 /// other written length is, not with the noise of its sum (0.30000000000000004).
@@ -1174,4 +1207,89 @@ fn a_part_one_call_makes_with_others_is_refused_with_that_call() {
         let x = after.part(&part.name).unwrap().at_mm[0];
         assert!((x - part.at_mm[0] - 100.0).abs() < 1e-9, "{}", moved.source);
     }
+}
+
+/// Review 2026-10-19 WB-5 (rest in review 2026-10-24): a name the program
+/// already gives is refused with the line that gives it; the typed name stays
+/// the target, as it is what changes.
+#[test]
+fn a_name_the_program_gives_is_refused_with_the_line_that_gives_it() {
+    let message = refusal(TWO, "a", PartChange::Rename("b".to_owned()));
+    assert!(
+        message.contains("a part named \"b\" on line 2; choose another name"),
+        "{message}"
+    );
+    let mirror = PartChange::Mirror {
+        copy: "b".to_owned(),
+        point: [0.0; 3],
+        normal: [1.0, 0.0, 0.0],
+    };
+    let message = refusal(TWO, "a", mirror);
+    assert!(message.contains("named \"b\" on line 2;"), "{message}");
+    let message = refusal(TWO, "a", PartChange::Rename(" ".to_owned()));
+    assert!(message.contains("a part needs a name"), "{message}");
+}
+
+/// Review 2026-10-19 WB-5 (rest in review 2026-10-24): a program the edit
+/// rewrote that then failed was refused at the line of the rewritten text,
+/// "program line 3" of a program of two lines, with a traceback quoting lines
+/// the user never saw.
+#[test]
+fn a_program_that_fails_after_the_edit_is_refused_on_the_users_lines() {
+    let source = "box(\"a\", (10, 10, 10))\nbox(\"b\", (5, 5, 5), at=(50, 0, 0))\n";
+    let pull = |part: &str, face: &str| {
+        let change = PartChange::PushPull {
+            face: face.to_owned(),
+            distance: 5.0,
+        };
+        (part.to_owned(), change)
+    };
+    let error = rewrite_rule_program_parts(&program(source), &[pull("a", "z+"), pull("b", "nope")])
+        .expect_err("refused");
+    let rejection = error.rejection();
+    assert_eq!(rejection.code(), "evaluation_error");
+    assert!(
+        !rejection.target_name().starts_with("program line"),
+        "{}",
+        rejection.target_name()
+    );
+    let reason = rejection.reason_text();
+    assert!(
+        reason.starts_with("the line the edit adds, `push_pull(\"b\", face=\"nope\"")
+            && reason.contains("face \"nope\" does not exist")
+            && !reason.contains("edit.star:4"),
+        "{reason}"
+    );
+
+    // Line 2 of the rewritten program is line 3 of the user's, once the
+    // delete earlier in the batch took out line 1.
+    let source = "box(\"b\", (5, 5, 5), at=(50, 0, 0))\n\
+                  box(\"a\", (10, 10, 10))\n\
+                  move(chr(97), by=(1, 0, 0))\n";
+    let error = rewrite_rule_program_parts(
+        &program(source),
+        &[
+            ("b".to_owned(), PartChange::Delete),
+            ("a".to_owned(), PartChange::Rename("c".to_owned())),
+        ],
+    )
+    .expect_err("refused");
+    let rejection = error.rejection();
+    assert_eq!(rejection.target_name(), "program line 3", "{error:?}");
+    assert!(
+        (rejection.reason_text()).starts_with("after the edit the program fails on line 3: "),
+        "{}",
+        rejection.reason_text()
+    );
+    let RuleProgramApplyError::Program {
+        location: Some(location),
+        ..
+    } = &error
+    else {
+        panic!("{error:?}");
+    };
+    assert!(
+        (location.excerpt.iter()).any(|line| line.line == 1 && line.text.starts_with("box(\"b\"")),
+        "{location:?}"
+    );
 }

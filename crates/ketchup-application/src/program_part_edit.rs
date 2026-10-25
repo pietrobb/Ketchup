@@ -137,11 +137,14 @@ pub(crate) fn refused_at(
 impl Edit<'_> {
     /// The part's literal `at=` shifted, when its creating call has one
     /// outside any loop and the program then makes what the `move()` line
-    /// makes; otherwise a `rotate()` / `move()` line for the part.
+    /// makes; otherwise a `rotate()` / `move()` line for the part. With the
+    /// evaluation of the program written, when this already made it, so a
+    /// part moved by its literal costs two evaluations, not three (review
+    /// 2026-10-19 WB-6).
     pub(crate) fn transform(
         &self,
         world_edit: Transform,
-    ) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
+    ) -> Result<(RuleProgramSource, Expected, Option<Evaluated>), RuleProgramApplyError> {
         let model = &self.evaluated.model;
         let part = model.part(self.name).expect("checked by the caller");
         self.moved_with(|_| false)?;
@@ -165,13 +168,15 @@ impl Edit<'_> {
         {
             let moved = written_point(std::array::from_fn(|i| literal.value[i] + motion.shift[i]));
             let rewritten = self.with(vec![(literal.bytes, point_literal(moved))]);
-            if evaluate(&rewritten).is_ok_and(|after| {
-                expected.holds(model, &after.model) && after.model == moved_by_line.model
-            }) {
-                return Ok((rewritten, expected));
+            if let Ok(after) = evaluate(&rewritten)
+                && expected.holds(model, &after.model)
+                && after.model == moved_by_line.model
+            {
+                return Ok((rewritten, expected, Some(after)));
             }
+            return Ok((appended, expected, Some(moved_by_line)));
         }
-        Ok((appended, expected))
+        Ok((appended, expected, None))
     }
 
     /// Refused when the call that makes the part also changes a part that is

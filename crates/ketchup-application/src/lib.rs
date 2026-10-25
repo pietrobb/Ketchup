@@ -24,6 +24,7 @@ mod product_change;
 pub mod program_isolation;
 mod program_part_change;
 mod program_part_edit;
+mod program_part_lines;
 pub mod program_variants;
 pub mod rejections;
 mod rule_appearance;

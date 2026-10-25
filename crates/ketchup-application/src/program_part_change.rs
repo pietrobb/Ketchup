@@ -6,6 +6,7 @@
 //! another line still uses.
 use crate::RuleProgramApplyError;
 use crate::program_part_edit::{refused, refused_at};
+use crate::program_part_lines::on_users_lines;
 use crate::rule_program::evaluate;
 use ketchup_model::document::{RuleProgramSource, Transform};
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM};
@@ -110,7 +111,8 @@ pub fn rewrite_rule_program_parts_from(
     current: Option<&Evaluated>,
     changes: &[(String, PartChange)],
 ) -> Result<Option<RewrittenProgram>, RuleProgramApplyError> {
-    let mut source = source.clone();
+    let users = source;
+    let mut source = users.clone();
     let mut evaluated = match current {
         Some(current) => Cow::Borrowed(current),
         None => Cow::Owned(evaluate(&source)?),
@@ -160,6 +162,7 @@ pub fn rewrite_rule_program_parts_from(
             evaluated: &evaluated,
             name,
         };
+        let mut checked = None;
         let (rewritten, expected) = match change {
             PartChange::Delete => edit.delete()?,
             PartChange::Color(color) => edit.color(*color)?,
@@ -185,10 +188,20 @@ pub fn rewrite_rule_program_parts_from(
                 path,
                 value,
             } => edit.parameter(feature, path, *value)?,
-            PartChange::Transform(world_edit) => edit.transform(*world_edit)?,
+            PartChange::Transform(world_edit) => {
+                let (rewritten, expected, after) = edit.transform(*world_edit)?;
+                checked = after;
+                (rewritten, expected)
+            }
         };
-        let after =
-            evaluate(&rewritten).map_err(|error| expected.kept_lines(&source).unwrap_or(error))?;
+        let after = match checked {
+            Some(after) => after,
+            None => evaluate(&rewritten).map_err(|error| {
+                expected
+                    .kept_lines(&source)
+                    .unwrap_or_else(|| on_users_lines(error, &rewritten, users))
+            })?,
+        };
         if !expected.holds(&evaluated.model, &after.model) {
             return Err(expected.kept_lines(&source).unwrap_or_else(|| {
                 let message = format!(
@@ -254,7 +267,7 @@ fn coloured_at_once(
         return Ok(None);
     }
     let rewritten = with_edits(source, edits);
-    let after = evaluate(&rewritten)?;
+    let after = evaluate(&rewritten).map_err(|error| on_users_lines(error, &rewritten, source))?;
     let mut expected = evaluated.model.clone();
     for part in &mut expected.parts {
         if let Some(color) = colours.get(part.name.as_str()) {
@@ -685,6 +698,18 @@ impl Edit<'_> {
         self.text()[..byte].matches('\n').count() + 1
     }
 
+    /// " on line N", N the line that makes part `other`, for a refusal of a
+    /// name the program already gives it; the name typed is what changes,
+    /// so the refusal stays on it.
+    fn made_on(&self, other: &str) -> String {
+        let other = Edit {
+            name: other,
+            ..*self
+        };
+        (other.found_call())
+            .map_or_else(String::new, |call| format!(" on line {}", call.lines.first))
+    }
+
     /// As [`refused`], naming `line` of the program as the one to change.
     fn refused_on(
         &self,
@@ -963,12 +988,19 @@ impl Edit<'_> {
     ) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
         let doing = "rename it";
         let name = quote(self.name);
-        if new.trim().is_empty() || self.evaluated.model.part(new).is_some() {
+        if new.trim().is_empty() {
+            return Err(refused(
+                "program_part_name_taken",
+                "a part needs a name; type one no part of the program has",
+            ));
+        }
+        if self.evaluated.model.part(new).is_some() {
             return Err(refused(
                 "program_part_name_taken",
                 format!(
-                    "the program already makes a part named {}; choose another name",
-                    quote(new)
+                    "the program already makes a part named {}{}; choose another name",
+                    quote(new),
+                    self.made_on(new)
                 ),
             ));
         }
@@ -1082,11 +1114,21 @@ impl Edit<'_> {
         normal: [f64; 3],
     ) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
         let length = normal.iter().map(|value| value * value).sum::<f64>().sqrt();
-        if self.evaluated.model.part(copy).is_some() || length <= 0.0 || !length.is_finite() {
+        if self.evaluated.model.part(copy).is_some() {
             return Err(refused(
                 "program_part_mirror",
                 format!(
-                    "the mirrored copy of part {} needs a new name and a plane with a direction",
+                    "the program already makes a part named {}{}; choose another name for the mirrored copy",
+                    quote(copy),
+                    self.made_on(copy)
+                ),
+            ));
+        }
+        if length <= 0.0 || !length.is_finite() {
+            return Err(refused(
+                "program_part_mirror",
+                format!(
+                    "the mirrored copy of part {} needs a plane with a direction",
                     quote(self.name)
                 ),
             ));
@@ -1515,10 +1557,28 @@ impl Edit<'_> {
         }
         let extrusion = value - others;
         if extrusion <= DEFAULT_LINEAR_TOLERANCE_MM {
+            let lines = (part.face_offsets())
+                .filter(|offset| offset.name != LENGTH)
+                .filter_map(|offset| {
+                    source_edit::named_call_statement(
+                        &self.source.file_name,
+                        self.text(),
+                        "push_pull",
+                        self.name,
+                        &[("name", &offset.name)],
+                    )
+                })
+                .map(|bytes| self.line_of(bytes.start).to_string())
+                .collect::<Vec<_>>();
+            let pulls = match lines.as_slice() {
+                [] => "the Push/Pulls of other lines".to_owned(),
+                [line] => format!("the Push/Pull on line {line}"),
+                lines => format!("the Push/Pulls on lines {}", lines.join(", ")),
+            };
             return Err(refused(
                 "program_length_not_positive",
                 format!(
-                    "{feature} of part {name} would be {} mm long for the part to be {} mm long with the Push/Pulls of other lines; type a length above {}",
+                    "{feature} of part {name} would be {} mm long for the part to be {} mm long with {pulls}; type a length above {}",
                     number_literal(written(extrusion)),
                     number_literal(written(value)),
                     number_literal(written(others))
