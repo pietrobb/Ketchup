@@ -24,6 +24,7 @@ use crate::tolerance::UNDERLAY_ARC_CHORD_MM;
 use crate::underlay::fill::sweep_crossings;
 use crate::underlay::{arc_chord_step, push_segment};
 use ketchup_geometry::linalg::{cross2, dot2};
+use std::collections::HashMap;
 
 /// A hatch as an underlay draws it, in millimetres of the drawing (or of its block).
 #[derive(Clone)]
@@ -349,6 +350,8 @@ fn signed_area(ring: &[[f64; 2]]) -> f64 {
 /// Whether `point` lies inside `ring` (an odd number of its edges cross the ray from it
 /// to +x).
 fn inside(point: [f64; 2], ring: &[[f64; 2]]) -> bool {
+    #[cfg(test)]
+    tests::INSIDE_TESTS.set(tests::INSIDE_TESTS.get() + 1);
     ring.iter()
         .zip(ring.iter().cycle().skip(1))
         .filter(|(start, end)| {
@@ -423,26 +426,91 @@ fn counted_rings(rings: Vec<Vec<[f64; 2]>>, outermost: &[bool], style: i64) -> V
     if !matches!(style, 1 | 2) {
         return rings;
     }
-    let within = |ring: usize, other: usize| ring != other && inside(rings[ring][0], &rings[other]);
-    let outer = if outermost.iter().any(|flagged| *flagged) {
+    let flagged = outermost.iter().any(|flagged| *flagged);
+    let containers = if style == 1 || !flagged {
+        containing_rings(&rings)
+    } else {
+        Vec::new()
+    };
+    let outer = if flagged {
         outermost.to_vec()
     } else {
-        (0..rings.len())
-            .map(|ring| !(0..rings.len()).any(|other| within(ring, other)))
-            .collect()
+        containers.iter().map(Vec::is_empty).collect()
     };
     let kept = (0..rings.len())
         .map(|ring| {
             outer[ring]
                 || (style == 1
-                    && (0..rings.len()).any(|other| outer[other] && within(ring, other))
-                    && !(0..rings.len()).any(|other| !outer[other] && within(ring, other)))
+                    && containers[ring].iter().any(|other| outer[*other])
+                    && containers[ring].iter().all(|other| outer[*other]))
         })
         .collect::<Vec<_>>();
     rings
         .into_iter()
         .zip(kept)
         .filter_map(|(ring, kept)| kept.then_some(ring))
+        .collect()
+}
+
+/// For each of `rings`, the others its first corner lies inside. A point outside a
+/// ring's box is outside the ring, so only rings whose box covers the grid cell of the
+/// corner, and the corner itself, are tested; the grid has about one cell per ring.
+fn containing_rings(rings: &[Ring]) -> Vec<Vec<usize>> {
+    let boxes: Vec<_> = rings
+        .iter()
+        .map(|ring| point_bounds(ring.iter().copied()))
+        .collect();
+    let Some([low, high]) = point_bounds(boxes.iter().flatten().flatten().copied()) else {
+        return vec![Vec::new(); rings.len()];
+    };
+    let across = f64::from(u32::try_from(rings.len().isqrt()).unwrap_or(u32::MAX)).max(1.0);
+    let size = [0, 1].map(|axis| ((high[axis] - low[axis]) / across).max(f64::MIN_POSITIVE));
+    // Whole-number column and row, at most `across`, so no cell lies off the grid.
+    let cell = |point: [f64; 2]| {
+        [0, 1].map(|axis| {
+            ((point[axis] - low[axis]) / size[axis])
+                .floor()
+                .clamp(0.0, across)
+                + 0.0
+        })
+    };
+    let mut grid: HashMap<[u64; 2], Vec<usize>> = HashMap::new();
+    for (index, bounds) in boxes.iter().enumerate() {
+        let Some([first, last]) = bounds.map(|bounds| bounds.map(cell)) else {
+            continue;
+        };
+        let mut column = first[0];
+        while column <= last[0] {
+            let mut row = first[1];
+            while row <= last[1] {
+                grid.entry([column.to_bits(), row.to_bits()])
+                    .or_default()
+                    .push(index);
+                row += 1.0;
+            }
+            column += 1.0;
+        }
+    }
+    rings
+        .iter()
+        .enumerate()
+        .map(|(ring, points)| {
+            let point = points[0];
+            let [column, row] = cell(point);
+            let candidates = grid.get(&[column.to_bits(), row.to_bits()]);
+            candidates
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|other| {
+                    *other != ring
+                        && boxes[*other].is_some_and(|[low, high]| {
+                            (0..2).all(|axis| low[axis] <= point[axis] && point[axis] <= high[axis])
+                        })
+                        && inside(point, &rings[*other])
+                })
+                .collect()
+        })
         .collect()
 }
 
@@ -905,4 +973,57 @@ fn pattern_pieces(
         }
     }
     Ok(pieces)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// How often [`inside`] tested a point against a ring on this thread.
+        pub(super) static INSIDE_TESTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn square(low: [f64; 2], size: f64) -> Ring {
+        let [x, y] = low;
+        vec![[x, y], [x + size, y], [x + size, y + size], [x, y + size]]
+    }
+
+    /// Review 2026-10-24 UL-26: an outer or ignore hatch tested every ring against every
+    /// other before the budget saw it, so 10 000 islands took seconds.
+    #[test]
+    fn islands_are_tested_only_against_rings_around_them() {
+        // A floor with 40 x 40 tiles, each with a small hole in it.
+        let mut rings = vec![square([0.0, 0.0], 10_000.0)];
+        for column in 0..40 {
+            for row in 0..40 {
+                let low = [
+                    100.0 + 200.0 * f64::from(column),
+                    100.0 + 200.0 * f64::from(row),
+                ];
+                rings.push(square(low, 100.0));
+                rings.push(square([low[0] + 40.0, low[1] + 40.0], 20.0));
+            }
+        }
+        let count = rings.len();
+        for (style, kept) in [(1, 1 + 1600), (2, 1)] {
+            INSIDE_TESTS.set(0);
+            let counted = counted_rings(rings.clone(), &vec![false; count], style);
+            assert_eq!(counted.len(), kept, "style {style}");
+            // A tile lies in the floor, a hole in its tile and the floor.
+            assert!(
+                INSIDE_TESTS.get() <= 2 * count,
+                "{} tests",
+                INSIDE_TESTS.get()
+            );
+        }
+        // Outer keeps the tiles, not the holes in them.
+        let counted = counted_rings(rings, &vec![false; count], 1);
+        assert!(
+            counted
+                .iter()
+                .all(|ring| ring.len() == 4 && ring[1][0] - ring[0][0] >= 100.0)
+        );
+    }
 }
