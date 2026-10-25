@@ -90,20 +90,7 @@ pub(crate) fn on_users_lines(
     let failing = location.at.line;
     let failing_text =
         (written.source.split('\n').nth(failing.saturating_sub(1))).unwrap_or_default();
-    let place = |line: usize| {
-        let mut moved = ErrorLocation::of_line(&users.file_name, &users.source, line);
-        moved.call_stack = (location.call_stack.iter())
-            .filter_map(|frame| {
-                let mut frame = frame.clone();
-                if frame.at.file == written.file_name {
-                    frame.at.line =
-                        users_line(&written.source, &users.source, frame.at.line).ok()?;
-                }
-                Some(frame)
-            })
-            .collect();
-        moved
-    };
+    let place = |line: usize| moved(&location, line, written, users);
     let (message, location) = match users_line(&written.source, &users.source, failing) {
         Ok(line) => {
             let mut moved = place(line);
@@ -135,9 +122,158 @@ pub(crate) fn on_users_lines(
     }
 }
 
+/// `location`, on lines of `written`, at line `line` of `users`.
+fn moved(
+    location: &ErrorLocation,
+    line: usize,
+    written: &RuleProgramSource,
+    users: &RuleProgramSource,
+) -> Box<ErrorLocation> {
+    let mut moved = ErrorLocation::of_line(&users.file_name, &users.source, line);
+    moved.call_stack = (location.call_stack.iter())
+        .filter_map(|frame| {
+            let mut frame = frame.clone();
+            if frame.at.file == written.file_name {
+                frame.at.line = users_line(&written.source, &users.source, frame.at.line).ok()?;
+            }
+            Some(frame)
+        })
+        .collect();
+    moved
+}
+
+/// `error`, a refusal on the lines of `written`, the program as the earlier
+/// changes of a batch left it, told on the lines of `users`: the lines its
+/// words name and its location (review 2026-10-24 WB-5). A line an earlier
+/// change added is no line of the user's, so it is named as such and the
+/// refusal has no location.
+pub(crate) fn refusal_on_users_lines(
+    error: RuleProgramApplyError,
+    written: &RuleProgramSource,
+    users: &RuleProgramSource,
+) -> RuleProgramApplyError {
+    let RuleProgramApplyError::Program {
+        code,
+        message,
+        location,
+    } = error
+    else {
+        return error;
+    };
+    if written.source == users.source {
+        return RuleProgramApplyError::Program {
+            code,
+            message,
+            location,
+        };
+    }
+    let line = |line| users_line(&written.source, &users.source, line).map_or_else(|o| o, Some);
+    let location = location.and_then(|location| {
+        if location.at.file != written.file_name {
+            return Some(location);
+        }
+        Some(moved(&location, line(location.at.line)?, written, users))
+    });
+    RuleProgramApplyError::Program {
+        code,
+        message: users_words(&message, line),
+        location,
+    }
+}
+
+const ADDED_LINE: &str = "a line an earlier change of the edit adds";
+
+/// `message` with each "line N" and "lines N, M" outside its quoted names
+/// on the user's line `line(N)`.
+fn users_words(message: &str, line: impl Fn(usize) -> Option<usize>) -> String {
+    let mut words = String::with_capacity(message.len());
+    let mut at = 0;
+    let mut quoted = false;
+    while let Some(next) = message[at..].chars().next() {
+        let rest = &message[at..];
+        if quoted && next == '\\' {
+            let escape: usize = rest.chars().take(2).map(char::len_utf8).sum();
+            words.push_str(&rest[..escape]);
+            at += escape;
+            continue;
+        }
+        if next == '"' {
+            quoted = !quoted;
+        } else if !quoted
+            && words
+                .chars()
+                .last()
+                .is_none_or(|last| !last.is_alphanumeric())
+            && let Some(numbers) = rest
+                .strip_prefix("lines ")
+                .or_else(|| rest.strip_prefix("line "))
+            && let (found, read) = line_numbers(numbers)
+            && !found.is_empty()
+        {
+            let head = &rest[..rest.len() - numbers.len()];
+            if let [only] = found[..] {
+                match line(only) {
+                    Some(users) => words.push_str(&format!("{head}{users}")),
+                    None => words.push_str(ADDED_LINE),
+                }
+            } else {
+                let numbers: Vec<_> = (found.iter())
+                    .map(|&number| {
+                        line(number)
+                            .map_or_else(|| ADDED_LINE.to_owned(), |users| users.to_string())
+                    })
+                    .collect();
+                words.push_str(head);
+                words.push_str(&numbers.join(", "));
+            }
+            at += head.len() + read;
+            continue;
+        }
+        words.push(next);
+        at += next.len_utf8();
+    }
+    words
+}
+
+/// The numbers "N" or "N, M, …" that `text` starts with, and the bytes they take.
+fn line_numbers(text: &str) -> (Vec<usize>, usize) {
+    let mut numbers = Vec::new();
+    let mut read = 0;
+    loop {
+        let separator = if numbers.is_empty() { "" } else { ", " };
+        let Some(rest) = text[read..].strip_prefix(separator) else {
+            break;
+        };
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let Ok(number) = rest[..digits].parse() else {
+            break;
+        };
+        numbers.push(number);
+        read += separator.len() + digits;
+    }
+    (numbers, read)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::users_line;
+    use super::{users_line, users_words};
+
+    #[test]
+    fn the_lines_a_refusal_names_are_moved_but_not_those_in_a_quoted_name() {
+        let line = |line| (line != 9).then_some(line + 1);
+        assert_eq!(
+            users_words(
+                "part \"line 2\" is used on lines 3, 9; change line 4, then outline 5",
+                line
+            ),
+            "part \"line 2\" is used on lines 4, a line an earlier change of the edit adds; \
+             change line 5, then outline 5"
+        );
+        assert_eq!(
+            users_words("named \"m\\\" line 1\" on line 9;", line),
+            "named \"m\\\" line 1\" on a line an earlier change of the edit adds;"
+        );
+    }
 
     #[test]
     fn a_line_is_found_in_the_users_program_past_lines_the_edit_added_or_removed() {

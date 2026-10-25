@@ -1293,3 +1293,69 @@ fn a_program_that_fails_after_the_edit_is_refused_on_the_users_lines() {
         "{location:?}"
     );
 }
+
+/// Review 2026-10-24 capability finding on WB-5: a later change of a batch
+/// was refused on the lines of the program as the earlier changes left it,
+/// which the user never saw.
+#[test]
+fn a_later_change_of_a_batch_is_refused_on_the_users_lines() {
+    let source = "box(\"a\", (5, 5, 5), at=(50, 0, 0))\n\
+                  for i in range(2):\n    \
+                  box(\"r%d\" % i, (10, 10, 10), at=(0, 0, 20 * i))\n";
+    let error = rewrite_rule_program_parts(
+        &program(source),
+        &[
+            ("a".to_owned(), PartChange::Delete),
+            ("r0".to_owned(), PartChange::Color(Some([1, 2, 3]))),
+        ],
+    )
+    .expect_err("refused");
+    let rejection = error.rejection();
+    assert_eq!(rejection.target_name(), "program line 2", "{error:?}");
+    assert!(
+        rejection.reason_text().contains("loop on line 2"),
+        "{}",
+        rejection.reason_text()
+    );
+    let RuleProgramApplyError::Program {
+        location: Some(location),
+        ..
+    } = &error
+    else {
+        panic!("{error:?}");
+    };
+    assert!(
+        (location.excerpt.iter()).any(|line| line.line == 1 && line.text.starts_with("box(\"a\"")),
+        "{location:?}"
+    );
+
+    // A name an earlier change gave on a line it added: the user has no such
+    // line to look at.
+    let source = "box(\"a\", (5, 5, 5))\nbox(\"b\", (5, 5, 5), at=(50, 0, 0))\n";
+    let error = rewrite_rule_program_parts(
+        &program(source),
+        &[
+            (
+                "a".to_owned(),
+                PartChange::Mirror {
+                    copy: "m".to_owned(),
+                    point: [100.0, 0.0, 0.0],
+                    normal: [1.0, 0.0, 0.0],
+                },
+            ),
+            ("b".to_owned(), PartChange::Rename("m".to_owned())),
+        ],
+    )
+    .expect_err("refused");
+    let RuleProgramApplyError::Program {
+        message, location, ..
+    } = &error
+    else {
+        panic!("{error:?}");
+    };
+    assert!(location.is_none(), "{location:?}");
+    assert!(
+        message.contains("named \"m\" on a line an earlier change of the edit adds"),
+        "{message}"
+    );
+}

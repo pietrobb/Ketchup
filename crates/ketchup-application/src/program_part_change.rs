@@ -6,7 +6,7 @@
 //! another line still uses.
 use crate::RuleProgramApplyError;
 use crate::program_part_edit::{refused, refused_at};
-use crate::program_part_lines::on_users_lines;
+use crate::program_part_lines::{on_users_lines, refusal_on_users_lines};
 use crate::rule_program::evaluate;
 use ketchup_model::document::{RuleProgramSource, Transform};
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM};
@@ -162,13 +162,16 @@ pub fn rewrite_rule_program_parts_from(
             evaluated: &evaluated,
             name,
         };
+        // Refused on the lines of the program the earlier changes left, told
+        // on the user's.
+        let on_users = |error: RuleProgramApplyError| refusal_on_users_lines(error, &source, users);
         let mut checked = None;
         let (rewritten, expected) = match change {
-            PartChange::Delete => edit.delete()?,
-            PartChange::Color(color) => edit.color(*color)?,
+            PartChange::Delete => edit.delete().map_err(on_users)?,
+            PartChange::Color(color) => edit.color(*color).map_err(on_users)?,
             PartChange::Rename(new) => {
                 let document_name = document_names.remove(name).unwrap_or_else(|| name.clone());
-                let renamed = edit.rename(new, &document_name)?;
+                let renamed = edit.rename(new, &document_name).map_err(on_users)?;
                 document_names.insert(new.clone(), document_name);
                 renamed
             }
@@ -176,20 +179,22 @@ pub fn rewrite_rule_program_parts_from(
                 copy,
                 point,
                 normal,
-            } => edit.mirror(copy, *point, *normal)?,
-            PartChange::PushPull { face, distance } => edit.push_pull(face, *distance)?,
+            } => edit.mirror(copy, *point, *normal).map_err(on_users)?,
+            PartChange::PushPull { face, distance } => {
+                edit.push_pull(face, *distance).map_err(on_users)?
+            }
             PartChange::Finish {
                 kind,
                 edges,
                 amount,
-            } => edit.finish(*kind, edges, *amount)?,
+            } => edit.finish(*kind, edges, *amount).map_err(on_users)?,
             PartChange::Parameter {
                 feature,
                 path,
                 value,
-            } => edit.parameter(feature, path, *value)?,
+            } => edit.parameter(feature, path, *value).map_err(on_users)?,
             PartChange::Transform(world_edit) => {
-                let (rewritten, expected, after) = edit.transform(*world_edit)?;
+                let (rewritten, expected, after) = edit.transform(*world_edit).map_err(on_users)?;
                 checked = after;
                 (rewritten, expected)
             }
@@ -197,13 +202,12 @@ pub fn rewrite_rule_program_parts_from(
         let after = match checked {
             Some(after) => after,
             None => evaluate(&rewritten).map_err(|error| {
-                expected
-                    .kept_lines(&source)
+                (expected.kept_lines(&source).map(on_users))
                     .unwrap_or_else(|| on_users_lines(error, &rewritten, users))
             })?,
         };
         if !expected.holds(&evaluated.model, &after.model) {
-            return Err(expected.kept_lines(&source).unwrap_or_else(|| {
+            return Err(on_users(expected.kept_lines(&source).unwrap_or_else(|| {
                 let message = format!(
                     "the program did not make part {} as the edit asked: {}; change it in the program",
                     quote(name),
@@ -215,7 +219,7 @@ pub fn rewrite_rule_program_parts_from(
                     }
                     None => refused("program_part_change_mismatch", message),
                 }
-            }));
+            })));
         }
         source = rewritten;
         evaluated = Cow::Owned(after);
