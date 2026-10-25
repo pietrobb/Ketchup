@@ -58,15 +58,13 @@ use ketchup_interaction::{
         definition_requires_evaluated_geometry,
     },
 };
-use ketchup_manufacturing::blender_export::{ExactGlbExport, MeshGlbInstance, model_glb_export};
+use ketchup_manufacturing::blender_export::{MeshGlbInstance, model_glb_export};
 use ketchup_manufacturing::dxf_export::export_visible_plan_dxf;
 use ketchup_manufacturing::fabrication::{
     BtlxExportOptions, BtlxProfileProcessingRequest, GeneralFabricationProjection,
     project_general_fabrication,
 };
-use ketchup_manufacturing::three_mf_export::{
-    ExactThreeMfExport, MeshThreeMfInstance, model_three_mf_export,
-};
+use ketchup_manufacturing::three_mf_export::{MeshThreeMfInstance, model_three_mf_export};
 use ketchup_model::cam::{CamPlanId, CamPostprocessorDialect};
 #[cfg(test)]
 use ketchup_model::document::ParameterValueType;
@@ -86,8 +84,8 @@ use ketchup_model::document::{
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole, ExactMeshExport,
-    ExactResultRegistry, ExactStlExport, MeshExportBody, MeshExportSource,
-    exact_body_terminal_features, model_stl_export,
+    ExactResultRegistry, MeshExportBody, MeshExportSource, exact_body_terminal_features,
+    model_stl_export,
 };
 #[cfg(test)]
 use ketchup_model::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};

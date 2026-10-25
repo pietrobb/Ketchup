@@ -80,7 +80,12 @@ fn blender_glb_file_command_exports_current_scene_with_loss_report() {
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
-    harness.run();
+    step_until(
+        &mut harness,
+        Duration::from_secs(10),
+        "GLB export did not finish",
+        |app| app.file_activity_label().is_none() && path.exists(),
+    );
 
     assert_eq!(harness.state().document.current().revision_id(), revision);
     assert_eq!(
@@ -130,7 +135,12 @@ fn sketchup_dae_file_command_exports_current_scene_with_loss_report() {
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
-    harness.run();
+    step_until(
+        &mut harness,
+        Duration::from_secs(10),
+        "DAE export did not finish",
+        |app| app.file_activity_label().is_none() && path.exists(),
+    );
 
     assert_eq!(
         harness.state().document.current().canonical_digest(),
@@ -151,6 +161,67 @@ fn sketchup_dae_file_command_exports_current_scene_with_loss_report() {
         receipt.operation(),
         "export-current-model-dae-with-loss-report"
     );
+}
+
+/// Review 2026-10-24 UI-28: the GLB and DAE exports were made in the frame that chose
+/// their path, so the window stopped painting on a large model and the indication's Cancel
+/// could not stop them. The file is made on a thread; cancelling (Esc) then writes nothing.
+#[test]
+fn a_mesh_export_is_made_while_the_window_paints_and_cancel_writes_nothing() {
+    for (command, name) in [
+        (AppCommand::ExportSketchupDae, "current-model.dae"),
+        (AppCommand::ExportBlenderGlb, "current-model.glb"),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(name);
+        let dialogs = dialogs::ScriptedFileDialogs::new()
+            .queue_export(&path)
+            .always_confirm_high_risk_as(86);
+        let script = dialogs.clone();
+        let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+        install_initial_graph_result(&mut app);
+        let mut harness = Harness::builder()
+            .with_size(Vec2::new(1600.0, 1000.0))
+            .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+        harness.run();
+        let file_menu = harness.state().catalog.text("menu-file");
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+            .click();
+        harness.run();
+        let export = harness.state().command_label(command);
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+            .click();
+        step_until(
+            &mut harness,
+            Duration::from_secs(10),
+            "no export path was asked for",
+            |_| !script.export_requests().is_empty(),
+        );
+
+        assert!(
+            !path.exists() && harness.state().file_activity_label().is_some(),
+            "{name} was written in the frame that chose its path"
+        );
+        harness.input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        for _ in 0..5 {
+            harness.step();
+        }
+        assert!(harness.state().file_activity_label().is_none());
+        assert_eq!(
+            harness.state().digest,
+            harness.state().catalog.text("digest-cancelled")
+        );
+        assert!(!path.exists());
+        assert!(script.high_risk_prompts().is_empty());
+    }
 }
 
 #[test]

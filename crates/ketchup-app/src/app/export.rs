@@ -1,7 +1,7 @@
 //! Exports of the current model and profiles (DXF, STL, 3MF, GLB, STEP, IGES, CAM, cut lists).
 
+use super::mesh_export_activity::MeshFormat;
 use crate::*;
-use ketchup_manufacturing::blender_export::{DaeExport, model_dae_export};
 use ketchup_manufacturing::dxf_annotations::DEFAULT_PLAN_SCALE;
 
 impl KetchupApp {
@@ -167,164 +167,21 @@ impl KetchupApp {
         &mut self,
         path: &Path,
     ) -> Result<Written, ExportError> {
-        self.side_effect_receipts.clear();
-        let snapshot = self.document.current();
-        let result = self
-            .current_visible_mesh_scene(&snapshot)
-            .and_then(|scene| {
-                if scene.iter().any(|body| {
-                    matches!(
-                        body.source,
-                        CurrentVisibleMeshSource::Exact(ref package)
-                            if matches!(package.as_ref(), ExactBodyPackage::Imported(_))
-                    )
-                }) {
-                    return Err(ExportError::UnsupportedContent {
-                        reason: "imported STEP bounds proxies cannot be exported as STL",
-                    });
-                }
-                let bodies = scene
-                    .iter()
-                    .map(|body| MeshExportBody {
-                        source: body.source.as_export_source(),
-                        transform: body.occurrence.transform,
-                    })
-                    .collect::<Vec<_>>();
-                model_stl_export(&snapshot, &bodies).map_err(ExportError::failed)
-            })
-            .and_then(|bundle| {
-                let report_path = path.with_extension("stl.loss.txt");
-                let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
-                let evidence = exact_stl_export_evidence(path, &bundle);
-                self.authorize_export_bundle(
-                    ExportConsent {
-                        class: HighRiskClass::LossyConversion,
-                        operation: "export-current-model-stl-with-loss-report",
-                        title_key: "dialog-export-lossy-title",
-                        risk_key: "dialog-export-lossy-risk",
-                        overwrite_title_key: "dialog-export-overwrite-title",
-                        overwrite_operations: [
-                            "overwrite-current-model-stl-export",
-                            "overwrite-current-model-stl-loss-report",
-                        ],
-                    },
-                    path,
-                    &report_path,
-                    &precondition,
-                    &evidence,
-                )?;
-                write_export_bundle(
-                    path,
-                    bundle.mesh_stl.as_bytes(),
-                    &report_path,
-                    bundle.loss_report.as_bytes(),
-                    &precondition,
-                )?;
-                Ok(Written::with_loss_report(path, &report_path))
-            });
-        self.report_export_outcome("stl", path, result)
+        self.export_mesh_to(MeshFormat::Stl, path)
     }
 
     pub(crate) fn export_current_model_three_mf_to(
         &mut self,
         path: &Path,
     ) -> Result<Written, ExportError> {
-        self.side_effect_receipts.clear();
-        let snapshot = self.document.current();
-        let result = self
-            .current_visible_mesh_scene(&snapshot)
-            .and_then(|scene| {
-                let instances = scene
-                    .iter()
-                    .map(|body| MeshThreeMfInstance {
-                        source: body.source.as_export_source(),
-                        occurrence: &body.occurrence,
-                    })
-                    .collect::<Vec<_>>();
-                model_three_mf_export(&snapshot, &instances).map_err(ExportError::failed)
-            })
-            .and_then(|bundle| {
-                let report_path = path.with_extension("3mf.loss.txt");
-                let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
-                let evidence = exact_three_mf_export_evidence(path, &bundle);
-                self.authorize_export_bundle(
-                    ExportConsent {
-                        class: HighRiskClass::LossyConversion,
-                        operation: "export-current-model-3mf-with-loss-report",
-                        title_key: "dialog-export-lossy-title",
-                        risk_key: "dialog-export-lossy-risk",
-                        overwrite_title_key: "dialog-export-overwrite-title",
-                        overwrite_operations: [
-                            "overwrite-current-model-3mf-export",
-                            "overwrite-current-model-3mf-loss-report",
-                        ],
-                    },
-                    path,
-                    &report_path,
-                    &precondition,
-                    &evidence,
-                )?;
-                write_export_bundle(
-                    path,
-                    &bundle.three_mf,
-                    &report_path,
-                    bundle.loss_report.as_bytes(),
-                    &precondition,
-                )?;
-                Ok(Written::with_loss_report(path, &report_path))
-            });
-        self.report_export_outcome("3mf", path, result)
+        self.export_mesh_to(MeshFormat::ThreeMf, path)
     }
 
     pub(crate) fn export_current_model_glb_to(
         &mut self,
         path: &Path,
     ) -> Result<Written, ExportError> {
-        self.side_effect_receipts.clear();
-        let snapshot = self.document.current();
-        let result = self
-            .current_visible_mesh_scene(&snapshot)
-            .and_then(|scene| {
-                let instances = scene
-                    .iter()
-                    .map(|body| MeshGlbInstance {
-                        source: body.source.as_export_source(),
-                        occurrence: &body.occurrence,
-                    })
-                    .collect::<Vec<_>>();
-                model_glb_export(&snapshot, &instances).map_err(ExportError::failed)
-            })
-            .and_then(|bundle| {
-                let report_path = path.with_extension("glb.loss.txt");
-                let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
-                let evidence = exact_glb_export_evidence(path, &bundle);
-                self.authorize_export_bundle(
-                    ExportConsent {
-                        class: HighRiskClass::LossyConversion,
-                        operation: "export-current-model-blender-glb-with-loss-report",
-                        title_key: "dialog-export-blender-title",
-                        risk_key: "dialog-export-blender-risk",
-                        overwrite_title_key: "dialog-export-overwrite-title",
-                        overwrite_operations: [
-                            "overwrite-current-model-blender-glb-export",
-                            "overwrite-current-model-blender-glb-loss-report",
-                        ],
-                    },
-                    path,
-                    &report_path,
-                    &precondition,
-                    &evidence,
-                )?;
-                write_export_bundle(
-                    path,
-                    &bundle.glb,
-                    &report_path,
-                    bundle.loss_report.as_bytes(),
-                    &precondition,
-                )?;
-                Ok(Written::with_loss_report(path, &report_path))
-            });
-        self.report_export_outcome("glb", path, result)
+        self.export_mesh_to(MeshFormat::Glb, path)
     }
 
     /// COLLADA for SketchUp from the same visible meshes as the GLB export.
@@ -332,51 +189,7 @@ impl KetchupApp {
         &mut self,
         path: &Path,
     ) -> Result<Written, ExportError> {
-        self.side_effect_receipts.clear();
-        let snapshot = self.document.current();
-        let result = self
-            .current_visible_mesh_scene(&snapshot)
-            .and_then(|scene| {
-                let instances = scene
-                    .iter()
-                    .map(|body| MeshGlbInstance {
-                        source: body.source.as_export_source(),
-                        occurrence: &body.occurrence,
-                    })
-                    .collect::<Vec<_>>();
-                model_dae_export(&snapshot, &instances).map_err(ExportError::failed)
-            })
-            .and_then(|bundle| {
-                let report_path = path.with_extension("dae.loss.txt");
-                let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
-                let evidence = dae_export_evidence(path, &bundle);
-                self.authorize_export_bundle(
-                    ExportConsent {
-                        class: HighRiskClass::LossyConversion,
-                        operation: "export-current-model-dae-with-loss-report",
-                        title_key: "dialog-export-sketchup-title",
-                        risk_key: "dialog-export-sketchup-risk",
-                        overwrite_title_key: "dialog-export-sketchup-overwrite-title",
-                        overwrite_operations: [
-                            "overwrite-current-model-dae-export",
-                            "overwrite-current-model-dae-loss-report",
-                        ],
-                    },
-                    path,
-                    &report_path,
-                    &precondition,
-                    &evidence,
-                )?;
-                write_export_bundle(
-                    path,
-                    bundle.dae.as_bytes(),
-                    &report_path,
-                    bundle.loss_report.as_bytes(),
-                    &precondition,
-                )?;
-                Ok(Written::with_loss_report(path, &report_path))
-            });
-        self.report_export_outcome("dae", path, result)
+        self.export_mesh_to(MeshFormat::Dae, path)
     }
 
     pub(crate) fn btlx_export_options(&self) -> BtlxExportOptions {
@@ -863,46 +676,6 @@ impl KetchupApp {
             self.reviews.cam_export_dialog = Some(pending);
         }
     }
-}
-
-fn exact_stl_export_evidence(path: &Path, bundle: &ExactStlExport) -> Vec<u8> {
-    export_bundle_evidence(
-        b"ketchup.current-model-stl-export.v1",
-        path,
-        bundle.mesh_stl.as_bytes(),
-        &path.with_extension("stl.loss.txt"),
-        bundle.loss_report.as_bytes(),
-    )
-}
-
-fn exact_three_mf_export_evidence(path: &Path, bundle: &ExactThreeMfExport) -> Vec<u8> {
-    export_bundle_evidence(
-        b"ketchup.current-model-3mf-export.v1",
-        path,
-        &bundle.three_mf,
-        &path.with_extension("3mf.loss.txt"),
-        bundle.loss_report.as_bytes(),
-    )
-}
-
-fn exact_glb_export_evidence(path: &Path, bundle: &ExactGlbExport) -> Vec<u8> {
-    export_bundle_evidence(
-        b"ketchup.current-model-blender-glb-export.v1",
-        path,
-        &bundle.glb,
-        &path.with_extension("glb.loss.txt"),
-        bundle.loss_report.as_bytes(),
-    )
-}
-
-fn dae_export_evidence(path: &Path, bundle: &DaeExport) -> Vec<u8> {
-    export_bundle_evidence(
-        b"ketchup.current-model-dae-export.v1",
-        path,
-        bundle.dae.as_bytes(),
-        &path.with_extension("dae.loss.txt"),
-        bundle.loss_report.as_bytes(),
-    )
 }
 
 pub(super) fn export_bundle_evidence(

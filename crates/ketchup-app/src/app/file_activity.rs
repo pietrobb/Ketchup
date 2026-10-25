@@ -12,6 +12,7 @@ pub(crate) struct FileActivity {
     pub(super) viewer_export: Option<super::viewer_export_activity::ViewerExportTask>,
     pub(super) exchange_export: Option<super::exchange_export::ExchangeExportTask>,
     pub(super) drawing_export: Option<super::drawing_export_activity::DrawingExportTask>,
+    pub(super) mesh_export: Option<super::mesh_export_activity::MeshExportTask>,
     pub(super) dwg_reading: Option<super::dwg_import::DwgReadTask>,
     pub(super) exact_import_reading: Option<super::exact_import_activity::ExactImportReadTask>,
     pub(crate) underlay: super::underlay::UnderlayImport,
@@ -185,6 +186,7 @@ impl KetchupApp {
             || self.file.activity.viewer_export.is_some()
             || self.file.activity.exchange_export.is_some()
             || self.file.activity.drawing_export.is_some()
+            || self.file.activity.mesh_export.is_some()
             || self.file.activity.dwg_reading.is_some()
             || self.file.activity.exact_import_reading.is_some()
             || self.file.activity.underlay.reading.is_some()
@@ -247,6 +249,8 @@ impl KetchupApp {
             AppCommand::ExportViewer
         } else if let Some(task) = &self.file.activity.exchange_export {
             task.format().command()
+        } else if let Some(task) = &self.file.activity.mesh_export {
+            task.format().command()
         } else if self.file.activity.saving.is_some() {
             AppCommand::Save
         } else {
@@ -303,6 +307,7 @@ impl KetchupApp {
             self.cancel_viewer_export_preparation();
             self.cancel_exchange_export();
             self.cancel_drawing_export();
+            self.cancel_mesh_export();
         }
         let Some(label) = self.file_activity_label() else {
             return;
@@ -335,11 +340,16 @@ impl KetchupApp {
             self.cancel_viewer_export_preparation();
             self.cancel_exchange_export();
             self.cancel_drawing_export();
+            self.cancel_mesh_export();
             context.request_repaint();
             return;
         }
         if self.file.activity.drawing_export.is_some() {
             self.poll_drawing_export(context);
+            return;
+        }
+        if self.file.activity.mesh_export.is_some() {
+            self.poll_mesh_export(context);
             return;
         }
         if self.file.activity.exchange_export.is_some() {
@@ -413,6 +423,12 @@ impl KetchupApp {
             } {
                 if let Some(path) = self.choose_export_path(format.key()) {
                     self.start_exchange_export(format, path, context);
+                }
+            } else if let Some(format) =
+                super::mesh_export_activity::MeshFormat::of_command(pending.command)
+            {
+                if let Some(path) = self.choose_export_path(format.key()) {
+                    self.start_mesh_export(format, path, context);
                 }
             } else {
                 self.dispatch_command(pending.command);

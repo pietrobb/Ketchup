@@ -52,6 +52,7 @@ pub(crate) mod joints_ui;
 mod joints_ui_tests;
 mod local_outliner;
 mod local_time;
+pub(crate) mod mesh_export_activity;
 mod mirror;
 mod outliner;
 mod patterns;
