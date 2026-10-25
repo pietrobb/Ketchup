@@ -1093,3 +1093,45 @@ fn a_pulled_distance_and_a_finish_amount_are_written_without_noise() {
         assert!(finished.source.contains("=0.3)"), "{}", finished.source);
     }
 }
+
+const WINDOW: &str = "wall = box(\"wall\", (4000, 200, 2600))\n\
+                      window(\"win\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 2200, 900, 1200, 1250, cut=wall)\n";
+
+/// Review 2026-10-24 WB-25: one part of a `window()` was deleted, coloured or
+/// renamed through the whole call ("wall, win/frame changed too", "a name from
+/// an expression"), and its pane moved alone left the opening in the wall.
+#[test]
+fn a_part_one_call_makes_with_others_is_refused_with_that_call() {
+    let by = PartChange::Transform(Transform::from_translation(100.0, 0.0, 0.0).unwrap());
+    for (name, edit) in [
+        ("win/glass", PartChange::Delete),
+        ("win/glass", PartChange::Rename("pane".to_owned())),
+        ("win/frame left", PartChange::Color(Some([1, 2, 3]))),
+    ] {
+        let message = refusal(WINDOW, name, edit);
+        assert!(
+            message.contains("window() on line 2")
+                && message.contains("\"win/frame top\"")
+                && message.contains("changes \"wall\""),
+            "{message}"
+        );
+    }
+    let message = refusal(WINDOW, "win/glass", by.clone());
+    assert!(
+        message.contains("window() on line 2") && message.contains("also changes \"wall\""),
+        "{message}"
+    );
+    // The wall moved with the window carries its opening along.
+    let before = model(&program(WINDOW));
+    let all = (before.parts.iter())
+        .map(|part| (part.name.clone(), by.clone()))
+        .collect::<Vec<_>>();
+    let moved = rewrite_rule_program_parts(&program(WINDOW), &all)
+        .expect("moved")
+        .expect("a program");
+    let after = model(&moved);
+    for part in &before.parts {
+        let x = after.part(&part.name).unwrap().at_mm[0];
+        assert!((x - part.at_mm[0] - 100.0).abs() < 1e-9, "{}", moved.source);
+    }
+}

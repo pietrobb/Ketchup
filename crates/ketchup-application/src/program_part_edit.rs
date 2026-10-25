@@ -144,6 +144,7 @@ impl Edit<'_> {
     ) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
         let model = &self.evaluated.model;
         let part = model.part(self.name).expect("checked by the caller");
+        self.moved_with(|_| false)?;
         let motion = Motion::of(world_edit, part.at_mm)?;
         let (at, rotation) = motion.frame_after(part.at_mm, &part.rotation);
         let expected = Expected::Placed {
@@ -171,6 +172,35 @@ impl Edit<'_> {
             }
         }
         Ok((appended, expected))
+    }
+
+    /// Refused when the call that makes the part also changes a part that is
+    /// `moving` alike: a `move()` of a `window()` pane alone would leave the
+    /// opening it cut in the wall where it was (review 2026-10-24 WB-25).
+    fn moved_with(&self, moving: impl Fn(&str) -> bool) -> Result<(), RuleProgramApplyError> {
+        let Some(call) = self.found_call().filter(|call| call.loop_line.is_none()) else {
+            return Ok(());
+        };
+        let (_, changed) = self.made_along(&call);
+        let left: Vec<_> = (changed.iter())
+            .filter(|other| !moving(other))
+            .map(|other| quote(other))
+            .collect();
+        if left.is_empty() {
+            return Ok(());
+        }
+        Err(refused_at(
+            self.source,
+            call.lines.first,
+            "program_part_made_with_others",
+            format!(
+                "{}() on line {} that makes part {} also changes {}, which would stay where it is; move them together, or move it in the program",
+                self.callee(&call),
+                call.lines.first,
+                quote(self.name),
+                left.join(", ")
+            ),
+        ))
     }
 
     /// The `rotate()` / `move()` lines that make `motion` of the part.
@@ -225,6 +255,10 @@ pub(crate) fn transformed_at_once(
             evaluated,
             name,
         };
+        // A part moved with what its call changes, by the same motion.
+        edit.moved_with(|other| {
+            (changes.iter()).any(|(moved, motion)| moved == other && motion == change)
+        })?;
         let motion = Motion::of(*world_edit, part.at_mm)?;
         if placed
             .insert(

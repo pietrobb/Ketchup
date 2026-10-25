@@ -740,7 +740,62 @@ impl Edit<'_> {
                 ),
             ));
         }
+        let (made, changed) = self.made_along(&call);
+        if !made.is_empty() || !changed.is_empty() {
+            let mut also = Vec::new();
+            if !made.is_empty() {
+                also.push(format!("makes {} too", listed(&made)));
+            }
+            if !changed.is_empty() {
+                also.push(format!("changes {}", listed(&changed)));
+            }
+            return Err(self.refused_on(
+                call.lines.first,
+                "program_part_made_with_others",
+                format!(
+                    "part {name} is one of what {}() on line {} makes, which also {}; {doing} in the program",
+                    self.callee(&call),
+                    call.lines.first,
+                    also.join(" and ")
+                ),
+            ));
+        }
         Ok(call)
+    }
+
+    /// The other parts the creating `call` makes, and the parts another call
+    /// makes that it changes: `window()` makes a frame and a pane and cuts
+    /// its wall, so one of them is not changed alone (review 2026-10-24 WB-25).
+    pub(crate) fn made_along(&self, call: &CreatingCall) -> (Vec<String>, Vec<String>) {
+        let (mut made, mut changed) = (Vec::new(), Vec::new());
+        for (other, recorded) in &self.evaluated.part_sources {
+            let inherited = self.evaluated.inherited_sources.get(other);
+            if other == self.name
+                || self.evaluated.model.part(other).is_none()
+                || !recorded.contains(&call.lines)
+                || inherited.is_some_and(|lines| lines.contains(&call.lines))
+            {
+                continue;
+            }
+            let theirs = Edit {
+                source: self.source,
+                evaluated: self.evaluated,
+                name: other,
+            }
+            .found_call();
+            if theirs.is_some_and(|theirs| theirs.lines == call.lines) {
+                made.push(other.clone());
+            } else {
+                changed.push(other.clone());
+            }
+        }
+        (made, changed)
+    }
+
+    /// The name of the function `call` calls.
+    pub(crate) fn callee<'s>(&'s self, call: &CreatingCall) -> &'s str {
+        let text = &self.text()[call.bytes.clone()];
+        text.split('(').next().unwrap_or(text).trim()
     }
 
     fn delete(&self) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
