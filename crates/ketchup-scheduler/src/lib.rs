@@ -619,6 +619,33 @@ fn read_regular_file(path: &Path, label: &str) -> Result<Vec<u8>, WorkerError> {
     read_reserved(&mut file, metadata.len(), label)
 }
 
+/// Copies the regular file at `path` into `into` a piece at a time and returns
+/// the SHA-256 of the bytes it copied: a source of any size is hashed without
+/// being held whole.
+pub(crate) fn copy_regular_file_hashed(
+    path: &Path,
+    label: &str,
+    into: &mut impl Write,
+) -> Result<String, WorkerError> {
+    struct Tee<'a, W> {
+        source: fs::File,
+        into: &'a mut W,
+    }
+    impl<W: Write> Read for Tee<'_, W> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let read = self.source.read(buffer)?;
+            self.into.write_all(&buffer[..read])?;
+            Ok(read)
+        }
+    }
+    let transport = |error: io::Error| WorkerError::Transport(error.to_string());
+    let source = fs::File::open(path).map_err(transport)?;
+    if !source.metadata().map_err(transport)?.is_file() {
+        return Err(WorkerError::NotRegularFile(label.to_owned()));
+    }
+    ketchup_model::graph::sha256_reader_hex(Tee { source, into }).map_err(transport)
+}
+
 /// The `len` bytes `reader` holds, in a buffer reserved for them up front.
 fn read_reserved(reader: &mut impl Read, len: u64, label: &str) -> Result<Vec<u8>, WorkerError> {
     let mut bytes = reserve_whole(len, label).map_err(WorkerError::OutOfMemory)?;
@@ -1310,8 +1337,8 @@ impl ExactWorkerSupervisor {
         occurrences: usize,
         cancelled: &AtomicBool,
     ) -> Result<Vec<u8>, WorkerError> {
-        let source = read_regular_file(source_path, "STEP staging source")?;
-        let source_sha256 = sha256_hex(&source);
+        let source_sha256 =
+            copy_regular_file_hashed(source_path, "STEP staging source", &mut io::sink())?;
         self.client.ensure_not_cancelled(cancelled)?;
         match self.client.convert_step_to_iges_request_with_cancellation(
             source_path,
@@ -2968,6 +2995,44 @@ mod tests {
         assert!(
             matches!(&grown, Err(WorkerError::ChangedWhileRead(label)) if label == "DXF"),
             "{grown:?}"
+        );
+    }
+
+    /// Review 10-24 EX-21: a STEP source is hashed, and copied, a piece at a
+    /// time; it is never held whole just to learn its SHA-256.
+    #[test]
+    fn a_source_is_hashed_and_copied_without_being_held_whole() {
+        struct Pieces {
+            bytes: Vec<u8>,
+            largest: usize,
+        }
+        impl Write for Pieces {
+            fn write(&mut self, piece: &[u8]) -> io::Result<usize> {
+                self.largest = self.largest.max(piece.len());
+                self.bytes.extend_from_slice(piece);
+                Ok(piece.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("part.step");
+        let content: Vec<u8> = (0..(4 << 20) + 3)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        std::fs::write(&source, &content).unwrap();
+        let mut copy = Pieces {
+            bytes: Vec::new(),
+            largest: 0,
+        };
+        let sha256 = copy_regular_file_hashed(&source, "STEP source", &mut copy).unwrap();
+        assert_eq!(sha256, sha256_hex(&content));
+        assert!(copy.bytes == content, "the copy differs from the source");
+        assert!(
+            copy.largest <= 64 * 1024,
+            "held {} bytes at once",
+            copy.largest
         );
     }
 

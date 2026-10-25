@@ -3031,30 +3031,23 @@ fn verified_copy(
     operation: &'static str,
 ) -> Result<tempfile::NamedTempFile, WorkerFailure> {
     let failure = |diagnostic: &str| backend_failure(operation, diagnostic);
-    let mut file =
-        std::fs::File::open(&source.path).map_err(|error| failure(&error.to_string()))?;
-    let len = file
-        .metadata()
-        .map_err(|error| failure(&error.to_string()))?
-        .len();
-    let mut source_bytes = crate::reserve_whole(len, &format!("{label} source"))
-        .map_err(|error| failure(&error.to_string()))?;
-    file.read_to_end(&mut source_bytes)
-        .map_err(|error| failure(&error.to_string()))?;
-    if !is_sha256_hex(&source.sha256) || sha256_hex(&source_bytes) != source.sha256 {
-        return Err(failure(&format!(
-            "{label} source bytes do not match the declared SHA-256"
-        )));
-    }
     let extension = label.to_ascii_lowercase();
     let mut copy = tempfile::Builder::new()
         .prefix(&format!("ketchup-verified-{extension}-"))
         .suffix(&format!(".{extension}"))
         .tempfile()
         .map_err(|error| failure(&error.to_string()))?;
-    copy.write_all(&source_bytes)
-        .and_then(|()| copy.flush())
-        .map_err(|error| failure(&error.to_string()))?;
+    // The copy is hashed as it is written, so the bytes proven are the bytes
+    // OCCT reads, and a source of any size is never held whole.
+    let copied =
+        crate::copy_regular_file_hashed(&source.path, &format!("{label} source"), &mut copy)
+            .map_err(|error| failure(&error.to_string()))?;
+    if !is_sha256_hex(&source.sha256) || copied != source.sha256 {
+        return Err(failure(&format!(
+            "{label} source bytes do not match the declared SHA-256"
+        )));
+    }
+    copy.flush().map_err(|error| failure(&error.to_string()))?;
     Ok(copy)
 }
 
