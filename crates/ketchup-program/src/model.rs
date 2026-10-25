@@ -23,6 +23,11 @@ pub struct Param {
     pub max: Option<f64>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub doc: String,
+    /// Declared with `unit=""`: a count, a factor or an angle, which the
+    /// window reads without a length unit; else millimetres (review
+    /// 2026-10-24 WB-27).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plain: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]

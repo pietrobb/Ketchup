@@ -7,7 +7,9 @@
 
 #@topic basics: Parts, frames, faces, parameters, numbers
 #
-#   param(name, default, min=, max=, doc=)  -> number the user can override
+#   param(name, default, min=, max=, doc=, unit="mm")  -> number the user can override;
+#     unit="" for a count, a factor or an angle: the window then takes no length unit
+#     ("3 m"), else it reads one as millimetres
 #   box(name, size, at=, material=, color=, attributes=, tool=)  -> part
 #   board(name, size, at=, material=, grain=, edges=, color=)  -> a panel for the cut list
 #   Every body (box, extrude, revolve, sweep, loft) takes material=, color=

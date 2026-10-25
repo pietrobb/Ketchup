@@ -1681,8 +1681,16 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] min: Option<Value<'v>>,
         #[starlark(require = named)] max: Option<Value<'v>>,
         #[starlark(require = named, default = "")] doc: &str,
+        #[starlark(require = named, default = "mm")] unit: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
+        let plain = match unit {
+            "mm" => false,
+            "" => true,
+            other => anyhow::bail!(
+                "param({name:?}): unit must be \"mm\" for a length or \"\" for a count, a factor or an angle, got {other:?}"
+            ),
+        };
         let integer_default = default.unpack_i32().is_some();
         let default = number(default, &format!("param({name:?}) default"))?;
         let min = given(min).map(|value| number(value, "min")).transpose()?;
@@ -1701,6 +1709,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 min,
                 max,
                 doc: doc.to_owned(),
+                plain,
             });
         }
         let heap = eval.heap();

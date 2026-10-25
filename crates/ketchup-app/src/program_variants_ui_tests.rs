@@ -186,6 +186,64 @@ fn an_unreadable_parameter_value_changes_nothing_and_says_why() {
     assert_eq!(field_value(&harness, "width").as_deref(), Some("600"));
 }
 
+/// Review 2026-10-24 WB-27: a value typed without Enter was dropped when
+/// the field lost focus, and a count read "3 m" as 3000.
+#[test]
+fn a_value_is_set_when_its_field_loses_focus_and_a_count_takes_no_unit() {
+    let mut harness = harness();
+    let field = named(&harness, "params-field", "height");
+    harness
+        .get_by_role_and_label(Role::TextInput, &field)
+        .focus();
+    harness.run_steps(1);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness
+        .get_by_role_and_label(Role::TextInput, &field)
+        .type_text("70 cm");
+    harness.run_steps(1);
+    harness.key_press(egui::Key::Tab);
+    settle(&mut harness);
+    assert_eq!(right_side(harness.state()), (582.0, 700.0));
+
+    // Escape leaves the value as it was.
+    harness
+        .get_by_role_and_label(Role::TextInput, &field)
+        .focus();
+    harness.run_steps(1);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness
+        .get_by_role_and_label(Role::TextInput, &field)
+        .type_text("900");
+    harness.run_steps(1);
+    harness.key_press(egui::Key::Escape);
+    settle(&mut harness);
+    assert_eq!(right_side(harness.state()), (582.0, 700.0));
+
+    let counted = RuleProgramSource {
+        file_name: "shelves.star".into(),
+        source: "N = param(\"shelves\", 2, unit = \"\")\n\
+                 for i in range(N):\n    box(\"s%d\" % i, (600, 400, 18), at = (0, 0, 300 * i))\n"
+            .into(),
+        overrides: BTreeMap::new(),
+        variants: BTreeMap::new(),
+    };
+    harness
+        .state_mut()
+        .apply_program_source(counted, false)
+        .unwrap();
+    settle(&mut harness);
+    let undo = harness.state().undo_step_count();
+    type_parameter(&mut harness, "shelves", "3 m");
+    settle(&mut harness);
+    assert_eq!(harness.state().undo_step_count(), undo);
+    let unreadable = text(&harness, "value-unreadable");
+    let outcome = harness.state().live.variants.outcome.clone().unwrap();
+    assert!(outcome.contains(&unreadable), "{outcome}");
+    type_parameter(&mut harness, "shelves", "3");
+    settle(&mut harness);
+    assert_eq!(field_value(&harness, "shelves").as_deref(), Some("3"));
+}
+
 #[test]
 fn the_dock_saves_uses_and_deletes_variants_without_waiting_for_them() {
     let mut harness = harness();

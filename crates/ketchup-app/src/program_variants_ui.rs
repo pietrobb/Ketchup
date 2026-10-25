@@ -7,7 +7,7 @@
 //! their fields and buttons wait, never the frame.
 
 use super::*;
-use crate::length_input::{DecimalSeparator, read_length};
+use crate::length_input::{DecimalSeparator, read_length, read_number};
 use crate::live_bridge::variant_window::VariantAction;
 use crate::program_evaluation::Lookup;
 use ketchup_application::program_variants::active_variant;
@@ -112,8 +112,9 @@ impl KetchupApp {
         }
     }
 
-    /// One field per parameter; Enter in a field asks for its value. Text that
-    /// is no value changes nothing and says why.
+    /// One field per parameter; Enter in a field, or leaving it changed, asks
+    /// for its value, in millimetres unless the parameter takes no unit. Text
+    /// that is no value changes nothing and says why.
     fn show_params(
         &mut self,
         ui: &mut egui::Ui,
@@ -159,8 +160,21 @@ impl KetchupApp {
                 self.live.variants.draft = Some((param.name.clone(), text));
             } else if field.lost_focus() {
                 self.live.variants.draft = None;
-                if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                    match read_length(&text, decimal) {
+                // Enter, or leaving a changed field, sets the value; Escape
+                // leaves it (review 2026-10-24 WB-27).
+                let (enter, escape) = ui.input(|input| {
+                    (
+                        input.key_pressed(egui::Key::Enter),
+                        input.key_pressed(egui::Key::Escape),
+                    )
+                });
+                if enter || (!escape && text != number_text(param.value, decimal)) {
+                    let read = if param.plain {
+                        read_number(&text, decimal)
+                    } else {
+                        read_length(&text, decimal)
+                    };
+                    match read {
                         Ok(value) => {
                             action = Some(VariantAction::SetParam(param.name.clone(), value))
                         }
