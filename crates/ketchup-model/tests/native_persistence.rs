@@ -2698,6 +2698,51 @@ fn a_checkpoint_of_many_steps_opens_within_one_budget_by_giving_up_the_oldest_un
     );
 }
 
+/// Review 2026-10-24 MD-26, the rest of M-12: a blob the file holds that no revision of
+/// the opened document names, such as the source of an import an earlier Kečup kept only
+/// for Undo steps a file no longer opens with, leaves the file at the next Save instead of
+/// being written into every one after.
+#[test]
+fn a_blob_no_opened_revision_names_leaves_the_file_at_the_next_save() {
+    use ketchup_model::underlay::{plan_underlay, plan_underlay_removal};
+    let mut store = graph_document();
+    let mut container = persistence::ContainerData::default();
+    let lines = b"the lines only an old Undo step named".to_vec();
+    let orphan = container.insert_import_blob(lines.clone()).unwrap();
+    let (batch, id) = plan_underlay(
+        &store.current(),
+        "Plan",
+        &[],
+        &[],
+        ketchup_model::graph::sha256_bytes(&lines),
+        [0.0; 2],
+    )
+    .unwrap();
+    store.apply_batch(&batch).unwrap();
+    store
+        .apply_batch(&plan_underlay_removal(&store.current(), id).unwrap())
+        .unwrap();
+    // As an earlier Kečup saved it: with its Undo steps, the blob kept for them.
+    // A blob no revision names stays, as a newer Kečup may keep one (see
+    // native_container_preserves_optional_extensions_and_content_addressed_blobs).
+    let saved = persistence::save_document_store(&store, &container).unwrap();
+    let open = |bytes: &[u8]| {
+        persistence::load(bytes)
+            .unwrap()
+            .into_editable_with_container()
+            .ok()
+            .unwrap()
+    };
+    let (opened, data) = open(&saved);
+    assert!(data.blobs().contains_key(&orphan));
+    let again = persistence::save_container(&opened.current(), &data).unwrap();
+    let (_, data) = open(&again);
+    assert!(
+        !data.blobs().contains_key(&orphan),
+        "the orphan blob is saved again"
+    );
+}
+
 /// Review 2026-10-21 LIM-1: every edit checks that neither the file nor its
 /// checkpoint changed on disk. With a large blob in the file, an edit after the
 /// first hashes its step, not the file, the checkpoint or the blob again, and

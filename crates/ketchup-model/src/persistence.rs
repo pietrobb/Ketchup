@@ -1851,6 +1851,12 @@ fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, Pe
                     steps: revisions - 1,
                 });
             }
+            mark_unopened_history_sources(
+                &mut outcome,
+                &revision_history,
+                &document,
+                &history_container_data,
+            );
             return Ok(outcome);
         };
         let discarded = |reason: String| LoadNotice::HistoryDiscarded { reason };
@@ -1871,7 +1877,17 @@ fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, Pe
                     PersistenceError::InvalidRevisionHistory.to_string(),
                 ));
             }
-            (LoadOutcome::Editable { document, .. }, Ok(restored)) => *document = restored,
+            (
+                LoadOutcome::Editable {
+                    document,
+                    container_data,
+                    ..
+                },
+                Ok(restored),
+            ) => {
+                mark_sources(container_data, history_imported_sources(&restored));
+                *document = restored;
+            }
             (LoadOutcome::Editable { audit, .. }, Err(error)) => {
                 audit.notices.push(discarded(error.to_string()));
             }
@@ -1884,6 +1900,57 @@ fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, Pe
         }
     }
     Ok(outcome)
+}
+
+/// Marks the blobs of `container_data` among `named` as sources: each leaves the file with
+/// the last revision that names it (review 2026-10-24 MD-26). A blob no revision ever
+/// named stays, as a newer Kečup may keep one.
+fn mark_sources(container_data: &mut ContainerData, named: BTreeSet<String>) {
+    let held = named
+        .into_iter()
+        .filter(|hash| container_data.blobs.contains_key(hash));
+    Arc::make_mut(&mut container_data.imported_source_blobs).extend(held);
+}
+
+/// Marks as sources the blobs the revisions of `history`, a history the file opens without,
+/// name: the source of an import an earlier Kečup kept only for those Undo steps would
+/// otherwise be written into every file after (the rest of review 2026-10-18 M-12). The
+/// revisions are read only when a blob the opened revision does not name is there, one
+/// at a time; one that does not read names nothing.
+fn mark_unopened_history_sources(
+    outcome: &mut LoadOutcome,
+    history: &[u8],
+    document: &[u8],
+    history_container_data: &ContainerData,
+) {
+    let LoadOutcome::Editable { container_data, .. } = outcome else {
+        return;
+    };
+    if container_data
+        .blobs
+        .keys()
+        .all(|hash| container_data.imported_source_blobs.contains(hash))
+    {
+        return;
+    }
+    let Ok(parsed) = read_history_records(history, document, HISTORY_BUDGET, false) else {
+        return;
+    };
+    let mut named = BTreeSet::new();
+    let mut migrated_digests = BTreeMap::new();
+    for record in &parsed.records {
+        let Ok(encoded) = record.encoded_snapshot.assemble(&parsed.chunks) else {
+            continue;
+        };
+        if let Ok(revision) = load_document(
+            &encoded,
+            history_container_data.clone(),
+            &mut migrated_digests,
+        ) {
+            named.extend(imported_source_blob_hashes(&revision.snapshot()));
+        }
+    }
+    mark_sources(container_data, named);
 }
 
 fn read_revision_principal(reader: &mut Reader<'_>) -> Result<ProposalPrincipal, PersistenceError> {
