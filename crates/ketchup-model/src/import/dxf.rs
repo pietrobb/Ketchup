@@ -67,6 +67,9 @@ struct DxfReading {
     /// Draws a true ellipse and a spline a profile cannot hold exactly by its chords,
     /// instead of reporting it unsupported (review 2026-10-24 UL-21).
     curves: bool,
+    /// Draws a point, such as a surveyed one, as a cross ([`parse_point`]) instead of
+    /// reporting it unsupported (review 2026-10-24).
+    points: bool,
 }
 
 const PROFILE_READING: DxfReading = DxfReading {
@@ -81,6 +84,7 @@ const PROFILE_READING: DxfReading = DxfReading {
     styles: false,
     fills: false,
     curves: false,
+    points: false,
 };
 
 /// No limit, yet small enough that the `+ 1` of a check cannot overflow.
@@ -97,6 +101,7 @@ const UNDERLAY_READING: DxfReading = DxfReading {
     styles: true,
     fills: true,
     curves: true,
+    points: true,
 };
 
 mod block;
@@ -456,6 +461,9 @@ struct DiagnosticCounts {
     /// The code page its `$DWGCODEPAGE` names, ANSI_1252 when it names none: a text's
     /// `%%nnn` is the character nnn of it.
     code_page: CodePage,
+    /// How wide the cross a point is drawn as is: the drawing's `$PDSIZE` when positive,
+    /// otherwise [`POINT_MARK_MM`].
+    point_size_mm: f64,
     /// What it left out, by diagnostic code and what (an entity type or a block, and
     /// why): one report entry each, with the count and the first handles or names.
     skipped: BTreeMap<(&'static str, String), Skipped>,
@@ -494,6 +502,7 @@ impl DiagnosticCounts {
             hidden_layers: BTreeSet::new(),
             frozen_layers: BTreeSet::new(),
             code_page: CodePage::WINDOWS_1252,
+            point_size_mm: POINT_MARK_MM,
             skipped: BTreeMap::new(),
             first_skip: None,
             fill_pieces_left: limits::DRAWING_ENTITIES,
@@ -1225,9 +1234,18 @@ fn parse_header(
             Ok(point)
         })
         .transpose()?;
+    // A size of 0 or below is a share of the screen, which an underlay has none of.
+    if diagnostics.reading.points
+        && let Some(size) = variables.get("$PDSIZE")
+        && let size = parse_number(exactly_one(size, 40)?)?
+        && size > 0.0
+    {
+        diagnostics.point_size_mm = scale_coordinate(size, units.millimetres_per_unit())?;
+    }
     for name in variables.keys().copied() {
         if name != "$INSUNITS"
             && name != "$INSBASE"
+            && !(diagnostics.reading.points && name == "$PDSIZE")
             && !(diagnostics.reading.styles && style::STYLE_VARIABLES.contains(&name))
         {
             diagnostics.add(
@@ -1406,6 +1424,12 @@ fn parse_entities(
                         parse_dimension(record, units, ordinal, block_definitions, diagnostics)?;
                     let placed = leave_out_hidden(&kind, placed, diagnostics)?;
                     output.push_placed(place_on_frozen_layer(record, diagnostics, placed)?);
+                }
+                "POINT" if diagnostics.reading.points => {
+                    for segment in parse_point(record, units, diagnostics)? {
+                        output.layers.insert(segment.layer.clone());
+                        output.loose.push(LooseSegment { ordinal, ..segment });
+                    }
                 }
                 "TEXT" | "MTEXT" | "ATTDEF" if diagnostics.reading.texts => {
                     output.push_texts(text::parse_text(&kind, record, units, diagnostics)?);
@@ -1667,6 +1691,39 @@ fn parse_line(
             end_mm: end,
         },
     })
+}
+
+/// How wide a point is drawn when the drawing sizes points by the screen (`$PDSIZE` 0, its
+/// default, or below): 10 cm, as a stake on a site plan.
+const POINT_MARK_MM: f64 = 100.0;
+
+/// A POINT as the cross an underlay draws it as, [`DiagnosticCounts::point_size_mm`]
+/// wide, whatever `$PDMODE` says its mark is.
+fn parse_point(
+    record: &[DxfPair<'_>],
+    units: ImportUnitDecision,
+    diagnostics: &mut DiagnosticCounts,
+) -> Result<[LooseSegment; 2], DxfImportError> {
+    let layer = parse_layer(record)?;
+    ensure_planar_wcs(record)?;
+    report_ignored_groups(
+        "POINT",
+        record,
+        &[5, 8, 10, 20, 30, 39, 50, 100, 210, 220, 230],
+        diagnostics,
+    )?;
+    let [x, y] = parse_xy(record, 10, 20, units.millimetres_per_unit())?;
+    let half = diagnostics.point_size_mm / 2.0;
+    let arm = |start_mm, end_mm| LooseSegment {
+        layer: layer.clone(),
+        ordinal: 0,
+        style: EntityStyle::default(),
+        segment: ProfileSegment::Line { start_mm, end_mm },
+    };
+    Ok([
+        arm([x - half, y], [x + half, y]),
+        arm([x, y - half], [x, y + half]),
+    ])
 }
 
 fn parse_circle(

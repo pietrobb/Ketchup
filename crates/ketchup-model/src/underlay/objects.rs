@@ -9,7 +9,7 @@ use std::ops::Range;
 use super::{Reader, UnderlayLinesError, f64_at, push_count};
 
 /// The kinds of entity an object can be, by their DXF names.
-const KINDS: [&str; 20] = [
+const KINDS: [&str; 21] = [
     "LINE",
     "ARC",
     "CIRCLE",
@@ -30,6 +30,7 @@ const KINDS: [&str; 20] = [
     "LEADER",
     "MESH",
     "MPOLYGON",
+    "POINT",
 ];
 
 /// The kind of entity an object is.

@@ -154,6 +154,42 @@ fn a_text_line_of_250_wide_characters_is_read_whole() {
     assert!(read_dxf_underlay(&long, DxfImportOptions::new(None)).is_ok());
 }
 
+/// Review 2026-10-24: the POINTs of a survey were left out as unsupported, so a site plan
+/// came without its surveyed points.
+#[test]
+fn a_point_is_drawn_as_a_cross_as_wide_as_the_drawing_sizes_points() {
+    let crosses = |header: &str| {
+        let source = format!(
+            "0\nSECTION\n2\nHEADER\n{header}0\nENDSEC\n0\nSECTION\n2\nENTITIES\n\
+             0\nPOINT\n8\nsurvey\n10\n2\n20\n3\n30\n417.25\n0\nENDSEC\n0\nEOF\n"
+        );
+        let underlay = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
+        assert_eq!(underlay.layers, ["survey"]);
+        let unsupported = (underlay.diagnostics.iter())
+            .any(|diagnostic| diagnostic.code() == "dxf.entity-unsupported");
+        assert!(!unsupported);
+        let objects = &underlay.lines.objects().objects;
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].kind.name(), "POINT");
+        let mut segments = underlay.lines.layers()[0].segments().collect::<Vec<_>>();
+        segments.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        segments
+    };
+    // In metres, 0.5 m wide; the point stands where the survey put it.
+    assert_eq!(
+        crosses("9\n$INSUNITS\n70\n6\n9\n$PDSIZE\n40\n0.5\n"),
+        [
+            [[1_750.0, 3_000.0], [2_250.0, 3_000.0]],
+            [[2_000.0, 2_750.0], [2_000.0, 3_250.0]],
+        ]
+    );
+    // Sized by the screen (0, the default): 100 mm wide.
+    assert_eq!(
+        crosses("9\n$INSUNITS\n70\n4\n9\n$PDSIZE\n40\n0\n"),
+        [[[-48.0, 3.0], [52.0, 3.0]], [[2.0, -47.0], [2.0, 53.0]]]
+    );
+}
+
 #[test]
 fn an_entity_it_cannot_read_is_left_out_and_counted() {
     let entities = [
