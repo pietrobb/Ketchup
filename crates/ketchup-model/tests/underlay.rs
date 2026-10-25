@@ -253,6 +253,51 @@ fn the_chords_of_a_large_arc_stay_within_a_tenth_of_a_millimetre() {
     }
 }
 
+/// Review 2026-10-24 UL-21: every true ellipse, every spline of degree 2 or more and an
+/// ellipse ending at a rounded TAU were left out as unsupported.
+#[test]
+fn ellipses_and_splines_are_drawn_by_their_chords() {
+    let entities = concat!(
+        "0\nELLIPSE\n8\ne\n10\n0\n20\n0\n11\n100\n21\n0\n40\n0.5\n41\n0\n42\n6.283185307179586\n",
+        "0\nELLIPSE\n8\nrounded\n10\n0\n20\n0\n11\n100\n21\n0\n40\n0.5\n41\n0\n42\n6.28318530718\n",
+        "0\nSPLINE\n8\ns\n70\n8\n71\n3\n72\n8\n73\n4\n74\n0\n",
+        "40\n0\n40\n0\n40\n0\n40\n0\n40\n1\n40\n1\n40\n1\n40\n1\n",
+        "10\n0\n20\n0\n10\n10\n20\n20\n10\n30\n20\n20\n10\n40\n20\n0\n",
+    );
+    let underlay = read(entities);
+    let unsupported = (underlay.diagnostics.iter())
+        .find(|diagnostic| diagnostic.code() == "dxf.entity-unsupported")
+        .map(|diagnostic| (diagnostic.subject().map(str::to_owned), diagnostic.count()));
+    assert_eq!(unsupported, None, "{:?}", underlay.diagnostics);
+    assert_eq!(underlay.layers, ["e", "rounded", "s"]);
+    let layers = underlay.lines.layers();
+    for ellipse in &layers[..2] {
+        let rings: Vec<_> = ellipse.polylines().collect();
+        assert_eq!(rings.len(), 1);
+        let ring = rings[0];
+        assert!(ring.len() > 16, "{}", ring.len());
+        assert_eq!(ring.first(), ring.last(), "a closed ring");
+        for [x, y] in ring {
+            let on = (x / 100.0).powi(2) + (y / 50.0).powi(2);
+            assert!((on - 1.0).abs() < 1.0e-6, "({x}, {y}) off the ellipse");
+        }
+        let top = ring.iter().map(|point| point[1]).fold(f64::MIN, f64::max);
+        assert!((top - 50.0).abs() < 0.1, "{top}");
+    }
+    let curve: Vec<_> = layers[2].polylines().collect();
+    assert_eq!(curve.len(), 1);
+    let curve = curve[0];
+    assert_eq!(curve.first(), Some(&[0.0, 0.0]));
+    assert_eq!(curve.last(), Some(&[40.0, 0.0]));
+    // The cubic's middle, at t = 1/2: (0 + 3 * 10 + 3 * 30 + 40) / 8, (3 * 20 + 3 * 20) / 8.
+    assert!(
+        curve
+            .iter()
+            .any(|point| (point[0] - 20.0).abs() < 1.0e-9 && (point[1] - 15.0).abs() < 1.0e-9),
+        "{curve:?}"
+    );
+}
+
 #[test]
 fn an_xref_and_its_blocks_are_not_loaded_but_named_with_their_inserts() {
     // SITE is a resolved xref (4 | 32, and 64, ignored on input); SITE|door a block of it (16).

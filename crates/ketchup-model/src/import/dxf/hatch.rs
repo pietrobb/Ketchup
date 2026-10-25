@@ -583,8 +583,27 @@ fn elliptical_edge(
     if sweep <= DXF_GEOMETRY_EPSILON_MM || (end - start).abs() >= 360.0 {
         sweep = tau;
     }
+    let mut points = ellipse_points(center, major, ratio, from, sweep);
+    if !counterclockwise {
+        points.reverse();
+    }
+    Ok(points)
+}
+
+/// The points of the ellipse around `center` with the major semi-axis `major` and the
+/// minor one `ratio` of it, from parameter `from` on by `sweep`, counterclockwise: its
+/// chords stay within [`UNDERLAY_ARC_CHORD_MM`] of the major circle's arc.
+pub(super) fn ellipse_points(
+    center: [f64; 2],
+    major: [f64; 2],
+    ratio: f64,
+    from: f64,
+    sweep: f64,
+) -> Vec<[f64; 2]> {
     let minor = [-major[1] * ratio, major[0] * ratio];
-    let chords = (sweep / arc_chord_step(radius)).ceil().max(1.0);
+    let chords = (sweep / arc_chord_step(major[0].hypot(major[1])))
+        .ceil()
+        .max(1.0);
     let mut points = Vec::new();
     let mut index = 0.0;
     while index <= chords {
@@ -595,10 +614,7 @@ fn elliptical_edge(
         ]);
         index += 1.0;
     }
-    if !counterclockwise {
-        points.reverse();
-    }
-    Ok(points)
+    points
 }
 
 /// The points of a spline edge: its B-spline (rational with weights, group 42) evaluated
@@ -630,6 +646,17 @@ fn spline_edge(edge: &[DxfPair<'_>], scale: f64) -> Result<Vec<[f64; 2]>, DxfImp
         .filter(|pair| pair.code == 42)
         .map(|pair| parse_number(pair.value))
         .collect::<Result<Vec<_>, _>>()?;
+    bspline_points(degree, &controls, &knots, &weights)
+}
+
+/// The points of the B-spline of `degree` through `controls` over `knots`, rational
+/// with `weights` (none: polynomial), evaluated span by span.
+pub(super) fn bspline_points(
+    degree: usize,
+    controls: &[[f64; 2]],
+    knots: &[f64],
+    weights: &[f64],
+) -> Result<Vec<[f64; 2]>, DxfImportError> {
     if degree < 1
         || controls.len() <= degree
         || knots.len() != controls.len() + degree + 1

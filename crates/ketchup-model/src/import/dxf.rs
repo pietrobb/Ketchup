@@ -53,6 +53,9 @@ struct DxfReading {
     /// Reads a hatch as the area it paints or the pattern it draws there
     /// ([`hatch::read_hatch`]), not as the profiles of its boundary.
     fills: bool,
+    /// Draws a true ellipse and a spline a profile cannot hold exactly by its chords,
+    /// instead of reporting it unsupported (review 2026-10-24 UL-21).
+    curves: bool,
 }
 
 const PROFILE_READING: DxfReading = DxfReading {
@@ -64,6 +67,7 @@ const PROFILE_READING: DxfReading = DxfReading {
     texts: false,
     styles: false,
     fills: false,
+    curves: false,
 };
 
 /// No limit, yet small enough that the `+ 1` of a check cannot overflow.
@@ -78,6 +82,7 @@ const UNDERLAY_READING: DxfReading = DxfReading {
     texts: true,
     styles: true,
     fills: true,
+    curves: true,
 };
 
 mod block;
@@ -1611,7 +1616,7 @@ fn parse_ellipse(
     if ratio <= 0.0 || ratio > 1.0 {
         return Err(DxfImportError::DegenerateGeometry);
     }
-    if ratio != 1.0 {
+    if ratio != 1.0 && !diagnostics.reading.curves {
         diagnostics.add(
             ImportDiagnosticSeverity::Warning,
             "dxf.entity-unsupported",
@@ -1639,15 +1644,32 @@ fn parse_ellipse(
     if radius <= DXF_GEOMETRY_EPSILON_MM {
         return Err(DxfImportError::DegenerateGeometry);
     }
-    let start_parameter = parse_optional_number(record, 41)?.unwrap_or(0.0);
-    let end_parameter = parse_optional_number(record, 42)?.unwrap_or(std::f64::consts::TAU);
+    let tau = std::f64::consts::TAU;
+    // Drawing programs write TAU rounded (6.28318530718): a parameter that near 0 or
+    // TAU is that one (review 2026-10-24 UL-21).
+    let snapped = |parameter: f64| {
+        if (parameter - tau).abs() <= ELLIPSE_PARAMETER_SNAP {
+            tau
+        } else if parameter.abs() <= ELLIPSE_PARAMETER_SNAP {
+            0.0
+        } else {
+            parameter
+        }
+    };
+    let start_parameter = snapped(parse_optional_number(record, 41)?.unwrap_or(0.0));
+    let end_parameter = snapped(parse_optional_number(record, 42)?.unwrap_or(tau));
     // An end below the start runs on through parameter 0, as DXF defines it.
     let mut sweep = end_parameter - start_parameter;
     if sweep < 0.0 {
-        sweep += std::f64::consts::TAU;
+        sweep += tau;
     }
-    if start_parameter < 0.0 || end_parameter > std::f64::consts::TAU || sweep <= f64::EPSILON {
+    if start_parameter < 0.0 || end_parameter > tau || sweep <= f64::EPSILON {
         return Err(DxfImportError::AmbiguousGeometry);
+    }
+    if ratio != 1.0 {
+        let full = start_parameter == 0.0 && end_parameter == tau;
+        let points = hatch::ellipse_points(center, major_axis, ratio, start_parameter, sweep);
+        return chord_profile(layer, ordinal, points, full).map(Some);
     }
 
     let point_at = |parameter: f64| -> Result<[f64; 2], DxfImportError> {
@@ -1711,6 +1733,54 @@ fn parse_ellipse(
         segments,
         closed,
     }))
+}
+
+/// How near an ellipse's parameter must be to 0 or TAU to be read as it.
+const ELLIPSE_PARAMETER_SNAP: f64 = 1.0e-9;
+
+/// The profile of the chords through `points` (millimetres), a ring when `closed`: its
+/// last point is then its first.
+fn chord_profile(
+    layer: String,
+    ordinal: usize,
+    points: Vec<[f64; 2]>,
+    closed: bool,
+) -> Result<OrderedProfile, DxfImportError> {
+    let mut kept: Vec<[f64; 2]> = Vec::with_capacity(points.len());
+    for [x, y] in points {
+        let point = [normalize_coordinate(x)?, normalize_coordinate(y)?];
+        if kept
+            .last()
+            .is_none_or(|last| ensure_distinct(*last, point).is_ok())
+        {
+            kept.push(point);
+        }
+    }
+    if closed {
+        if kept.len() > 1 && ensure_distinct(kept[0], kept[kept.len() - 1]).is_err() {
+            kept.pop();
+        }
+        if let Some(&first) = kept.first() {
+            kept.push(first);
+        }
+    }
+    if kept.len() < 2 + usize::from(closed) {
+        return Err(DxfImportError::DegenerateGeometry);
+    }
+    let segments = kept
+        .windows(2)
+        .map(|pair| ProfileSegment::Line {
+            start_mm: pair[0],
+            end_mm: pair[1],
+        })
+        .collect();
+    Ok(OrderedProfile {
+        layer,
+        ordinal,
+        style: EntityStyle::default(),
+        segments,
+        closed,
+    })
 }
 
 fn parse_spline_points(
@@ -1860,6 +1930,19 @@ fn parse_spline(
         return Err(DxfImportError::MalformedPairs);
     }
     let has_fit_tangent = !start_tangents.is_empty() || !end_tangents.is_empty();
+    if diagnostics.reading.curves && (degree != 1 || !weights.is_empty()) {
+        // A B-spline is its control polygon's, so it scales with its controls.
+        let scale = units.millimetres_per_unit();
+        let controls = (controls.iter())
+            .map(|[x, y]| Ok([scale_coordinate(*x, scale)?, scale_coordinate(*y, scale)?]))
+            .collect::<Result<Vec<_>, DxfImportError>>()?;
+        let points = hatch::bspline_points(degree, &controls, &knots, &weights)?;
+        let returns = matches!(
+            (points.first(), points.last()),
+            (Some(first), Some(last)) if ensure_distinct(*first, *last).is_err()
+        );
+        return chord_profile(layer, ordinal, points, flags & 1 != 0 && returns).map(Some);
+    }
     if degree != 1
         || flags & (2 | 4) != 0
         || !weights.is_empty()
