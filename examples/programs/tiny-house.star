@@ -115,8 +115,11 @@ alternatives(["koncept", "konštrukcia"])
 production(tags = ["konštrukcia", "window", "door"])
 # Nosné prvky musia preniesť svoju tiaž až na základ: ležať zhora na nesenom prvku
 # (trám pod oboma koncami) alebo visieť na nosnom spoji (joint(..., bearing = True)).
-# Krytina nesie hrebenáč a odovzdá ho cez debnenie krokvám.
-load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB", "krytina"], name = "nosná konštrukcia")
+# Krytina nesie hrebenáč a odovzdá ho cez debnenie krokvám. Sadrokartón a fasáda sú
+# priskrutkované k rámu a izolácia je zovretá medzi stĺpikmi: visia na prvkoch, ktorých
+# sa dotýkajú, bez joint() pre každú dvojicu.
+load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB", "krytina"],
+          fixed = ["sadrokartón", "fasáda", "izolácia"], name = "nosná konštrukcia")
 
 # Zaťaženia: vlastná tiaž konštrukcie (hustoty z knižnice), úžitkové na podlahe podkrovia,
 # údržba strechy a sneh na krytine (na pôdorys). Sneh na zemi sk pre miesto stavby treba

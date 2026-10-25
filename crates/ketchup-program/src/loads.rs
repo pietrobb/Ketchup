@@ -979,9 +979,26 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     // still runs one way down. Touching a carrier without a joint holds nothing.
     let mut fixed_to: Vec<Vec<Support>> = parts.iter().map(|_| Vec::new()).collect();
     let mut touches: Vec<BTreeSet<usize>> = parts.iter().map(|_| BTreeSet::new()).collect();
-    let mut fix_to = |item: usize, carrier: usize, support: Support| {
-        if joined(&parts[item].name, &parts[carrier].name) {
-            fixed_to[item].push(support);
+    // So too a part that carries nothing beside or under a member or the ground
+    // leans on it or hangs from it only where a joint ties them; a carrier
+    // (sheathing on its studs) and a part of the tags `fixed` lean as they are.
+    let fixed: Vec<bool> = parts
+        .iter()
+        .zip(&may_carry)
+        .map(|(part, carries)| {
+            *carries
+                || model
+                    .load_paths
+                    .iter()
+                    .any(|path| !part.tags.is_disjoint(&path.fixed_tags))
+        })
+        .collect();
+    let mut fix_to = |item: usize, carrier: usize, support: Support, lean: bool| {
+        if lean && fixed[item] {
+            leans[item].push(support);
+        } else if joined(&parts[item].name, &parts[carrier].name) {
+            let held = if lean { &mut leans } else { &mut fixed_to };
+            held[item].push(support);
         } else {
             touches[item].insert(carrier);
         }
@@ -1017,9 +1034,9 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                 } else {
                     for (item, other) in [(left, right), (right, left)] {
                         if leans_on[other] {
-                            leans[item].push(support(other));
+                            fix_to(item, other, support(other), true);
                         } else if may_carry[other] && !may_carry[item] {
-                            fix_to(item, other, support(other));
+                            fix_to(item, other, support(other), false);
                         }
                     }
                     continue;
@@ -1028,9 +1045,9 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                     rests[upper].push(support(lower));
                 } else if leans_on[upper] {
                     // Hangs from it (a ceiling board under a joist), unless it carries it.
-                    leans[lower].push(support(upper));
+                    fix_to(lower, upper, support(upper), true);
                 } else if may_carry[upper] {
-                    fix_to(lower, upper, support(upper));
+                    fix_to(lower, upper, support(upper), false);
                 }
             }
         }

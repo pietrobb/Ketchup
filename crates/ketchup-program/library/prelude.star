@@ -912,7 +912,7 @@ def boss(part, face, profile, height, name = "boss"):
 #     Templates "50 B", "80 B", "120 B", "160 B" (square), "50 N", "80 N", "120 N" (tilting
 #     up to 50 degrees, rafters).
 #
-#   load_path(only=None, carriers=[], name=, ignore=[], hint=)
+#   load_path(only=None, carriers=[], fixed=[], name=, ignore=[], hint=)
 #     Every member (part with one of the tags `only`; every part without) must pass
 #     its weight down: it stands on the floor or is anchored, or its centre of mass
 #     lies in plan over the faces where it rests from above on carried parts (or
@@ -920,8 +920,10 @@ def boss(part, face, profile, height, name = "boss"):
 #     a beam on one end only is not carried. Besides members only parts on the floor
 #     and parts tagged `carriers` (a floor deck) carry. Error: member_not_carried.
 #     For the loads, a part neither member nor carrier that rests on nothing hangs from
-#     or leans on members, else on the carriers a joint() ties it to (gypsum screwed to
-#     OSB over an opening); touching a carrier without a joint holds nothing.
+#     or leans on the members and the ground a joint() ties it to, else on such carriers
+#     (gypsum screwed to OSB over an opening); touching without a joint holds nothing,
+#     and the part keeps its weight. Parts tagged `fixed` (cladding screwed to the
+#     studs, insulation held between them) hang from or lean on members as if joined.
 #   dowels(a, b, dowel="8x35", count=, margin=50, spacing=250, clearance=1.5, rest=6, offset=0)
 #     drills matching holes into two touching parts and records the joint.
 #     offset is signed mm along the selected row (positive towards increasing contact u/v).

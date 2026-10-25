@@ -93,6 +93,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
     fn load_path<'v>(
         #[starlark(require = named)] only: Option<Value<'v>>,
         #[starlark(require = named)] carriers: Option<Value<'v>>,
+        #[starlark(require = named)] fixed: Option<Value<'v>>,
         #[starlark(require = named)] name: Option<Value<'v>>,
         #[starlark(require = named)] ignore: Option<Value<'v>>,
         #[starlark(require = named)] hint: Option<Value<'v>>,
@@ -115,6 +116,10 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
                 .transpose()?
                 .unwrap_or_default(),
             carrier_tags: given(carriers)
+                .map(|value| tag_names(value, heap))
+                .transpose()?
+                .unwrap_or_default(),
+            fixed_tags: given(fixed)
                 .map(|value| tag_names(value, heap))
                 .transpose()?
                 .unwrap_or_default(),

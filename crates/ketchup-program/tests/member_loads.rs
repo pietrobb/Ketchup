@@ -136,14 +136,27 @@ joint(\"gypsum\", \"board\", kind = \"screw\")\n"
     );
 
     // A board that carries nothing is no place to fix to: two parts resting on
-    // nothing still never lean on each other.
+    // nothing still never lean on each other. Nor does the board, unjoined, lean
+    // on the post (PG-14b) unless the load path says boards are fixed.
     let plain = report(&wall("\"construction\""), &[]);
     assert_eq!(
         plain.loads.unassigned.keys().collect::<Vec<_>>(),
+        ["board", "gypsum"]
+    );
+    close(member(&plain, "post").loads_n["permanent"], weight(0.02));
+    let fixed = report(
+        &wall("\"construction\", \"boards\"").replace(
+            "carriers = [\"deck\"]",
+            "carriers = [\"deck\"], fixed = [\"boards\"]",
+        ),
+        &[],
+    );
+    assert_eq!(
+        fixed.loads.unassigned.keys().collect::<Vec<_>>(),
         ["gypsum"]
     );
     close(
-        member(&plain, "post").loads_n["permanent"],
+        member(&fixed, "post").loads_n["permanent"],
         weight(0.02) + weight(0.0015),
     );
 }
@@ -190,6 +203,64 @@ box(\"block\", (100, 100, 662.4), at = (100, 105, 500), material = \"steel\", ta
         member(&screwed, "post").loads_n["permanent"],
         wood(0.02) + wood(0.002) + block,
     );
+}
+
+/// PG-14b (review 2026-10-24): a 500 kg steel block that only touches a post
+/// from the side, or hangs under a beam, gave it 4 988.7 N with no joint and
+/// no word. A carrier (sheathing) still leans on its members without one.
+#[test]
+fn a_part_beside_or_under_a_member_without_a_joint_keeps_its_weight() {
+    let block = 0.0637 * 7850.0 * 9.81;
+    let cases = [
+        // Beside the post, 100 mm clear of the floor.
+        (
+            "box(\"post\", (100, 100, 2000), material = \"C24\", grounded = True, tags = [\"frame\"])
+box(\"block\", (100, 637, 1000), at = (100, 0, 100), material = \"steel\", tags = [\"construction\"])\n",
+            "post",
+        ),
+        // Under a beam on two posts.
+        (
+            "box(\"left\", (100, 100, 2000), material = \"C24\", grounded = True)
+box(\"right\", (100, 100, 2000), at = (2900, 0, 0), material = \"C24\", grounded = True)
+box(\"post\", (3000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"block\", (100, 637, 1000), at = (1000, 0, 1000), material = \"steel\", tags = [\"construction\"])\n",
+            "post",
+        ),
+    ];
+    for (parts, holder) in cases {
+        let source = |fixing: &str| {
+            format!(
+                "load_path(only = [\"frame\"])
+material_weight(\"steel\", kg_m3 = 7850, source = \"test\")
+self_weight([\"construction\"])
+{parts}{fixing}"
+            )
+        };
+        let loose = report(&source(""), &[]);
+        let reason = loose
+            .loads
+            .unassigned
+            .get("block")
+            .unwrap_or_else(|| panic!("the block keeps its weight: {:?}", loose.loads));
+        assert!(reason.contains("only touches post"), "{reason}");
+        assert!(
+            member(&loose, holder)
+                .loads_n
+                .get("permanent")
+                .copied()
+                .unwrap_or(0.0)
+                < 1.0,
+            "{:?}",
+            member(&loose, holder).loads_n
+        );
+
+        let screwed = report(
+            &source("joint(\"block\", \"post\", kind = \"screw\")\n"),
+            &[],
+        );
+        assert_eq!(screwed.loads.unassigned, BTreeMap::new());
+        close(member(&screwed, holder).loads_n["permanent"], block);
+    }
 }
 
 #[test]

@@ -24,6 +24,11 @@ pub struct LoadPath {
     /// them only members and parts on the floor or anchored carry anything.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub carrier_tags: BTreeSet<String>,
+    /// Tags of parts fastened to the members and ground they lean on or hang
+    /// from (cladding screwed to studs, insulation held between them), as if
+    /// a joint() tied each pair; any other part needs one (review PG-14b).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub fixed_tags: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub ignore: BTreeSet<String>,
     pub hint: String,
