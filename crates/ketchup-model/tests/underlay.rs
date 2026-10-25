@@ -298,6 +298,61 @@ fn ellipses_and_splines_are_drawn_by_their_chords() {
     );
 }
 
+/// Review 2026-10-24 UL-22: an entity with extrusion (0, 0, -1), as Mirror leaves it, or
+/// with 1e-17 of noise in it was left out as not flat. A LINE, an ELLIPSE and a SPLINE
+/// are in world coordinates, a TEXT and a 2D POLYLINE in their own, mirrored; and a
+/// POLYLINE left out took its VERTEX and SEQEND for three more broken entities.
+#[test]
+fn an_entity_upside_down_or_with_noise_in_its_extrusion_is_read() {
+    let down = "210\n0\n220\n0\n230\n-1\n";
+    let entities = [
+        "0\nLINE\n8\nnoise\n10\n0\n20\n0\n11\n10\n21\n0\n210\n1e-17\n220\n0\n230\n1\n"
+            .to_owned(),
+        format!("0\nLINE\n8\nline\n10\n0\n20\n5\n11\n10\n21\n5\n{down}"),
+        format!(
+            "0\nELLIPSE\n8\nellipse\n10\n0\n20\n0\n11\n100\n21\n0\n40\n0.5\n41\n0\n42\n1.5707963267948966\n{down}"
+        ),
+        format!("0\nTEXT\n8\ntext\n10\n10\n20\n5\n40\n2\n1\nA\n{down}"),
+        format!(
+            "0\nPOLYLINE\n8\npolyline\n66\n1\n70\n0\n{down}0\nVERTEX\n8\npolyline\n10\n10\n20\n0\n0\nVERTEX\n8\npolyline\n10\n20\n20\n0\n0\nSEQEND\n"
+        ),
+        "0\nPOLYLINE\n8\ntilted\n66\n1\n70\n0\n210\n1\n220\n0\n230\n0\n0\nVERTEX\n8\ntilted\n10\n0\n20\n0\n0\nVERTEX\n8\ntilted\n10\n1\n20\n0\n0\nSEQEND\n"
+            .to_owned(),
+    ]
+    .concat();
+    let underlay = read(&entities);
+    assert_eq!(
+        underlay.layers,
+        ["noise", "line", "ellipse", "text", "polyline"]
+    );
+    let layers = underlay.lines.layers();
+    let only = |layer: usize| {
+        let polylines: Vec<_> = layers[layer].polylines().collect();
+        assert_eq!(polylines.len(), 1, "{}", underlay.layers[layer]);
+        polylines[0].to_vec()
+    };
+    assert_eq!(only(0), [[0.0, 0.0], [10.0, 0.0]]);
+    assert_eq!(only(1), [[0.0, 5.0], [10.0, 5.0]]);
+    // Clockwise seen from above: from (100, 0) down to (0, -50).
+    let arc = only(2);
+    assert_eq!(arc.first(), Some(&[100.0, 0.0]));
+    let end = arc.last().unwrap();
+    assert!(
+        end[0].abs() < 1.0e-9 && (end[1] + 50.0).abs() < 1.0e-9,
+        "{end:?}"
+    );
+    assert!(arc.iter().all(|point| point[1] <= 0.0), "{arc:?}");
+    let text = &layers[3].texts()[0];
+    assert_eq!(text.anchor_mm, [-10.0, 5.0]);
+    assert!((text.rotation_rad - std::f64::consts::PI).abs() < 1.0e-12);
+    assert_eq!(only(4), [[-10.0, 0.0], [-20.0, 0.0]]);
+    let unreadable = (underlay.diagnostics.iter())
+        .filter(|diagnostic| diagnostic.code() == "dxf.entity-unreadable")
+        .map(|diagnostic| diagnostic.count())
+        .sum::<u32>();
+    assert_eq!(unreadable, 1, "{:?}", underlay.diagnostics);
+}
+
 #[test]
 fn an_xref_and_its_blocks_are_not_loaded_but_named_with_their_inserts() {
     // SITE is a resolved xref (4 | 32, and 64, ignored on input); SITE|door a block of it (16).

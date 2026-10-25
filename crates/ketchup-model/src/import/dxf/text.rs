@@ -29,7 +29,10 @@ pub(super) fn parse_text(
         return parse_mtext(record, units, diagnostics).map(Some);
     }
     let layer = parse_layer(record)?;
-    ensure_planar(record)?;
+    // Its points are in its own coordinates: seen from below (-Z, as Mirror leaves it)
+    // its X is the world's -X (review 2026-10-24 UL-22).
+    let mirrored = ensure_planar_ocs(record)?;
+    let flip = |[x, y]: [f64; 2]| if mirrored { [0.0 - x, y] } else { [x, y] };
     let attribute = kind != "TEXT";
     // An attribute's vertical alignment is group 74; its group 73 is a field length.
     let vertical_code = if attribute { 74 } else { 73 };
@@ -61,18 +64,26 @@ pub(super) fn parse_text(
     let height_mm = positive(scale_coordinate(parse_required_number(record, 40)?, scale)?)?;
     let mut text = UnderlayText::new(
         special_characters(raw, diagnostics.code_page),
-        parse_xy(record, 10, 20, scale)?,
+        flip(parse_xy(record, 10, 20, scale)?),
         height_mm,
     );
     text.width_factor = positive(parse_optional_number(record, 41)?.unwrap_or(1.0))?;
-    text.rotation_rad = parse_optional_number(record, 50)?
+    let rotation_rad = parse_optional_number(record, 50)?
         .unwrap_or(0.0)
         .to_radians();
+    text.rotation_rad = if mirrored {
+        std::f64::consts::PI - rotation_rad
+    } else {
+        rotation_rad
+    };
     let second = match (
         parse_optional_number(record, 11)?,
         parse_optional_number(record, 21)?,
     ) {
-        (Some(x), Some(y)) => Some([scale_coordinate(x, scale)?, scale_coordinate(y, scale)?]),
+        (Some(x), Some(y)) => Some(flip([
+            scale_coordinate(x, scale)?,
+            scale_coordinate(y, scale)?,
+        ])),
         _ => None,
     };
     justify(
@@ -86,7 +97,8 @@ pub(super) fn parse_text(
         diagnostics,
     )?;
     report_style(kind, record, &[], diagnostics)?;
-    if parse_optional_i64(record, 71)?.is_some_and(|flags| flags & 6 != 0) {
+    // Seen from below its letters read backwards; they are drawn readable.
+    if mirrored || parse_optional_i64(record, 71)?.is_some_and(|flags| flags & 6 != 0) {
         diagnostics.add(
             ImportDiagnosticSeverity::Warning,
             "dxf.text-mirroring-ignored",
@@ -115,7 +127,7 @@ fn parse_mtext(
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<OrderedText, DxfImportError> {
     let layer = parse_layer(record)?;
-    ensure_planar(record)?;
+    ensure_planar_wcs(record)?;
     report_ignored_groups(
         "MTEXT",
         record,

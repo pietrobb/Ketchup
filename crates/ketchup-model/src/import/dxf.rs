@@ -1391,6 +1391,25 @@ fn parse_entities(
             if error.ends_reading() {
                 return Err(error);
             }
+            // The vertices and attributes it did not get to are its, not entities that
+            // failed too (review 2026-10-24 UL-22).
+            let pending = pairs.get(index).is_some_and(|pair| {
+                pair.code == 0
+                    && ["VERTEX", "ATTRIB", "SEQEND"]
+                        .iter()
+                        .any(|kind| pair.value.eq_ignore_ascii_case(kind))
+            });
+            if pending {
+                skip_sub_entities(
+                    &kind,
+                    record,
+                    pairs,
+                    &mut index,
+                    &mut ordinal,
+                    entity_count,
+                    diagnostics.reading.max_entities,
+                )?;
+            }
             diagnostics.skip(
                 "dxf.entity-unreadable",
                 format!("{kind}: {}", error.reason()),
@@ -1532,7 +1551,7 @@ fn parse_line(
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<LooseSegment, DxfImportError> {
     let layer = parse_layer(record)?;
-    ensure_planar(record)?;
+    ensure_planar_wcs(record)?;
     report_ignored_groups(
         "LINE",
         record,
@@ -1627,7 +1646,10 @@ fn parse_ellipse(
     }
 
     let layer = parse_layer(record)?;
-    ensure_planar(record)?;
+    // Its centre and axis are in world coordinates; seen from below (-Z) it runs
+    // clockwise (review 2026-10-24 UL-22).
+    let turn = extrusion_sign(record)?;
+    let clockwise = turn < 0.0;
     report_ignored_groups(
         "ELLIPSE",
         record,
@@ -1668,12 +1690,14 @@ fn parse_ellipse(
     }
     if ratio != 1.0 {
         let full = start_parameter == 0.0 && end_parameter == tau;
-        let points = hatch::ellipse_points(center, major_axis, ratio, start_parameter, sweep);
+        let points =
+            hatch::ellipse_points(center, major_axis, ratio * turn, start_parameter, sweep);
         return chord_profile(layer, ordinal, points, full).map(Some);
     }
 
     let point_at = |parameter: f64| -> Result<[f64; 2], DxfImportError> {
         let (sine, cosine) = deterministic_sin_cos_degrees(parameter.to_degrees());
+        let sine = sine * turn;
         Ok([
             normalize_coordinate(center[0] + major_axis[0] * cosine - major_axis[1] * sine)?,
             normalize_coordinate(center[1] + major_axis[1] * cosine + major_axis[0] * sine)?,
@@ -1694,13 +1718,13 @@ fn parse_ellipse(
                     start_mm: start,
                     end_mm: opposite,
                     center_mm: center,
-                    clockwise: false,
+                    clockwise,
                 },
                 ProfileSegment::CircularArc {
                     start_mm: opposite,
                     end_mm: start,
                     center_mm: center,
-                    clockwise: false,
+                    clockwise,
                 },
             ],
             true,
@@ -1713,7 +1737,7 @@ fn parse_ellipse(
             end,
             center,
             radius,
-            false,
+            clockwise,
             sweep > std::f64::consts::PI,
         )?;
         (
@@ -1721,7 +1745,7 @@ fn parse_ellipse(
                 start_mm: start,
                 end_mm: end,
                 center_mm: center,
-                clockwise: false,
+                clockwise,
             }],
             false,
         )
@@ -1822,7 +1846,7 @@ fn parse_spline(
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<Option<OrderedProfile>, DxfImportError> {
     let layer = parse_layer(record)?;
-    ensure_planar(record)?;
+    ensure_planar_wcs(record)?;
     report_ignored_groups(
         "SPLINE",
         record,
@@ -3882,7 +3906,7 @@ fn parse_polyline(
 ) -> Result<Vec<OrderedProfile>, DxfImportError> {
     let profile_ordinal = *ordinal;
     let layer = parse_layer(record)?;
-    ensure_planar(record)?;
+    let mirrored = ensure_planar_ocs(record)?;
     report_ignored_groups(
         "POLYLINE",
         record,
@@ -3917,6 +3941,11 @@ fn parse_polyline(
         return Err(DxfImportError::AmbiguousGeometry);
     }
     let three_dimensional = flags & 8 != 0;
+    // A 3D polyline and a mesh are in world coordinates; seen from below they are
+    // not read (review 2026-10-24 UL-22 mirrors only the 2D one, in its own).
+    if mirrored && (three_dimensional || polygon_mesh || polyface) {
+        return Err(DxfImportError::NonPlanarGeometry);
+    }
     if flags & 128 != 0 {
         diagnostics.add(
             ImportDiagnosticSeverity::Warning,
@@ -4017,14 +4046,12 @@ fn parse_polyline(
     if vertices.len() < 2 {
         return Err(DxfImportError::MalformedPairs);
     }
-    Ok(vec![build_polyline_profile(
-        layer,
-        profile_ordinal,
-        vertices,
-        closed,
-        units,
-        diagnostics,
-    )?])
+    let mut profile =
+        build_polyline_profile(layer, profile_ordinal, vertices, closed, units, diagnostics)?;
+    if mirrored {
+        profile.segments = profile.segments.into_iter().map(mirror_ocs).collect();
+    }
+    Ok(vec![profile])
 }
 
 fn parse_polygon_mesh_vertex(
@@ -4598,46 +4625,51 @@ fn ensure_matching_optional_layer(
     }
 }
 
-fn ensure_planar(record: &[DxfPair<'_>]) -> Result<(), DxfImportError> {
+/// How far an extrusion direction may be off ±Z and still be it: drawing programs
+/// leave 1e-17 in it (review 2026-10-24 UL-22).
+const EXTRUSION_TOLERANCE: f64 = 1.0e-9;
+
+/// The sign of the Z of an entity flat in the plan: no height and an extrusion of
+/// ±Z.
+fn extrusion_sign(record: &[DxfPair<'_>]) -> Result<f64, DxfImportError> {
+    let mut sign = 1.0;
     for pair in record {
-        match pair.code {
-            30 | 31 | 32 | 33 | 38 | 39 if parse_number(pair.value)? != 0.0 => {
-                return Err(DxfImportError::NonPlanarGeometry);
+        let off = match pair.code {
+            30 | 31 | 32 | 33 | 38 | 39 => parse_number(pair.value)? != 0.0,
+            210 | 220 => parse_number(pair.value)?.abs() > EXTRUSION_TOLERANCE,
+            230 => {
+                let z = parse_number(pair.value)?;
+                sign = z.signum();
+                (z.abs() - 1.0).abs() > EXTRUSION_TOLERANCE
             }
-            210 | 220 if parse_number(pair.value)? != 0.0 => {
-                return Err(DxfImportError::NonPlanarGeometry);
-            }
-            230 if parse_number(pair.value)? != 1.0 => {
-                return Err(DxfImportError::NonPlanarGeometry);
-            }
-            _ => {}
+            _ => false,
+        };
+        if off {
+            return Err(DxfImportError::NonPlanarGeometry);
         }
+    }
+    Ok(sign)
+}
+
+fn ensure_planar(record: &[DxfPair<'_>]) -> Result<(), DxfImportError> {
+    if extrusion_sign(record)? < 0.0 {
+        return Err(DxfImportError::NonPlanarGeometry);
     }
     Ok(())
 }
 
+/// Like `ensure_planar` for an entity whose points are in world coordinates (a LINE,
+/// an ELLIPSE, a SPLINE, an MTEXT): its extrusion only turns its thickness, so -Z
+/// changes none of its points.
+fn ensure_planar_wcs(record: &[DxfPair<'_>]) -> Result<(), DxfImportError> {
+    extrusion_sign(record).map(|_| ())
+}
+
 /// Like `ensure_planar` for an entity whose points are in its object coordinate
-/// system: extrusion (0, 0, -1), which AutoCAD's Mirror leaves on arcs, circles
-/// and polylines, is accepted. Returns whether the entity is so mirrored.
+/// system: extrusion (0, 0, -1), which AutoCAD's Mirror leaves on arcs, circles,
+/// polylines and texts, is accepted. Returns whether the entity is so mirrored.
 fn ensure_planar_ocs(record: &[DxfPair<'_>]) -> Result<bool, DxfImportError> {
-    let mirrored = record
-        .iter()
-        .rev()
-        .find(|pair| pair.code == 230)
-        .map(|pair| parse_number(pair.value))
-        .transpose()?
-        == Some(-1.0);
-    if mirrored {
-        let upright = record
-            .iter()
-            .filter(|pair| pair.code != 230)
-            .copied()
-            .collect::<Vec<_>>();
-        ensure_planar(&upright)?;
-    } else {
-        ensure_planar(record)?;
-    }
-    Ok(mirrored)
+    Ok(extrusion_sign(record)? < 0.0)
 }
 
 /// A segment from an object coordinate system with extrusion (0, 0, -1) in world
