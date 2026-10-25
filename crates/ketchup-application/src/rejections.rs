@@ -447,7 +447,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "program_parameter_not_driven",
         Planning,
         "program line",
-        "No single param() sets the value, so it cannot be written into the program.",
+        "Neither a single param() nor one number of the part's own call sets the value alone, so it cannot be written into the program.",
         "Change the value on the program line named in the target, or make it a param() of the program.",
     ),
     entry(
@@ -512,6 +512,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "program line",
         "The part is made in a loop together with other parts.",
         "Change the loop on the program line named in the target, or make the part outside it.",
+    ),
+    entry(
+        "program_part_made_with_others",
+        Planning,
+        "program line",
+        "One call makes the part together with other parts or changes another part, as window() makes a frame and a pane and cuts its wall, so a change of this part alone cannot be written there.",
+        "Change the arguments of the call on the program line named in the target, or move the parts it changes together.",
     ),
     entry(
         "program_part_mirror",

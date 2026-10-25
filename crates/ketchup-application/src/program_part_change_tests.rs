@@ -1097,6 +1097,46 @@ fn a_pulled_distance_and_a_finish_amount_are_written_without_noise() {
 const WINDOW: &str = "wall = box(\"wall\", (4000, 200, 2600))\n\
                       window(\"win\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 2200, 900, 1200, 1250, cut=wall)\n";
 
+fn set(feature: &str, path: &str, value: f64) -> PartChange {
+    PartChange::Parameter {
+        feature: feature.to_owned(),
+        path: path.to_owned(),
+        value,
+    }
+}
+
+/// Review 2026-10-24 WB-26: the parameter panel refused the place and the
+/// sizes of a literal `box(...)`, though Move writes its literal `at=` in place.
+#[test]
+fn a_value_one_literal_of_the_creating_call_makes_is_written_in_place() {
+    let source =
+        "box(\"a\", (600, 18, 720), at=(10, 0, 0))\nbox(\"b\", (5, 5, 5), at=(900, 0, 0))\n";
+    for (feature, path, value, written) in [
+        ("a transform", "translation.x", 17.0, "at=(17, 0, 0)"),
+        ("a transform", "translation.z", -4.5, "at=(10, 0, -4.5)"),
+        ("a sketch", "bounds.width", 607.0, "(607, 18, 720)"),
+        ("a sketch", "bounds.height", 25.0, "(600, 25, 720)"),
+    ] {
+        let changed = change(source, "a", set(feature, path, value));
+        assert!(changed.source.contains(written), "{}", changed.source);
+        assert_eq!(changed.source.lines().count(), 2, "{}", changed.source);
+        let reading = Reading::Feature {
+            feature: feature.to_owned(),
+            path: path.to_owned(),
+        };
+        assert_eq!(reading.of(&model(&changed), "a"), Some(value));
+        others_same(&model(&program(source)), &model(&changed), "a");
+    }
+    let profile = "extrude(\"e\", profile=[[0, 0], [100, 0], [100, 50]], distance=18)\n";
+    let changed = change(profile, "e", set("e sketch", "entities.1.end.x", 107.0));
+    assert_eq!(changed.source, profile.replace("[100, 0]", "[107, 0]"));
+    // A literal whose change moves another part too stays refused.
+    let read =
+        "a = box(\"a\", (600, 18, 720))\nbox(\"b\", (5, 5, 5), at=(part_info(a).max[0], 0, 0))\n";
+    let message = refusal(read, "a", set("a sketch", "bounds.width", 607.0));
+    assert!(message.contains("not set by one param()"), "{message}");
+}
+
 /// Review 2026-10-24 WB-25: one part of a `window()` was deleted, coloured or
 /// renamed through the whole call ("wall, win/frame changed too", "a name from
 /// an expression"), and its pane moved alone left the opening in the wall.

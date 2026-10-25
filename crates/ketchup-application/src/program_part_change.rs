@@ -1378,6 +1378,11 @@ impl Edit<'_> {
         if let Some(Driven::Alone(rewritten)) = driven {
             return Ok((rewritten, self.reads(reading, value)));
         }
+        if driven.is_none()
+            && let Some(rewritten) = self.literal_driven(&reading, value)
+        {
+            return Ok((rewritten, self.reads(reading, value)));
+        }
         let what = format!("{feature} · {path}");
         if let Some(refusal) =
             (driven.as_ref()).and_then(|driven| driven.out_of_range(self.name, &what))
@@ -1416,6 +1421,42 @@ impl Edit<'_> {
                 "{feature} · {path} of part {name} is not set by one param(); change it{line} in the program"
             ),
         ))
+    }
+
+    /// The program with the one number literal of the part's creating call,
+    /// outside loops and the program's functions, that makes the part read
+    /// `value` while nothing else the program makes changes, written in
+    /// place as Move writes `at=` (review 2026-10-24 WB-26). `None` when no
+    /// literal does.
+    fn literal_driven(&self, reading: &Reading, value: f64) -> Option<RuleProgramSource> {
+        /// Probes past these many literals of one call are not worth their evaluations.
+        const MOST_LITERALS: usize = 32;
+        let call = (self.found_call())
+            .filter(|call| call.loop_line.is_none() && call.function.is_none())?;
+        let baseline = reading.of(&self.evaluated.model, self.name)?;
+        let literals =
+            source_edit::number_literals(&self.source.file_name, self.text(), call.bytes);
+        literals
+            .into_iter()
+            .take(MOST_LITERALS)
+            .find_map(|(bytes, current)| {
+                // not a tolerance: a probe step large enough to change the evaluated model.
+                let step = current.abs().mul_add(1.0e-4, 1.0e-3);
+                let probe = self.with(vec![(bytes.clone(), number_literal(current + step))]);
+                let probed = reading.of(&evaluate(&probe).ok()?.model, self.name)?;
+                let slope = (probed - baseline) / step;
+                if slope.abs() <= ACCUMULATED_ROUNDING {
+                    return None;
+                }
+                let replacement = written(current + (value - baseline) / slope);
+                let rewritten = self.with(vec![(bytes, number_literal(replacement))]);
+                let after = evaluate(&rewritten).ok()?;
+                let reads = reading
+                    .of(&after.model, self.name)
+                    .is_some_and(|read| (read - value).abs() <= ACCUMULATED_ROUNDING);
+                (reads && self.changed_besides(reading, &after.model).is_empty())
+                    .then_some(rewritten)
+            })
     }
 
     /// The first line besides the part's creating call without which the

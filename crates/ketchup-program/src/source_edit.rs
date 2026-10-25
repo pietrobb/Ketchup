@@ -201,6 +201,32 @@ pub fn string_literals(file_name: &str, source: &str, text: &str) -> Vec<(Range<
     found
 }
 
+/// Every number literal of the source within `within`, a sign included, in
+/// order: its bytes and its value.
+#[must_use]
+pub fn number_literals(
+    file_name: &str,
+    source: &str,
+    within: Range<usize>,
+) -> Vec<(Range<usize>, f64)> {
+    let Some(ast) = parsed(file_name, source) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(Range<usize>, f64)> = Vec::new();
+    walk(Visit::Stmt(ast.statement()), &mut |expression| {
+        let bytes = span_bytes(expression.span);
+        if within.start <= bytes.start
+            && bytes.end <= within.end
+            && let Some(value) = literal_number(expression)
+            // The literal of a signed number is visited after its sign.
+            && !found.iter().any(|(signed, _)| signed.start <= bytes.start && bytes.end <= signed.end)
+        {
+            found.push((bytes, value));
+        }
+    });
+    found
+}
+
 /// The `was=` string literal of `continue_part("<part>", was=...)`.
 #[must_use]
 pub fn continuation_of(file_name: &str, source: &str, part: &str) -> Option<Range<usize>> {

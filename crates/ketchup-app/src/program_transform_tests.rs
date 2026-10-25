@@ -342,11 +342,19 @@ fn a_panel_value_of_a_program_part_is_written_into_the_program() {
     assert!(app.digest.contains("above 0"), "{}", app.digest);
     assert_eq!(app.document_revision(), revision);
 
-    // A width written in the source is refused with its line; nothing changes.
-    let revision = app.document_revision();
-    assert!(!set_value(&mut app, "b", "bounds.width", 250.0));
-    assert!(app.digest.contains("line 3"), "{}", app.digest);
-    assert_eq!(app.document_revision(), revision);
+    // A width written as a literal is written in place (review 2026-10-24
+    // WB-26), one more undo step.
+    assert!(
+        set_value(&mut app, "b", "bounds.width", 250.0),
+        "{}",
+        app.digest
+    );
+    assert!(
+        source(&app).contains("box(\"b\", (250, 50, 10), at = (0, x, 0))"),
+        "{}",
+        source(&app)
+    );
+    assert_eq!(app.undo_step_count(), steps + 3);
 }
 
 #[test]
