@@ -11,7 +11,8 @@
 //! default. Format 103 shipped in Kečup 0.1.0, which ignores fields it does not know,
 //! so a new field under 103 would be dropped by 0.1.0 and lost at its next Save (PS-4).
 //! Format 104 adds underlays, 105 annotations; an older file has none, so it reads
-//! without a conversion, and a document without them is still written as 103. The
+//! without a conversion, and a document without them is still written as 103 when
+//! Kečup 0.2.0 reads all of it ([`fits_format_103`]). The
 //! optional fields of the current format are listed in `tests/format_golden.rs`, which
 //! also fails on any other change. The reader refuses a
 //! current-format snapshot with fields it does not know (`PersistenceError::UnknownFields`). The encoder writes the serde
@@ -32,15 +33,40 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 105;
 /// written by this version.
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
-/// 105 with annotations, else 104 with underlays, else 103.
+/// 105 with annotations, else 104 with underlays or with what Kečup 0.1.0 and 0.2.0
+/// refuse to read, else 103.
 fn format_of(product: &ProductModel) -> u16 {
     if !product.annotations.is_empty() {
         SNAPSHOT_FORMAT
-    } else if !product.underlays.is_empty() {
+    } else if !product.underlays.is_empty() || !fits_format_103(product) {
         104
     } else {
         OLDEST_WRITTEN_FORMAT
     }
+}
+
+/// Whether Kečup 0.1.0 and 0.2.0, which read format 103, accept every import receipt
+/// of `product`: at most 1 024 outputs and a source within their reader's limit. A
+/// file they refuse as damaged makes them open an older `.recovery` instead and
+/// overwrite the newer file at its next Save; format 104 they refuse as newer
+/// (review 2026-10-24 MD-20).
+fn fits_format_103(product: &ProductModel) -> bool {
+    use crate::import::ImportFormat;
+    const OUTPUTS: usize = 1_024;
+    const MIB: u64 = 1024 * 1024;
+    // The bounded ASCII STL of 0.2.0: 8 lines of at most 128 bytes and CR LF a triangle.
+    const STL: u64 = (ketchup_tolerance::limits::MESH_TRIANGLES as u64 * 8 + 2) * 130;
+    product.import_receipts.values().all(|receipt| {
+        let source_limit = match receipt.format() {
+            ImportFormat::Stl => STL,
+            ImportFormat::Dxf => 8 * MIB,
+            ImportFormat::Step
+            | ImportFormat::Iges
+            | ImportFormat::SketchupScene
+            | ImportFormat::Glb => 32 * MIB,
+        };
+        receipt.outputs().len() <= OUTPUTS && receipt.source_byte_len() <= source_limit
+    })
 }
 
 /// First format this codec wrote. Numbers below it belong to the retired hand-written

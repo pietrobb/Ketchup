@@ -147,6 +147,48 @@ fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
     }
 }
 
+/// The format Save writes for a document with one DXF import of `lines` lines,
+/// its source padded with comments to `padding` more bytes.
+fn saved_format_of_a_dxf_import(lines: usize, padding: usize) -> u16 {
+    use ketchup_model::import::{DxfImportOptions, plan_dxf_import};
+    let entities = (0..lines)
+        .map(|line| {
+            let y = 10 * line;
+            format!("0\nLINE\n8\n0\n10\n0\n20\n{y}\n11\n100\n21\n{y}\n")
+        })
+        .collect::<String>();
+    let comment = format!("999\n{}\n", "x".repeat(200));
+    let comments = comment.repeat(padding.div_ceil(comment.len()));
+    let source = format!(
+        "{comments}0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+    );
+    let mut document = DocumentStore::new();
+    let batch = plan_dxf_import(
+        &document.current(),
+        source.as_bytes(),
+        "lines.dxf",
+        DxfImportOptions::new(None),
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let snapshot = persistence::save(&document.current());
+    u16::from_le_bytes([snapshot[10], snapshot[11]])
+}
+
+/// Review 2026-10-24 MD-20: format 103 was chosen for any document without underlays
+/// and annotations, so a DXF import of more than 341 profiles (a receipt of more than
+/// 1 024 outputs) or of a source over 8 MiB was written as 103, which Kečup 0.1.0 and
+/// 0.2.0 refuse as damaged and open their older `.recovery` instead. Such a document
+/// is written as 104, which they refuse cleanly as newer; one within their limits
+/// stays 103.
+#[test]
+fn a_document_beyond_what_kecup_0_2_0_reads_is_not_written_as_format_103() {
+    assert_eq!(saved_format_of_a_dxf_import(3, 0), 103);
+    assert_eq!(saved_format_of_a_dxf_import(341, 0), 103);
+    assert_eq!(saved_format_of_a_dxf_import(400, 0), 104);
+    assert_eq!(saved_format_of_a_dxf_import(3, 9 * 1024 * 1024), 104);
+}
+
 /// One annotation of each kind, shown by the tag [`ANNOTATION_TAG`].
 fn annotations() -> Vec<Annotation> {
     let tags = BTreeSet::from([TagId(ANNOTATION_TAG)]);
