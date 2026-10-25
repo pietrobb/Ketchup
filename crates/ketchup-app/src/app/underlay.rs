@@ -21,8 +21,7 @@ use ketchup_model::underlay::{
 use ketchup_program::CancelToken;
 
 /// What one layer of an underlay's lines draws: the box of its points and text anchors in
-/// their own millimetres (`None` for a layer that draws nothing), its straight lines and
-/// its texts.
+/// their own millimetres (`None` for a layer that draws nothing), its lines and its texts.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LayerExtent {
     bounds_mm: Option<[[f64; 2]; 2]>,
@@ -33,13 +32,41 @@ pub(crate) struct LayerExtent {
 /// One [`LayerExtent`] per layer of an underlay's lines.
 pub(crate) type UnderlayExtent = Arc<[LayerExtent]>;
 
+/// A layer's lines are the entities that draw lines on it, an arc or a polyline one each
+/// however many straight pieces draw it (review 2026-10-24 UI-30); an underlay saved
+/// before its objects were kept counts its straight pieces.
 fn underlay_extent(lines: &UnderlayLines) -> UnderlayExtent {
+    let objects = &lines.objects().objects;
+    let mut drawn = vec![0_usize; lines.layers().len()];
+    for object in objects {
+        let mut layers = object
+            .parts
+            .iter()
+            .filter(|part| !part.points.is_empty())
+            .map(|part| part.layer)
+            .collect::<Vec<_>>();
+        layers.sort_unstable();
+        layers.dedup();
+        for layer in layers {
+            if let Some(count) = usize::try_from(layer)
+                .ok()
+                .and_then(|layer| drawn.get_mut(layer))
+            {
+                *count += 1;
+            }
+        }
+    }
     lines
         .layers()
         .iter()
-        .map(|layer: &LayerLines| LayerExtent {
+        .zip(drawn)
+        .map(|(layer, drawn): (&LayerLines, usize)| LayerExtent {
             bounds_mm: layer.bounds_mm(),
-            lines: layer.segment_count(),
+            lines: if objects.is_empty() {
+                layer.segment_count()
+            } else {
+                drawn
+            },
             texts: layer.texts().len(),
         })
         .collect()

@@ -26,6 +26,42 @@ fn drawing() -> String {
     )
 }
 
+/// Review 2026-10-24 UI-30: the count was of straight pieces, so a layer of arcs and
+/// circles counted the chords they are drawn with, not its lines; each drawn entity is
+/// one line, a polyline of four sides one too.
+#[test]
+fn layers_panel_counts_each_arc_circle_and_polyline_as_one_line() {
+    let drawing = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nENTITIES\n\
+         0\nARC\n8\nround\n10\n0\n20\n0\n40\n500\n50\n0\n51\n180\n\
+         0\nCIRCLE\n8\nround\n10\n2000\n20\n0\n40\n300\n\
+         0\nLWPOLYLINE\n8\nframe\n90\n4\n70\n1\n10\n0\n20\n0\n10\n100\n20\n0\n10\n100\n20\n100\n10\n0\n20\n100\n\
+         0\nENDSEC\n0\nEOF\n";
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("plan.dxf");
+    std::fs::write(&path, drawing).unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &path);
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.document = DocumentStore::new();
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+
+    let rows = app
+        .tag_rows()
+        .into_iter()
+        .map(|(_, _, _, label)| label)
+        .collect::<Vec<_>>();
+    for row in [
+        "plan (3 lines)",
+        "plan · round (2 lines)",
+        "plan · frame (1 line)",
+    ] {
+        assert!(
+            rows.iter().any(|label| label == row),
+            "no {row:?} in {rows:?}"
+        );
+    }
+}
+
 #[test]
 fn layers_panel_counts_the_lines_and_texts_of_an_underlays_tags() {
     let directory = tempfile::tempdir().unwrap();
