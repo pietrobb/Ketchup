@@ -1357,6 +1357,50 @@ fn a_file_in_a_read_only_folder_opens_and_edits_without_a_checkpoint() {
     std::fs::set_permissions(&lock, permissions).unwrap();
 }
 
+/// The same from a window whose own file holds its lock for unsaved edits: that lock is
+/// the other file's, so the read-only file still opens without a checkpoint and edits,
+/// instead of every edit failing to take a lock there (review 2026-10-24 UI-20).
+#[test]
+fn a_file_in_a_read_only_folder_opened_over_unsaved_work_edits_without_a_checkpoint() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("shared.ketchup");
+    let mut author = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
+    author.click_menu_command("menu-file", AppCommand::Save);
+    drop(author);
+    let mut lock = primary.as_os_str().to_owned();
+    lock.push(".work-recovery-lock");
+    let lock = std::path::PathBuf::from(lock);
+    std::fs::write(&lock, b"").unwrap();
+    let mut permissions = std::fs::metadata(&lock).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&lock, permissions.clone()).unwrap();
+
+    let own = directory.path().join("own.ketchup");
+    let mut shell = Shell::with_dialogs(
+        ScriptedFileDialogs::new()
+            .queue_save(&own)
+            .queue_open(&primary)
+            .always_discard(),
+    );
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    assert!(ketchup_model::persistence::work_recovery_path(&own).is_file());
+
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().document_path(), Some(primary.as_path()));
+    assert!(digest_has(&shell, "digest-opened-without-work-recovery"));
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    assert!(shell.app().is_dirty());
+    assert!(!digest_starts_like(&shell, "error-save-document"));
+    assert!(!ketchup_model::persistence::work_recovery_path(&primary).exists());
+    drop(shell);
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&lock, permissions).unwrap();
+}
+
 #[test]
 fn gui_save_rejects_replaced_work_recovery_before_publication() {
     let directory = tempfile::tempdir().unwrap();

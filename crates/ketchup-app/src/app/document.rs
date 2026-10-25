@@ -285,19 +285,26 @@ impl KetchupApp {
                         work_recovery_base,
                     });
                 let notices = outcome.audit().notices.clone();
+                // The window's lock is this file's only on a reopen of its own file;
+                // another file's lock says nothing of this one's folder (review
+                // 2026-10-24 UI-20).
+                let own_file = self.file.path.as_deref() == Some(path)
+                    || self
+                        .file
+                        .recovery_open
+                        .as_ref()
+                        .is_some_and(|recovery| recovery.requested_path == path);
+                let kept_lock = self.file.work_recovery_lock.take().filter(|_| own_file);
                 // A checkpoint this file cannot use would refuse every later one,
                 // so the first edit would fail; it is kept, under another name.
                 let set_aside = notices
                     .iter()
                     .any(|notice| matches!(notice, LoadNotice::WorkRecoveryUnusable { .. }))
                     .then(|| {
-                        recovery_lock
-                            .as_ref()
-                            .or(self.file.work_recovery_lock.as_ref())
-                            .map_or(
-                                Err(ketchup_model::persistence::FilePersistenceError::ExternalConflict),
-                                |lock| ketchup_model::persistence::set_aside_work_recovery(path, lock),
-                            )
+                        recovery_lock.as_ref().or(kept_lock.as_ref()).map_or(
+                            Err(ketchup_model::persistence::FilePersistenceError::ExternalConflict),
+                            |lock| ketchup_model::persistence::set_aside_work_recovery(path, lock),
+                        )
                     });
                 let Ok((mut document, container_data)) = outcome.into_editable_with_container()
                 else {
@@ -318,10 +325,9 @@ impl KetchupApp {
                 self.file.identity = file_identity;
                 self.file.work_recovery_identity = work_recovery_identity;
                 // Only a read-only folder opens without a lock of its own or kept.
-                self.file.work_recovery_off =
-                    recovery_lock.is_none() && self.file.work_recovery_lock.is_none();
-                self.file.work_recovery_lock = work_recovery_identity
-                    .and(recovery_lock.or_else(|| self.file.work_recovery_lock.take()));
+                self.file.work_recovery_off = recovery_lock.is_none() && kept_lock.is_none();
+                self.file.work_recovery_lock =
+                    work_recovery_identity.and(recovery_lock.or(kept_lock));
                 self.file.work_recovery_digest = None;
                 self.file.saved_digest = self.document.history_digest();
                 self.reset_document_presentation();
