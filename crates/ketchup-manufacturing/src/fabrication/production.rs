@@ -301,6 +301,24 @@ pub(super) fn job_stock_frame(stock: &GeneralMachiningGeometry) -> Option<JobSto
     else {
         return None;
     };
+    // A box the woodWOP program machines: the job lays it as that program does.
+    if let Some(woodwop) = woodwop_stock_frame(stock) {
+        let unit = |axis: usize| -> [f64; 3] {
+            std::array::from_fn(|other| f64::from(u8::from(other == axis)))
+        };
+        let mut origin_mm = woodwop.blank.corner_mm;
+        let mut axes = woodwop.definition_axes.map(unit);
+        if woodwop.reversed_y {
+            origin_mm[woodwop.definition_axes[1]] += woodwop.dimensions_mm[1];
+            axes[1][woodwop.definition_axes[1]] = -1.0;
+        }
+        return Some(JobStockFrame {
+            origin_mm,
+            axes,
+            dimensions_mm: woodwop.dimensions_mm,
+            rectangular: true,
+        });
+    }
     let stock_dimensions = [
         *cross_section_width_mm,
         *cross_section_height_mm,

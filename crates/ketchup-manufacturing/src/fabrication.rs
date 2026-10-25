@@ -2051,7 +2051,7 @@ fn woodwop_vertical_pocket_macro(
 }
 
 /// The blank of a rectangular stock in definition-local mm: its minimum
-/// corner and its extents along definition x, y (cross-section) and z (length).
+/// corner and its extents along definition x, y and z.
 /// BTLx and woodWOP measure machining from this corner; production_job reports
 /// the same corner as its stock frame origin.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2099,18 +2099,48 @@ fn rectangular_stock(geometry: &GeneralMachiningGeometry) -> Option<StockBlank> 
     else {
         return None;
     };
-    if *frame != identity_machining_frame()
-        || *start_mm != [0.0, 0.0, 0.0]
-        || *length_axis != [0.0, 0.0, 1.0]
+    // A profile drawn on any face of a box and extruded across it is the same
+    // box along the definition axes when its axes lie along them.
+    let axes = [frame.x_axis, frame.y_axis, *length_axis];
+    let [Some(first), Some(second), Some(third)] = axes.map(definition_axis) else {
+        return None;
+    };
+    if first == second
+        || first == third
+        || second == third
+        || start_mm.iter().any(|coordinate| !coordinate.is_finite())
     {
         return None;
     }
-    rectangular_stock_profile(
+    let local = rectangular_stock_profile(
         cross_section,
         *length_mm,
         *cross_section_width_mm,
         *cross_section_height_mm,
-    )
+    )?;
+    let mut corner_mm = *start_mm;
+    let mut extents_mm = [0.0; 3];
+    for ((axis, vector), (corner, extent)) in [first, second, third]
+        .into_iter()
+        .zip(axes)
+        .zip(local.corner_mm.into_iter().zip(local.extents_mm))
+    {
+        let sign = vector[axis];
+        corner_mm[axis] += sign * corner + if sign < 0.0 { -extent } else { 0.0 };
+        extents_mm[axis] = extent;
+    }
+    Some(StockBlank {
+        corner_mm,
+        extents_mm,
+    })
+}
+
+/// The definition axis a unit vector lies along, either way.
+fn definition_axis(vector: [f64; 3]) -> Option<usize> {
+    let axis = vector.iter().position(|component| component.abs() == 1.0)?;
+    (0..3)
+        .all(|other| other == axis || vector[other] == 0.0)
+        .then_some(axis)
 }
 
 fn rectangular_stock_profile(
@@ -3606,6 +3636,7 @@ fn machining_frame(
     .then_some(frame)
 }
 
+#[cfg(test)]
 const fn identity_machining_frame() -> GeneralMachiningFrame {
     GeneralMachiningFrame {
         origin_mm: [0.0, 0.0, 0.0],

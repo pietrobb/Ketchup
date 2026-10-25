@@ -103,15 +103,37 @@ fn btlx_stock_dimensions_require_a_closed_axis_aligned_rectangle() {
         unreachable!()
     };
     *start_mm = [10.0, 0.0, 0.0];
-    assert_eq!(rectangular_stock(&translated), None);
+    assert_eq!(
+        rectangular_stock(&translated),
+        Some(StockBlank {
+            corner_mm: [10.0, 0.0, 0.0],
+            extents_mm: [100.0, 50.0, 1000.0],
+        })
+    );
 
+    // A quarter turn about z: the profile's x runs along y, its y along -x.
     let mut rotated = valid.clone();
     let GeneralMachiningGeometry::PrismaticStock { frame, .. } = &mut rotated else {
         unreachable!()
     };
     frame.x_axis = [0.0, 1.0, 0.0];
     frame.y_axis = [-1.0, 0.0, 0.0];
-    assert_eq!(rectangular_stock(&rotated), None);
+    assert_eq!(
+        rectangular_stock(&rotated),
+        Some(StockBlank {
+            corner_mm: [-50.0, 0.0, 0.0],
+            extents_mm: [50.0, 100.0, 1000.0],
+        })
+    );
+
+    let mut oblique = valid.clone();
+    let GeneralMachiningGeometry::PrismaticStock { frame, .. } = &mut oblique else {
+        unreachable!()
+    };
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    frame.x_axis = [half, half, 0.0];
+    frame.y_axis = [-half, half, 0.0];
+    assert_eq!(rectangular_stock(&oblique), None);
 
     let mut open = valid.clone();
     let GeneralMachiningGeometry::PrismaticStock { cross_section, .. } = &mut open else {
@@ -132,6 +154,114 @@ fn btlx_stock_dimensions_require_a_closed_axis_aligned_rectangle() {
     };
     *end_mm = [100.0, 1.0];
     assert_eq!(rectangular_stock(&diagonal), None);
+}
+
+/// The stock of the box `corner_mm` .. `corner_mm + extents_mm` drawn on the
+/// plane with axes `x_axis`, `y_axis` (unit definition axes, either way) and
+/// extruded along `length_axis` from a sketch origin at the definition origin.
+fn box_stock(
+    corner_mm: [f64; 3],
+    extents_mm: [f64; 3],
+    x_axis: [f64; 3],
+    y_axis: [f64; 3],
+    length_axis: [f64; 3],
+) -> GeneralMachiningGeometry {
+    // Where the box spans along a unit axis, as a range of that axis.
+    let span = |axis: [f64; 3]| {
+        let index = axis.iter().position(|value| *value != 0.0).unwrap();
+        let ends =
+            [corner_mm[index], corner_mm[index] + extents_mm[index]].map(|end| end * axis[index]);
+        (ends[0].min(ends[1]), extents_mm[index])
+    };
+    let ((u, width), (v, height), (start, length)) =
+        (span(x_axis), span(y_axis), span(length_axis));
+    let points = [
+        [u, v],
+        [u + width, v],
+        [u + width, v + height],
+        [u, v + height],
+    ];
+    GeneralMachiningGeometry::PrismaticStock {
+        frame: GeneralMachiningFrame {
+            origin_mm: [0.0; 3],
+            x_axis,
+            y_axis,
+            normal: cross(x_axis, y_axis),
+        },
+        cross_section: (0..4)
+            .map(|i| GeneralMachiningSegment::Line {
+                start_mm: points[i],
+                end_mm: points[(i + 1) % 4],
+            })
+            .collect(),
+        start_mm: length_axis.map(|value| value * start),
+        length_axis,
+        length_mm: length,
+        cross_section_width_mm: width,
+        cross_section_height_mm: height,
+    }
+}
+
+#[test]
+fn a_box_extruded_from_any_face_is_the_same_btlx_and_woodwop_stock() {
+    use production::job_stock_frame;
+    let unit = |axis: usize, sign: f64| {
+        let mut vector = [0.0; 3];
+        vector[axis] = sign;
+        vector
+    };
+    let corner = [-200.0, 30.0, 5.0];
+    for extents in [
+        [600.0, 400.0, 19.0],
+        [400.0, 400.0, 19.0],
+        [19.0, 400.0, 600.0],
+    ] {
+        let flat = box_stock(corner, extents, unit(0, 1.0), unit(1, 1.0), unit(2, 1.0));
+        let expected = StockBlank {
+            corner_mm: corner,
+            extents_mm: extents,
+        };
+        let woodwop = woodwop_stock_frame(&flat).unwrap();
+        let job = job_stock_frame(&flat).unwrap();
+        let mut faces = 0;
+        for normal_axis in 0..3 {
+            for normal_sign in [-1.0, 1.0] {
+                for x_sign in [-1.0, 1.0] {
+                    let normal = unit(normal_axis, normal_sign);
+                    let x_axis = unit((normal_axis + 1) % 3, x_sign);
+                    let y_axis = cross(normal, x_axis);
+                    for length_axis in [normal, normal.map(|value| -value)] {
+                        let case = format!(
+                            "{extents:?}, x {x_axis:?}, y {y_axis:?}, along {length_axis:?}"
+                        );
+                        let stock = box_stock(corner, extents, x_axis, y_axis, length_axis);
+                        assert_eq!(rectangular_stock(&stock), Some(expected), "{case}");
+                        assert_eq!(woodwop_stock_frame(&stock), Some(woodwop), "{case}");
+                        let frame = job_stock_frame(&stock).unwrap();
+                        assert_eq!(frame.dimensions_mm, woodwop.dimensions_mm, "{case}");
+                        assert!(frame.rectangular, "{case}");
+                        // The job lays the blank as woodWOP does, each axis
+                        // along the same definition axis.
+                        for (axis, definition_axis) in
+                            frame.axes.iter().zip(woodwop.definition_axes)
+                        {
+                            assert_eq!(
+                                axis[definition_axis].abs(),
+                                1.0,
+                                "{case}: job axes {:?}",
+                                frame.axes
+                            );
+                        }
+                        if extents[0] != extents[1] {
+                            assert_eq!(frame, job, "{case}");
+                        }
+                        faces += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(faces, 24);
+    }
 }
 
 #[test]
