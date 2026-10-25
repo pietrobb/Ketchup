@@ -60,11 +60,13 @@ impl GeneralFabricationProjection {
     /// One physical piece per entry, with definition-local machining coordinates.
     /// dimensions_mm are descending stock-frame bounding extents, not necessarily a cut piece.
     /// stock_frame maps those axes and a corner of the blank to definition-local mm;
-    /// it is right-handed, the frame of the woodWOP programs. Only rectangular_prism
-    /// denotes a rectangular blank.
+    /// it is right-handed, the frame of the woodWOP programs. A piece machined from
+    /// below only is turned_over: its frame is turned a half turn about its first
+    /// axis, as the woodWOP program lays it. Only rectangular_prism denotes a
+    /// rectangular blank.
     /// Original profiles and machining frames remain unchanged in operations.
     /// Setup A initially groups all machining; only a chosen postprocessor can validate
-    /// that it fits one fixture. No opposite-face orientation or toolpath is inferred.
+    /// that it fits one fixture. No toolpath is inferred.
     pub fn production_job(
         &self,
         snapshot: &Snapshot,
@@ -78,7 +80,12 @@ impl GeneralFabricationProjection {
         let mut codes = BTreeSet::new();
         let mut matched_operations = BTreeSet::new();
         let mut pins = BTreeMap::<InstancePath, Vec<Value>>::new();
+        let mut pin_normals = BTreeMap::<InstancePath, Vec<[f64; 3]>>::new();
         for (joint, hole) in super::capabilities::undrilled_pin_holes(snapshot)? {
+            pin_normals
+                .entry(hole.instance_path.clone())
+                .or_default()
+                .push(hole.inward_unit_local);
             pins.entry(hole.instance_path.clone())
                 .or_default()
                 .push(json!({
@@ -101,10 +108,9 @@ impl GeneralFabricationProjection {
                 .name();
             let (matching, frame) = row_stock(row, &self.manufacturing.operations)?;
             let JobStockFrame {
-                origin_mm,
-                axes: stock_axes,
                 dimensions_mm,
                 rectangular,
+                ..
             } = frame;
             let stock_shape = if rectangular {
                 "rectangular_prism"
@@ -149,6 +155,24 @@ impl GeneralFabricationProjection {
                     })
                     .collect::<Vec<_>>();
                 let holes = pins.remove(path).unwrap_or_default();
+                let normals = machining_normals(
+                    matching.iter().map(|(_, operation)| *operation),
+                    pin_normals.remove(path).unwrap_or_default().into_iter(),
+                );
+                let upward = normals
+                    .iter()
+                    .map(|normal| dot(*normal, frame.axes[2]))
+                    .collect::<Vec<_>>();
+                let turned_over = laid_underside_up(&upward);
+                let JobStockFrame {
+                    origin_mm,
+                    axes: stock_axes,
+                    ..
+                } = if turned_over {
+                    frame.turned_over()
+                } else {
+                    frame
+                };
                 let setups = if operations.len() > 1 || !holes.is_empty() {
                     vec![json!({
                         "id": "A", "code": code,
@@ -167,6 +191,7 @@ impl GeneralFabricationProjection {
                     "material_key": row.material_key,
                     "dimensions_mm": dimensions_mm,
                     "stock_frame": {"origin_mm": origin_mm, "axes": stock_axes},
+                    "turned_over": turned_over,
                     "stock_shape": stock_shape,
                     "coordinate_frame": "definition_local_mm",
                     "operations": operations,
@@ -245,6 +270,22 @@ pub(super) struct JobStockFrame {
     pub dimensions_mm: [f64; 3],
     /// The blank is a rectangular prism, not a profile extrusion.
     pub rectangular: bool,
+}
+
+impl JobStockFrame {
+    /// The frame of the blank laid the other face up, a half turn about its
+    /// first axis, as the woodWOP program lays a part machined from below.
+    pub(super) fn turned_over(self) -> Self {
+        let [x, y, z] = self.axes;
+        let [_, width, thickness] = self.dimensions_mm;
+        Self {
+            origin_mm: std::array::from_fn(|axis| {
+                self.origin_mm[axis] + y[axis] * width + z[axis] * thickness
+            }),
+            axes: [x, y.map(|value| -value), z.map(|value| -value)],
+            ..self
+        }
+    }
 }
 
 pub(super) fn job_stock_frame(stock: &GeneralMachiningGeometry) -> Option<JobStockFrame> {

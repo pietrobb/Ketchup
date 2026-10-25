@@ -332,6 +332,74 @@ fn a_board_drilled_from_below_is_turned_over_and_one_drilled_from_both_faces_is_
     );
 }
 
+/// Review 2026-10-24 MF-20: a production job and its own woodWOP program agree
+/// where a hole is in a board turned over. The job's stock frame took the
+/// hole the program drills at (180, 280) from above back to (180, 280, 19),
+/// not the (180, 120, 0) drawn, and the program did not say which face goes up.
+#[test]
+fn a_production_job_turns_its_stock_frame_over_as_its_woodwop_program() {
+    use ketchup_manufacturing::fabrication::production::HomagWoodwopAdapter;
+    use ketchup_model::document::{CanonicalCommand, CommandBatch};
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    for (face, entry, turned) in [
+        ("z-", [180.0, 120.0, 0.0], true),
+        ("z+", [180.0, 120.0, 19.0], false),
+    ] {
+        let snapshot = apply(&format!(
+            "panel = board('panel', (600, 400, 19))\n\
+             hole(panel, '{face}', at = (180, 120), diameter = 8, depth = 10)\n"
+        ));
+        let panel = snapshot.scene_query()[0].instance_path.clone();
+        let snapshot = snapshot
+            .preview_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetProductionCode {
+                    instance_path: panel,
+                    code: Some("000000000001".into()),
+                },
+            ]))
+            .unwrap();
+        let projection =
+            fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+        let woodwop = HomagWoodwopAdapter {
+            options: Default::default(),
+        };
+        let job = projection
+            .production_job(&snapshot, &[&woodwop])
+            .unwrap_or_else(|error| panic!("{error}"));
+        let part = &job["parts"][0];
+        let mpr = job["outputs"]["homag-woodwop4"][0]["content"]
+            .as_str()
+            .unwrap();
+        let value = |key: &str| -> f64 {
+            let start = mpr.find(&format!("\n{key}=\"")).unwrap() + key.len() + 3;
+            mpr[start..start + mpr[start..].find('"').unwrap()]
+                .parse()
+                .unwrap()
+        };
+        // A vertical drilling enters the top face of the blank as the program lays it.
+        let machine = [value("XA"), value("YA"), value("DI")];
+        let vector = |value: &serde_json::Value| -> [f64; 3] {
+            std::array::from_fn(|axis| value[axis].as_f64().unwrap())
+        };
+        let origin = vector(&part["stock_frame"]["origin_mm"]);
+        let axes: [[f64; 3]; 3] =
+            std::array::from_fn(|axis| vector(&part["stock_frame"]["axes"][axis]));
+        let drawn: [f64; 3] = std::array::from_fn(|index| {
+            origin[index] + (0..3).map(|k| axes[k][index] * machine[k]).sum::<f64>()
+        });
+        assert!(
+            drawn
+                .iter()
+                .zip(entry)
+                .all(|(got, want)| (got - want).abs() < 1e-9),
+            "{face}: the job takes the program's hole to {drawn:?}, drawn at {entry:?}\n{mpr}"
+        );
+        assert_eq!(part["turned_over"], turned, "{face}: {part}");
+        assert_eq!(mpr.contains("\n\\turned over: "), turned, "{face}\n{mpr}");
+    }
+}
+
 /// MF-19: the cabinet and the table, both doweled from below or from inside,
 /// are each part one woodWOP program.
 #[test]

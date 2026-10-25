@@ -206,6 +206,8 @@ pub const GENERAL_DRAWING_SVG_V3: &str = "ketchup.general-drawing-svg.v3";
 pub const GENERAL_MANUFACTURING_EXPORT_V2: &str = "ketchup.general-manufacturing-export.v2";
 pub const WOODWOP_MPR_4_0_DRILL_EXPORT_V1: &str = "ketchup.woodwop-mpr-4.0-drill-export.v1";
 pub const WOODWOP_MPR_4_0_MACHINING_EXPORT_V2: &str = "ketchup.woodwop-mpr-4.0-machining-export.v2";
+/// The header line of a woodWOP program whose part is laid the other face up.
+const WOODWOP_UNDERSIDE_UP_NOTE: &str = "\\turned over: lay the part underside (as drawn) up\\\n";
 pub const HOMAG_BHX_PRODUCTION_PACKAGE_V1: &str = "ketchup.homag-bhx-production-package.v1";
 pub const HOMAG_CODE128_LABEL_V1: &str = "ketchup.homag-code128-label.v1";
 pub const WELDMENT_CUT_LIST_EXPORT_V1: &str = "ketchup.weldment-cut-list-export.v1";
@@ -1129,7 +1131,7 @@ impl GeneralFabricationProjection {
             .map_or("", |definition| definition.name());
         let (stock_frame, macros) = woodwop_setup(
             stock_frame,
-            &drilling_normals(machining.iter().copied(), &[]),
+            &machining_normals(machining.iter().copied(), std::iter::empty()),
             |stock_frame| {
                 machining
                     .iter()
@@ -1267,7 +1269,10 @@ impl GeneralFabricationProjection {
                     }
                     let (stock_frame, macros) = woodwop_setup(
                         stock_frame,
-                        &drilling_normals(machining.iter().copied(), &instance_holes),
+                        &machining_normals(
+                            machining.iter().copied(),
+                            instance_holes.iter().map(|hole| hole.inward_unit_local),
+                        ),
                         |stock_frame| {
                             let mut macros = machining
                                 .iter()
@@ -1547,43 +1552,51 @@ struct WoodwopStockFrame {
     turned_over: bool,
 }
 
-/// The directions, in the part's frame, of its drillings and pin holes.
-fn drilling_normals<'a>(
+/// The directions, in the part's frame, of its drillings, pockets and pin holes.
+pub(super) fn machining_normals<'a>(
     operations: impl Iterator<Item = &'a GeneralManufacturingOperation>,
-    holes: &[&PinHole],
+    holes: impl Iterator<Item = [f64; 3]>,
 ) -> Vec<[f64; 3]> {
     operations
         .filter_map(|operation| match &operation.machining {
-            GeneralMachiningGeometry::CircularDrill { frame, .. } => Some(frame.normal),
+            GeneralMachiningGeometry::CircularDrill { frame, .. }
+            | GeneralMachiningGeometry::ProfileCut { frame, .. } => Some(frame.normal),
             _ => None,
         })
-        .chain(holes.iter().map(|hole| hole.inward_unit_local))
+        .chain(holes)
         .collect()
 }
 
+/// Whether a part machined along `upward` components of its machining
+/// directions (on the axis of its thickness, which points up) is laid its
+/// underside up: it is machined from below and not from above. The woodWOP
+/// programs and the production job turn it alike (MF-20).
+pub(super) fn laid_underside_up(upward: &[f64]) -> bool {
+    let from = |sign: f64| upward.iter().any(|up| sign * up >= 1.0 - ROUNDING);
+    from(1.0) && !from(-1.0)
+}
+
 /// The stock frame and macros of one woodWOP setup, which machines the top face
-/// and the edges. A part drilled from below only is laid the other face up; one
-/// drilled from both faces is refused by name, as `normals` (the drilling
+/// and the edges. A part machined from below only is laid the other face up; one
+/// drilled from both faces is refused by name, as `normals` (the machining
 /// directions in the part's frame) show it.
 fn woodwop_setup<T>(
     stock_frame: WoodwopStockFrame,
     normals: &[[f64; 3]],
     macros: impl Fn(WoodwopStockFrame) -> Option<T>,
 ) -> Result<(WoodwopStockFrame, T), GeneralFabricationError> {
-    for turned_over in [false, true] {
-        let frame = WoodwopStockFrame {
-            turned_over,
-            ..stock_frame
-        };
-        if let Some(macros) = macros(frame) {
-            return Ok((frame, macros));
-        }
-    }
-    let vertical = |sign: f64| {
-        normals
-            .iter()
-            .any(|normal| sign * woodwop_direction(*normal, stock_frame)[2] >= 1.0 - ROUNDING)
+    let upward = normals
+        .iter()
+        .map(|normal| woodwop_direction(*normal, stock_frame)[2])
+        .collect::<Vec<_>>();
+    let frame = WoodwopStockFrame {
+        turned_over: laid_underside_up(&upward),
+        ..stock_frame
     };
+    if let Some(macros) = macros(frame) {
+        return Ok((frame, macros));
+    }
+    let vertical = |sign: f64| upward.iter().any(|up| sign * up >= 1.0 - ROUNDING);
     Err(if vertical(1.0) && vertical(-1.0) {
         GeneralFabricationError::DrilledFromBothFaces {
             part: String::new(),
@@ -1661,8 +1674,15 @@ fn woodwop_mpr_output(
         format_btlx_positive_number(width_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
     let thickness =
         format_btlx_positive_number(thickness_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
+    // A part machined from below is laid its underside (as drawn) up; the
+    // operator needs to be told which face goes up.
+    let face_up = if stock_frame.turned_over {
+        WOODWOP_UNDERSIDE_UP_NOTE
+    } else {
+        ""
+    };
     let mut output = format!(
-        "[H\nVERSION=\"4.0\"\nOP=\"1\"\nINCH=\"0\"\nMAT=\"HOMAG\"\n_BSX={length}\n_BSY={width}\n_BSZ={thickness}\n\\{export_contract}\\\n<100 \\WerkStck\\\nLA=\"{length}\"\nBR=\"{width}\"\nDI=\"{thickness}\"\nFNX=\"0\"\nFNY=\"0\"\nAX=\"0\"\nAY=\"0\"\nRNX=\"0\"\nRNY=\"0\"\nRNZ=\"0\"\n"
+        "[H\nVERSION=\"4.0\"\nOP=\"1\"\nINCH=\"0\"\nMAT=\"HOMAG\"\n_BSX={length}\n_BSY={width}\n_BSZ={thickness}\n\\{export_contract}\\\n{face_up}<100 \\WerkStck\\\nLA=\"{length}\"\nBR=\"{width}\"\nDI=\"{thickness}\"\nFNX=\"0\"\nFNY=\"0\"\nAX=\"0\"\nAY=\"0\"\nRNX=\"0\"\nRNY=\"0\"\nRNZ=\"0\"\n"
     );
     for processing in macros {
         output.push_str(processing);
