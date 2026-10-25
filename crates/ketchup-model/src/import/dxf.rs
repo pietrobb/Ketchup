@@ -42,6 +42,9 @@ struct DxfReading {
     max_entities: usize,
     max_profiles: usize,
     max_segments: usize,
+    /// How many segments, texts and fills the drawing's blocks may hold and one entity's
+    /// inserts place (review 2026-10-24 UL-25).
+    max_placed: usize,
     /// Joins loose lines and arcs into profiles; otherwise each stays one of its own.
     chain: bool,
     /// Reads texts and attributes instead of reporting them unsupported or dropped.
@@ -63,6 +66,8 @@ const PROFILE_READING: DxfReading = DxfReading {
     max_entities: MAX_DXF_ENTITIES,
     max_profiles: MAX_DXF_PROFILES,
     max_segments: MAX_DXF_SEGMENTS_PER_PROFILE,
+    // Bounded by its entities and profiles already.
+    max_placed: UNBOUNDED,
     chain: true,
     texts: false,
     styles: false,
@@ -78,6 +83,7 @@ const UNDERLAY_READING: DxfReading = DxfReading {
     max_entities: UNBOUNDED,
     max_profiles: UNBOUNDED,
     max_segments: UNBOUNDED,
+    max_placed: limits::DRAWING_ENTITIES,
     chain: false,
     texts: true,
     styles: true,
@@ -208,6 +214,8 @@ pub enum DxfImportError {
     InvalidBulge,
     InvalidBlock,
     UnsupportedInsertTransform,
+    /// A block placed here would draw more than an underlay's blocks have left to place.
+    TooMuchPlaced,
     TooManyEntities,
     TooManyProfiles,
     TooManySegments,
@@ -320,6 +328,13 @@ impl fmt::Display for DxfImportError {
             Self::UnsupportedInsertTransform => {
                 "DXF INSERT uses unsupported zero, non-uniform curved, or Z scaling"
             }
+            Self::TooMuchPlaced => {
+                return write!(
+                    formatter,
+                    "DXF INSERT places more than the {} lines, texts and fills an underlay's blocks may place",
+                    limits::DRAWING_ENTITIES
+                );
+            }
             Self::TooManySegments => "one DXF chain exceeds the 1,024 segment limit",
             Self::AmbiguousGeometry => {
                 "DXF line/arc connectivity is branched, duplicated, or otherwise ambiguous"
@@ -430,6 +445,10 @@ struct DiagnosticCounts {
     /// of the drawing's entity budget; what a block's own hatches draw counts where an
     /// insert places them.
     fill_pieces_left: usize,
+    /// How many more segments, texts and fills inserts may place, of
+    /// [`DxfReading::max_placed`]: what the blocks hold stays taken, what one entity of
+    /// the drawing places is given back once it is drawn.
+    placed_left: usize,
     /// The block being read, as the drawing names it, if any: a report of what it
     /// leaves out names it, whose coordinates it gives.
     block: Option<String>,
@@ -457,6 +476,7 @@ impl DiagnosticCounts {
             skipped: BTreeMap::new(),
             first_skip: None,
             fill_pieces_left: limits::DRAWING_ENTITIES,
+            placed_left: reading.max_placed,
             block: None,
         }
     }
@@ -3558,6 +3578,19 @@ fn parse_insert(
     if placement_count > diagnostics.reading.max_entities {
         return Err(DxfImportError::TooManyEntities);
     }
+    // What it places counts before any of it is built: an array of millions, or arrays
+    // placed inside one another, is left out alone (review 2026-10-24 UL-25).
+    let fill_pieces =
+        |fill: &OrderedFill| fill.pattern.len() + fill.rings.iter().map(Vec::len).sum::<usize>();
+    let block_cost = (block.profiles.iter())
+        .map(|profile| profile.segments.len())
+        .chain(block.fills.iter().map(fill_pieces))
+        .fold(block.texts.len(), usize::saturating_add);
+    let placed = placement_count
+        .checked_mul(block_cost.max(1))
+        .filter(|placed| *placed <= diagnostics.placed_left)
+        .ok_or(DxfImportError::TooMuchPlaced)?;
+    diagnostics.placed_left -= placed;
     let unit_scale = units.millimetres_per_unit();
     let column_spacing_mm = scale_coordinate(
         flip(parse_optional_number(record, 44)?.unwrap_or(0.0)),

@@ -302,6 +302,46 @@ fn ellipses_and_splines_are_drawn_by_their_chords() {
 /// with 1e-17 of noise in it was left out as not flat. A LINE, an ELLIPSE and a SPLINE
 /// are in world coordinates, a TEXT and a 2D POLYLINE in their own, mirrored; and a
 /// POLYLINE left out took its VERTEX and SEQEND for three more broken entities.
+/// Review 2026-10-24 UL-25: an underlay placed blocks without a budget. A MINSERT of
+/// 3e9 × 3e9 asked for 9e18 lines at once and stopped the reader; one of a million
+/// lines, or arrays placed inside one another, held a gigabyte.
+#[test]
+fn what_the_blocks_place_past_the_drawings_budget_is_left_out_and_counted() {
+    let blocks = concat!(
+        "0\nSECTION\n2\nBLOCKS\n",
+        "0\nBLOCK\n8\n0\n2\ntick\n70\n0\n10\n0\n20\n0\n",
+        "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n1\n21\n0\n",
+        "0\nENDBLK\n0\nENDSEC\n",
+    );
+    let array = |columns: u64, rows: u64| {
+        format!(
+            "0\nINSERT\n8\nmarks\n2\ntick\n10\n0\n20\n0\n70\n{columns}\n71\n{rows}\n44\n2\n45\n2\n"
+        )
+    };
+    let entities = [
+        line("walls", [0.0, -5.0], [10.0, -5.0]),
+        array(3_000_000_000, 3_000_000_000),
+        array(1_001, 1_000),
+        array(10, 10),
+    ]
+    .concat();
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n{blocks}0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+    );
+    let underlay = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
+    // The wall and the ten by ten ticks; the two arrays past the budget are left out.
+    assert_eq!(underlay.lines.segment_count(), 101);
+    let unreadable = (underlay.diagnostics.iter())
+        .find(|diagnostic| diagnostic.code() == "dxf.entity-unreadable")
+        .unwrap();
+    assert_eq!(unreadable.count(), 2);
+    assert!(
+        unreadable.subject().unwrap().starts_with("INSERT: "),
+        "{:?}",
+        unreadable.subject()
+    );
+}
+
 #[test]
 fn an_entity_upside_down_or_with_noise_in_its_extrusion_is_read() {
     let down = "210\n0\n220\n0\n230\n-1\n";
