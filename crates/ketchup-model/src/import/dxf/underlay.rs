@@ -52,15 +52,10 @@ pub fn read_dxf_underlay_from(
 ) -> Result<DxfUnderlay, DxfImportError> {
     let _any_coordinate = AnyFiniteCoordinate::new();
     let code_page = text_encoding(&mut source)?;
-    let encoding = code_page.as_ref().map(|(encoding, _)| *encoding);
+    let encoding = code_page.as_ref().map(|(encoding, ..)| *encoding);
     let mut diagnostics = DiagnosticCounts::new(UNDERLAY_READING);
-    if let Some((_, name)) = code_page {
-        diagnostics.add(
-            ImportDiagnosticSeverity::Info,
-            "dxf.text-code-page",
-            Some(name),
-            1,
-        )?;
+    if let Some((_, name, doubtful)) = code_page {
+        diagnostics.code_page_read(name, doubtful)?;
     }
     let sections = read_sections(PairReader::new(&mut source, encoding)?, &mut diagnostics)?;
     let header = sections.header.pairs();
@@ -391,16 +386,18 @@ fn read_sections(
 /// names when it is older than DXF 2007, with that name.
 fn text_encoding(
     source: &mut (impl BufRead + Seek),
-) -> Result<Option<(&'static encoding_rs::Encoding, String)>, DxfImportError> {
+) -> Result<Option<(CodePage, String, bool)>, DxfImportError> {
     source.seek(SeekFrom::Start(0)).map_err(read_error)?;
     let mut line = Vec::new();
     let (mut utf8, mut empty) = (true, true);
+    let mut high = HighBytes::default();
     // A header variable's value is the second line after its name.
     let mut acadver = HeaderValue::default();
     let mut code_page = HeaderValue::default();
     while read_line(source, &mut line)? {
         empty = false;
         utf8 &= std::str::from_utf8(&line).is_ok();
+        high.see(&line);
         let trimmed = line.trim_ascii();
         acadver.see(trimmed, b"$ACADVER");
         code_page.see(trimmed, b"$DWGCODEPAGE");
@@ -416,7 +413,10 @@ fn text_encoding(
         .is_none_or(|version| version.as_slice() < b"AC1021".as_slice())
         .then_some(code_page.value)
         .flatten()
-        .and_then(|name| Some((code_page_encoding(&name)?, code_page_name(&name))))
+        .and_then(|name| {
+            let code_page = code_page_encoding(&name)?;
+            Some((code_page, code_page_name(&name), code_page.doubtful(&high)))
+        })
         .map(Some)
         .ok_or(DxfImportError::NonAscii)
 }
@@ -446,17 +446,14 @@ impl HeaderValue {
 /// Reads group-code/value pairs line by line in the drawing's text encoding.
 struct PairReader<'a, R> {
     source: &'a mut R,
-    encoding: Option<&'static encoding_rs::Encoding>,
+    encoding: Option<CodePage>,
     line: Vec<u8>,
     /// Past the header: in the blocks or entities, whose texts keep their spaces.
     in_drawing: bool,
 }
 
 impl<'a, R: BufRead + Seek> PairReader<'a, R> {
-    fn new(
-        source: &'a mut R,
-        encoding: Option<&'static encoding_rs::Encoding>,
-    ) -> Result<Self, DxfImportError> {
+    fn new(source: &'a mut R, encoding: Option<CodePage>) -> Result<Self, DxfImportError> {
         source.seek(SeekFrom::Start(0)).map_err(read_error)?;
         Ok(Self {
             source,
@@ -499,8 +496,8 @@ impl<R: BufRead> PairReader<'_, R> {
         text.push_str(
             &self
                 .encoding
-                .unwrap_or(encoding_rs::UTF_8)
-                .decode_without_bom_handling_and_without_replacement(&self.line)
+                .unwrap_or(CodePage::Standard(encoding_rs::UTF_8))
+                .decode(&self.line)
                 .ok_or(DxfImportError::NonAscii)?,
         );
         if too_long(text) {

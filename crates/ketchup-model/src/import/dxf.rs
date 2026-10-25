@@ -112,7 +112,7 @@ mod underlay;
 
 use block::{BlockDefinition, parse_blocks};
 use chain::{assemble_loose_segments, point_key, without_duplicate_segments};
-use code_page::{code_page_encoding, code_page_name, dxf_source_text};
+use code_page::{CodePage, HighBytes, code_page_encoding, code_page_name, dxf_source_text};
 use extrusion::{ensure_planar, ensure_planar_ocs, ensure_planar_wcs, extrusion_sign, mirror_ocs};
 use hatch::OrderedFill;
 use polyline::{PolylineVertex, build_polyline_profile, parse_lwpolyline, parse_polyline};
@@ -455,7 +455,7 @@ struct DiagnosticCounts {
     frozen_layers: BTreeSet<String>,
     /// The code page its `$DWGCODEPAGE` names, ANSI_1252 when it names none: a text's
     /// `%%nnn` is the character nnn of it.
-    code_page: &'static encoding_rs::Encoding,
+    code_page: CodePage,
     /// What it left out, by diagnostic code and what (an entity type or a block, and
     /// why): one report entry each, with the count and the first handles or names.
     skipped: BTreeMap<(&'static str, String), Skipped>,
@@ -493,7 +493,7 @@ impl DiagnosticCounts {
             reading,
             hidden_layers: BTreeSet::new(),
             frozen_layers: BTreeSet::new(),
-            code_page: encoding_rs::WINDOWS_1252,
+            code_page: CodePage::WINDOWS_1252,
             skipped: BTreeMap::new(),
             first_skip: None,
             fill_pieces_left: limits::DRAWING_ENTITIES,
@@ -582,6 +582,25 @@ impl DiagnosticCounts {
             )?;
         }
         Ok(())
+    }
+
+    /// Reports the code page the text was read in, and warns when it is
+    /// [doubtful](CodePage::doubtful): the texts may read wrong.
+    fn code_page_read(&mut self, name: String, doubtful: bool) -> Result<(), DxfImportError> {
+        if doubtful {
+            self.add(
+                ImportDiagnosticSeverity::Warning,
+                "dxf.text-code-page-doubtful",
+                Some(name.clone()),
+                1,
+            )?;
+        }
+        self.add(
+            ImportDiagnosticSeverity::Info,
+            "dxf.text-code-page",
+            Some(name),
+            1,
+        )
     }
 
     fn add(
@@ -875,13 +894,8 @@ fn read_dxf(
     let (text, code_page) = dxf_source_text(source)?;
     let pairs = parse_pairs(&text, reading.max_pairs)?;
     let (sections, mut diagnostics) = parse_sections(&pairs, reading)?;
-    if let Some(code_page) = code_page {
-        diagnostics.add(
-            ImportDiagnosticSeverity::Info,
-            "dxf.text-code-page",
-            Some(code_page),
-            1,
-        )?;
+    if let Some((code_page, doubtful)) = code_page {
+        diagnostics.code_page_read(code_page, doubtful)?;
     }
     let header = sections.get("HEADER").map(Vec::as_slice).unwrap_or(&[]);
     let (units, insbase_mm) = parse_header(header, options, &mut diagnostics)?;

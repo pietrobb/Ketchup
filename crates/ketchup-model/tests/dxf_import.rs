@@ -3612,6 +3612,42 @@ fn arcs_with_different_centres_join_where_their_ends_meet() {
     assert_eq!(segments[1].end_mm(), segments[0].start_mm());
 }
 
+/// Review 2026-10-24: a DOS code page refused the whole drawing, and a code page the
+/// bytes do not fit was not warned of.
+#[test]
+fn a_dos_code_page_is_read_and_a_doubtful_one_is_warned_of() {
+    let file = |code_page: &str, layer: &[u8], text: &[u8]| {
+        let mut source = format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$DWGCODEPAGE\n3\n{code_page}\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n").into_bytes();
+        for (kind, rest) in [
+            ("LINE", b"10\n0\n20\n0\n11\n1\n21\n0\n".as_slice()),
+            ("TEXT", b"10\n0\n20\n0\n40\n2\n1\n"),
+        ] {
+            source.extend_from_slice(format!("0\n{kind}\n8\n").as_bytes());
+            source.extend_from_slice(layer);
+            source.extend_from_slice(b"\n");
+            source.extend_from_slice(rest);
+        }
+        source.extend_from_slice(text);
+        source.extend_from_slice(b"\n0\nENDSEC\n0\nEOF\n");
+        inspect_dxf(&source, DxfImportOptions::new(None)).unwrap()
+    };
+    let warned = |parsed: &ketchup_model::import::ParsedDxf| {
+        parsed
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code() == "dxf.text-code-page-doubtful")
+            .map(|diagnostic| diagnostic.subject().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    // "Stena žlť" in CP852.
+    let parsed = file("DOS852", b"Stena \xA7l\x9C", b"A");
+    assert_eq!(parsed.layers(), ["Stena žlť"]);
+    assert!(warned(&parsed).is_empty());
+    // "žluťoučký" in CP1250, declared ANSI_1252: ť = 0x9D is undefined there.
+    let parsed = file("ANSI_1252", b"walls", b"\x9Elu\x9Dou\xE8k\xFD");
+    assert_eq!(warned(&parsed), [Some("ANSI_1252".to_owned())]);
+}
+
 /// P3-V: a DXF older than 2007 is written in the Windows code page its
 /// `$DWGCODEPAGE` names, so Slovak layer names arrive as single bytes such as
 /// 0xF4 for "ô" in ANSI_1250. Such files were refused whole as "not UTF-8".

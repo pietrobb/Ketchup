@@ -115,6 +115,63 @@ fn an_underlay_read_in_a_code_page_names_it() {
     );
 }
 
+/// Review 2026-10-24: DOS850, DOS852 and DOS866 refused the whole drawing, and a drawing
+/// declared ANSI_1252 but written in CP1250 read „žlu\u{9d}oučký“ with no warning.
+#[test]
+fn dos_code_pages_are_read_and_a_doubtful_code_page_is_warned_of() {
+    let source = |code_page: &str, layer: &[u8], text: &[u8]| {
+        let mut source = format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$DWGCODEPAGE\n3\n{code_page}\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n").into_bytes();
+        for (kind, rest) in [
+            ("LINE", b"10\n0\n20\n0\n11\n100\n21\n0\n".as_slice()),
+            ("TEXT", b"10\n0\n20\n0\n40\n2\n1\n"),
+        ] {
+            source.extend_from_slice(format!("0\n{kind}\n8\n").as_bytes());
+            source.extend_from_slice(layer);
+            source.extend_from_slice(b"\n");
+            source.extend_from_slice(rest);
+        }
+        source.extend_from_slice(text);
+        source.extend_from_slice(b"\n0\nENDSEC\n0\nEOF\n");
+        source
+    };
+    let read = |code_page: &str, layer: &[u8], text: &[u8]| {
+        read_dxf_underlay(&source(code_page, layer, text), DxfImportOptions::new(None)).unwrap()
+    };
+    // "Stena žlť" in CP852: ž = 0xA7, ť = 0x9C; "Façade" in CP850: ç = 0x87;
+    // "Стена" in CP866.
+    for (code_page, layer, expected) in [
+        ("DOS852", b"Stena \xA7l\x9C".as_slice(), "Stena žlť"),
+        ("DOS850", b"Fa\x87ade", "Façade"),
+        ("DOS866", b"\x91\xE2\xA5\xAD\xA0", "Стена"),
+    ] {
+        let underlay = read(code_page, layer, b"A");
+        assert_eq!(underlay.layers, [expected], "{code_page}");
+        assert_eq!(
+            counted(&underlay, "dxf.text-code-page", Some(code_page)),
+            Some(1)
+        );
+        assert_eq!(
+            counted(&underlay, "dxf.text-code-page-doubtful", Some(code_page)),
+            None
+        );
+    }
+    // "žluťoučký" in CP1250 (ť = 0x9D, undefined in CP1252) declared ANSI_1252.
+    let underlay = read("ANSI_1252", b"walls", b"\x9Elu\x9Dou\xE8k\xFD");
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        Some(1),
+        "{:?}",
+        underlay.diagnostics
+    );
+    // Read rightly, the same text is not doubtful.
+    let underlay = read("ANSI_1250", b"walls", b"\x9Elu\x9Dou\xE8k\xFD");
+    assert_eq!(underlay.lines.layers()[0].texts()[0].text, "žluťoučký");
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1250")),
+        None
+    );
+}
+
 const BLOCKS: &str = concat!(
     // A door: its leaf and its number, on layer 0, so on the layer of its insert.
     "0\nBLOCK\n8\n0\n2\ndoor\n70\n0\n10\n0\n20\n0\n",

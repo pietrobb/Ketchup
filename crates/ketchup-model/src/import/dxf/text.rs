@@ -440,7 +440,7 @@ pub(super) fn unicode_escapes(raw: &str) -> std::borrow::Cow<'_, str> {
 /// character nnn of the drawing's `code_page` (a number it has no single character for,
 /// the Unicode character of that number); the underline and overline switches `%%u` and
 /// `%%o` are taken out.
-fn special_characters(raw: &str, code_page: &'static encoding_rs::Encoding) -> String {
+fn special_characters(raw: &str, code_page: CodePage) -> String {
     if !raw.contains("%%") {
         return raw.to_owned();
     }
@@ -477,12 +477,12 @@ fn special_characters(raw: &str, code_page: &'static encoding_rs::Encoding) -> S
 
 /// The character `number` of `code_page`, or, for a number it has no single character
 /// for, the Unicode character of that number.
-fn numbered_character(number: u32, code_page: &'static encoding_rs::Encoding) -> Option<char> {
+fn numbered_character(number: u32, code_page: CodePage) -> Option<char> {
     u8::try_from(number)
         .ok()
         .and_then(|byte| {
             let bytes = [byte];
-            let decoded = code_page.decode_without_bom_handling_and_without_replacement(&bytes)?;
+            let decoded = code_page.decode(&bytes)?;
             let mut chars = decoded.chars();
             chars.next().filter(|_| chars.next().is_none())
         })
