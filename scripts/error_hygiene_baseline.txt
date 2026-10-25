@@ -30,7 +30,6 @@ crates/ketchup-headless/src/protocol.rs dropped_variant 13
 crates/ketchup-headless/src/protocol.rs stringified_variant 2
 crates/ketchup-headless/src/protocol.rs unreachable 2
 crates/ketchup-headless/src/protocol/model_tools.rs debug_formatted 4
-crates/ketchup-headless/src/protocol/production.rs debug_formatted 1
 crates/ketchup-model/src/exact_brep_graph.rs stringified_variant 3
 crates/ketchup-model/src/import/dxf.rs unreachable 1
 crates/ketchup-model/src/import/glb.rs stringified_variant 1
@@ -38,7 +37,7 @@ crates/ketchup-model/src/shared_change.rs stringified_variant 22
 crates/ketchup-model/src/shared_change/replacement.rs stringified_variant 1
 crates/ketchup-program/src/eval.rs debug_formatted 1
 crates/ketchup-program/src/model.rs unreachable 2
-crates/ketchup-scheduler/src/lib.rs stringified_variant 30
+crates/ketchup-scheduler/src/lib.rs stringified_variant 28
 crates/ketchup-scheduler/src/pair_query.rs formatted_variant 1
 crates/ketchup-scheduler/src/pair_query.rs stringified_variant 6
 crates/ketchup-scheduler/src/plugin.rs stringified_variant 5

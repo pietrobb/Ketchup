@@ -608,15 +608,23 @@ pub fn reserve_whole(len: u64, label: &str) -> Result<Vec<u8>, OutOfMemory> {
 /// Reads a regular file whole, with no size limit: the buffer holds what the
 /// file holds on disk.
 fn read_regular_file(path: &Path, label: &str) -> Result<Vec<u8>, WorkerError> {
-    let mut file =
-        fs::File::open(path).map_err(|error| WorkerError::Transport(error.to_string()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| WorkerError::Transport(error.to_string()))?;
+    let (mut file, len) = open_regular_file(path, label)?;
+    read_reserved(&mut file, len, label)
+}
+
+/// The regular file at `path`, open, and its length.
+fn open_regular_file(path: &Path, label: &str) -> Result<(fs::File, u64), WorkerError> {
+    let file = fs::File::open(path).map_err(transport)?;
+    let metadata = file.metadata().map_err(transport)?;
     if !metadata.is_file() {
         return Err(WorkerError::NotRegularFile(label.to_owned()));
     }
-    read_reserved(&mut file, metadata.len(), label)
+    Ok((file, metadata.len()))
+}
+
+/// A file the window reads for the worker could not be read.
+fn transport(error: io::Error) -> WorkerError {
+    WorkerError::Transport(error.to_string())
 }
 
 /// Copies the regular file at `path` into `into` a piece at a time and returns
@@ -638,18 +646,13 @@ pub(crate) fn copy_regular_file_hashed(
             Ok(read)
         }
     }
-    let transport = |error: io::Error| WorkerError::Transport(error.to_string());
-    let source = fs::File::open(path).map_err(transport)?;
-    if !source.metadata().map_err(transport)?.is_file() {
-        return Err(WorkerError::NotRegularFile(label.to_owned()));
-    }
+    let (source, _) = open_regular_file(path, label)?;
     ketchup_model::graph::sha256_reader_hex(Tee { source, into }).map_err(transport)
 }
 
 /// The `len` bytes `reader` holds, in a buffer reserved for them up front.
 fn read_reserved(reader: &mut impl Read, len: u64, label: &str) -> Result<Vec<u8>, WorkerError> {
     let mut bytes = reserve_whole(len, label).map_err(WorkerError::OutOfMemory)?;
-    let transport = |error: io::Error| WorkerError::Transport(error.to_string());
     reader
         .take(len)
         .read_to_end(&mut bytes)
