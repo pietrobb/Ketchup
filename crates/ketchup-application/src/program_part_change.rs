@@ -1086,7 +1086,6 @@ impl Edit<'_> {
             return Ok((rewritten, self.reads(reading, before + distance)));
         }
         let part = self.evaluated.model.part(self.name);
-        let count = part.map_or(0, |part| part.face_offsets().count());
         // The editor names an extrusion's caps "start" and "end"; the
         // program names them as the extrusion does.
         let written_face = match (part.map(|part| &part.body), face) {
@@ -1099,10 +1098,27 @@ impl Edit<'_> {
             quote(self.name),
             quote(written_face),
             number_literal(written(distance)),
-            quote(&format!("GUI Push/Pull {}", count + 1))
+            quote(&self.push_pull_name())
         );
         let reading = Reading::Face(written_face.to_owned());
         Ok((self.appended(&line), self.reads(reading, written(distance))))
+    }
+
+    /// "GUI Push/Pull N" for the part's next Push/Pull: N one past its
+    /// Push/Pulls, or the next number no feature of the part is named with,
+    /// as a deleted line can leave that name taken (review 2026-10-24 WB-22).
+    fn push_pull_name(&self) -> String {
+        let part = self.evaluated.model.part(self.name);
+        let taken = part.map_or_else(BTreeSet::new, |part| {
+            (part.features.iter().map(|made| made.name.as_str()))
+                .chain(part.face_offsets().map(|offset| offset.name.as_str()))
+                .collect()
+        });
+        let count = part.map_or(0, |part| part.face_offsets().count());
+        (count + 1..)
+            .map(|n| format!("GUI Push/Pull {n}"))
+            .find(|name| !taken.contains(name.as_str()))
+            .expect("some number is free")
     }
 
     fn finish(
@@ -1233,7 +1249,8 @@ impl Edit<'_> {
     /// it, made `value` long in all: by the one `param()` that alone makes
     /// its length, else by one `push_pull()` of its `end` named [`LENGTH`].
     /// A value typed again writes that line again, so it replaces the first
-    /// value instead of adding to it. The Push/Pulls of other lines stay, so
+    /// value instead of adding to it, unless a later line reads the part and
+    /// another part would change too: then the change is added at the end. The Push/Pulls of other lines stay, so
     /// the extrusion is made `value` less what they add, and a value they
     /// leave no extrusion above 0 for is refused.
     fn length(
@@ -1305,7 +1322,30 @@ impl Edit<'_> {
             &[("face", end), ("name", LENGTH)],
         );
         let rewritten = match (earlier, line) {
-            (Some(bytes), line) => self.with(vec![(bytes, line.unwrap_or_default())]),
+            (Some(bytes), line) => {
+                let in_place = self.with(vec![(bytes, line.unwrap_or_default())]);
+                // A line after the length line that reads the part (a
+                // mirrored copy, a part placed at its end) would change with
+                // it (review 2026-10-24 WB-20): the change is then added at
+                // the end, where nothing reads it.
+                let alone = evaluate(&in_place).is_ok_and(|after| {
+                    self.other_parts_changed(&after.model).is_empty()
+                        && declarations_changed(&self.evaluated.model, &after.model).is_empty()
+                });
+                let now = length.expect("an extrusion has a length");
+                if alone {
+                    in_place
+                } else if (value - now).abs() <= DEFAULT_LINEAR_TOLERANCE_MM {
+                    self.source.clone()
+                } else {
+                    self.appended(&format!(
+                        "push_pull({name}, face={}, distance={}, name={})\n",
+                        quote(end),
+                        number_literal(written(value - now)),
+                        quote(&self.push_pull_name())
+                    ))
+                }
+            }
             (None, _) if written_before.is_some() => {
                 return Err(refused(
                     "program_length_not_written",

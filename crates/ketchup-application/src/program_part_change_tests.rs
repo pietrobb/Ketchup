@@ -650,6 +650,49 @@ fn a_length_typed_again_replaces_the_first_value_instead_of_adding_to_it() {
     assert_eq!(set_length(&second, 18.0).unwrap().unwrap().source, PADDED);
 }
 
+/// Review 2026-10-24 WB-20: a mirrored copy made after the length line keeps
+/// its length when the length is typed again; only part a changes.
+#[test]
+fn a_length_typed_again_leaves_a_later_copy_of_the_part_alone() {
+    let first = set_length(&program(PADDED), 10.0).unwrap().unwrap();
+    let mirrored = program(&format!(
+        "{}mirrored(\"a\", \"a mirrored\", point=(0, 0, 0), normal=(1, 0, 0))\n",
+        first.source
+    ));
+    let typed = set_length(&mirrored, 30.0).unwrap().unwrap();
+    assert_eq!(length(&typed), 30.0);
+    let (before, after) = (model(&mirrored), model(&typed));
+    assert_eq!(after.part("a mirrored"), before.part("a mirrored"));
+    assert_eq!(after.part("b"), before.part("b"));
+}
+
+fn push_pull(source: &RuleProgramSource, distance: f64) -> RuleProgramSource {
+    let change = PartChange::PushPull {
+        face: "z+".to_owned(),
+        distance,
+    };
+    rewrite_rule_program_parts(source, &[("a".to_owned(), change)])
+        .unwrap()
+        .unwrap()
+}
+
+/// Review 2026-10-24 WB-22: a length line that goes away leaves its Push/Pull
+/// number taken by a later Push/Pull, so the next one gets a free number
+/// instead of a name the part already has.
+#[test]
+fn a_push_pull_after_a_removed_length_line_gets_a_free_name() {
+    let pushed = push_pull(&program(PADDED), 5.0);
+    let typed = set_length(&pushed, 10.0).unwrap().unwrap();
+    let pushed_again = push_pull(&typed, 5.0);
+    assert!(pushed_again.source.contains("GUI Push/Pull 3"));
+    // 18 of the box and 10 of the two Push/Pulls: the length line goes.
+    let back = set_length(&pushed_again, 28.0).unwrap().unwrap();
+    assert!(!back.source.contains("\"Length\""), "{}", back.source);
+    let third = push_pull(&back, 5.0);
+    assert_eq!(length(&third), 33.0);
+    assert!(third.source.contains("GUI Push/Pull 4"), "{}", third.source);
+}
+
 #[test]
 fn a_typed_length_keeps_the_push_pulls_of_other_lines() {
     let pushed = program(&format!(
