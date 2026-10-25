@@ -667,6 +667,113 @@ fn document_dimensions_of_shown_tags_follow_the_authored_ones_and_other_marks_ar
     );
 }
 
+/// Review 2026-10-24 VW-20: a scene made from a saved view listed every
+/// document dimension, and which ones were exported followed the window's
+/// layers at the time. A view hiding the foundations showed their dimensions in
+/// the air; one showing a layer the window hides had none of its dimensions.
+#[test]
+fn a_saved_scene_shows_the_document_dimensions_of_the_layers_it_shows() {
+    use ketchup_model::annotation::{Annotation, AnnotationMark};
+    use ketchup_model::document::{SavedView, SavedViewId};
+    let mut document = nested_document();
+    let dimension = |name: &str, tag: u64| Annotation {
+        name: name.into(),
+        tags: [TagId(tag)].into(),
+        mark: AnnotationMark::Dimension {
+            from_mm: [0.0; 3],
+            to_mm: [600.0, 0.0, 0.0],
+            offset_mm: 0.0,
+            height_mm: 3.5,
+        },
+    };
+    let saved = |id, name: &str, hidden_tags: &[u64]| {
+        CanonicalCommand::UpsertSavedView(SavedView {
+            id: SavedViewId(id),
+            name: name.into(),
+            camera: desktop_camera(false),
+            style: Default::default(),
+            hidden_tags: hidden_tags.iter().copied().map(TagId).collect(),
+            section: None,
+        })
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateTag {
+                id: TagId(1),
+                name: "foundations".into(),
+                visible: true,
+            },
+            CanonicalCommand::CreateTag {
+                id: TagId(2),
+                name: "services".into(),
+                visible: false,
+            },
+            CanonicalCommand::SetAnnotations {
+                annotations: vec![dimension("footing", 1), dimension("duct", 2)],
+            },
+            saved(41, "Interior", &[1, 2]),
+            saved(42, "Services", &[1]),
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let body = box_package(&snapshot, DefinitionId(1), FeatureId(3), "current", &[]).unwrap();
+    let occurrences = snapshot.scene_query();
+    let instances: Vec<_> = occurrences
+        .iter()
+        .filter(|item| item.definition_id == DefinitionId(1))
+        .map(|occurrence| MeshGlbInstance {
+            source: MeshExportSource::Exact(&body),
+            occurrence,
+        })
+        .collect();
+    let data = ViewerExportData {
+        saved_views: [
+            (SavedViewId(41), camera_context()),
+            (SavedViewId(42), camera_context()),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let manifest = roundtrip(
+        &model_viewer_export(&snapshot, &instances, &data)
+            .unwrap()
+            .package,
+    )
+    .manifest;
+    assert_eq!(
+        manifest.dimensions.iter().map(|d| d.id).collect::<Vec<_>>(),
+        [1, 2],
+        "the window shows the footing, a saved view the duct"
+    );
+    let shown = |name: &str| {
+        manifest
+            .scenes
+            .iter()
+            .find(|scene| scene.name == name)
+            .unwrap()
+            .visible_dimensions
+            .clone()
+    };
+    assert_eq!(shown("Interior"), Vec::<u64>::new());
+    assert_eq!(shown("Services"), [2]);
+
+    // Without a saved view showing it, a layer the window hides stays out.
+    let alone = ViewerExportData {
+        saved_views: [(SavedViewId(41), camera_context())].into(),
+        ..Default::default()
+    };
+    let manifest = roundtrip(
+        &model_viewer_export(&snapshot, &instances, &alone)
+            .unwrap()
+            .package,
+    )
+    .manifest;
+    assert_eq!(
+        manifest.dimensions.iter().map(|d| d.id).collect::<Vec<_>>(),
+        [1]
+    );
+}
+
 #[test]
 fn changed_source_never_exports_old_nested_placements() {
     let mut document = nested_document();

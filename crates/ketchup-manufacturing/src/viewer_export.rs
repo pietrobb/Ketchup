@@ -4,8 +4,8 @@
 use crate::blender_export::{MeshGlbInstance, model_glb_export_including_hidden};
 use ketchup_model::annotation::{AnnotationMark, DimensionLayout};
 use ketchup_model::document::{
-    DefinitionId, InstancePath, InstancePathStep, LocalOccurrenceKey, SavedViewId, Snapshot,
-    UnitSystem,
+    DefinitionId, InstancePath, InstancePathStep, LocalOccurrenceKey, SavedView, SavedViewId,
+    Snapshot, TagId, UnitSystem,
 };
 use ketchup_model::exact_product::MeshExportSource;
 use ketchup_rejection::{Rejection, RejectionPhase};
@@ -44,8 +44,9 @@ pub struct ViewerExportData {
     /// viewport. Legacy saved views do not store their original viewport size.
     pub saved_views: BTreeMap<SavedViewId, DesktopCameraContext>,
     /// Shown in every scene made from a saved view, except those listed in
-    /// `scenes_without_dimensions` (saved-view IDs). The document's visible
-    /// dimension annotations (a program's `dim()`) join them, numbered after them.
+    /// `scenes_without_dimensions` (saved-view IDs). The document's dimension
+    /// annotations (a program's `dim()`) join them, numbered after them: those
+    /// the window or a selected saved view shows, each scene those of its layers.
     pub dimensions: Vec<view::Dimension>,
     pub scenes_without_dimensions: BTreeSet<u64>,
     pub start_scene: Option<u64>,
@@ -131,12 +132,26 @@ pub fn model_viewer_export(
     let mut scenes = data.scenes.clone();
     let mut loss_report = export.loss_report;
     loss_report.push_str("viewer_edges=tessellated CAD face boundaries; canonical mesh boundaries and creases (normal dot < 0.95); not exact topological curves\n");
-    let (annotated, omitted_annotations) = annotation_dimensions(snapshot, &data.dimensions)?;
+    let saved_views = data
+        .saved_views
+        .iter()
+        .map(|(id, context)| {
+            let saved = snapshot.saved_view(*id).ok_or_else(|| {
+                invalid(
+                    "scenes",
+                    "A selected saved view is missing from this document.",
+                )
+            })?;
+            Ok((saved, context))
+        })
+        .collect::<Result<Vec<_>, Rejection>>()?;
+    let (annotated, omitted_annotations) =
+        annotation_dimensions(snapshot, &data.dimensions, &saved_views)?;
     let dimensions = data
         .dimensions
         .iter()
         .cloned()
-        .chain(annotated)
+        .chain(annotated.iter().map(|(dimension, _)| dimension.clone()))
         .collect::<Vec<_>>();
     if omitted_annotations > 0 {
         use std::fmt::Write;
@@ -146,23 +161,28 @@ pub fn model_viewer_export(
         )
         .expect("writing to a String cannot fail");
     }
-    for (id, context) in &data.saved_views {
-        let saved = snapshot.saved_view(*id).ok_or_else(|| {
-            invalid(
-                "scenes",
-                "A selected saved view is missing from this document.",
-            )
-        })?;
+    for (saved, context) in saved_views {
         let (mut scene, omitted) = scenes::saved_scene(snapshot, saved, context, &occurrences)?;
-        if !data.scenes_without_dimensions.contains(&id.0) {
-            scene.visible_dimensions = dimensions.iter().map(|d| d.id).collect();
+        if !data.scenes_without_dimensions.contains(&saved.id.0) {
+            // The document's own dimensions follow the layers the view shows.
+            scene.visible_dimensions = data
+                .dimensions
+                .iter()
+                .map(|d| d.id)
+                .chain(
+                    annotated
+                        .iter()
+                        .filter(|(_, tags)| tags.is_disjoint(&saved.hidden_tags))
+                        .map(|(dimension, _)| dimension.id),
+                )
+                .collect();
         }
         if !omitted.is_empty() {
             use std::fmt::Write;
             writeln!(
                 loss_report,
                 "viewer_scene {} omitted_display_flags={}",
-                id.0,
+                saved.id.0,
                 omitted.join(",")
             )
             .expect("writing to a String cannot fail");
@@ -193,21 +213,28 @@ pub fn model_viewer_export(
     })
 }
 
-/// The dimension annotations of the document whose tags are shown, as world
-/// points with the measured value and the dimension line moved by its offset
-/// as the drawings place it; numbered after the IDs of `authored`. Also how
-/// many other visible annotations the package leaves out.
-fn annotation_dimensions(
-    snapshot: &Snapshot,
+/// A document dimension and the tags that show and hide it.
+type TaggedDimension<'a> = (view::Dimension, &'a BTreeSet<TagId>);
+
+/// The dimension annotations of the document whose tags the window or one of
+/// `saved_views` shows, with their tags, as world points with the measured
+/// value and the dimension line moved by its offset as the drawings place it;
+/// numbered after the IDs of `authored`. Also how many other such annotations
+/// the package leaves out.
+fn annotation_dimensions<'a>(
+    snapshot: &'a Snapshot,
     authored: &[view::Dimension],
-) -> Result<(Vec<view::Dimension>, usize), Rejection> {
+    saved_views: &[(&SavedView, &DesktopCameraContext)],
+) -> Result<(Vec<TaggedDimension<'a>>, usize), Rejection> {
     let display_unit = match snapshot.units() {
         UnitSystem::Millimetres => view::LengthUnit::Millimetre,
     };
-    let visible = snapshot
-        .annotations()
-        .iter()
-        .filter(|annotation| snapshot.tags_visible(&annotation.tags));
+    let visible = snapshot.annotations().iter().filter(|annotation| {
+        snapshot.tags_visible(&annotation.tags)
+            || saved_views
+                .iter()
+                .any(|(saved, _)| annotation.tags.is_disjoint(&saved.hidden_tags))
+    });
     let mut omitted = 0;
     let mut marks = Vec::new();
     for annotation in visible {
@@ -221,6 +248,7 @@ fn annotation_dimensions(
                 from_mm,
                 to_mm,
                 DimensionLayout::new(from_mm, to_mm, offset_mm),
+                &annotation.tags,
             )),
             _ => omitted += 1,
         }
@@ -242,13 +270,16 @@ fn annotation_dimensions(
     let dimensions = marks
         .into_iter()
         .zip(first + 1..)
-        .map(|((from, to, layout), id)| view::Dimension {
-            id,
-            from: world(from),
-            to: world(to),
-            label_offset_mm: std::array::from_fn(|axis| layout.line[0][axis] - from[axis]),
-            value_mm: layout.value_mm,
-            display_unit: display_unit.clone(),
+        .map(|((from, to, layout, tags), id)| {
+            let dimension = view::Dimension {
+                id,
+                from: world(from),
+                to: world(to),
+                label_offset_mm: std::array::from_fn(|axis| layout.line[0][axis] - from[axis]),
+                value_mm: layout.value_mm,
+                display_unit: display_unit.clone(),
+            };
+            (dimension, tags)
         })
         .collect();
     Ok((dimensions, omitted))
