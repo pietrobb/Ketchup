@@ -413,7 +413,8 @@ fn a_param_that_drives_other_parts_too_is_not_overridden() {
             && message.contains("line 2"),
         "{message}"
     );
-    // A length the shared param() drives is this part's own push_pull().
+    // A length the shared param() drives is this part's own push_pull(),
+    // written against the parameter (WB-21).
     let source =
         "H = param(\"h\", 18)\nbox(\"a\", (10, 20, H))\nbox(\"b\", (10, 20, H), at=(0, 50, 0))\n";
     let before = model(&program(source));
@@ -429,7 +430,7 @@ fn a_param_that_drives_other_parts_too_is_not_overridden() {
     assert!(lengthened.overrides.is_empty());
     assert_eq!(
         lengthened.source,
-        format!("{source}push_pull(\"a\", face=\"z+\", distance=5, name=\"Length\")\n")
+        format!("{source}push_pull(\"a\", face=\"z+\", distance=23 - H, name=\"Length\")\n")
     );
     let after = model(&lengthened);
     assert_eq!(Reading::Length.of(&after, "a"), Some(23.0));
@@ -664,6 +665,30 @@ fn a_length_typed_again_leaves_a_later_copy_of_the_part_alone() {
     let (before, after) = (model(&mirrored), model(&typed));
     assert_eq!(after.part("a mirrored"), before.part("a mirrored"));
     assert_eq!(after.part("b"), before.part("b"));
+}
+
+/// Review 2026-10-24 WB-21: a length typed for a part whose length a shared
+/// `param()` makes was written as the difference, so setting the parameter
+/// later moved it (10 typed, h = 30, a 22 long). It is written against the
+/// parameter, so the typed length stays and the parameter makes the rest.
+#[test]
+fn a_typed_length_stays_when_the_shared_parameter_that_made_it_changes() {
+    let shared = program(
+        "H = param(\"h\", 18)\nbox(\"a\", (10, 20, H), at=(0, 0, 0))\nbox(\"b\", (5, 5, H), at=(50, 0, 0))\n",
+    );
+    let typed = set_length(&shared, 10.0).unwrap().unwrap();
+    assert_eq!(length(&typed), 10.0);
+    let mut taller = typed.clone();
+    taller.overrides.insert("h".to_owned(), 30.0);
+    assert_eq!(length(&taller), 10.0, "{}", typed.source);
+    let b = |source: &RuleProgramSource| Reading::Length.of(&model(source), "b").unwrap();
+    assert_eq!(b(&taller), 30.0);
+    // Typed again, the one line is written again.
+    let again = set_length(&typed, 12.0).unwrap().unwrap();
+    assert_eq!(again.source.matches("name=\"Length\"").count(), 1);
+    taller = again.clone();
+    taller.overrides.insert("h".to_owned(), 30.0);
+    assert_eq!(length(&taller), 12.0, "{}", again.source);
 }
 
 fn push_pull(source: &RuleProgramSource, distance: f64) -> RuleProgramSource {

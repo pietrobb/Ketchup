@@ -1292,7 +1292,7 @@ impl Edit<'_> {
         // With no line of its own yet, the one param() that makes the whole
         // length alone is overridden; once the line is there, it is written
         // again, so a parameter never adds to it.
-        match self.driven(&Reading::Length, value) {
+        let shared = match self.driven(&Reading::Length, value) {
             Some(Driven::Alone(rewritten)) if written_before.is_none() => {
                 return Ok((rewritten, self.reads(Reading::Length, value)));
             }
@@ -1302,9 +1302,13 @@ impl Edit<'_> {
                 if let Some(refusal) = driven.out_of_range(self.name, feature) {
                     return Err(refusal);
                 }
+                match driven {
+                    Driven::Shared { parameter, .. } => Some(parameter),
+                    _ => None,
+                }
             }
-            None => {}
-        }
+            None => None,
+        };
         let distance = written(extrusion - pad);
         let line = (distance.abs() > DEFAULT_LINEAR_TOLERANCE_MM).then(|| {
             format!(
@@ -1321,9 +1325,19 @@ impl Edit<'_> {
             self.name,
             &[("face", end), ("name", LENGTH)],
         );
-        let rewritten = match (earlier, line) {
-            (Some(bytes), line) => {
-                let in_place = self.with(vec![(bytes, line.unwrap_or_default())]);
+        if earlier.is_none() && written_before.is_some() {
+            return Err(refused(
+                "program_length_not_written",
+                format!(
+                    "the push_pull() named {} of part {name} is not a line of its own on face {}; change it in the program",
+                    quote(LENGTH),
+                    quote(end)
+                ),
+            ));
+        }
+        let build = |line: Option<String>| match &earlier {
+            Some(bytes) => {
+                let in_place = self.with(vec![(bytes.clone(), line.unwrap_or_default())]);
                 // A line after the length line that reads the part (a
                 // mirrored copy, a part placed at its end) would change with
                 // it (review 2026-10-24 WB-20): the change is then added at
@@ -1346,20 +1360,73 @@ impl Edit<'_> {
                     ))
                 }
             }
-            (None, _) if written_before.is_some() => {
-                return Err(refused(
-                    "program_length_not_written",
-                    format!(
-                        "the push_pull() named {} of part {name} is not a line of its own on face {}; change it in the program",
-                        quote(LENGTH),
-                        quote(end)
-                    ),
-                ));
-            }
-            (None, Some(line)) => self.appended(&line),
-            (None, None) => self.source.clone(),
+            None => line.map_or_else(|| self.source.clone(), |line| self.appended(&line)),
         };
+        // A length a shared param() makes is written against that parameter
+        // (`distance=10 - H`), so setting the parameter later leaves the typed
+        // length (review 2026-10-24 WB-21). Only where the program names the
+        // parameter at its top level and the line keeps the length when the
+        // parameter changes; else the number.
+        // The line written so before no longer changes with the parameter,
+        // so the parameter is the one it names.
+        let shared = shared.or_else(|| {
+            let statement = &self.text()[earlier.clone()?];
+            let (_, rest) = statement.split_once("distance=")?;
+            let (_, variable) = rest.split_once(',')?.0.split_once(" - ")?;
+            (self.evaluated.model.params.iter())
+                .find(|made| {
+                    parameter_variable(self.text(), &made.name).as_deref() == Some(variable.trim())
+                })
+                .map(|made| made.name.clone())
+        });
+        let against = line.as_ref().and(shared).and_then(|parameter| {
+            let variable = parameter_variable(self.text(), &parameter)?;
+            let candidate = build(Some(format!(
+                "push_pull({name}, face={}, distance={} - {variable}, name={})\n",
+                quote(end),
+                number_literal(written(extrusion)),
+                quote(LENGTH)
+            )));
+            self.keeps_length(&candidate, &parameter, value)
+                .then_some(candidate)
+        });
+        let rewritten = against.unwrap_or_else(|| build(line));
         Ok((rewritten, self.reads(Reading::Length, value)))
+    }
+
+    /// `source` makes this part `value` long, and still does with
+    /// `parameter` set to another value within its range.
+    fn keeps_length(&self, source: &RuleProgramSource, parameter: &str, value: f64) -> bool {
+        let reads = |source: &RuleProgramSource| {
+            evaluate(source)
+                .ok()
+                .and_then(|after| Reading::Length.of(&after.model, self.name))
+                .is_some_and(|length| (length - value).abs() <= ACCUMULATED_ROUNDING)
+        };
+        let Some(made) = (self.evaluated.model.params.iter()).find(|made| made.name == parameter)
+        else {
+            return false;
+        };
+        let current = source
+            .overrides
+            .get(parameter)
+            .copied()
+            .unwrap_or(made.value);
+        let within = |value: f64| {
+            made.min.is_none_or(|minimum| value >= minimum)
+                && made.max.is_none_or(|maximum| value <= maximum)
+        };
+        // not a tolerance: a probe step large enough to change the evaluated model.
+        let step = current.abs().mul_add(0.1, 1.0);
+        let Some(probed) = [current + step, current - step]
+            .into_iter()
+            .find(|v| within(*v))
+        else {
+            return false;
+        };
+        let mut probe = source.clone();
+        probe.overrides.insert(parameter.to_owned(), probed);
+        reads(source) && reads(&probe)
     }
 
     fn too_short(&self, feature: &str, length: f64) -> RuleProgramApplyError {
@@ -1380,6 +1447,27 @@ impl Edit<'_> {
 
 /// Name of the `push_pull()` that sets an extrusion's length typed for it.
 const LENGTH: &str = "Length";
+
+/// The variable a top-level line `NAME = param("parameter", ...)` of `text`
+/// gives the parameter's value.
+fn parameter_variable(text: &str, parameter: &str) -> Option<String> {
+    let literals = [format!("\"{parameter}\""), format!("'{parameter}'")];
+    text.lines().find_map(|line| {
+        let (variable, value) = line.split_once('=')?;
+        let variable = variable.trim_end();
+        let call = value.trim_start().strip_prefix("param(")?.trim_start();
+        let identifier = !variable.is_empty()
+            && !variable.starts_with(|c: char| c.is_ascii_digit())
+            && variable
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        (identifier
+            && literals
+                .iter()
+                .any(|literal| call.starts_with(literal.as_str())))
+        .then(|| variable.to_owned())
+    })
+}
 
 /// The values of part `old` besides what `reading` reads that `new` makes
 /// differently, named for a message: what the part is and how it is turned,
