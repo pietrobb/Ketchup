@@ -18,6 +18,9 @@ pub(super) struct BlockDefinition {
     /// Read for an underlay only: its entities, in its own coordinates; the objects of its
     /// profiles, texts and fills index them.
     pub(super) objects: Vec<super::objects::SourceObject>,
+    /// How many entities it places, those of the blocks it places included: each insert
+    /// counts them again against the reading's entity budget.
+    pub(super) entities: usize,
 }
 
 impl BlockDefinition {
@@ -44,8 +47,43 @@ struct BlockResolution<'a> {
     diagnostics: &'a mut DiagnosticCounts,
 }
 
+/// The keys of the blocks that the INSERTs and DIMENSIONs of a section name, seen one
+/// pair at a time.
+#[derive(Default)]
+pub(super) struct InsertedBlocks {
+    keys: BTreeSet<String>,
+    placing: bool,
+}
+
+impl InsertedBlocks {
+    pub(super) fn see(&mut self, code: i16, value: &str) {
+        if code == 0 {
+            self.placing =
+                value.eq_ignore_ascii_case("INSERT") || value.eq_ignore_ascii_case("DIMENSION");
+        } else if code == 2
+            && self.placing
+            && let Ok(key) = block_name_key(value)
+        {
+            self.keys.insert(key);
+        }
+    }
+
+    pub(super) fn of(pairs: &[DxfPair<'_>]) -> Self {
+        let mut inserted = Self::default();
+        for pair in pairs {
+            inserted.see(pair.code, pair.value);
+        }
+        inserted
+    }
+
+    fn contains(&self, key: &str) -> bool {
+        self.keys.contains(key)
+    }
+}
+
 pub(super) fn parse_blocks<'a>(
     pairs: &[DxfPair<'a>],
+    inserted: &InsertedBlocks,
     units: ImportUnitDecision,
     entity_count: &mut usize,
     diagnostics: &mut DiagnosticCounts,
@@ -146,7 +184,13 @@ pub(super) fn parse_blocks<'a>(
         }
     }
 
-    let keys = raw_blocks.keys().cloned().collect::<Vec<_>>();
+    // Only the blocks the drawing's entities place are read, with the blocks they
+    // place: a block nothing inserts would otherwise cost its whole expansion
+    // (review 2026-10-24 UL-24).
+    let keys = (raw_blocks.keys())
+        .filter(|key| inserted.contains(key))
+        .cloned()
+        .collect::<Vec<_>>();
     let mut blocks = BTreeMap::new();
     let mut resolving = BTreeSet::new();
     {
@@ -233,6 +277,7 @@ fn resolve_raw_block<'a>(
                 xref: true,
                 xrefs: BTreeMap::new(),
                 objects: Vec::new(),
+                entities: 0,
             },
         );
         return Ok(());
@@ -252,6 +297,7 @@ fn resolve_raw_block<'a>(
     // reported in its own coordinates, under its name.
     let pieces_left = resolution.diagnostics.fill_pieces_left;
     let outer = resolution.diagnostics.block.replace(raw.name.clone());
+    let counted_before = *resolution.entity_count;
     let parsed = parse_entities(
         &raw.entities,
         units,
@@ -263,6 +309,7 @@ fn resolve_raw_block<'a>(
     resolution.diagnostics.fill_pieces_left = pieces_left;
     resolution.diagnostics.block = outer;
     parsed?;
+    let entities = *resolution.entity_count - counted_before;
     let reading = resolution.diagnostics.reading;
     let mut profiles = if reading.chain {
         assemble_loose_segments(
@@ -305,6 +352,7 @@ fn resolve_raw_block<'a>(
             xref: false,
             xrefs: parsed_entities.xrefs,
             objects: parsed_entities.objects,
+            entities,
         },
     );
     Ok(())

@@ -843,16 +843,17 @@ fn read_dxf(
         sections.get("TABLES").map(Vec::as_slice).unwrap_or(&[]),
         true,
     );
+    let entities = sections
+        .get("ENTITIES")
+        .ok_or(DxfImportError::MissingEntitiesSection)?;
     let mut entity_count = 0;
     let blocks = parse_blocks(
         sections.get("BLOCKS").map(Vec::as_slice).unwrap_or(&[]),
+        &block::InsertedBlocks::of(entities),
         units,
         &mut entity_count,
         &mut diagnostics,
     )?;
-    let entities = sections
-        .get("ENTITIES")
-        .ok_or(DxfImportError::MissingEntitiesSection)?;
     let mut parsed_entities = ParsedEntities::default();
     parse_entities(
         entities,
@@ -3480,8 +3481,14 @@ fn parse_insert(
     if expanded_profile_count > diagnostics.reading.max_profiles {
         return Err(DxfImportError::TooManyProfiles);
     }
+    // Each placement counts every entity the block places, so a block placed again and
+    // again inside others costs what it expands to (review 2026-10-24 UL-24); the
+    // insert itself is counted already.
+    let placed_entities = placement_count
+        .checked_mul(block.entities.max(1))
+        .ok_or(DxfImportError::TooManyEntities)?;
     *entity_count = entity_count
-        .checked_add(placement_count - 1)
+        .checked_add(placed_entities - 1)
         .ok_or(DxfImportError::TooManyEntities)?;
     if *entity_count > diagnostics.reading.max_entities {
         return Err(DxfImportError::TooManyEntities);

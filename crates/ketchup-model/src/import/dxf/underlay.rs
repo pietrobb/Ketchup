@@ -12,6 +12,7 @@
 //! entities one at a time (with the vertices or attributes that follow one) straight into
 //! the lines. Memory grows with the lines kept, not with the size of the file.
 
+use super::block::InsertedBlocks;
 use super::*;
 use crate::underlay::style::LineStyle;
 use crate::underlay::{UnderlayLines, UnderlayLinesBuilder};
@@ -70,6 +71,7 @@ pub fn read_dxf_underlay_from(
     let mut entity_count = 0;
     let blocks = parse_blocks(
         &sections.blocks.pairs(),
+        &sections.inserted,
         units,
         &mut entity_count,
         &mut diagnostics,
@@ -306,6 +308,8 @@ struct Sections {
     tables: PairBuffer,
     blocks: PairBuffer,
     entities: bool,
+    /// The blocks the entities place, the only ones read.
+    inserted: InsertedBlocks,
 }
 
 /// Checks the SECTION/ENDSEC/EOF structure as a profile import does, keeping the header,
@@ -319,6 +323,7 @@ fn read_sections(
         tables: PairBuffer::default(),
         blocks: PairBuffer::default(),
         entities: false,
+        inserted: InsertedBlocks::default(),
     };
     let mut names = BTreeSet::new();
     let mut value = String::new();
@@ -353,6 +358,7 @@ fn read_sections(
             match kept.as_mut() {
                 Some(blocks) if name == "BLOCKS" => blocks.push_flat(code, &value),
                 Some(kept) => kept.push(code, &value),
+                None if name == "ENTITIES" => sections.inserted.see(code, &value),
                 None => {}
             }
         }

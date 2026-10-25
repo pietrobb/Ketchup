@@ -3185,6 +3185,45 @@ fn block_and_entity_streams_share_one_global_entity_budget() {
     );
 }
 
+/// Review 2026-10-24 UL-24: a block that places an array of 40,000 lines costs those
+/// 40,000 entities wherever it is placed. Twenty-six blocks that each place it once are
+/// read only if the drawing places them, and then refused for their entities, instead
+/// of each holding its own copy of the array (a 3.7 KB file took a gigabyte).
+#[test]
+fn a_block_placed_inside_many_others_counts_its_whole_expansion() {
+    let mut blocks = String::from(concat!(
+        "0\nBLOCK\n2\nline\n70\n0\n10\n0\n20\n0\n",
+        "0\nLINE\n10\n0\n20\n0\n11\n0\n21\n5\n",
+        "0\nENDBLK\n",
+        "0\nBLOCK\n2\narray\n70\n0\n10\n0\n20\n0\n",
+        "0\nINSERT\n2\nline\n10\n0\n20\n0\n70\n40000\n44\n10\n",
+        "0\nENDBLK\n"
+    ));
+    for index in 0..26 {
+        blocks.push_str(&format!(
+            "0\nBLOCK\n2\nplaces-{index}\n70\n0\n10\n0\n20\n0\n0\nINSERT\n2\narray\n10\n0\n20\n{index}\n0\nENDBLK\n"
+        ));
+    }
+    let line = "0\nLINE\n10\n0\n20\n0\n11\n1\n21\n0\n";
+    let unplaced = inspect_dxf(
+        &dxf_with_blocks(4, &blocks, line),
+        DxfImportOptions::new(None),
+    )
+    .unwrap();
+    assert_eq!(unplaced.profiles().len(), 1);
+    let placed: String = (0..26)
+        .map(|index| format!("0\nINSERT\n2\nplaces-{index}\n10\n0\n20\n0\n"))
+        .collect();
+    assert_eq!(
+        inspect_dxf(
+            &dxf_with_blocks(4, &blocks, &placed),
+            DxfImportOptions::new(None)
+        )
+        .map(|parsed| parsed.profiles().len()),
+        Err(DxfImportError::TooManyEntities)
+    );
+}
+
 /// Thousands of INSERTs of a full block are each within the profile limit; the
 /// drawing as a whole is refused before its profiles are compared pairwise
 /// (a 300 KB file used to build 1.7 million profiles and hang the import).
