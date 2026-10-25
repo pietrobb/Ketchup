@@ -32,27 +32,44 @@ fn users_line(written: &str, users: &str, line: usize) -> Result<usize, Option<u
     let offset = line - prefix - 1;
     // A line found once on each side is the user's, however many lines the
     // edit added or removed around it.
-    let text = written_block[offset];
-    let once = |block: &[&str]| {
-        let mut found = block
-            .iter()
-            .enumerate()
-            .filter(|(_, other)| **other == text);
+    let once = |block: &[&str], text: &str| {
+        let mut found = (block.iter().enumerate()).filter(|(_, other)| **other == text);
         match (found.next(), found.next()) {
             (Some((at, _)), None) => Some(at),
             _ => None,
         }
     };
-    if once(written_block).is_some()
-        && let Some(at) = once(users_block)
-    {
+    // Where line `at` of the written block is in the user's, when it is found
+    // once on each side.
+    let anchor = |at: usize| {
+        let text = written_block[at];
+        once(written_block, text).and(once(users_block, text))
+    };
+    let text = written_block[offset];
+    if let Some(at) = anchor(offset) {
         return Ok(prefix + at + 1);
     }
-    // The edit changed lines in place: the line is where it was.
-    if written_block.len() == users_block.len() && text == users_block[offset] {
-        return Ok(line);
+    // Between the nearest lines found once on each side, the edit rewrote the
+    // user's lines in place only when it wrote as many as it replaced;
+    // otherwise the line is one it added (capability finding run 319).
+    let before = (0..offset)
+        .rev()
+        .find_map(|at| anchor(at).map(|users_at| (at + 1, users_at + 1)))
+        .unwrap_or((0, 0));
+    let after = (offset + 1..written_block.len())
+        .find_map(|at| anchor(at).map(|users_at| (at, users_at)))
+        .unwrap_or((written_block.len(), users_block.len()));
+    let same_count = after.1.checked_sub(before.1) == Some(after.0 - before.0);
+    if !same_count {
+        return Err(None);
     }
-    Err((offset < users_block.len()).then_some(line))
+    let users_at = before.1 + offset - before.0;
+    let users_line = prefix + users_at + 1;
+    if text == users_block[users_at] {
+        Ok(users_line)
+    } else {
+        Err(Some(users_line))
+    }
 }
 
 /// The interpreter's own words in `message`, without its traceback and
@@ -285,8 +302,10 @@ mod tests {
         // A line added in the middle and one at the end.
         let added = "a\nb\nmove\nc\nd\npush\n";
         assert_eq!(users_line(added, users, 4), Ok(3));
-        assert_eq!(users_line(added, users, 3), Err(Some(3)));
+        assert_eq!(users_line(added, users, 3), Err(None));
         assert_eq!(users_line(added, users, 6), Err(None));
+        // An added line beside one an earlier change removed is still added.
+        assert_eq!(users_line("a\nb\nM\n", "a\nc\nb\n", 3), Err(None));
         // A line written in place, and the unchanged one between two edits.
         let renamed = "A\nb\nC\nd\n";
         assert_eq!(users_line(renamed, users, 3), Err(Some(3)));

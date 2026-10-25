@@ -1358,4 +1358,37 @@ fn a_later_change_of_a_batch_is_refused_on_the_users_lines() {
         message.contains("named \"m\" on a line an earlier change of the edit adds"),
         "{message}"
     );
+
+    // The same after an earlier change deleted a line: the added line is not
+    // the user's line 3, `box("b"…)` (capability finding run 319).
+    let source = "box(\"a\", (5, 5, 5))\n\
+                  box(\"c\", (5, 5, 5), at=(0, 50, 0))\n\
+                  box(\"b\", (5, 5, 5), at=(50, 0, 0))\n";
+    let error = rewrite_rule_program_parts(
+        &program(source),
+        &[
+            ("c".to_owned(), PartChange::Delete),
+            (
+                "a".to_owned(),
+                PartChange::Mirror {
+                    copy: "m".to_owned(),
+                    point: [100.0, 0.0, 0.0],
+                    normal: [1.0, 0.0, 0.0],
+                },
+            ),
+            ("b".to_owned(), PartChange::Rename("m".to_owned())),
+        ],
+    )
+    .expect_err("refused");
+    let RuleProgramApplyError::Program {
+        message, location, ..
+    } = &error
+    else {
+        panic!("{error:?}");
+    };
+    assert!(location.is_none(), "{location:?}");
+    assert!(
+        message.contains("named \"m\" on a line an earlier change of the edit adds"),
+        "{message}"
+    );
 }
