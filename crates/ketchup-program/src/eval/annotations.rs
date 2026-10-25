@@ -38,6 +38,7 @@ fn add<'v>(
     tags: Option<Value<'v>>,
     mark: AnnotationMark,
 ) -> anyhow::Result<NoneType> {
+    check_name("annotation name", name)?;
     let tags = given(tags)
         .map(|value| tag_names(value, eval.heap()))
         .transpose()?
@@ -52,7 +53,7 @@ fn add<'v>(
     }
     let state = state(eval)?;
     let mut model = state.model.borrow_mut();
-    if model.annotations.iter().any(|other| other.name == name) {
+    if state.annotation_names.borrow().contains(name) {
         anyhow::bail!(
             "{function}({name:?}): another annotation already has this name; give each text, \
              dimension, leader and polyline its own name"
@@ -64,6 +65,23 @@ fn add<'v>(
             ketchup_model::annotation::MAX_ANNOTATIONS
         );
     }
+    // Kept outside the heap like the text of a part (review 2026-10-24 PG-22).
+    let text = |text: &str| text.len() + std::mem::size_of::<String>();
+    let mark_bytes = match &checked.mark {
+        AnnotationMark::Text { text: value, .. } | AnnotationMark::Leader { text: value, .. } => {
+            text(value)
+        }
+        AnnotationMark::Line { points_mm, .. } => std::mem::size_of_val(points_mm.as_slice()),
+        AnnotationMark::Dimension { .. } => 0,
+    };
+    crate::execution_budget::hold_outside(
+        std::mem::size_of::<ProgramAnnotation>()
+            + 2 * text(name)
+            + tags.iter().map(|tag| text(tag)).sum::<usize>()
+            + mark_bytes,
+        &format!("{function}({name:?})"),
+    )?;
+    state.annotation_names.borrow_mut().insert(name.to_owned());
     model.annotations.push(ProgramAnnotation {
         name: checked.name,
         tags,

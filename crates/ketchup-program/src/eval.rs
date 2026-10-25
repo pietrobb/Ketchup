@@ -128,6 +128,8 @@ struct State {
     /// look them up here instead of scanning the model for every new part.
     names: RefCell<BTreeMap<String, Named>>,
     group_of: RefCell<BTreeMap<String, String>>,
+    /// Every annotation name so far, for the same uniqueness lookup.
+    annotation_names: RefCell<BTreeSet<String>>,
     /// Bodies added to the model so far, see [`MAX_MODEL_BODIES`].
     bodies: std::cell::Cell<usize>,
 }
@@ -2836,6 +2838,40 @@ mod tests {
         let evaluated = run(&few).unwrap();
         assert_eq!(evaluated.log.len(), 3);
         assert_eq!(evaluated.model.parts.len(), 3);
+    }
+
+    /// Review 2026-10-24 PG-22: annotations kept their points, text and name
+    /// outside the heap uncounted: 200 polylines through one list of 100 000
+    /// points took ~496 MB without `memory_limit`. Here 100 polylines through
+    /// one list of 5 000 points keep 12 MB on a 1 MiB bound.
+    #[test]
+    fn annotation_points_text_and_names_count_against_the_heap_bound() {
+        let run = |source: &str| {
+            evaluate_bounded(
+                "kept.star",
+                source,
+                &BTreeMap::new(),
+                &CancelToken::default(),
+                1 << 20,
+            )
+        };
+        let points = "pts = [(i, 0) for i in range(5000)]\n";
+        let error = run(&format!(
+            "{points}for i in range(100):\n    polyline(\"l%d\" % i, pts)\n"
+        ))
+        .map(|_| ())
+        .unwrap_err();
+        assert_eq!(error.code, "memory_limit", "{error}");
+        let few = run(&format!(
+            "{points}for i in range(3):\n    polyline(\"l%d\" % i, pts)\n"
+        ))
+        .unwrap();
+        assert_eq!(few.model.annotations.len(), 3);
+        // A name is as long as a part's at most.
+        let error = run("text(\"n\" * 100000, \"a\", at = (0, 0))\n")
+            .map(|_| ())
+            .unwrap_err();
+        assert!(error.message.contains("name"), "{error}");
     }
 
     fn builtin_names() -> Vec<String> {
