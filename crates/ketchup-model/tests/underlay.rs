@@ -637,6 +637,72 @@ fn an_underlay_is_added_and_removed_with_its_tags_in_one_undo_step_each() {
     assert_eq!(document.current().tags().count(), 0);
 }
 
+/// Two drawings in national grid coordinates (S-JTSK) of one area move near the origin by
+/// the median of their own points, which differs by metres; the second is placed by the
+/// difference, so a point both drawings share lies at one point of the document, also
+/// after the first was fitted onto the model.
+#[test]
+fn underlays_in_one_national_grid_share_the_documents_origin() {
+    let underlay = read(&line("walls", [0.0, 0.0], [1000.0, 0.0]));
+    let lines = sha256_bytes(&underlay.lines.encode());
+    let mut document = DocumentStore::new();
+    let add = |document: &mut DocumentStore, offset: [f64; 2]| {
+        let (batch, id) = plan_underlay(
+            &document.current(),
+            "Plan",
+            &underlay.layers,
+            &underlay.hidden_layers,
+            lines,
+            offset,
+        )
+        .unwrap();
+        document.apply_batch(&batch).unwrap();
+        id
+    };
+    let shared = [-740_000_000.0, -1_045_000_000.0];
+    let local = |offset: [f64; 2]| [shared[0] - offset[0], shared[1] - offset[1]];
+    let at = |document: &DocumentStore, id, offset| {
+        document
+            .current()
+            .underlay(id)
+            .unwrap()
+            .to_document(local(offset))
+    };
+    let close = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-6;
+
+    let (sheet_a, sheet_b) = (
+        [-740_005_000.0, -1_045_004_000.0],
+        [-739_987_000.0, -1_044_995_000.0],
+    );
+    let a = add(&mut document, sheet_a);
+    let b = add(&mut document, sheet_b);
+    let (on_a, on_b) = (at(&document, a, sheet_a), at(&document, b, sheet_b));
+    assert!(close(on_a, on_b), "{on_a:?} and {on_b:?} are one point");
+
+    let from = [
+        local(sheet_a),
+        [local(sheet_a)[0] + 1000.0, local(sheet_a)[1]],
+    ];
+    let to = [[2000.0, 500.0], [2000.0, 1500.0]];
+    let (batch, _) = plan_underlay_fit(&document.current(), a, from, to, false).unwrap();
+    document.apply_batch(&batch).unwrap();
+    let sheet_c = [-740_012_000.0, -1_044_990_000.0];
+    let c = add(&mut document, sheet_c);
+    let on_c = at(&document, c, sheet_c);
+    assert!(close(on_c, to[0]), "{on_c:?} lies where the fit put {to:?}");
+
+    // A drawing in its own small coordinates moved by nothing stays where it is drawn.
+    let own = add(&mut document, [0.0; 2]);
+    assert_eq!(
+        document
+            .current()
+            .underlay(own)
+            .unwrap()
+            .to_document([5.0, 6.0]),
+        [5.0, 6.0]
+    );
+}
+
 /// Two points picked on an underlay land on two points of the model: turned, and scaled
 /// only when asked. Each fit is one Undo step, the placement is saved with the file, and
 /// two picks at one point are refused.

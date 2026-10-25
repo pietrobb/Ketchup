@@ -1188,7 +1188,9 @@ impl std::error::Error for UnderlayPlanError {}
 
 /// One batch, so one Undo step, that adds an underlay named `name` with a tag of its own
 /// and one per layer, its lines being the container blob `lines_sha256`, moved by
-/// `offset_mm` from the drawing's own coordinates. The tags of `hidden_layers`, the layers
+/// `offset_mm` from the drawing's own coordinates and placed where that puts it beside the
+/// first underlay that was moved too ([`placement::geo_placement`]). The tags of
+/// `hidden_layers`, the layers
 /// the drawing turned off or froze, start hidden.
 pub fn plan_underlay(
     snapshot: &Snapshot,
@@ -1235,7 +1237,7 @@ pub fn plan_underlay(
         layers,
         lines_sha256,
         offset_mm_bits: offset_mm.map(f64::to_bits),
-        placement: Transform::identity(),
+        placement: placement::geo_placement(snapshot, offset_mm),
     }));
     Ok((CommandBatch::new(commands), id))
 }

@@ -70,6 +70,29 @@ impl Underlay {
     }
 }
 
+/// Where an underlay moved by `offset_mm` from its drawing's own coordinates lies: by the
+/// first underlay of `snapshot` that was moved too, and by the difference of the two
+/// offsets from it, so that drawings in one national grid lie on each other wherever the
+/// median of each moved it. Identity for a drawing not moved, the first one moved, or one
+/// so far from the first that it would leave the model.
+pub(super) fn geo_placement(snapshot: &Snapshot, offset_mm: [f64; 2]) -> Transform {
+    let Some(first) = snapshot
+        .underlays()
+        .filter(|underlay| underlay.offset_mm() != [0.0; 2])
+        .min_by_key(|underlay| underlay.id.0)
+    else {
+        return Transform::identity();
+    };
+    if offset_mm == [0.0; 2] {
+        return Transform::identity();
+    }
+    let [x, y] = [0, 1].map(|axis| offset_mm[axis] - first.offset_mm()[axis]);
+    Transform::from_translation(x, y, 0.0)
+        .ok()
+        .and_then(|apart| in_range(first.placement.compose(apart)).ok())
+        .unwrap_or_else(Transform::identity)
+}
+
 /// A two-point fit: the underlay's new placement, how it turned and scaled, and by how much
 /// the second picked point misses its target along the line from the first, as the
 /// distances between the two pairs differ and the fit does not scale.
