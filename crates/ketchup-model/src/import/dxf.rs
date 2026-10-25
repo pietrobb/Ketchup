@@ -1439,9 +1439,9 @@ fn left_out(
         Some((ImportDiagnosticSeverity::Info, "dxf.entity-paper-space"))
     } else if parse_optional_i64(record, 60)? == Some(1) {
         Some((ImportDiagnosticSeverity::Warning, "dxf.entity-invisible"))
-    } else if parse_optional_text(record, 8)?
-        .is_some_and(|layer| hidden_layers.contains(&layer.to_ascii_uppercase()))
-    {
+    } else if parse_optional_text(record, 8)?.is_some_and(|layer| {
+        hidden_layers.contains(&text::unicode_escapes(layer).to_ascii_uppercase())
+    }) {
         Some((ImportDiagnosticSeverity::Warning, "dxf.entity-layer-hidden"))
     } else {
         None
@@ -1478,7 +1478,7 @@ fn hidden_layers(tables: &[DxfPair<'_>], turned_off: bool) -> BTreeSet<String> {
                 || integer(70).is_some_and(|flags| flags & 1 != 0))
             && let Some(name) = group(2)
         {
-            hidden.insert(name.to_ascii_uppercase());
+            hidden.insert(text::unicode_escapes(name).to_ascii_uppercase());
         }
     }
     hidden
@@ -4596,7 +4596,8 @@ fn parse_layer(record: &[DxfPair<'_>]) -> Result<String, DxfImportError> {
 
 fn parse_optional_layer(record: &[DxfPair<'_>]) -> Result<Option<String>, DxfImportError> {
     let mut values = record.iter().filter(|pair| pair.code == 8);
-    let layer = values.next().map(|pair| pair.value);
+    // A name escapes what its code page lacks as a text does (review 2026-10-24 UL-23).
+    let layer = values.next().map(|pair| text::unicode_escapes(pair.value));
     if values.next().is_some() {
         return Err(DxfImportError::MalformedPairs);
     }
@@ -4609,7 +4610,7 @@ fn parse_optional_layer(record: &[DxfPair<'_>]) -> Result<Option<String>, DxfImp
             {
                 return Err(DxfImportError::MalformedPairs);
             }
-            Ok(layer.to_owned())
+            Ok(layer.into_owned())
         })
         .transpose()
 }

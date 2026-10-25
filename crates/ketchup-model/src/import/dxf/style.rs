@@ -226,7 +226,7 @@ impl DrawingStyles {
                 record
                     .iter()
                     .find(|pair| pair.code == 2)
-                    .map(|pair| pair.value.to_ascii_uppercase())
+                    .map(|pair| super::text::unicode_escapes(pair.value).to_ascii_uppercase())
             };
             let mut unnamed = || {
                 diagnostics.add(

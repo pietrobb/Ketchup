@@ -54,6 +54,37 @@ fn a_numbered_special_character_is_read_in_the_drawings_code_page() {
     assert_eq!(text("", "%%128 5"), "€ 5");
 }
 
+/// Review 2026-10-24 UL-23: a drawing before 2007 in ANSI_1252 writes Czech and Slovak
+/// letters as `\U+011B`, in a TEXT and in a layer's name; only an MTEXT read them, and a
+/// layer named so was refused for its backslash.
+#[test]
+fn an_escaped_character_is_read_in_a_text_an_attribute_and_a_layers_name() {
+    let source = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+        "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n2\n",
+        "0\nLAYER\n2\nskryt\\U+00E1\n70\n1\n62\n7\n6\nCONTINUOUS\n",
+        "0\nENDTAB\n0\nENDSEC\n",
+        "0\nSECTION\n2\nENTITIES\n",
+        "0\nTEXT\n8\nst\\U+011Bny\n10\n0\n20\n0\n40\n250\n1\nSt\\U+011Bna \\M+5B0A1\n",
+        "0\nLINE\n8\nskryt\\U+00E1\n10\n0\n20\n0\n11\n100\n21\n0\n",
+        "0\nMTEXT\n8\nst\\U+011Bny\n10\n0\n20\n500\n40\n250\n1\n\\U+0161\\M+5B0A1\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+    let underlay = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
+    let read: Vec<_> = texts(&underlay, "stěny")
+        .iter()
+        .map(|text| text.text.as_str())
+        .collect();
+    assert_eq!(read, ["Stěna 啊", "š啊"]);
+    // The line's layer is the frozen one in the table, matched by its name as escaped.
+    assert_eq!(underlay.hidden_layers, ["skrytá"]);
+    assert!(
+        underlay.layers.iter().any(|layer| layer == "skrytá"),
+        "{:?}",
+        underlay.layers
+    );
+}
+
 /// Review 2026-10-19 P3: an underlay read in the code page its pre-2007 drawing names
 /// says which, as the profile import does; a UTF-8 drawing names none.
 #[test]

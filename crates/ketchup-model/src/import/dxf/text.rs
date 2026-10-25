@@ -63,7 +63,7 @@ pub(super) fn parse_text(
     report_field(kind, raw, diagnostics)?;
     let height_mm = positive(scale_coordinate(parse_required_number(record, 40)?, scale)?)?;
     let mut text = UnderlayText::new(
-        special_characters(raw, diagnostics.code_page),
+        special_characters(&unicode_escapes(raw), diagnostics.code_page),
         flip(parse_xy(record, 10, 20, scale)?),
         height_mm,
     );
@@ -347,20 +347,15 @@ fn mtext_plain(raw: &str, fonts: &mut Vec<String>) -> String {
                 Some('~') => plain.push(' '),
                 Some(literal @ ('\\' | '{' | '}')) => plain.push(literal),
                 Some('S') => plain.push_str(&parameter(&mut chars).replace(['^', '#'], "/")),
-                Some('U') if chars.peek() == Some(&'+') => {
-                    chars.next();
-                    let code = chars.by_ref().take(4).collect::<String>();
-                    plain.push(
-                        u32::from_str_radix(&code, 16)
-                            .ok()
-                            .and_then(char::from_u32)
-                            .unwrap_or(char::REPLACEMENT_CHARACTER),
-                    );
-                }
-                Some('M') if chars.peek() == Some(&'+') => {
-                    // A character in a code page by number: drawn as unknown.
-                    chars.by_ref().take(6).for_each(drop);
-                    plain.push(char::REPLACEMENT_CHARACTER);
+                Some(kind @ ('U' | 'M')) if chars.peek() == Some(&'+') => {
+                    let length = if kind == 'U' { 5 } else { 6 };
+                    let escape = std::iter::once(kind)
+                        .chain(chars.clone().take(length))
+                        .collect::<String>();
+                    let character = escaped_character(&escape)
+                        .map_or(char::REPLACEMENT_CHARACTER, |(character, _)| character);
+                    chars.by_ref().take(length).for_each(drop);
+                    plain.push(character);
                 }
                 Some('F' | 'f') => {
                     let font = parameter(&mut chars);
@@ -378,6 +373,67 @@ fn mtext_plain(raw: &str, fonts: &mut Vec<String>) -> String {
         }
     }
     plain
+}
+
+/// The character an escape `\U+XXXX` (Unicode) or `\M+nXXXX` (a double-byte code page:
+/// 1 Japanese, 2 Traditional Chinese, 3 Korean, 4 Johab, 5 Simplified Chinese) at the
+/// start of `escape`, the text after its backslash, stands for, and how many bytes of
+/// `escape` it takes. DXF before 2007 writes so what its code page has no character for,
+/// as Czech and Slovak letters in ANSI_1252 (review 2026-10-24 UL-23).
+fn escaped_character(escape: &str) -> Option<(char, usize)> {
+    let hex = |digits: &str| {
+        (digits.len() == 4 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| u32::from_str_radix(digits, 16).ok())
+            .flatten()
+    };
+    if let Some(code) = escape.strip_prefix("U+").and_then(|rest| rest.get(..4)) {
+        let character = hex(code).and_then(char::from_u32)?;
+        return Some((character, 6));
+    }
+    let rest = escape.strip_prefix("M+")?;
+    let page = match rest.as_bytes().first()? {
+        b'1' => Some(encoding_rs::SHIFT_JIS),
+        b'2' => Some(encoding_rs::BIG5),
+        b'3' => Some(encoding_rs::EUC_KR),
+        b'5' => Some(encoding_rs::GBK),
+        b'4' => None,
+        _ => return None,
+    };
+    let number = hex(rest.get(1..5)?)?;
+    let bytes = u16::try_from(number).ok()?.to_be_bytes();
+    let character = page
+        .and_then(|page| {
+            let decoded = page.decode_without_bom_handling_and_without_replacement(&bytes)?;
+            let mut chars = decoded.chars();
+            chars.next().filter(|_| chars.next().is_none())
+        })
+        .unwrap_or(char::REPLACEMENT_CHARACTER);
+    Some((character, 7))
+}
+
+/// `raw` with each `\U+XXXX` and `\M+nXXXX` its character ([`escaped_character`]): in a
+/// TEXT, an attribute and a layer's name.
+pub(super) fn unicode_escapes(raw: &str) -> std::borrow::Cow<'_, str> {
+    if !raw.contains("\\U+") && !raw.contains("\\M+") {
+        return raw.into();
+    }
+    let mut text = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(at) = rest.find('\\') {
+        text.push_str(&rest[..at]);
+        match escaped_character(&rest[at + 1..]) {
+            Some((character, used)) => {
+                text.push(character);
+                rest = &rest[at + 1 + used..];
+            }
+            None => {
+                text.push('\\');
+                rest = &rest[at + 1..];
+            }
+        }
+    }
+    text.push_str(rest);
+    text.into()
 }
 
 /// The special characters of a text: `%%c` ⌀, `%%d` °, `%%p` ±, `%%%` %, `%%nnn` the
