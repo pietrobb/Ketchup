@@ -32,6 +32,8 @@ pub use work_recovery::{
     headless_with_parent_sync_failure, headless_with_read_handle_lock_failure,
     headless_with_read_only_folder,
 };
+#[cfg(feature = "testing")]
+pub use work_recovery_steps::headless_with_checkpoint_assembly_budget;
 mod payload_error;
 pub(crate) mod sheet_metal_v1;
 pub(crate) mod snapshot_codec;
@@ -2392,6 +2394,14 @@ impl<'a> HistorySnapshot<'a> {
     fn assembled_len(&self) -> usize {
         match self {
             Self::Document(_) | Self::Whole { .. } => 0,
+            Self::Chunks { length, .. } => *length,
+        }
+    }
+
+    /// Bytes it is, held apart from the file once copied out of it.
+    fn len(&self) -> usize {
+        match self {
+            Self::Document(bytes) | Self::Whole { bytes, .. } => bytes.len(),
             Self::Chunks { length, .. } => *length,
         }
     }

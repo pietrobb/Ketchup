@@ -2618,6 +2618,86 @@ fn a_work_recovery_step_cut_short_opens_the_steps_before_it_and_says_so() {
     ));
 }
 
+/// Review 2026-10-24 MD-25: the revisions the steps of a checkpoint add count against one
+/// budget for the whole open, not a new one per step. Past it the open gives up the
+/// oldest Undo steps, as a whole checkpoint keeps fewer, and still opens the last edit
+/// with the recent ones.
+#[test]
+fn a_checkpoint_of_many_steps_opens_within_one_budget_by_giving_up_the_oldest_undo_steps() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("many-steps.ketchup");
+    let container_data = persistence::ContainerData::default();
+    let mut store = graph_document();
+    publish(
+        &path,
+        &store,
+        &container_data,
+        persistence::Publish::Replace,
+    )
+    .unwrap();
+    let revision_len = std::fs::read(&path).unwrap().len();
+    let base = persistence::read_native_document_identity(&path).unwrap();
+    let mut identity = None;
+    for value in [17.0, 19.0, 23.0, 29.0, 31.0, 37.0] {
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value.to_string(), value).unwrap(),
+                },
+            ]))
+            .unwrap();
+        identity = Some(checkpoint(&path, &store, &container_data, base, identity).unwrap());
+    }
+    let all_steps = store.visible_undo_steps();
+    assert!(all_steps >= 6, "{all_steps}");
+    let whole = persistence::load_file_with_source(&path).unwrap();
+    let whole = whole.into_parts().0.into_editable().ok().unwrap();
+    assert_eq!(whole.visible_undo_steps(), all_steps);
+
+    let opened = persistence::headless_with_checkpoint_assembly_budget(3 * revision_len, || {
+        persistence::load_file_with_source(&path).unwrap()
+    });
+    assert_eq!(
+        opened.outcome().snapshot().canonical_digest(),
+        store.current().canonical_digest()
+    );
+    assert!(matches!(
+        opened.outcome().audit().notices.as_slice(),
+        [persistence::LoadNotice::OpenedWorkRecovery { .. }]
+    ));
+    let opened = opened.into_parts().0.into_editable().ok().unwrap();
+    let kept = opened.visible_undo_steps();
+    assert!(
+        0 < kept && kept < all_steps,
+        "{kept} of {all_steps} Undo steps"
+    );
+
+    // Undone back past what the budget keeps, the step that returns there is the one
+    // the open cannot take; it says so and opens the edit before it.
+    let last_edit = store.current().canonical_digest();
+    for _ in 0..5 {
+        store.undo().unwrap();
+    }
+    checkpoint(&path, &store, &container_data, base, identity).unwrap();
+    let opened = persistence::headless_with_checkpoint_assembly_budget(3 * revision_len, || {
+        persistence::load_file_with_source(&path).unwrap()
+    });
+    match opened.outcome().audit().notices.as_slice() {
+        [
+            persistence::LoadNotice::OpenedWorkRecovery { .. },
+            persistence::LoadNotice::WorkRecoveryStepDamaged { reason },
+        ] => assert!(reason.contains("resource limit"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(opened.outcome().snapshot().canonical_digest(), last_edit);
+    let whole = persistence::load_file_with_source(&path).unwrap();
+    assert_eq!(
+        whole.outcome().snapshot().canonical_digest(),
+        store.current().canonical_digest()
+    );
+}
+
 /// Review 2026-10-21 LIM-1: every edit checks that neither the file nor its
 /// checkpoint changed on disk. With a large blob in the file, an edit after the
 /// first hashes its step, not the file, the checkpoint or the blob again, and

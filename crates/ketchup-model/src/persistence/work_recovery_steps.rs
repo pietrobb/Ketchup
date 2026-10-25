@@ -376,32 +376,54 @@ pub(super) fn assemble_checkpoint(
     verify_checksums(payload)?;
     let entries = container_directory(payload)?;
     let (document, base) = read_base(&entries)?;
+    let budget = assembly_budget();
     let mut revisions = Vec::with_capacity(base.records.len());
     for record in &base.records {
-        revisions.push(Assembled::of_record(
+        revisions.push(Some(Assembled::of_record(
             record,
             &base.chunks,
             document.checksum,
-        )?);
+        )?));
     }
     let (mut cursor, mut next_revision_id) = (base.cursor, base.next_revision_id);
+    give_up_oldest(&mut revisions, cursor, budget);
     for (number, step) in steps.iter().enumerate() {
         let applied = Step::read(step).and_then(|step| {
-            let kept = &revisions[step.kept(revisions.len())?];
+            // A revision given up to the budget cannot be built on.
+            let kept = revisions[step.kept(revisions.len())?]
+                .as_ref()
+                .ok_or(PersistenceError::ResourceLimit)?;
+            let (kept_id, kept_snapshot) = (kept.id, Arc::clone(&kept.snapshot));
+            let kept_program = kept.program.clone();
             let history =
-                read_history_records(step.history, &kept.snapshot.bytes, HISTORY_BUDGET, false)?;
+                read_history_records(step.history, &kept_snapshot.bytes, HISTORY_BUDGET, false)?;
+            // Counted before anything is copied out: what the step adds fits the budget
+            // on its own, and the oldest revisions make room for it after.
+            history
+                .records
+                .iter()
+                .skip(1)
+                .try_fold(0usize, |sum, record| {
+                    sum.checked_add(record.encoded_snapshot.len())
+                })
+                .filter(|added_len| *added_len <= budget)
+                .ok_or(PersistenceError::ResourceLimit)?;
+            // Nor can a revision given up be returned to.
+            if step.cursor < step.keep && revisions[step.skip + step.cursor].is_none() {
+                return Err(PersistenceError::ResourceLimit);
+            }
             let mut added = Vec::with_capacity(step.added.len());
             for (record, (held, as_kept)) in history.records.iter().skip(1).zip(&step.added) {
                 let mut revision = Assembled::of_record(record, &history.chunks, [0; 32])?;
                 if *as_kept {
-                    revision.program.clone_from(&kept.program);
+                    revision.program.clone_from(&kept_program);
                 }
                 if (revision.id, revision.snapshot.sha256) != *held {
                     return Err(PersistenceError::InvalidRevisionHistory);
                 }
-                added.push(revision);
+                added.push(Some(revision));
             }
-            if history.records[0].revision_id != kept.id {
+            if history.records[0].revision_id != kept_id {
                 return Err(PersistenceError::InvalidRevisionHistory);
             }
             let next = history.next_revision_id;
@@ -409,7 +431,10 @@ pub(super) fn assemble_checkpoint(
             Ok((step.cursor, next))
         });
         match applied {
-            Ok(applied) => (cursor, next_revision_id) = applied,
+            Ok(applied) => {
+                (cursor, next_revision_id) = applied;
+                give_up_oldest(&mut revisions, cursor, budget);
+            }
             Err(error) => {
                 damaged = Some((number, error));
                 break;
@@ -417,7 +442,14 @@ pub(super) fn assemble_checkpoint(
         }
     }
 
-    let revisions = revisions.iter().collect::<Vec<_>>();
+    // The revisions given up are the first ones and the last, so the rest, the current
+    // one among them, are one history.
+    let first = revisions.iter().take_while(|slot| slot.is_none()).count();
+    let revisions = revisions[first..]
+        .iter()
+        .map_while(Option::as_ref)
+        .collect::<Vec<_>>();
+    let cursor = cursor - first;
     let current = revisions[cursor];
     let file = |revisions: &[&Assembled], cursor: usize| {
         let snapshot = &current.snapshot;
@@ -446,6 +478,55 @@ pub(super) fn assemble_checkpoint(
         file => file?,
     };
     Ok((file, damaged.map(damage_reason)))
+}
+
+/// Gives up the oldest revisions, then the Redo steps past `cursor`, while their snapshots
+/// weigh more than `budget`, as a whole checkpoint keeps its history within one budget
+/// (review 2026-10-24 MD-25): the steps of a checkpoint add to that one budget, not each to
+/// a new one. The revision at `cursor` stays.
+fn give_up_oldest(revisions: &mut [Option<Assembled>], cursor: usize, budget: usize) {
+    let weight =
+        |slot: &Option<Assembled>| slot.as_ref().map_or(0, |held| held.snapshot.bytes.len());
+    let mut held = revisions.iter().map(weight).sum::<usize>();
+    let (before, after) = revisions.split_at_mut(cursor);
+    for slot in before.iter_mut().chain(after.iter_mut().skip(1).rev()) {
+        if held <= budget {
+            return;
+        }
+        held -= weight(slot);
+        *slot = None;
+    }
+}
+
+/// The most bytes of snapshots one checkpoint assembles to at once.
+fn assembly_budget() -> usize {
+    #[cfg(feature = "testing")]
+    if let Some(budget) = ASSEMBLY_BUDGET.get() {
+        return budget;
+    }
+    usize::try_from(HISTORY_BUDGET.snapshots).unwrap_or(usize::MAX)
+}
+
+#[cfg(feature = "testing")]
+thread_local! {
+    static ASSEMBLY_BUDGET: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `operation` with the snapshots one checkpoint assembles to on this thread held to
+/// `bytes`, a budget a test can fill without gigabytes.
+#[cfg(feature = "testing")]
+pub fn headless_with_checkpoint_assembly_budget<T>(
+    bytes: usize,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<usize>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ASSEMBLY_BUDGET.set(self.0);
+        }
+    }
+    let _reset = Reset(ASSEMBLY_BUDGET.replace(Some(bytes)));
+    operation()
 }
 
 fn damage_reason((number, error): (usize, PersistenceError)) -> String {
