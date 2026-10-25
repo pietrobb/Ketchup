@@ -2079,7 +2079,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
             # A window() or door(): its opening in this panel, if it lies in it.
             offsets = [sum([l["thickness"] for l in layers[:k]]) for k in range(len(layers) + 1)]
             top_v = max([max([p[1] for p in _outline(name, length, height, top, s)]) for s in offsets[:-1]] + [0.0])
-            o = _opening_in(name, o, origin, along, up, out, offsets[-1], top_v)
+            o = _opening_in(name, o, origin, along, up, out, offsets[-1], length, top_v)
         if o != None:
             holes.append(tuple([float(x) for x in o]))
     for i in range(len(holes)):
@@ -2370,8 +2370,9 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
 #     The result is one value: .name, .kind ("window" or "door"), .parts, .tool and the
 #     numbers above (.origin, .along, .up, .out, .wall, .u, .v, .width, .height).
 #       buildup(openings=[...]) takes it as it is: a build-up in the same wall and storey
-#       gets it as its opening in its own panel coordinates; a build-up in another wall,
-#       or wholly above or below the opening, leaves it out.
+#       gets it as its opening in its own panel coordinates; a build-up in another wall
+#       (crossing it or parallel in front or behind), wholly past either end of the
+#       opening along the wall, or wholly above or below it, leaves it out.
 #       .tool is a tool body through the whole wall; cut=part subtracts it from that plain
 #       wall body (a concept wall), the cut named like the opening.
 #     Refused with the reason: a frame that leaves no room inside the opening or does not
@@ -2488,11 +2489,13 @@ def door(name, origin, along, up, wall, u, v, width, height, frame = (80, 78), i
         ("leaf", u + fw, v + threshold, u1 - fw, v1 - fw, inset + (fd - leaf) / 2.0, leaf, fill_material, fill_color),
     ])
 
-def _opening_in(name, o, origin, along, up, out, depth, top_v):
+def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
     """The (u, v, width, height) of window()/door() `o` in buildup `name`'s panel, or
-    None when it lies in another wall or wholly above or below the panel."""
+    None when it lies in another wall (one not parallel to the panel, or wholly in front
+    of or behind it), wholly past either end of the panel or wholly above or below it
+    (review 2026-10-24 PG-24)."""
     if abs(abs(_dot(o.out, out)) - 1) > 0.000001:
-        fail("buildup(%s): %s %s does not lie in the plane of the panel" % (name, o.kind, o.name))
+        return None
     s0 = _dot(vec_sub(o.origin, origin), out)
     s1 = s0 + _dot(o.out, out) * o.wall
     if min(s0, s1) >= depth - 0.001 or max(s0, s1) <= 0.001:
@@ -2502,7 +2505,7 @@ def _opening_in(name, o, origin, along, up, out, depth, top_v):
         p = vec_sub(vec_add(o.origin, vec_add(vec_scale(o.along, o.u + du), vec_scale(o.up, o.v + dv))), origin)
         us.append(_dot(p, along))
         vs.append(_dot(p, up))
-    if max(vs) <= 0.001 or min(vs) >= top_v - 0.001:
+    if max(vs) <= 0.001 or min(vs) >= top_v - 0.001 or max(us) <= 0.001 or min(us) >= length - 0.001:
         return None
     return (min(us), min(vs), max(us) - min(us), max(vs) - min(vs))
 

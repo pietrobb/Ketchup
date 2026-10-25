@@ -181,6 +181,32 @@ buildup(\"back\", (3900, 32.5, 0), (-1, 0, 0), (0, 0, 1), 3800, LAYERS, height =
     assert_eq!(errors(&issues), Vec::<String>::new());
 }
 
+/// PG-24 (review 2026-10-24): a build-up in a wall at right angles to the
+/// window's, and one in the window's own wall but past its end along it,
+/// leave the window out as the topic says, instead of failing.
+#[test]
+fn a_build_up_in_a_crossing_wall_or_past_the_opening_along_its_wall_leaves_it_out() {
+    let source = format!(
+        "{LAYERS}
+win = window(\"win\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 2200, 900, 1200, 1250)
+buildup(\"east\", (3900, 200, 0), (0, 1, 0), (0, 0, 1), 3600, LAYERS, height = 2600, openings = [win])
+buildup(\"next\", (4000, 200, 0), (1, 0, 0), (0, 0, 1), 2000, LAYERS, height = 2600, openings = [win])
+buildup(\"floor\", (0, 200, 0), (1, 0, 0), (0, 1, 0), 3900, LAYERS, height = 3600, openings = [win])"
+    );
+    let (model, issues) = evaluate(&source);
+    assert_eq!(errors(&issues), Vec::<String>::new());
+    for whole in ["east/", "next/", "floor/"] {
+        let found = pieces(&model, whole);
+        assert!(!found.is_empty(), "{whole} was not built");
+        assert!(
+            found
+                .iter()
+                .all(|(name, _)| !name.contains("header") && !name.contains("sill")),
+            "{whole} must have no opening: {found:?}"
+        );
+    }
+}
+
 #[test]
 fn no_window_over_finds_a_window_without_naming_its_tag() {
     let source = format!(
@@ -355,11 +381,6 @@ fn bad_windows_and_doors_name_the_problem() {
         (
             "door(\"d\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 100, 0, 900, 2100, swing = \"left\")",
             "swing must be \"in\" or \"out\"",
-        ),
-        (
-            "buildup(\"floor\", (0, 0, 0), (1, 0, 0), (0, 1, 0), 4000, [{\"name\": \"a\", \"thickness\": 20}], height = 3000,
-                     openings = [window(\"w\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 100, 900, 900, 1200)])",
-            "window w does not lie in the plane of the panel",
         ),
     ] {
         let source = format!("{wall}{call}");
