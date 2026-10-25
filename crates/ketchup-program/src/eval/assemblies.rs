@@ -123,6 +123,9 @@ fn capture(model: &ProgramModel, name: &str) -> anyhow::Result<ProgramComponent>
 fn instance_part(part: &Part, instance: &ProgramInstance) -> Part {
     let mut part = part.clone();
     part.name = format!("{}/{}", instance.name, part.name);
+    if let Some(item) = part.attributes.get_mut("bought_item") {
+        *item = format!("{}/{item}", instance.name);
+    }
     move_part(&mut part, &instance.rotation, [0.0; 3]);
     translate_part(&mut part, instance.at_mm);
     part.refresh_feature_tree();
@@ -172,6 +175,20 @@ fn instance_joint(joint: &Joint, instance: &ProgramInstance) -> Joint {
         frame::Obb::new(instance.at_mm, &instance.rotation, min, max).world_bounds()
     });
     joint
+}
+
+/// The bought item a copy `name` of piece `source` of `item` is a piece of: a
+/// new one, shared by the copies of the item's other pieces made the same way
+/// (the same suffix, as `mirrored(piece, piece + " mirrored", ...)`, or under
+/// the same group, as `"east/" + piece`), so a copied window is one more window.
+fn copied_item(item: &str, source: &str, name: &str) -> String {
+    match name.strip_prefix(source) {
+        Some(suffix) if !suffix.is_empty() => format!("{item} copied as{suffix}"),
+        _ => match name.rsplit_once('/') {
+            Some((group, _)) => format!("{item} copied to {group}"),
+            None => format!("{item} copied as {name}"),
+        },
+    }
 }
 
 pub(super) fn validate(model: &ProgramModel) -> anyhow::Result<()> {
@@ -225,14 +242,14 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
                 (None, None) => anyhow::bail!("copy(): unknown part {source:?}"),
             }
         };
-        let copy = insert_part(
-            &state,
-            Part {
-                name: name.to_owned(),
-                ..copy
-            },
-            tool,
-        )?;
+        let mut copy = Part {
+            name: name.to_owned(),
+            ..copy
+        };
+        if let Some(item) = copy.attributes.get_mut("bought_item") {
+            *item = copied_item(item, &source, name);
+        }
+        let copy = insert_part(&state, copy, tool)?;
         {
             let mut sources = state.part_sources.borrow_mut();
             let lines = sources.get(&source).cloned().unwrap_or_default();

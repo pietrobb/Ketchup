@@ -242,6 +242,38 @@ window(\"stair\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 100, 1200, 400, 800, c
     assert_eq!(made, ["wall"]);
 }
 
+/// PG-21 (review 2026-10-24): the mirrored copies of a window's five pieces kept
+/// its `bought_item`, so two windows were ordered as one.
+#[test]
+fn a_copied_or_mirrored_window_is_one_more_bought_item() {
+    let (model, _) = evaluate(WALL);
+    let pieces: Vec<String> = model
+        .parts
+        .iter()
+        .filter(|part| part.name.starts_with("win/"))
+        .map(|part| format!("{:?}", part.name))
+        .collect();
+    assert_eq!(pieces.len(), 5, "{pieces:?}");
+    let pieces = pieces.join(", ");
+    let source = format!(
+        "{WALL}
+for piece in [{pieces}]:
+    mirrored(piece, piece + \" mirrored\", (6000, 0, 0), (1, 0, 0))
+    mirrored(piece, \"east/\" + piece, (8000, 0, 0), (1, 0, 0))
+component(\"window\", [{pieces}])
+instance(\"upper\", \"window\", at = (0, 0, 3000))
+"
+    );
+    let (model, issues) = evaluate(&source);
+    assert_eq!(errors(&issues), Vec::<String>::new());
+    let windows = ketchup_program::bom(&model)
+        .hardware
+        .into_iter()
+        .find(|row| row.item == "window 1200 x 1250")
+        .expect("the window row");
+    assert_eq!((windows.count, windows.parts.len()), (4, 20));
+}
+
 #[test]
 fn a_door_keeps_the_space_its_leaf_swings_through_clear() {
     // The leaf is 740 wide (x 680..1420); inside the room is y > 200, outside y < 0.
