@@ -899,10 +899,9 @@ fn read_dxf(
     }
     let header = sections.get("HEADER").map(Vec::as_slice).unwrap_or(&[]);
     let (units, insbase_mm) = parse_header(header, options, &mut diagnostics)?;
-    diagnostics.hidden_layers = hidden_layers(
-        sections.get("TABLES").map(Vec::as_slice).unwrap_or(&[]),
-        true,
-    );
+    let tables = sections.get("TABLES").map(Vec::as_slice).unwrap_or(&[]);
+    diagnostics.hidden_layers = hidden_layers(tables, true);
+    diagnostics.frozen_layers = hidden_layers(tables, false);
     let entities = sections
         .get("ENTITIES")
         .ok_or(DxfImportError::MissingEntitiesSection)?;
@@ -1133,7 +1132,8 @@ fn parse_sections<'a>(
         {
             return Err(DxfImportError::DuplicateSection);
         }
-        if name != "HEADER" && name != "BLOCKS" && name != "ENTITIES" {
+        // TABLES is read for the layers it hides.
+        if !matches!(name.as_str(), "HEADER" | "TABLES" | "BLOCKS" | "ENTITIES") {
             diagnostics.add(
                 ImportDiagnosticSeverity::Warning,
                 "dxf.section-ignored",
@@ -1295,7 +1295,7 @@ fn parse_entities(
         // refusing the whole drawing.
         let read = (|| -> Result<(), DxfImportError> {
             if !matches!(kind.as_str(), "ATTRIB" | "SEQEND")
-                && let Some((severity, code)) = left_out(record, &diagnostics.hidden_layers)?
+                && let Some((severity, code)) = left_out(&kind, record, diagnostics)?
             {
                 skip_sub_entities(
                     &kind,
@@ -1397,12 +1397,14 @@ fn parse_entities(
                         diagnostics,
                     )?;
                     placed.texts.append(&mut attributes);
+                    let placed = leave_out_hidden(&kind, placed, diagnostics)?;
                     output.push_placed(place_on_frozen_layer(record, diagnostics, placed)?);
                 }
                 "DIMENSION" => {
                     let block_definitions = blocks.ok_or(DxfImportError::InvalidBlock)?;
                     let placed =
                         parse_dimension(record, units, ordinal, block_definitions, diagnostics)?;
+                    let placed = leave_out_hidden(&kind, placed, diagnostics)?;
                     output.push_placed(place_on_frozen_layer(record, diagnostics, placed)?);
                 }
                 "TEXT" | "MTEXT" | "ATTDEF" if diagnostics.reading.texts => {
@@ -1489,17 +1491,23 @@ fn parse_entities(
 /// layout (paper space, group 67 = 1), such as a frame or a title block, or
 /// its author hid it (group 60 = 1, review 2026-10-17 F-2) or the layer it is
 /// on (turned off or frozen, review 2026-10-18 MF-13). Each is left out and
-/// counted, never made a profile.
+/// counted, never made a profile. An insert or a dimension is left out whole only on a
+/// frozen layer: on a layer turned off, what its block holds on visible layers is shown,
+/// and [`leave_out_hidden`] takes out the rest (review 2026-10-24).
 fn left_out(
+    kind: &str,
     record: &[DxfPair<'_>],
-    hidden_layers: &BTreeSet<String>,
+    diagnostics: &DiagnosticCounts,
 ) -> Result<Option<(ImportDiagnosticSeverity, &'static str)>, DxfImportError> {
+    let places = matches!(kind, "INSERT" | "DIMENSION");
     Ok(if parse_optional_i64(record, 67)? == Some(1) {
         Some((ImportDiagnosticSeverity::Info, "dxf.entity-paper-space"))
     } else if parse_optional_i64(record, 60)? == Some(1) {
         Some((ImportDiagnosticSeverity::Warning, "dxf.entity-invisible"))
     } else if parse_optional_text(record, 8)?.is_some_and(|layer| {
-        hidden_layers.contains(&text::unicode_escapes(layer).to_ascii_uppercase())
+        let layer = text::unicode_escapes(layer).to_ascii_uppercase();
+        diagnostics.hidden_layers.contains(&layer)
+            && (!places || diagnostics.frozen_layers.contains(&layer))
     }) {
         Some((ImportDiagnosticSeverity::Warning, "dxf.entity-layer-hidden"))
     } else {
@@ -1563,6 +1571,35 @@ fn place_on_frozen_layer(
         for own in layers.chain(placed.fills.iter_mut().map(|fill| &mut fill.layer)) {
             own.clone_from(&layer);
         }
+    }
+    Ok(placed)
+}
+
+/// Takes out of what an insert or a dimension of `kind` placed on a layer turned off
+/// what lies on a hidden layer: what its block holds on layer 0, which took the
+/// placement's layer (what it holds on other hidden layers was left out as the block was
+/// read). Counted once for the placement when anything is taken out. An underlay hides
+/// no layer, so it keeps everything.
+fn leave_out_hidden(
+    kind: &str,
+    mut placed: Placed,
+    diagnostics: &mut DiagnosticCounts,
+) -> Result<Placed, DxfImportError> {
+    if diagnostics.hidden_layers.is_empty() {
+        return Ok(placed);
+    }
+    let hidden = |layer: &str| (diagnostics.hidden_layers).contains(&layer.to_ascii_uppercase());
+    let before = placed.profiles.len() + placed.texts.len() + placed.fills.len();
+    placed.profiles.retain(|profile| !hidden(&profile.layer));
+    placed.texts.retain(|text| !hidden(&text.layer));
+    placed.fills.retain(|fill| !hidden(&fill.layer));
+    if placed.profiles.len() + placed.texts.len() + placed.fills.len() < before {
+        diagnostics.add(
+            ImportDiagnosticSeverity::Warning,
+            "dxf.entity-layer-hidden",
+            Some(kind.to_owned()),
+            1,
+        )?;
     }
     Ok(placed)
 }

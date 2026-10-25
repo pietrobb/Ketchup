@@ -2374,6 +2374,53 @@ fn a_dimension_without_its_block_and_hidden_layers_are_left_out_and_counted() {
     );
 }
 
+/// Review 2026-10-24: an INSERT on a layer turned off was left out whole, though AutoCAD
+/// still shows what its block holds on visible layers (turning a layer off hides only
+/// what the block holds on layer 0, which takes the insert's layer; freezing it hides the
+/// whole placement). The report also named TABLES an ignored section, though it was read.
+#[test]
+fn an_insert_on_a_layer_turned_off_keeps_what_its_block_holds_on_visible_layers() {
+    let tables = concat!(
+        "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n3\n",
+        "0\nLAYER\n2\nwalls\n70\n0\n62\n7\n",
+        "0\nLAYER\n2\noff\n70\n0\n62\n-3\n",
+        "0\nLAYER\n2\nfrozen\n70\n1\n62\n5\n",
+        "0\nENDTAB\n0\nENDSEC\n",
+    );
+    let blocks = concat!(
+        "0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n8\n0\n2\ndoor\n70\n0\n10\n0\n20\n0\n",
+        "0\nLINE\n8\nwalls\n10\n0\n20\n0\n11\n10\n21\n0\n",
+        "0\nLINE\n8\n0\n10\n0\n20\n5\n11\n10\n21\n5\n",
+        "0\nENDBLK\n0\nENDSEC\n",
+    );
+    let entities = concat!(
+        "0\nSECTION\n2\nENTITIES\n",
+        "0\nINSERT\n8\noff\n2\ndoor\n10\n0\n20\n0\n",
+        "0\nINSERT\n8\nfrozen\n2\ndoor\n10\n100\n20\n0\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n{tables}{blocks}{entities}"
+    )
+    .into_bytes();
+    let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
+
+    assert_eq!(parsed.layers(), &["walls".to_owned()]);
+    let segments: Vec<_> = (parsed.profiles().iter())
+        .flat_map(|profile| profile.segments())
+        .map(|segment| (segment.start_mm(), segment.end_mm()))
+        .collect();
+    assert_eq!(segments, [([0.0, 0.0], [10.0, 0.0])]);
+    let count = |code: &str, subject: &str| {
+        (parsed.diagnostics().iter())
+            .find(|diagnostic| diagnostic.code() == code && diagnostic.subject() == Some(subject))
+            .map(|diagnostic| diagnostic.count())
+    };
+    // The frozen insert whole, and the part of the other one on layer 0.
+    assert_eq!(count("dxf.entity-layer-hidden", "INSERT"), Some(2));
+    assert_eq!(count("dxf.section-ignored", "TABLES"), None);
+}
+
 #[test]
 fn translated_block_inserts_expand_exact_profiles_with_layer_inheritance_and_units() {
     let source = dxf_with_blocks(

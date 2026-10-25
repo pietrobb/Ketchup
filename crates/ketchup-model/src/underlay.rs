@@ -766,7 +766,8 @@ pub struct UnderlayLinesBuilder {
 
 /// How far from the middle a drawing moved near the origin keeps its lines and texts:
 /// ±10 km, the cadastral map of a whole municipality. Its points are f64 and need no
-/// model envelope; the window draws them in f32, to about 1 mm out there.
+/// model envelope; the window draws each as a high and a low f32 part taken from the eye,
+/// so they stay exact out there too.
 pub const UNDERLAY_EXTENT_MM: f64 = 10_000_000.0;
 
 /// Chords of a whole circle at most, however large it is: enough for the chords of an
