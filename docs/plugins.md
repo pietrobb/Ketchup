@@ -121,3 +121,23 @@ again outside it (the interpreter and the files its command line names); a
 command line has at most 1000 arguments. Past a limit the run is refused before
 anything starts. The files are read off the window's thread, and a cancelled
 request stops reading at the next file.
+
+## Files an MCP client opens or imports
+
+MCP `file action=open` and `file action=import` ask the user nothing: the
+window opens or imports the path the client sends. An MCP client is a local
+program running with the user's rights and holding the window's local token,
+so it could read the file itself. That is not true of every client: an AI
+client may run its tools in a sandbox that keeps it out of some folders. Such
+a client, steered by text it read (prompt injection), can still have the
+window load any local file of a type Kečup reads (a `.ketchup` document,
+STEP, IGES, STL, DXF, DWG, an image underlay) and then read what it holds
+back through MCP queries and inspections, past its own sandbox.
+
+What the window still refuses for any client is a path that is not an
+absolute path on a local drive: a network share (`\\server\share`, a drive
+letter mapped to a share), a device or an alternate data stream. These are
+refused before anything is read, so Windows does not sign in to the server
+with the user's credentials. Connect to Kečup only MCP clients you would let
+read your local files, and close the connection of a client that works on
+text from sources you do not trust.
