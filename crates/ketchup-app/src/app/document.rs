@@ -690,11 +690,14 @@ impl KetchupApp {
                 .recovery_open
                 .as_ref()
                 .is_some_and(|recovery| recovery.requested_path == path);
+        // A lock file another user left where none can be taken (review 2026-10-24
+        // UI-21) is no reason to refuse the save: the file is written as it was
+        // opened, without a checkpoint.
         let target_lock = if active_target && self.file.work_recovery_lock.is_some() {
             None
         } else {
-            match ketchup_model::persistence::WorkRecoveryLock::acquire(path) {
-                Ok(lock) => Some(lock),
+            match ketchup_model::persistence::WorkRecoveryLock::acquire_unless_read_only(path) {
+                Ok(lock) => lock,
                 Err(error) => {
                     self.report_file_persistence_error("error-save-document", path, &error);
                     return Err(SaveFailure::Failed);
@@ -782,12 +785,17 @@ impl KetchupApp {
             self.start_prepared_write(path, prepared, expected_identity, target_lock, context);
             return Ok(());
         }
+        let lockless = target_lock.is_none() && self.file.work_recovery_lock.is_none();
         let result = ketchup_model::persistence::publish_document(
             path,
             &prepared,
             ketchup_model::persistence::Publish::over(expected_identity),
         );
-        self.finish_document_save(path, saved_identity, result)
+        let finished = self.finish_document_save(path, saved_identity, result);
+        if lockless && self.file.path.as_deref() == Some(path) {
+            self.file.work_recovery_off = true;
+        }
+        finished
     }
 
     pub(super) fn finish_document_save(

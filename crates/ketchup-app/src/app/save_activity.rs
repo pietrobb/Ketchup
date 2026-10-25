@@ -183,6 +183,8 @@ impl KetchupApp {
                     ),
                 };
                 let written = result.is_ok();
+                // Written where no lock could be taken: still without a checkpoint.
+                let lockless = target_lock.is_none();
                 self.finish_close_save(written && task.source.current(self));
                 if !task.source.current(self)
                     && task.source.document == self.document.current().document_id()
@@ -220,6 +222,9 @@ impl KetchupApp {
                     && self.file.work_recovery_lock.is_none()
                 {
                     self.file.work_recovery_lock = target_lock;
+                }
+                if written && lockless && self.file.path.as_deref() == Some(task.path.as_path()) {
+                    self.file.work_recovery_off = true;
                 }
                 if task.close_requested && written {
                     context.send_viewport_cmd(egui::ViewportCommand::Close);

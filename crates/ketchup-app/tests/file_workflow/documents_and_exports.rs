@@ -1405,6 +1405,60 @@ fn a_file_in_a_read_only_folder_opened_over_unsaved_work_edits_without_a_checkpo
     std::fs::set_permissions(&lock, permissions).unwrap();
 }
 
+/// Another user's lock file on a writable share that no read-only handle can lock, as on
+/// a Linux NFS client: the file opens without a checkpoint, and its edits are saved back
+/// into it, instead of Save failing to open that lock file for writing (review
+/// 2026-10-24 UI-21).
+#[test]
+fn a_file_whose_lock_file_cannot_be_locked_is_saved_back_into_its_writable_folder() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("shared.ketchup");
+    let mut author = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
+    author.click_menu_command("menu-file", AppCommand::Save);
+    drop(author);
+    let before = std::fs::read(&primary).unwrap();
+    let mut lock = primary.as_os_str().to_owned();
+    lock.push(".work-recovery-lock");
+    let lock = std::path::PathBuf::from(lock);
+    std::fs::write(&lock, b"").unwrap();
+    let mut permissions = std::fs::metadata(&lock).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&lock, permissions.clone()).unwrap();
+
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_open(&primary));
+    ketchup_model::persistence::headless_with_read_handle_lock_failure(|| {
+        shell.click_menu_command("menu-file", AppCommand::Open);
+        assert_eq!(shell.app().document_path(), Some(primary.as_path()));
+        assert!(digest_has(&shell, "digest-opened-without-work-recovery"));
+        assert!(shell.app_mut().create_box());
+        shell.settle();
+        assert!(shell.app().is_dirty());
+
+        shell.click_menu_command("menu-file", AppCommand::Save);
+        shell.settle();
+        assert!(
+            !digest_starts_like(&shell, "error-save-document"),
+            "{}",
+            shell.app().action_digest()
+        );
+        assert!(!shell.app().is_dirty());
+        assert_ne!(std::fs::read(&primary).unwrap(), before);
+
+        assert!(shell.app_mut().create_box());
+        shell.settle();
+        assert!(
+            !digest_starts_like(&shell, "error-save-document"),
+            "{}",
+            shell.app().action_digest()
+        );
+    });
+    assert!(!ketchup_model::persistence::work_recovery_path(&primary).exists());
+    drop(shell);
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&lock, permissions).unwrap();
+}
+
 #[test]
 fn gui_save_rejects_replaced_work_recovery_before_publication() {
     let directory = tempfile::tempdir().unwrap();
