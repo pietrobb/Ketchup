@@ -5,7 +5,7 @@ use super::underlay_snapping::{underlay_of, underlay_reference};
 use crate::transform_operation::TransformTarget;
 use crate::*;
 use ketchup_model::underlay::UnderlayId;
-use ketchup_model::underlay::placement::UnderlayFitError;
+use ketchup_model::underlay::placement::{UnderlayFitError, plan_underlay_edit};
 
 impl KetchupApp {
     /// The underlay selected alone, while the document still has it.
@@ -55,6 +55,25 @@ impl KetchupApp {
             self.refuse_underlay_edit(UnderlayFitError::OffPlane.to_string());
         }
         refused
+    }
+
+    /// Refuses, in the status line and by its own reason, a move or turn by `edit` of the
+    /// underlay `selection` names that its placement does not take, such as one past the
+    /// model's range: the plan of it is none, which the commit would call a stale preview
+    /// (review 2026-10-24 UI-24).
+    pub(crate) fn underlay_edit_refused(
+        &mut self,
+        selection: &SelectionId,
+        edit: Option<Transform>,
+    ) -> bool {
+        let (Some(id), Some(edit)) = (underlay_of(selection), edit) else {
+            return false;
+        };
+        let Err(error) = plan_underlay_edit(&self.document.current(), id, edit) else {
+            return false;
+        };
+        self.refuse_underlay_edit(error.to_string());
+        true
     }
 
     /// Refuses, in the status line, a copy of an underlay: it is placed, not copied.

@@ -127,6 +127,8 @@ impl TransformPlan {
                 )
             }
             TransformTarget::Underlay(id) => {
+                // A refused edit has no plan and no preview; the commit names why
+                // (`KetchupApp::underlay_edit_refused`).
                 let batch = plan_underlay_edit(snapshot, *id, request.world_edit).ok()?;
                 (batch.commands().to_vec(), BTreeMap::new())
             }

@@ -210,7 +210,8 @@ impl KetchupApp {
     }
 
     /// The snaps on the shown underlay lines within `tolerance_px` of the pointer, as the
-    /// model's snaps rank them.
+    /// model's snaps rank them. An underlay the Move tool is moving has none: it is drawn
+    /// where the pointer takes it, not where its lines were (review 2026-10-24 UI-25).
     pub(crate) fn underlay_snaps_at_screen(
         &self,
         pointer: Pos2,
@@ -224,9 +225,13 @@ impl KetchupApp {
         let Some((point, radius)) = self.underlay_snap_window(pointer, rect, tolerance_px) else {
             return Vec::new();
         };
+        let moving = self
+            .move_session()
+            .and_then(|(drag, _)| underlay_of(&drag.selection));
         self.underlay_snaps_near(&snapshot, point, radius)
             .0
             .into_iter()
+            .filter(|(id, _)| moving != Some(*id))
             .map(|(id, snap)| {
                 (
                     underlay_reference(id, snap.segment),

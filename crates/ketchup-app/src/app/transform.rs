@@ -372,7 +372,9 @@ impl KetchupApp {
     pub(crate) fn commit_move_drag(&mut self, drag: &MoveDrag) -> bool {
         self.gesture.transform.move_copy = false;
         self.transform_tool.input.reset();
-        if self.underlay_drag_refused(&drag.selection, drag.axis == Some(Axis::Z)) {
+        if self.underlay_drag_refused(&drag.selection, drag.axis == Some(Axis::Z))
+            || (!drag.copy && self.underlay_edit_refused(&drag.selection, move_world_edit(drag)))
+        {
             return false;
         }
         if !self.move_preview_is_current(drag) {
@@ -484,7 +486,9 @@ impl KetchupApp {
     pub(crate) fn commit_rotate_drag(&mut self, drag: &RotateDrag) -> bool {
         self.gesture.transform.rotate_copy = false;
         self.transform_tool.input.reset();
-        if self.underlay_drag_refused(&drag.selection, drag.axis != Axis::Z) {
+        if self.underlay_drag_refused(&drag.selection, drag.axis != Axis::Z)
+            || (!drag.copy && self.underlay_edit_refused(&drag.selection, rotate_world_edit(drag)))
+        {
             return false;
         }
         if !self.rotate_preview_is_current(drag) {
@@ -1846,14 +1850,13 @@ impl KetchupApp {
         {
             return None;
         }
-        let delta = moved_by(drag);
         let request = self.transform_request(
             drag.source_document_id,
             drag.source_revision,
             &drag.selection,
             &drag.occurrence_paths,
             drag.group_id,
-            Transform::from_translation(delta.x, delta.y, delta.z).ok()?,
+            move_world_edit(drag)?,
         )?;
         TransformPlan::prepare(&self.document.current(), request)
     }
@@ -1868,22 +1871,13 @@ impl KetchupApp {
         {
             return None;
         }
-        let world_edit = if underlay_of(&drag.selection).is_some() {
-            // Turned about Z only, built in the plane so the placement stays exactly planar.
-            if drag.axis != Axis::Z {
-                return None;
-            }
-            planar_turn([drag.centre_mm.x, drag.centre_mm.y], drag.angle_degrees).ok()?
-        } else {
-            world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees).ok()?
-        };
         let request = self.transform_request(
             drag.source_document_id,
             drag.source_revision,
             &drag.selection,
             &drag.occurrence_paths,
             drag.group_id,
-            world_edit,
+            rotate_world_edit(drag)?,
         )?;
         TransformPlan::prepare(&self.document.current(), request)
     }
@@ -3034,6 +3028,25 @@ impl KetchupApp {
             pick.snap.reference = pick.primary.reference.clone();
             pick.snap.position_mm = pick.primary.position_mm;
         }
+    }
+}
+
+/// The world edit of a move drag: [`moved_by`].
+fn move_world_edit(drag: &MoveDrag) -> Option<Transform> {
+    let delta = moved_by(drag);
+    Transform::from_translation(delta.x, delta.y, delta.z).ok()
+}
+
+/// The world edit of a rotate drag. An underlay turns about Z only, built in the plane so
+/// its placement stays exactly planar.
+fn rotate_world_edit(drag: &RotateDrag) -> Option<Transform> {
+    if underlay_of(&drag.selection).is_some() {
+        if drag.axis != Axis::Z {
+            return None;
+        }
+        planar_turn([drag.centre_mm.x, drag.centre_mm.y], drag.angle_degrees).ok()
+    } else {
+        world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees).ok()
     }
 }
 

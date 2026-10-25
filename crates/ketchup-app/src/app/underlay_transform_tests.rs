@@ -167,6 +167,54 @@ fn an_underlay_moved_onto_a_point_above_the_ground_lands_in_plan() {
     assert!(app.digest.contains(&in_plan), "{in_plan} in {}", app.digest);
 }
 
+/// Review 2026-10-24 UI-24: a move its placement refuses, such as one past the model's
+/// range, found no plan and said the preview was stale; the status line names why.
+#[test]
+fn an_underlay_move_past_the_models_range_is_refused_by_its_reason() {
+    let mut harness = shell();
+    let axes_end = Vec3::new(240.0, 120.0, 0.0);
+    click(&mut harness, axes_end);
+    assert!(harness.state().selected_underlay().is_some());
+    let digest = harness.state().canonical_digest();
+    harness.state_mut().dispatch_command(AppCommand::Move);
+    click(&mut harness, axes_end);
+    let app = harness.state_mut();
+    app.move_session_mut().unwrap().delta_mm = Vec3::new(1_500_000.0, 0.0, 0.0);
+    let drag = app.move_session().unwrap().0.clone();
+    assert!(!app.commit_move_drag(&drag));
+    assert!(
+        app.digest.contains("its origin stays within"),
+        "{}",
+        app.digest
+    );
+    assert_eq!(app.canonical_digest(), digest);
+}
+
+/// Review 2026-10-24 UI-25: an underlay being moved is drawn where the pointer takes it,
+/// yet the pointer snapped to its lines where they were before the move, where nothing is
+/// drawn.
+#[test]
+fn an_underlay_being_moved_does_not_snap_to_where_it_was() {
+    let mut harness = shell();
+    let axes_end = Vec3::new(240.0, 120.0, 0.0);
+    let wall_end = Vec3::new(240.0, 20.0, 0.0);
+    click(&mut harness, axes_end);
+    point(&mut harness, wall_end);
+    let snapped = |app: &KetchupApp| app.hover.snap.as_ref().map(|snap| snap.position_mm);
+    assert_eq!(
+        snapped(harness.state()),
+        Some(wall_end),
+        "snaps before a move"
+    );
+
+    harness.state_mut().dispatch_command(AppCommand::Move);
+    click(&mut harness, axes_end);
+    point(&mut harness, wall_end);
+    let app = harness.state();
+    assert!(app.transform_gesture_active());
+    assert_ne!(snapped(app), Some(wall_end));
+}
+
 #[test]
 fn an_underlay_move_out_of_the_ground_plane_or_a_copy_is_refused_by_name() {
     let mut harness = shell();
