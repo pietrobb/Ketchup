@@ -168,6 +168,9 @@ pub enum CanonicalError {
     },
     SavedViewNotFound(SavedViewId),
     UnderlayNotFound(UnderlayId),
+    /// The underlay's placement scales it more than `UNDERLAY_MAX_SCALE` either way or
+    /// puts its origin outside the model's ±`MAX_COORDINATE_MM`.
+    UnderlayPlacementOutOfRange(UnderlayId),
     InvalidAnnotation {
         name: String,
         problem: crate::annotation::AnnotationProblem,
@@ -375,6 +378,7 @@ impl CanonicalError {
             Self::InvalidSavedView { .. } => "canonical.invalid_saved_view",
             Self::SavedViewNotFound(..) => "canonical.saved_view_not_found",
             Self::UnderlayNotFound(..) => "canonical.underlay_not_found",
+            Self::UnderlayPlacementOutOfRange(..) => "canonical.underlay_placement_out_of_range",
             Self::InvalidAnnotation { .. } => "canonical.invalid_annotation",
             Self::InvalidClassificationDimension(..) => {
                 "canonical.invalid_classification_dimension"
@@ -778,6 +782,14 @@ impl fmt::Display for CanonicalError {
             }
             Self::SavedViewNotFound(id) => write!(formatter, "saved view {} does not exist", id.0),
             Self::UnderlayNotFound(id) => write!(formatter, "underlay {} does not exist", id.0),
+            Self::UnderlayPlacementOutOfRange(id) => write!(
+                formatter,
+                "underlay {} is placed out of range: an underlay scales by at most {} either \
+                 way and its origin stays within ±{} mm",
+                id.0,
+                crate::tolerance::UNDERLAY_MAX_SCALE,
+                crate::tolerance::MAX_COORDINATE_MM
+            ),
             Self::InvalidAnnotation { name, problem } => {
                 write!(formatter, "annotation {name:?} {problem}")
             }

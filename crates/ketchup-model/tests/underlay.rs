@@ -979,3 +979,50 @@ fn a_two_point_fit_places_the_underlay_on_the_model_in_one_undo_step() {
         .to_string();
     assert!(refusal.contains("1000000 mm"), "{refusal}");
 }
+
+/// Review 2026-10-24 MD-24: the bounds of a placement hold in the document itself, not
+/// only in the fit and move that plan one, so a batch that places an underlay 1e12 mm
+/// away or scales it a billion times is refused as a file holding one would be.
+#[test]
+fn a_placement_past_the_bounds_is_refused_by_the_document_not_only_by_the_fit() {
+    use ketchup_model::document::{CanonicalCommand, CanonicalError, CommandBatch};
+    let underlay = read(&line("walls", [0.0, 0.0], [1000.0, 0.0]));
+    let mut document = DocumentStore::new();
+    let (batch, id) = plan_underlay(
+        &document.current(),
+        "Plan",
+        &underlay.layers,
+        &underlay.hidden_layers,
+        sha256_bytes(&underlay.lines.encode()),
+        [0.0; 2],
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let placed = document.current().underlay(id).unwrap().clone();
+    let far = Transform::from_translation(1.0e12, 0.0, 0.0).unwrap();
+    let huge = Transform::from_matrix([
+        1.0e9, 0.0, 0.0, 0.0, 0.0, 1.0e9, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    for placement in [far, huge] {
+        let batch = CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+            ketchup_model::underlay::Underlay {
+                placement,
+                ..placed.clone()
+            },
+        )]);
+        let Err(refusal) = document.apply_batch(&batch) else {
+            panic!("{placement:?} is out of range, yet the document took it");
+        };
+        assert_eq!(
+            refusal,
+            CanonicalError::UnderlayPlacementOutOfRange(id),
+            "{refusal}"
+        );
+        assert!(refusal.to_string().contains("1000000 mm"), "{refusal}");
+    }
+    assert_eq!(
+        document.current().underlay(id).unwrap().placement,
+        placed.placement
+    );
+}

@@ -24,20 +24,31 @@ pub(crate) fn is_planar(placement: &Transform) -> bool {
         && placement.inverse().is_some()
 }
 
-/// `placement` when it scales by at most [`UNDERLAY_MAX_SCALE`] either way and keeps the
-/// origin of the lines within the model's ±[`MAX_COORDINATE_MM`].
-fn in_range(placement: Transform) -> Result<Transform, UnderlayFitError> {
-    let scale = placement.affine().determinant().abs().sqrt();
+/// Whether `placement` scales by at most [`UNDERLAY_MAX_SCALE`] either way and keeps the
+/// origin of the lines within the model's ±[`MAX_COORDINATE_MM`]: what the document holds
+/// of an underlay (review 2026-10-24 MD-24), and so what a fit or move may plan.
+pub(crate) fn within_bounds(placement: &Transform) -> bool {
     let matrix = placement.matrix();
-    let origin_mm = [matrix[3], matrix[7]];
-    if (1.0 / UNDERLAY_MAX_SCALE..=UNDERLAY_MAX_SCALE).contains(&scale)
-        && origin_mm
+    (1.0 / UNDERLAY_MAX_SCALE..=UNDERLAY_MAX_SCALE).contains(&placement_scale(placement))
+        && [matrix[3], matrix[7]]
             .iter()
             .all(|value| value.abs() <= MAX_COORDINATE_MM)
-    {
+}
+
+fn placement_scale(placement: &Transform) -> f64 {
+    placement.affine().determinant().abs().sqrt()
+}
+
+/// `placement` when it is [`within_bounds`].
+fn in_range(placement: Transform) -> Result<Transform, UnderlayFitError> {
+    if within_bounds(&placement) {
         Ok(placement)
     } else {
-        Err(UnderlayFitError::OutOfRange { scale, origin_mm })
+        let matrix = placement.matrix();
+        Err(UnderlayFitError::OutOfRange {
+            scale: placement_scale(&placement),
+            origin_mm: [matrix[3], matrix[7]],
+        })
     }
 }
 
@@ -66,7 +77,7 @@ impl Underlay {
     /// The millimetres of the document one millimetre of its lines spans.
     #[must_use]
     pub fn scale(&self) -> f64 {
-        self.placement.affine().determinant().abs().sqrt()
+        placement_scale(&self.placement)
     }
 }
 

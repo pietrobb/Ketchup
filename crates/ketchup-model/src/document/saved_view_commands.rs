@@ -106,6 +106,9 @@ pub(super) fn validate_underlay(
     if !crate::underlay::placement::is_planar(&underlay.placement) {
         return Err(CanonicalError::InvalidTransform);
     }
+    if !crate::underlay::placement::within_bounds(&underlay.placement) {
+        return Err(CanonicalError::UnderlayPlacementOutOfRange(underlay.id));
+    }
     for layer in &underlay.layers {
         ensure_name(&layer.name)?;
     }
