@@ -485,7 +485,7 @@ impl KetchupApp {
             .underlays()
             .filter(|underlay| shown(underlay.tag))
             .filter_map(|underlay| {
-                let extent = self.cached_underlay_extent(underlay)?;
+                let extent = self.cached_underlay_extent(underlay);
                 let corners = underlay
                     .layers
                     .iter()
@@ -511,9 +511,7 @@ impl KetchupApp {
     ) -> BTreeMap<TagId, [usize; 2]> {
         let mut counts = BTreeMap::<TagId, [usize; 2]>::new();
         for underlay in snapshot.underlays() {
-            let Some(extent) = self.cached_underlay_extent(underlay) else {
-                continue;
-            };
+            let extent = self.cached_underlay_extent(underlay);
             for (layer, drawn) in underlay.layers.iter().zip(extent.iter()) {
                 for tag in [underlay.tag, layer.tag] {
                     let count = counts.entry(tag).or_default();
@@ -543,19 +541,29 @@ impl KetchupApp {
     }
 
     /// The layer extents of `underlay`'s lines, decoded from the document's blob the first
-    /// time; `None` while the document holds no readable blob of them.
-    fn cached_underlay_extent(&self, underlay: &Underlay) -> Option<UnderlayExtent> {
+    /// time, or taken from lines the bridge already decoded; a blob the document lacks or
+    /// cannot decode has no layers, kept as [`Self::underlay_draws`] keeps it, so it is not
+    /// decoded again each frame (review 2026-10-24 UI-27).
+    fn cached_underlay_extent(&self, underlay: &Underlay) -> UnderlayExtent {
         let key = underlay.lines_sha256;
         if let Some(extent) = self.render.underlay_extents.borrow().get(&key) {
-            return Some(Arc::clone(extent));
+            return Arc::clone(extent);
         }
-        let blobs = self.file.container_data.blobs();
-        let lines = UnderlayLines::decode(blobs.get(&underlay.lines_blob())?).ok()?;
-        let extent = underlay_extent(&lines);
+        let decoded = self.render.underlay_lines.borrow().get(&key).cloned();
+        let extent = match decoded {
+            Some(lines) => underlay_extent(&lines),
+            None => self
+                .file
+                .container_data
+                .blobs()
+                .get(&underlay.lines_blob())
+                .and_then(|bytes| UnderlayLines::decode(bytes).ok())
+                .map_or_else(|| Arc::from([]), |lines| underlay_extent(&lines)),
+        };
         self.render
             .underlay_extents
             .borrow_mut()
             .insert(key, Arc::clone(&extent));
-        Some(extent)
+        extent
     }
 }

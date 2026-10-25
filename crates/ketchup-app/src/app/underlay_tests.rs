@@ -237,6 +237,31 @@ fn an_underlay_draws_its_texts_on_their_layer_which_hides_them() {
     assert_eq!(drawn(&mut app), vec![6]);
 }
 
+/// Review 2026-10-24 UI-27: without the GPU renderer the Layers panel and framing read an
+/// underlay's extent each frame; an unreadable blob was decoded again every frame. Its
+/// failure is kept like a read, so the next frame does not decode it again.
+#[test]
+fn an_unreadable_underlay_blob_is_decoded_once_not_every_frame() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("plan.dxf");
+    std::fs::write(&path, LAYERED_DRAWING_DXF).unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &path);
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    let snapshot = app.document.current();
+    let key = snapshot.underlays().next().unwrap().lines_sha256;
+    app.file.container_data = ketchup_model::persistence::ContainerData::default();
+    app.render.underlay_extents.get_mut().clear();
+
+    assert!(app.underlay_counts_by_tag(&snapshot).is_empty());
+
+    assert!(
+        app.render.underlay_extents.borrow().contains_key(&key),
+        "the failed read is kept"
+    );
+    assert!(app.shown_underlay_bounds(&snapshot).is_empty());
+}
+
 #[test]
 fn removing_an_underlay_is_one_undo_step_that_takes_its_tags_along() {
     let directory = tempfile::tempdir().unwrap();
