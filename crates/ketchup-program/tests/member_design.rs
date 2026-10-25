@@ -335,6 +335,52 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
 }
 
 #[test]
+fn a_beam_notched_on_its_top_over_its_bearing_is_checked_in_shear_with_kv_1() {
+    // Review 2026-10-24 PG-25: the beam of `beam` notched 40 mm deep over
+    // the first 150 mm on its top, the side away from the post, instead of
+    // its underside. EC5 6.5.2(2), fig. 6.11(b): kv = 1 there; kv of a notch
+    // on the post's side was taken. The deck lies on both from 150 mm on.
+    let source = |profile: &str, post_a: f64| {
+        format!(
+            "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+timber_design({{\"C24\": \"C24\"}})
+box(\"post a\", (100, 100, {post_a}), material = \"C24\", grounded = True)
+box(\"post b\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+part = extrude(\"beam\", profile = {profile}, distance = 100, material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 100, 2000), z = (0, -1, 0), x = (1, 0, 0))
+box(\"deck\", (3850, 600, 20), at = (150, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+"
+        )
+    };
+    let under = report(
+        &source(
+            "[(0, 40), (150, 40), (150, 0), (4000, 0), (4000, 200), (0, 200)]",
+            2040.0,
+        ),
+        &[],
+    );
+    let on_top = report(
+        &source(
+            "[(0, 0), (4000, 0), (4000, 200), (150, 200), (150, 160), (0, 160)]",
+            2000.0,
+        ),
+        &[],
+    );
+    // The same reaction on the same net 100 x 160 mm; kv of the notch under
+    // it as in a_beam_notched_over_its_bearing_is_checked_in_shear_with_kv.
+    let (h, alpha, x) = (200.0f64, 0.8f64, 100.0);
+    let kv = 5.0
+        / (h.sqrt()
+            * ((alpha * (1.0 - alpha)).sqrt()
+                + 0.8 * x / h * (1.0 / alpha - alpha * alpha).sqrt()));
+    close(
+        utilization(member(&on_top, "beam"), "shear_notch"),
+        utilization(member(&under, "beam"), "shear_notch") * kv,
+    );
+}
+
+#[test]
 fn a_beam_notched_over_a_bearing_longer_than_400_mm_is_not_verified() {
     // Review 2026-10-19 P3: the beam of `beam` 100 x 200 over two spans, its
     // underside notched 40 mm deep over 1700..2300 mm, where a wall 500 mm

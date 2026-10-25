@@ -166,7 +166,7 @@ pub const BASIS: [&str; 9] = [
     "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
     "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2, gamma_M 1.3 solid / 1.25 glulam (table 2.3)",
     "bending with kh (3.2, 3.3), kcrit = 1: members assumed braced against lateral torsional buckling by the decking",
-    "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch; elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
+    "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch, kv = 1 for a notch in the top over a bearing under the member (fig. 6.11(b)); elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
     "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes, and its deflection is the resultant of the vertical and the sideways part, each at its own worst load pattern; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
     "a computed check, not an authorized structural design",
@@ -806,6 +806,11 @@ struct Shape {
     arc: f64,
     /// Depth across the member at a load-frame position, when it varies (notches).
     depth_at: Option<Box<dyn Fn(f64) -> f64>>,
+    /// Where the member's underside is at a load-frame position, mm up along
+    /// the profile, less where its own slope takes it: the same at a notch
+    /// and past it when the notch is cut into the top (review 2026-10-24
+    /// PG-25). None when the profile has no up.
+    underside_at: Option<Box<dyn Fn(f64) -> f64>>,
 }
 
 /// The mirrors among `operations` (review 2026-10-19 PG-13: they reflect the
@@ -1010,6 +1015,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             twists,
             arc: 1.0,
             depth_at: None,
+            underside_at: None,
         });
     }
     // The profile is a side or plan view: the grain runs along its longest edge.
@@ -1084,6 +1090,22 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     // The grain runs in the profile plane, so no cut along the extrusion bores along it.
     let (_, unmodelled) = changes(part, None, [d[0], d[1], 0.0], b.min(h));
     let profile = segments.clone();
+    // Up along the profile's other axis, and how far the member's own slope
+    // takes its underside up per unit of its length.
+    let up = world[1 - long][2];
+    let underside_at = (depth_in_plane && up.abs() > ROUNDING).then(|| {
+        let profile = segments.clone();
+        let slope = d[1 - long] / d[long] * up.signum();
+        Box::new(move |x: f64| {
+            let hits = crossings(&profile, long, start + x);
+            let low = if up > 0.0 {
+                hits.first().copied()
+            } else {
+                hits.last().map(|hit| -hit)
+            };
+            low.unwrap_or(f64::NAN) - slope * x
+        }) as Box<dyn Fn(f64) -> f64>
+    });
     // Bending takes the section cut across the profile at each place, turned
     // as placed: in the vertical plane across the grain.
     let section_axes = across_grain(grain);
@@ -1122,6 +1144,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             Box::new(move |x: f64| chord(&profile, long, start + x) * along)
                 as Box<dyn Fn(f64) -> f64>
         }),
+        underside_at,
     })
 }
 
@@ -1655,12 +1678,21 @@ fn beam_checks(
             } else if h_ef < 0.95 * h {
                 let kn = if class.glulam { 6.5 } else { 5.0 };
                 let alpha = h_ef / h;
-                let x = notch_corner(depth_at, zone, load.length_mm, 0.95 * h, shape.arc);
-                let kv = (kn
-                    / (h.sqrt()
+                let (x, corner) = notch_corner(depth_at, zone, load.length_mm, 0.95 * h, shape.arc);
+                // A notch in the top, away from the bearing under it, keeps
+                // the underside: kv = 1 (6.5.2(2), fig. 6.11(b)).
+                let middle = (zone.lo + zone.hi) / 2.0;
+                let on_top = shape.underside_at.as_ref().is_some_and(|underside| {
+                    (underside(middle) - underside(corner)).abs() < (h - h_ef) / 2.0
+                });
+                let kv = if on_top {
+                    1.0
+                } else {
+                    (kn / (h.sqrt()
                         * ((alpha * (1.0 - alpha)).sqrt()
                             + 0.8 * x / h * (1.0 / alpha - alpha * alpha).sqrt())))
-                .min(1.0);
+                    .min(1.0)
+                };
                 for combination in uls {
                     let force = factor(&combination.factors, &reaction) * cos_t;
                     let tau = 1.5 * force / (KCR * b * h_ef);
@@ -1823,17 +1855,18 @@ fn tension_notch(
 }
 
 /// EC5 6.5.2, fig. 6.11: `x`, mm, from the middle of the reaction in `zone`
-/// to the corner of the notch, where the member is `full` deep again. A
-/// notch with a corner on each side takes the farther one. `depth_at` and
-/// `length` are along the load frame, `arc` mm per unit of it (review
-/// 2026-10-17 PG-3: the half bearing length was taken instead).
+/// to the corner of the notch, where the member is `full` deep again, and
+/// that place along the load frame. A notch with a corner on each side takes
+/// the farther one. `depth_at` and `length` are along the load frame, `arc`
+/// mm per unit of it (review 2026-10-17 PG-3: the half bearing length was
+/// taken instead).
 fn notch_corner(
     depth_at: &dyn Fn(f64) -> f64,
     zone: &Zone,
     length: f64,
     full: f64,
     arc: f64,
-) -> f64 {
+) -> (f64, f64) {
     let middle = (zone.lo + zone.hi) / 2.0;
     let step = 1.0 / arc;
     let corner = |towards: f64| {
@@ -1841,7 +1874,7 @@ fn notch_corner(
         loop {
             let next = notched + towards * step;
             if !(0.0..=length).contains(&next) {
-                return 0.0;
+                return (0.0, middle);
             }
             if depth_at(next) >= full {
                 // The corner lies between the last notched step and this one.
@@ -1854,12 +1887,13 @@ fn notch_corner(
                         a = half;
                     }
                 }
-                return (b - middle).abs() * arc;
+                return ((b - middle).abs() * arc, b);
             }
             notched = next;
         }
     };
-    corner(1.0).max(corner(-1.0))
+    let (ahead, behind) = (corner(1.0), corner(-1.0));
+    if ahead.0 >= behind.0 { ahead } else { behind }
 }
 
 /// Reactions of a member whose bearings touch or overlap, along its load frame.
