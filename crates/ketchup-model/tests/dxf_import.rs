@@ -2962,8 +2962,60 @@ fn cyclic_or_excessively_deep_nested_block_graphs_fail_closed() {
             &dxf_with_blocks(4, &too_deep, "0\nINSERT\n2\nd0\n10\n0\n20\n0\n"),
             options
         ),
-        Err(DxfImportError::InvalidBlock)
+        Err(DxfImportError::BlocksTooDeep)
     );
+}
+
+/// Review 2026-10-24 UL-28: how deep a block nests was counted from the block the
+/// reading started at, so whether a chain of 41 blocks was read depended on the
+/// order of their names, and the one refused was named a cyclic or undefined block.
+#[test]
+fn a_block_nested_too_deep_is_refused_as_such_whatever_the_names() {
+    for name in [
+        (|index: usize| format!("b{index:02}")) as fn(usize) -> String,
+        |index| format!("b{:02}", 40 - index),
+    ] {
+        let mut blocks = String::new();
+        for index in 0..41 {
+            blocks.push_str(&format!(
+                "0\nBLOCK\n2\n{}\n70\n0\n10\n0\n20\n0\n",
+                name(index)
+            ));
+            if index == 40 {
+                blocks.push_str("0\nLINE\n10\n0\n20\n0\n11\n1\n21\n0\n");
+            } else {
+                let inner = name(index + 1);
+                blocks.push_str(&format!("0\nINSERT\n2\n{inner}\n10\n0\n20\n0\n"));
+            }
+            blocks.push_str("0\nENDBLK\n");
+        }
+        // The whole chain, and its 21 innermost blocks 100 mm to the right.
+        let entities = format!(
+            "0\nINSERT\n2\n{}\n10\n0\n20\n0\n0\nINSERT\n2\n{}\n10\n100\n20\n0\n",
+            name(0),
+            name(20)
+        );
+        let parsed = inspect_dxf(
+            &dxf_with_blocks(4, &blocks, &entities),
+            DxfImportOptions::new(None),
+        )
+        .unwrap();
+        let [profile] = parsed.profiles() else {
+            panic!("{}: {:?}", name(0), parsed.profiles());
+        };
+        assert_eq!(profile.segments()[0].start_mm()[0], 100.0, "{}", name(0));
+        let unreadable = (parsed.diagnostics().iter())
+            .filter(|diagnostic| diagnostic.code() == "dxf.block-unreadable")
+            .filter_map(|diagnostic| diagnostic.subject())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            unreadable,
+            [format!(
+                "DXF nests blocks more than 32 deep; blocks: {}",
+                name(0)
+            )],
+        );
+    }
 }
 
 /// What a house plan exported from Revit holds: inserts scaled alike in all three axes,

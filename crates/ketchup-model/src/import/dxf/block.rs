@@ -40,7 +40,8 @@ struct RawBlockDefinition<'a> {
 
 struct BlockResolution<'a> {
     blocks: &'a mut BTreeMap<String, BlockDefinition>,
-    resolving: &'a mut BTreeSet<String>,
+    /// [`nesting_heights`] of the drawing's blocks.
+    heights: BTreeMap<String, usize>,
     /// The blocks that could not be resolved, with why: each is read and reported once.
     failed: BTreeMap<String, DxfImportError>,
     entity_count: &'a mut usize,
@@ -192,17 +193,16 @@ pub(super) fn parse_blocks<'a>(
         .cloned()
         .collect::<Vec<_>>();
     let mut blocks = BTreeMap::new();
-    let mut resolving = BTreeSet::new();
     {
         let mut resolution = BlockResolution {
             blocks: &mut blocks,
-            resolving: &mut resolving,
+            heights: nesting_heights(&raw_blocks),
             failed: BTreeMap::new(),
             entity_count,
             diagnostics,
         };
         for key in keys {
-            if let Err(error) = resolve_block(&key, &raw_blocks, 0, units, &mut resolution) {
+            if let Err(error) = resolve_block(&key, &raw_blocks, units, &mut resolution) {
                 skip_block(&raw_blocks[&key].name, error, resolution.diagnostics)?;
             }
         }
@@ -229,10 +229,59 @@ fn skip_block(
     )
 }
 
+/// How many blocks deep each block nests, itself included: 1 for a block that places
+/// none. An insert of a block the drawing does not define, or of one that places the
+/// inserting block back, does not count; resolving refuses those. Counted over the whole
+/// drawing, so the limit on it does not depend on the block the reading starts at
+/// (review 2026-10-24 UL-28), and without recursion, however long a chain is.
+fn nesting_heights(
+    raw_blocks: &BTreeMap<String, RawBlockDefinition<'_>>,
+) -> BTreeMap<String, usize> {
+    let placed: BTreeMap<&str, Vec<String>> = (raw_blocks.iter())
+        .map(|(key, raw)| {
+            let placed = if raw.xref {
+                Vec::new()
+            } else {
+                block_dependencies(&raw.entities).unwrap_or_default()
+            };
+            (key.as_str(), placed)
+        })
+        .collect();
+    let mut heights = BTreeMap::<String, usize>::new();
+    let mut on_path = BTreeSet::new();
+    for &root in placed.keys() {
+        if heights.contains_key(root) {
+            continue;
+        }
+        on_path.insert(root);
+        let mut stack = vec![(root, 0)];
+        while let Some(&mut (key, ref mut next)) = stack.last_mut() {
+            let children = &placed[key];
+            if let Some(child) = children.get(*next) {
+                *next += 1;
+                let child = child.as_str();
+                if placed.contains_key(child)
+                    && !heights.contains_key(child)
+                    && on_path.insert(child)
+                {
+                    stack.push((child, 0));
+                }
+                continue;
+            }
+            let below = (children.iter())
+                .filter_map(|child| heights.get(child.as_str()))
+                .max();
+            heights.insert(key.to_owned(), below.map_or(1, |below| below + 1));
+            on_path.remove(key);
+            stack.pop();
+        }
+    }
+    heights
+}
+
 fn resolve_block<'a>(
     key: &str,
     raw_blocks: &BTreeMap<String, RawBlockDefinition<'a>>,
-    depth: usize,
     units: ImportUnitDecision,
     resolution: &mut BlockResolution<'_>,
 ) -> Result<(), DxfImportError> {
@@ -246,11 +295,11 @@ fn resolve_block<'a>(
         .get(key)
         .cloned()
         .ok_or(DxfImportError::InvalidBlock)?;
-    if depth >= MAX_DXF_BLOCK_DEPTH || !resolution.resolving.insert(key.to_owned()) {
-        return Err(DxfImportError::InvalidBlock);
-    }
-    let resolved = resolve_raw_block(key, raw, raw_blocks, depth, units, resolution);
-    resolution.resolving.remove(key);
+    let resolved = if resolution.heights.get(key) > Some(&MAX_DXF_BLOCK_DEPTH) {
+        Err(DxfImportError::BlocksTooDeep)
+    } else {
+        resolve_raw_block(key, raw, raw_blocks, units, resolution)
+    };
     if let Err(error) = &resolved {
         resolution.failed.insert(key.to_owned(), error.clone());
     }
@@ -262,7 +311,6 @@ fn resolve_raw_block<'a>(
     key: &str,
     raw: RawBlockDefinition<'a>,
     raw_blocks: &BTreeMap<String, RawBlockDefinition<'a>>,
-    depth: usize,
     units: ImportUnitDecision,
     resolution: &mut BlockResolution<'_>,
 ) -> Result<(), DxfImportError> {
@@ -282,10 +330,19 @@ fn resolve_raw_block<'a>(
         );
         return Ok(());
     }
+    let height = resolution.heights.get(key).copied().unwrap_or(1);
     for dependency in block_dependencies(&raw.entities)? {
         // An insert or dimension of a block that cannot be resolved here (missing, too
-        // deep, or one inserting itself) is left out as an entity it cannot read.
-        if let Err(error) = resolve_block(&dependency, raw_blocks, depth + 1, units, resolution)
+        // deep, or one inserting itself) is left out as an entity it cannot read. A block
+        // that nests no less deep than this one places it back: each block resolved
+        // nests less deep than the one placing it, so resolving recurses at most
+        // MAX_DXF_BLOCK_DEPTH deep.
+        let resolved = if resolution.heights.get(&dependency) >= Some(&height) {
+            Err(DxfImportError::InvalidBlock)
+        } else {
+            resolve_block(&dependency, raw_blocks, units, resolution)
+        };
+        if let Err(error) = resolved
             && error.ends_reading()
         {
             return Err(error);

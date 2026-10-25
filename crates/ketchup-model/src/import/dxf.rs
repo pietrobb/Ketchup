@@ -218,6 +218,8 @@ pub enum DxfImportError {
     DegenerateGeometry,
     InvalidBulge,
     InvalidBlock,
+    /// A block that places blocks more than [`MAX_DXF_BLOCK_DEPTH`] deep, itself included.
+    BlocksTooDeep,
     UnsupportedInsertTransform,
     /// A block placed here would draw more than an underlay's blocks have left to place.
     TooMuchPlaced,
@@ -329,6 +331,12 @@ impl fmt::Display for DxfImportError {
             Self::InvalidBulge => "DXF contains an invalid or full-circle polyline bulge",
             Self::InvalidBlock => {
                 "DXF contains an invalid, duplicate, cyclic, or undefined block"
+            }
+            Self::BlocksTooDeep => {
+                return write!(
+                    formatter,
+                    "DXF nests blocks more than {MAX_DXF_BLOCK_DEPTH} deep"
+                );
             }
             Self::UnsupportedInsertTransform => {
                 "DXF INSERT uses unsupported zero, non-uniform curved, or Z scaling"
