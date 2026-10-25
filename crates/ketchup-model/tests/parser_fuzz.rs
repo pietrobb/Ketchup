@@ -1,9 +1,11 @@
 //! Review 2026-10-09 §5.1 (9): every import reader takes mutated files and
 //! either reads them or refuses them, never panics and never runs long. The
 //! mutations are deterministic (fixed seeds), so a failure names the case that
-//! reproduces it. The per-input time limit catches blowups such as DXF-1 (one
-//! block inserted thousands of times), the panic check catches DXF-2 (an
-//! `unreachable!` behind a rotation a hair below zero).
+//! reproduces it. The panic check catches DXF-2 (an `unreachable!` behind a
+//! rotation a hair below zero) in every pull request; the per-input time limit
+//! that catches blowups such as DXF-1 (one block inserted thousands of times)
+//! runs nightly in release (`perf_*`), since a debug build on a loaded machine
+//! missed it with nothing wrong (review 2026-10-24 TST-23).
 
 use ketchup_model::import::{
     DxfImportOptions, ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision, inspect_dxf,
@@ -12,8 +14,10 @@ use ketchup_model::import::{
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// Generous for a debug build on a loaded machine; the seeds read in
-/// milliseconds, so only a pathological input comes near it.
+/// Only a reader that hangs comes near it, in any build on any machine.
+const HANG_PATIENCE: Duration = Duration::from_secs(300);
+/// In release the seeds read in milliseconds, so only a pathological input
+/// comes near it.
 const PER_INPUT: Duration = Duration::from_secs(5);
 
 /// xorshift64*: small, fast and the same on every machine.
@@ -156,8 +160,8 @@ fn moved_record(record: &[u8], copy: usize) -> Vec<u8> {
 }
 
 /// Runs every mutated input on its own thread and fails on a panic or on an
-/// input that takes longer than `PER_INPUT`.
-fn fuzz(format: &str, seeds: &[Vec<u8>], cases: usize, read: fn(&[u8])) {
+/// input that takes longer than `limit`.
+fn fuzz(format: &str, seeds: &[Vec<u8>], cases: usize, read: fn(&[u8]), limit: Duration) {
     let mut mutator = Mutator(0x9E37_79B9_7F4A_7C15 ^ format.len() as u64);
     for case in 0..cases {
         let seed = &seeds[case % seeds.len()];
@@ -175,7 +179,7 @@ fn fuzz(format: &str, seeds: &[Vec<u8>], cases: usize, read: fn(&[u8])) {
                 let _ = done.send(());
             })
             .unwrap();
-        match finished.recv_timeout(PER_INPUT) {
+        match finished.recv_timeout(limit) {
             Ok(()) => reader.join().unwrap(),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let panic = reader
@@ -189,7 +193,7 @@ fn fuzz(format: &str, seeds: &[Vec<u8>], cases: usize, read: fn(&[u8])) {
                 panic!("{format} case {case} ({length} bytes) panicked: {message}");
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                panic!("{format} case {case} ({length} bytes) ran longer than {PER_INPUT:?}");
+                panic!("{format} case {case} ({length} bytes) ran longer than {limit:?}");
             }
         }
     }
@@ -272,22 +276,43 @@ fn scene_seed() -> Vec<u8> {
 }
 
 #[test]
-fn mutated_dxf_files_are_read_or_refused_quickly_without_panicking() {
+fn mutated_dxf_files_are_read_or_refused_without_panicking() {
+    fuzz_dxf(HANG_PATIENCE);
+}
+
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_mutated_dxf_files_are_read_or_refused_quickly() {
+    fuzz_dxf(PER_INPUT);
+}
+
+fn fuzz_dxf(limit: Duration) {
     for seed in dxf_seeds() {
         if let Err(error) = inspect_dxf(&seed, DxfImportOptions::new(None)) {
             panic!("the seed itself is readable: {error:?}");
         }
     }
-    fuzz("dxf", &dxf_seeds(), 600, |bytes| {
+    let read: fn(&[u8]) = |bytes| {
         let _ = inspect_dxf(
             bytes,
             DxfImportOptions::new(Some(ImportLengthUnit::Millimetre)),
         );
-    });
+    };
+    fuzz("dxf", &dxf_seeds(), 600, read, limit);
 }
 
 #[test]
-fn mutated_stl_files_are_read_or_refused_quickly_without_panicking() {
+fn mutated_stl_files_are_read_or_refused_without_panicking() {
+    fuzz_stl(HANG_PATIENCE);
+}
+
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_mutated_stl_files_are_read_or_refused_quickly() {
+    fuzz_stl(PER_INPUT);
+}
+
+fn fuzz_stl(limit: Duration) {
     for seed in stl_seeds() {
         let units = ImportUnitDecision::new(
             ImportLengthUnit::Millimetre,
@@ -298,24 +323,36 @@ fn mutated_stl_files_are_read_or_refused_quickly_without_panicking() {
             "the seed itself is readable"
         );
     }
-    fuzz("stl", &stl_seeds(), 600, |bytes| {
+    let read: fn(&[u8]) = |bytes| {
         let units = ImportUnitDecision::new(
             ImportLengthUnit::Millimetre,
             ImportUnitAuthority::UserDeclared,
         );
         let _ = parse_stl(bytes, units);
-    });
+    };
+    fuzz("stl", &stl_seeds(), 600, read, limit);
 }
 
 #[test]
-fn mutated_sketchup_scenes_are_read_or_refused_quickly_without_panicking() {
+fn mutated_sketchup_scenes_are_read_or_refused_without_panicking() {
+    fuzz_scene(HANG_PATIENCE);
+}
+
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_mutated_sketchup_scenes_are_read_or_refused_quickly() {
+    fuzz_scene(PER_INPUT);
+}
+
+fn fuzz_scene(limit: Duration) {
     assert!(
         inspect_sketchup_scene(&scene_seed()).is_ok(),
         "the seed itself is readable"
     );
-    fuzz("kscene", &[scene_seed()], 600, |bytes| {
+    let read: fn(&[u8]) = |bytes| {
         let _ = inspect_sketchup_scene(bytes);
-    });
+    };
+    fuzz("kscene", &[scene_seed()], 600, read, limit);
 }
 
 /// The vertex buffer of the GLB seed; the fuzzer mutates the JSON chunk the
@@ -341,7 +378,17 @@ fn glb_with_json(json: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn mutated_glb_files_are_read_or_refused_quickly_without_panicking() {
+fn mutated_glb_files_are_read_or_refused_without_panicking() {
+    fuzz_glb(HANG_PATIENCE);
+}
+
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_mutated_glb_files_are_read_or_refused_quickly() {
+    fuzz_glb(PER_INPUT);
+}
+
+fn fuzz_glb(limit: Duration) {
     let seed = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../artifacts/blender/garden-studio-colored.glb"
@@ -354,7 +401,8 @@ fn mutated_glb_files_are_read_or_refused_quickly_without_panicking() {
     GLB_BUFFER.get_or_init(|| seed[20 + json_length..].to_vec());
     assert_eq!(glb_with_json(&json), seed, "the seed packs back unchanged");
     assert!(inspect_glb(&seed).is_ok(), "the seed itself is readable");
-    fuzz("glb", &[json], 300, |json| {
+    let read: fn(&[u8]) = |json| {
         let _ = inspect_glb(&glb_with_json(json));
-    });
+    };
+    fuzz("glb", &[json], 300, read, limit);
 }

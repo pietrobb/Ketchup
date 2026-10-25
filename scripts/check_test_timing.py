@@ -15,6 +15,8 @@ Counted as a budget:
 - a wait shorter than `PATIENCE_FLOOR` whose result the test needs (`recv_timeout(250 ms)
   .expect(…)`), which fails when the machine is slow; polling it (`if let Ok`, `match`,
   `while`) or asserting it timed out (`.is_err()`) is not;
+- a `match` on a wait whose `Timeout` arm fails the test, shorter than `HANG_FLOOR`: it
+  limits the work it waits for (review 2026-10-24 TST-23);
 - a call to a `perf_*` function from a function not named `perf_*`.
 
 Not counted: a deadline that only stops a wait on a hung condition (`Instant::now() <
@@ -33,6 +35,10 @@ from check_test_sleeps import is_test_file  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PATIENCE_FLOOR_MS = 5_000
+# A matched wait that fails the test on its timeout limits the work it waits for;
+# under this it fails on a loaded machine, so it guards only against a hang.
+HANG_FLOOR_MS = 60_000
+FAILS_ON_TIMEOUT = re.compile(r"Timeout\)?\s*=>\s*\{?\s*(?:panic!|unreachable!|assert)")
 FUNCTION = re.compile(r"\bfn\s+(\w+)")
 # A `perf_*` test and the attributes above it, which must ignore it in the PR suite.
 PERF_TEST = re.compile(r"((?:^[ \t]*#\[[^\n]*\n|^[ \t]*///[^\n]*\n)+)[ \t]*fn\s+perf_\w+", re.M)
@@ -99,6 +105,19 @@ def milliseconds(expression: str, constants: dict[str, float]) -> float | None:
     return None
 
 
+def arms(text: str, after: int) -> str:
+    """The braced block that follows `after`: the arms of a `match`."""
+    opening = text.find("{", after)
+    if opening < 0:
+        return ""
+    depth = 0
+    for index in range(opening, len(text)):
+        depth += {"{": 1, "}": -1}.get(text[index], 0)
+        if depth == 0:
+            return text[opening:index + 1]
+    return text[opening:]
+
+
 def short_needed_waits(text: str) -> list[int]:
     """Lines of a wait under `PATIENCE_FLOOR_MS` whose result the test relies on."""
     constants = {}
@@ -109,11 +128,18 @@ def short_needed_waits(text: str) -> list[int]:
     found = []
     for wait in WAIT.finditer(text):
         value = milliseconds(wait.group(1), constants)
-        if value is None or value >= PATIENCE_FLOOR_MS:
+        if value is None:
             continue
         start = max(text.rfind(mark, 0, wait.start()) for mark in ";{}") + 1
         ends = [end for end in (text.find(mark, wait.end()) for mark in ";{") if end >= 0]
         statement = text[start:min(ends, default=len(text))]
+        if re.match(r"\s*match\b", statement) and FAILS_ON_TIMEOUT.search(arms(text, wait.end())):
+            # It limits the work itself, not a message already on its way (TST-23).
+            if value < HANG_FLOOR_MS:
+                found.append(text.count("\n", 0, wait.start()) + 1)
+            continue
+        if value >= PATIENCE_FLOOR_MS:
+            continue
         if re.match(r"\s*(?:if|while|match)\b", statement) or ".is_err()" in statement:
             continue  # polling, or asserting that nothing arrived in time
         found.append(text.count("\n", 0, wait.start()) + 1)

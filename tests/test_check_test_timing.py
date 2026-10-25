@@ -91,6 +91,33 @@ def test_lower_bounds_polls_and_patient_waits_pass(tmp_path):
     assert checker.check(tmp_path) == 0
 
 
+def test_a_matched_wait_that_fails_on_timeout_is_a_budget_under_the_hang_floor(tmp_path):
+    # Review 2026-10-24 TST-23: the DXF fuzz test failed the PR suite on a loaded machine
+    # through `match finished.recv_timeout(PER_INPUT) { … Timeout => panic!(…) }` with
+    # 5 s per input: a `match` was taken for polling and 5 s met the patience floor.
+    write(tmp_path, "crates/a/tests/fuzz.rs", (
+        "const PER_INPUT: Duration = Duration::from_secs(5);\n"
+        "const HUNG: Duration = Duration::from_secs(300);\n"
+        "fn fuzz() {\n"
+        "    match finished.recv_timeout(PER_INPUT) {\n"
+        "        Ok(()) => {}\n"
+        "        Err(mpsc::RecvTimeoutError::Timeout) => {\n"
+        "            panic!(\"ran longer than {PER_INPUT:?}\");\n"
+        "        }\n"
+        "    }\n"
+        "    match finished.recv_timeout(HUNG) {\n"
+        "        Err(RecvTimeoutError::Timeout) => panic!(\"hung\"),\n"
+        "        _ => {}\n"
+        "    }\n"
+        "    match finished.recv_timeout(PER_INPUT) {\n"
+        "        Err(RecvTimeoutError::Timeout) => {}\n"
+        "        _ => {}\n"
+        "    }\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == ["crates/a/tests/fuzz.rs:4"]
+
+
 def test_the_viewer_crates_are_checked_too(tmp_path):
     # Review 2026-10-21 P3: only crates/ was scanned.
     write(tmp_path, "viewer/web/tests/smoke.rs", (
