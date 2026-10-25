@@ -154,7 +154,8 @@ pub struct ExactAxialAttachmentInput {
 pub struct ImportedExactPackage {
     pub identity: BodyResultIdentity,
     pub source_sha256: [u8; 32],
-    pub source_bytes: Vec<u8>,
+    /// The document's blob, shared by every part imported from it.
+    pub source_bytes: Arc<Vec<u8>>,
     pub source_part_index: Option<u32>,
     pub solid_count: u32,
     pub topology_counts: Option<[u32; 5]>,
@@ -870,9 +871,10 @@ impl ImportedExactPackage {
     pub fn from_snapshot(
         snapshot: &Snapshot,
         definition_id: DefinitionId,
-        source_bytes: Vec<u8>,
+        source_bytes: impl Into<Arc<Vec<u8>>>,
         mesh: &crate::import::StepImportMesh,
     ) -> Result<Self, ExactProductError> {
+        let source_bytes = source_bytes.into();
         let definition = snapshot
             .definition(definition_id)
             .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
@@ -885,7 +887,7 @@ impl ImportedExactPackage {
         let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
             return Err(ExactProductError::UnsupportedDefinition);
         };
-        let source_sha256: [u8; 32] = Sha256::digest(&source_bytes).into();
+        let source_sha256: [u8; 32] = Sha256::digest(source_bytes.as_slice()).into();
         if source_bytes.len() as u64 != spec.source_byte_len || source_sha256 != spec.source_sha256
         {
             return Err(ExactProductError::InvalidWorkerEvidence);

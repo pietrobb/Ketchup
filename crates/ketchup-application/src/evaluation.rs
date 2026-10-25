@@ -14,7 +14,7 @@ use ketchup_model::import::{
     StepImportEvidence,
 };
 use ketchup_model::persistence::ContainerData;
-use ketchup_scheduler::{MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES, WorkerError, reserve_whole};
+use ketchup_scheduler::{MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES, WorkerError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -27,13 +27,14 @@ use std::time::{Duration, Instant};
 enum ExactEvaluationRequest {
     Graph {
         graph: Box<ExactBRepGraph>,
-        imported_sources: Vec<Vec<u8>>,
+        imported_sources: Vec<Arc<Vec<u8>>>,
     },
     Topology {
         graph: Box<ExactBRepGraph>,
-        imported_sources: Vec<Vec<u8>>,
+        imported_sources: Vec<Arc<Vec<u8>>>,
     },
-    Imported(DefinitionId, Vec<u8>),
+    /// The source is the document's blob itself, shared, never a copy.
+    Imported(DefinitionId, Arc<Vec<u8>>),
 }
 
 /// Why one exact producer cannot be prepared or evaluated. Its text becomes the
@@ -49,8 +50,6 @@ enum ExactProducerError {
     ImportedSourceMismatch {
         sha256: String,
     },
-    /// The memory for the worker's copy of the imported sources is not there.
-    OutOfMemory(ketchup_scheduler::OutOfMemory),
     DefinitionUnavailable(DefinitionId),
     DefinitionNotSingular(DefinitionId),
     FeatureUnavailable(FeatureId),
@@ -84,7 +83,6 @@ impl std::fmt::Display for ExactProducerError {
                 f,
                 "imported exact source blob {sha256} does not match its canonical identity"
             ),
-            Self::OutOfMemory(error) => error.fmt(f),
             Self::DefinitionUnavailable(id) => {
                 write!(f, "imported exact definition {} is unavailable", id.0)
             }
@@ -608,12 +606,8 @@ fn prepare_requests(
                                     sha256: hash,
                                 });
                             }
-                            let mut source =
-                                reserve_whole(*source_byte_len, "imported exact source")
-                                    .map_err(ExactProducerError::OutOfMemory)?;
-                            source.extend_from_slice(blob);
                             imported_hashes.push(*source_sha256);
-                            imported_sources.push(source);
+                            imported_sources.push(Arc::clone(blob));
                         }
                         Ok(Some((
                             definition_id,
@@ -637,13 +631,9 @@ fn prepare_requests(
                                 sha256: hash,
                             });
                         }
-                        let mut source =
-                            reserve_whole(spec.source_byte_len, "imported exact source")
-                                .map_err(ExactProducerError::OutOfMemory)?;
-                        source.extend_from_slice(blob);
                         Ok(Some((
                             definition_id,
-                            ExactEvaluationRequest::Imported(definition_id, source),
+                            ExactEvaluationRequest::Imported(definition_id, Arc::clone(blob)),
                         )))
                     }
                 }
@@ -930,7 +920,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
             } | ExactEvaluationRequest::Topology { graph, imported_sources } => {
                 let imported_sources = imported_sources
                     .iter()
-                    .map(Vec::as_slice)
+                    .map(|source| source.as_slice())
                     .collect::<Vec<_>>();
                 let package = worker
                     .evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
@@ -1481,8 +1471,15 @@ mod imported_source_tests {
         let (requests, _) = prepared.unwrap();
         assert!(matches!(
             requests.as_slice(),
-            [(_, ExactEvaluationRequest::Imported(_, bytes))] if *bytes == source
+            [(_, ExactEvaluationRequest::Imported(_, bytes))] if **bytes == source
         ));
         assert!(hashed < source.len() as u64 / 64, "{hashed}");
+        // Review 10-24 EX-22: the request shares the document's blob, so 20
+        // parts of one 30 MiB STEP hold it once, not 20 times.
+        let blob = container.blobs().values().next().unwrap();
+        assert!(matches!(
+            requests.as_slice(),
+            [(_, ExactEvaluationRequest::Imported(_, bytes))] if bytes.as_ptr() == blob.as_ptr()
+        ));
     }
 }

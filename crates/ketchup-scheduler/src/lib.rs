@@ -2235,7 +2235,7 @@ impl ExactWorkerSupervisor {
                 ExactBodyPackage::Imported(expected) => {
                     if let Some(part_index) = expected.source_part_index {
                         let original = directory.path().join(format!("imported-{index}.step"));
-                        std::fs::write(&original, &expected.source_bytes)
+                        std::fs::write(&original, expected.source_bytes.as_slice())
                             .map_err(|error| WorkerError::Transport(error.to_string()))?;
                         self.client.export_step_xde_part_request_with_cancellation(
                             &original,
@@ -2246,7 +2246,7 @@ impl ExactWorkerSupervisor {
                             cancelled,
                         )
                     } else {
-                        std::fs::write(&source, &expected.source_bytes)
+                        std::fs::write(&source, expected.source_bytes.as_slice())
                             .map_err(|error| WorkerError::Transport(error.to_string()))
                     }
                 }
@@ -2273,7 +2273,7 @@ impl ExactWorkerSupervisor {
                             if let Some(part_index) = expected.source_part_index {
                                 let original =
                                     directory.path().join(format!("imported-{index}.step"));
-                                std::fs::write(&original, &expected.source_bytes)
+                                std::fs::write(&original, expected.source_bytes.as_slice())
                                     .map_err(|error| WorkerError::Transport(error.to_string()))?;
                                 self.client.export_step_xde_part_request_with_cancellation(
                                     &original,
@@ -2284,7 +2284,7 @@ impl ExactWorkerSupervisor {
                                     cancelled,
                                 )?;
                             } else {
-                                std::fs::write(&source, &expected.source_bytes)
+                                std::fs::write(&source, expected.source_bytes.as_slice())
                                     .map_err(|error| WorkerError::Transport(error.to_string()))?;
                             }
                         }
