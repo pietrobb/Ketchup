@@ -607,6 +607,48 @@ fn pair_worker_count(left_graphs: usize, pairs: usize, idle: usize) -> (usize, b
     }
 }
 
+/// How a pair check runs: on one worker, or on `workers` side by side. When
+/// only idle workers may run, `idle` holds one for each, taken from the pool
+/// before any range starts.
+enum PairWorkers {
+    Serial,
+    Parallel {
+        workers: usize,
+        idle: Vec<crate::worker_pool::PooledExactWorker>,
+    },
+}
+
+/// The workers a check of `pairs` between `left_graphs` left solids runs on.
+/// Idle workers are counted whatever their memory share, so when only they may
+/// run the check takes those that can be its share first and runs on as many
+/// as it got (review 2026-10-24 EX-24); fewer than two leave it serial.
+fn pair_workers(path: Option<&Path>, left_graphs: usize, pairs: usize) -> PairWorkers {
+    let (workers, idle_only) =
+        pair_worker_count(left_graphs, pairs, crate::worker_pool::idle_workers(path));
+    if workers == 1 {
+        return PairWorkers::Serial;
+    }
+    if !idle_only {
+        return PairWorkers::Parallel {
+            workers,
+            idle: Vec::new(),
+        };
+    }
+    let idle: Vec<_> = std::iter::from_fn(|| crate::worker_pool::checkout_idle(path, workers))
+        .take(workers)
+        .collect();
+    if idle.len() < 2 {
+        for unused in idle {
+            unused.release();
+        }
+        return PairWorkers::Serial;
+    }
+    PairWorkers::Parallel {
+        workers: idle.len(),
+        idle,
+    }
+}
+
 /// Independent graph ranges use several isolated workers; small checks keep one.
 /// Results are forwarded in range order, regardless of worker completion order.
 fn send_exact_pair_batches(
@@ -619,23 +661,23 @@ fn send_exact_pair_batches(
     tx: &mpsc::Sender<ExactPairBatch>,
 ) {
     let left_graphs: BTreeSet<_> = pairs.iter().map(|pair| pair.2.left_graph).collect();
-    let (workers, idle_only) = pair_worker_count(
-        left_graphs.len(),
-        pairs.len(),
-        crate::worker_pool::idle_workers(path),
-    );
-    if workers == 1 {
-        send_serial_pair_batches(
-            path,
-            pairs,
-            graphs,
-            sources,
-            contact_tolerance_mm,
-            cancelled,
-            tx,
-        );
-        return;
-    }
+    let (workers, idle) = match pair_workers(path, left_graphs.len(), pairs.len()) {
+        PairWorkers::Serial => {
+            send_serial_pair_batches(
+                path,
+                pairs,
+                graphs,
+                sources,
+                contact_tolerance_mm,
+                cancelled,
+                tx,
+            );
+            return;
+        }
+        PairWorkers::Parallel { workers, idle } => (workers, idle),
+    };
+    let mut idle = idle.into_iter();
+    let own: Vec<_> = (0..workers).map(|_| idle.next()).collect();
     // Pair costs vary widely, so workers take small ranges from a shared queue
     // instead of one fixed share each; a range keeps neighbouring solids together.
     let ranks = order::locality_ranks(
@@ -658,24 +700,14 @@ fn send_exact_pair_batches(
     let running = AtomicUsize::new(workers);
     let (ranges, senders, next, running) = (&ranges, &senders, &next, &running);
     std::thread::scope(|scope| {
-        for worker in 0..workers {
+        for idle in own {
             scope.spawn(move || {
                 let claim = || {
                     let index = next.fetch_add(1, Ordering::AcqRel);
                     let sender = senders.lock().ok()?.get_mut(index)?.take()?;
                     Some((ranges[index], sender))
                 };
-                // Only an already running worker joins; the first one always works.
-                let idle_only = idle_only && worker > 0;
-                let idle = idle_only
-                    .then(|| crate::worker_pool::checkout_idle(path, workers))
-                    .flatten();
-                let claimed = if idle_only && idle.is_none() {
-                    None
-                } else {
-                    claim()
-                };
-                if let Some((range, range_tx)) = claimed {
+                if let Some((range, range_tx)) = claim() {
                     let checked_out = match idle {
                         Some(supervisor) => Ok(supervisor),
                         None => crate::worker_pool::checkout_sharing(path, workers, cancelled),
@@ -1895,6 +1927,61 @@ box('beside', (100, 100, 18), at=(100, 300, 0))";
             let measured = pieces::measure(&hulls[a], &hulls[b], tolerance, gap);
             let area = |p: Vec<ContactPatch>| p.iter().map(|p| p.area_mm2).sum::<f64>().round();
             assert_eq!(measured.map(|(p, gap)| (area(p), gap)), answer, "{a} / {b}");
+        }
+    }
+
+    /// Review 2026-10-24 EX-24: a check spread over idle workers took them one by one as
+    /// its ranges started. Idle workers whose memory share did not fit were counted all
+    /// the same, so the first range started a new worker and the others found none.
+    /// Its own module, so its turn keeps the other pool tests from filling or
+    /// draining the idle pool while it counts it.
+    mod idle_pool {
+        use super::*;
+
+        #[test]
+        fn a_check_spread_over_idle_workers_takes_them_before_it_starts_and_starts_none() {
+            let _turn = crate::collision::integration_support::file_turn();
+            let path = crate::evaluation::exact_worker_candidates()
+                .into_iter()
+                .find(|path| path.is_file())
+                .expect("native exact worker required");
+            let (most, _) = pair_worker_count(usize::MAX, 0, 0);
+            if most < 2 {
+                return; // This machine's budget runs exact workers one at a time.
+            }
+            let pairs = most * PAIRS_PER_IDLE_WORKER;
+            let cancelled = AtomicBool::new(false);
+            let idle = |share: usize| {
+                crate::worker_pool::clear_idle();
+                let workers: Vec<_> = (0..most)
+                    .map(|_| {
+                        crate::worker_pool::checkout_sharing(Some(&path), share, &cancelled)
+                            .unwrap()
+                    })
+                    .collect();
+                for worker in workers {
+                    worker.release();
+                }
+            };
+            // Idle workers of the share this check gives each: it takes all of them.
+            idle(most);
+            match pair_workers(Some(&path), 1, pairs) {
+                PairWorkers::Parallel { workers, idle } => {
+                    assert_eq!((workers, idle.len()), (most, most));
+                    for worker in idle {
+                        worker.release();
+                    }
+                }
+                PairWorkers::Serial => panic!("{most} idle workers were not used"),
+            }
+            // Idle workers of the whole budget cannot be its share: the check runs on one.
+            idle(1);
+            assert!(matches!(
+                pair_workers(Some(&path), 1, pairs),
+                PairWorkers::Serial
+            ));
+            assert_eq!(crate::worker_pool::idle_count(), most);
+            crate::worker_pool::clear_idle();
         }
     }
 

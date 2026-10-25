@@ -66,6 +66,14 @@ pub(crate) fn idle_count() -> usize {
         .len()
 }
 
+/// Stops every idle worker, so a test starts from an empty pool.
+#[cfg(test)]
+pub(crate) fn clear_idle() {
+    let stopped =
+        std::mem::take(&mut *IDLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+    drop(stopped);
+}
+
 /// Idle workers of `executable` a request can take without starting one.
 pub(crate) fn idle_workers(executable: Option<&Path>) -> usize {
     let Some(canonical) = executable.and_then(|path| path.canonicalize().ok()) else {
