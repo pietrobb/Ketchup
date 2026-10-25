@@ -448,28 +448,39 @@ impl From<DimensionError> for CanonicalError {
     }
 }
 
+impl CanonicalError {
+    /// What an invalid revolve, offset, sweep, member, joint or loft lacks.
+    fn feature_shape_rule(&self) -> &'static str {
+        match self {
+            Self::InvalidRevolve => "revolve axis or angle is invalid",
+            Self::InvalidPlanarOffset => "planar offset distance or bounded profile is invalid",
+            Self::InvalidSweep => {
+                "sweep requires one bounded closed profile and a compatible non-degenerate open path"
+            }
+            Self::InvalidWeldmentMember => {
+                "weldment member requires a bounded closed profile, a canonical spatial path, and orientation in [-180, 180) degrees"
+            }
+            Self::InvalidWeldmentJoint => {
+                "weldment joint requires two distinct straight members meeting at one manufacturable nonparallel endpoint"
+            }
+            Self::InvalidLoft => "loft requires ordered bounded closed-profile sections",
+            _ => "feature shape is invalid",
+        }
+    }
+}
+
 impl fmt::Display for CanonicalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptySourceToken => write!(formatter, "{}", DimensionError::EmptySourceToken),
             Self::InvalidDecimalToken => write!(formatter, "{}", DimensionError::InvalidDecimalToken),
             Self::DimensionOutsideEnvelope => write!(formatter, "{}", DimensionError::OutsideEnvelope),
-            Self::InvalidRevolve => formatter.write_str("revolve axis or angle is invalid"),
-            Self::InvalidPlanarOffset => {
-                formatter.write_str("planar offset distance or bounded profile is invalid")
-            }
-            Self::InvalidSweep => {
-                formatter.write_str("sweep requires one bounded closed profile and a compatible non-degenerate open path")
-            }
-            Self::InvalidWeldmentMember => formatter.write_str(
-                "weldment member requires a bounded closed profile, a canonical spatial path, and orientation in [-180, 180) degrees",
-            ),
-            Self::InvalidWeldmentJoint => formatter.write_str(
-                "weldment joint requires two distinct straight members meeting at one manufacturable nonparallel endpoint",
-            ),
-            Self::InvalidLoft => {
-                formatter.write_str("loft requires ordered bounded closed-profile sections")
-            }
+            Self::InvalidRevolve
+            | Self::InvalidPlanarOffset
+            | Self::InvalidSweep
+            | Self::InvalidWeldmentMember
+            | Self::InvalidWeldmentJoint
+            | Self::InvalidLoft => formatter.write_str(self.feature_shape_rule()),
             Self::InvalidSheetMetal(error) => write!(formatter, "invalid sheet-metal feature: {error}"),
             Self::ReservedNodeId => formatter.write_str("node ID zero is reserved"),
             Self::EmptyNodeName => formatter.write_str("node name is empty"),

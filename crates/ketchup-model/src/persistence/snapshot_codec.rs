@@ -55,10 +55,11 @@ fn fits_format_103(product: &ProductModel) -> bool {
     const OUTPUTS: usize = 1_024;
     const MIB: u64 = 1024 * 1024;
     // The bounded ASCII STL of 0.2.0: 8 lines of at most 128 bytes and CR LF a triangle.
-    const STL: u64 = (ketchup_tolerance::limits::MESH_TRIANGLES as u64 * 8 + 2) * 130;
+    let stl = u64::try_from(ketchup_tolerance::limits::MESH_TRIANGLES)
+        .map_or(u64::MAX, |triangles| (triangles * 8 + 2) * 130);
     product.import_receipts.values().all(|receipt| {
         let source_limit = match receipt.format() {
-            ImportFormat::Stl => STL,
+            ImportFormat::Stl => stl,
             ImportFormat::Dxf => 8 * MIB,
             ImportFormat::Step
             | ImportFormat::Iges

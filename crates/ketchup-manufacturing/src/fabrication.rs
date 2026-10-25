@@ -134,11 +134,11 @@ impl PieceDimensions {
         extents
     }
 
-    /// The columns of a BOM row of `kind`: a timber member in the BTLx order,
-    /// every other piece as a cut list.
+    /// The columns of a BOM row of `kind`: a member in the BTLx order, every
+    /// other piece as a cut list.
     #[must_use]
     pub fn bom_mm(self, kind: GeneralBomItemKind) -> [f64; 3] {
-        if kind == GeneralBomItemKind::Timber {
+        if kind.is_member() {
             self.stock_mm()
         } else {
             self.cut_mm()
