@@ -1087,24 +1087,23 @@ impl Part {
                 distance_mm,
                 caps,
             } => {
-                let (min, max) = profile_bounds(segments);
-                self.grown_by_pushed_faces(
-                    [min[0], min[1], 0.0],
-                    [max[0], max[1], *distance_mm],
-                    segments,
-                    Some(caps),
+                let (profile, span, grow) = self.pulled_profile(segments, *distance_mm, caps);
+                let (min, max) = profile_bounds(&profile);
+                (
+                    [min[0] - grow, min[1] - grow, span[0] - grow],
+                    [max[0] + grow, max[1] + grow, span[1] + grow],
                 )
             }
             ProgramPartBody::Revolve { .. } => {
-                let support = |axis: usize, sign: f64| {
+                // A face of a revolved body moved out grows it on every side.
+                let grow = self.pushed_out();
+                let reach = |axis: usize, sign: f64| {
                     let direction = std::array::from_fn(|i| if i == axis { sign } else { 0.0 });
-                    sign * self.revolve_support(direction)
+                    self.revolve_support(direction) + grow
                 };
-                self.grown_by_pushed_faces(
-                    std::array::from_fn(|i| support(i, -1.0)),
-                    std::array::from_fn(|i| support(i, 1.0)),
-                    &[],
-                    None,
+                (
+                    std::array::from_fn(|i| -reach(i, -1.0)),
+                    std::array::from_fn(|i| reach(i, 1.0)),
                 )
             }
             ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => {
@@ -1168,57 +1167,53 @@ impl Part {
             .fold(f64::NEG_INFINITY, f64::max)
     }
 
-    fn pushes_faces_out(&self) -> bool {
-        self.face_offsets().any(|offset| offset.distance_mm > 0.0)
+    /// How far the faces moved outward reach out together.
+    fn pushed_out(&self) -> f64 {
+        self.face_offsets()
+            .map(|offset| offset.distance_mm.max(0.0))
+            .sum()
     }
 
-    /// `min`/`max` grown by each face moved outward. Extrusion caps move
-    /// along z; a straight profile side moves to its offset line, which its
-    /// straight neighbours extend to meet. Any other face (a revolved or cut
-    /// face, a side next to an arc) grows the bounds by its distance on every
-    /// side.
-    fn grown_by_pushed_faces(
+    /// An extrusion's profile and its span along z after every Push/Pull,
+    /// out or in: a cap moves along z; a straight profile side moves to its
+    /// offset line, which its straight neighbours extend to meet. Any other
+    /// face (a cut face, a side next to an arc) moved outward grows the body
+    /// by its distance on every side, the last value; moved in, it leaves the
+    /// bounds, which still hold the part. A face pulled in shrinks them
+    /// (review 2026-10-24 WB-28).
+    fn pulled_profile(
         &self,
-        mut min: [f64; 3],
-        mut max: [f64; 3],
         segments: &[ProgramProfileSegment],
-        caps: Option<&[String; 2]>,
-    ) -> ([f64; 3], [f64; 3]) {
+        distance_mm: f64,
+        caps: &[String; 2],
+    ) -> (Vec<ProgramProfileSegment>, [f64; 2], f64) {
         let doubled_area = ProgramProfileSegment::doubled_signed_area(segments);
         let turn = if doubled_area < 0.0 { -1.0 } else { 1.0 };
-        for offset in self.face_offsets().filter(|o| o.distance_mm > 0.0) {
+        let mut profile = segments.to_vec();
+        let mut span = [0.0, distance_mm];
+        let mut grow = 0.0;
+        for offset in self.face_offsets() {
             let d = offset.distance_mm;
             let face = offset.face.split('#').next().unwrap_or_default();
-            match caps.and_then(|caps| caps.iter().position(|cap| cap == face)) {
-                Some(0) => {
-                    min[2] -= d;
-                    continue;
-                }
-                Some(_) => {
-                    max[2] += d;
-                    continue;
-                }
-                None => {}
-            }
-            let moved = segments
-                .iter()
-                .position(|s| s.name == face)
-                .and_then(|index| moved_side(segments, index, d * turn));
-            let Some(points) = moved else {
-                for axis in 0..3 {
-                    min[axis] -= d;
-                    max[axis] += d;
-                }
-                continue;
-            };
-            for point in points {
-                for axis in 0..2 {
-                    min[axis] = min[axis].min(point[axis]);
-                    max[axis] = max[axis].max(point[axis]);
+            match caps.iter().position(|cap| cap == face) {
+                Some(0) => span[0] -= d,
+                Some(_) => span[1] += d,
+                None => {
+                    let count = profile.len();
+                    let moved = (profile.iter().position(|s| s.name == face))
+                        .and_then(|index| Some((index, moved_side(&profile, index, d * turn)?)));
+                    let Some((index, [start, end])) = moved else {
+                        grow += d.max(0.0);
+                        continue;
+                    };
+                    profile[index].start_mm = start;
+                    profile[index].end_mm = end;
+                    profile[(index + count - 1) % count].end_mm = start;
+                    profile[(index + 1) % count].start_mm = end;
                 }
             }
         }
-        (min, max)
+        (profile, [span[0].min(span[1]), span[0].max(span[1])], grow)
     }
 
     /// `reach` of a swept or lofted body along a direction in its own frame.
@@ -1260,19 +1255,20 @@ impl Part {
         let largest =
             |values: &mut dyn Iterator<Item = f64>| values.fold(f64::NEG_INFINITY, f64::max);
         let body = match &self.body {
-            ProgramPartBody::Extrusion { .. } | ProgramPartBody::Revolve { .. }
-                if self.pushes_faces_out() =>
-            {
-                bounds_reach()
-            }
             ProgramPartBody::Extrusion {
                 segments,
                 distance_mm,
-                ..
+                caps,
             } => {
-                largest(&mut segments.iter().map(|s| s.support([local[0], local[1]])))
-                    + (local[2] * distance_mm).max(0.0)
+                let (profile, span, grow) = self.pulled_profile(segments, *distance_mm, caps);
+                if grow > 0.0 {
+                    bounds_reach()
+                } else {
+                    largest(&mut profile.iter().map(|s| s.support([local[0], local[1]])))
+                        + (local[2] * span[0]).max(local[2] * span[1])
+                }
             }
+            ProgramPartBody::Revolve { .. } if self.pushed_out() > 0.0 => bounds_reach(),
             ProgramPartBody::Revolve { .. } => self.revolve_support(local),
             ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => self.local_reach(local),
         };

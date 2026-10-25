@@ -492,6 +492,31 @@ fn the_neighbours_of_a_pulled_face_grow_with_it() {
     assert_span(&face("end"), [0.0, 0.0], [100.0, 95.0]);
 }
 
+/// Review 2026-10-24 WB-28: a face pulled in (a negative Push/Pull) left the
+/// part's bounds and reach where they were, so a part put on a shortened
+/// part stood 8 mm above it.
+#[test]
+fn a_face_pulled_in_shrinks_the_bounds_and_the_reach() {
+    let source = "a = box(\"a\", (600, 400, 720))\n\
+                  push_pull(a, face = \"z+\", distance = -8, name = \"shorter\")\n\
+                  push_pull(a, face = \"x+\", distance = -20, name = \"narrower\")\n\
+                  push_pull(a, face = \"z-\", distance = -5, name = \"raised\")\n\
+                  box(\"b\", (100, 100, 18), at = (0, 0, part_info(a).max[2]))\n";
+    let a = part(source, "a");
+    let (min, max) = a.world_bounds();
+    assert_near(min, [0.0, 0.0, 5.0], "min");
+    assert_near(max, [580.0, 400.0, 712.0], "max");
+    for (direction, reach) in [
+        ([0.0, 0.0, 1.0], 712.0),
+        ([0.0, 0.0, -1.0], -5.0),
+        ([1.0, 0.0, 0.0], 580.0),
+    ] {
+        let reached = a.reach(direction);
+        assert!((reached - reach).abs() < 1e-9, "{direction:?}: {reached}");
+    }
+    assert_near(part(source, "b").at_mm, [0.0, 0.0, 712.0], "b on a");
+}
+
 #[test]
 fn contact_finds_a_profile_face_mirrored_in_the_middle_of_the_program() {
     let source = "\

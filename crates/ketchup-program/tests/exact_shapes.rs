@@ -176,10 +176,10 @@ fn a_face_pushed_out_grows_the_box_where_its_neighbours_meet_it() {
         board_bounds("push_pull(board, face = \"end\", distance = 12, name = \"p\")\n").1,
         [100.0, 100.0, 30.0]
     );
-    // Pushed in, the box stays as it was.
+    // Pulled in, the box shrinks with it (review 2026-10-24 WB-28).
     assert_eq!(
         board_bounds("push_pull(board, face = \"end\", distance = -6, name = \"p\")\n").1,
-        [100.0, 100.0, 18.0]
+        [100.0, 100.0, 12.0]
     );
 }
 
