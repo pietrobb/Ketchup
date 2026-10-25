@@ -217,6 +217,9 @@ pub enum UnderlayLinesError {
     Inflate(miniz_oxide::inflate::TINFLStatus),
     /// The length declared is more than [`MAX_INFLATION`] times the deflated bytes.
     Inflated { length: usize, deflated: usize },
+    /// The length declared, or that of lines to be written, is more than
+    /// [`limits::UNDERLAY_LINES_BYTES`].
+    TooLarge { length: usize },
     /// The bytes end before the counts they declare.
     Truncated,
     /// Bytes are left over after the last layer.
@@ -253,6 +256,11 @@ impl fmt::Display for UnderlayLinesError {
             Self::Inflated { length, deflated } => write!(
                 formatter,
                 "the underlay lines declare {length} bytes, more than {MAX_INFLATION} times their {deflated} compressed bytes; the file is damaged"
+            ),
+            Self::TooLarge { length } => write!(
+                formatter,
+                "the underlay lines take {length} bytes, more than the {} MiB an underlay may hold",
+                limits::UNDERLAY_LINES_BYTES >> 20
             ),
             Self::Truncated => formatter.write_str("the underlay lines end too early"),
             Self::TrailingBytes => formatter.write_str("bytes follow the last underlay layer"),
@@ -457,17 +465,36 @@ impl UnderlayLines {
     /// version 5, without fills either as version 4, which older readers read too.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
+        let (with_objects, with_fills, body) = self.encode_whole_body();
+        Self::deflate(with_objects, with_fills, &body)
+    }
+
+    /// What [`Self::encode`] writes, or why [`Self::decode`] would not read it back: lines
+    /// past [`limits::UNDERLAY_LINES_BYTES`] are refused before they are deflated.
+    pub fn encode_readable(&self) -> Result<Vec<u8>, UnderlayLinesError> {
+        let (with_objects, with_fills, body) = self.encode_whole_body();
+        if body.len() > limits::UNDERLAY_LINES_BYTES {
+            return Err(UnderlayLinesError::TooLarge { length: body.len() });
+        }
+        Ok(Self::deflate(with_objects, with_fills, &body))
+    }
+
+    fn encode_whole_body(&self) -> (bool, bool, Vec<u8>) {
         let with_objects = !self.objects.is_empty();
         let with_fills = with_objects || self.fill_count() > 0;
         let mut body = self.encode_body(with_fills);
         if with_objects {
             self.objects.encode(&mut body);
         }
-        let mut deflated = miniz_oxide::deflate::compress_to_vec_zlib(&body, DEFLATE_LEVEL);
+        (with_objects, with_fills, body)
+    }
+
+    fn deflate(with_objects: bool, with_fills: bool, body: &[u8]) -> Vec<u8> {
+        let mut deflated = miniz_oxide::deflate::compress_to_vec_zlib(body, DEFLATE_LEVEL);
         if !inflates_plausibly(body.len(), deflated.len()) {
             // Stored, as `decode` refuses a body more than [`MAX_INFLATION`] times its
             // deflated bytes.
-            deflated = miniz_oxide::deflate::compress_to_vec_zlib(&body, 0);
+            deflated = miniz_oxide::deflate::compress_to_vec_zlib(body, 0);
         }
         let magic = MAGICS[match (with_objects, with_fills) {
             (true, _) => 5,
@@ -542,7 +569,11 @@ impl UnderlayLines {
         // Inflated no further than the length declared, so a damaged or hostile blob
         // allocates no more than it says it holds; and a length far past what its
         // bytes could hold is refused before anything is inflated, so a blob of a few
-        // MB cannot ask for gigabytes (review 2026-10-24 MD-22).
+        // MB cannot ask for gigabytes (review 2026-10-24 MD-22), nor one of some 16 MB
+        // past what an underlay may hold.
+        if length > limits::UNDERLAY_LINES_BYTES {
+            return Err(UnderlayLinesError::TooLarge { length });
+        }
         if !inflates_plausibly(length, deflated.len()) {
             return Err(UnderlayLinesError::Inflated {
                 length,

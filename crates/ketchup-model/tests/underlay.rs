@@ -530,6 +530,26 @@ fn a_blob_that_would_inflate_a_thousandfold_is_refused_before_inflating() {
     assert_eq!(UnderlayLines::decode(&lines.encode()).unwrap(), lines);
 }
 
+/// Capability review of #2604: a blob within the inflation ratio but declaring more than
+/// an underlay may hold is refused before it is inflated, so some 16 MB of deflate in a
+/// `.ketchup` cannot make the window allocate gigabytes either.
+#[test]
+fn a_blob_declaring_more_than_an_underlay_may_hold_is_refused_before_inflating() {
+    let length = ketchup_tolerance::limits::UNDERLAY_LINES_BYTES + 1;
+    // Not deflate at all: inflating it would fail, refusing it must not get that far.
+    let deflated = vec![0xAB_u8; length / 64];
+    let mut bomb = b"KUNDRLY6".to_vec();
+    bomb.extend_from_slice(&u64::try_from(length).unwrap().to_le_bytes());
+    bomb.extend_from_slice(&deflated);
+    assert_eq!(
+        UnderlayLines::decode(&bomb),
+        Err(UnderlayLinesError::TooLarge { length })
+    );
+
+    let lines = read(&line("walls", [0.0, 0.0], [1000.0, 0.0])).lines;
+    assert_eq!(lines.encode_readable().unwrap(), lines.encode());
+}
+
 /// The lines are kept deflated with their objects (KUNDRLY6): a grid of 4,000 lines takes
 /// well under half its 16 bytes a point. A blob saved before, uncompressed (KUNDRLY3 and
 /// older), still reads, without objects, so a document saved with an underlay keeps

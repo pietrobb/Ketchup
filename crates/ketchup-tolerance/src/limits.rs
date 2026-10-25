@@ -37,6 +37,11 @@ pub const DRAWING_ENTITIES: usize = 1_000_000;
 /// Most profiles one drawing import makes, all in one Undo step.
 pub const DRAWING_PROFILES: usize = 50_000;
 
+/// Most bytes the lines of one underlay hold inflated, some 16 million points: a drawing
+/// read within [`DRAWING_ENTITIES`] holds a tenth of it; a blob declaring more is refused
+/// before it is inflated, and a drawing reading to more is not added.
+pub const UNDERLAY_LINES_BYTES: usize = 256 * 1024 * 1024;
+
 /// Most steps in one instance path (nesting depth of definitions).
 pub const INSTANCE_PATH_STEPS: usize = 256;
 

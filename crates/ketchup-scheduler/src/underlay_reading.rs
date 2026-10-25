@@ -48,8 +48,14 @@ fn read(input: &UnderlayInput) -> Result<UnderlayOutcome, UnderlayRefusal> {
             report: error.to_string(),
         },
     })?;
-    std::fs::write(&input.output, underlay.lines.encode())
-        .map_err(|error| file(&input.output, &error))?;
+    // Lines the document could not read back are not added.
+    let lines = underlay
+        .lines
+        .encode_readable()
+        .map_err(|error| UnderlayRefusal::Dxf {
+            report: error.to_string(),
+        })?;
+    std::fs::write(&input.output, lines).map_err(|error| file(&input.output, &error))?;
     Ok(UnderlayOutcome::Read(Box::new(UnderlayRead {
         segments: underlay.lines.segment_count(),
         texts: underlay.lines.text_count(),
