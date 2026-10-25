@@ -1336,7 +1336,9 @@ fn a_file_in_a_read_only_folder_opens_and_edits_without_a_checkpoint() {
             .queue_open(&primary)
             .queue_save(&elsewhere),
     );
-    shell.click_menu_command("menu-file", AppCommand::Open);
+    ketchup_model::persistence::headless_with_read_only_folder(directory.path(), || {
+        shell.click_menu_command("menu-file", AppCommand::Open);
+    });
     assert_eq!(shell.app().document_path(), Some(primary.as_path()));
     assert!(digest_has(&shell, "digest-opened-without-work-recovery"));
     assert!(shell.app_mut().create_box());
@@ -1387,7 +1389,9 @@ fn a_file_in_a_read_only_folder_opened_over_unsaved_work_edits_without_a_checkpo
     shell.settle();
     assert!(ketchup_model::persistence::work_recovery_path(&own).is_file());
 
-    shell.click_menu_command("menu-file", AppCommand::Open);
+    ketchup_model::persistence::headless_with_read_only_folder(directory.path(), || {
+        shell.click_menu_command("menu-file", AppCommand::Open);
+    });
     assert_eq!(shell.app().document_path(), Some(primary.as_path()));
     assert!(digest_has(&shell, "digest-opened-without-work-recovery"));
     assert!(shell.app_mut().create_box());

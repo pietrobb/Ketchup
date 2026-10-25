@@ -2902,3 +2902,36 @@ fn document_tolerance_is_saved_undoable_and_part_of_the_digest() {
         }
     ));
 }
+
+/// A lock file that cannot be written in a folder that takes files (another user's on a
+/// shared drive, one marked read-only by an unpacked archive) is no read-only folder: it
+/// is locked through a read-only handle, so a session holding it keeps the next one out.
+/// Only a folder that takes no file opens without a lock (review 2026-10-24 UI-21).
+#[test]
+fn a_read_only_lock_file_in_a_writable_folder_still_locks_the_file() {
+    use ketchup_model::persistence::{FilePersistenceError, WorkRecoveryLock};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("shared.ketchup");
+    let mut lock = path.as_os_str().to_owned();
+    lock.push(".work-recovery-lock");
+    std::fs::write(&lock, b"").unwrap();
+    let mut permissions = std::fs::metadata(&lock).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&lock, permissions.clone()).unwrap();
+
+    let held = WorkRecoveryLock::acquire_unless_read_only(&path).unwrap();
+    assert!(held.is_some(), "a writable folder takes a checkpoint");
+    assert!(matches!(
+        WorkRecoveryLock::acquire_unless_read_only(&path),
+        Err(FilePersistenceError::ExternalConflict)
+    ));
+    drop(held);
+    let read_only = persistence::headless_with_read_only_folder(directory.path(), || {
+        WorkRecoveryLock::acquire_unless_read_only(&path).unwrap()
+    });
+    assert!(read_only.is_none());
+
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&lock, permissions).unwrap();
+}

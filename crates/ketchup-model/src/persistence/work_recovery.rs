@@ -112,18 +112,41 @@ impl WorkRecoveryLock {
     /// [`Self::acquire`], or `None` where the file's folder cannot take the lock
     /// file at all (a read-only share, a protected USB key, a mounted DMG). No
     /// checkpoint can be written there either, so the file opens without one.
+    ///
+    /// A lock file that cannot be written in a folder that takes files (another user's
+    /// on a shared drive, one marked read-only by an unpacked archive) is locked through
+    /// a read-only handle instead, so a session holding it still keeps this one out
+    /// (review 2026-10-24 UI-21).
     pub fn acquire_unless_read_only(path: &Path) -> Result<Option<Self>, FilePersistenceError> {
-        match Self::acquire(path) {
+        let denied = match Self::acquire(path) {
             Err(FilePersistenceError::Io(error))
                 if matches!(
                     error.kind(),
                     io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
                 ) =>
             {
-                Ok(None)
+                error
             }
-            acquired => acquired.map(Some),
+            acquired => return acquired.map(Some),
+        };
+        let mut lock_path = path.as_os_str().to_os_string();
+        lock_path.push(".work-recovery-lock");
+        let held = match fs::File::open(lock_path) {
+            Ok(file) => match file.try_lock() {
+                Ok(()) => Some(Self { _file: file }),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(FilePersistenceError::ExternalConflict);
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(FilePersistenceError::Io(error));
+                }
+            },
+            Err(_) => None,
+        };
+        if !folder_takes_files(path) {
+            return Ok(None);
         }
+        held.map(Some).ok_or(FilePersistenceError::Io(denied))
     }
 }
 
@@ -293,9 +316,41 @@ pub fn set_aside_work_recovery(
     Err(FilePersistenceError::SetAsideNamesTaken(source))
 }
 
+/// Whether the folder of `path` takes a new file: a probe file is made there and removed.
+fn folder_takes_files(path: &Path) -> bool {
+    let folder = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    #[cfg(feature = "testing")]
+    if READ_ONLY_FOLDER.with_borrow(|read_only| read_only.as_deref() == Some(folder)) {
+        return false;
+    }
+    tempfile::Builder::new()
+        .prefix(".ketchup-write-probe")
+        .tempfile_in(folder)
+        .is_ok()
+}
+
 #[cfg(feature = "testing")]
 thread_local! {
     pub(super) static FAIL_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static READ_ONLY_FOLDER: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `operation` with `folder` taking no new file on this thread, as a read-only share
+/// does; a real one cannot be made in a test on every platform (Windows ignores a
+/// folder's read-only flag, root ignores its mode).
+#[cfg(feature = "testing")]
+pub fn headless_with_read_only_folder<T>(folder: &Path, operation: impl FnOnce() -> T) -> T {
+    struct Reset(Option<PathBuf>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            READ_ONLY_FOLDER.set(self.0.take());
+        }
+    }
+    let _reset = Reset(READ_ONLY_FOLDER.replace(Some(folder.to_path_buf())));
+    operation()
 }
 
 /// Inject a directory-sync error on this thread in the real publication path.
