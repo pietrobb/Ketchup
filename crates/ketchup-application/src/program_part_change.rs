@@ -500,10 +500,12 @@ impl Expected {
                         })
                     })
                     .collect::<Vec<_>>();
-                let mut expected = serde_json::to_value(before).expect("models serialize");
-                renamed(&mut expected, from, to, &kept);
-                expected["continuations"][to.as_str()] = was.as_str().into();
-                serde_json::to_value(after).is_ok_and(|after| after == expected)
+                let mut expected = before.clone();
+                expected.continuations.remove(from);
+                expected.continuations.insert(to.clone(), was.clone());
+                let expected = serde_json::to_value(expected).expect("models serialize");
+                serde_json::to_value(after)
+                    .is_ok_and(|after| only_renamed(&expected, &after, from, to, &kept))
             }
             Self::Mirrored { copy, bounds } => {
                 let Some(made) = after.part(copy) else {
@@ -557,8 +559,10 @@ fn listed(names: &[String]) -> String {
 }
 
 /// Fields of a program model that hold names of something else than parts:
-/// parameters, materials, attributes and tags keep their names in a rename.
-const NOT_PART_NAMES: [&str; 9] = [
+/// parameters, materials, attributes, tags and annotations keep their names
+/// and texts in a rename.
+const NOT_PART_NAMES: [&str; 10] = [
+    "annotations",
     "params",
     "material",
     "attributes",
@@ -615,37 +619,50 @@ fn name_use(model: &ProgramModel, part: &str, name: &str) -> Option<String> {
     })
 }
 
-/// `value` with the part name `from` read as `to`, also where it starts a
-/// name the program derives from it ("a transform", "a/notch"), but not in
-/// the names `kept` or the names derived from them.
-fn renamed(value: &mut serde_json::Value, from: &str, to: &str, kept: &[String]) {
-    match value {
-        serde_json::Value::String(text)
-            if derived_from(text, from).is_some()
-                && !(kept.iter()).any(|kept| derived_from(text, kept).is_some()) =>
-        {
-            text.replace_range(..from.len(), to);
+/// Whether `after` is `before` with the part name `from` read as `to` in some
+/// of the places that hold it, also where it starts a name the program derives
+/// from it ("a transform", "a/notch"), but not in the names `kept` or the names
+/// derived from them. A string that only reads the same, a text, a feature kind
+/// or a face, stays as it was (review 2026-10-24 WB-24).
+fn only_renamed(
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+    from: &str,
+    to: &str,
+    kept: &[String],
+) -> bool {
+    use serde_json::Value;
+    let renamed = |text: &str| {
+        derived_from(text, from)
+            .filter(|_| !kept.iter().any(|kept| derived_from(text, kept).is_some()))
+            .map(|rest| format!("{to}{rest}"))
+    };
+    match (before, after) {
+        (Value::String(old), Value::String(new)) => {
+            old == new || renamed(old).is_some_and(|renamed| renamed == *new)
         }
-        serde_json::Value::Array(items) => items
-            .iter_mut()
-            .for_each(|item| renamed(item, from, to, kept)),
-        serde_json::Value::Object(fields) => {
-            let keys = fields
-                .keys()
-                .filter(|key| *key == from)
-                .cloned()
-                .collect::<Vec<_>>();
-            for key in keys {
-                if let Some(field) = fields.remove(&key) {
-                    fields.insert(to.to_owned(), field);
-                }
-            }
-            fields
-                .iter_mut()
-                .filter(|(key, _)| !NOT_PART_NAMES.contains(&key.as_str()))
-                .for_each(|(_, field)| renamed(field, from, to, kept));
+        (Value::Array(old), Value::Array(new)) => {
+            old.len() == new.len()
+                && (old.iter().zip(new)).all(|(old, new)| only_renamed(old, new, from, to, kept))
         }
-        _ => {}
+        (Value::Object(old), Value::Object(new)) => {
+            old.len() == new.len()
+                && old.iter().all(|(key, old)| {
+                    let new = match new.get(key) {
+                        Some(new) => Some(new),
+                        None if key == from => new.get(to),
+                        None => None,
+                    };
+                    new.is_some_and(|new| {
+                        if NOT_PART_NAMES.contains(&key.as_str()) {
+                            old == new
+                        } else {
+                            only_renamed(old, new, from, to, kept)
+                        }
+                    })
+                })
+        }
+        _ => before == after,
     }
 }
 
@@ -788,6 +805,10 @@ impl Edit<'_> {
         }
         removed.sort_by_key(|bytes| bytes.start);
         removed.dedup();
+        // A text, a material or a parameter that reads the same is no use of
+        // the part (review 2026-10-24 WB-24).
+        let unused = self.unused_name();
+        let made = self.naming_literal(&call);
         if let Some((_, line)) =
             source_edit::string_literals(&self.source.file_name, self.text(), self.name)
                 .into_iter()
@@ -795,6 +816,7 @@ impl Edit<'_> {
                     !removed
                         .iter()
                         .any(|gone| gone.start <= bytes.start && bytes.end <= gone.end)
+                        && self.names_the_part(made.as_ref(), bytes, &unused)
                 })
         {
             return Err(self.refused_on(
@@ -905,14 +927,8 @@ impl Edit<'_> {
             ));
         }
         let call = self.creating_call(doing)?;
-        // The literal of the call that is the part's name: the second one of
-        // `mirrored("a", "a mirrored", ...)` (review 2026-10-24 WB-23).
         let literals = source_edit::string_literals(&self.source.file_name, self.text(), self.name);
-        let named = literals
-            .iter()
-            .map(|(bytes, _)| bytes.clone())
-            .find(|bytes| call.bytes.start <= bytes.start && bytes.end <= call.bytes.end);
-        let Some(made) = named else {
+        let Some(made) = self.naming_literal(&call) else {
             return Err(self.refused_on(
                 call.lines.first,
                 "program_part_computed_name",
@@ -926,11 +942,12 @@ impl Edit<'_> {
         // parameter or a text that reads the same stays as it is.
         let mut edits = vec![(made.clone(), quote(new))];
         let mut kept = Vec::new();
+        let unused = self.unused_name();
         for (bytes, line) in literals {
             if bytes == made {
                 continue;
             }
-            if self.names_the_part(&bytes, new) {
+            if self.names_the_part(Some(&made), &bytes, &unused) {
                 edits.push((bytes, quote(new)));
             } else {
                 kept.push(line);
@@ -959,13 +976,48 @@ impl Edit<'_> {
     }
 
     /// Whether the string literal at `bytes` names this part: read as
-    /// `other`, a name no part has, the program stops at that name.
-    fn names_the_part(&self, bytes: &Range<usize>, other: &str) -> bool {
-        matches!(
-            evaluate(&self.with(vec![(bytes.clone(), quote(other))])),
-            Err(RuleProgramApplyError::Program { message, .. })
-                if message.contains(&format!("{other:?}"))
-        )
+    /// `other`, a name no part has, the program stops at that name, and no
+    /// longer once the literal `made` that names the part is `other` too. A
+    /// face or a kind that reads the same fails either way (review 2026-10-24
+    /// WB-24).
+    fn names_the_part(
+        &self,
+        made: Option<&Range<usize>>,
+        bytes: &Range<usize>,
+        other: &str,
+    ) -> bool {
+        let stops_at_other = |edits: Vec<(Range<usize>, String)>| {
+            matches!(
+                evaluate(&self.with(edits)),
+                Err(RuleProgramApplyError::Program { message, .. })
+                    if message.contains(&format!("{other:?}"))
+            )
+        };
+        stops_at_other(vec![(bytes.clone(), quote(other))])
+            && made.is_none_or(|made| {
+                !stops_at_other(vec![
+                    (made.clone(), quote(other)),
+                    (bytes.clone(), quote(other)),
+                ])
+            })
+    }
+
+    /// The string literal of the creating call that is the part's name: the
+    /// second one of `mirrored("a", "a mirrored", ...)` (review 2026-10-24 WB-23).
+    fn naming_literal(&self, call: &CreatingCall) -> Option<Range<usize>> {
+        source_edit::string_literals(&self.source.file_name, self.text(), self.name)
+            .into_iter()
+            .map(|(bytes, _)| bytes)
+            .find(|bytes| call.bytes.start <= bytes.start && bytes.end <= call.bytes.end)
+    }
+
+    /// A name nothing of the program has, nor its source mentions.
+    fn unused_name(&self) -> String {
+        let taken = names(&self.evaluated.model);
+        (1_usize..)
+            .map(|n| format!("{} gone {n}", self.name))
+            .find(|name| !taken.contains(name) && !self.text().contains(name.as_str()))
+            .expect("some name is unused")
     }
 
     fn mirror(

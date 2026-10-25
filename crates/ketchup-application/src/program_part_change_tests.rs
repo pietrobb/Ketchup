@@ -58,9 +58,14 @@ fn delete_of_a_part_another_line_uses_is_refused_with_that_line() {
         message.contains("\"a\"") && message.contains("line 3"),
         "{message}"
     );
+    // A string that only reads like the part's name is no use (review
+    // 2026-10-24 WB-24).
     let named = "box(\"a\", (10, 20, 30))\nbox(\"b\", (5, 5, 5), at=(50, 0, 0))\nprint(\"a\")\n";
-    let message = refusal(named, "a", PartChange::Delete);
-    assert!(message.contains("line 3"), "{message}");
+    let deleted = change(named, "a", PartChange::Delete);
+    assert_eq!(
+        deleted.source,
+        "box(\"b\", (5, 5, 5), at=(50, 0, 0))\nprint(\"a\")\n"
+    );
 }
 
 #[test]
@@ -327,6 +332,55 @@ fn rename_keeps_the_parts_whose_names_only_start_with_the_old_name() {
         assert_eq!(after.part(other), before.part(other), "{}", renamed.source);
         assert_eq!(after.continuations["board"], from);
     }
+}
+
+/// Review 2026-10-24 WB-24: the check after a rename read every string of the
+/// model equal to the old name as the part's, so a part named like a text, a
+/// feature kind or a face ("pad", "start", "x+") could not be renamed, and a
+/// delete was refused by a text reading the part's name.
+#[test]
+fn a_text_feature_or_face_reading_the_name_neither_blocks_a_rename_nor_a_delete() {
+    let texted = "box(\"a\", (10, 20, 30))\nbox(\"b\", (5, 5, 5), at=(50, 0, 0))\n\
+                  text(\"t\", \"a\", at=(0, 0))\n";
+    let deleted = change(texted, "a", PartChange::Delete);
+    assert_eq!(
+        deleted.source,
+        "box(\"b\", (5, 5, 5), at=(50, 0, 0))\ntext(\"t\", \"a\", at=(0, 0))\n"
+    );
+    let renamed = change(texted, "a", PartChange::Rename("c".to_owned()));
+    let after = model(&renamed);
+    assert!(after.part("c").is_some(), "{}", renamed.source);
+    assert_eq!(after.annotations, model(&program(texted)).annotations);
+
+    for name in [
+        "start",
+        "end",
+        "pad",
+        "sketch",
+        "transform",
+        "extrusion",
+        "x+",
+    ] {
+        let source = format!(
+            "box({name:?}, (10, 20, 30))\npush_pull({name:?}, face=\"x+\", distance=5, name=\"Pull\")\n\
+             box(\"b\", (5, 5, 5), at=(50, 0, 0))\n"
+        );
+        let before = model(&program(&source));
+        let renamed = change(&source, name, PartChange::Rename("board".to_owned()));
+        let after = model(&renamed);
+        assert_eq!(
+            after.part("board").map(|part| part.local_bounds()),
+            before.part(name).map(|part| part.local_bounds()),
+            "{name}: {}",
+            renamed.source
+        );
+    }
+
+    // A literal that does name the part still refuses the delete.
+    let grouped = "box(\"a\", (10, 20, 30))\nbox(\"b\", (5, 5, 5), at=(50, 0, 0))\n\
+                   group(\"g\", [\"a\", \"b\"])\n";
+    let message = refusal(grouped, "a", PartChange::Delete);
+    assert!(message.contains("line 3"), "{message}");
 }
 
 #[test]
