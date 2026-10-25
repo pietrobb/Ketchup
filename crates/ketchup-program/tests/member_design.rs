@@ -91,6 +91,59 @@ fn a_simply_supported_beam_matches_the_hand_calculation() {
     assert_eq!(beam.status, "pass");
 }
 
+/// PG-20 (review 2026-10-24): a beam resting only on a post at its far end, or
+/// hanging on one hanger, came out `pass` as a cantilever clamped there, while
+/// the load path said it was not carried. Neither support takes a moment.
+#[test]
+fn a_beam_on_one_support_off_its_centre_tips_over_it_and_is_not_verified() {
+    let one_post = report(
+        "load_path(only = [\"frame\"])
+self_weight([\"frame\"])
+timber_design({\"C24\": \"C24\"})
+box(\"post b\", (100, 100, 2000), at = (2900, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (3000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+",
+        &[],
+    );
+    let beam = member(&one_post, "beam");
+    assert_eq!(beam.status, "not_verified", "{beam:?}");
+    assert!(
+        beam.missing
+            .iter()
+            .any(|reason| reason.contains("rests on post b alone and tips over it")),
+        "{:?}",
+        beam.missing
+    );
+    let hanger = report(
+        "load_path(only = [\"frame\"])
+self_weight([\"frame\"])
+timber_design({\"C24\": \"C24\"})
+box(\"post\", (100, 100, 2000), material = \"C24\", grounded = True)
+box(\"beam\", (1500, 100, 200), at = (100, 0, 1500), material = \"C24\", tags = [\"frame\"])
+joint(\"beam\", \"post\", kind = \"hanger\", bearing = True)
+",
+        &[],
+    );
+    let beam = member(&hanger, "beam");
+    assert_eq!(beam.status, "not_verified", "{beam:?}");
+    // Resting over its centre on one wide support it stays put.
+    let centred = report(
+        "load_path(only = [\"frame\"])
+self_weight([\"frame\"])
+timber_design({\"C24\": \"C24\"})
+box(\"wall\", (1000, 100, 2000), at = (1000, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (3000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+",
+        &[],
+    );
+    let beam = member(&centred, "beam");
+    assert!(
+        beam.missing.iter().all(|reason| !reason.contains("tips")),
+        "{:?}",
+        beam.missing
+    );
+}
+
 #[test]
 fn a_beam_continuous_over_a_middle_post_takes_five_eighths_shear_there() {
     // 6000 mm beam on post centres 50, 3000, 5950 mm: two spans of 2950 mm.

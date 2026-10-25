@@ -465,7 +465,14 @@ fn bearing_runs(support: Support, frame: &Frame) -> Vec<Support> {
 /// A beam's loads shared among its supports, which bear on `ranges` along it
 /// (same order), continuous over the inner ones. A support `held` by a joint
 /// may pull the member down (a negative share); any other lets go of it.
-fn beam_shares(patches: &[Patch], ranges: &[(f64, f64)], held: &[bool]) -> Shares {
+/// `across_gravity`: the horizontal part of the member's unit axis (0 for a
+/// post, which its loads press along rather than turn).
+fn beam_shares(
+    patches: &[Patch],
+    ranges: &[(f64, f64)],
+    held: &[bool],
+    across_gravity: f64,
+) -> Shares {
     let mut order: Vec<usize> = (0..ranges.len()).collect();
     order.sort_by(|a, b| ranges[*a].0.total_cmp(&ranges[*b].0));
     // Bearings that touch (a doubled stud) are one support and share what
@@ -602,8 +609,24 @@ fn beam_shares(patches: &[Patch], ranges: &[(f64, f64)], held: &[bool]) -> Share
                 });
         }
     }
-    // Lifting off down to one support of several, the member tips over it.
-    let tips = clusters.len() > 1 && active.len() == 1;
+    // Lifting off down to one support of several, the member tips over it. On
+    // one support only it tips as soon as its loads act beside the bearing: no
+    // joint takes a moment (a hanger or screws do not clamp it).
+    let tips = match active.as_slice() {
+        [_] if clusters.len() > 1 => true,
+        [only] => {
+            let (lo, hi) = bearings[*only];
+            let (force, moment) = pieces.iter().flat_map(|(_, pieces)| pieces).fold(
+                (0.0, 0.0),
+                |(force, moment), (from, to, value)| {
+                    (force + value, moment + value * f64::midpoint(*from, *to))
+                },
+            );
+            let at = moment / force;
+            force > 0.0 && (lo - at).max(at - hi) * across_gravity > 1.0
+        }
+        _ => false,
+    };
     Shares {
         loads: shares,
         lifted,
@@ -1025,7 +1048,8 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                         || joined(&parts[item].name, &parts[support.supporter].name)
                 })
                 .collect();
-            let shares = beam_shares(&patches[item], &ranges, &held);
+            let axis = frames[item].axis;
+            let shares = beam_shares(&patches[item], &ranges, &held, axis[0].hypot(axis[1]));
             if shares.tips {
                 let names: Vec<&str> = list
                     .iter()
@@ -1033,10 +1057,22 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                     .filter(|(_, lifted)| **lifted)
                     .map(|(support, _)| parts[support.supporter].name.as_str())
                     .collect();
-                missing[item].insert(format!(
-                    "it lifts off {} and tips over its last support (EQU 0.9 G + 1.5 Q): no joint holds it down",
-                    names.join(", ")
-                ));
+                missing[item].insert(if names.is_empty() {
+                    let mut on: Vec<&str> = list
+                        .iter()
+                        .map(|support| parts[support.supporter].name.as_str())
+                        .collect();
+                    on.dedup();
+                    format!(
+                        "it rests on {} alone and tips over it: its load acts beside the bearing and no joint takes a moment",
+                        on.join(", ")
+                    )
+                } else {
+                    format!(
+                        "it lifts off {} and tips over its last support (EQU 0.9 G + 1.5 Q): no joint holds it down",
+                        names.join(", ")
+                    )
+                });
             }
             lifted = shares.lifted;
             tension = shares.tension;
