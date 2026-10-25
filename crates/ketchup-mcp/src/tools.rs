@@ -32,7 +32,7 @@ fn apply_and_verify_wait(timeout_ms: u64) -> Duration {
 /// How long the client waits for importing the file `args` names.
 fn import_wait(args: &Map<String, Value>) -> Duration {
     let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
-    crate::import_response_wait(std::path::Path::new(path)) + DELIVERY_MARGIN
+    crate::import_response_wait(path) + DELIVERY_MARGIN
 }
 const IMAGE_PROTOCOL_VERSION: u32 = 4;
 const WINDOW_START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -969,8 +969,25 @@ mod wait_tests {
         drawing.as_file().set_len(1 << 30).unwrap();
         let path = drawing.path().to_str().unwrap();
         let args = json!({"path": path}).as_object().unwrap().clone();
-        assert!(import_wait(&args) > crate::import_response_wait(drawing.path()));
+        assert!(import_wait(&args) > crate::import_response_wait(path));
         assert!(import_wait(&args) > OPEN_WAIT);
+    }
+
+    /// A path the window would refuse is never looked up for its size, so a share
+    /// path does not sign in to the share: the same large file named by a relative
+    /// path gets only the base wait.
+    #[test]
+    fn a_refused_import_path_is_not_read_for_its_size() {
+        let drawing = tempfile::Builder::new().tempfile_in(".").unwrap();
+        drawing.as_file().set_len(1 << 30).unwrap();
+        let relative = drawing.path().file_name().unwrap().to_str().unwrap();
+        assert!(std::path::Path::new(relative).is_file());
+        assert_eq!(
+            crate::import_response_wait(relative),
+            crate::OPEN_RESPONSE_WAIT
+        );
+        let args = json!({"path": relative}).as_object().unwrap().clone();
+        assert_eq!(import_wait(&args), OPEN_WAIT);
     }
 
     /// A window started with a document loads it before it reports ready.

@@ -36,9 +36,14 @@ const IMPORT_WAIT_PER_MIB: std::time::Duration = std::time::Duration::from_secs(
 const IMPORT_WAIT_MOST: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// How long the window waits for importing the file at `path`; a file it cannot
-/// read is refused at once and adds nothing.
+/// read is refused at once and adds nothing. A path the window refuses
+/// ([`path_policy::local_absolute_path`]) is not looked up at all: asking for
+/// the size of `\\server\share\x.dwg` would already sign in to that server.
 #[must_use]
-pub fn import_response_wait(path: &std::path::Path) -> std::time::Duration {
+pub fn import_response_wait(path: &str) -> std::time::Duration {
+    if !path_policy::local_absolute_path(path) {
+        return OPEN_RESPONSE_WAIT;
+    }
     let bytes = std::fs::metadata(path).map_or(0, |metadata| metadata.len());
     let mib = u32::try_from(bytes.div_ceil(1 << 20)).unwrap_or(u32::MAX);
     OPEN_RESPONSE_WAIT
