@@ -151,6 +151,9 @@ pub fn rewrite_rule_program_parts_from(
     {
         return Ok(Some(RewrittenProgram { source, evaluated }));
     }
+    if let Some(coloured) = coloured_at_once(&source, &evaluated, changes)? {
+        return Ok(Some(coloured));
+    }
     for (name, change) in changes {
         let edit = Edit {
             source: &source,
@@ -211,6 +214,66 @@ pub fn rewrite_rule_program_parts_from(
     Ok((!makes_nothing).then(|| RewrittenProgram {
         source,
         evaluated: evaluated.into_owned(),
+    }))
+}
+
+/// A batch that only colours parts, each once, written in one go and checked
+/// as a whole: colouring a part and its mirrored copy alike is no "copy
+/// changed too" (review 2026-10-24 WB-23). `None` for any other batch.
+fn coloured_at_once(
+    source: &RuleProgramSource,
+    evaluated: &Evaluated,
+    changes: &[(String, PartChange)],
+) -> Result<Option<RewrittenProgram>, RuleProgramApplyError> {
+    let names: BTreeSet<_> = changes.iter().map(|(name, _)| name).collect();
+    if changes.len() < 2 || names.len() < changes.len() {
+        return Ok(None);
+    }
+    let mut colours = BTreeMap::new();
+    for (name, change) in changes {
+        let PartChange::Color(color) = change else {
+            return Ok(None);
+        };
+        colours.insert(name.as_str(), *color);
+    }
+    let mut edits = Vec::new();
+    for name in colours.keys() {
+        let edit = Edit {
+            source,
+            evaluated,
+            name,
+        };
+        edits.push(edit.colour_edit(colours[name])?);
+    }
+    // Parts one call makes are coloured one after another.
+    edits.sort_by_key(|(bytes, _)| bytes.start);
+    if edits
+        .windows(2)
+        .any(|pair| pair[1].0.start < pair[0].0.end || pair[1].0 == pair[0].0)
+    {
+        return Ok(None);
+    }
+    let rewritten = with_edits(source, edits);
+    let after = evaluate(&rewritten)?;
+    let mut expected = evaluated.model.clone();
+    for part in &mut expected.parts {
+        if let Some(color) = colours.get(part.name.as_str()) {
+            part.color = *color;
+        }
+    }
+    let expected = Expected::Same(Box::new(expected));
+    if !expected.holds(&evaluated.model, &after.model) {
+        return Err(refused(
+            "program_part_change_mismatch",
+            format!(
+                "the program did not colour the parts as the edit asked: {}; change it in the program",
+                expected.difference(&evaluated.model, &after.model)
+            ),
+        ));
+    }
+    Ok(Some(RewrittenProgram {
+        source: rewritten,
+        evaluated: after,
     }))
 }
 
@@ -779,9 +842,24 @@ impl Edit<'_> {
         &self,
         color: Option<[u8; 3]>,
     ) -> Result<(RuleProgramSource, Expected), RuleProgramApplyError> {
+        let rewritten = self.with(vec![self.colour_edit(color)?]);
+        let mut expected = self.evaluated.model.clone();
+        expected
+            .parts
+            .iter_mut()
+            .filter(|part| part.name == self.name)
+            .for_each(|part| part.color = color);
+        Ok((rewritten, Expected::Same(Box::new(expected))))
+    }
+
+    /// The bytes of the creating call that give the part `color`, and their text.
+    fn colour_edit(
+        &self,
+        color: Option<[u8; 3]>,
+    ) -> Result<(Range<usize>, String), RuleProgramApplyError> {
         let call = self.creating_call("change its colour")?;
         let written = color.map(|[r, g, b]| format!("color=({r}, {g}, {b})"));
-        let edit = match (call.color, written) {
+        Ok(match (call.color, written) {
             (Some((argument, _)), Some(written)) => (argument, written),
             (Some((argument, _)), None) => {
                 let before = self.text()[..argument.start].trim_end();
@@ -796,15 +874,7 @@ impl Edit<'_> {
                 }
             },
             (None, None) => (0..0, String::new()),
-        };
-        let rewritten = self.with(vec![edit]);
-        let mut expected = self.evaluated.model.clone();
-        expected
-            .parts
-            .iter_mut()
-            .filter(|part| part.name == self.name)
-            .for_each(|part| part.color = color);
-        Ok((rewritten, Expected::Same(Box::new(expected))))
+        })
     }
 
     /// `document_name` is the part's name in the document, which its new

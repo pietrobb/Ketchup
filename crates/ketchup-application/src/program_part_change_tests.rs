@@ -100,6 +100,21 @@ fn a_mirrored_copy_is_deleted_and_renamed_on_its_own_line() {
     let after = model(&coloured);
     assert_eq!(after.part("a mirrored").unwrap().color, Some([1, 2, 3]));
     assert_eq!(after.part("a").unwrap().color, None, "{}", coloured.source);
+    // The source and its copy coloured alike in one batch.
+    let both =
+        ["a", "a mirrored"].map(|name| (name.to_owned(), PartChange::Color(Some([9, 9, 9]))));
+    let coloured = rewrite_rule_program_parts(&program(source), &both)
+        .expect("coloured")
+        .expect("a program");
+    let after = model(&coloured);
+    for name in ["a", "a mirrored"] {
+        assert_eq!(
+            after.part(name).unwrap().color,
+            Some([9, 9, 9]),
+            "{}",
+            coloured.source
+        );
+    }
 }
 
 #[test]
