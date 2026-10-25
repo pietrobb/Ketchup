@@ -105,6 +105,36 @@ fn read_steps(bytes: &[u8]) -> (Vec<Vec<u8>>, Option<PersistenceError>) {
 /// A revision as a checkpoint names it: its id and the checksum of its snapshot.
 type Held = (u64, [u8; 32]);
 
+/// A revision as a plan compares it: as the checkpoint names it, with its origin
+/// and checkpoint name where the plan knows them. Naming a checkpoint keeps the
+/// id and the snapshot, so without the name a step would not write it (review
+/// 2026-10-24 MD-21).
+#[derive(Clone, Debug)]
+struct Planned {
+    held: Held,
+    /// `None` for a revision a step added, whose record the plan does not read;
+    /// it is never taken as unchanged.
+    named: Option<(RevisionOrigin, Option<String>)>,
+}
+
+impl Planned {
+    fn of(revision: &Revision) -> Self {
+        let (id, _, origin, checkpoint) = revision.fields();
+        Self {
+            held: (id, revision.encoded().sha256),
+            named: Some((origin, checkpoint.map(str::to_owned))),
+        }
+    }
+
+    fn is(&self, revision: &Revision) -> bool {
+        let (id, _, origin, checkpoint) = revision.fields();
+        self.held == (id, revision.encoded().sha256)
+            && self.named.as_ref().is_some_and(|(held_origin, name)| {
+                *held_origin == origin && name.as_deref() == checkpoint
+            })
+    }
+}
+
 struct Step<'a> {
     skip: usize,
     keep: usize,
@@ -163,7 +193,7 @@ pub(super) struct CheckpointPlan {
     base_identity: FileIdentity,
     len: usize,
     payload_len: usize,
-    held: Vec<Held>,
+    held: Vec<Planned>,
     side: BTreeMap<String, (bool, Option<[u8; 32]>)>,
 }
 
@@ -172,17 +202,27 @@ pub(super) fn read_plan(bytes: &[u8]) -> Option<CheckpointPlan> {
     let (base_identity, payload, steps) = split_checkpoint(bytes)?;
     let entries = container_directory(payload).ok()?;
     let (base_document, base) = read_base(&entries).ok()?;
-    let mut held = Vec::<Held>::new();
+    let mut held = Vec::<Planned>::new();
     for record in &base.records {
         let checksum = record.encoded_snapshot.checksum(base_document.checksum);
-        held.push((record.revision_id, checksum));
+        held.push(Planned {
+            held: (record.revision_id, checksum),
+            named: Some((record.origin, record.checkpoint.clone())),
+        });
     }
     let (steps, None) = read_steps(steps) else {
         return None;
     };
     for step in &steps {
         let step = Step::read(step).ok()?;
-        let added = step.added.iter().map(|(held, _)| *held).collect();
+        let added = step
+            .added
+            .iter()
+            .map(|(held, _)| Planned {
+                held: *held,
+                named: None,
+            })
+            .collect();
         step.apply(&mut held, added).ok()?;
     }
     Some(CheckpointPlan {
@@ -210,13 +250,11 @@ pub(super) fn plan_step(
     let revisions = document.revision_history().collect::<Vec<_>>();
     let current = |revision: &Revision| (revision.id(), revision.encoded().sha256);
     let held = &plan.held;
-    let skip = held
-        .iter()
-        .position(|held| *held == current(revisions[0]))?;
+    let skip = held.iter().position(|held| held.is(revisions[0]))?;
     let keep = held[skip..]
         .iter()
         .zip(&revisions)
-        .take_while(|(held, revision)| **held == current(revision))
+        .take_while(|(held, revision)| held.is(revision))
         .count();
     let (cursor, added) = (document.history_cursor(), revisions.len() - keep);
     let mut step = Vec::new();
@@ -244,7 +282,10 @@ pub(super) fn plan_step(
     (len - plan.payload_len <= plan.payload_len).then(|| {
         let next = CheckpointPlan {
             len,
-            held: revisions.iter().map(|revision| current(revision)).collect(),
+            held: revisions
+                .iter()
+                .map(|revision| Planned::of(revision))
+                .collect(),
             ..plan.clone()
         };
         (step, next)

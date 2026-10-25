@@ -1714,6 +1714,62 @@ fn thirty_one_edits_keep_thirty_undo_steps_and_a_saved_file_reopens_without_them
     assert!(store.undo().is_none());
 }
 
+/// Review 2026-10-24 MD-21: naming a checkpoint replaces the current revision with
+/// one of the same id and snapshot, and the work-recovery step compared revisions by
+/// those alone, so it recorded no change and after a crash the name was gone. The
+/// named revision is written again, and the recovered history keeps its name.
+#[test]
+fn a_checkpoint_named_after_edits_survives_a_crash() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("named.ketchup");
+    let container_data = persistence::ContainerData::default();
+    let mut store = graph_document();
+    let base = publish(
+        &path,
+        &store,
+        &container_data,
+        persistence::Publish::Replace,
+    )
+    .unwrap();
+    let names = |store: &DocumentStore| {
+        store
+            .revision_history()
+            .map(|revision| revision.checkpoint().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    let mut recovery = None;
+    for value in [3.0, 4.0] {
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value.to_string(), value).unwrap(),
+                },
+            ]))
+            .unwrap();
+        recovery = Some(checkpoint(&path, &store, &container_data, base, recovery).unwrap());
+    }
+    let current = store.current();
+    store
+        .create_checkpoint(
+            current.revision_id(),
+            &current.canonical_digest(),
+            "before the roof",
+        )
+        .unwrap();
+    checkpoint(&path, &store, &container_data, base, recovery).unwrap();
+
+    // A crash: nothing is saved, the next open finds the checkpoint.
+    let opened = persistence::load_file_with_source(&path).unwrap();
+    assert_eq!(opened.source_path(), persistence::work_recovery_path(&path));
+    let recovered = opened.into_parts().0.into_editable().ok().unwrap();
+    assert_eq!(names(&recovered), names(&store));
+    assert_eq!(
+        names(&recovered).last(),
+        Some(&Some("before the roof".to_owned()))
+    );
+}
+
 #[test]
 fn work_recovery_of_a_model_over_32_mb_restores_it() {
     let directory = tempfile::tempdir().unwrap();
