@@ -541,6 +541,7 @@ fn shared_continuation_exposes_new_names_on_the_same_mcp_paths() {
 fn nested_component_wire_reports_and_reads_distinguish_all_shared_leaf_paths() {
     let source = "t=extrude(\"t\",profile=[(0,0),(100,0),(0,100)],distance=20)\nc=box(\"clear\",(20,20,20),at=(70,70,0))\nh=box(\"hit\",(20,20,20),at=(10,10,0))\na=component(\"child\",[t,c,h])\ni=instance(\"inner\",a,at=(200,0,0))\np=component(\"parent\",[group(\"pair\",[a,i])])\ninstance(\"outer\",p,at=(800,500,0),x=(0,1,0))\n";
     let mut wire = Wire::new();
+    let replaced = wire.app.document.current().canonical_digest();
     let applied = wire
         .call_within(apply(source, true), Duration::from_secs(60))
         .result
@@ -626,8 +627,9 @@ fn nested_component_wire_reports_and_reads_distinguish_all_shared_leaf_paths() {
         .map(|part| part["definition_id"].as_u64().unwrap())
         .collect::<BTreeSet<_>>();
     assert_eq!(t.len(), 1);
+    // The program replaced the window's starting model: Undo brings that back.
     assert!(wire.call(Request::Undo { expected: None }).ok);
-    assert!(wire.app.document.current().scene_query().is_empty());
+    assert_eq!(wire.app.document.current().canonical_digest(), replaced);
     assert!(wire.call(Request::Redo { expected: None }).ok);
     assert_eq!(
         wire.call(Request::Program { expected: None })

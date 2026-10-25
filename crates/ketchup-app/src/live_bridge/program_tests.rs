@@ -1897,6 +1897,7 @@ fn a_program_that_replaces_a_saved_document_saves_back_to_its_file() {
     assert!(app.save_document_to(&path));
     let mut bridge = transport::start(egui::Context::default()).unwrap();
     let source = "box(\"kotva\", (35, 35, 200))\n";
+    let replaced = names(&app);
 
     bridge
         .execute(&mut app, apply(source, true), false)
@@ -1929,6 +1930,12 @@ fn a_program_that_replaces_a_saved_document_saves_back_to_its_file() {
         reopened.document.current_rule_program().unwrap().source,
         source
     );
+
+    // Review 2026-10-24 UI-22: the replacement is one Undo step on the same document,
+    // so Undo brings back the model it replaced, not an empty one.
+    assert!(app.undo(), "{}", app.digest);
+    assert_eq!(names(&app), replaced, "{}", app.digest);
+    assert_eq!(app.document_path(), Some(path.as_path()));
 }
 
 /// Bug report 2026-10-22 (#2586): a refused save answered save_rejected with

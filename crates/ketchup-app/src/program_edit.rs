@@ -107,7 +107,7 @@ impl KetchupApp {
                     if self.is_dirty() {
                         return Err(RuleProgramApplyError::UnsavedChanges);
                     }
-                    self.new_document_for_the_same_file();
+                    return self.publish_program_replacement(source, plan.evaluated);
                 }
                 let batch = ketchup_application::plan_rule_model_batch(
                     &self.document,
@@ -116,7 +116,6 @@ impl KetchupApp {
                 (ProgramEdit::Created, batch)
             }
         };
-        // After any new_document(): it starts a fresh window state.
         self.program_evaluations.seed(&source, &plan.evaluated);
         let proposal = self
             .document
@@ -139,6 +138,40 @@ impl KetchupApp {
             self.camera.zoom_fit_pending_quiet = true;
         }
         Ok((edit, plan.evaluated))
+    }
+
+    /// Publishes the model of `evaluated`, built in a document of its own, in place of
+    /// the window's model as one Undo step on the same document, so Undo brings back
+    /// the model it replaced and the window keeps its file (review 2026-10-24 UI-22).
+    fn publish_program_replacement(
+        &mut self,
+        source: RuleProgramSource,
+        evaluated: ketchup_program::Evaluated,
+    ) -> Result<(ProgramEdit, ketchup_program::Evaluated), RuleProgramApplyError> {
+        let mut replacement = DocumentStore::new();
+        let batch =
+            ketchup_application::plan_rule_model_batch(&replacement, evaluated.reference_model())?;
+        let proposal = replacement
+            .prepare_proposal_with_context(batch, ProposalContext::rule_program())
+            .map_err(|error| RuleProgramApplyError::Session(SessionError::Prepare(error)))?;
+        replacement
+            .commit_verified_proposal(&proposal)
+            .map_err(|error| RuleProgramApplyError::Session(SessionError::Commit(error)))?;
+        replacement
+            .bind_rule_program(source.clone())
+            .map_err(|error| RuleProgramApplyError::Session(SessionError::Canonical(error)))?;
+        self.program_evaluations.seed(&source, &evaluated);
+        self.complete_mutation_with_work_recovery(|document| {
+            document
+                .publish_replacement(&replacement)
+                .map(drop)
+                .map_err(SessionError::Canonical)
+        })
+        .map_err(session_error)?;
+        self.finish_program_edit();
+        self.camera.zoom_fit_pending = true;
+        self.camera.zoom_fit_pending_quiet = true;
+        Ok((ProgramEdit::Created, evaluated))
     }
 
     /// Publishes the document's program with only its variants changed, as one
