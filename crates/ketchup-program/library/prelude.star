@@ -225,8 +225,10 @@ def member(name, start, end, section, across = None, material = "timber", grain 
     The bar's local z runs along its length (z- face at `start`, z+ at `end`);
     local x is `across` made perpendicular to the length. By default it is
     horizontal and square to the length, so a sloping bar (a rafter, a brace)
-    keeps its height in the vertical plane at every slope; only a vertical bar
-    takes world x. Ends are square; trim them with booleans when they must
+    keeps its height in the vertical plane at every slope; it points towards
+    world +y for a bar more along world x than y in plan and towards +x for
+    one more along y, so it turns over at 45 degrees in plan; only a vertical
+    bar takes world x. Ends are square; trim them with booleans when they must
     follow another surface.
     """
     direction = vec_sub(end, start)
@@ -244,16 +246,18 @@ def member(name, start, end, section, across = None, material = "timber", grain 
 
 def _member_across(direction, length):
     """The default across of member(): world z x the length, horizontal at any
-    slope, signed as before (towards world y for a bar along x, towards world
-    x otherwise) so level bars keep their face names; world x when vertical."""
+    slope, signed as before so level bars keep their face names: towards world
+    +y for a bar more along world x than y in plan, towards world +x for one more
+    along y; world x when vertical. It turns over only at 45 degrees in plan, at
+    any slope (review 2026-10-24 PG-27: it turned at about 25.8 degrees of a
+    level bar, and of a sloping one at an angle its slope moved)."""
     horizontal = (-direction[1], direction[0], 0)
     size = vec_length(horizontal)
     if size <= 1e-9 * length:
         return (1, 0, 0)
-    previous = (0, 1, 0) if abs(direction[0]) > 0.9 * length else (1, 0, 0)
-    side = _dot(horizontal, previous)
-    if abs(side) <= 1e-9 * size:
-        side = horizontal[1]
+    # A hip at 45 degrees, its ends computed, counts as along x either way.
+    along_x = abs(direction[0]) >= abs(direction[1]) - 1e-9 * size
+    side = horizontal[1] if along_x else horizontal[0]
     return horizontal if side > 0 else vec_scale(horizontal, -1)
 
 #@topic placement: Placing parts by relation, distances and contact
