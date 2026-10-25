@@ -59,6 +59,10 @@ def schema() -> etree.XMLSchema:
 def test_there_are_goldens_and_one_carries_a_thread():
     assert len(GOLDENS) >= 10
     assert any(b'Name="ThreadSize"' in golden.read_bytes() for golden in GOLDENS)
+    # A through hole, and members lying along definition x and y (review 2026-10-24 MF-25).
+    assert any(b"<DepthLimited>no</DepthLimited>" in golden.read_bytes() for golden in GOLDENS)
+    names = {golden.name for golden in GOLDENS}
+    assert {"along-x-drilling-2.3.1.btlx", "along-y-drilling-2.3.1.btlx"} <= names
 
 
 @pytest.mark.parametrize("golden", GOLDENS, ids=lambda golden: golden.name)

@@ -645,6 +645,42 @@ fn bom_dimensions_are_the_exact_bounds_not_the_display_mesh() {
 }
 
 #[test]
+fn btlx_of_a_member_lying_along_x_or_y_is_a_golden_the_xsd_checks() {
+    // A 2000 x 100 profile extruded 60 mm, so the member's length runs along
+    // definition x or y, not z, with a 50 mm hole into its face. Goldens, so
+    // tests/test_btlx_schema.py validates them (review 2026-10-24 MF-25).
+    for (stock, center, golden) in [
+        (
+            [[0.0, 0.0], [2000.0, 0.0], [2000.0, 100.0], [0.0, 100.0]],
+            [500.0, 40.0],
+            "along-x-drilling-2.3.1.btlx",
+        ),
+        (
+            [[0.0, 0.0], [100.0, 0.0], [100.0, 2000.0], [0.0, 2000.0]],
+            [40.0, 500.0],
+            "along-y-drilling-2.3.1.btlx",
+        ),
+    ] {
+        let mut document = drilled_stock_document(&stock, "60", center);
+        // The second member above the first, clear of it whichever way it lies.
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: GRAPH_RIGHT,
+                    transform: Transform::from_translation(0.0, 0.0, 200.0).unwrap(),
+                },
+            ]))
+            .unwrap();
+        let (snapshot, projection) =
+            exact_graph_document_fabrication_projection(document, golden, GRAPH_BOOLEAN);
+        let export = projection.btlx_2_3_1_export(&snapshot).unwrap();
+        assert_btlx_golden(&export, golden);
+        let xml = String::from_utf8(export).unwrap();
+        assert!(xml.contains("Length=\"2000\""), "{golden}\n{xml}");
+    }
+}
+
+#[test]
 fn btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner() {
     // Profile (-30, -70) .. (30, 70), 2000 mm long, a hole into the start face
     // at (15, 40): 45 mm across the 60 mm width and 110 mm up the 140 mm
@@ -2726,6 +2762,9 @@ fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_mac
         // not the padded cutter (review 2026-10-19 MF-17). The through cut
         // enters the end the blind drilling leaves by.
         let btlx = projection.btlx_2_3_1_export(&snapshot).unwrap();
+        // A golden, so tests/test_btlx_schema.py checks DepthLimited no
+        // against the XSD (review 2026-10-24 MF-25).
+        assert_btlx_golden(&btlx, "through-drilling-2.3.1.btlx");
         let blind_golden = include_str!("fixtures/btlx/circular-drilling-2.3.1.btlx");
         assert_eq!(
             String::from_utf8(btlx.clone()).unwrap(),
