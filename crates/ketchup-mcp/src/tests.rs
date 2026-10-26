@@ -888,6 +888,7 @@ fn a_client_initializes_and_lists_every_tool() {
             "model",
             "edit",
             "file",
+            "drawing",
             "view",
             "batch",
             "run_plugin"

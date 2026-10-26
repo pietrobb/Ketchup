@@ -61,7 +61,7 @@ impl KetchupApp {
         &self,
         underlay: &Underlay,
     ) -> Option<Arc<UnderlaySnapIndex>> {
-        let key = underlay.lines_sha256;
+        let key = underlay.lines_key();
         let mut slots = self.render.underlay_snaps.borrow_mut();
         let built = match slots.get(&key) {
             Some(UnderlaySnapSlot::Ready(index)) => return Some(Arc::clone(index)),
@@ -80,7 +80,7 @@ impl KetchupApp {
                     .container_data
                     .blobs()
                     .get(&underlay.lines_blob())
-                    .and_then(|bytes| UnderlayLines::decode(bytes).ok())
+                    .and_then(|bytes| underlay.read_lines(bytes).ok())
                     .unwrap_or_default();
                 self.build_underlay_snap_index(key, lines);
                 return None;
@@ -110,10 +110,28 @@ impl KetchupApp {
         let slots = self.render.underlay_snaps.borrow();
         self.document.current().underlays().all(|underlay| {
             matches!(
-                slots.get(&underlay.lines_sha256),
+                slots.get(&underlay.lines_key()),
                 Some(UnderlaySnapSlot::Ready(_))
             )
         })
+    }
+
+    /// Waits until the snap index of every underlay of the document is built.
+    #[cfg(test)]
+    pub(crate) fn wait_for_underlay_snaps(&self) {
+        for underlay in self.document.current().underlays() {
+            if self.underlay_snap_index(underlay).is_some() {
+                continue;
+            }
+            let key = underlay.lines_key();
+            let mut slots = self.render.underlay_snaps.borrow_mut();
+            if let Some(UnderlaySnapSlot::Building(receiver)) = slots.get(&key) {
+                let index = receiver
+                    .recv()
+                    .expect("the snap index thread sends its index");
+                slots.insert(key, UnderlaySnapSlot::Ready(Arc::new(index)));
+            }
+        }
     }
 
     /// Whether `underlay` and its layer `layer` are shown.

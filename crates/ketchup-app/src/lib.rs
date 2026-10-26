@@ -1201,8 +1201,8 @@ struct SelectionState {
     topological: Vec<(SelectionId, SnapshotBoundTopologicalSelection)>,
     selected_group: Option<GroupId>,
     edit_context: Vec<EditContext>,
-    /// An underlay, selected alone: Move and Rotate change its placement.
-    underlay: Option<ketchup_model::underlay::UnderlayId>,
+    /// An underlay, selected alone, and the objects picked in its drawing.
+    underlay: Option<selection_state::UnderlaySelection>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

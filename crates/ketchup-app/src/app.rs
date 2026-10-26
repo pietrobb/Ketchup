@@ -103,6 +103,10 @@ mod thread_display_tests;
 pub(crate) mod tool_gesture;
 mod transform;
 pub(crate) mod underlay;
+pub(crate) mod underlay_edit;
+#[cfg(test)]
+#[path = "app/underlay_edit_tests.rs"]
+mod underlay_edit_tests;
 pub(crate) mod underlay_fit_tool;
 pub(crate) mod underlay_snapping;
 #[cfg(test)]

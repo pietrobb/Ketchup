@@ -242,6 +242,10 @@ impl Tools {
                 };
                 self.send(&action, args, wait)
             }
+            "drawing" => {
+                let action = take_action(&mut args, &["remove"])?;
+                self.send(&format!("drawing_{action}"), args, DEFAULT_WAIT)
+            }
             "view" => self.view(args),
             "batch" => self.batch(args),
             "run_plugin" => {

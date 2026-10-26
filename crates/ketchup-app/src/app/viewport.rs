@@ -508,8 +508,8 @@ impl KetchupApp {
             }
             return;
         };
-        if let ElementId::Underlay { underlay, .. } = target.element {
-            self.select_underlay(underlay);
+        if let ElementId::Underlay { underlay, segment } = target.element {
+            self.pick_underlay_object(underlay, segment, additive);
             return;
         }
         let occurrence_id = target.instance_path.root_occurrence();

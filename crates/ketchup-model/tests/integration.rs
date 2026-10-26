@@ -51,6 +51,7 @@ mod suffix_suppress_resume;
 mod suffix_suppress_resume_verifier;
 mod topology_identity;
 mod underlay;
+mod underlay_edits;
 mod underlay_fill;
 mod underlay_objects;
 mod underlay_snap;

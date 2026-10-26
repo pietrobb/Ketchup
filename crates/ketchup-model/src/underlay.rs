@@ -11,6 +11,7 @@
 //! lines. What the lines are — the entities, inserts, dimensions and hatches of the
 //! drawing — its objects say ([`objects::UnderlayObjects`]).
 
+pub mod edits;
 pub mod fill;
 pub mod object_query;
 pub mod objects;
@@ -58,6 +59,9 @@ pub struct Underlay {
         skip_serializing_if = "placement::is_identity"
     )]
     pub placement: Transform,
+    /// What was changed of its drawing in Kečup; its blob stays as it was read.
+    #[serde(default, skip_serializing_if = "edits::UnderlayEdits::is_empty")]
+    pub edits: edits::UnderlayEdits,
 }
 
 impl Underlay {
@@ -892,6 +896,7 @@ impl UnderlayLinesBuilder {
             parent,
             parts: Vec::new(),
             detail,
+            removed: false,
         });
         u32::try_from(self.objects.objects.len() - 1)
             .expect("an underlay count fits the blob's u32")
@@ -1270,6 +1275,7 @@ pub fn plan_underlay(
         lines_sha256,
         offset_mm_bits: offset_mm.map(f64::to_bits),
         placement: placement::geo_placement(snapshot, offset_mm),
+        edits: edits::UnderlayEdits::default(),
     }));
     Ok((CommandBatch::new(commands), id))
 }

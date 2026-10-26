@@ -6,7 +6,7 @@ use crate::*;
 use egui_kittest::Harness;
 use ketchup_model::underlay::snap::UnderlaySnapKind;
 
-fn shell() -> Harness<'static, KetchupApp> {
+pub(super) fn shell() -> Harness<'static, KetchupApp> {
     let mut harness = Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
         .with_step_dt(1.0 / 60.0)
@@ -33,7 +33,7 @@ fn shell() -> Harness<'static, KetchupApp> {
     panic!("the underlay never came into view");
 }
 
-fn point(harness: &mut Harness<'_, KetchupApp>, world: Vec3) -> Pos2 {
+pub(super) fn point(harness: &mut Harness<'_, KetchupApp>, world: Vec3) -> Pos2 {
     let screen = harness.state().viewport_position(world).unwrap() + Vec2::new(2.0, 1.0);
     let rect = harness.state().camera.viewport_rect.unwrap();
     assert!(
@@ -48,7 +48,7 @@ fn point(harness: &mut Harness<'_, KetchupApp>, world: Vec3) -> Pos2 {
     screen
 }
 
-fn click(harness: &mut Harness<'_, KetchupApp>, world: Vec3) {
+pub(super) fn click(harness: &mut Harness<'_, KetchupApp>, world: Vec3) {
     let screen = point(harness, world);
     for pressed in [true, false] {
         harness.input_mut().events.push(egui::Event::PointerButton {
@@ -61,7 +61,7 @@ fn click(harness: &mut Harness<'_, KetchupApp>, world: Vec3) {
     }
 }
 
-fn press(harness: &mut Harness<'_, KetchupApp>, key: egui::Key) {
+pub(super) fn press(harness: &mut Harness<'_, KetchupApp>, key: egui::Key) {
     harness.key_press(key);
     harness.step();
 }

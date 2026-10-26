@@ -294,6 +294,9 @@ pub struct UnderlayObject {
     /// Where what it draws itself lies; what its children draw is theirs.
     pub parts: Vec<ObjectPart>,
     pub detail: ObjectDetail,
+    /// Taken out of the drawing in Kečup ([`super::edits`]): it holds nothing and no
+    /// question finds it. Never saved in the blob.
+    pub removed: bool,
 }
 
 impl UnderlayObject {
@@ -480,6 +483,7 @@ impl UnderlayObjects {
                 parent: (parent != u32::MAX).then_some(parent),
                 parts,
                 detail,
+                removed: false,
             });
         }
         Ok(Self { layers, objects })

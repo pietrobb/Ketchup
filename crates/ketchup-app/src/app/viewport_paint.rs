@@ -448,6 +448,7 @@ impl KetchupApp {
                 .with_section(self.section_clip_plane()),
             ));
         }
+        self.paint_picked_underlay_objects(painter, rect);
     }
 
     /// Paint an adaptive construction grid and the three world axes on Z = 0.

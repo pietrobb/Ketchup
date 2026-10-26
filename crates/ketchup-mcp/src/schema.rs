@@ -225,6 +225,19 @@ pub fn tools() -> Value {
             }},
         },
         {
+            "name": "drawing",
+            "description": "2D CAD on a DXF/DWG drawing imported as an underlay (file action=import as_underlay=true): changes the drawing itself, not the model. Objects are the rows of inspect action=underlay_objects, by id; only top-level ones are edited: an insert, dimension or hatch is one object with everything it draws. \
+    remove takes object_ids, or instead every top-level object that meets the document box within_mm (as underlay_objects within_mm finds them; the answer lists the ids), out of the drawing as one Undo step (Undo brings them back): their lines, texts and fills leave the view, snapping, underlay_objects, underlay_regions, underlay_parallel and from_underlay; every other object keeps its id, so ids from one underlay_objects answer stay valid. The imported file is never changed; Save keeps the edits in the document. An id inside an insert or dimension is refused with remove_instead, the top-level object holding it; an id already removed is entity_not_found. A drawing imported before Kečup kept objects has none: import it again. \
+    In the window the same: a click on a line of the drawing picks its object, Shift+click picks more or drops one, Delete removes them.",
+            "inputSchema": {"type": "object", "required": ["action"], "properties": {
+                "action": {"type": "string", "enum": ["remove"]},
+                "underlay_id": {"type": "integer", "minimum": 1, "description": "The underlay (may be omitted when the document has one)."},
+                "object_ids": {"type": "array", "minItems": 1, "maxItems": 100000, "items": {"type": "integer", "minimum": 0}, "description": "For remove: top-level object ids from inspect action=underlay_objects. Give this or within_mm."},
+                "within_mm": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}, "description": "For remove: [[x_min, y_min], [x_max, y_max]] in document mm; every top-level object meeting it goes."},
+                "expected": {"type": "object", "description": EXPECTED},
+            }},
+        },
+        {
             "name": "view",
             "description": "selection sets the window selection; view sets the camera (iso/top/front are orthographic; iso has Z up; zoom_fit preserves projection; every view frames the whole model); \
     image returns a PNG render of the CAD viewport (not a screenshot, not a geometry check). \

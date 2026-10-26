@@ -41,10 +41,16 @@ const RELEASE_0_2_0: &str = concat!(
     "/tests/fixtures/persistence/release-0.2.0.bin"
 );
 
+/// Format 105 as Save wrote it: an underlay and annotations.
+const SAVED_105: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format105.bin"
+);
+
 /// The current format as Save writes it: the current revision alone.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/persistence/format105.bin"
+    "/tests/fixtures/persistence/format106.bin"
 );
 
 /// Canonical digest of the current revision each fixture was written with.
@@ -52,6 +58,7 @@ const DIGEST_102: &str = "32004c2fb9d7739d";
 const DIGEST_103: &str = "695c01140f69ddb9";
 const DIGEST_104: &str = "36c397ed20d2ec76";
 const DIGEST_105: &str = "fdcd5e8c616c1323";
+const DIGEST_106: &str = "949b76a793c6ab72";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
 fn opened(path: &str, schema: u16, digest: &str) -> (DocumentStore, ContainerData) {
@@ -127,13 +134,14 @@ fn a_file_saved_by_the_previous_release_opens_with_its_program_and_variants() {
 /// and 0.2.0, which read format 103, refused every file saved since. A document is saved
 /// in the oldest format that holds it: without underlays and annotations as format 103,
 /// the very snapshot bytes 0.2.0 itself saved, with an underlay as format 104; with
-/// annotations 105 (the golden).
+/// annotations 105; with an edited underlay 106 (the golden).
 #[test]
 fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
     for (path, schema, digest) in [
         (RELEASE_0_2_0, 103, DIGEST_103),
         (FIXTURE_103, 103, DIGEST_103),
         (SAVED_104, 104, DIGEST_104),
+        (SAVED_105, 105, DIGEST_105),
     ] {
         let (document, _) = opened(path, schema, digest);
         let snapshot = persistence::save(&document.current());
@@ -236,8 +244,10 @@ fn annotations() -> Vec<Annotation> {
 
 const ANNOTATION_TAG: u64 = 1_000;
 
+/// Format 105 adds annotations: the format 104 fixture with them saves as the format 105
+/// file.
 #[test]
-fn a_format_105_file_with_annotations_saves_the_golden() {
+fn a_format_104_document_with_annotations_saves_the_format_105_file() {
     let (mut document, container) = opened(FIXTURE_104, 104, DIGEST_104);
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -253,6 +263,25 @@ fn a_format_105_file_with_annotations_saves_the_golden() {
         .unwrap();
     assert_eq!(document.current().canonical_digest(), DIGEST_105);
     let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(saved, std::fs::read(SAVED_105).unwrap());
+    let (reopened, _) = opened(SAVED_105, 105, DIGEST_105);
+    assert_eq!(reopened.current().annotations(), annotations());
+}
+
+/// Format 106 adds the edits of an underlay's drawing: the format 105 file with object 0
+/// of its drawing removed.
+#[test]
+fn a_format_106_file_with_an_edited_underlay_saves_the_golden() {
+    let (mut document, container) = opened(SAVED_105, 105, DIGEST_105);
+    let mut underlay = document.current().underlays().next().unwrap().clone();
+    underlay.edits.removed_objects.insert(0);
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+            underlay.clone(),
+        )]))
+        .unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_106);
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
     if ketchup_test_env::update_golden() {
         std::fs::write(GOLDEN, saved).unwrap();
         panic!("wrote {GOLDEN}");
@@ -262,7 +291,8 @@ fn a_format_105_file_with_annotations_saves_the_golden() {
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_105);
+    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_106);
+    assert_eq!(reopened.current().underlays().next(), Some(&underlay));
     assert_eq!(reopened.current().annotations(), annotations());
     assert_eq!(
         persistence::save_document_store_current_snapshot(&reopened, &container).unwrap(),
@@ -274,7 +304,8 @@ fn a_format_105_file_with_annotations_saves_the_golden() {
 /// `file: field` under `src/`. Format 103 shipped in Kečup 0.1.0, which drops a field it
 /// does not know and loses it at its next Save, so a new optional field of the saved
 /// document needs a new format number like any other new field (PS-4): `underlays` and an
-/// underlay's `placement` came with format 104, `annotations` with 105.
+/// underlay's `placement` came with format 104, `annotations` with 105, an underlay's
+/// `edits` with 106.
 const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: annotations",
     "document.rs: contact_joints",
@@ -307,7 +338,9 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: tool_name",
     "exact_brep_graph.rs: trim_bits",
     "exact_brep_graph.rs: up_bits",
+    "underlay.rs: edits",
     "underlay.rs: placement",
+    "underlay/edits.rs: removed_objects",
 ];
 
 #[test]

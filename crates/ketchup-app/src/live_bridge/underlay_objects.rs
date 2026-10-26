@@ -90,7 +90,7 @@ impl LiveBridge {
         let mut answer = json!({
             "underlay_id": underlay.id.0,
             "name": underlay.name,
-            "objects_total": index.len(),
+            "objects_total": index.present(),
             "matched": found.len(),
             "objects": rows,
             "next_offset": (next < found.len()).then_some(next),
@@ -125,8 +125,8 @@ impl LiveBridge {
 }
 
 /// From the underlay's lines to the document and to the drawing's own coordinates.
-struct Placed<'a> {
-    underlay: &'a Underlay,
+pub(super) struct Placed<'a> {
+    pub(super) underlay: &'a Underlay,
 }
 
 impl Placed<'_> {
@@ -144,7 +144,7 @@ impl Placed<'_> {
     }
 
     /// The box of the underlay's lines that holds the document box `area`.
-    fn local_area(&self, area: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
+    pub(super) fn local_area(&self, area: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
         let [low, high] = area;
         bounds_of_points(
             [

@@ -10,7 +10,7 @@ use ketchup_model::underlay::placement::{UnderlayFitError, plan_underlay_edit};
 impl KetchupApp {
     /// The underlay selected alone, while the document still has it.
     pub(crate) fn selected_underlay(&self) -> Option<UnderlayId> {
-        let id = self.selection.underlay?;
+        let id = self.selection.underlay()?;
         (self.selection.occurrences.is_empty()
             && self.selection.primary.is_none()
             && self.selection.selected_group.is_none()

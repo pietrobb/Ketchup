@@ -428,7 +428,7 @@ impl KetchupApp {
         let dragged = self.underlay_drag_edit();
         let mut draws = Vec::new();
         for underlay in snapshot.underlays() {
-            let key = underlay.lines_sha256;
+            let key = underlay.lines_key();
             let geometry = if let Some(geometry) = self.render.underlays.get(&key) {
                 Arc::clone(geometry)
             } else {
@@ -438,7 +438,7 @@ impl KetchupApp {
                     .container_data
                     .blobs()
                     .get(&blob)
-                    .map(|bytes| UnderlayLines::decode(bytes));
+                    .map(|bytes| underlay.read_lines(bytes));
                 let reason = match decoded {
                     Some(Ok(lines)) => Ok(lines),
                     Some(Err(error)) => Err(error.to_string()),
@@ -486,7 +486,7 @@ impl KetchupApp {
         let named = |key: &[u8; 32]| {
             snapshot
                 .underlays()
-                .any(|underlay| underlay.lines_sha256 == *key)
+                .any(|underlay| underlay.lines_key() == *key)
         };
         self.render.underlays.retain(|key, _| named(key));
         self.render
@@ -554,12 +554,16 @@ impl KetchupApp {
     /// The lines and objects of `underlay`, decoded from the document's blob the first
     /// time; `None` while the document holds no readable blob of them.
     pub(crate) fn cached_underlay_lines(&self, underlay: &Underlay) -> Option<Arc<UnderlayLines>> {
-        let key = underlay.lines_sha256;
+        let key = underlay.lines_key();
         if let Some(lines) = self.render.underlay_lines.borrow().get(&key) {
             return Some(Arc::clone(lines));
         }
         let blobs = self.file.container_data.blobs();
-        let lines = Arc::new(UnderlayLines::decode(blobs.get(&underlay.lines_blob())?).ok()?);
+        let lines = Arc::new(
+            underlay
+                .read_lines(blobs.get(&underlay.lines_blob())?)
+                .ok()?,
+        );
         self.render
             .underlay_lines
             .borrow_mut()
@@ -572,7 +576,7 @@ impl KetchupApp {
     /// cannot decode has no layers, kept as [`Self::underlay_draws`] keeps it, so it is not
     /// decoded again each frame (review 2026-10-24 UI-27).
     fn cached_underlay_extent(&self, underlay: &Underlay) -> UnderlayExtent {
-        let key = underlay.lines_sha256;
+        let key = underlay.lines_key();
         if let Some(extent) = self.render.underlay_extents.borrow().get(&key) {
             return Arc::clone(extent);
         }
@@ -584,7 +588,7 @@ impl KetchupApp {
                 .container_data
                 .blobs()
                 .get(&underlay.lines_blob())
-                .and_then(|bytes| UnderlayLines::decode(bytes).ok())
+                .and_then(|bytes| underlay.read_lines(bytes).ok())
                 .map_or_else(|| Arc::from([]), |lines| underlay_extent(&lines)),
         };
         self.render

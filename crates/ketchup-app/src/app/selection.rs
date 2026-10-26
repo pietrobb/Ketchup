@@ -976,6 +976,9 @@ impl KetchupApp {
             if let Some(id) = self.picked_joint_id() {
                 return self.delete_picked_joint(id);
             }
+            if self.picked_underlay_objects().is_some() {
+                return self.delete_picked_underlay_objects();
+            }
             let hidden = self.hidden_selected_count();
             if hidden > 0 {
                 self.digest = self.catalog.format(

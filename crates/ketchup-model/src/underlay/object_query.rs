@@ -65,14 +65,34 @@ impl<'a> ObjectIndex<'a> {
         }
     }
 
+    /// The object `id`, `None` for one that was removed ([`super::edits`]).
     #[must_use]
     pub fn object(&self, id: u32) -> Option<&'a UnderlayObject> {
-        self.lines.objects().objects.get(as_index(id))
+        self.lines
+            .objects()
+            .objects
+            .get(as_index(id))
+            .filter(|object| !object.removed)
     }
 
+    /// How many ids there are, removed objects' too.
     #[must_use]
     pub fn len(&self) -> usize {
         self.children.len()
+    }
+
+    /// How many objects there are, removed ones left out.
+    #[must_use]
+    pub fn present(&self) -> usize {
+        self.live().count()
+    }
+
+    fn live(&self) -> impl Iterator<Item = &'a UnderlayObject> {
+        self.lines
+            .objects()
+            .objects
+            .iter()
+            .filter(|object| !object.removed)
     }
 
     #[must_use]
@@ -176,6 +196,9 @@ impl<'a> ObjectIndex<'a> {
             .filter_map(|index| u32::try_from(index).ok())
             .filter(|id| {
                 let object = &objects[as_index(*id)];
+                if object.removed {
+                    return false;
+                }
                 let placed_right = match filter.parent {
                     Some(parent) => object.parent == Some(parent),
                     None => !filter.top_level || object.parent.is_none(),
@@ -301,7 +324,7 @@ impl<'a> ObjectIndex<'a> {
     #[must_use]
     pub fn kind_counts(&self) -> BTreeMap<&'static str, [usize; 2]> {
         let mut counts = BTreeMap::new();
-        for object in &self.lines.objects().objects {
+        for object in self.live() {
             let count = counts.entry(object.kind.name()).or_insert([0, 0]);
             count[0] += usize::from(object.parent.is_none());
             count[1] += 1;
@@ -313,7 +336,7 @@ impl<'a> ObjectIndex<'a> {
     #[must_use]
     pub fn block_counts(&self) -> BTreeMap<&'a str, [usize; 2]> {
         let mut counts = BTreeMap::new();
-        for object in &self.lines.objects().objects {
+        for object in self.live() {
             if let ObjectDetail::Insert { block, .. } = &object.detail {
                 let count = counts.entry(block.as_str()).or_insert([0, 0]);
                 count[0] += usize::from(object.parent.is_none());
@@ -328,7 +351,7 @@ impl<'a> ObjectIndex<'a> {
     pub fn layer_counts(&self) -> BTreeMap<&'a str, usize> {
         let objects = self.lines.objects();
         let mut counts = BTreeMap::new();
-        for object in &objects.objects {
+        for object in self.live() {
             *counts.entry(objects.layer_name(object)).or_insert(0) += 1;
         }
         counts
@@ -373,6 +396,9 @@ fn meets(own: [[f64; 2]; 2], area: [[f64; 2]; 2]) -> bool {
 /// The bounds of what `object` draws itself: its points, fills, text anchors and the
 /// points of its detail.
 fn own_bounds(lines: &UnderlayLines, object: &UnderlayObject) -> Option<[[f64; 2]; 2]> {
+    if object.removed {
+        return None;
+    }
     let mut bounds = None;
     let mut add = |point: [f64; 2]| bounds = merge(bounds, Some([point, point]));
     for part in &object.parts {

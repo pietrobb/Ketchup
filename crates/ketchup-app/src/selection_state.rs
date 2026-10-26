@@ -1,6 +1,18 @@
 //! What is selected: parts, a group, exact faces and edges, or an underlay.
 
 use crate::*;
+use ketchup_model::underlay::UnderlayId;
+
+/// An underlay selected alone, so Move and Rotate place it, and the objects of its
+/// drawing picked in it, by id, so Delete takes them out.
+#[derive(Clone, Debug)]
+pub(crate) struct UnderlaySelection {
+    pub(crate) id: UnderlayId,
+    objects: BTreeSet<u32>,
+}
+
+/// No objects picked.
+static NO_OBJECTS: BTreeSet<u32> = BTreeSet::new();
 
 impl SelectionState {
     pub(crate) fn clear(&mut self) {
@@ -13,9 +25,38 @@ impl SelectionState {
     }
 
     /// Selects the underlay `id` alone.
-    pub(crate) fn select_underlay(&mut self, id: ketchup_model::underlay::UnderlayId) {
+    pub(crate) fn select_underlay(&mut self, id: UnderlayId) {
         self.clear();
-        self.underlay = Some(id);
+        self.underlay = Some(UnderlaySelection {
+            id,
+            objects: BTreeSet::new(),
+        });
+    }
+
+    /// The underlay selected, if one is.
+    pub(crate) fn underlay(&self) -> Option<UnderlayId> {
+        self.underlay.as_ref().map(|selected| selected.id)
+    }
+
+    /// The objects of the selected underlay's drawing picked in it.
+    pub(crate) fn underlay_objects(&self) -> &BTreeSet<u32> {
+        self.underlay
+            .as_ref()
+            .map_or(&NO_OBJECTS, |selected| &selected.objects)
+    }
+
+    /// Picks `object` of the selected underlay's drawing; `additive` adds it to those
+    /// picked, or takes it away when it was picked already.
+    pub(crate) fn pick_underlay_object(&mut self, object: u32, additive: bool) {
+        let Some(selected) = self.underlay.as_mut() else {
+            return;
+        };
+        if !additive {
+            selected.objects.clear();
+        } else if selected.objects.remove(&object) {
+            return;
+        }
+        selected.objects.insert(object);
     }
 
     pub(crate) fn contains(&self, instance_path: &InstancePath) -> bool {
