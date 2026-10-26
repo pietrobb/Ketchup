@@ -228,12 +228,34 @@ pub fn tools() -> Value {
             "name": "drawing",
             "description": "2D CAD on a DXF/DWG drawing imported as an underlay (file action=import as_underlay=true): changes the drawing itself, not the model. Objects are the rows of inspect action=underlay_objects, by id; only top-level ones are edited: an insert, dimension or hatch is one object with everything it draws. \
     remove takes object_ids, or instead every top-level object that meets the document box within_mm (as underlay_objects within_mm finds them; the answer lists the ids), out of the drawing as one Undo step (Undo brings them back): their lines, texts and fills leave the view, snapping, underlay_objects, underlay_regions, underlay_parallel and from_underlay; every other object keeps its id, so ids from one underlay_objects answer stay valid. The imported file is never changed; Save keeps the edits in the document. An id inside an insert or dimension is refused with remove_instead, the top-level object holding it; an id already removed is entity_not_found. A drawing imported before Kečup kept objects has none: import it again. \
-    In the window the same: a click on a line of the drawing picks its object, Shift+click picks more or drops one, Delete removes them.",
+    draw adds shapes on the existing layer named layer (underlay_objects lists the layers), as new objects of the drawing, one Undo step; the answer gives their object_ids. shapes are in document mm: {shape: line, points_mm: [[x,y],[x,y]]}, {shape: polyline, points_mm, closed}, {shape: arc, center_mm, radius_mm, start_deg, end_deg} counterclockwise, {shape: circle, center_mm, radius_mm}, {shape: text, anchor_mm, height_mm, rotation_deg, text}. A bad shape is refused with shape_index; an unknown layer with layer. \
+    move moves object_ids (drawn ones too): scaled by scale and turned counterclockwise by rotate_deg about about_mm (default [0,0]), mirrored across the line through the two points mirror_line_mm, then moved by by_mm; give at least one of them. copy=true keeps the objects and adds such copies (new_object_ids in the answer; a copied insert places its block again). One Undo step; ids stay. \
+    In the window: a click on a line of the drawing picks its object, Shift+click picks more or drops one, Delete removes them, Move and Rotate move them (Ctrl copies); a double-click selects the whole drawing, which Move and Rotate then place.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
-                "action": {"type": "string", "enum": ["remove"]},
+                "action": {"type": "string", "enum": ["remove", "draw", "move"]},
                 "underlay_id": {"type": "integer", "minimum": 1, "description": "The underlay (may be omitted when the document has one)."},
-                "object_ids": {"type": "array", "minItems": 1, "maxItems": 100000, "items": {"type": "integer", "minimum": 0}, "description": "For remove: top-level object ids from inspect action=underlay_objects. Give this or within_mm."},
+                "object_ids": {"type": "array", "minItems": 1, "maxItems": 100000, "items": {"type": "integer", "minimum": 0}, "description": "For remove and move: top-level object ids from inspect action=underlay_objects or from draw. remove takes this or within_mm."},
                 "within_mm": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}, "description": "For remove: [[x_min, y_min], [x_max, y_max]] in document mm; every top-level object meeting it goes."},
+                "layer": {"type": "string", "minLength": 1, "description": "For draw: the drawing's layer the shapes go on."},
+                "shapes": {"type": "array", "minItems": 1, "maxItems": 10000, "items": {"type": "object", "required": ["shape"], "properties": {
+                    "shape": {"type": "string", "enum": ["line", "polyline", "arc", "circle", "text"]},
+                    "points_mm": {"type": "array", "minItems": 2, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}},
+                    "closed": {"type": "boolean"},
+                    "center_mm": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+                    "radius_mm": {"type": "number", "exclusiveMinimum": 0},
+                    "start_deg": {"type": "number"},
+                    "end_deg": {"type": "number"},
+                    "anchor_mm": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+                    "height_mm": {"type": "number", "exclusiveMinimum": 0},
+                    "rotation_deg": {"type": "number"},
+                    "text": {"type": "string", "minLength": 1},
+                }}, "description": "For draw: the shapes, in document mm."},
+                "by_mm": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+                "rotate_deg": {"type": "number", "description": "For move: counterclockwise turn about about_mm."},
+                "scale": {"type": "number", "exclusiveMinimum": 0, "description": "For move: uniform scale about about_mm."},
+                "about_mm": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+                "mirror_line_mm": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}, "description": "For move: two points of the mirror line, document mm."},
+                "copy": {"type": "boolean", "description": "For move: keep the objects and add moved copies."},
                 "expected": {"type": "object", "description": EXPECTED},
             }},
         },

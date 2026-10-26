@@ -1042,6 +1042,7 @@ pub enum AppCommand {
     Scale,
     Measure,
     FitUnderlay,
+    DrawIntoUnderlay,
     Orbit,
     Pan,
     Undo,

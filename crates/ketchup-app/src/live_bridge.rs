@@ -445,6 +445,39 @@ pub enum Request {
         #[serde(default)]
         within_mm: Option<[[f64; 2]; 2]>,
     },
+    /// Draws `shapes`, in document millimetres, on layer `layer` of an underlay's drawing
+    /// as new objects, one Undo step.
+    DrawingDraw {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        #[serde(default)]
+        underlay_id: Option<u64>,
+        layer: String,
+        shapes: Vec<ketchup_model::underlay::drawn::DrawnShape>,
+    },
+    /// Moves top-level objects of an underlay's drawing, or adds moved copies of them with
+    /// `copy`, one Undo step: scaled by `scale` and turned by `rotate_deg` about
+    /// `about_mm`, mirrored across the line through `mirror_line_mm`, then moved by
+    /// `by_mm`, all in document millimetres.
+    DrawingMove {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        #[serde(default)]
+        underlay_id: Option<u64>,
+        object_ids: Vec<u32>,
+        #[serde(default)]
+        by_mm: Option<[f64; 2]>,
+        #[serde(default)]
+        rotate_deg: Option<f64>,
+        #[serde(default)]
+        scale: Option<f64>,
+        #[serde(default)]
+        about_mm: Option<[f64; 2]>,
+        #[serde(default)]
+        mirror_line_mm: Option<[[f64; 2]; 2]>,
+        #[serde(default)]
+        copy: bool,
+    },
     /// The endpoint, intersection, midpoint and nearest point of the shown underlay lines
     /// within `radius_mm` of `point_mm`, the length of the line or arc nearest it, and with
     /// `to_mm` the distance from the snap at `point_mm` to the snap at `to_mm`.
@@ -2904,7 +2937,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_draw","drawing_move","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -3166,6 +3199,12 @@ impl LiveBridge {
             }
             request @ Request::DrawingRemove { .. } => {
                 self.drawing_remove(app, &request, ui_busy, cancelled)
+            }
+            request @ Request::DrawingDraw { .. } => {
+                self.drawing_draw(app, &request, ui_busy, cancelled)
+            }
+            request @ Request::DrawingMove { .. } => {
+                self.drawing_move(app, &request, ui_busy, cancelled)
             }
             request @ Request::UnderlaySnap { .. } => Self::underlay_snap(app, &request),
             request @ Request::UnderlayObjects { .. } => Self::underlay_objects(app, &request),

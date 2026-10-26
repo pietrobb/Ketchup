@@ -11,6 +11,7 @@
 //! lines. What the lines are — the entities, inserts, dimensions and hatches of the
 //! drawing — its objects say ([`objects::UnderlayObjects`]).
 
+pub mod drawn;
 pub mod edits;
 pub mod fill;
 pub mod object_query;
@@ -897,6 +898,7 @@ impl UnderlayLinesBuilder {
             parts: Vec::new(),
             detail,
             removed: false,
+            added_by: None,
         });
         u32::try_from(self.objects.objects.len() - 1)
             .expect("an underlay count fits the blob's u32")

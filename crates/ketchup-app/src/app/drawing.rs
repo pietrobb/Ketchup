@@ -2345,7 +2345,7 @@ impl KetchupApp {
     }
 
     /// Records the current document as the one the shape in progress is drawn on.
-    fn mark_sketch_source(&mut self) {
+    pub(crate) fn mark_sketch_source(&mut self) {
         let snapshot = self.document.current();
         self.gesture.sketch.source = Some((snapshot.document_id(), snapshot.revision_id()));
     }
@@ -2370,6 +2370,9 @@ impl KetchupApp {
     }
 
     pub(crate) fn complete_line_sketch(&mut self, start: Vec3, end: Vec3) -> bool {
+        if self.underlay_draw_target().is_some() {
+            return self.draw_underlay_line(start, end);
+        }
         if let Some(origin) = self.gesture.sketch.chain_origin {
             let close_distance = length(Vec3::new(
                 end.x - origin.x,
@@ -2584,6 +2587,9 @@ impl KetchupApp {
     ) -> bool {
         if !radius_mm.is_finite() || radius_mm <= 0.01 {
             return false;
+        }
+        if self.underlay_draw_target().is_some() {
+            return self.draw_underlay_circle(center, radius_mm);
         }
         let direction = self.drawing_local_delta(center, center + direction);
         let direction_length = length(direction);
@@ -2928,6 +2934,9 @@ impl KetchupApp {
         end: Vec3,
         bulge_point: Vec3,
     ) -> bool {
+        if self.underlay_draw_target().is_some() {
+            return self.draw_underlay_arc(start, end, bulge_point);
+        }
         let Some(arc) = self.drawing_arc(start, end, bulge_point) else {
             return false;
         };
@@ -3009,6 +3018,9 @@ impl KetchupApp {
     }
 
     pub(crate) fn complete_rectangle_sketch(&mut self, start: Vec3, end: Vec3) -> bool {
+        if self.underlay_draw_target().is_some() {
+            return self.draw_underlay_rectangle(start, end);
+        }
         if self.face_workflow_datum() != PrincipalPlane::Xy {
             return self.complete_datum_rectangle(start, end);
         }

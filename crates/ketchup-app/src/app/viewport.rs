@@ -1873,6 +1873,7 @@ impl KetchupApp {
         {
             // An annotation drawn over the model is picked before what lies under it.
             self.hover.presses = [self.hover.presses[1].take(), None];
+            self.hover.press_points = [self.hover.press_points[1].take(), None];
         } else if self.active_tool == ActiveTool::Select {
             let pressed = self
                 .hover
@@ -1880,6 +1881,7 @@ impl KetchupApp {
                 .as_ref()
                 .map(|hit| hit.instance_path.clone());
             self.hover.presses = [self.hover.presses[1].take(), pressed];
+            self.hover.press_points = [self.hover.press_points[1].take(), Some(pointer)];
             let additive = ui.input(|input| input.modifiers.shift);
             let target = self
                 .hover
@@ -2118,6 +2120,20 @@ impl KetchupApp {
     /// Drags of the Select, Move, Rotate and Push/Pull tools.
     fn viewport_tool_drags(&mut self, ui: &egui::Ui, response: &egui::Response) {
         if self.active_tool == ActiveTool::Select
+            && response.double_clicked()
+            && self.hover.target.is_none()
+            && let [Some(first), Some(second)] = self.hover.press_points
+            && first.distance(second) <= 4.0
+            && let Some(id) = self
+                .hover
+                .snap
+                .as_ref()
+                .and_then(|snap| super::underlay_snapping::underlay_of(&snap.reference))
+        {
+            // A click picks one object of a drawing; a double-click the whole drawing, which
+            // Move and Rotate then place.
+            self.select_whole_underlay(id);
+        } else if self.active_tool == ActiveTool::Select
             && response.double_clicked()
             && let Some(target) = self.hover.target.clone()
             // Not a click on an annotation, then one on the part under it.

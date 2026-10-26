@@ -297,6 +297,9 @@ pub struct UnderlayObject {
     /// Taken out of the drawing in Kečup ([`super::edits`]): it holds nothing and no
     /// question finds it. Never saved in the blob.
     pub removed: bool,
+    /// The index in [`super::edits::UnderlayEdits::added`] of the edit that added it;
+    /// `None` for an object read from the drawing. Never saved in the blob.
+    pub added_by: Option<u32>,
 }
 
 impl UnderlayObject {
@@ -484,6 +487,7 @@ impl UnderlayObjects {
                 parts,
                 detail,
                 removed: false,
+                added_by: None,
             });
         }
         Ok(Self { layers, objects })

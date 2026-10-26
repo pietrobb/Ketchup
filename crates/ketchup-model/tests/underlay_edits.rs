@@ -4,12 +4,14 @@
 //! underlay carries, one Undo step each, and name the lines they give.
 use ketchup_model::document::DocumentStore;
 use ketchup_model::import::{DxfImportOptions, read_dxf_underlay};
-use ketchup_model::underlay::UnderlayLines;
+use ketchup_model::underlay::drawn::{AddedObject, DrawnShape};
 use ketchup_model::underlay::edits::{
-    UnderlayEdits, UnderlayObjectError, plan_underlay_object_removal,
+    UnderlayEdits, UnderlayObjectError, plan_underlay_drawing, plan_underlay_object_removal,
+    plan_underlay_object_transform,
 };
 use ketchup_model::underlay::object_query::{ObjectFilter, ObjectIndex};
 use ketchup_model::underlay::plan_underlay;
+use ketchup_model::underlay::{UnderlayId, UnderlayLines};
 
 const BLOCKS: &str = concat!(
     "0\nBLOCK\n8\n0\n2\nleaf\n70\n0\n10\n0\n20\n0\n",
@@ -51,7 +53,7 @@ fn lines() -> UnderlayLines {
 }
 
 /// The id of the top-level object of handle `handle`.
-fn id(lines: &UnderlayLines, handle: u64) -> u32 {
+fn id_of(lines: &UnderlayLines, handle: u64) -> u32 {
     let index = lines
         .objects()
         .objects
@@ -64,6 +66,7 @@ fn id(lines: &UnderlayLines, handle: u64) -> u32 {
 fn removing(ids: &[u32]) -> UnderlayEdits {
     UnderlayEdits {
         removed_objects: ids.iter().copied().collect(),
+        ..UnderlayEdits::default()
     }
 }
 
@@ -81,8 +84,8 @@ fn removing_the_middle_of_joined_lines_splits_their_polyline() {
     let lines = lines();
     let joined = [[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
     assert!(polylines(&lines).contains(&joined.to_vec()));
-    let middle = id(&lines, 0x11);
-    let edited = lines.clone().edited(&removing(&[middle]));
+    let middle = id_of(&lines, 0x11);
+    let edited = lines.clone().edited(&removing(&[middle]), &[]);
     let after = polylines(&edited);
     assert!(after.contains(&vec![[0.0, 0.0], [100.0, 0.0]]), "{after:?}");
     assert!(
@@ -99,11 +102,11 @@ fn removing_the_middle_of_joined_lines_splits_their_polyline() {
     let index = ObjectIndex::new(&edited);
     assert!(index.object(middle).is_none());
     assert_eq!(
-        index.own_polylines(id(&lines, 0x10)),
+        index.own_polylines(id_of(&lines, 0x10)),
         vec![&[[0.0, 0.0], [100.0, 0.0]][..]]
     );
     assert_eq!(
-        index.own_polylines(id(&lines, 0x12)),
+        index.own_polylines(id_of(&lines, 0x12)),
         vec![&[[100.0, 100.0], [0.0, 100.0]][..]]
     );
     assert_eq!(index.present(), ObjectIndex::new(&lines).present() - 1);
@@ -117,12 +120,12 @@ fn removing_the_middle_of_joined_lines_splits_their_polyline() {
 #[test]
 fn an_insert_takes_its_block_and_attributes_with_it() {
     let lines = lines();
-    let door = id(&lines, 0x20);
+    let door = id_of(&lines, 0x20);
     let before = ObjectIndex::new(&lines);
     let children = before.children(door).to_vec();
     assert!(!children.is_empty());
     assert!(lines.text_count() >= 2);
-    let edited = lines.clone().edited(&removing(&[door]));
+    let edited = lines.clone().edited(&removing(&[door]), &[]);
     let index = ObjectIndex::new(&edited);
     for object in std::iter::once(door).chain(children) {
         assert!(index.object(object).is_none(), "{object}");
@@ -144,13 +147,13 @@ fn a_text_and_a_hatch_leave_with_their_objects() {
     let lines = lines();
     let edited = lines
         .clone()
-        .edited(&removing(&[id(&lines, 0x30), id(&lines, 0x40)]));
+        .edited(&removing(&[id_of(&lines, 0x30), id_of(&lines, 0x40)]), &[]);
     assert_eq!(edited.text_count(), lines.text_count() - 1);
     assert_eq!(lines.fill_count(), 1);
     assert_eq!(edited.fill_count(), 0);
     // What the walls draw is untouched.
     assert_eq!(
-        ObjectIndex::new(&edited).own_polylines(id(&lines, 0x11)),
+        ObjectIndex::new(&edited).own_polylines(id_of(&lines, 0x11)),
         vec![&[[100.0, 0.0], [100.0, 100.0]][..]]
     );
 }
@@ -158,7 +161,262 @@ fn a_text_and_a_hatch_leave_with_their_objects() {
 #[test]
 fn no_edits_are_the_lines_as_read() {
     let lines = lines();
-    assert_eq!(lines.clone().edited(&UnderlayEdits::default()), lines);
+    assert_eq!(lines.clone().edited(&UnderlayEdits::default(), &[]), lines);
+}
+
+/// A document with an underlay of the layers of [`lines`].
+fn document() -> (DocumentStore, UnderlayId) {
+    let mut document = DocumentStore::new();
+    let (batch, underlay_id) = plan_underlay(
+        &document.current(),
+        "plan",
+        &[
+            "walls".into(),
+            "doors".into(),
+            "notes".into(),
+            "floor".into(),
+        ],
+        &[],
+        [7; 32],
+        [0.0, 0.0],
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    (document, underlay_id)
+}
+
+/// The lines of underlay `id` in `document` as drawn now.
+fn drawn(document: &DocumentStore, id: UnderlayId) -> UnderlayLines {
+    let underlay = document.current().underlay(id).unwrap().clone();
+    lines().edited(&underlay.edits, &underlay.layers)
+}
+
+fn moving(by: [f64; 2]) -> [[f64; 3]; 2] {
+    [[1.0, 0.0, by[0]], [0.0, 1.0, by[1]]]
+}
+
+fn text_at(lines: &UnderlayLines, text: &str) -> Vec<[f64; 2]> {
+    lines
+        .layers()
+        .iter()
+        .flat_map(|layer| layer.texts())
+        .filter(|drawn| drawn.text == text)
+        .map(|drawn| drawn.anchor_mm)
+        .collect()
+}
+
+#[test]
+fn drawn_shapes_are_new_objects_after_the_drawings_own() {
+    let (mut document, id) = document();
+    let read = lines().objects().objects.len();
+    let shapes = vec![
+        DrawnShape::Polyline {
+            points_mm: vec![[0.0, 200.0], [300.0, 200.0]],
+            closed: false,
+        },
+        DrawnShape::Circle {
+            center_mm: [50.0, 50.0],
+            radius_mm: 20.0,
+        },
+        DrawnShape::Text {
+            anchor_mm: [10.0, 300.0],
+            height_mm: 25.0,
+            rotation_deg: 0.0,
+            text: "Kuchyňa".into(),
+        },
+    ];
+    let snapshot = document.current();
+    assert_eq!(
+        plan_underlay_drawing(&snapshot, id, "roof", shapes.clone()).unwrap_err(),
+        UnderlayObjectError::UnknownLayer("roof".into())
+    );
+    let flat = DrawnShape::Circle {
+        center_mm: [0.0, 0.0],
+        radius_mm: 0.0,
+    };
+    assert_eq!(
+        plan_underlay_drawing(&snapshot, id, "walls", vec![shapes[0].clone(), flat]).unwrap_err(),
+        UnderlayObjectError::InvalidShape(1)
+    );
+    let steps = document.visible_undo_steps();
+    document
+        .apply_batch(&plan_underlay_drawing(&snapshot, id, "walls", shapes).unwrap())
+        .unwrap();
+    assert_eq!(document.visible_undo_steps(), steps + 1);
+
+    let edited = drawn(&document, id);
+    let index = ObjectIndex::new(&edited);
+    let new = |offset: usize| u32::try_from(read + offset).unwrap();
+    let kinds = (0..3)
+        .map(|offset| index.object(new(offset)).unwrap().kind.name())
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, ["LINE", "CIRCLE", "TEXT"]);
+    assert_eq!(
+        index.own_polylines(new(0)),
+        vec![&[[0.0, 200.0], [300.0, 200.0]][..]]
+    );
+    let [low, high] = index.bounds(new(1)).unwrap();
+    for (got, want) in low.iter().chain(&high).zip([30.0, 30.0, 70.0, 70.0]) {
+        assert!((got - want).abs() < 1e-6, "{low:?} {high:?}");
+    }
+    assert_eq!(text_at(&edited, "Kuchyňa"), [[10.0, 300.0]]);
+    assert_eq!(index.own_texts(new(2))[0].text, "Kuchyňa");
+    assert_eq!(
+        edited.segment_count(),
+        lines().segment_count() + 1 + {
+            let circle = index.own_polylines(new(1));
+            circle[0].len() - 1
+        }
+    );
+
+    // A drawn object is removed like a read one, and the ids after it stay.
+    let snapshot = document.current();
+    document
+        .apply_batch(&plan_underlay_object_removal(&snapshot, id, &edited, &[new(0)]).unwrap())
+        .unwrap();
+    let edited = drawn(&document, id);
+    let index = ObjectIndex::new(&edited);
+    assert!(index.object(new(0)).is_none());
+    assert_eq!(index.object(new(2)).unwrap().kind.name(), "TEXT");
+    document.undo().unwrap();
+    document.undo().unwrap();
+    assert!(document.current().underlay(id).unwrap().edits.is_empty());
+}
+
+#[test]
+fn a_moved_object_keeps_its_id_and_moves_again_from_where_it_is() {
+    let (mut document, id) = document();
+    let lines = lines();
+    let text = id_of(&lines, 0x30);
+    let walls = id_of(&lines, 0x10);
+    for _ in 0..2 {
+        let snapshot = document.current();
+        let batch = plan_underlay_object_transform(
+            &snapshot,
+            id,
+            &drawn(&document, id),
+            &[text],
+            &moving([100.0, 0.0]),
+            false,
+        )
+        .unwrap();
+        document.apply_batch(&batch).unwrap();
+    }
+    let edited = drawn(&document, id);
+    assert_eq!(text_at(&edited, "WC"), [[250.0, 50.0]]);
+    let index = ObjectIndex::new(&edited);
+    assert!(index.object(text).is_some());
+    assert_eq!(index.present(), ObjectIndex::new(&lines).present());
+    assert_eq!(
+        index.own_polylines(walls),
+        vec![&[[0.0, 0.0], [100.0, 0.0]][..]]
+    );
+    let shear = [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0]];
+    assert_eq!(
+        plan_underlay_object_transform(&document.current(), id, &edited, &[text], &shear, false)
+            .unwrap_err(),
+        UnderlayObjectError::InvalidMap
+    );
+}
+
+#[test]
+fn a_copy_of_an_insert_places_the_block_again_and_a_turned_copy_turns_its_lines() {
+    let (mut document, id) = document();
+    let lines = lines();
+    let door = id_of(&lines, 0x20);
+    let walls = id_of(&lines, 0x10);
+    let quarter = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0]];
+    let snapshot = document.current();
+    document
+        .apply_batch(
+            &plan_underlay_object_transform(&snapshot, id, &lines, &[door, walls], &quarter, true)
+                .unwrap(),
+        )
+        .unwrap();
+    let edited = drawn(&document, id);
+    let index = ObjectIndex::new(&edited);
+    assert_eq!(
+        index.block_counts().get("leaf").map(|counts| counts[0]),
+        Some(2)
+    );
+    // Copies come in the order of the ids: the walls' line, then the door.
+    let copied_walls = u32::try_from(lines.objects().objects.len()).unwrap();
+    assert_eq!(
+        index.own_polylines(copied_walls),
+        vec![&[[0.0, 0.0], [0.0, 100.0]][..]]
+    );
+    assert_eq!(text_at(&edited, "D-01").len(), 2);
+    // The original stays where it was.
+    assert_eq!(
+        index.own_polylines(walls),
+        vec![&[[0.0, 0.0], [100.0, 0.0]][..]]
+    );
+
+    // A copy of the copy goes from where the copy is.
+    let snapshot = document.current();
+    document
+        .apply_batch(
+            &plan_underlay_object_transform(
+                &snapshot,
+                id,
+                &edited,
+                &[copied_walls],
+                &moving([0.0, 10.0]),
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let edited = drawn(&document, id);
+    let last = u32::try_from(edited.objects().objects.len() - 1).unwrap();
+    assert_eq!(
+        ObjectIndex::new(&edited).own_polylines(last),
+        vec![&[[0.0, 10.0], [0.0, 110.0]][..]]
+    );
+}
+
+#[test]
+fn moving_a_drawn_shape_rewrites_it() {
+    let (mut document, id) = document();
+    let read = u32::try_from(lines().objects().objects.len()).unwrap();
+    let snapshot = document.current();
+    let arc = DrawnShape::Arc {
+        center_mm: [0.0, 0.0],
+        radius_mm: 10.0,
+        start_deg: 0.0,
+        end_deg: 90.0,
+    };
+    document
+        .apply_batch(&plan_underlay_drawing(&snapshot, id, "notes", vec![arc]).unwrap())
+        .unwrap();
+    let mirror = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    let snapshot = document.current();
+    document
+        .apply_batch(
+            &plan_underlay_object_transform(
+                &snapshot,
+                id,
+                &drawn(&document, id),
+                &[read],
+                &mirror,
+                false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let edits = document.current().underlay(id).unwrap().edits.clone();
+    assert_eq!(edits.added.len(), 1);
+    let AddedObject::Drawn { shape, .. } = &edits.added[0] else {
+        panic!("{edits:?}");
+    };
+    let DrawnShape::Arc {
+        start_deg, end_deg, ..
+    } = shape
+    else {
+        panic!("{shape:?}");
+    };
+    // Mirrored, the quarter from 0° to 90° runs from 90° to 180°.
+    assert!((start_deg - 90.0).abs() < 1e-9 && (end_deg - 180.0).abs() < 1e-9);
 }
 
 #[test]
@@ -183,7 +441,7 @@ fn a_removal_is_one_undo_step_that_names_new_lines() {
     let before = document.current().underlay(underlay_id).unwrap().clone();
     assert_eq!(before.lines_key(), before.lines_sha256);
 
-    let door = id(&lines, 0x20);
+    let door = id_of(&lines, 0x20);
     let child = ObjectIndex::new(&lines).children(door)[0];
     let snapshot = document.current();
     let plan = |ids: &[u32]| plan_underlay_object_removal(&snapshot, underlay_id, &lines, ids);
@@ -214,7 +472,7 @@ fn a_removal_is_one_undo_step_that_names_new_lines() {
     assert_ne!(after.lines_key(), before.lines_key());
 
     // Removed once, it is not found again.
-    let edited = lines.clone().edited(&after.edits);
+    let edited = lines.clone().edited(&after.edits, &after.layers);
     assert_eq!(
         plan_underlay_object_removal(&document.current(), underlay_id, &edited, &[door])
             .unwrap_err(),

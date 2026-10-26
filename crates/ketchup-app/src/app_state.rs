@@ -153,6 +153,9 @@ pub(crate) struct HoverState {
     /// press that picked an annotation): a double click opens a part only when
     /// both of its presses hit it.
     pub(crate) presses: [Option<InstancePath>; 2],
+    /// Where on screen the last two Select presses were: a double click selects a whole
+    /// drawing only when both were on the same spot, not two quick picks of two objects.
+    pub(crate) press_points: [Option<Pos2>; 2],
 }
 
 /// Which side panels and windows are open.

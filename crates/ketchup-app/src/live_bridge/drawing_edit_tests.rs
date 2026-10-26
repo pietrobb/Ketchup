@@ -177,3 +177,159 @@ fn a_client_removes_objects_of_a_drawing_in_one_undo_step_that_save_and_open_kee
     assert_eq!(opened.canonical_digest(), edited);
     assert_eq!(top_level(&mut bridge, &mut opened), after);
 }
+
+fn row(bridge: &mut LiveBridge, app: &mut KetchupApp, id: &Value) -> Value {
+    bridge
+        .execute(
+            app,
+            ask("underlay_objects", json!({"object_id": id})),
+            false,
+        )
+        .unwrap()["object"]
+        .clone()
+}
+
+fn close(value: &Value, want: [[f64; 2]; 2]) -> bool {
+    let got: [[f64; 2]; 2] = serde_json::from_value(value.clone()).unwrap();
+    got.iter()
+        .flatten()
+        .zip(want.iter().flatten())
+        .all(|(got, want)| (got - want).abs() < 1e-6)
+}
+
+#[test]
+fn a_client_draws_moves_and_copies_objects_of_a_drawing_in_document_millimetres() {
+    let (mut app, mut bridge, _) = imported(DRAWING);
+    let before = top_level(&mut bridge, &mut app);
+    let undo = app.undo_step_count();
+
+    assert_eq!(
+        bridge
+            .execute(
+                &mut app,
+                ask(
+                    "drawing_draw",
+                    json!({"layer": "roof", "shapes": [{"shape": "line", "points_mm": [[0, 0], [1, 0]]}]})
+                ),
+                false
+            )
+            .unwrap_err(),
+        "invalid_params"
+    );
+    assert_eq!(take_error_details().unwrap()["details"]["layer"], "roof");
+    assert_eq!(
+        bridge
+            .execute(
+                &mut app,
+                ask(
+                    "drawing_draw",
+                    json!({"layer": "walls", "shapes": [{"shape": "circle", "center_mm": [0, 0], "radius_mm": -1}]})
+                ),
+                false
+            )
+            .unwrap_err(),
+        "invalid_params"
+    );
+    assert_eq!(take_error_details().unwrap()["details"]["shape_index"], 0);
+
+    let drawn = bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_draw",
+                json!({"layer": "walls", "shapes": [
+                    {"shape": "line", "points_mm": [[100, 1000], [600, 1000]]},
+                    {"shape": "text", "anchor_mm": [100, 1200], "height_mm": 50, "text": "Spálňa"},
+                ]}),
+            ),
+            false,
+        )
+        .unwrap();
+    assert_eq!(app.undo_step_count(), undo + 1);
+    let [line, text] = [
+        drawn["object_ids"][0].clone(),
+        drawn["object_ids"][1].clone(),
+    ];
+    let line_row = row(&mut bridge, &mut app, &line);
+    assert_eq!(line_row["kind"], "LINE", "{line_row}");
+    assert_eq!(line_row["layer"], "walls");
+    assert!(
+        close(&line_row["bounds_mm"], [[100.0, 1000.0], [600.0, 1000.0]]),
+        "{line_row}"
+    );
+    let text_row = row(&mut bridge, &mut app, &text);
+    assert_eq!(text_row["texts"][0]["text"], "Spálňa", "{text_row}");
+    assert!(close(
+        &json!([text_row["texts"][0]["anchor_mm"], [0, 0]]),
+        [[100.0, 1200.0], [0.0, 0.0]]
+    ));
+    assert_eq!(top_level(&mut bridge, &mut app).len(), before.len() + 2);
+
+    // Turned a quarter about its start and moved up: it stands from (100, 1100) to (100, 1600).
+    let moved = bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_move",
+                json!({"object_ids": [line], "rotate_deg": 90, "about_mm": [100, 1000], "by_mm": [0, 100]}),
+            ),
+            false,
+        )
+        .unwrap();
+    assert_eq!(moved["copy"], false, "{moved}");
+    assert!(close(
+        &row(&mut bridge, &mut app, &line)["bounds_mm"],
+        [[100.0, 1100.0], [100.0, 1600.0]]
+    ));
+
+    // A mirrored copy of the wall line, and of a door: its block is placed again.
+    let wall = id_of(&before, "2A");
+    let door = id_of(&before, "1F");
+    let copied = bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_move",
+                json!({"object_ids": [wall, door], "mirror_line_mm": [[0, 0], [1, 0]], "copy": true}),
+            ),
+            false,
+        )
+        .unwrap();
+    let new = copied["new_object_ids"].as_array().unwrap().clone();
+    assert_eq!(new.len(), 2, "{copied}");
+    let wall_row = row(&mut bridge, &mut app, &json!(wall));
+    // Copies come in the order of the ids, the door's first.
+    let door_copy = row(&mut bridge, &mut app, &new[0]);
+    assert_eq!(door_copy["block"], "DOOR_80", "{door_copy}");
+    assert_eq!(door_copy["mirrored"], true);
+    let copy_row = row(&mut bridge, &mut app, &new[1]);
+    let [[x0, y0], [x1, y1]]: [[f64; 2]; 2] =
+        serde_json::from_value(wall_row["bounds_mm"].clone()).unwrap();
+    assert!(
+        close(&copy_row["bounds_mm"], [[x0, -y1], [x1, -y0]]),
+        "{copy_row}"
+    );
+    let summary = bridge
+        .execute(&mut app, ask("underlay_objects", json!({})), false)
+        .unwrap();
+    assert_eq!(summary["kinds"]["INSERT"], json!([3, 3]), "{summary}");
+    assert_eq!(app.undo_step_count(), undo + 3);
+
+    assert_eq!(
+        bridge
+            .execute(
+                &mut app,
+                ask("drawing_move", json!({"object_ids": [wall]})),
+                false
+            )
+            .unwrap_err(),
+        "invalid_params",
+        "a move needs a map"
+    );
+    for _ in 0..3 {
+        bridge
+            .execute(&mut app, Request::Undo { expected: None }, false)
+            .unwrap();
+    }
+    assert_eq!(top_level(&mut bridge, &mut app), before);
+}

@@ -260,6 +260,8 @@ fn has_effect(request: &Request) -> bool {
         | Request::RemoveUnderlay { .. }
         | Request::FitUnderlay { .. }
         | Request::DrawingRemove { .. }
+        | Request::DrawingDraw { .. }
+        | Request::DrawingMove { .. }
         | Request::Export { .. }
         | Request::Selection { .. }
         | Request::View { .. }

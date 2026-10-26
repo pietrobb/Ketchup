@@ -1,10 +1,15 @@
 //! Moving and turning a selected underlay with the Move and Rotate tools: the gesture is the
 //! model's, and its edit goes into the underlay's placement as a fit's does, one Undo step.
 
+use super::transform::{move_world_edit, rotate_world_edit};
+use super::underlay_edit::UnderlayEditError;
 use super::underlay_snapping::{underlay_of, underlay_reference};
 use crate::transform_operation::TransformTarget;
 use crate::*;
 use ketchup_model::underlay::UnderlayId;
+use ketchup_model::underlay::drawn::in_lines;
+use ketchup_model::underlay::edits::UnderlayObjectError;
+use ketchup_model::underlay::objects::Affine;
 use ketchup_model::underlay::placement::{UnderlayFitError, plan_underlay_edit};
 
 impl KetchupApp {
@@ -34,6 +39,15 @@ impl KetchupApp {
             "digest-underlay-selected",
             &BTreeMap::from([("name", name)]),
         );
+    }
+
+    /// Selects the whole drawing of underlay `id`, no object picked in it, so Move and
+    /// Rotate place the drawing.
+    pub(crate) fn select_whole_underlay(&mut self, id: UnderlayId) {
+        self.select_underlay(id);
+        if self.selected_underlay() == Some(id) {
+            self.digest = self.catalog.text("digest-underlay-whole-selected");
+        }
     }
 
     fn refuse_underlay_edit(&mut self, reason: String) {
@@ -93,7 +107,10 @@ impl KetchupApp {
         rect: Rect,
         copy: bool,
     ) -> bool {
-        if self.underlay_copy_refused(copy || self.gesture.transform.move_copy) {
+        let copy = copy || self.gesture.transform.move_copy;
+        // Picked objects of the drawing are copied; the drawing itself is only placed.
+        let objects = self.picked_underlay_objects().is_some();
+        if !objects && self.underlay_copy_refused(copy) {
             return false;
         }
         let start = self
@@ -126,15 +143,19 @@ impl KetchupApp {
                 axis,
                 axis_reference,
                 delta_mm: Vec3::ZERO,
-                copy: false,
+                copy: objects && copy,
             },
         );
         true
     }
 
     /// The underlay a live move or turn drags, and its edit so far: the viewport draws it
-    /// there before the edit is committed.
+    /// there before the edit is committed. With objects picked in it the drag is theirs,
+    /// and the drawing stays.
     pub(crate) fn underlay_drag_edit(&self) -> Option<(UnderlayId, Transform)> {
+        if self.picked_underlay_objects().is_some() {
+            return None;
+        }
         let plan = match self.transform_tool.session.as_ref()? {
             ToolSession::Move { drag, .. } => self.move_transform_plan(drag),
             ToolSession::Rotate { drag, .. } => self.rotate_transform_plan(drag),
@@ -145,4 +166,82 @@ impl KetchupApp {
             _ => None,
         }
     }
+
+    /// The edit so far of a live move or turn, or copy, of the objects picked in a
+    /// drawing: the viewport draws them there before the edit is committed.
+    pub(crate) fn picked_objects_drag_edit(&self) -> Option<Transform> {
+        match self.transform_tool.session.as_ref()? {
+            ToolSession::Move { drag, .. } => {
+                self.dragged_underlay_objects(&drag.selection)?;
+                move_world_edit(drag)
+            }
+            ToolSession::Rotate { drag, .. } => {
+                self.dragged_underlay_objects(&drag.selection)?;
+                rotate_world_edit(drag)
+            }
+            ToolSession::Scale { .. } => None,
+        }
+    }
+
+    /// The objects picked in the drawing `selection` names: a move or turn of it edits
+    /// them, not where the drawing lies.
+    pub(crate) fn dragged_underlay_objects(
+        &self,
+        selection: &SelectionId,
+    ) -> Option<(UnderlayId, Vec<u32>)> {
+        let id = underlay_of(selection)?;
+        self.picked_underlay_objects()
+            .filter(|(picked, _)| *picked == id)
+    }
+
+    /// Moves or turns the objects `ids` of the drawing of `underlay` by the document edit
+    /// `edit`, or adds copies of them so placed when `copy`, as one Undo step, and keeps
+    /// them picked.
+    pub(crate) fn commit_underlay_objects_edit(
+        &mut self,
+        underlay: UnderlayId,
+        ids: &[u32],
+        edit: Option<Transform>,
+        copy: bool,
+    ) -> bool {
+        let map = edit.and_then(|edit| {
+            let found = self.document.current().underlay(underlay)?.clone();
+            in_lines(&plane_part(edit), &found.plane_map())
+        });
+        let result = match map {
+            Some(map) => self.transform_underlay_objects(underlay, ids, &map, copy),
+            None => Err(UnderlayEditError::Plan(UnderlayObjectError::InvalidMap)),
+        };
+        match result {
+            Ok(()) => {
+                self.select_underlay(underlay);
+                for id in ids {
+                    self.selection.pick_underlay_object(*id, true);
+                }
+                self.status_key = "status-object-moved";
+                self.digest = self.catalog.format(
+                    if copy {
+                        "digest-underlay-objects-copied"
+                    } else {
+                        "digest-underlay-objects-moved"
+                    },
+                    &BTreeMap::from([("count", ids.len().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.refuse_underlay_edit(error.to_string());
+                false
+            }
+        }
+    }
+}
+
+/// The map of the ground plane a document edit that keeps it makes.
+fn plane_part(edit: Transform) -> Affine {
+    let matrix = edit.matrix();
+    [
+        [matrix[0], matrix[1], matrix[3]],
+        [matrix[4], matrix[5], matrix[7]],
+    ]
 }

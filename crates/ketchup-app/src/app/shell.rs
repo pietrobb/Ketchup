@@ -171,6 +171,7 @@ impl KetchupApp {
                 pointer: None,
                 projection_cache: RefCell::new(None),
                 presses: [None, None],
+                press_points: [None, None],
             },
             active_tool: ActiveTool::Select,
             panels: app_state::Panels {
@@ -1120,6 +1121,7 @@ impl KetchupApp {
                     &mut self.gesture.underlay_fit.scaled,
                     self.catalog.text("tool-fit-underlay-scale"),
                 );
+                self.menu_command(ui, AppCommand::DrawIntoUnderlay);
                 self.menu_command(ui, AppCommand::Orbit);
                 self.menu_command(ui, AppCommand::Pan);
             });

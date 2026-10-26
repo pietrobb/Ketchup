@@ -26,6 +26,9 @@ pub(crate) struct Gesture {
     pub(crate) planar_offset_mm: Option<f64>,
     pub(crate) drag: Option<PointerDrag>,
     pub(crate) underlay_fit: crate::app::underlay_fit_tool::UnderlayFitGesture,
+    /// The drawing and layer the Line, Rectangle, Circle and Arc tools draw into instead
+    /// of the model, while on.
+    pub(crate) underlay_draw: Option<crate::app::underlay_draw::UnderlayDrawTarget>,
 }
 
 /// A point on a picked face and the face's outward normal; the Mirror tool

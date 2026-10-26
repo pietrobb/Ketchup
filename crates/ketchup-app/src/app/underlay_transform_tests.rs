@@ -61,6 +61,22 @@ pub(super) fn click(harness: &mut Harness<'_, KetchupApp>, world: Vec3) {
     }
 }
 
+/// A double-click on a line of the drawing: selects the whole drawing, so Move and Rotate
+/// place it.
+pub(super) fn double_click(harness: &mut Harness<'_, KetchupApp>, world: Vec3) {
+    // Apart from an earlier click, so the two are not its second and third.
+    for _ in 0..40 {
+        harness.step();
+    }
+    click(harness, world);
+    click(harness, world);
+    assert!(
+        harness.state().selection.underlay_objects().is_empty(),
+        "{}",
+        harness.state().digest
+    );
+}
+
 pub(super) fn press(harness: &mut Harness<'_, KetchupApp>, key: egui::Key) {
     harness.key_press(key);
     harness.step();
@@ -93,7 +109,7 @@ fn move_and_rotate_place_a_clicked_underlay_in_one_undo_step_each() {
     let wall_end = Vec3::new(240.0, 20.0, 0.0);
 
     // A click on a line of the underlay, with no part under the pointer, selects it.
-    click(&mut harness, axes_end);
+    double_click(&mut harness, axes_end);
     assert_eq!(harness.state().selected_underlay(), Some(id));
     assert!(harness.state().selected_instance_paths().is_empty());
     let undo = harness.state().undo_step_count();
@@ -146,7 +162,7 @@ fn move_and_rotate_place_a_clicked_underlay_in_one_undo_step_each() {
 fn an_underlay_moved_onto_a_point_above_the_ground_lands_in_plan() {
     let mut harness = shell();
     let axes_end = Vec3::new(240.0, 120.0, 0.0);
-    click(&mut harness, axes_end);
+    double_click(&mut harness, axes_end);
     assert!(harness.state().selected_underlay().is_some());
     let undo = harness.state().undo_step_count();
     harness.state_mut().dispatch_command(AppCommand::ViewIso);
@@ -173,7 +189,7 @@ fn an_underlay_moved_onto_a_point_above_the_ground_lands_in_plan() {
 fn an_underlay_move_past_the_models_range_is_refused_by_its_reason() {
     let mut harness = shell();
     let axes_end = Vec3::new(240.0, 120.0, 0.0);
-    click(&mut harness, axes_end);
+    double_click(&mut harness, axes_end);
     assert!(harness.state().selected_underlay().is_some());
     let digest = harness.state().canonical_digest();
     harness.state_mut().dispatch_command(AppCommand::Move);
@@ -198,7 +214,7 @@ fn an_underlay_being_moved_does_not_snap_to_where_it_was() {
     let mut harness = shell();
     let axes_end = Vec3::new(240.0, 120.0, 0.0);
     let wall_end = Vec3::new(240.0, 20.0, 0.0);
-    click(&mut harness, axes_end);
+    double_click(&mut harness, axes_end);
     point(&mut harness, wall_end);
     let snapped = |app: &KetchupApp| app.hover.snap.as_ref().map(|snap| snap.position_mm);
     assert_eq!(
@@ -218,7 +234,7 @@ fn an_underlay_being_moved_does_not_snap_to_where_it_was() {
 #[test]
 fn an_underlay_move_out_of_the_ground_plane_or_a_copy_is_refused_by_name() {
     let mut harness = shell();
-    click(&mut harness, Vec3::new(240.0, 120.0, 0.0));
+    double_click(&mut harness, Vec3::new(240.0, 120.0, 0.0));
     assert!(harness.state().selected_underlay().is_some());
     let digest = harness.state().canonical_digest();
 

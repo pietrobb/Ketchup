@@ -372,14 +372,28 @@ impl KetchupApp {
     pub(crate) fn commit_move_drag(&mut self, drag: &MoveDrag) -> bool {
         self.gesture.transform.move_copy = false;
         self.transform_tool.input.reset();
+        let objects = self.dragged_underlay_objects(&drag.selection);
         if self.underlay_drag_refused(&drag.selection, drag.axis == Some(Axis::Z))
-            || (!drag.copy && self.underlay_edit_refused(&drag.selection, move_world_edit(drag)))
+            || (objects.is_none()
+                && !drag.copy
+                && self.underlay_edit_refused(&drag.selection, move_world_edit(drag)))
         {
             return false;
         }
         if !self.move_preview_is_current(drag) {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
+        }
+        if let Some((underlay, ids)) = objects {
+            if length(drag.delta_mm) < 0.01 {
+                return false;
+            }
+            return self.commit_underlay_objects_edit(
+                underlay,
+                &ids,
+                move_world_edit(drag),
+                drag.copy,
+            );
         }
         if let Some(target) = drag.profile_target.as_ref().filter(|_| !drag.copy) {
             let delta_mm = [
@@ -486,14 +500,28 @@ impl KetchupApp {
     pub(crate) fn commit_rotate_drag(&mut self, drag: &RotateDrag) -> bool {
         self.gesture.transform.rotate_copy = false;
         self.transform_tool.input.reset();
+        let objects = self.dragged_underlay_objects(&drag.selection);
         if self.underlay_drag_refused(&drag.selection, drag.axis != Axis::Z)
-            || (!drag.copy && self.underlay_edit_refused(&drag.selection, rotate_world_edit(drag)))
+            || (objects.is_none()
+                && !drag.copy
+                && self.underlay_edit_refused(&drag.selection, rotate_world_edit(drag)))
         {
             return false;
         }
         if !self.rotate_preview_is_current(drag) {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
+        }
+        if let Some((underlay, ids)) = objects {
+            if !rotation_is_meaningful(drag.angle_degrees) {
+                return false;
+            }
+            return self.commit_underlay_objects_edit(
+                underlay,
+                &ids,
+                rotate_world_edit(drag),
+                drag.copy,
+            );
         }
         if drag.copy {
             return self.rotate_copy_occurrences(
@@ -2841,6 +2869,7 @@ impl KetchupApp {
     pub(crate) fn begin_rotate_drag_at(&mut self, pointer: Pos2, rect: Rect, copy: bool) -> bool {
         let underlay = self.selected_underlay();
         if underlay.is_some()
+            && self.picked_underlay_objects().is_none()
             && self.underlay_copy_refused(copy || self.gesture.transform.rotate_copy)
         {
             return false;
@@ -3032,14 +3061,14 @@ impl KetchupApp {
 }
 
 /// The world edit of a move drag: [`moved_by`].
-fn move_world_edit(drag: &MoveDrag) -> Option<Transform> {
+pub(super) fn move_world_edit(drag: &MoveDrag) -> Option<Transform> {
     let delta = moved_by(drag);
     Transform::from_translation(delta.x, delta.y, delta.z).ok()
 }
 
 /// The world edit of a rotate drag. An underlay turns about Z only, built in the plane so
 /// its placement stays exactly planar.
-fn rotate_world_edit(drag: &RotateDrag) -> Option<Transform> {
+pub(super) fn rotate_world_edit(drag: &RotateDrag) -> Option<Transform> {
     if underlay_of(&drag.selection).is_some() {
         if drag.axis != Axis::Z {
             return None;

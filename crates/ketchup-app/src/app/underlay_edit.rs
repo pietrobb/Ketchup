@@ -6,8 +6,13 @@
 //! ([`ketchup_model::underlay::edits`]).
 
 use crate::*;
-use ketchup_model::underlay::edits::{UnderlayObjectError, plan_underlay_object_removal};
+use ketchup_model::underlay::drawn::DrawnShape;
+use ketchup_model::underlay::edits::{
+    UnderlayObjectError, plan_underlay_drawing, plan_underlay_object_removal,
+    plan_underlay_object_transform,
+};
 use ketchup_model::underlay::object_query::ObjectIndex;
+use ketchup_model::underlay::objects::Affine;
 use ketchup_model::underlay::{UnderlayId, UnderlayLines, UnderlayPlanError};
 
 /// The most points the picked objects are drawn with in one frame.
@@ -15,14 +20,14 @@ const MAX_PICKED_POINTS: usize = 100_000;
 
 /// Why objects of a drawing were not taken out.
 #[derive(Debug)]
-pub(crate) enum UnderlayObjectRemovalError {
+pub(crate) enum UnderlayEditError {
     /// The document holds no readable lines of the underlay.
     NoLines,
     Plan(UnderlayObjectError),
     Commit(WorkRecoveryMutationError<CanonicalError>),
 }
 
-impl std::fmt::Display for UnderlayObjectRemovalError {
+impl std::fmt::Display for UnderlayEditError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoLines => formatter.write_str("the document holds no lines of the underlay"),
@@ -32,7 +37,7 @@ impl std::fmt::Display for UnderlayObjectRemovalError {
     }
 }
 
-impl std::error::Error for UnderlayObjectRemovalError {}
+impl std::error::Error for UnderlayEditError {}
 
 impl KetchupApp {
     /// The top-level object of `underlay` that drew its straight piece `segment`, counted
@@ -99,20 +104,56 @@ impl KetchupApp {
         &mut self,
         underlay: UnderlayId,
         ids: &[u32],
-    ) -> Result<(), UnderlayObjectRemovalError> {
+    ) -> Result<(), UnderlayEditError> {
+        self.edit_underlay_drawing(underlay, |snapshot, lines| {
+            plan_underlay_object_removal(snapshot, underlay, lines, ids)
+        })
+    }
+
+    /// Draws `shapes`, in the millimetres of its lines, on layer `layer` of the drawing of
+    /// `underlay`, as one Undo step.
+    pub(crate) fn draw_into_underlay(
+        &mut self,
+        underlay: UnderlayId,
+        layer: &str,
+        shapes: Vec<DrawnShape>,
+    ) -> Result<(), UnderlayEditError> {
+        self.edit_underlay_drawing(underlay, |snapshot, _| {
+            plan_underlay_drawing(snapshot, underlay, layer, shapes)
+        })
+    }
+
+    /// Moves the objects `ids` of the drawing of `underlay` by `map`, in the millimetres of
+    /// its lines, or adds copies of them so moved when `copy`, as one Undo step.
+    pub(crate) fn transform_underlay_objects(
+        &mut self,
+        underlay: UnderlayId,
+        ids: &[u32],
+        map: &Affine,
+        copy: bool,
+    ) -> Result<(), UnderlayEditError> {
+        self.edit_underlay_drawing(underlay, |snapshot, lines| {
+            plan_underlay_object_transform(snapshot, underlay, lines, ids, map, copy)
+        })
+    }
+
+    /// Commits the batch `plan` makes of the document and the lines of `underlay` as drawn
+    /// now.
+    fn edit_underlay_drawing(
+        &mut self,
+        underlay: UnderlayId,
+        plan: impl FnOnce(&Snapshot, &UnderlayLines) -> Result<CommandBatch, UnderlayObjectError>,
+    ) -> Result<(), UnderlayEditError> {
         let snapshot = self.document.current();
-        let found = snapshot
-            .underlay(underlay)
-            .ok_or(UnderlayObjectRemovalError::Plan(UnderlayObjectError::Plan(
-                UnderlayPlanError::NotFound(underlay),
-            )))?;
+        let found = snapshot.underlay(underlay).ok_or(UnderlayEditError::Plan(
+            UnderlayObjectError::Plan(UnderlayPlanError::NotFound(underlay)),
+        ))?;
         let lines = self
             .cached_underlay_lines(found)
-            .ok_or(UnderlayObjectRemovalError::NoLines)?;
-        let batch = plan_underlay_object_removal(&snapshot, underlay, &lines, ids)
-            .map_err(UnderlayObjectRemovalError::Plan)?;
+            .ok_or(UnderlayEditError::NoLines)?;
+        let batch = plan(&snapshot, &lines).map_err(UnderlayEditError::Plan)?;
         self.apply_batch_with_work_recovery(&batch)
-            .map_err(UnderlayObjectRemovalError::Commit)
+            .map_err(UnderlayEditError::Commit)
     }
 
     /// Delete on objects picked in a drawing: takes them out, one Undo step, and keeps the
@@ -154,6 +195,10 @@ impl KetchupApp {
             return;
         };
         let index = ObjectIndex::new(&lines);
+        // A live move or turn draws them where it takes them.
+        let placement = self
+            .picked_objects_drag_edit()
+            .map_or(underlay.placement, |edit| edit.compose(underlay.placement));
         let stroke = Stroke::new(2.5_f32, self.palette().accent);
         let painter = painter.with_clip_rect(rect);
         let mut budget = MAX_PICKED_POINTS;
@@ -168,8 +213,7 @@ impl KetchupApp {
                 let points = run
                     .iter()
                     .map(|[x, y]| {
-                        let world =
-                            transform_model_point(underlay.placement, Vec3::new(*x, *y, 0.0));
+                        let world = transform_model_point(placement, Vec3::new(*x, *y, 0.0));
                         self.project(world, rect)
                     })
                     .collect::<Vec<_>>();

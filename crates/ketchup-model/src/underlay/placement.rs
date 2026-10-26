@@ -74,6 +74,16 @@ impl Underlay {
         in_plane(inverse, document_mm)
     }
 
+    /// The map of the plane from its lines to the document.
+    #[must_use]
+    pub fn plane_map(&self) -> super::objects::Affine {
+        let matrix = self.placement.matrix();
+        [
+            [matrix[0], matrix[1], matrix[3]],
+            [matrix[4], matrix[5], matrix[7]],
+        ]
+    }
+
     /// The millimetres of the document one millimetre of its lines spans.
     #[must_use]
     pub fn scale(&self) -> f64 {

@@ -11,6 +11,7 @@
 use ketchup_model::annotation::{Annotation, AnnotationMark};
 use ketchup_model::document::{CanonicalCommand, CommandBatch, DocumentStore, TagId};
 use ketchup_model::persistence::{self, ContainerData, LoadNotice, LoadOutcome};
+use ketchup_model::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeSet;
 
 const FIXTURE_102: &str = concat!(
@@ -58,7 +59,7 @@ const DIGEST_102: &str = "32004c2fb9d7739d";
 const DIGEST_103: &str = "695c01140f69ddb9";
 const DIGEST_104: &str = "36c397ed20d2ec76";
 const DIGEST_105: &str = "fdcd5e8c616c1323";
-const DIGEST_106: &str = "949b76a793c6ab72";
+const DIGEST_106: &str = "29680d90129178f6";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
 fn opened(path: &str, schema: u16, digest: &str) -> (DocumentStore, ContainerData) {
@@ -269,12 +270,24 @@ fn a_format_104_document_with_annotations_saves_the_format_105_file() {
 }
 
 /// Format 106 adds the edits of an underlay's drawing: the format 105 file with object 0
-/// of its drawing removed.
+/// of its drawing removed, object 1 moved, a line drawn and a copy of object 1 added.
 #[test]
 fn a_format_106_file_with_an_edited_underlay_saves_the_golden() {
     let (mut document, container) = opened(SAVED_105, 105, DIGEST_105);
     let mut underlay = document.current().underlays().next().unwrap().clone();
+    let moved = [[0.0, -1.0, 10.0], [1.0, 0.0, 20.0]];
     underlay.edits.removed_objects.insert(0);
+    underlay.edits.moved_objects.insert(1, moved);
+    underlay.edits.added = vec![
+        AddedObject::Drawn {
+            layer: underlay.layers[0].name.clone(),
+            shape: DrawnShape::Polyline {
+                points_mm: vec![[0.0, 0.0], [250.0, 0.0]],
+                closed: false,
+            },
+        },
+        AddedObject::Copy { of: 1, map: moved },
+    ];
     document
         .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
             underlay.clone(),
@@ -340,6 +353,8 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: up_bits",
     "underlay.rs: edits",
     "underlay.rs: placement",
+    "underlay/edits.rs: added",
+    "underlay/edits.rs: moved_objects",
     "underlay/edits.rs: removed_objects",
 ];
 
