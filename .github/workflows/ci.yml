@@ -133,6 +133,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          # The parent tells which files the change touches.
+          fetch-depth: 2
       - name: runtime directory
         run: mkdir -m 700 -p "$XDG_RUNTIME_DIR"
       - name: rustfmt
@@ -150,9 +152,14 @@ jobs:
           RUST_TEST_THREADS: 1
         run: cargo test --locked --release $CRATES --no-fail-fast -- --ignored perf_
       # The tests of the 750-part house are ignored in every step (AGENTS.md
-      # section 6, scripts/check_large_house_tests.py) and run nightly here.
+      # section 6, scripts/check_large_house_tests.py) and run nightly here,
+      # and in a pull request that changes what they evaluate (review
+      # 2026-10-24 CI-23).
+      - name: whether the change reaches the house
+        id: house
+        run: python3 scripts/changes_reach_the_house.py
       - name: large-house tests
-        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.house.outputs.run == 'true')
         run: cargo test --locked $CRATES --no-fail-fast -- --ignored large_house
       # The plugin host's Unix process group lives in the vendored process-wrap
       # (PATCH.md); ketchup-scheduler, which uses it, needs OCCT and is tested
@@ -193,6 +200,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          # The parent tells which files the change touches.
+          fetch-depth: 2
       # OCCT built by one Visual Studio may not link with another's, so a
       # runner image with a newer one builds it again.
       - name: Visual Studio version
@@ -258,8 +267,11 @@ jobs:
         run: |
           python -m pip install --quiet --require-hashes -r tests/requirements-ci.txt
           python scripts/run_production_tests.py --prebuilt
+      - name: whether the change reaches the house
+        id: house
+        run: python scripts/changes_reach_the_house.py
       - name: large-house tests
-        if: env.NIGHTLY == 'true'
+        if: env.NIGHTLY == 'true' || steps.house.outputs.run == 'true'
         env:
           RUST_TEST_THREADS: 2
         run: cargo test --locked $env:CRATES.Split(' ') --no-fail-fast -- --ignored large_house
