@@ -5,7 +5,9 @@
 //! model millimetres, writes them N times taller.
 
 use crate::dxf_export::{R12Layers, number};
-use ketchup_model::annotation::{AnnotationMark, DimensionLayout, dimension_text, paper};
+use ketchup_model::annotation::{
+    Annotation, AnnotationMark, DimensionLayout, dimension_text, paper,
+};
 use ketchup_model::document::Snapshot;
 use ketchup_model::r12_text;
 use ketchup_model::tolerance::MIN_DIMENSION_MM;
@@ -48,6 +50,17 @@ impl PlanAnnotations {
     }
 }
 
+/// The name whose layer an annotation lies on: its first tag, or none.
+fn annotation_layer_source<'a>(snapshot: &'a Snapshot, annotation: &'a Annotation) -> &'a str {
+    annotation
+        .tags
+        .iter()
+        .filter_map(|id| snapshot.tag(*id))
+        .map(|tag| tag.name())
+        .min()
+        .unwrap_or(UNTAGGED_LAYER)
+}
+
 /// The visible annotations of `snapshot` drawn at `1:scale`, on layers taken from
 /// `layers` so that none shares a layer with a part.
 pub(crate) fn plan_annotations(
@@ -56,19 +69,19 @@ pub(crate) fn plan_annotations(
     layers: &mut R12Layers,
 ) -> PlanAnnotations {
     let mut plan = PlanAnnotations::default();
+    layers.claim(
+        snapshot
+            .annotations()
+            .iter()
+            .filter(|annotation| snapshot.tags_visible(&annotation.tags))
+            .map(|annotation| annotation_layer_source(snapshot, annotation)),
+    );
     for annotation in snapshot.annotations() {
         if !snapshot.tags_visible(&annotation.tags) {
             plan.hidden += 1;
             continue;
         }
-        let source = annotation
-            .tags
-            .iter()
-            .filter_map(|id| snapshot.tag(*id))
-            .map(|tag| tag.name())
-            .min()
-            .unwrap_or(UNTAGGED_LAYER);
-        let layer = layers.layer(source);
+        let layer = layers.layer(annotation_layer_source(snapshot, annotation));
         match &annotation.mark {
             AnnotationMark::Text {
                 at_mm,

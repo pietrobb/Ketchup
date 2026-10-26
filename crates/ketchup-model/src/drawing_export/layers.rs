@@ -27,6 +27,15 @@ impl R12Layers {
         }
     }
 
+    /// Gives each of `sources` its layer in the order of the names rather
+    /// than of first use, so which of two names R12 reads as one gets the
+    /// suffix does not depend on where they stand in the scene.
+    pub fn claim<'a>(&mut self, sources: impl IntoIterator<Item = &'a str>) {
+        for source in sources.into_iter().collect::<BTreeSet<_>>() {
+            self.layer(source);
+        }
+    }
+
     pub fn layer(&mut self, source: &str) -> String {
         if let Some(layer) = self.by_source.get(source) {
             return layer.clone();

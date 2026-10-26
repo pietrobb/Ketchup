@@ -8,7 +8,9 @@ use std::fmt::{self, Write as _};
 use ketchup_geometry::sketch::{
     SketchError, SketchSpec, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
 };
-use ketchup_model::document::{CanonicalError, FeatureKind, ProfileSegment, Snapshot, Transform};
+use ketchup_model::document::{
+    CanonicalError, Definition, Feature, FeatureKind, ProfileSegment, Snapshot, Transform,
+};
 pub(crate) use ketchup_model::drawing_export::layers::R12Layers;
 use ketchup_model::import::{DxfImportError, DxfImportOptions, inspect_dxf, read_dxf_underlay};
 
@@ -134,6 +136,35 @@ pub fn export_visible_plan_dxf(
     let mut elevated_profile_count = 0_usize;
     let mut renamed_layers = BTreeSet::new();
     let mut r12_layers = R12Layers::default();
+    let source_layer = |feature: &Feature, definition: &Definition| -> String {
+        feature
+            .name()
+            .strip_prefix(IMPORTED_LAYER_PREFIX)
+            .unwrap_or_else(|| definition.name())
+            .to_owned()
+    };
+    // Parts take their layers before annotations, each group by name.
+    let part_sources = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|item| item.visible)
+        .filter_map(|occurrence| snapshot.definition(occurrence.definition_id))
+        .flat_map(|definition| {
+            definition
+                .feature_ids()
+                .iter()
+                .filter_map(|id| snapshot.feature(*id))
+                .filter(|feature| {
+                    matches!(
+                        feature.kind(),
+                        FeatureKind::Profile { .. } | FeatureKind::Sketch(_)
+                    )
+                })
+                .map(|feature| source_layer(feature, definition))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    r12_layers.claim(part_sources.iter().map(String::as_str));
     for occurrence in snapshot
         .scene_query()
         .into_iter()
@@ -146,10 +177,8 @@ pub fn export_visible_plan_dxf(
             let feature = snapshot
                 .feature(*feature_id)
                 .ok_or(DxfProfileExportError::InvalidGeometry)?;
-            let source_layer = feature
-                .name()
-                .strip_prefix(IMPORTED_LAYER_PREFIX)
-                .unwrap_or_else(|| definition.name());
+            let source_layer = source_layer(feature, definition);
+            let source_layer = source_layer.as_str();
             let (source_profiles, transform) = match feature.kind() {
                 FeatureKind::Profile { segments, closed } => {
                     (vec![(segments.clone(), *closed)], occurrence.transform)

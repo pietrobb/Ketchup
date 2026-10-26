@@ -137,6 +137,54 @@ fn profiles_export_as_r12_polylines_and_a_slovak_name_becomes_an_ascii_layer() {
 /// Review 2026-10-17 P3: an R12 layer name is at most 31 characters of
 /// `A-Z 0-9 $ _ -`, and R12 does not tell `Cut` from `CUT`. Every source
 /// name keeps a layer of its own that obeys both rules.
+/// Review 2026-10-19 P3 (208072c): of two names R12 reads as one, the part
+/// first in the scene kept the name and the other got `_2`, so reordering the
+/// parts swapped their layers. The layer now follows the name alone.
+#[test]
+fn which_of_two_names_r12_reads_as_one_gets_the_suffix_does_not_depend_on_scene_order() {
+    let triangle = FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [20.0, 20.0]]);
+    let square = FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]]);
+    let layers_by_corner_count = |parts: [(&str, &FeatureKind); 2]| {
+        let mut commands = Vec::new();
+        for (index, (name, kind)) in (1_u64..).zip(parts) {
+            commands.extend([
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(index),
+                    name: name.to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(index),
+                    definition_id: DefinitionId(index),
+                    name: "outline".to_owned(),
+                    kind: kind.clone(),
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(index),
+                    definition_id: DefinitionId(index),
+                    name: name.to_owned(),
+                    transform: Transform::from_translation(0.0, 50.0 * index as f64, 0.0).unwrap(),
+                    parent: None,
+                    tags: Default::default(),
+                    visible: true,
+                },
+            ]);
+        }
+        let mut document = DocumentStore::new();
+        commit(&mut document, CommandBatch::new(commands));
+        let exported = export_visible_profiles_dxf(&document.current()).unwrap();
+        inspect_dxf(&exported.dxf, DxfImportOptions::new(None))
+            .unwrap()
+            .profiles()
+            .iter()
+            .map(|profile| (profile.segments().len(), profile.layer().to_owned()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let cut_first = layers_by_corner_count([("Cut", &triangle), ("CUT", &square)]);
+    let cut_last = layers_by_corner_count([("CUT", &square), ("Cut", &triangle)]);
+    assert_eq!(cut_first, cut_last);
+    assert_eq!(cut_first.len(), 2, "{cut_first:?}");
+}
+
 #[test]
 fn profile_layers_obey_the_r12_name_rules_and_stay_distinct() {
     let names = [

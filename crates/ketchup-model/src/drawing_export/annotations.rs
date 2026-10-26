@@ -90,18 +90,22 @@ pub(super) fn draw_sheet_annotations(
         counts.without_plan_view = shown.len();
         return (counts, drawn);
     }
+    let source = |annotation: &Annotation| {
+        annotation
+            .tags
+            .iter()
+            .filter_map(|id| snapshot.tag(*id))
+            .map(|tag| tag.name())
+            .min()
+            .unwrap_or(UNTAGGED_LAYER)
+    };
     let mut layers = R12Layers::reserving(&SHEET_LAYERS);
+    layers.claim(shown.iter().map(|annotation| source(annotation)));
     for (view, placement) in plans {
         let scale = view_scale(view, placement);
         let at = |point: [f64; 3]| page_point([point[0], point[1]], placement.origin_mm, scale);
         for annotation in &shown {
-            let source = annotation
-                .tags
-                .iter()
-                .filter_map(|id| snapshot.tag(*id))
-                .map(|tag| tag.name())
-                .min()
-                .unwrap_or(UNTAGGED_LAYER);
+            let source = source(annotation);
             let mut marks = Marks {
                 name: &annotation.name,
                 lines: Vec::new(),
