@@ -24,7 +24,15 @@ ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "scripts" / "test_sleeps_baseline.txt"
 # `thread::park_timeout` sleeps as well when nothing unparks the thread; a space before
 # the parenthesis is still a call (review 2026-10-19 P3).
-SLEEP = re.compile(r"\b(?:sleep|sleep_ms|park_timeout|park_timeout_ms)\s*\(")
+SLEEPS = ("sleep", "sleep_ms", "park_timeout", "park_timeout_ms")
+# `use std::thread::sleep as nap;` calls it `nap` (review 2026-10-24).
+RUST_ALIAS = re.compile(rf"\b(?:{'|'.join(SLEEPS)})\s+as\s+(\w+)")
+
+
+def rust_sleeps(text: str, aliases_from: str) -> int:
+    """The sleep calls of `text`, under the names `aliases_from` imports them as too."""
+    names = [*SLEEPS, *RUST_ALIAS.findall(aliases_from)]
+    return len(re.findall(rf"\b(?:{'|'.join(map(re.escape, names))})\s*\(", text))
 
 
 def is_test_file(relative: Path) -> bool:
@@ -32,10 +40,17 @@ def is_test_file(relative: Path) -> bool:
 
 
 def python_sleeps(text: str) -> int:
-    """The `sleep(...)` and `time.sleep(...)` calls of a Python file."""
-    return sum(1 for node in ast.walk(ast.parse(text)) if isinstance(node, ast.Call) and (
-        isinstance(node.func, ast.Name) and node.func.id == "sleep"
-        or isinstance(node.func, ast.Attribute) and node.func.attr == "sleep"))
+    """The `sleep(...)` and `time.sleep(...)` calls of a Python file, `sleep` imported
+    under another name included, and the wait of an Event made in the same call
+    (`Event().wait(0.5)`), which nothing can set."""
+    tree = ast.parse(text)
+    names = {"sleep"} | {alias.asname for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                         for alias in node.names if alias.name == "sleep" and alias.asname}
+    return sum(1 for node in ast.walk(tree) if isinstance(node, ast.Call) and (
+        isinstance(node.func, ast.Name) and node.func.id in names
+        or isinstance(node.func, ast.Attribute) and node.func.attr == "sleep"
+        or isinstance(node.func, ast.Attribute) and node.func.attr == "wait"
+        and isinstance(node.func.value, ast.Call)))
 
 
 def current_counts(root: Path = ROOT) -> dict[str, int]:
@@ -49,10 +64,11 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
         relative = path.relative_to(root)
         if "target" in relative.parts:
             continue
-        text = path.read_text(encoding="utf-8", errors="replace")
+        source = path.read_text(encoding="utf-8", errors="replace")
+        text = source
         if not is_test_file(relative):
-            text = "".join(match.group(0) for match in TEST_MODULE.finditer(text))
-        count = len(SLEEP.findall(text))
+            text = "".join(match.group(0) for match in TEST_MODULE.finditer(source))
+        count = rust_sleeps(text, source)
         if count:
             counts[relative.as_posix()] = count
     return counts

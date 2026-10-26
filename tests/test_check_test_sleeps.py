@@ -70,6 +70,34 @@ def test_counts_the_sleep_calls_of_python_tests(tmp_path):
     }
 
 
+def test_counts_sleeps_called_by_another_name(tmp_path):
+    # Review 2026-10-24 (§3.7): `use thread::sleep as nap`, `from time import sleep as
+    # pause` and a fresh `Event().wait(0.5)`, which nothing can set, slept unseen.
+    write(
+        tmp_path,
+        "crates/a/tests/flow.rs",
+        "use std::thread::sleep as nap;\n"
+        "use std::thread::{park_timeout as doze, spawn};\n"
+        "fn t() { nap(TICK); doze (TICK); napkin(1); }\n",
+    )
+    write(
+        tmp_path,
+        "tests/test_flow.py",
+        "import threading\n"
+        "from time import sleep as pause\n"
+        "from threading import Event\n"
+        "pause(0.1)\n"
+        "Event().wait(0.5)\n"
+        "threading.Event().wait(timeout=1)\n"
+        "done = Event()\n"
+        "done.wait(5)\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/tests/flow.rs": 2,
+        "tests/test_flow.py": 3,
+    }
+
+
 def test_growth_fails_and_shrinking_passes(tmp_path):
     write(tmp_path, "crates/a/tests/flow.rs", "fn t() { sleep(A); sleep(B); }\n")
     assert checker.check(tmp_path, update=True) == 0
