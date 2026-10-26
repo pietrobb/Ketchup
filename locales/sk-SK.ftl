@@ -1719,6 +1719,7 @@ value-placeholder = zadajte presnú hodnotu
 value-length-preview = = { $value } mm
 value-comma-not-decimal = Čiarka tu nie je desatinná: píš 12.5 a hodnoty oddeľ ; x alebo : (80;60)
 value-unreadable = nie je to číslo, dĺžka ani výraz
+value-x-separates = x oddeľuje hodnoty a toto pole berie jednu: násobí sa * (3*200)
 outliner-group = ▸ { $name }    členov: { $count }
 outliner-object = { $visibility }  { $name }    { $dimensions } mm
 outliner-object-grouped = { $visibility }  { $name }    { $dimensions } mm    · Skupina { $group }

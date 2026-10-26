@@ -991,6 +991,52 @@ fn move_copy_array_multiplies_and_divides_the_last_vector_in_one_undo_step() {
     assert_eq!(app.document.current().occurrences().count(), 6);
 }
 
+/// Review 2026-10-19 P3-G: `5x` and `4/`, as typed in SketchUp, are counts
+/// too, not "nothing to apply".
+#[test]
+fn move_copy_array_takes_the_mark_after_the_count_too() {
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let origin = app.occurrence_box_geometry(1).unwrap().0;
+    app.dispatch_command(AppCommand::Move);
+    let delta = Vec3::new(40.0, 0.0, 0.0);
+    assert!(app.copy_selected(delta));
+    app.value_box.input = "5x".to_owned();
+    assert_eq!(app.value_box_length_preview(), None);
+    assert!(app.apply_value_input(), "{}", app.digest);
+    assert_eq!(app.document.current().occurrences().count(), 6);
+    app.value_box.input = "4/".to_owned();
+    assert!(app.apply_value_input(), "{}", app.digest);
+    assert_eq!(app.document.current().occurrences().count(), 5);
+    let last = app.occurrence_box_geometry(5).unwrap().0;
+    assert_eq!(last, origin + delta);
+    assert_eq!(app.document.visible_undo_steps(), 1);
+}
+
+/// Review 2026-10-19 P3-G: `3×200` in a field of one length was refused with
+/// no word on why; `x` separates values, so the field says `*` multiplies.
+#[test]
+fn x_in_a_field_of_one_length_is_refused_with_the_hint_that_star_multiplies() {
+    let mut app = KetchupApp::new();
+    app.dispatch_command(AppCommand::Line);
+    let steps = app.undo_step_count();
+    let hint = app.catalog.text("value-x-separates");
+    assert!(hint.contains("3*200"), "{hint}");
+    for input in ["3×200", "3x200", "3 X 200"] {
+        app.value_box.input = input.to_owned();
+        assert_eq!(
+            app.value_box_length_preview().as_deref(),
+            Some(hint.as_str()),
+            "{input}"
+        );
+        assert!(!app.apply_value_input(), "{input}");
+        assert_eq!(app.digest, hint, "{input}");
+        assert_eq!(app.undo_step_count(), steps);
+    }
+    app.value_box.input = "3*200".to_owned();
+    assert_eq!(app.value_box_length_preview().as_deref(), Some("= 600 mm"));
+}
+
 #[test]
 fn move_copy_array_repeats_the_entire_multi_selection_atomically() {
     let mut app = KetchupApp::new();

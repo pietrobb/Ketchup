@@ -626,17 +626,11 @@ impl KetchupApp {
         if self.active_tool == ActiveTool::Rectangle {
             return self.rectangle_preview();
         }
-        let length_field = matches!(
-            self.value_label_key(),
-            "value-label-distance"
-                | "value-label-radius"
-                | "value-label-second-radius"
-                | "value-label-bulge"
-                | "value-label-thickness"
-                | "value-label-radius-distance"
-                | "value-label-mirror-offset"
-        );
-        let value = length_field
+        if self.value_box_separates_one_length() {
+            return Some(self.catalog.text("value-x-separates"));
+        }
+        let value = self
+            .value_box_takes_one_length()
             .then(|| {
                 crate::length_input::length_preview_mm(
                     &self.value_box.input,
@@ -648,6 +642,32 @@ impl KetchupApp {
             "value-length-preview",
             &BTreeMap::from([("value", format_height(value))]),
         ))
+    }
+
+    /// Whether the value box takes one length (Move and Rectangle take more).
+    fn value_box_takes_one_length(&self) -> bool {
+        !matches!(self.active_tool, ActiveTool::Move | ActiveTool::Rectangle)
+            && matches!(
+                self.value_label_key(),
+                "value-label-distance"
+                    | "value-label-radius"
+                    | "value-label-second-radius"
+                    | "value-label-bulge"
+                    | "value-label-thickness"
+                    | "value-label-radius-distance"
+                    | "value-label-mirror-offset"
+            )
+    }
+
+    /// `3×200` typed where one length is taken: `x` separates values, so
+    /// the field refuses it and says that `*` multiplies (review 2026-10-19
+    /// P3-G, refused before without a word on why).
+    pub(crate) fn value_box_separates_one_length(&self) -> bool {
+        let input = &self.value_box.input;
+        self.value_box_takes_one_length()
+            && input.contains(['x', 'X', '×'])
+            && crate::length_input::read_values(input, self.value_box.decimal)
+                .is_ok_and(|values| values.len() > 1)
     }
 
     /// A comma typed where the decimal separator is a point: every field
@@ -662,7 +682,7 @@ impl KetchupApp {
     /// expression or a conversion, a copy array count never.
     fn move_preview(&self) -> Option<String> {
         let input = self.value_box.input.trim();
-        if input.starts_with(['x', 'X', '*', '×', '/']) {
+        if super::tool_gesture::is_move_copy_array(input) {
             return None;
         }
         let value = match self.typed_move()? {

@@ -444,6 +444,10 @@ impl KetchupApp {
             self.digest = self.catalog.text("value-comma-not-decimal");
             return false;
         }
+        if self.value_box_separates_one_length() {
+            self.digest = self.catalog.text("value-x-separates");
+            return false;
+        }
         if let Some(tool) = GESTURES.iter().find(|tool| tool.takes_typed(self)) {
             return tool.apply_typed(self);
         }
@@ -588,7 +592,7 @@ impl KetchupApp {
 
     fn apply_typed_move(&mut self) -> bool {
         let value = self.value_box.input.trim();
-        if value.starts_with(['x', 'X', '*', '×', '/']) {
+        if is_move_copy_array(value) {
             let limit = MAX_CAD_GENERATED_OCCURRENCES.to_string();
             let Some((mode, count)) = parse_move_copy_array(value, self.value_box.decimal) else {
                 self.digest = self.catalog.format(
@@ -772,20 +776,30 @@ impl KetchupApp {
     }
 }
 
+const MULTIPLY_MARKS: [char; 4] = ['x', 'X', '*', '×'];
+
+/// Whether typed Move text is a copy array count: `x5`, `5x`, `/4` or `4/`.
+pub(crate) fn is_move_copy_array(input: &str) -> bool {
+    let marks = ['x', 'X', '*', '×', '/'];
+    let trimmed = input.trim();
+    trimmed.starts_with(marks) || trimmed.ends_with(marks)
+}
+
 fn parse_move_copy_array(
     input: &str,
     decimal: DecimalSeparator,
 ) -> Option<(MoveCopyArrayMode, usize)> {
     let trimmed = input.trim();
-    let (mode, count) = if let Some(count) = trimmed
-        .strip_prefix('x')
-        .or_else(|| trimmed.strip_prefix('X'))
-        .or_else(|| trimmed.strip_prefix('*'))
-        .or_else(|| trimmed.strip_prefix('×'))
-    {
+    // Before or after the count, as SketchUp takes both: `x5` and `5x`.
+    let marked = |marks: &[char]| {
+        trimmed
+            .strip_prefix(marks)
+            .or_else(|| trimmed.strip_suffix(marks))
+    };
+    let (mode, count) = if let Some(count) = marked(&MULTIPLY_MARKS) {
         (MoveCopyArrayMode::Multiply, count)
     } else {
-        (MoveCopyArrayMode::Divide, trimmed.strip_prefix('/')?)
+        (MoveCopyArrayMode::Divide, marked(&['/'])?)
     };
     let count = crate::length_input::read_whole::<usize>(count, decimal).ok()?;
     // The limit is checked against the number of new parts, which the

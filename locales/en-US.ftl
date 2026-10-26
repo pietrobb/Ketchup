@@ -1769,6 +1769,7 @@ value-placeholder = type exact value
 value-length-preview = = { $value } mm
 value-comma-not-decimal = A comma is no decimal separator here: write 12.5, and separate values with ; x or : (80;60)
 value-unreadable = not a number, length or expression
+value-x-separates = x separates values, and this field takes one: to multiply, type * (3*200)
 outliner-group = ▸ { $name }    { $count ->
         [one] { $count } member
        *[other] { $count } members
