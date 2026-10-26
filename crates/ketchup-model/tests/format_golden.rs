@@ -313,12 +313,38 @@ fn a_format_106_file_with_an_edited_underlay_saves_the_golden() {
     );
 }
 
+/// A drawing stood up as a view, its lines unedited, needs 106 as well: written as 104,
+/// a reader of 104 would not know the plane it stands on.
+#[test]
+fn a_drawing_standing_as_a_view_is_saved_as_format_106() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane};
+    let (mut document, container) = opened(SAVED_105, 105, DIGEST_105);
+    let mut underlay = document.current().underlays().next().unwrap().clone();
+    assert!(underlay.edits.is_empty());
+    underlay.view = UnderlayView {
+        plane: ViewPlane::from_name("front").unwrap(),
+        at_mm: 250.0,
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+            underlay.clone(),
+        )]))
+        .unwrap();
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    let path = std::env::temp_dir().join(format!("ketchup-view-{}.ketchup", std::process::id()));
+    std::fs::write(&path, &saved).unwrap();
+    let digest = document.current().canonical_digest();
+    let (reopened, _) = opened(path.to_str().unwrap(), persistence::CURRENT_SCHEMA, &digest);
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(reopened.current().underlays().next(), Some(&underlay));
+}
+
 /// Every field of the model that is left out of the file while it has its default, as
 /// `file: field` under `src/`. Format 103 shipped in Kečup 0.1.0, which drops a field it
 /// does not know and loses it at its next Save, so a new optional field of the saved
 /// document needs a new format number like any other new field (PS-4): `underlays` and an
 /// underlay's `placement` came with format 104, `annotations` with 105, an underlay's
-/// `edits` with 106.
+/// `edits` and `view` with 106.
 const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: annotations",
     "document.rs: contact_joints",
@@ -353,6 +379,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: up_bits",
     "underlay.rs: edits",
     "underlay.rs: placement",
+    "underlay.rs: view",
     "underlay/edits.rs: added",
     "underlay/edits.rs: moved_objects",
     "underlay/edits.rs: removed_objects",

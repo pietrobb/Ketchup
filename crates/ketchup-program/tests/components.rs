@@ -171,6 +171,49 @@ fn invalid_component_edits_and_names_fail_instead_of_diverging_from_shared_geome
     }
 }
 
+/// A profile part takes named segments as a profile does: a slot of two sides and two
+/// half-circle ends keeps its arcs, and its bounds reach the arcs' far points.
+#[test]
+fn a_profile_part_of_named_segments_keeps_its_arcs() {
+    let evaluated = evaluate(
+        "slot.star",
+        r#"
+s=[["a",(0,0),(20,0)],["b",(20,0),(20,10),{"through":(25,5)}],["c",(20,10),(0,10)],["d",(0,10),(0,0),{"through":(-5,5)}]]
+profile_part("slot",points=s,closed=True)
+profile_part("rim",points=s[:2])
+"#,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let slot = evaluated.model.part("slot").unwrap();
+    let ketchup_program::model::ProgramPartBody::Profile { segments, closed } = &slot.body else {
+        panic!("not a profile")
+    };
+    assert!(closed);
+    assert_eq!(segments.len(), 4);
+    assert!(segments[1].arc.is_some() && segments[3].arc.is_some());
+    let (low, high) = slot.world_bounds();
+    assert!(
+        (low[0] + 5.0).abs() < 1e-9 && (high[0] - 25.0).abs() < 1e-9,
+        "{low:?} {high:?}"
+    );
+    for (source, message) in [
+        (
+            "profile_part(\"open\",points=s[:2],closed=True)",
+            "closed=True",
+        ),
+        ("profile_part(\"gap\",points=[s[0],s[2]])", "closed=True"),
+    ] {
+        let error = evaluate(
+            "bad.star",
+            &format!("s=[[\"a\",(0,0),(20,0)],[\"b\",(20,0),(20,10),{{\"through\":(25,5)}}],[\"c\",(20,10),(0,10)]]\n{source}\n"),
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(error.message.contains(message), "{source}: {error}");
+    }
+}
+
 #[test]
 fn planar_program_profiles_preserve_open_runs_and_reject_nonrigid_solids() {
     let evaluated = evaluate(

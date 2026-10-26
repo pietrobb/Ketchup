@@ -11,7 +11,8 @@
 //! default. Format 103 shipped in Kečup 0.1.0, which ignores fields it does not know,
 //! so a new field under 103 would be dropped by 0.1.0 and lost at its next Save (PS-4).
 //! Format 104 adds underlays, 105 annotations, 106 the edits of an underlay's drawing
-//! ([`crate::underlay::edits`]); an older file has none, so it reads
+//! ([`crate::underlay::edits`]) and the plane it stands on as a view
+//! ([`crate::underlay::view`]); an older file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
 //! Kečup 0.2.0 reads all of it ([`fits_format_103`]). The
 //! optional fields of the current format are listed in `tests/format_golden.rs`, which
@@ -34,13 +35,14 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 106;
 /// written by this version.
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
-/// 106 with an underlay whose drawing was edited, else 105 with annotations, else 104
+/// 106 with an underlay whose drawing was edited or that stands as a view, else 105 with
+/// annotations, else 104
 /// with underlays or with what Kečup 0.1.0 and 0.2.0 refuse to read, else 103.
 fn format_of(product: &ProductModel) -> u16 {
     if product
         .underlays
         .values()
-        .any(|underlay| !underlay.edits.is_empty())
+        .any(|underlay| !underlay.edits.is_empty() || !underlay.view.is_ground())
     {
         SNAPSHOT_FORMAT
     } else if !product.annotations.is_empty() {

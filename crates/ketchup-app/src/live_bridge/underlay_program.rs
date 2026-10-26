@@ -368,10 +368,45 @@ fn point_text(point: [f64; 2]) -> String {
     format!("{}, {}", number(point[0]), number(point[1]))
 }
 
+/// The ring in document millimetres: its corners, or, when it has round edges, its sides
+/// as named segments, the round ones arcs (see [`super::underlay_arcs`]).
 fn ring_text(underlay: &Underlay, ring: &[[f64; 2]], indent: &str) -> String {
+    use super::underlay_arcs::Piece;
+    let ring = ring
+        .iter()
+        .map(|point| underlay.to_document(*point))
+        .collect::<Vec<_>>();
+    if let Some(pieces) = super::underlay_arcs::pieces(&ring) {
+        let at = |point: [f64; 2]| format!("({})", point_text(point));
+        return pieces
+            .iter()
+            .enumerate()
+            .map(|(index, piece)| match *piece {
+                Piece::Line { start, end } => {
+                    format!(
+                        "{indent}[\"e{}\", {}, {}],\n",
+                        index + 1,
+                        at(start),
+                        at(end)
+                    )
+                }
+                Piece::Arc {
+                    start,
+                    end,
+                    through,
+                } => format!(
+                    "{indent}[\"e{}\", {}, {}, {{\"through\": {}}}],\n",
+                    index + 1,
+                    at(start),
+                    at(end),
+                    at(through)
+                ),
+            })
+            .collect();
+    }
     let points = ring
         .iter()
-        .map(|point| format!("({})", point_text(underlay.to_document(*point))))
+        .map(|point| format!("({})", point_text(*point)))
         .collect::<Vec<_>>();
     points
         .chunks(POINTS_PER_LINE)

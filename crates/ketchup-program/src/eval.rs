@@ -1685,7 +1685,31 @@ fn planar_builtins(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
         check_part_name(name)?;
-        let mut points = items(points, heap, "profile_part points")?
+        let points = items(points, heap, "profile_part points")?;
+        let named = points.first().is_some_and(|item| {
+            item.iterate(heap)
+                .ok()
+                .and_then(|mut fields| fields.next())
+                .is_some_and(|field| field.unpack_str().is_some())
+        });
+        if named {
+            // Named segments, lines and arcs as a profile takes them; closed when the last
+            // ends where the first starts.
+            let list = heap.alloc(points);
+            let segments = profile_segments(list, heap, "profile_part points")?;
+            let joined = segments
+                .windows(2)
+                .all(|pair| pair[0].end_mm == pair[1].start_mm);
+            let ends_at_start = segments.first().map(|first| first.start_mm)
+                == segments.last().map(|last| last.end_mm);
+            if !joined || closed != ends_at_start {
+                anyhow::bail!(
+                    "profile_part {name:?}: each named segment must start where the one before ends, the last ending at the first's start exactly when closed=True"
+                );
+            }
+            return add_profile_part(name, segments, closed, eval);
+        }
+        let mut points = points
             .into_iter()
             .map(|p| numbers::<2>(p, heap, "profile_part point"))
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -1701,21 +1725,30 @@ fn planar_builtins(builder: &mut GlobalsBuilder) {
             if pair[0] == pair[1] { anyhow::bail!("profile_part {name:?}: consecutive points must differ; remove the duplicate point"); }
             Ok(ProgramProfileSegment::line(format!("edge_{}", i + 1), pair[0], pair[1]))
         }).collect::<anyhow::Result<Vec<_>>>()?;
-        let (min, max) = profile_bounds(&segments);
-        let state = state(eval)?;
-        let part = insert_part(
-            &state,
-            new_part(
-                name,
-                [max[0] - min[0], max[1] - min[1], 0.0],
-                [0.0; 3],
-                ProgramPartBody::Profile { segments, closed },
-            ),
-            false,
-        )?;
-        record_source(eval, &state, &[name]);
-        Ok(part_value(&part, heap))
+        add_profile_part(name, segments, closed, eval)
     }
+}
+
+fn add_profile_part<'v>(
+    name: &str,
+    segments: Vec<ProgramProfileSegment>,
+    closed: bool,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> anyhow::Result<Value<'v>> {
+    let (min, max) = profile_bounds(&segments);
+    let state = state(eval)?;
+    let part = insert_part(
+        &state,
+        new_part(
+            name,
+            [max[0] - min[0], max[1] - min[1], 0.0],
+            [0.0; 3],
+            ProgramPartBody::Profile { segments, closed },
+        ),
+        false,
+    )?;
+    record_source(eval, &state, &[name]);
+    Ok(part_value(&part, eval.heap()))
 }
 
 #[starlark_module]

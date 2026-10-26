@@ -245,7 +245,7 @@ def {name}_through(name, outline, holes, frame, tool):
     return part
 
 {name}_VIEWS = [{listed}]
-{name}_WORLD = [[f[0][k] + p[0] * f[1][k] + p[1] * f[2][k] for k in range(3)] for v, h, f in {name}_VIEWS for p in v]
+{name}_WORLD = [[f[0][k] + p[0] * f[1][k] + p[1] * f[2][k] for k in range(3)] for v, h, f in {name}_VIEWS for p in [q[1] if type(q[0]) == \"string\" else q for q in v]]
 {name}_LOW = [min([q[k] for q in {name}_WORLD]) - 1 for k in range(3)]
 {name}_HIGH = [max([q[k] for q in {name}_WORLD]) + 1 for k in range(3)]
 {name}_PART = {name}_through({}, {views0}, {views0}_HOLES, {views0}_FRAME, False)

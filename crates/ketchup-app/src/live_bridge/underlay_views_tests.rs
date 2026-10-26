@@ -280,9 +280,9 @@ fn piece_sheet() -> (String, f64) {
     (std::fs::read_to_string(&path).unwrap(), volume)
 }
 
-/// `sheet` imported `copies` times into an empty window.
-fn imported_copies(sheet: &str, copies: usize) -> (KetchupApp, LiveBridge) {
-    let (mut app, mut bridge, _) = imported(sheet);
+/// `sheet` imported `copies` times into an empty window, and how far the import moved it.
+fn imported_copies(sheet: &str, copies: usize) -> (KetchupApp, LiveBridge, [f64; 2]) {
+    let (mut app, mut bridge, offset) = imported(sheet);
     let directory = tempfile::tempdir().unwrap();
     for copy in 1..copies {
         let path = directory.path().join(format!("copy{copy}.dxf"));
@@ -295,7 +295,7 @@ fn imported_copies(sheet: &str, copies: usize) -> (KetchupApp, LiveBridge) {
         };
         bridge.execute(&mut app, import, false).unwrap();
     }
-    (app, bridge)
+    (app, bridge, offset)
 }
 
 /// The views of drawing `id` as the AI finds them: the whole figures of its VISIBLE
@@ -322,7 +322,7 @@ fn view_bounds(app: &mut KetchupApp, bridge: &mut LiveBridge, id: u64) -> Vec<[[
 fn the_ai_rebuilds_a_part_from_the_three_views_of_its_drawing_sheet() {
     let (sheet, volume) = piece_sheet();
     assert!((volume - 180_000.0).abs() < 1.0, "{volume}");
-    let (mut app, mut bridge) = imported_copies(&sheet, 3);
+    let (mut app, mut bridge, _) = imported_copies(&sheet, 3);
     let figures = view_bounds(&mut app, &mut bridge, 1);
     // The views are the figures no other figure holds; the slot is a figure in the top one.
     let inside = |[a, b]: [[f64; 2]; 2], [c, d]: [[f64; 2]; 2]| {
@@ -393,6 +393,47 @@ fn the_ai_rebuilds_a_part_from_the_three_views_of_its_drawing_sheet() {
     evaluate_exact(&mut app);
     let rebuilt = exact_volume(&app, "REBUILT");
     assert!((rebuilt - volume).abs() < 1.0, "{rebuilt} != {volume}");
+}
+
+/// As a soakaway pit's sheet draws it: in plan the filter as a CIRCLE 800 across, under it
+/// in section the filter 600 high, at the same X. The importer draws the circle as a
+/// hundred and more chords; the AI's solid is still the round filter, a cylinder.
+#[test]
+fn the_ai_builds_a_round_part_from_a_circle_in_plan_and_its_section() {
+    let sheet = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n8\npart\n10\n400\n20\n1500\n40\n400\n{}0\nENDSEC\n0\nEOF\n",
+        outline(
+            "part",
+            &[[0.0, 0.0], [800.0, 0.0], [800.0, 600.0], [0.0, 600.0]]
+        ),
+    );
+    let (mut app, mut bridge, offset) = imported_copies(&sheet, 2);
+    let at = |[x, y]: [f64; 2]| [x - offset[0], y - offset[1]];
+    call(
+        &mut app,
+        &mut bridge,
+        "drawing_view",
+        json!({"underlay_id": 2, "plane": "front"}),
+    );
+    let built = call(
+        &mut app,
+        &mut bridge,
+        "drawing_solid_from_views",
+        json!({"name": "FILTER", "views": [
+            {"underlay_id": 1, "at_mm": at([400.0, 1500.0])},
+            {"underlay_id": 2, "at_mm": at([400.0, 300.0])},
+        ]}),
+    );
+    assert_eq!(built["name"], "FILTER", "{built}");
+    let source = app.document.current_rule_program().unwrap().source.clone();
+    assert!(source.contains("{\"through\": "), "{source}");
+    evaluate_exact(&mut app);
+    let volume = exact_volume(&app, "FILTER");
+    let cylinder = std::f64::consts::PI * 400.0 * 400.0 * 600.0;
+    assert!(
+        (volume - cylinder).abs() < 1e-5 * cylinder,
+        "{volume} != {cylinder}"
+    );
 }
 
 #[test]

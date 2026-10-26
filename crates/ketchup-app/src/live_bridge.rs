@@ -94,6 +94,7 @@ mod program_variants;
 #[cfg(test)]
 mod tests;
 mod transport;
+mod underlay_arcs;
 mod underlay_binding;
 mod underlay_objects;
 pub(crate) mod underlay_program;
