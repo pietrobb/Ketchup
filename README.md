@@ -136,7 +136,7 @@ This is an evolving assembly and drafting path, not yet a complete mechanical si
 
 ### Ketchup Viewer
 
-Ketchup Viewer opens a read-only `.ketchup-view` package exported from Ketchup. A customer can orbit the model, pick a part to see its name, material, size, and notes, switch the saved scenes, and send back comments with arrows and the camera position, without being able to change the geometry. The Windows Viewer is installed with Ketchup; Android, macOS, and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
+Ketchup Viewer opens a read-only `.ketchup-view` package exported from Ketchup. A customer can orbit the model in perspective or orthographic view, pick a part to see its name, material, size, and notes, switch the saved scenes (each opens in the projection it was saved in), show the dimensions the author placed, measure between two points snapped to vertices, edges, or faces, and send back comments with arrows and the camera position, without being able to change the geometry. The Windows Viewer is installed with Ketchup; Android, macOS, and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
 
 ## Connect your AI harness (MCP)
 
@@ -198,7 +198,7 @@ The Rust workspace also builds on Linux against an OCCT 8.0.1 install in the Uni
 
 No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo lives in memory for the session and reaches back 30 edits: Save writes only the current revision, and reopening a file starts a new Undo history. A named checkpoint in the revision catalog is saved with the file only when it names the revision you save, so save right after naming it; a checkpoint on an earlier edit lasts only for the session, and 30 newer edits drop it. While you work, a work-recovery copy beside the file keeps your edits and their Undo steps, so a crash loses neither.
 
-A newer Kečup opens the files of an older one. A document without underlays and annotations, whose imports stay within the limits of Kečup 0.2.0 (at most 341 profiles from one drawing, a DXF source of at most 8 MiB, other sources of at most 32 MiB), is saved in the format 0.1.0 and 0.2.0 read, so they open it too. Kečup 0.2.0 and later refuse any other file a newer version saved and change nothing. **Do not go back to 0.1.0 with files a later version has saved:** 0.1.0 takes such a file for a damaged one and opens, without saying so, the `.recovery` copy beside it, which holds the content before that save, and saving there can overwrite the newer file.
+A newer Ketchup opens the files of an older one. A document without underlays and annotations, whose imports stay within the limits of Ketchup 0.2.0 (at most 341 profiles from one drawing, a DXF source of at most 8 MiB, other sources of at most 32 MiB), is saved in the format 0.1.0 and 0.2.0 read, so they open it too. Ketchup 0.2.0 and later refuse any other file a newer version saved and change nothing. **Do not go back to 0.1.0 with files a later version has saved:** 0.1.0 takes such a file for a damaged one and opens, without saying so, the `.recovery` copy beside it, which holds the content before that save, and saving there can overwrite the newer file.
 
 ## Architecture
 

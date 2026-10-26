@@ -33,7 +33,7 @@ impl ViewerApp {
         ui.heading(self.t("viewer-measure-heading"));
         match (measure.first, measure.done) {
             (None, Some(done)) => {
-                let distance = format!("{}{} mm", about(&done), millimetres(done.distance()));
+                let distance = distance_text(self.language, &done);
                 ui.label(
                     egui::RichText::new(
                         self.language
@@ -43,7 +43,7 @@ impl ViewerApp {
                     .size(18.0),
                 );
                 for (axis, value) in ["ΔX", "ΔY", "ΔZ"].into_iter().zip(done.delta()) {
-                    ui.label(format!("{axis}: {} mm", millimetres(value)));
+                    ui.label(format!("{axis}: {} mm", millimetres(self.language, value)));
                 }
                 if let Some(note) = approximate_note(self.language, &done) {
                     ui.label(egui::RichText::new(note).color(egui::Color32::LIGHT_YELLOW));
@@ -57,7 +57,13 @@ impl ViewerApp {
                 ui.label(self.t("viewer-measure-first"));
             }
         }
-        ui.small(self.t("viewer-measure-cancel"));
+        // A phone has no Esc key to name (review 2026-10-24 DOC-21).
+        let touch = ui.input(egui::InputState::has_touch_screen);
+        ui.small(self.t(if touch {
+            "viewer-measure-cancel-touch"
+        } else {
+            "viewer-measure-cancel"
+        }));
         ui.separator();
     }
 }
@@ -149,15 +155,19 @@ pub(super) fn paint_measure(
         taken.push(label(painter, at + egui::vec2(14.0, 14.0), kind.to_owned()));
     }
     if let Some((a, b, measured)) = line {
-        let galley = layout(painter, distance_text(&measured));
+        let galley = layout(painter, distance_text(language, &measured));
         let plate = distance_plate(a, b, galley.size() + egui::vec2(6.0, 6.0), &taken);
         paint_plate(painter, plate, galley);
     }
 }
 
 /// The text over the line: only the distance; ΔX, ΔY and ΔZ are listed beside the model.
-fn distance_text(measured: &Measured) -> String {
-    format!("{}{} mm", about(measured), millimetres(measured.distance()))
+fn distance_text(language: Language, measured: &Measured) -> String {
+    format!(
+        "{}{} mm",
+        about(measured),
+        millimetres(language, measured.distance())
+    )
 }
 
 /// The space a point or a snap mark takes on the screen.
@@ -292,12 +302,12 @@ mod tests {
             a: snap([0.0, 0.0, 0.0], false),
             b: snap([100.0, 100.0, 50.0], false),
         };
-        assert_eq!(distance_text(&exact), "150 mm");
+        assert_eq!(distance_text(Language::ENGLISH, &exact), "150 mm");
         let curved = Measured {
             a: snap([0.0, 0.0, 0.0], true),
             ..exact
         };
-        let text = distance_text(&curved);
+        let text = distance_text(Language::ENGLISH, &curved);
         assert_eq!(text, "≈ 150 mm");
         assert!(!text.contains('Δ') && !text.contains('\n'), "{text}");
     }
@@ -393,9 +403,11 @@ mod tests {
         harness.get_by_label("Kliknite alebo ťuknite na druhý bod (B).");
         let camera = harness.state().camera.clone().expect("camera");
         click(&mut harness, [100.0, 100.0, 50.0]);
-        harness.get_by_label("Vzdialenosť: 141.42 mm");
+        // Review 2026-10-24 DOC-21: a decimal comma in Slovak.
+        harness.get_by_label("Vzdialenosť: 141,42 mm");
         harness.get_by_label("ΔX: 100 mm");
         harness.get_by_label("ΔZ: 0 mm");
+        harness.get_by_label("Esc alebo tlačidlo Zmerať meranie ukončí.");
         assert!(harness.query_by_label_contains("Približne").is_none());
         assert_eq!(harness.state().selected, None);
         let after = harness.state().camera.as_ref().expect("camera");
@@ -430,5 +442,32 @@ mod tests {
         assert!(harness.state().measure.is_none(), "the button ends it too");
         click(&mut harness, [50.0, 50.0, 50.0]);
         assert_eq!(harness.state().selected, Some(0), "clicks pick parts again");
+
+        // DOC-21: on a touch screen (a phone) there is no Esc to name.
+        let at = on_screen(&harness, [50.0, 50.0, 50.0]);
+        for phase in [egui::TouchPhase::Start, egui::TouchPhase::End] {
+            harness.input_mut().events.push(egui::Event::Touch {
+                device_id: egui::TouchDeviceId(1),
+                id: egui::TouchId(1),
+                phase,
+                pos: at,
+                force: None,
+            });
+            harness.run();
+        }
+        harness.get_by_label("Zmerať").click();
+        harness.run();
+        harness.get_by_label("Tlačidlo Zmerať meranie ukončí.");
+        assert!(harness.query_by_label_contains("Esc").is_none());
+    }
+
+    #[test]
+    fn millimetres_have_no_negative_zero_and_the_language_s_decimal_mark() {
+        let slovak = Language::from_tag("sk").expect("sk");
+        assert_eq!(millimetres(Language::ENGLISH, -0.001), "0");
+        assert_eq!(millimetres(slovak, -0.004), "0");
+        assert_eq!(millimetres(Language::ENGLISH, -18.5), "-18.5");
+        assert_eq!(millimetres(slovak, 18.25), "18,25");
+        assert_eq!(millimetres(slovak, 600.0), "600");
     }
 }

@@ -545,7 +545,7 @@ impl ViewerApp {
                     std::array::from_fn(|i| max_mm[i] - min_mm[i]),
                 ),
             };
-            let [x, y, z] = size.map(millimetres);
+            let [x, y, z] = size.map(|value| millimetres(self.language, value));
             ui.label(
                 self.language
                     .format(label, &[("x", &x), ("y", &y), ("z", &z)]),
@@ -994,10 +994,14 @@ fn ndc(rect: egui::Rect, point: egui::Pos2) -> [f32; 2] {
     ]
 }
 
-/// Millimetres with at most two decimals and no trailing zeros: `600`, `18.5`.
-fn millimetres(value: f64) -> String {
+/// Millimetres with at most two decimals, no trailing zeros and the
+/// language's decimal mark: `600`, `18.5`, `18,5`; a value that rounds to
+/// zero is `0`, not `-0`.
+fn millimetres(language: Language, value: f64) -> String {
     let text = format!("{value:.2}");
-    text.trim_end_matches('0').trim_end_matches('.').to_owned()
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    let text = if text == "-0" { "0" } else { text };
+    text.replace('.', language.text("viewer-decimal-mark"))
 }
 
 /// Per occurrence: visible unless the scene hides it or one of its ancestors.
