@@ -140,7 +140,7 @@ sign "$app"
 codesign --verify --strict --deep "$app"
 
 echo "${#libraries[@]} OCCT libraries bundled"
-"$app/Contents/MacOS/ketchup-app" --inspect-native-document examples/example02.ketchup >/dev/null
+"$app/Contents/MacOS/ketchup-app" --inspect-native-document examples/house-project.ketchup >/dev/null
 
 mkdir "$work/dmg"
 cp -R "$app" "$work/dmg/"
