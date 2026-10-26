@@ -585,6 +585,96 @@ fn tools_export_drawing_writes_the_edited_drawing_as_dxf() {
     assert_eq!(again.lines.segment_count(), 1);
 }
 
+/// A wall moved with its floor hatch and its dimension, clicked in a headless window
+/// (Shift picks the hatch and the dimension too) and exported: the DXF written draws all
+/// three where they were moved to, the dimension's lines from a block of its own.
+#[test]
+fn a_wall_moved_with_its_hatch_and_dimension_exports_where_they_now_lie() {
+    const PLAN: &str = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+        "0\nSECTION\n2\nBLOCKS\n",
+        "0\nBLOCK\n5\n30\n8\n0\n2\n*D1\n70\n1\n10\n0\n20\n0\n30\n0\n3\n*D1\n",
+        "0\nLINE\n5\n31\n8\n0\n10\n40\n20\n100\n11\n240\n21\n100\n",
+        "0\nLINE\n5\n32\n8\n0\n10\n40\n20\n30\n11\n40\n21\n110\n",
+        "0\nLINE\n5\n33\n8\n0\n10\n240\n20\n30\n11\n240\n21\n110\n",
+        "0\nENDBLK\n5\n34\n8\n0\n0\nENDSEC\n",
+        "0\nSECTION\n2\nENTITIES\n",
+        "0\nLINE\n5\nA1\n8\nwalls\n10\n40\n20\n20\n11\n240\n21\n20\n",
+        "0\nHATCH\n5\nA8\n8\nfloor\n10\n0\n20\n0\n30\n0\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n3\n",
+        "72\n0\n73\n1\n93\n4\n10\n100\n20\n180\n10\n180\n20\n180\n10\n180\n20\n240\n",
+        "10\n100\n20\n240\n97\n0\n75\n0\n76\n1\n98\n0\n",
+        "0\nDIMENSION\n5\nA9\n8\ndims\n2\n*D1\n10\n240\n20\n100\n30\n0\n11\n140\n21\n110\n31\n0\n",
+        "70\n33\n42\n200\n13\n40\n23\n30\n33\n0\n14\n240\n24\n30\n34\n0\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("plan.dxf");
+    let output = directory.path().join("edited.dxf");
+    std::fs::write(&source, PLAN).unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &source)
+        .queue_export(&output);
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    let mut harness = shell_of(app);
+    let undo = harness.state().undo_step_count();
+
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    shift_click(&mut harness, Vec3::new(140.0, 210.0, 0.0));
+    shift_click(&mut harness, Vec3::new(140.0, 100.0, 0.0));
+    assert_eq!(picked(&harness), 3, "{}", harness.state().digest);
+    // From the wall's end onto the box's top corner: in plan by (-140, 40).
+    harness.state_mut().dispatch_command(AppCommand::Move);
+    click(&mut harness, Vec3::new(240.0, 20.0, 0.0));
+    click(&mut harness, Vec3::new(100.0, 60.0, 20.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(!end_at(&mut harness, [40.0, 20.0]), "the wall moved");
+    assert!(end_at(&mut harness, [100.0, 140.0]), "the dimension moved");
+
+    harness.state_mut().dispatch_command(AppCommand::Select);
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExportUnderlayDxf);
+    let app = harness.state();
+    assert!(app.digest.contains("edited.dxf"), "{}", app.digest);
+    let written = std::fs::read_to_string(&output).unwrap();
+    let again = ketchup_model::import::read_dxf_underlay(
+        written.as_bytes(),
+        ketchup_model::import::DxfImportOptions::new(None),
+    )
+    .unwrap();
+    let layer = |name: &str| {
+        let at = again.layers.iter().position(|layer| layer == name).unwrap();
+        &again.lines.layers()[at]
+    };
+    let ends = |name: &str| {
+        let mut ends = layer(name)
+            .polylines()
+            .flat_map(|polyline| [polyline[0], polyline[polyline.len() - 1]])
+            .map(|[x, y]| [x.round(), y.round()])
+            .collect::<Vec<_>>();
+        ends.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        ends
+    };
+    assert_eq!(ends("walls"), [[-100.0, 60.0], [100.0, 60.0]], "{written}");
+    assert_eq!(
+        ends("dims"),
+        [
+            [-100.0, 70.0],
+            [-100.0, 140.0],
+            [-100.0, 150.0],
+            [100.0, 70.0],
+            [100.0, 140.0],
+            [100.0, 150.0]
+        ],
+        "{written}"
+    );
+    let floor = layer("floor").fills();
+    assert_eq!(floor.len(), 1);
+    assert!(floor[0].contains([0.0, 250.0]) && !floor[0].contains([140.0, 210.0]));
+}
+
 /// A room with a column in it (two closed polylines) and a solid hatch with no boundary.
 const ROOM_AND_FLOOR: &str = concat!(
     "0\nLWPOLYLINE\n8\nrooms\n90\n4\n70\n1\n",

@@ -19,15 +19,31 @@ const TABLES: &str = concat!(
     "0\nLAYER\n5\n10\n100\nAcDbSymbolTableRecord\n100\nAcDbLayerTableRecord\n2\nwalls\n70\n0\n62\n1\n6\nCONTINUOUS\n",
     "0\nLAYER\n5\n11\n100\nAcDbSymbolTableRecord\n100\nAcDbLayerTableRecord\n2\nnotes\n70\n0\n62\n3\n6\nCONTINUOUS\n",
     "0\nLAYER\n5\n12\n100\nAcDbSymbolTableRecord\n100\nAcDbLayerTableRecord\n2\ndoors\n70\n0\n62\n5\n6\nCONTINUOUS\n",
+    "0\nENDTAB\n",
+    "0\nTABLE\n2\nBLOCK_RECORD\n5\n1\n70\n1\n",
+    "0\nBLOCK_RECORD\n5\n31\n330\n1\n100\nAcDbSymbolTableRecord\n100\nAcDbBlockTableRecord\n2\n*D1\n",
     "0\nENDTAB\n0\nENDSEC\n",
 );
 
+/// The block `leaf` of a door, and the block `*D1` the dimension A9 draws.
 const BLOCKS: &str = concat!(
     "0\nSECTION\n2\nBLOCKS\n",
     "0\nBLOCK\n5\n20\n8\n0\n2\nleaf\n70\n0\n10\n0\n20\n0\n",
     "0\nLINE\n5\n21\n8\n0\n10\n0\n20\n0\n11\n800\n21\n0\n",
     "0\nARC\n5\n22\n8\n0\n10\n0\n20\n0\n40\n800\n50\n0\n51\n90\n",
-    "0\nENDBLK\n5\n23\n8\n0\n0\nENDSEC\n",
+    "0\nENDBLK\n5\n23\n8\n0\n",
+    "0\nBLOCK\n5\n30\n330\n31\n100\nAcDbEntity\n8\n0\n100\nAcDbBlockBegin\n2\n*D1\n70\n1\n",
+    "10\n0\n20\n0\n30\n0\n3\n*D1\n",
+    "0\nLINE\n5\n32\n330\n31\n100\nAcDbEntity\n8\n0\n100\nAcDbLine\n",
+    "10\n8000\n20\n2000\n30\n0\n11\n9000\n21\n2000\n31\n0\n",
+    "0\nLINE\n5\n33\n330\n31\n100\nAcDbEntity\n8\n0\n100\nAcDbLine\n",
+    "10\n8000\n20\n1500\n30\n0\n11\n8000\n21\n2100\n31\n0\n",
+    "0\nLINE\n5\n34\n330\n31\n100\nAcDbEntity\n8\n0\n100\nAcDbLine\n",
+    "10\n9000\n20\n1500\n30\n0\n11\n9000\n21\n2100\n31\n0\n",
+    "0\nTEXT\n5\n35\n330\n31\n100\nAcDbEntity\n8\n0\n100\nAcDbText\n",
+    "10\n8400\n20\n2050\n30\n0\n40\n100\n1\n1000\n100\nAcDbText\n",
+    "0\nENDBLK\n5\n36\n330\n31\n100\nAcDbEntity\n8\n0\n100\nAcDbBlockEnd\n",
+    "0\nENDSEC\n",
 );
 
 const ENTITIES: &str = concat!(
@@ -51,6 +67,26 @@ const ENTITIES: &str = concat!(
     "210\n0\n220\n0\n230\n1\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n2\n72\n0\n73\n1\n93\n4\n",
     "10\n7000\n20\n0\n10\n8000\n20\n0\n10\n8000\n20\n1000\n10\n7000\n20\n1000\n",
     "97\n0\n75\n0\n76\n1\n98\n0\n",
+    "0\nDIMENSION\n5\nA9\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbDimension\n2\n*D1\n",
+    "10\n9000\n20\n2000\n30\n0\n11\n8500\n21\n2100\n31\n0\n70\n33\n42\n1000\n",
+    "100\nAcDbAlignedDimension\n13\n8000\n23\n1500\n33\n0\n14\n9000\n24\n1500\n34\n0\n",
+    // A solid fill bounded by edges, one a clockwise arc, made from the circle A7.
+    "0\nHATCH\n5\nAA\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbHatch\n10\n0\n20\n0\n30\n0\n",
+    "210\n0\n220\n0\n230\n1\n2\nSOLID\n70\n1\n71\n1\n91\n1\n92\n1\n93\n4\n",
+    "72\n1\n10\n10000\n20\n0\n11\n11000\n21\n0\n",
+    "72\n2\n10\n11000\n20\n500\n40\n500\n50\n270\n51\n90\n73\n0\n",
+    "72\n1\n10\n11000\n20\n1000\n11\n10000\n21\n1000\n",
+    "72\n1\n10\n10000\n20\n1000\n11\n10000\n21\n0\n",
+    "97\n1\n330\nA7\n75\n0\n76\n1\n98\n1\n10\n10500\n20\n500\n",
+    // Lines 300 apart across a square, as the hatch carries them.
+    "0\nHATCH\n5\nAB\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbHatch\n10\n0\n20\n0\n30\n0\n",
+    "210\n0\n220\n0\n230\n1\n2\nUSER\n70\n0\n71\n0\n91\n1\n92\n1\n93\n4\n",
+    "72\n1\n10\n12000\n20\n0\n11\n13000\n21\n0\n",
+    "72\n1\n10\n13000\n20\n0\n11\n13000\n21\n1000\n",
+    "72\n1\n10\n13000\n20\n1000\n11\n12000\n21\n1000\n",
+    "72\n1\n10\n12000\n20\n1000\n11\n12000\n21\n0\n",
+    "97\n0\n75\n0\n76\n0\n52\n0\n41\n300\n77\n0\n78\n1\n",
+    "53\n0\n43\n0\n44\n150\n45\n0\n46\n300\n79\n0\n98\n1\n10\n12500\n20\n500\n",
     "0\nENDSEC\n",
 );
 
@@ -73,13 +109,14 @@ fn id_of(lines: &UnderlayLines, handle: u64) -> u32 {
     u32::try_from(index).unwrap()
 }
 
-/// What a drawing draws, by layer name: its straight pieces, both ways round, and its
-/// texts and fills.
+/// What a drawing draws, by layer name: its straight pieces, both ways round, its texts,
+/// and its fills with the edges of their rings.
 #[derive(Debug, Default)]
 struct Drawn {
     pieces: Vec<[[f64; 2]; 2]>,
     texts: Vec<(String, [f64; 2], f64, f64)>,
     fills: usize,
+    fill_edges: Vec<[[f64; 2]; 2]>,
 }
 
 fn drawn(lines: &UnderlayLines, names: &[String]) -> std::collections::BTreeMap<String, Drawn> {
@@ -104,6 +141,13 @@ fn drawn(lines: &UnderlayLines, names: &[String]) -> std::collections::BTreeMap<
             ));
         }
         drawn.fills += layer.fills().len();
+        for fill in layer.fills() {
+            for ring in fill.rings() {
+                for (at, point) in ring.iter().enumerate() {
+                    drawn.fill_edges.push([*point, ring[(at + 1) % ring.len()]]);
+                }
+            }
+        }
     }
     by_layer
         .retain(|_, drawn| !drawn.pieces.is_empty() || !drawn.texts.is_empty() || drawn.fills > 0);
@@ -149,6 +193,14 @@ fn assert_same(
             }
         }
         assert_eq!(got.fills, expected.fills, "fills of {name}");
+        for (from, to) in [(got, expected), (expected, got)] {
+            for point in from.fill_edges.iter().flatten() {
+                assert!(
+                    to.fill_edges.iter().any(|edge| on(*point, *edge) < 0.25),
+                    "{name}: fill corner {point:?} not on the other's rings"
+                );
+            }
+        }
         assert_eq!(got.texts.len(), expected.texts.len(), "texts of {name}");
         for text in &expected.texts {
             assert!(
@@ -304,28 +356,83 @@ fn an_edited_drawing_written_as_dxf_reads_back_as_the_underlay_drew_it() {
     assert_same(&drawn(&again.lines, &again.layers), &drawn(&edited, names));
 }
 
+/// A room is moved with its fill and its dimensions: hatches (a polyline boundary, edges
+/// with a clockwise arc, a pattern of lines) and a dimension moved, turned, mirrored and
+/// copied read back where the underlay drew them. Each dimension draws a block of its own,
+/// with its record; the hatches no longer name what they were made from.
 #[test]
-fn a_moved_hatch_or_another_drawing_is_refused_by_name() {
+fn moved_and_copied_hatches_and_dimensions_are_written_where_they_now_lie() {
     let source = source();
     let original = read(source.as_bytes());
     let lines = &original.lines;
-    let mut edits = UnderlayEdits::default();
-    edits.moved_objects.insert(
-        id_of(lines, 0xA8),
-        similarity([100.0, 0.0], 0.0, 1.0, [0.0, 0.0], None),
+    let names = &original.layers;
+    let layers = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect::<Vec<_>>();
+    let id = |handle| id_of(lines, handle);
+    let shift = similarity([100.0, 0.0], 0.0, 1.0, [0.0, 0.0], None);
+    let turn = similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None);
+    let mirror = similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
     );
-    let error = write_edited_dxf(
+    let mut edits = UnderlayEdits::default();
+    edits.moved_objects.insert(id(0xA8), shift);
+    edits.moved_objects.insert(id(0xA9), turn);
+    edits.moved_objects.insert(id(0xAA), mirror);
+    edits.moved_objects.insert(id(0xAB), turn);
+    for (of, map) in [(0xA9, mirror), (0xAA, turn), (0xAB, mirror), (0xA8, turn)] {
+        edits.added.push(AddedObject::Copy { of: id(of), map });
+    }
+    assert!(edits.is_valid());
+
+    let written = write_edited_dxf(
         source.as_bytes(),
         DxfImportOptions::new(None),
         lines,
         &edits,
     )
-    .unwrap_err();
-    assert!(
-        matches!(&error, EditedDxfError::Refused(DxfEditRefusal::NotMappable { kind, .. }) if kind == "HATCH"),
-        "{error}"
-    );
+    .unwrap();
+    let text = String::from_utf8(written.clone()).unwrap();
+    assert!(text.contains(BLOCKS.trim_end_matches("0\nENDSEC\n")));
+    // Named by its record, its BLOCK (groups 2 and 3) and its dimension.
+    for name in ["*D2", "*D3"] {
+        assert_eq!(text.matches(&format!("\n{name}\n")).count(), 4, "{name}");
+    }
+    assert_eq!(text.matches("BLOCK_RECORD\n").count(), 4);
+    assert!(!text.contains("97\n1\n330\nA7\n"), "{text}");
+    let handles = text
+        .split('\n')
+        .collect::<Vec<_>>()
+        .chunks(2)
+        .filter(|pair| pair[0].trim() == "5")
+        .map(|pair| pair[1].to_owned())
+        .collect::<Vec<_>>();
+    let mut unique = handles.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), handles.len(), "{handles:?}");
 
+    let again = read(&written);
+    let edited = lines.clone().edited(&edits, &layers);
+    let drawn_again = drawn(&again.lines, &again.layers);
+    assert_same(&drawn_again, &drawn(&edited, names));
+    assert_eq!(drawn_again["walls"].fills, 4);
+}
+
+#[test]
+fn another_drawing_is_refused() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
     let other = source.replace("11\n4000\n21\n0\n", "11\n4100\n21\n0\n");
     let error = write_edited_dxf(
         other.as_bytes(),

@@ -1,7 +1,8 @@
 //! A DXF drawing written back with what was changed of it in Kečup as an underlay
 //! ([`crate::underlay::edits`]). The source file's own text is kept byte for byte: its
 //! header, tables, styles, blocks and every entity not changed. The entities taken out are
-//! left out, the moved ones are mapped where they lie, and after the drawing's own come
+//! left out, the moved ones are mapped where they lie (a hatch by its boundary, pattern and
+//! seeds; a dimension with a block of its own drawn as it lies), and after the drawing's own come
 //! the copies, with handles of their own, and the shapes drawn, as LINE, LWPOLYLINE, ARC,
 //! CIRCLE and TEXT on their layers. The source must be the drawing the underlay was read
 //! from: it is read again, and its lines must be the underlay's.
@@ -204,6 +205,31 @@ struct Drawing<'a> {
     owner: Option<Vec<u8>>,
     /// Each layer name as read, with the bytes the drawing writes it in.
     layers: Vec<(String, Vec<u8>)>,
+    /// The blocks of the BLOCKS section.
+    blocks: Vec<BlockAt>,
+    /// The pair `ENDSEC` closing the BLOCKS section.
+    blocks_end: Option<usize>,
+    /// The pair `ENDTAB` closing the BLOCK_RECORD table, with the table's handle.
+    block_records: Option<(usize, Option<Vec<u8>>)>,
+    /// The number after the highest of the drawing's `*D<n>` blocks.
+    next_dimension_block: u64,
+}
+
+/// A block of the BLOCKS section: the pair `BLOCK` it starts at, its name upper case, the
+/// handle of its block record (group 330), and its pair `ENDBLK`.
+struct BlockAt {
+    start: usize,
+    name: String,
+    owner: Option<Vec<u8>>,
+    endblk: Option<usize>,
+}
+
+/// What mapped dimensions add besides their own entity: their drawn blocks, and the
+/// records of those blocks.
+struct NewBlocks {
+    blocks: Vec<u8>,
+    records: Vec<u8>,
+    next_dimension: u64,
 }
 
 impl<'a> Drawing<'a> {
@@ -238,9 +264,14 @@ impl<'a> Drawing<'a> {
             utf8: false,
             owner: None,
             layers: Vec::new(),
+            blocks: Vec::new(),
+            blocks_end: None,
+            block_records: None,
+            next_dimension_block: 1,
         };
         let mut section = String::new();
         let mut record = String::new();
+        let mut table = (String::new(), None::<Vec<u8>>);
         let mut max_handle = None::<u64>;
         let mut version = Vec::new();
         let mut index = 0;
@@ -256,7 +287,43 @@ impl<'a> Drawing<'a> {
                     }
                     continue;
                 }
-                0 => record = name(pair),
+                0 => {
+                    record = name(pair);
+                    match (section.as_str(), record.as_str()) {
+                        ("BLOCKS", "BLOCK") => drawing.blocks.push(BlockAt {
+                            start: index,
+                            name: String::new(),
+                            owner: None,
+                            endblk: None,
+                        }),
+                        ("BLOCKS", "ENDBLK") => {
+                            if let Some(block) = drawing.blocks.last_mut() {
+                                block.endblk = Some(index);
+                            }
+                        }
+                        ("BLOCKS", "ENDSEC") => drawing.blocks_end = Some(index),
+                        ("TABLES", "ENDTAB") if table.0 == "BLOCK_RECORD" => {
+                            drawing.block_records = Some((index, table.1.take()));
+                        }
+                        _ => {}
+                    }
+                }
+                2 | 5 if section == "TABLES" && record == "TABLE" => {
+                    if pair.code == 2 {
+                        table = (name(pair), None);
+                    } else {
+                        table.1 = Some(value(pair).to_vec());
+                    }
+                }
+                2 | 330 if section == "BLOCKS" && record == "BLOCK" => {
+                    if let Some(block) = drawing.blocks.last_mut() {
+                        if pair.code == 2 && block.name.is_empty() {
+                            block.name = name(pair);
+                        } else if pair.code == 330 && block.owner.is_none() {
+                            block.owner = Some(value(pair).to_vec());
+                        }
+                    }
+                }
                 9 if section == "HEADER" => {
                     let next = pairs.get(index + 1).ok_or(DxfEditRefusal::Malformed)?;
                     match name(pair).as_str() {
@@ -298,6 +365,12 @@ impl<'a> Drawing<'a> {
             (None, None) => None,
             (seed, max) => Some(seed.unwrap_or(0).max(max.map_or(1, |max| max + 1))),
         };
+        drawing.next_dimension_block = drawing
+            .blocks
+            .iter()
+            .filter_map(|block| block.name.strip_prefix("*D")?.parse::<u64>().ok())
+            .max()
+            .map_or(1, |last| last.saturating_add(1));
         drawing.subclassed = version.as_slice() >= b"AC1012".as_slice();
         drawing.utf8 = version.as_slice() >= b"AC1021".as_slice();
         drawing.owner = drawing.entities.iter().find_map(|entity| {
@@ -414,12 +487,19 @@ impl<'a> Drawing<'a> {
         for &object in edits.removed_objects.iter().filter(|id| **id < read_count) {
             replaced[entity_of(object)?] = Some(None);
         }
+        let mut handles = self.next_handle;
+        let mut blocks = NewBlocks {
+            blocks: Vec::new(),
+            records: Vec::new(),
+            next_dimension: self.next_dimension_block,
+        };
         for (&object, map) in &edits.moved_objects {
             if edits.removed_objects.contains(&object) {
                 continue;
             }
             let entity = entity_of(object)?;
-            let mapped = self.mapped(object, entity, &frame.map(map), None)?;
+            let map = frame.map(map);
+            let mapped = self.mapped(object, entity, &map, false, &mut handles, &mut blocks)?;
             replaced[entity] = Some(Some(mapped));
         }
         // How many objects each object of the drawing is with all it placed: a copy of it
@@ -434,7 +514,6 @@ impl<'a> Drawing<'a> {
                 tree[parent] = tree[parent].saturating_add(tree[index]);
             }
         }
-        let mut handles = self.next_handle;
         let mut added = Vec::new();
         let mut id = read_count;
         for edit in &edits.added {
@@ -452,7 +531,15 @@ impl<'a> Drawing<'a> {
             match edit {
                 AddedObject::Copy { of, map } => {
                     let entity = entity_of(*of)?;
-                    added.extend(self.mapped(*of, entity, &frame.map(map), Some(&mut handles))?);
+                    let map = frame.map(map);
+                    added.extend(self.mapped(
+                        *of,
+                        entity,
+                        &map,
+                        true,
+                        &mut handles,
+                        &mut blocks,
+                    )?);
                 }
                 AddedObject::Drawn { layer, shape } => {
                     added.extend(self.drawn(layer, shape, frame, &mut handles));
@@ -484,6 +571,20 @@ impl<'a> Drawing<'a> {
         }
         let end = self.pairs[self.entities_end].start;
         edits_at.push((end..end, added));
+        // A dimension's block is found only in the BLOCKS section, so when blocks were
+        // added there is one.
+        if let Some(index) = self.blocks_end
+            && !blocks.blocks.is_empty()
+        {
+            let at = self.pairs[index].start;
+            edits_at.push((at..at, blocks.blocks));
+        }
+        if let Some((index, _)) = self.block_records
+            && !blocks.records.is_empty()
+        {
+            let at = self.pairs[index].start;
+            edits_at.push((at..at, blocks.records));
+        }
         edits_at.sort_by_key(|(range, _)| range.start);
         for (range, with) in edits_at {
             splice(&mut out, range, &with);
@@ -493,32 +594,127 @@ impl<'a> Drawing<'a> {
     }
 
     /// The entity `entity`, of object `object`, mapped by `map`, of the drawing's units;
-    /// as a copy with handles of its own from `handles` when given.
+    /// with `copy` a copy, with handles of its own from `handles`. A dimension draws a
+    /// block mapped as it is, added to `blocks`.
     fn mapped(
         &self,
         object: u32,
         entity: usize,
         map: &Affine,
-        mut handles: Option<&mut Option<u64>>,
+        copy: bool,
+        handles: &mut Option<u64>,
+        blocks: &mut NewBlocks,
     ) -> Result<Vec<u8>, EditedDxfError> {
         let entity = &self.entities[entity];
         let mut out = Vec::new();
-        let primary = handles.as_deref_mut().and_then(take_handle);
+        let primary = if copy { take_handle(handles) } else { None };
         for (index, (start, record)) in entity.records.iter().enumerate() {
             let end = entity
                 .records
                 .get(index + 1)
                 .map_or(entity.pairs.end, |next| next.0);
-            let own = if index == 0 {
-                primary
-            } else {
-                handles.as_deref_mut().and_then(take_handle)
+            let own = match (copy, index) {
+                (false, _) => None,
+                (true, 0) => primary,
+                (true, _) => take_handle(handles),
             };
-            let mapped = self.mapped_record(object, record, *start..end, map)?;
-            let copy = handles.is_some().then_some((own, primary, entity.handle));
+            let mut mapped = self.mapped_record(object, record, *start..end, map)?;
+            if record == "DIMENSION" {
+                self.dimension_block(object, &mut mapped, map, handles, blocks)?;
+            }
+            let copy = copy.then_some((own, primary, entity.handle));
             self.write_record(&mut out, &mapped, copy);
         }
         Ok(out)
+    }
+
+    /// The block the dimension `record` draws, mapped by `map` as a new block of its own
+    /// added to `blocks`, which `record` then names: a block name says where it is drawn,
+    /// so neither a moved nor a copied dimension can keep the one it was read with.
+    fn dimension_block(
+        &self,
+        object: u32,
+        record: &mut [Out],
+        map: &Affine,
+        handles: &mut Option<u64>,
+        blocks: &mut NewBlocks,
+    ) -> Result<(), EditedDxfError> {
+        let not_mappable = || DxfEditRefusal::NotMappable {
+            object,
+            kind: "DIMENSION".to_owned(),
+        };
+        let (at, index) = record
+            .iter()
+            .enumerate()
+            .find_map(|(at, out)| match out {
+                Out::Raw(index) if self.pairs[*index].code == 2 => Some((at, *index)),
+                _ => None,
+            })
+            .ok_or_else(not_mappable)?;
+        let wanted = String::from_utf8_lossy(self.value(index)).to_ascii_uppercase();
+        let block = self
+            .blocks
+            .iter()
+            .find(|block| block.name == wanted)
+            .ok_or_else(not_mappable)?;
+        let endblk = block.endblk.ok_or(DxfEditRefusal::Malformed)?;
+        let next_record = |from: usize| {
+            (from + 1..self.pairs.len())
+                .find(|index| self.pairs[*index].code == 0)
+                .ok_or(DxfEditRefusal::Malformed)
+        };
+        let name = format!("*D{}", blocks.next_dimension);
+        blocks.next_dimension = blocks.next_dimension.saturating_add(1);
+        let old_owner = block.owner.as_deref().and_then(hex);
+        // Its block record, in the drawings that have them.
+        let new_owner = match &self.block_records {
+            Some(_) if self.subclassed => take_handle(handles),
+            _ => None,
+        };
+        if let (Some(handle), Some((_, table))) = (new_owner, &self.block_records) {
+            let out = &mut blocks.records;
+            self.push_pair(out, 0, b"BLOCK_RECORD");
+            self.push_pair(out, 5, format!("{handle:X}").as_bytes());
+            if let Some(table) = table {
+                self.push_pair(out, 330, table);
+            }
+            self.push_pair(out, 100, b"AcDbSymbolTableRecord");
+            self.push_pair(out, 100, b"AcDbBlockTableRecord");
+            self.push_pair(out, 2, name.as_bytes());
+        }
+        let copy = |handles: &mut Option<u64>| Some((take_handle(handles), new_owner, old_owner));
+        // The BLOCK, named anew; its entities mapped; its ENDBLK.
+        let header = block.start..next_record(block.start)?;
+        let named = header
+            .clone()
+            .map(|index| match self.pairs[index].code {
+                2 | 3 => Out::Set(index, name.clone()),
+                _ => Out::Raw(index),
+            })
+            .collect::<Vec<_>>();
+        self.write_record(&mut blocks.blocks, &named, copy(handles));
+        let mut start = header.end;
+        while start < endblk {
+            let end = next_record(start)?;
+            let kind = String::from_utf8_lossy(self.value(start)).to_ascii_uppercase();
+            let mapped = self.mapped_record(object, &kind, start..end, map)?;
+            self.write_record(&mut blocks.blocks, &mapped, copy(handles));
+            start = end;
+        }
+        let tail = (endblk..next_record(endblk)?)
+            .map(Out::Raw)
+            .collect::<Vec<_>>();
+        self.write_record(&mut blocks.blocks, &tail, copy(handles));
+        record[at] = Out::Set(index, name);
+        Ok(())
+    }
+
+    /// Writes the pair of `code` and `value` to `out`.
+    fn push_pair(&self, out: &mut Vec<u8>, code: i32, value: &[u8]) {
+        out.extend_from_slice(format!("{code:>3}").as_bytes());
+        out.extend_from_slice(self.eol);
+        out.extend_from_slice(value);
+        out.extend_from_slice(self.eol);
     }
 
     /// The pairs of one record mapped by `map`.
@@ -601,7 +797,19 @@ impl<'a> Drawing<'a> {
                 out[at] = Out::Set(index, number(self.number(index)? * scale));
             } else if code == 42 && rules.bulge && mirrored {
                 out[at] = Out::Set(index, number(0.0 - self.number(index)?));
+            } else if rules.angles.contains(&code) {
+                let angle = turned(self.number(index)?, turn_deg, mirrored);
+                out[at] = Out::Set(index, number(angle));
             }
+        }
+        if rules.dimension
+            && let Some(at) = position(42)
+            && !matches!(number_of(70)?.unwrap_or(0.0) as i64 & 7, 2 | 5)
+        {
+            out[at] = Out::Set(own[at], number(self.number(own[at])? * scale));
+        }
+        if rules.hatch {
+            self.map_hatch(own, &mut out, map, turn_deg, mirrored, scale)?;
         }
         if rules.arc
             && let (Some(start), Some(end)) = (position(50), position(51))
@@ -666,6 +874,142 @@ impl<'a> Drawing<'a> {
         Ok(out)
     }
 
+    /// The groups of a HATCH or MPOLYGON, `own`, mapped by `map` into `out`, by where they
+    /// stand: the boundary paths (polylines with their bulges, or lines, arcs, elliptical
+    /// arcs and splines), then the pattern, its lines and the seed points. The elevation
+    /// before the paths stays. Mapped, it no longer follows the entities it was made from:
+    /// it is written as not associative, without their handles.
+    fn map_hatch(
+        &self,
+        own: &[usize],
+        out: &mut [Out],
+        map: &Affine,
+        turn: f64,
+        mirrored: bool,
+        scale: f64,
+    ) -> Result<(), EditedDxfError> {
+        let code = |at: usize| self.pairs[own[at]].code;
+        let value = |at: usize| self.number(own[at]);
+        let set = |out: &mut [Out], at: usize, value: f64| {
+            out[at] = Out::Set(own[at], number(value));
+        };
+        // The point (or with `linear` the direction) whose X is at `at` and Y at `at + 1`
+        // of group `y`.
+        let xy = |out: &mut [Out], at: usize, y: i32, linear: bool| {
+            if at + 1 >= own.len() || code(at + 1) != y {
+                return Err(EditedDxfError::from(DxfEditRefusal::Malformed));
+            }
+            let point = [value(at)?, value(at + 1)?];
+            let [x, y] = if linear {
+                let [[a, b, _], [c, d, _]] = *map;
+                [a * point[0] + b * point[1], c * point[0] + d * point[1]]
+            } else {
+                apply(map, point)
+            };
+            set(out, at, x);
+            set(out, at + 1, y);
+            Ok(())
+        };
+        let starts = (0..own.len())
+            .filter(|at| code(*at) == 92)
+            .collect::<Vec<_>>();
+        let first = *starts.first().ok_or(DxfEditRefusal::Malformed)?;
+        if let Some(at) = (0..first).find(|at| code(*at) == 71) {
+            set(out, at, 0.0);
+        }
+        let mut trailing = own.len();
+        for (path, &start) in starts.iter().enumerate() {
+            let end = starts.get(path + 1).copied().unwrap_or(own.len());
+            let sources = (start + 1..end)
+                .rev()
+                .find(|at| code(*at) == 97)
+                .ok_or(DxfEditRefusal::Malformed)?;
+            let count = value(sources)?;
+            let source_end = sources + 1 + usize::try_from(count as i64).unwrap_or(usize::MAX);
+            if source_end > end || (sources + 1..source_end).any(|at| code(at) != 330) {
+                return Err(DxfEditRefusal::Malformed.into());
+            }
+            set(out, sources, 0.0);
+            out[sources + 1..source_end].fill_with(|| Out::Drop);
+            if path + 1 == starts.len() {
+                trailing = source_end;
+            }
+            let body = start + 1..sources;
+            if value(start)? as i64 & 2 != 0 {
+                for at in body {
+                    match code(at) {
+                        10 => xy(out, at, 20, false)?,
+                        42 if mirrored => set(out, at, 0.0 - value(at)?),
+                        _ => {}
+                    }
+                }
+                continue;
+            }
+            let edges = body
+                .clone()
+                .filter(|at| code(*at) == 72)
+                .chain([sources])
+                .collect::<Vec<_>>();
+            for edge in edges.windows(2) {
+                let edge = edge[0]..edge[1];
+                let kind = value(edge.start)? as i64;
+                let find = |wanted: i32| edge.clone().find(|at| code(*at) == wanted);
+                for at in edge.clone() {
+                    match (kind, code(at)) {
+                        (1..=4, 10) | (1 | 4, 11) => xy(out, at, code(at) + 10, false)?,
+                        (3, 11) | (4, 12 | 13) => xy(out, at, code(at) + 10, true)?,
+                        (2, 40) => set(out, at, value(at)? * scale),
+                        _ => {}
+                    }
+                }
+                if matches!(kind, 2 | 3)
+                    && let (Some(start), Some(end)) = (find(50), find(51))
+                {
+                    // Counterclockwise from `from` to `to`; a clockwise edge (73 = 0) gives
+                    // the angles of its mirror image.
+                    let counterclockwise = find(73).map_or(Ok(1.0), value)? != 0.0;
+                    let (from, to) = (value(start)?, value(end)?);
+                    let (from, to) = if counterclockwise {
+                        (from, to)
+                    } else {
+                        (0.0 - to, 0.0 - from)
+                    };
+                    // An arc's angles lie in the plane; an elliptical arc's along its axis.
+                    let (from, to) = match (kind, mirrored) {
+                        (2, false) => (turn + from, turn + to),
+                        (2, true) => (turn - to, turn - from),
+                        (_, false) => (from, to),
+                        (_, true) => (0.0 - to, 0.0 - from),
+                    };
+                    let (from, to) = if counterclockwise {
+                        (from, to)
+                    } else {
+                        (0.0 - to, 0.0 - from)
+                    };
+                    set(out, start, from.rem_euclid(360.0));
+                    set(out, end, to.rem_euclid(360.0));
+                }
+            }
+        }
+        for at in trailing..own.len() {
+            match code(at) {
+                52 | 53 => set(out, at, turned(value(at)?, turn, mirrored)),
+                41 | 49 => set(out, at, value(at)? * scale),
+                43 => xy(out, at, 44, false)?,
+                45 => xy(out, at, 46, true)?,
+                10 => xy(out, at, 20, false)?,
+                11 => xy(out, at, 21, true)?,
+                460 => {
+                    let turn = turn.to_radians();
+                    let angle = value(at)?;
+                    set(out, at, if mirrored { turn - angle } else { turn + angle });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Writes the pairs `record` to `out`; a copy (`Some((own, primary, original))`) takes
     /// the handle `own`, and the primary's handle where it named the original's, and
     /// leaves out the reactors and extension dictionary that are the original's.
@@ -680,6 +1024,7 @@ impl<'a> Drawing<'a> {
             let (index, value) = match pair {
                 Out::Raw(index) => (*index, None),
                 Out::Set(index, value) => (*index, Some(value.as_bytes())),
+                Out::Drop => continue,
                 Out::New(code, value) => {
                     out.extend_from_slice(format!("{code:>3}").as_bytes());
                     out.extend_from_slice(self.eol);
@@ -863,11 +1208,12 @@ impl<'a> Drawing<'a> {
     }
 }
 
-/// One pair written of a record: as read, with a new value, or new.
+/// One pair written of a record: as read, with a new value, new, or left out.
 enum Out {
     Raw(usize),
     Set(usize, String),
     New(i32, String),
+    Drop,
 }
 
 /// What of a record a map changes, by group code.
@@ -890,6 +1236,12 @@ struct Rules {
     direction: Option<i32>,
     /// An INSERT: groups 41, 42 and 50 are its scales and rotation.
     insert: bool,
+    /// Angles in degrees of directions in the plane, turned and mirrored with it.
+    angles: &'static [i32],
+    /// A HATCH or MPOLYGON: what its groups are depends on where they stand.
+    hatch: bool,
+    /// A DIMENSION: group 42 is its measurement, and it draws a block of its own.
+    dimension: bool,
 }
 
 impl Rules {
@@ -904,6 +1256,9 @@ impl Rules {
             rotation: None,
             direction: None,
             insert: false,
+            angles: &[],
+            hatch: false,
+            dimension: false,
         };
         Some(match record {
             "LINE" => Self {
@@ -977,9 +1332,40 @@ impl Rules {
                 points: &[10, 11, 12, 13],
                 ..plain
             },
+            "LEADER" => Self {
+                points: &[10],
+                vectors: &[211, 212, 213],
+                lengths: &[40, 41],
+                ..plain
+            },
+            "MESH" => Self {
+                points: &[10],
+                ..plain
+            },
+            "HATCH" | "MPOLYGON" => Self {
+                hatch: true,
+                ..plain
+            },
+            "DIMENSION" => Self {
+                points: &[10, 11, 13, 14, 15, 16],
+                vectors: &[12],
+                angles: &[50, 53],
+                dimension: true,
+                ..plain
+            },
             _ => return None,
         })
     }
+}
+
+/// The direction at `degrees` in the plane, turned by `turn` and mirrored when `mirrored`.
+fn turned(degrees: f64, turn: f64, mirrored: bool) -> f64 {
+    if mirrored {
+        turn - degrees
+    } else {
+        turn + degrees
+    }
+    .rem_euclid(360.0)
 }
 
 /// The next of `handles`, which moves on past it.
