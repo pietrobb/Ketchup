@@ -5,6 +5,8 @@
 //! a part. Text height is millimetres on paper, every point is in world
 //! millimetres.
 
+pub mod paper;
+
 use crate::document::TagId;
 use crate::tolerance::{MAX_COORDINATE_MM, MIN_DIMENSION_MM, ROUNDING};
 use std::collections::BTreeSet;

@@ -5,9 +5,10 @@
 //! model millimetres, writes them N times taller.
 
 use crate::dxf_export::{R12Layers, number};
-use ketchup_model::annotation::{AnnotationMark, DimensionLayout, dimension_text};
+use ketchup_model::annotation::{AnnotationMark, DimensionLayout, dimension_text, paper};
 use ketchup_model::document::Snapshot;
-use ketchup_model::tolerance::{MIN_DIMENSION_MM, ROUNDING};
+use ketchup_model::r12_text;
+use ketchup_model::tolerance::MIN_DIMENSION_MM;
 use ketchup_model::underlay::text::LINE_PITCH_PER_HEIGHT;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -18,14 +19,6 @@ pub const DEFAULT_PLAN_SCALE: f64 = 100.0;
 pub const MAX_PLAN_SCALE: f64 = 100_000.0;
 /// The layer of an annotation without a tag.
 const UNTAGGED_LAYER: &str = "Annotations";
-/// On paper: the gap between a measured point and its extension line, how far the
-/// extension line runs past the dimension line, the length of an oblique tick and of
-/// a leader's arrowhead, and the arrowhead's width.
-const EXTENSION_GAP_MM: f64 = 1.0;
-const EXTENSION_BEYOND_MM: f64 = 2.0;
-const TICK_MM: f64 = 3.0;
-const ARROW_LENGTH_MM: f64 = 3.0;
-const ARROW_WIDTH_MM: f64 = 1.0;
 
 /// What the annotations add to a plan DXF.
 #[derive(Default)]
@@ -130,23 +123,28 @@ pub(crate) fn plan_annotations(
 }
 
 impl PlanAnnotations {
-    /// A left-aligned text, one TEXT per line, the first on the baseline at `at`.
+    /// A left-aligned text, one TEXT per line, the first on the baseline at `at`;
+    /// a line longer than an R12 string holds goes on over the next ones.
     fn text(&mut self, layer: &str, at: [f64; 2], height: f64, text: &str) {
         let mut baseline = at[1];
-        for line in text.split('\n') {
+        for line in text
+            .split('\n')
+            .flat_map(|line| r12_text::lines(line, f64::INFINITY))
+        {
             let place = TextPlace {
                 at: [at[0], baseline],
                 height,
                 angle_degrees: 0.0,
                 centred: false,
             };
-            text_record(&mut self.entities, layer, &place, line);
+            text_record(&mut self.entities, layer, &place, &line);
             self.drawn_texts += 1;
             baseline -= height * LINE_PITCH_PER_HEIGHT;
         }
     }
 
-    /// An aligned dimension and its block; `false` when it has no length in plan.
+    /// An aligned dimension and its block, drawn as [`paper::dimension_marks`]
+    /// draws it at `1:scale`; `false` when it has no length in plan.
     fn dimension(
         &mut self,
         layer: &str,
@@ -157,29 +155,13 @@ impl PlanAnnotations {
     ) -> bool {
         let points = measured.map(plan_point);
         let line = layout.line.map(plan_point);
-        let plan_length = distance(line[0], line[1]);
-        if plan_length < MIN_DIMENSION_MM {
+        if distance(line[0], line[1]) < MIN_DIMENSION_MM {
             return false;
         }
-        let along = [
-            (line[1][0] - line[0][0]) / plan_length,
-            (line[1][1] - line[0][1]) / plan_length,
-        ];
-        // The value reads from left to right, or from bottom to top.
-        let reading = if along[0] < -ROUNDING || (along[0].abs() <= ROUNDING && along[1] < 0.0) {
-            [-along[0], -along[1]]
-        } else {
-            along
+        let Some(marks) = paper::dimension_marks(points, line, scale) else {
+            return false;
         };
-        let up = [-reading[1], reading[0]];
-        let middle = [
-            (line[0][0] + line[1][0]) / 2.0,
-            (line[0][1] + line[1][1]) / 2.0,
-        ];
-        let text_at = [
-            middle[0] + up[0] * height / 2.0,
-            middle[1] + up[1] * height / 2.0,
-        ];
+        let text_at = marks.value_at;
         let value = dimension_text(layout.value_mm);
         let shortened = dimension_text(distance(points[0], points[1])) != value;
 
@@ -189,36 +171,13 @@ impl PlanAnnotations {
             "0\nBLOCK\n8\n0\n2\n{block}\n70\n1\n10\n0\n20\n0\n30\n0\n3\n{block}\n"
         )
         .expect("writing to a String cannot fail");
-        line_record(&mut self.blocks, "0", line[0], line[1]);
-        let tick = TICK_MM * scale / 2.0 / std::f64::consts::SQRT_2;
-        for end in line {
-            let slant = [(along[0] - along[1]) * tick, (along[1] + along[0]) * tick];
-            line_record(
-                &mut self.blocks,
-                "0",
-                [end[0] - slant[0], end[1] - slant[1]],
-                [end[0] + slant[0], end[1] + slant[1]],
-            );
-        }
-        for (point, end) in points.into_iter().zip(line) {
-            let reach = distance(point, end);
-            let gap = EXTENSION_GAP_MM * scale;
-            if reach <= gap {
-                continue;
-            }
-            let toward = [(end[0] - point[0]) / reach, (end[1] - point[1]) / reach];
-            let beyond = EXTENSION_BEYOND_MM * scale;
-            line_record(
-                &mut self.blocks,
-                "0",
-                [point[0] + toward[0] * gap, point[1] + toward[1] * gap],
-                [end[0] + toward[0] * beyond, end[1] + toward[1] * beyond],
-            );
+        for [start, end] in marks.lines {
+            line_record(&mut self.blocks, "0", start, end);
         }
         let place = TextPlace {
             at: text_at,
             height,
-            angle_degrees: reading[1].atan2(reading[0]).to_degrees(),
+            angle_degrees: marks.value_angle_degrees,
             centred: true,
         };
         text_record(&mut self.blocks, "0", &place, &value);
@@ -235,7 +194,7 @@ impl PlanAnnotations {
         )
         .expect("writing to a String cannot fail");
         if shortened {
-            write!(self.entities, "1\n{}\n", dxf_text(&value))
+            write!(self.entities, "1\n{}\n", r12_text::lossy(&value))
                 .expect("writing to a String cannot fail");
             self.value_overrides += 1;
         }
@@ -254,21 +213,11 @@ impl PlanAnnotations {
     /// The line of a leader from `point` to `at`, with a filled arrowhead at `point`.
     fn leader(&mut self, layer: &str, point: [f64; 2], at: [f64; 2], scale: f64) {
         line_record(&mut self.entities, layer, point, at);
-        let length = distance(point, at);
-        if length < MIN_DIMENSION_MM {
+        let Some([tip, left, right]) = paper::leader_arrowhead(point, at, scale) else {
             return;
-        }
-        let toward = [(at[0] - point[0]) / length, (at[1] - point[1]) / length];
-        let arrow = (ARROW_LENGTH_MM * scale).min(length);
-        let half = ARROW_WIDTH_MM * scale / 2.0;
-        let base = [point[0] + toward[0] * arrow, point[1] + toward[1] * arrow];
-        let side = [-toward[1] * half, toward[0] * half];
-        let corners = [
-            point,
-            [base[0] + side[0], base[1] + side[1]],
-            [base[0] - side[0], base[1] - side[1]],
-            [base[0] - side[0], base[1] - side[1]],
-        ];
+        };
+        // R12 takes a triangle as a SOLID whose last two corners meet.
+        let corners = [tip, left, right, right];
         write!(self.entities, "0\nSOLID\n8\n{layer}\n").expect("writing to a String cannot fail");
         for (index, corner) in corners.iter().enumerate() {
             write!(
@@ -297,7 +246,7 @@ fn text_record(output: &mut String, layer: &str, place: &TextPlace, text: &str) 
         output,
         "0\nTEXT\n8\n{layer}\n10\n{x}\n20\n{y}\n30\n0\n40\n{}\n1\n{}\n",
         number(place.height),
-        dxf_text(text),
+        r12_text::lossy(text),
     )
     .expect("writing to a String cannot fail");
     if place.angle_degrees != 0.0 {
@@ -341,26 +290,6 @@ fn polyline(output: &mut String, layer: &str, points: &[[f64; 2]], closed: bool)
     write!(output, "0\nSEQEND\n8\n{layer}\n").expect("writing to a String cannot fail");
 }
 
-/// A text as an R12 file holds it: ASCII, every other character as `\U+XXXX`
-/// (one beyond U+FFFF as `?`), and a percent sign as `%%%` so that it is never
-/// read as a control code such as `%%d`.
-fn dxf_text(text: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '%' => output.push_str("%%%"),
-            ' '..='~' => output.push(character),
-            _ => match u16::try_from(u32::from(character)) {
-                Ok(code) => {
-                    write!(output, "\\U+{code:04X}").expect("writing to a String cannot fail");
-                }
-                Err(_) => output.push('?'),
-            },
-        }
-    }
-    output
-}
-
 const fn plan_point(point: [f64; 3]) -> [f64; 2] {
     [point[0], point[1]]
 }
@@ -373,12 +302,57 @@ fn distance(left: [f64; 2], right: [f64; 2]) -> f64 {
 mod tests {
     use super::*;
 
+    /// The values of the TEXT records of `dxf`, in file order.
+    fn text_values(dxf: &str) -> Vec<&str> {
+        let lines: Vec<&str> = dxf.lines().collect();
+        let mut values = Vec::new();
+        let mut entity = "";
+        for pair in lines.chunks(2) {
+            let [code, data] = pair else { break };
+            match *code {
+                "0" => entity = data,
+                "1" if entity == "TEXT" => values.push(*data),
+                _ => {}
+            }
+        }
+        values
+    }
+
+    /// Review 2026-10-24 MF-28: a line of 300 accented characters was written
+    /// as one TEXT of 2100 characters, which no R12 reader takes.
     #[test]
-    fn a_text_keeps_its_accents_and_percent_signs_in_an_ascii_file() {
-        assert_eq!(
-            dxf_text("Kotva č. 5 – 50 %"),
-            "Kotva \\U+010D. 5 \\U+2013 50 %%%"
+    fn a_line_longer_than_an_r12_string_goes_on_over_the_next_lines() {
+        let mut plan = PlanAnnotations::default();
+        plan.text("plan", [0.0, 1000.0], 250.0, &"č".repeat(300));
+        let values = text_values(&plan.entities);
+        assert_eq!(values.len(), 9, "{values:?}");
+        assert!(values.iter().all(|value| value.len() <= 255));
+        assert_eq!(plan.drawn_texts, 9);
+        // Each further line a line pitch below the one before.
+        let second = 1000.0 - 250.0 * LINE_PITCH_PER_HEIGHT;
+        assert!(
+            plan.entities
+                .contains(&format!("10\n0\n20\n{}\n", number(second))),
+            "{}",
+            plan.entities
         );
-        assert_eq!(dxf_text("S-05"), "S-05");
+    }
+
+    /// Review 2026-10-24 MF-28: the plan set a dimension's value half its
+    /// height above the line where the sheets set it 1 mm on paper above.
+    #[test]
+    fn a_dimensions_value_sits_one_millimetre_on_paper_above_its_line() {
+        let mut plan = PlanAnnotations::default();
+        let (from, to) = ([0.0, 0.0, 0.0], [4000.0, 0.0, 0.0]);
+        let layout = DimensionLayout::new(from, to, 500.0);
+        assert!(plan.dimension("plan", [from, to], &layout, 250.0, 100.0));
+        let line_y = layout.line[0][1];
+        // The value at 1 mm × 100 above the line, not 250 / 2.
+        assert!(
+            plan.entities
+                .contains(&format!("11\n2000\n21\n{}\n", number(line_y + 100.0))),
+            "{}",
+            plan.entities
+        );
     }
 }

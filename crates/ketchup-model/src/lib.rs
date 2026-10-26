@@ -20,6 +20,7 @@ pub mod mechanical_coupling;
 pub mod mesh_recognition;
 pub mod persistence;
 pub mod pin_joint;
+pub mod r12_text;
 pub mod shared_change;
 pub mod sheet_metal;
 pub mod space;

@@ -793,6 +793,13 @@ fn a_drawing_sheet_draws_the_plan_annotations_in_its_top_view() {
     );
     let [leader] = of("TEXT", "anchor").try_into().ok().unwrap();
     assert_eq!(leader.text, "M24");
+    // Review 2026-10-24 MF-28: the leader's arrowhead is filled, as in the
+    // plan DXF and the drawing set, not two open strokes.
+    let [arrow] = of("SOLID", "anchor-arrow").try_into().ok().unwrap();
+    // Its tip at the leader's point, 1000 mm before the text in x and y.
+    for axis in 0..2 {
+        assert!((at(arrow)[axis] - (at(leader)[axis] - 1000.0 * scale)).abs() < 0.01);
+    }
     assert!(text_free(&sheet, "up") && text_free(&sheet, "far"));
 
     // As DWG the sheet keeps both DIMENSION entities and the texts on the tag's layer.
@@ -828,6 +835,12 @@ fn a_drawing_sheet_draws_the_plan_annotations_in_its_top_view() {
     let bundle = export_drawing(&snapshot, &drawing).unwrap();
     let pdf = String::from_utf8_lossy(bundle.pdf());
     assert_eq!(pdf.matches("Tm <33303030> Tj").count(), 2, "{pdf}");
+    assert_eq!(pdf.matches(" l h f\n").count(), 1, "the arrowhead filled");
+    let svg = String::from_utf8_lossy(bundle.svg());
+    assert!(
+        svg.contains("<polygon id=\"annotation-anchor-arrow\""),
+        "{svg}"
+    );
     drop(snapshot);
 
     // Hidden, the annotations leave the sheet.

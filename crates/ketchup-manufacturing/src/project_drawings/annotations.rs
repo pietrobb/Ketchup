@@ -5,20 +5,13 @@
 
 use super::ViewFrame;
 use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
-use ketchup_model::annotation::{Annotation, AnnotationMark, DimensionLayout, dimension_text};
-use ketchup_model::tolerance::{MIN_DIMENSION_MM, ROUNDING};
+use ketchup_model::annotation::{
+    Annotation, AnnotationMark, DimensionLayout, dimension_text, paper,
+};
+use ketchup_model::tolerance::MIN_DIMENSION_MM;
 use ketchup_model::underlay::text::LINE_PITCH_PER_HEIGHT;
 use serde::Serialize;
 
-/// On paper: the gap between a measured point and its extension line, how far the
-/// extension line runs past the dimension line, the length of an oblique tick, the
-/// gap between a dimension line and its value, and a leader's arrowhead.
-const EXTENSION_GAP_MM: f64 = 1.0;
-const EXTENSION_BEYOND_MM: f64 = 2.0;
-const TICK_MM: f64 = 3.0;
-const VALUE_GAP_MM: f64 = 1.0;
-const ARROW_LENGTH_MM: f64 = 3.0;
-const ARROW_WIDTH_MM: f64 = 1.0;
 // not a tolerance: the pen width of an annotation on the sheet.
 const ANNOTATION_STROKE_MM: f64 = 0.25;
 const ANNOTATION_COLOR: [u8; 3] = [0, 0, 0];
@@ -224,9 +217,13 @@ fn lines_of_text(page: &mut Page, at: [f64; 2], text: &str, height_mm: f64) {
     }
 }
 
-/// An aligned dimension on the page: its line with oblique ticks, the extension
-/// lines from the measured points, and the value above the line, reading from
-/// left to right or from bottom to top.
+/// The page runs y down and [`paper`] y up: a point of the one is the other's
+/// with y negated, and a turn keeps its sense as the sheet shows it.
+const fn flipped([x, y]: [f64; 2]) -> [f64; 2] {
+    [x, -y]
+}
+
+/// An aligned dimension on the page as [`paper::dimension_marks`] draws it.
 fn dimension(
     page: &mut Page,
     measured: [[f64; 2]; 2],
@@ -234,68 +231,18 @@ fn dimension(
     value: &str,
     height_mm: f64,
 ) {
-    let length = distance(line[0], line[1]);
-    if length <= 0.0 {
+    let Some(marks) = paper::dimension_marks(measured.map(flipped), line.map(flipped), 1.0) else {
         return;
-    }
-    let along = [
-        (line[1][0] - line[0][0]) / length,
-        (line[1][1] - line[0][1]) / length,
-    ];
-    page.line(line.to_vec(), stroke());
-    let tick = TICK_MM / 2.0 / std::f64::consts::SQRT_2;
-    for end in line {
-        let slant = [(along[0] + along[1]) * tick, (along[1] - along[0]) * tick];
-        page.line(
-            vec![
-                [end[0] - slant[0], end[1] - slant[1]],
-                [end[0] + slant[0], end[1] + slant[1]],
-            ],
-            stroke(),
-        );
-    }
-    for (point, end) in measured.into_iter().zip(line) {
-        let reach = distance(point, end);
-        if reach <= EXTENSION_GAP_MM {
-            continue;
-        }
-        let toward = [(end[0] - point[0]) / reach, (end[1] - point[1]) / reach];
-        page.line(
-            vec![
-                [
-                    point[0] + toward[0] * EXTENSION_GAP_MM,
-                    point[1] + toward[1] * EXTENSION_GAP_MM,
-                ],
-                [
-                    end[0] + toward[0] * EXTENSION_BEYOND_MM,
-                    end[1] + toward[1] * EXTENSION_BEYOND_MM,
-                ],
-            ],
-            stroke(),
-        );
-    }
-    // The page runs y down: a line pointing left, or straight down the sheet, is
-    // read the other way round.
-    let reading = if along[0] < -ROUNDING || (along[0].abs() <= ROUNDING && along[1] > 0.0) {
-        [-along[0], -along[1]]
-    } else {
-        along
     };
-    // Up from the reading direction, as the sheet shows it.
-    let up = [reading[1], -reading[0]];
-    let middle = [
-        f64::midpoint(line[0][0], line[1][0]),
-        f64::midpoint(line[0][1], line[1][1]),
-    ];
+    for drawn in marks.lines {
+        page.line(drawn.map(flipped).to_vec(), stroke());
+    }
     page.marks.push(Mark::Text {
-        at: [
-            middle[0] + up[0] * VALUE_GAP_MM,
-            middle[1] + up[1] * VALUE_GAP_MM,
-        ],
+        at: flipped(marks.value_at),
         text: value.to_owned(),
         height_mm,
         anchor: Anchor::Middle,
-        angle_deg: (-reading[1]).atan2(reading[0]).to_degrees(),
+        angle_deg: marks.value_angle_degrees,
         bold: false,
     });
 }
@@ -303,24 +250,13 @@ fn dimension(
 /// The line of a leader from `point` to `at` with a filled arrowhead at `point`.
 fn leader(page: &mut Page, point: [f64; 2], at: [f64; 2]) {
     page.line(vec![point, at], stroke());
-    let length = distance(point, at);
-    if length <= 0.0 {
-        return;
+    if let Some(corners) = paper::leader_arrowhead(point, at, 1.0) {
+        page.marks.push(Mark::Fill {
+            loops: vec![corners.to_vec()],
+            color: ANNOTATION_COLOR,
+            outline: None,
+        });
     }
-    let toward = [(at[0] - point[0]) / length, (at[1] - point[1]) / length];
-    let arrow = ARROW_LENGTH_MM.min(length);
-    let half = ARROW_WIDTH_MM / 2.0;
-    let base = [point[0] + toward[0] * arrow, point[1] + toward[1] * arrow];
-    let side = [-toward[1] * half, toward[0] * half];
-    page.marks.push(Mark::Fill {
-        loops: vec![vec![
-            point,
-            [base[0] + side[0], base[1] + side[1]],
-            [base[0] - side[0], base[1] - side[1]],
-        ]],
-        color: ANNOTATION_COLOR,
-        outline: None,
-    });
 }
 
 fn distance(left: [f64; 2], right: [f64; 2]) -> f64 {

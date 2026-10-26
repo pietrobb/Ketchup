@@ -8,6 +8,7 @@ use crate::drawing::{
     ORTHOGRAPHIC_LINEWORK_SCHEMA_V2, OrthographicDrawing, OrthographicView, ProjectedPolylineCurve,
     drawing_layout_digest, drawing_result_digest,
 };
+use crate::r12_text;
 use crate::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -22,7 +23,6 @@ pub const DRAWING_EXPORT_SCHEMA_V1: &str = "ketchup.drawing-export.v1";
 const MAX_EXPORT_LINES: usize = 100_000;
 const MAX_EXPORT_TEXTS: usize = 1_024;
 const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
-const MAX_DXF_STRING_CHARACTERS: usize = 255;
 /// Baseline-to-baseline distance of a text broken over lines, in text heights.
 const LINE_SPACING: f64 = 1.5;
 /// A generous glyph advance of the sheet's sans-serif font, in text heights,
@@ -211,6 +211,13 @@ struct PageLine {
     style: LineStyle,
 }
 
+/// A filled triangle of the sheet: a leader's arrowhead.
+#[derive(Clone)]
+struct PageFill {
+    id: String,
+    corners: [[f64; 2]; 3],
+}
+
 struct PageArc {
     id: String,
     center: [f64; 2],
@@ -251,16 +258,18 @@ pub fn export_drawing(
     // The sheet's own lines and texts come first; the DXF writes the
     // annotations' apart, on the layers of their tags.
     let (sheet_lines, sheet_texts) = (lines.len(), texts.len());
+    let mut fills = Vec::new();
     for mark in &marks {
         lines.extend(mark.lines.iter().cloned());
+        fills.extend(mark.fills.iter().cloned());
         texts.extend(mark.texts.iter().cloned());
     }
-    if lines.len() > MAX_EXPORT_LINES || texts.len() > MAX_EXPORT_LINES {
+    if lines.len() + fills.len() > MAX_EXPORT_LINES || texts.len() > MAX_EXPORT_LINES {
         return Err(DrawingExportError::ResourceLimit);
     }
     let (page_arcs, replaced_lines) = collect_page_arcs(drawing)?;
-    let svg = export_svg(drawing, &lines, &texts);
-    let pdf = export_pdf(drawing, &lines, &texts)?;
+    let svg = export_svg(drawing, &lines, &fills, &texts);
+    let pdf = export_pdf(drawing, &lines, &fills, &texts)?;
     let dxf = export_dxf(
         drawing,
         SheetContent {
@@ -673,7 +682,7 @@ fn collect_page_content(
         texts.push(PageText {
             id: note.stable_note_id.clone(),
             position: note.position_mm,
-            lines: text_lines(&note.text, f64::INFINITY),
+            lines: r12_text::lines(&note.text, f64::INFINITY),
             height_mm: 3.5,
             angle_deg: 0.0,
             middle: false,
@@ -963,7 +972,7 @@ fn push_title_block_text(
             }
             let height_mm = height * scale;
             let characters = (right - left - 4.0) / (GLYPH_WIDTH * height_mm);
-            let lines = text_lines(value, characters.max(1.0));
+            let lines = r12_text::lines(value, characters.max(1.0));
             let first = y;
             for _ in 1..lines.len() {
                 y -= LINE_SPACING * height_mm;
@@ -1032,7 +1041,12 @@ fn line_boxes(text: &PageText) -> impl Iterator<Item = [[f64; 2]; 2]> + '_ {
         })
 }
 
-fn export_svg(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageText]) -> Vec<u8> {
+fn export_svg(
+    drawing: &OrthographicDrawing,
+    lines: &[PageLine],
+    fills: &[PageFill],
+    texts: &[PageText],
+) -> Vec<u8> {
     let [width, height] = drawing.layout.page_size_mm;
     let mut svg = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- {DRAWING_EXPORT_SCHEMA_V1} result={} layout={} -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}mm\" height=\"{}mm\" viewBox=\"0 0 {} {}\">\n<style>.BORDER{{stroke:#000;stroke-width:.5;fill:none}}.VISIBLE{{stroke:#000;stroke-width:.35;fill:none}}.HIDDEN{{stroke:#000;stroke-width:.25;stroke-dasharray:2 1;fill:none}}.DIMENSION{{stroke:#000;stroke-width:.18;fill:none}}text{{font-family:sans-serif;fill:#000}}</style>\n",
@@ -1052,6 +1066,16 @@ fn export_svg(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
             number(height - line.start[1]),
             number(line.end[0]),
             number(height - line.end[1]),
+        ));
+    }
+    for fill in fills {
+        let points = fill
+            .corners
+            .map(|[x, y]| format!("{},{}", number(x), number(height - y)))
+            .join(" ");
+        svg.push_str(&format!(
+            "<polygon id=\"{}\" points=\"{points}\" style=\"fill:#000;stroke:none\"/>\n",
+            xml_escape(&fill.id),
         ));
     }
     for text in texts {
@@ -1196,6 +1220,23 @@ fn annotation_dxf(
             for line in &mark.lines {
                 push_dxf_line(&mut entities, line, &mark.layer, "CONTINUOUS")?;
             }
+            for fill in &mark.fills {
+                // R12 takes a triangle as a SOLID whose last two corners meet.
+                let [a, b, c] = fill.corners;
+                entities.push_str(&format!(
+                    "0\nSOLID\n8\n{}\n10\n{}\n20\n{}\n30\n0\n11\n{}\n21\n{}\n31\n0\n12\n{}\n22\n{}\n32\n0\n13\n{}\n23\n{}\n33\n0\n1001\nKETCHUP\n1000\n{}\n",
+                    mark.layer,
+                    number(a[0]),
+                    number(a[1]),
+                    number(b[0]),
+                    number(b[1]),
+                    number(c[0]),
+                    number(c[1]),
+                    number(c[0]),
+                    number(c[1]),
+                    dxf_text(&fill.id)?,
+                ));
+            }
             for text in &mark.texts {
                 push_dxf_text(&mut entities, text, &mark.layer)?;
             }
@@ -1261,7 +1302,7 @@ fn push_dxf_text(dxf: &mut String, text: &PageText, layer: &str) -> Result<(), D
     for piece in text
         .lines
         .iter()
-        .flat_map(|line| text_lines(line, f64::INFINITY))
+        .flat_map(|line| r12_text::lines(line, f64::INFINITY))
     {
         let value = dxf_text(&piece)?;
         let (x, y) = (number(at[0]), number(at[1]));
@@ -1290,6 +1331,7 @@ fn push_dxf_text(dxf: &mut String, text: &PageText, layer: &str) -> Result<(), D
 fn export_pdf(
     drawing: &OrthographicDrawing,
     lines: &[PageLine],
+    fills: &[PageFill],
     texts: &[PageText],
 ) -> Result<Vec<u8>, DrawingExportError> {
     let mut stream = format!(
@@ -1315,6 +1357,15 @@ fn export_pdf(
             number(line.start[1]),
             number(line.end[0]),
             number(line.end[1]),
+        ));
+    }
+    for fill in fills {
+        let [a, b, c] = fill
+            .corners
+            .map(|[x, y]| format!("{} {}", number(x), number(y)));
+        stream.push_str(&format!(
+            "% fill {}\n{a} m {b} l {c} l h f\n",
+            pdf_comment(&fill.id)
         ));
     }
     for text in texts {
@@ -1489,73 +1540,27 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// One character of an R12 string: a line break becomes a space and a
-/// character outside ASCII its `\U+XXXX` escape, so the file needs no code
-/// page and AutoCAD, ezdxf and acadrust read the same text. The escape holds
-/// one Basic Multilingual Plane character, so a character beyond it (an
-/// emoji) is refused rather than written as a surrogate pair no reader decodes.
-fn dxf_character(character: char) -> Result<String, DrawingExportError> {
-    match character {
-        '\r' | '\n' => Ok(" ".to_owned()),
-        ascii if ascii.is_ascii() => Ok(ascii.to_string()),
-        other if other.len_utf16() > 1 => Err(DrawingExportError::UnsupportedDxfText),
-        other => Ok(format!("\\U+{:04X}", u32::from(other))),
-    }
-}
-
-/// An identifier of the R12 file, refused when longer than the 255
-/// characters an R12 string carries once escaped.
+/// A string of the R12 file as [`crate::r12_text`] writes it. A character
+/// beyond the Basic Multilingual Plane (an emoji) is refused rather than
+/// written as a surrogate pair no reader decodes, and a string longer than
+/// the 255 characters an R12 string carries once written.
 fn dxf_text(value: &str) -> Result<String, DrawingExportError> {
     let output = value
         .chars()
-        .map(dxf_character)
+        .map(|character| {
+            r12_text::character(character).ok_or(DrawingExportError::UnsupportedDxfText)
+        })
         .collect::<Result<String, _>>()?;
-    if output.len() > MAX_DXF_STRING_CHARACTERS {
+    if output.len() > r12_text::MAX_STRING_CHARACTERS {
         return Err(DrawingExportError::DxfTextTooLong);
     }
     Ok(output)
 }
 
-/// `value` broken into lines of at most `max_characters` characters that are
-/// also R12 strings of at most 255 characters once escaped (Slovak diacritics
-/// take seven characters each): after the last space that fits, or between
-/// characters when no space does. The lines join back into `value`.
-pub(crate) fn text_lines(value: &str, max_characters: f64) -> Vec<String> {
-    let characters: Vec<char> = value.chars().collect();
-    let escaped = |character: char| dxf_character(character).map_or(1, |piece| piece.len());
-    let mut lines = Vec::new();
-    let mut start = 0;
-    while start < characters.len() {
-        let mut end = start;
-        let mut width = 0;
-        let mut count = 0.0;
-        while end < characters.len()
-            && count + 1.0 <= max_characters
-            && width + escaped(characters[end]) <= MAX_DXF_STRING_CHARACTERS
-        {
-            width += escaped(characters[end]);
-            count += 1.0;
-            end += 1;
-        }
-        if end < characters.len()
-            && let Some(space) = characters[start..end].iter().rposition(|c| *c == ' ')
-            && space > 0
-        {
-            end = start + space + 1;
-        }
-        lines.push(characters[start..end].iter().collect());
-        start = end;
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
-}
-
 /// A parts-list row's label broken into the lines that fit its column.
 pub(crate) fn bom_row_lines(label: &str) -> Vec<String> {
     let characters = (BOM_COLUMN_WIDTH_MM - 3.0) / (GLYPH_WIDTH * BOM_ROW_HEIGHT_MM);
-    text_lines(label, characters.floor())
+    r12_text::lines(label, characters.floor())
 }
 
 fn pdf_text_hex(value: &str) -> Result<String, DrawingExportError> {
@@ -1608,25 +1613,25 @@ fn pdf_comment(value: &str) -> String {
 
 #[cfg(test)]
 mod dxf_text_tests {
-    use super::{DrawingExportError, dxf_text, text_lines};
+    use super::{DrawingExportError, dxf_text, r12_text};
 
     #[test]
     fn a_long_text_breaks_after_the_last_space_that_fits_or_between_characters() {
         let words = format!("{} {}", "a".repeat(250), "b".repeat(10));
         assert_eq!(
-            text_lines(&words, f64::INFINITY),
+            r12_text::lines(&words, f64::INFINITY),
             [format!("{} ", "a".repeat(250)), "b".repeat(10)]
         );
         let word = "č".repeat(40);
         assert_eq!(
-            text_lines(&word, f64::INFINITY),
+            r12_text::lines(&word, f64::INFINITY),
             ["č".repeat(36), "č".repeat(4)]
         );
         assert_eq!(
-            text_lines("ab cd efgh ij", 6.0),
+            r12_text::lines("ab cd efgh ij", 6.0),
             ["ab cd ".to_owned(), "efgh ".to_owned(), "ij".to_owned()]
         );
-        assert_eq!(text_lines("", 6.0), [String::new()]);
+        assert_eq!(r12_text::lines("", 6.0), [String::new()]);
     }
 
     #[test]
@@ -1639,5 +1644,12 @@ mod dxf_text_tests {
             dxf_text("Kečup\u{FFFD}").as_deref(),
             Ok("Ke\\U+010Dup\\U+FFFD")
         );
+    }
+
+    /// Review 2026-10-24 MF-28: the sheet wrote a percent sign as it is, so
+    /// "%%d" in a text came out as a degree sign.
+    #[test]
+    fn a_percent_sign_is_written_as_the_r12_code_of_one() {
+        assert_eq!(dxf_text("50 %%d").as_deref(), Ok("50 %%%%%%d"));
     }
 }

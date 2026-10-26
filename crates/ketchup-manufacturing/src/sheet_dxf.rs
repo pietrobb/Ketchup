@@ -4,11 +4,13 @@
 //! layer CUT and every text as TEXT on layer TEXT. R12 has no hatch, so a fill
 //! keeps its outline only; the sheet's PDF shows the fill.
 //!
-//! A text character outside ASCII is written as its `\U+XXXX` escape, so the
-//! file needs no code page; one beyond the Basic Multilingual Plane, which no
-//! escape holds, is written as "?", as the PDF prints it.
+//! A text is written as [`r12_text`] writes it, so the file needs no code
+//! page; a character beyond the Basic Multilingual Plane, which no escape
+//! holds, is written as "?", as the PDF prints it.
 
 use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
+use ketchup_model::r12_text;
+use ketchup_model::underlay::text::LINE_PITCH_PER_HEIGHT;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
@@ -38,18 +40,6 @@ pub fn pen_layer(stroke: &Stroke) -> String {
         name.push_str("-DASHED");
     }
     name
-}
-
-fn dxf_text(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| match character {
-            '\r' | '\n' => " ".to_owned(),
-            ascii if ascii.is_ascii() => ascii.to_string(),
-            wide if wide.len_utf16() > 1 => "?".to_owned(),
-            other => format!("\\U+{:04X}", u32::from(other)),
-        })
-        .collect()
 }
 
 struct Writer {
@@ -84,28 +74,37 @@ impl Writer {
         }
     }
 
+    /// A text as one TEXT, or, longer than an R12 string holds, as several,
+    /// each a line pitch further down its own up direction.
     fn text(&mut self, at: [f64; 2], text: &str, height_mm: f64, anchor: Anchor, angle_deg: f64) {
         if text.trim().is_empty() {
             return;
         }
-        let [x, y] = self.point(at);
         let turn = if angle_deg == 0.0 {
             String::new()
         } else {
             format!("50\n{}\n", number(angle_deg))
         };
-        // R12 reads a justified text at its alignment point (11/21).
-        let justified = match anchor {
-            Anchor::Start => String::new(),
-            Anchor::Middle => format!("72\n1\n11\n{x}\n21\n{y}\n31\n0\n"),
-            Anchor::End => format!("72\n2\n11\n{x}\n21\n{y}\n31\n0\n"),
-        };
-        let _ = write!(
-            self.out,
-            "0\nTEXT\n8\n{TEXT_LAYER}\n10\n{x}\n20\n{y}\n30\n0\n40\n{}\n1\n{}\n{turn}{justified}",
-            number(height_mm),
-            dxf_text(text)
-        );
+        // Down the text on a page that runs y down.
+        let (sin, cos) = angle_deg.to_radians().sin_cos();
+        let step = LINE_PITCH_PER_HEIGHT * height_mm;
+        let mut down = 0.0;
+        for piece in r12_text::lines(text, f64::INFINITY) {
+            let [x, y] = self.point([at[0] + sin * down, at[1] + cos * down]);
+            // R12 reads a justified text at its alignment point (11/21).
+            let justified = match anchor {
+                Anchor::Start => String::new(),
+                Anchor::Middle => format!("72\n1\n11\n{x}\n21\n{y}\n31\n0\n"),
+                Anchor::End => format!("72\n2\n11\n{x}\n21\n{y}\n31\n0\n"),
+            };
+            let _ = write!(
+                self.out,
+                "0\nTEXT\n8\n{TEXT_LAYER}\n10\n{x}\n20\n{y}\n30\n0\n40\n{}\n1\n{}\n{turn}{justified}",
+                number(height_mm),
+                r12_text::lossy(&piece)
+            );
+            down += step;
+        }
     }
 }
 
@@ -215,5 +214,28 @@ mod tests {
             "{dxf}"
         );
         assert!(dxf.ends_with("0\nENDSEC\n0\nEOF\n"));
+    }
+
+    /// Review 2026-10-24 MF-28: a sheet wrote "%%d" as it is, so a reader drew
+    /// a degree sign, and wrote a text of any length as one TEXT.
+    #[test]
+    fn a_percent_sign_stays_one_and_a_long_text_goes_on_over_the_next_lines() {
+        let mut page = Page {
+            size_mm: [420.0, 297.0],
+            marks: Vec::new(),
+        };
+        page.text([10.0, 20.0], "50 %%d", 3.5, Anchor::Start);
+        page.text([10.0, 100.0], &"ž".repeat(40), 2.0, Anchor::Start);
+        let dxf = String::from_utf8(page_dxf(&page)).unwrap();
+        assert!(dxf.contains("\n1\n50 %%%%%%d\n"), "{dxf}");
+        // 36 letters of seven characters fill one R12 string, the rest go
+        // one line pitch further down the page.
+        let first = format!("\n1\n{}\n", "\\U+017E".repeat(36));
+        let second = format!(
+            "20\n{}\n30\n0\n40\n2\n1\n{}\n",
+            number(297.0 - 100.0 - 2.0 * LINE_PITCH_PER_HEIGHT),
+            "\\U+017E".repeat(4)
+        );
+        assert!(dxf.contains(&first) && dxf.contains(&second), "{dxf}");
     }
 }
