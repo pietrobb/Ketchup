@@ -357,6 +357,83 @@ fn a_unit_letter_typed_with_its_number_in_one_frame_stays_in_the_value() {
     assert_eq!(harness.state().active_tool, ActiveTool::Move);
 }
 
+/// Review 2026-10-19 P3-G (cfbb39b): in a slow frame that began a value,
+/// every other key was swallowed too: Delete before it, Backspace and Ctrl+Z
+/// in it, and Enter confirmed the preview, not the typed value. Now the keys
+/// are read in the order typed, as the field reads them.
+#[test]
+fn the_keys_of_one_slow_frame_are_read_in_order_with_the_value_they_begin() {
+    // Raw events, in the order given, all in the next frame: `key_press`
+    // would queue a key after text pushed with it.
+    let text = |harness: &mut Harness<'_, KetchupApp>, typed: &str| {
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text(typed.into()));
+    };
+    let raw = |harness: &mut Harness<'_, KetchupApp>, key, modifiers| {
+        harness.input_mut().events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+    };
+    let none = egui::Modifiers::NONE;
+
+    // "100" and Enter in one frame move the part by the typed 100 mm.
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let origin = app.occurrence_box_geometry(1).unwrap().0;
+    app.dispatch_command(AppCommand::Move);
+    let mut harness = shell(app);
+    text(&mut harness, "100");
+    raw(&mut harness, egui::Key::Enter, none);
+    harness.step();
+    harness.step();
+    let moved = harness.state().occurrence_box_geometry(1).unwrap().0;
+    assert_eq!(
+        moved,
+        origin + Vec3::new(100.0, 0.0, 0.0),
+        "{}",
+        harness.state().digest
+    );
+
+    // Backspace edits the value; Ctrl+Z after it drops it.
+    let mut app = KetchupApp::new();
+    app.dispatch_command(AppCommand::Rectangle);
+    let mut harness = shell(app);
+    text(&mut harness, "125");
+    raw(&mut harness, egui::Key::Backspace, none);
+    harness.step();
+    harness.step();
+    assert_eq!(harness.state().value_input(), "12");
+    press(&mut harness, egui::Key::Escape);
+    text(&mut harness, "7");
+    raw(&mut harness, egui::Key::Z, egui::Modifiers::COMMAND);
+    harness.step();
+    harness.step();
+    assert_eq!(harness.state().value_input(), "");
+
+    // Delete pressed before the value still deletes the selected part.
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let parts = app.document.current().occurrences().count();
+    let mut harness = shell(app);
+    raw(&mut harness, egui::Key::Delete, none);
+    text(&mut harness, "5");
+    harness.step();
+    harness.step();
+    assert_eq!(
+        harness.state().document.current().occurrences().count(),
+        parts - 1,
+        "{}",
+        harness.state().digest
+    );
+    assert_eq!(harness.state().value_input(), "5");
+}
+
 /// Review 2026-10-19 P3 (GUI): the value grammar takes "(1+2)*10" and "+5",
 /// but on the canvas a value could not begin with "(" or "+": neither opened
 /// the value field, so the rest was typed into nothing.

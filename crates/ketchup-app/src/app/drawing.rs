@@ -3161,6 +3161,36 @@ impl KetchupApp {
                             || (hole && matches!(first, 'M' | 'm'))
                     })
             });
+        // The keys from that first character on are the value's, in the
+        // order typed, as if the field had them already (review 2026-10-19
+        // P3-G): Backspace edits it, Enter applies it rather than the
+        // preview, and Esc or Ctrl+Z drop it; a key before it still is the
+        // canvas's, so Delete then "5" deletes, and an arrow still pins.
+        let value_keys = if starts_value {
+            context.input_mut(|input| {
+                let first = input
+                    .events
+                    .iter()
+                    .position(|event| matches!(event, egui::Event::Text(_)))
+                    .unwrap_or(input.events.len());
+                let tail = input.events.split_off(first);
+                let (keys, kept): (Vec<_>, Vec<_>) = tail.into_iter().partition(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Text(_)
+                            | egui::Event::Paste(_)
+                            | egui::Event::Copy
+                            | egui::Event::Cut
+                    ) || matches!(event, egui::Event::Key { key, .. }
+                        if !keymap::AXIS_LOCKS.iter().any(|(lock, _)| lock == key))
+                });
+                input.events.extend(kept);
+                keys
+            })
+        } else {
+            Vec::new()
+        };
+        let typed_value = read_value_keys(&value_keys);
         // Esc or Ctrl+Z in a value being typed drop the value together with
         // the operation it was typed for, as both do on the canvas; the field's
         // own text Undo would leave the value to be confirmed by the next Enter.
@@ -3181,33 +3211,36 @@ impl KetchupApp {
                         egui::Key::Z,
                     ))
             });
-        let command = if undo_typed_value {
+        let command = if undo_typed_value || typed_value.dropped {
             Some(AppCommand::Deselect)
         } else {
-            context.input_mut(|input| keymap::pressed(input, typing || starts_value))
+            context.input_mut(|input| keymap::pressed(input, typing))
         };
         let cycle_overlap = cycle_with_alt
             || (!typing
                 && context.input_mut(|input| input.consume_shortcut(&keymap::CYCLE_OVERLAP)));
         let confirm = !typing && context.input(|input| input.key_pressed(keymap::CONFIRM));
-        if !context.wants_keyboard_input() {
-            let typed = context.input(|input| {
-                input
-                    .events
-                    .iter()
-                    .filter_map(|event| match event {
-                        egui::Event::Text(text)
-                            if starts_value
-                                || text.chars().all(|character| {
+        if !context.wants_keyboard_input() && !typed_value.dropped {
+            let typed = if starts_value {
+                typed_value.text.clone()
+            } else {
+                context.input(|input| {
+                    input
+                        .events
+                        .iter()
+                        .filter_map(|event| match event {
+                            egui::Event::Text(text)
+                                if text.chars().all(|character| {
                                     "0123456789.,-+();xX*×/ ".contains(character)
                                 }) =>
-                        {
-                            Some(text.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect::<String>()
-            });
+                            {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect::<String>()
+                })
+            };
             // Space alone is the Select shortcut; it must not open the value
             // field, which would then hold the keyboard against every shortcut.
             if !typed.trim().is_empty() {
@@ -3223,6 +3256,11 @@ impl KetchupApp {
                     ActiveTool::Shell | ActiveTool::Fillet | ActiveTool::Chamfer
                 ) {
                     self.refresh_general_finish_preview();
+                }
+                if typed_value.confirmed {
+                    // As Enter in the field: the typed value, not the preview.
+                    self.value_box.focus = false;
+                    self.apply_value_input();
                 }
             }
         }
@@ -3671,4 +3709,52 @@ fn closed_spline_preview(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
             })
         })
         .collect()
+}
+
+/// A value typed on the canvas within one frame, read from its keys in order.
+#[derive(Default)]
+struct TypedValue {
+    text: String,
+    /// Enter followed it.
+    confirmed: bool,
+    /// Esc or Ctrl+Z followed it, which drop it with its operation.
+    dropped: bool,
+}
+
+/// Reads the keys a value was begun with in one frame as the value field
+/// would: text and paste add to it, Backspace takes back a character, Enter
+/// confirms it and Esc or Ctrl+Z drop it; keys after those are not read.
+/// Delete at the end of the text removes nothing.
+fn read_value_keys(events: &[egui::Event]) -> TypedValue {
+    let mut value = TypedValue::default();
+    for event in events {
+        match event {
+            egui::Event::Text(text) | egui::Event::Paste(text) => value.text.push_str(text),
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => match key {
+                egui::Key::Backspace => {
+                    value.text.pop();
+                }
+                egui::Key::Enter => {
+                    value.confirmed = true;
+                    break;
+                }
+                egui::Key::Escape => {
+                    value.dropped = true;
+                    break;
+                }
+                egui::Key::Z if modifiers.command && !modifiers.shift => {
+                    value.dropped = true;
+                    break;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    value
 }
