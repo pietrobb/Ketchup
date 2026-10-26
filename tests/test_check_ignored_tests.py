@@ -18,6 +18,7 @@ jobs:
           cargo test --locked --release $CRATES --no-fail-fast --
           --ignored perf_
           --skip perf_needs_a_document
+          --skip frames::tests::perf_on_a_real_gpu
       - name: houses
         run: cargo test --locked --release -p beta -- --ignored houses:: large_house
       # - run: cargo test -p alpha -- --ignored forgotten
@@ -53,6 +54,18 @@ fn only_mentions_a_subprocess() {}
 #[test]
 #[ignore = "perf: release timing budget, hardware GPU"]
 fn perf_on_a_real_gpu() {}
+
+#[test]
+#[ignore = "needs a hardware GPU"]
+fn gpu_named_by_no_step() {}
+
+#[test]
+#[cfg_attr(windows, ignore = "measurement: run on demand")]
+fn ignored_on_windows() {}
+
+#[test]
+#[cfg_attr(all(test, windows), ignore)]
+fn perf_ignored_on_windows() {}
 """
 
 
@@ -80,8 +93,14 @@ def test_an_ignored_test_no_step_runs_is_reported(tmp_path):
         "alpha frames::tests::forgotten: ignored, but no CI step runs it; add it to a nightly step or delete it",
         "alpha frames::tests::only_mentions_a_subprocess: ignored as a child process, but no test of alpha names it "
         "to start it; start it from a test or run it in a CI step",
+        # Review 2026-10-24 CI-21: a hardware GPU exempts a test only a step skips by name,
+        # and an ignore under cfg_attr is an ignore.
+        "alpha frames::tests::gpu_named_by_no_step: ignored as needing a hardware GPU, but no CI step that runs "
+        "ignored tests of alpha skips it by name; --skip it there or run it in a CI step",
+        "alpha frames::tests::ignored_on_windows: ignored, but no CI step runs it; add it to a nightly step or delete it",
         "beta other::whole: ignored, but no CI step runs it; add it to a nightly step or delete it",
     ]
+    assert ("alpha", "frames::tests::perf_ignored_on_windows", "") in tests
     # The same child, when no test of its crate starts it, is reported too.
     assert "alpha frames::tests::child" in " ".join(checker.unrun_tests(tests, runs))
 

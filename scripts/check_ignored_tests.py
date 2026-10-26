@@ -8,7 +8,10 @@ and their ignore reason says so: the child process another test starts, and a te
 that needs a hardware GPU, which the runners do not have. A child process must also
 be named in a string by a test of its crate, the one that starts it: a reason that
 only mentions a subprocess exempts nothing (review 2026-10-19 P3). A step whose
-`if:` is false runs nothing.
+`if:` is false runs nothing. A hardware GPU exempts only a test a step running
+ignored tests of its crate `--skip`s by its name, as CI keeps it out on purpose, and
+`#[cfg_attr(<condition>, ignore)]` is an ignore like `#[ignore]` (review 2026-10-24
+CI-21).
 """
 
 import functools
@@ -20,7 +23,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_ci_crates import CRATE_LIST, PACKAGE_FLAG, jobs, running_steps, without_comments  # noqa: E402
 
-IGNORED = re.compile(r'#\[ignore(?:\s*=\s*"([^"]*)")?\]\s*(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+(\w+)')
+# `#[ignore]`, `#[ignore = "…"]` or the same under `#[cfg_attr(<condition>, …)]`.
+IGNORED = re.compile(
+    r'#\[(?:cfg_attr\((?:[^()\]]|\([^()]*\))*?,\s*)?ignore(?:\s*=\s*"([^"]*)")?\s*\)?\]'
+    r"\s*(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+(\w+)"
+)
 CHILD = ("child process", "subprocess")
 GPU = "hardware GPU"
 # A string that names a function, alone or by its module path: how a test starts another as a child.
@@ -121,10 +128,26 @@ def runs_somewhere(crate, name, runs):
     )
 
 
+def skipped_by_name(crate, name, runs):
+    """Whether a step running ignored tests of `crate` skips this test by its own name."""
+    own = name.rsplit("::", 1)[-1]
+    return any(
+        crate in crates and any(skipped.rsplit("::", 1)[-1] == own for skipped in skips)
+        for crates, _, skips in runs
+    )
+
+
 def unrun_tests(tests, runs, started=frozenset()):
     problems = []
     for crate, name, reason in tests:
-        if GPU in reason or runs_somewhere(crate, name, runs):
+        if runs_somewhere(crate, name, runs):
+            continue
+        if GPU in reason:
+            if not skipped_by_name(crate, name, runs):
+                problems.append(
+                    f"{crate} {name}: ignored as needing a hardware GPU, but no CI step that runs ignored tests "
+                    f"of {crate} skips it by name; --skip it there or run it in a CI step"
+                )
             continue
         child = any(kind in reason for kind in CHILD)
         if child and (crate, name.rsplit("::", 1)[-1]) in started:
