@@ -3,7 +3,6 @@
 use crate::*;
 use ketchup_application::evaluation::ExactEvaluationResult;
 
-/// Prefer discrete hardware for normal startup; explicit diagnostics remain unique.
 /// The one graphics API the app renders with: Direct3D 12 on Windows, Metal on macOS.
 #[cfg(not(target_os = "macos"))]
 const NATIVE_BACKEND: (eframe::wgpu::Backend, eframe::wgpu::Backends) =
@@ -12,6 +11,7 @@ const NATIVE_BACKEND: (eframe::wgpu::Backend, eframe::wgpu::Backends) =
 const NATIVE_BACKEND: (eframe::wgpu::Backend, eframe::wgpu::Backends) =
     (eframe::wgpu::Backend::Metal, eframe::wgpu::Backends::METAL);
 
+/// Prefer discrete hardware for normal startup; explicit diagnostics remain unique.
 fn select_native_adapter(
     candidates: impl IntoIterator<Item = (eframe::wgpu::AdapterInfo, bool)>,
     requirement: Option<&AdapterRequirement>,

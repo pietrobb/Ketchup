@@ -6,8 +6,8 @@ use super::{CommandWrap, CommandWrapper};
 ///
 /// On Windows it only records the request, like [`KillOnDrop`](super::KillOnDrop): the
 /// `JobObject` wrapper creates its job with `JOB_OBJECT_LIMIT_PROCESS_MEMORY` and this many bytes
-/// as `ProcessMemoryLimit`. On Unix the child sets its own `RLIMIT_AS` to this many bytes before
-/// it executes the program. Either way an allocation past the limit fails inside the child; the
+/// as `ProcessMemoryLimit`. On Unix other than macOS the child sets its own `RLIMIT_AS` to this
+/// many bytes before it executes the program. Either way an allocation past the limit fails inside the child; the
 /// parent and the rest of the computer keep their memory.
 #[derive(Clone, Copy, Debug)]
 pub struct JobMemoryLimit(pub usize);
@@ -41,7 +41,15 @@ impl CommandWrapper for JobMemoryLimit {
 		Ok(())
 	}
 
-	#[cfg(unix)]
+	/// macOS refuses an `RLIMIT_AS` below the address space a process already reserves
+	/// (hundreds of GiB with the shared cache) with EINVAL, so a limit there would only stop
+	/// the child from starting; the limit is not enforced on macOS.
+	#[cfg(target_os = "macos")]
+	fn pre_spawn(&mut self, _command: &mut Command, _core: &CommandWrap) -> Result<()> {
+		Ok(())
+	}
+
+	#[cfg(all(unix, not(target_os = "macos")))]
 	fn pre_spawn(&mut self, command: &mut Command, _core: &CommandWrap) -> Result<()> {
 		use nix::sys::resource::{Resource, rlim_t, setrlimit};
 		use std::os::unix::process::CommandExt;

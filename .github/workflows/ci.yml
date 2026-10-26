@@ -338,7 +338,7 @@ jobs:
         with:
           persist-credentials: false
       - name: clippy
-        run: cargo clippy --locked -p ketchup-viewer-macos -p ketchup-viewer --all-targets -- -D warnings
+        run: cargo clippy --locked -p ketchup-viewer-macos -p ketchup-macos-open -p ketchup-viewer --all-targets -- -D warnings
       # The Viewer's comment save has its own Windows and macOS code, which
       # the Linux Viewer job never compiles; a renamed test fails here
       # instead of silently matching nothing (review 2026-10-19).

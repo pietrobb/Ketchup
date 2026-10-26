@@ -300,8 +300,8 @@ fn ten_thousand_occurrence_product() -> Duration {
         "{spatial_stats:?}"
     );
 
-    let adapter =
-        hardware_native_adapter().expect("M16 product proof requires a hardware DX12/Metal adapter");
+    let adapter = hardware_native_adapter()
+        .expect("M16 product proof requires a hardware DX12/Metal adapter");
     let adapter_info = adapter.get_info();
     assert_eq!(adapter_info.backend, NATIVE_BACKEND);
     assert!(!matches!(
