@@ -232,6 +232,26 @@ fn a_vertex_beats_the_edges_and_the_face_near_it_and_the_top_corner_hides_the_bo
     assert_at(snap, SnapKind::Vertex, [100.0, 100.0, 50.0], false);
 }
 
+/// Review 2026-10-24 VW-23: only four candidates were checked for being in
+/// sight, so vertices hidden under the face the pointer is over, nearer the
+/// pointer than a corner of that face, kept the corner from being caught.
+#[test]
+fn hidden_vertices_under_the_face_do_not_keep_its_corner_from_the_pointer() {
+    // A 2 × 2 × 10 mm block inside the box, under its top face, below the pointer.
+    let (points, triangles, lines) = block();
+    let small = points
+        .iter()
+        .map(|p| [93.0 + p[0] / 50.0, 93.0 + p[1] / 50.0, 10.0 + p[2] / 5.0])
+        .collect();
+    let model = Model::from_package(package(&[block(), (small, triangles, lines)])).expect("model");
+    let (_, camera) = scene();
+    let scene = (model, camera);
+    let mut measure = Measure::default();
+    // 8.5 points from the box's corner, 1.4 from the block's corners under it.
+    let snap = snap_at(&mut measure, &scene, &BOTH, [94.0, 94.0], [0.0, 0.0]);
+    assert_at(snap, SnapKind::Vertex, [100.0, 100.0, 50.0], false);
+}
+
 #[test]
 fn an_edge_gives_its_nearest_point_inside_and_outside_the_model() {
     let scene = scene();

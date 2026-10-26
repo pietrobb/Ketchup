@@ -335,11 +335,18 @@ impl Camera {
 
     /// A source point in normalized device coordinates.
     pub fn project(&self, point: [f32; 3], aspect: f32) -> [f32; 3] {
+        self.projector(aspect)(point)
+    }
+
+    /// [`Camera::project`] with the matrix worked out once, for many points.
+    pub fn projector(&self, aspect: f32) -> impl Fn([f32; 3]) -> [f32; 3] + use<> {
         let m = self.matrix(aspect);
-        let clip: [f32; 4] = std::array::from_fn(|i| {
-            projected_coordinate([m[0][i], m[1][i], m[2][i]], point) + m[3][i]
-        });
-        [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]]
+        move |point| {
+            let clip: [f32; 4] = std::array::from_fn(|i| {
+                projected_coordinate([m[0][i], m[1][i], m[2][i]], point) + m[3][i]
+            });
+            [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]]
+        }
     }
 
     /// The visible occurrence whose faces the ray through `ndc` hits first,

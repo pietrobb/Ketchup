@@ -4,7 +4,7 @@
 //! flat triangles the package stores for that face, and says so.
 
 use crate::{
-    camera::Camera,
+    camera::{Camera, Hit},
     model::{Model, indexed_point, source_point},
 };
 use ketchup_geometry::linalg::{Affine3, Vec3};
@@ -76,6 +76,8 @@ pub struct Measure {
     pub done: Option<Measured>,
     pub hover: Option<Snap>,
     curvature: HashMap<usize, MeshCurvature>,
+    /// Per body, worked out at its first snap, not at every pointer move.
+    points: HashMap<usize, BodyPoints>,
 }
 
 impl Measure {
@@ -96,7 +98,8 @@ impl Measure {
     /// what is in sight and not cut away by the section.
     pub fn snap(&mut self, model: &Model, camera: &Camera, pointer: &Pointer<'_>) -> Option<Snap> {
         let aspect = pointer.size[0].max(1.0) / pointer.size[1].max(1.0);
-        let screen = |point: [f64; 3]| screen_point(camera, aspect, pointer.size, point);
+        let project = camera.projector(aspect);
+        let screen = |point: [f64; 3]| screen_point(&project, pointer.size, point);
         let at = [
             (pointer.ndc[0] + 1.0) * 0.5 * pointer.size[0],
             (1.0 - pointer.ndc[1]) * 0.5 * pointer.size[1],
@@ -107,6 +110,14 @@ impl Measure {
                 .is_some_and(|s| Vec3::from(s.normal).dot(Vec3::from(point)) > s.offset_mm)
         };
         let (origin, ray) = camera.ray(pointer.ndc, aspect);
+        // The face under the pointer: taken when no vertex or edge is, and
+        // what tells the candidates hidden under it (review 2026-10-24 VW-23).
+        let hit = camera.pick_hit(model, pointer.ndc, aspect, pointer.visible, pointer.section);
+        let front = hit.and_then(|hit| front_plane(model, hit, ray));
+        let margin = sight_margin(model);
+        let behind = |point: [f64; 3]| {
+            front.is_some_and(|(on, normal)| normal.dot(Vec3::from(point) - on) < -margin)
+        };
         let mut vertices = Vec::new();
         let mut edges = Vec::new();
         let consider = |list: &mut Vec<Candidate>, point: [f64; 3], body: usize, keys: [Key; 2]| {
@@ -114,6 +125,7 @@ impl Measure {
                 let off = ((px[0] - at[0]).powi(2) + (px[1] - at[1]).powi(2)).sqrt();
                 if off <= SNAP_PX && !cut(point) {
                     list.push(Candidate {
+                        behind: behind(point),
                         off,
                         depth,
                         point,
@@ -127,37 +139,29 @@ impl Measure {
             if !pointer.visible[body.occurrence] || !near(&screen, body.bounds_mm, at) {
                 continue;
             }
-            let placement = Affine3::from_column_major(body.world_matrix_f64_mm);
-            let world = |local: [f32; 3]| -> [f64; 3] {
-                placement
-                    .transform_point(Vec3::from(source_point(local)))
-                    .into()
-            };
-            for (positions, _) in model.triangle_buffers(body.mesh) {
-                for chunk in positions.chunks_exact(12) {
-                    let local = std::array::from_fn(|k| {
-                        f32::from_le_bytes(chunk[k * 4..k * 4 + 4].try_into().expect("point"))
-                    });
-                    consider(&mut vertices, world(local), index, [key(local); 2]);
-                }
+            let points = self
+                .points
+                .entry(index)
+                .or_insert_with(|| BodyPoints::of(model, index));
+            for &(point, key) in &points.vertices {
+                consider(&mut vertices, point, index, [key; 2]);
             }
-            for (positions, indices) in model.line_buffers(body.mesh) {
-                for segment in 0..indices.len() / 8 {
-                    let ends =
-                        [0, 1].map(|end| indexed_point(positions, indices, segment * 2 + end));
-                    let point = closest_to_ray(origin, ray, ends.map(world));
-                    consider(&mut edges, point, index, ends.map(key));
-                }
+            for &(ends, keys) in &points.edges {
+                consider(&mut edges, closest_to_ray(origin, ray, ends), index, keys);
             }
         }
         for (kind, mut candidates) in [(SnapKind::Vertex, vertices), (SnapKind::Edge, edges)] {
-            // Of candidates equally near the pointer, the one nearest the viewer
-            // first: in a top view a box's top corner hides its bottom one.
+            // Candidates behind the face under the pointer last, as they are
+            // hidden unless they lie past its rim. Of candidates equally near
+            // the pointer, the one nearest the viewer first: in a top view a
+            // box's top corner hides its bottom one.
             candidates.sort_by(|a, b| {
-                (a.off * 2.0)
-                    .round()
-                    .total_cmp(&(b.off * 2.0).round())
-                    .then(a.depth.total_cmp(&b.depth))
+                a.behind.cmp(&b.behind).then(
+                    (a.off * 2.0)
+                        .round()
+                        .total_cmp(&(b.off * 2.0).round())
+                        .then(a.depth.total_cmp(&b.depth)),
+                )
             });
             for candidate in candidates.iter().take(SIGHT_CHECKS) {
                 if !in_sight(model, camera, aspect, pointer, candidate.point) {
@@ -175,7 +179,7 @@ impl Measure {
                 });
             }
         }
-        let hit = camera.pick_hit(model, pointer.ndc, aspect, pointer.visible, pointer.section)?;
+        let hit = hit?;
         let curvature = self.curvature(model, model.bodies[hit.body].mesh);
         Some(Snap {
             point: hit.point,
@@ -194,6 +198,8 @@ impl Measure {
 /// A vertex or an edge point near the pointer: how far from it on screen,
 /// its depth, the world point, its body and the vertex keys it stands on.
 struct Candidate {
+    /// It lies behind the face under the pointer.
+    behind: bool,
     off: f32,
     depth: f32,
     point: [f64; 3],
@@ -204,12 +210,11 @@ struct Candidate {
 /// `point` on the view in screen points from its top left, with its depth;
 /// `None` behind the camera.
 fn screen_point(
-    camera: &Camera,
-    aspect: f32,
+    project: &impl Fn([f32; 3]) -> [f32; 3],
     size: [f32; 2],
     point: [f64; 3],
 ) -> Option<([f32; 2], f32)> {
-    let p = camera.project(point.map(|v| v.to_f32().unwrap_or(f32::MAX)), aspect);
+    let p = project(point.map(|v| v.to_f32().unwrap_or(f32::MAX)));
     ((0.0..=1.0).contains(&p[2]) && p[0].is_finite() && p[1].is_finite()).then(|| {
         (
             [(p[0] + 1.0) * 0.5 * size[0], (1.0 - p[1]) * 0.5 * size[1]],
@@ -274,12 +279,76 @@ fn in_sight(
     };
     let (origin, ray) = camera.ray(ndc, aspect);
     let depth = |q: [f64; 3]| (Vec3::from(q) - origin).dot(ray) / ray.length();
+    depth(point) <= depth(hit) + sight_margin(model)
+}
+
+/// The single precision the faces are tested in, at the model's size.
+fn sight_margin(model: &Model) -> f64 {
     let magnitude = model
         .bounds_mm
         .iter()
         .flatten()
         .fold(1.0_f64, |m, v| m.max(v.abs()));
-    depth(point) <= depth(hit) + magnitude * f64::from(f32::EPSILON) * 64.0
+    magnitude * f64::from(f32::EPSILON) * 64.0
+}
+
+/// A point of the triangle `hit` met and its normal turned to the viewer
+/// looking along `ray`; `None` for a degenerate triangle.
+fn front_plane(model: &Model, hit: Hit, ray: Vec3) -> Option<(Vec3, Vec3)> {
+    let body = &model.bodies[hit.body];
+    let (positions, indices) = model.triangle_buffers(body.mesh).nth(hit.primitive)?;
+    let placement = Affine3::from_column_major(body.world_matrix_f64_mm);
+    let [a, b, c]: [Vec3; 3] = std::array::from_fn(|k| {
+        let local = indexed_point(positions, indices, hit.triangle * 3 + k);
+        placement.transform_point(Vec3::from(source_point(local)))
+    });
+    let normal = (b - a).cross(c - a).normalized()?;
+    let normal = if normal.dot(ray) > 0.0 {
+        normal * -1.0
+    } else {
+        normal
+    };
+    Some((Vec3::from(hit.point), normal))
+}
+
+/// One body's mesh vertices, each position once, and its model edges, in
+/// world millimetres with the vertex keys they stand on.
+#[derive(Debug)]
+struct BodyPoints {
+    vertices: Vec<([f64; 3], Key)>,
+    edges: Vec<([[f64; 3]; 2], [Key; 2])>,
+}
+
+impl BodyPoints {
+    fn of(model: &Model, body: usize) -> Self {
+        let body = &model.bodies[body];
+        let placement = Affine3::from_column_major(body.world_matrix_f64_mm);
+        let world = |local: [f32; 3]| -> [f64; 3] {
+            placement
+                .transform_point(Vec3::from(source_point(local)))
+                .into()
+        };
+        let mut seen = HashSet::new();
+        let mut vertices = Vec::new();
+        for (positions, _) in model.triangle_buffers(body.mesh) {
+            for chunk in positions.chunks_exact(12) {
+                let local: [f32; 3] = std::array::from_fn(|k| {
+                    f32::from_le_bytes(chunk[k * 4..k * 4 + 4].try_into().expect("point"))
+                });
+                if seen.insert(key(local)) {
+                    vertices.push((world(local), key(local)));
+                }
+            }
+        }
+        let mut edges = Vec::new();
+        for (positions, indices) in model.line_buffers(body.mesh) {
+            for segment in 0..indices.len() / 8 {
+                let ends = [0, 1].map(|end| indexed_point(positions, indices, segment * 2 + end));
+                edges.push((ends.map(world), ends.map(key)));
+            }
+        }
+        Self { vertices, edges }
+    }
 }
 
 /// A mesh vertex by its exact single-precision position; `-0.0` is `0.0`.
