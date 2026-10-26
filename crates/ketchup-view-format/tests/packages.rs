@@ -835,18 +835,48 @@ fn nested_transforms_paths_and_line_primitives_roundtrip_without_flattening() {
         Some(LocalDimensions::AuthoredAxes { size_mm: [10.0; 3] })
     );
     assert_eq!(reopened.manifest.scenes.len(), 2);
-    for mutate in [
-        (|v: &mut Value| v["nodes"][2]["extras"]["ketchupDefinitionId"] = json!(5))
-            as fn(&mut Value),
-        |v| v["nodes"][2]["extras"]["ketchupOwnerDefinitionId"] = json!(1),
-        |v| v["accessors"][2]["count"] = json!(3),
-        |v| v["meshes"][0]["primitives"][1]["indices"] = json!(99),
-        |v| v["meshes"][0]["primitives"][1]["attributes"]["POSITION"] = json!(2),
-        |v| v["nodes"][0]["extras"]["ketchupDefinitionId"] = json!(1),
-        |v| {
-            v["nodes"][0]["children"] = json!([]);
-            v["nodes"][1]["children"] = json!([3]);
-        },
+    // Review 2026-10-24 (§3.7): each mutation must be refused by the check
+    // it is meant to reach, not merely refused.
+    for (mutate, target, detail) in [
+        (
+            (|v: &mut Value| v["nodes"][2]["extras"]["ketchupDefinitionId"] = json!(5))
+                as fn(&mut Value),
+            "occurrences.definition_id",
+            "does not match its GLB occurrence",
+        ),
+        (
+            |v| v["nodes"][2]["extras"]["ketchupOwnerDefinitionId"] = json!(1),
+            "occurrences.path",
+            "incorrect owning definition",
+        ),
+        (
+            |v| v["accessors"][2]["count"] = json!(3),
+            "glb.primitive",
+            "Invalid primitive count",
+        ),
+        (
+            |v| v["meshes"][0]["primitives"][1]["indices"] = json!(99),
+            "glb.primitive",
+            "Missing index accessor",
+        ),
+        (
+            |v| v["meshes"][0]["primitives"][1]["attributes"]["POSITION"] = json!(2),
+            "glb.primitive",
+            "Missing position accessor",
+        ),
+        (
+            |v| v["nodes"][0]["extras"]["ketchupDefinitionId"] = json!(1),
+            "occurrences.definition_id",
+            "does not match its GLB occurrence",
+        ),
+        (
+            |v| {
+                v["nodes"][0]["children"] = json!([]);
+                v["nodes"][1]["children"] = json!([3]);
+            },
+            "occurrences.path",
+            "does not match its GLB ancestry",
+        ),
     ] {
         let mut changed = doc.clone();
         mutate(&mut changed);
@@ -854,7 +884,7 @@ fn nested_transforms_paths_and_line_primitives_roundtrip_without_flattening() {
             &serde_json::to_vec(&package.manifest).expect("manifest"),
             &encode_glb(&changed, &binary),
         );
-        assert!(Package::read(invalid.as_slice()).is_err());
+        assert_refused(Package::read(invalid.as_slice()), target, detail);
     }
     let mut wrong_owner = package.manifest.clone();
     if let PathStep::Occurrence {
@@ -868,12 +898,20 @@ fn nested_transforms_paths_and_line_primitives_roundtrip_without_flattening() {
         &serde_json::to_vec(&wrong_owner).expect("manifest"),
         &package.glb,
     );
-    assert!(Package::read(invalid.as_slice()).is_err());
+    assert_refused(
+        Package::read(invalid.as_slice()),
+        "occurrences.path",
+        "incorrect owning definition",
+    );
     doc["nodes"][0]["matrix"][0] = json!(1e200);
     doc["nodes"][2]["matrix"][0] = json!(1e200);
     let overflow = raw_package(
         &serde_json::to_vec(&package.manifest).expect("manifest"),
         &encode_glb(&doc, &binary),
     );
-    assert!(Package::read(overflow.as_slice()).is_err());
+    assert_refused(
+        Package::read(overflow.as_slice()),
+        "glb.nodes",
+        "overflow world coordinates",
+    );
 }
