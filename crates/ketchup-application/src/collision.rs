@@ -1672,9 +1672,13 @@ fn collision_report(
         report["hull_decided_pair_count"] = json!(hull_decided);
         // The worker answers a pair only for two valid solids, so a solid in one
         // needs no self-query of its own.
+        #[cfg(test)]
+        let keep_paired = tests::KEEP_PAIRED_SELF_QUERIES.get();
+        #[cfg(not(test))]
+        let keep_paired = false;
         let paired = pairs
             .iter()
-            .filter(|(left, right, _)| left != right)
+            .filter(|(left, right, _)| left != right && !keep_paired)
             .flat_map(|(left, right, _)| [*left, *right])
             .collect::<BTreeSet<_>>();
         pairs.retain(|(left, right, _)| left != right || !paired.contains(left));
@@ -1819,6 +1823,58 @@ mod integration_support;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Sends every solid's self-query again, as before #2574.
+        pub(super) static KEEP_PAIRED_SELF_QUERIES: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+    }
+
+    /// #2574: a solid in a worker pair drops its self-query; the report and the
+    /// pair facts stay what the self-query of every solid gave.
+    #[test]
+    fn dropping_self_queries_of_paired_solids_leaves_report_and_pair_facts_identical() {
+        let _turn = super::integration_support::file_turn();
+        let source = "box('under', (100, 100, 18))
+drilled = box('drilled', (100, 100, 18), at=(0, 0, 18))
+hole(drilled, 'z+', at=(50, 50), diameter=8, depth=8)
+box('lid', (100, 100, 18), at=(0, 0, 36))
+bored = box('bored', (100, 100, 18), at=(0, 300, 0))
+hole(bored, 'z+', at=(50, 50), diameter=8, depth=18, through=True)
+box('beside', (100, 100, 18), at=(100, 300, 0))
+box('alone', (50, 50, 18), at=(1000, 1000, 0))";
+        let mut session = crate::DocumentSession::new(crate::SessionSettings::default());
+        let program = ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "self-query.star".into(),
+            source: source.into(),
+            overrides: BTreeMap::new(),
+        };
+        let snapshot = session.apply_rule_program(program, false).unwrap().snapshot;
+        let container = ContainerData::default();
+        let check = |keep: bool| {
+            KEEP_PAIRED_SELF_QUERIES.set(keep);
+            let mut facts = ExactPairFacts::new();
+            let report = collision_report(
+                &snapshot,
+                &AssistantValidationSelection::only(&["collision"]),
+                Some((&container, None, Duration::from_secs(120))),
+                None,
+                None,
+                None,
+                Some(&mut facts),
+            );
+            KEEP_PAIRED_SELF_QUERIES.set(false);
+            (report, facts)
+        };
+        let (before, before_facts) = check(true);
+        let (after, after_facts) = check(false);
+        assert_eq!(before["complete"], true, "{before:#}");
+        assert_eq!(before["checked_body_count"], 6, "{before:#}");
+        assert!(!before_facts.is_empty());
+        assert_eq!(after, before);
+        assert_eq!(after_facts, before_facts);
+    }
 
     #[test]
     fn lost_parallel_receiver_cancels_workers_and_joins() {
