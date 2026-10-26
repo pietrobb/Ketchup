@@ -3158,6 +3158,8 @@ impl KetchupApp {
         // so "(1+2)*10" and "+5" begin a value as "10" does. In the Hole tool
         // a typed "M" starts a thread size ("M8 12") the same way.
         let hole = self.active_tool == ActiveTool::Hole;
+        // The Text into drawing tool takes any text typed.
+        let text = self.active_tool == ActiveTool::UnderlayText;
         let starts_value = !typing
             && context.input(|input| {
                 input
@@ -3171,6 +3173,7 @@ impl KetchupApp {
                         first.is_ascii_digit()
                             || matches!(first, '.' | ',' | '-' | '+' | '(')
                             || (hole && matches!(first, 'M' | 'm'))
+                            || (text && !first.is_whitespace())
                     })
             });
         // The keys from that first character on are the value's, in the

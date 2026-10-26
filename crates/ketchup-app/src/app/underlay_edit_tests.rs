@@ -337,6 +337,97 @@ fn the_drawing_tools_draw_into_the_drawing_on_the_picked_objects_layer() {
     assert!(drawn_shapes(&harness).is_empty());
 }
 
+fn type_text(harness: &mut Harness<'_, KetchupApp>, text: &str) {
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text(text.to_owned()));
+    harness.step();
+    harness.step();
+}
+
+/// 2D-2: Text into drawing, typed and clicked: the text typed (commas and all) goes on the
+/// picked object's layer where clicked, as high as typed or as the second click is from
+/// the first; one Undo step each, and a click on its letters picks it.
+#[test]
+fn the_text_tool_writes_a_typed_text_into_the_drawing() {
+    let mut harness = shell();
+    let undo = harness.state().undo_step_count();
+    let digest = harness.state().canonical_digest();
+    let scale = harness
+        .state()
+        .document
+        .current()
+        .underlays()
+        .next()
+        .unwrap()
+        .scale();
+
+    click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::TextIntoUnderlay);
+    assert_eq!(harness.state().active_tool, ActiveTool::UnderlayText);
+    // A click before any text places nothing.
+    click(&mut harness, Vec3::new(140.0, 160.0, 0.0));
+    assert_eq!(harness.state().undo_step_count(), undo);
+    assert!(harness.state().gesture.underlay_text.is_none());
+
+    type_text(&mut harness, "1.02 WC, bath");
+    assert_eq!(harness.state().value_box.input, "1.02 WC, bath");
+    click(&mut harness, Vec3::new(240.0, 120.0, 0.0));
+    assert_eq!(harness.state().undo_step_count(), undo, "the start only");
+    type_text(&mut harness, "20");
+    press(&mut harness, egui::Key::Enter);
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+
+    // The second text's height is clicked: up the line at x = 60, 150 long.
+    type_text(&mut harness, "A");
+    click(&mut harness, Vec3::new(60.0, 0.0, 0.0));
+    click(&mut harness, Vec3::new(60.0, 150.0, 0.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 2, "{}", app.digest);
+
+    let shapes = drawn_shapes(&harness);
+    assert_eq!(shapes.len(), 2, "{shapes:?}");
+    for ((layer, shape), (expected, at, height)) in shapes.iter().zip([
+        ("1.02 WC, bath", [240.0, 120.0], 20.0),
+        ("A", [60.0, 0.0], 150.0),
+    ]) {
+        assert_eq!(layer, "axes");
+        match shape {
+            DrawnShape::Text {
+                anchor_mm,
+                height_mm,
+                rotation_deg,
+                text,
+            } => {
+                assert_eq!(text, expected);
+                assert!(near(*anchor_mm, at), "{anchor_mm:?}");
+                assert!((height_mm * scale - height).abs() < 1e-6, "{height_mm}");
+                assert_eq!(*rotation_deg, 0.0);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    // A click on its letters picks the new text.
+    harness.state_mut().dispatch_command(AppCommand::Select);
+    click(&mut harness, Vec3::new(265.0, 130.0, 0.0));
+    assert_eq!(picked(&harness), 1, "{}", harness.state().digest);
+    assert!(
+        harness.state().digest.contains("TEXT"),
+        "{}",
+        harness.state().digest
+    );
+
+    for _ in 0..2 {
+        harness.state_mut().undo();
+    }
+    assert_eq!(harness.state().canonical_digest(), digest);
+}
+
 /// 2D-2: Trim, Extend and Offset drawing line, clicked: Trim cuts the wall back to the
 /// line crossing it, Extend takes a short line up to the axes line, Offset draws a
 /// parallel line a typed distance away on the side clicked, and Mirror flips a picked

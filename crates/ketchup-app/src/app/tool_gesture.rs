@@ -438,6 +438,10 @@ impl KetchupApp {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
         }
+        // The Text into drawing tool's field holds the text, commas and all.
+        if self.active_tool == ActiveTool::UnderlayText {
+            return self.confirm_underlay_text();
+        }
         // A comma is refused the same way in every field, before any tool
         // reads it, so nothing is guessed from `80,60`.
         if self.value_box_refuses_comma() {

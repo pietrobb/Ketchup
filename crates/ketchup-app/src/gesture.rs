@@ -34,6 +34,9 @@ pub(crate) struct Gesture {
     /// The first point, in document XY, of the line Mirror flips objects picked in a
     /// drawing across.
     pub(crate) underlay_mirror_from: Option<[f64; 2]>,
+    /// Where the text the Text into drawing tool places starts, and the text, until its
+    /// height is clicked or typed.
+    pub(crate) underlay_text: Option<(Vec3, String)>,
 }
 
 /// A point on a picked face and the face's outward normal; the Mirror tool

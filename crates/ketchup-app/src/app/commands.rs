@@ -38,7 +38,7 @@ impl KetchupApp {
                         || self.picked_joint_id().is_some()
                         || self.picked_underlay_objects().is_some()
                 }
-                AppCommand::DrawIntoUnderlay => {
+                AppCommand::DrawIntoUnderlay | AppCommand::TextIntoUnderlay => {
                     self.gesture.underlay_draw.is_some() || self.selected_underlay().is_some()
                 }
                 AppCommand::Deselect => self.deselect_source_plan().is_some(),
@@ -285,6 +285,8 @@ impl KetchupApp {
                 self.status_key = "status-underlay-trim";
             } else if tool == ActiveTool::ExtendUnderlayLine {
                 self.status_key = "status-underlay-extend";
+            } else if tool == ActiveTool::UnderlayText {
+                self.begin_underlay_text();
             } else if tool == ActiveTool::OffsetUnderlayLine {
                 self.gesture.underlay_offset = None;
                 self.status_key = "status-underlay-offset-line";
@@ -529,6 +531,7 @@ impl KetchupApp {
             | AppCommand::TrimUnderlayLine
             | AppCommand::ExtendUnderlayLine
             | AppCommand::OffsetUnderlayLine
+            | AppCommand::TextIntoUnderlay
             | AppCommand::Orbit
             | AppCommand::Pan
             | AppCommand::ZoomWindow => {}

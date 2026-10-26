@@ -2125,6 +2125,10 @@ impl KetchupApp {
                 | ActiveTool::OffsetUnderlayLine
         ) {
             self.click_underlay_line_tool(pointer, response.rect);
+        } else if self.active_tool == ActiveTool::UnderlayText
+            && let Some(point) = self.measurement_point_at_screen(pointer, response.rect, 0.0)
+        {
+            self.click_underlay_text(point);
         }
     }
 

@@ -1,6 +1,7 @@
 //! Drawing into an underlay's drawing with the Line, Rectangle, Circle and Arc tools: while
 //! Draw into drawing is on, what they finish becomes a LINE, LWPOLYLINE, CIRCLE or ARC on a
-//! layer of the drawing, one Undo step each, instead of a profile of the model.
+//! layer of the drawing, one Undo step each, instead of a profile of the model; the Text
+//! into drawing tool puts a TEXT there.
 
 use crate::*;
 use ketchup_model::underlay::UnderlayId;
@@ -23,23 +24,116 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-underlay-draw-off");
             return;
         }
-        let Some(underlay) = self.selected_underlay() else {
+        if self.selected_underlay().is_none() {
             return;
-        };
-        let Some(layer) = self.underlay_draw_layer(underlay) else {
-            return;
-        };
+        }
         if !matches!(
             self.active_tool,
-            ActiveTool::Line | ActiveTool::Rectangle | ActiveTool::Circle | ActiveTool::Arc
+            ActiveTool::Line
+                | ActiveTool::Rectangle
+                | ActiveTool::Circle
+                | ActiveTool::Arc
+                | ActiveTool::UnderlayText
         ) {
             self.dispatch_command(AppCommand::Line);
         }
+        self.start_underlay_draw();
+    }
+
+    /// Drawing into the selected drawing on, on the layer it starts on; says so.
+    fn start_underlay_draw(&mut self) -> bool {
+        let Some(underlay) = self.selected_underlay() else {
+            return false;
+        };
+        let Some(layer) = self.underlay_draw_layer(underlay) else {
+            return false;
+        };
         self.digest = self.catalog.format(
             "digest-underlay-draw-on",
             &BTreeMap::from([("layer", layer.clone())]),
         );
         self.gesture.underlay_draw = Some(UnderlayDrawTarget { underlay, layer });
+        true
+    }
+
+    /// The Text into drawing tool taken up: it draws into the drawing being drawn into, or
+    /// starts drawing into the selected one.
+    pub(crate) fn begin_underlay_text(&mut self) {
+        self.gesture.underlay_text = None;
+        if self.underlay_draw_target().is_none() && !self.start_underlay_draw() {
+            self.active_tool = ActiveTool::Select;
+            self.status_key = "status-ready";
+            return;
+        }
+        self.status_key = "status-underlay-text-start";
+    }
+
+    /// One click of the Text into drawing tool: the first places the start of the text's
+    /// baseline, taking the text typed; the second the top of its letters, unless a
+    /// height was typed since.
+    pub(crate) fn click_underlay_text(&mut self, point: Vec3) -> bool {
+        let typed = self.value_box.input.trim().to_owned();
+        let Some((anchor, text)) = self.gesture.underlay_text.take() else {
+            if typed.is_empty() {
+                self.digest = self.catalog.text("digest-underlay-text-required");
+                return false;
+            }
+            self.gesture.underlay_text = Some((point, typed));
+            self.value_box.input.clear();
+            self.status_key = "status-underlay-text-height";
+            return false;
+        };
+        let height_mm = if typed.is_empty() {
+            length(point - anchor)
+        } else if let Some(height_mm) = parse_distance_mm(&typed, self.value_box.decimal) {
+            height_mm
+        } else {
+            self.gesture.underlay_text = Some((anchor, text));
+            self.digest = self.catalog.text("digest-sketch-invalid-length");
+            return false;
+        };
+        let Some(scale) = self
+            .underlay_draw_target()
+            .and_then(|target| {
+                self.document
+                    .current()
+                    .underlay(target.underlay)
+                    .map(|u| u.scale())
+            })
+            .filter(|scale| scale.is_finite() && *scale > 0.0)
+        else {
+            return false;
+        };
+        if height_mm <= limits::MIN_LENGTH_MM {
+            self.gesture.underlay_text = Some((anchor, text));
+            self.digest = self.catalog.text("digest-sketch-invalid-length");
+            return false;
+        }
+        let drawn = self.draw_underlay_shapes(&[anchor], |points| {
+            vec![DrawnShape::Text {
+                anchor_mm: points[0],
+                height_mm: height_mm / scale,
+                rotation_deg: 0.0,
+                text,
+            }]
+        });
+        if drawn {
+            self.value_box.input.clear();
+            self.status_key = "status-underlay-text-start";
+        }
+        drawn
+    }
+
+    /// Enter in the Text into drawing tool: with the start placed, the height typed
+    /// places the text; before, the text waits for its start.
+    pub(crate) fn confirm_underlay_text(&mut self) -> bool {
+        match self.gesture.underlay_text.as_ref() {
+            Some(&(anchor, _)) => self.click_underlay_text(anchor),
+            None => {
+                self.status_key = "status-underlay-text-start";
+                false
+            }
+        }
     }
 
     /// The layer drawing into `underlay` starts on.
@@ -194,7 +288,10 @@ impl KetchupApp {
         match self.draw_into_underlay(target.underlay, &target.layer, shapes) {
             Ok(()) => {
                 // A line goes on from its end; other shapes are done.
-                if self.active_tool != ActiveTool::Line {
+                if matches!(
+                    self.active_tool,
+                    ActiveTool::Rectangle | ActiveTool::Circle | ActiveTool::Arc
+                ) {
                     self.rearm_sketch();
                 }
                 self.digest = self.catalog.format(

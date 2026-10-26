@@ -590,6 +590,7 @@ impl KetchupApp {
         self.gesture.underlay_fit.clear_points();
         self.gesture.underlay_offset = None;
         self.gesture.underlay_mirror_from = None;
+        self.gesture.underlay_text = None;
         self.gesture.mirror = None;
         self.gesture.planar_offset_mm = None;
     }
@@ -1124,6 +1125,7 @@ impl KetchupApp {
                     self.catalog.text("tool-fit-underlay-scale"),
                 );
                 self.menu_command(ui, AppCommand::DrawIntoUnderlay);
+                self.menu_command(ui, AppCommand::TextIntoUnderlay);
                 self.menu_command(ui, AppCommand::TrimUnderlayLine);
                 self.menu_command(ui, AppCommand::ExtendUnderlayLine);
                 self.menu_command(ui, AppCommand::OffsetUnderlayLine);
