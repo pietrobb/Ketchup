@@ -51,7 +51,11 @@ pub(crate) struct Held {
 #[cfg(test)]
 impl Held {
     pub(crate) fn send(self, evaluation: Evaluation) -> Result<(), mpsc::SendError<Evaluation>> {
-        let sender = self.sender.lock().unwrap().take();
+        let sender = self
+            .sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         match sender {
             Some(sender) => sender.send(evaluation),
             None => Err(mpsc::SendError(evaluation)),
@@ -176,7 +180,10 @@ impl ProgramEvaluations {
         Held {
             sender,
             _hang: crate::tests::shell::hang_guard("a held program evaluation", move || {
-                release.lock().unwrap().take();
+                release
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
             }),
         }
     }
