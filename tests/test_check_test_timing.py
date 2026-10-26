@@ -60,6 +60,52 @@ def test_the_ways_around_the_first_check_are_budgets_too(tmp_path):
     ]
 
 
+def test_the_shapes_the_second_check_missed_are_budgets_too(tmp_path):
+    # Review 2026-10-24 TST-21: a measured time kept under another name, a percentile
+    # field, the comparison on a line of its own, `.lt()` and `assert_lt!` all passed.
+    write(tmp_path, "crates/a/tests/flow.rs", (
+        "fn timed() {\n"
+        "    let started = Instant::now();\n"
+        "    let spent = started.elapsed();\n"
+        "    assert!(spent < limit);\n"
+        "    assert!(report.p95 < 16.0);\n"
+        "    assert!(\n"
+        "        started.elapsed()\n"
+        "            < limit,\n"
+        "    );\n"
+        "    assert!(started.elapsed().lt(&limit));\n"
+        "    assert!(FRAME_BUDGET.gt(&spent));\n"
+        "    assert_lt!(started.elapsed(), limit);\n"
+        "    debug_assert_ge!(FRAME_BUDGET, spent);\n"
+        # Lower bounds, and a deadline of a wait, stay allowed in every shape.
+        "    assert_le!(limit, spent);\n"
+        "    assert!(spent.ge(&limit));\n"
+        "    assert!(\n"
+        "        Instant::now()\n"
+        "            < deadline\n"
+        "    );\n"
+        "    let count = parts.len();\n"
+        "    assert!(count < 3);\n"
+        "    assert!(\n"
+        "        (back.total_ms - sent.total_ms).abs()\n"
+        "            <= f64::EPSILON * sent.total_ms.abs()\n"
+        "    );\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"crates/a/tests/flow.rs:{line}" for line in (4, 5, 8, 10, 11, 12, 13)
+    ]
+    # A unit-test module compiled for tests on one platform is a test module.
+    write(tmp_path, "crates/a/src/lib.rs", (
+        "fn poll() { let _ = started.elapsed(); }\n"
+        "#[cfg(all(test, windows))]\n"
+        "mod tests {\n"
+        "    fn t() { assert!(started.elapsed() < Duration::from_secs(1)); }\n"
+        "}\n"
+    ))
+    assert "crates/a/src/lib.rs:4" in checker.violations(tmp_path)
+
+
 def test_unit_tests_in_an_indented_module_count(tmp_path):
     # Review 2026-10-18 P3: only a `mod tests` at the start of a line was read.
     write(tmp_path, "crates/a/src/lib.rs", (

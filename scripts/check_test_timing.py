@@ -9,8 +9,12 @@ budget belongs only in a function named `perf_*` (the test and its helpers), mar
 
 Counted as a budget:
 - a measured time held below a bound, in either order (`t.elapsed() < X`, `X > elapsed`,
-  `report.cancel_ms <= 250.0`): `elapsed()`, `as_millis()` and the like, or a name or field
-  saying it is a time (`elapsed`, `took`, `latency`, `duration`, `*_ms`, `*_secs` …);
+  `report.cancel_ms <= 250.0`): `elapsed()`, `as_millis()` and the like, a name or field
+  saying it is a time (`elapsed`, `took`, `latency`, `duration`, `*_ms`, `*_secs`, a
+  percentile such as `p95` …), or a variable `let` set from one (`let spent =
+  s.elapsed()`); compared by an operator (also at the start of a line of its own, as
+  rustfmt breaks it), by `.lt()`/`.le()`/`.gt()`/`.ge()` or by `assert_lt!` and its kin
+  (review 2026-10-24 TST-21);
 - anything held below a `Duration` or a budget (`< Duration::…`, `FRAME_BUDGET >`);
 - a wait shorter than `PATIENCE_FLOOR` whose result the test needs (`recv_timeout(250 ms)
   .expect(…)`), which fails when the machine is slow; polling it (`if let Ok`, `match`,
@@ -46,16 +50,25 @@ PERF_CALL = re.compile(r"(?<!fn )\bperf_\w+\s*\(")
 # Code that reads the clock; elsewhere a `Duration` compared is a computed value
 # (a retry delay), not a measured one.
 CLOCK = re.compile(r"Instant::now\(\)|\.elapsed\(\)")
-# Unit tests inside a production file, at any indentation (a `mod tests` in a `mod`).
+# Unit tests inside a production file, at any indentation (a `mod tests` in a `mod`), also
+# under `#[cfg(all(test, windows))]` and the like.
 TEST_MODULE = re.compile(
-    r"^([ \t]*)#\[cfg\(test\)\][ \t]*\n(?:[ \t]*#\[[^\n]*\][ \t]*\n)*"
+    r"^([ \t]*)#\[cfg\((?:test|(?:all|any)\([^()\n]*\btest\b[^()\n]*\))\)\][ \t]*\n(?:[ \t]*#\[[^\n]*\][ \t]*\n)*"
     r"[ \t]*(?:pub(?:\([^)]*\))?\s+)?mod \w+ \{\n.*?^\1\}", re.M | re.S)
 # A comparison operator between spaces: not a generic (`Vec<u8>`), `->`, `=>` or a shift.
 COMPARISON = re.compile(r"(?<=\s)(<=?|>=?)(?=\s)")
 MEASURED = re.compile(
     r"\.elapsed\(\)|\.as_(?:millis|micros|nanos|secs(?:_f32|_f64)?)\(\)"
     r"|\b[a-z_0-9]*(?:elapsed|took|latency|duration)[a-z_0-9]*\b(?!\s*\()"
-    r"|\b[a-z_0-9]+_(?:ms|us|ns|millis|micros|nanos|secs|seconds)\b(?!\s*\()")
+    r"|\b[a-z_0-9]+_(?:ms|us|ns|millis|micros|nanos|secs|seconds)\b(?!\s*\()"
+    r"|\b[a-z_0-9]*(?:p50|p90|p95|p99|p999|percentile)[a-z_0-9]*\b(?!\s*\()")
+# A variable set from a measured time, which keeps measuring under its own name.
+STORED = re.compile(r"\blet\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=([^;]+);")
+# `a.lt(&b)` and its kin, and `assert_lt!(a, b)` and its kin: `lt`/`le` hold the first
+# below the second, `gt`/`ge` above.
+METHOD = re.compile(r"\.(lt|le|gt|ge)\(")
+MACRO = re.compile(r"\b(?:debug_)?assert_(lt|le|gt|ge)!\(")
+OPERATOR_FIRST = re.compile(r"^\s*(?:<=?|>=?)\s")
 LIMIT = re.compile(r"\bDuration::|\b[A-Z][A-Z0-9_]*(?:BUDGET|DEADLINE)\b")
 NOW = re.compile(r"^\s*(?:std::time::)?Instant::now\(\)\s*$")
 WAIT = re.compile(r"\.(?:recv_timeout|wait_timeout\w*|wait|next_event)\(\s*([^()]*(?:\([^()]*\))?)\s*\)")
@@ -83,16 +96,41 @@ def operand(text: str, backwards: bool) -> str:
     return text
 
 
-def compares_a_budget(line: str) -> bool:
+def holds_below(small: str, large: str, stored: re.Pattern | None) -> bool:
+    if NOW.match(small):
+        return False  # `Instant::now() < deadline`: a wait, not a budget
+    if re.search(r"\bEPSILON\b", large):
+        return False  # a float tolerance (a round trip of a measured value), not a budget
+    return bool(MEASURED.search(small) or LIMIT.search(large) or (stored and stored.search(small)))
+
+
+def compares_a_budget(line: str, stored: re.Pattern | None = None) -> bool:
     for comparison in COMPARISON.finditer(line):
         left = operand(line[:comparison.start()], backwards=True)
         right = operand(line[comparison.end():], backwards=False)
         small, large = (left, right) if comparison.group(1).startswith("<") else (right, left)
-        if NOW.match(small):
-            continue  # `Instant::now() < deadline`: a wait, not a budget
-        if MEASURED.search(small) or LIMIT.search(large):
+        if holds_below(small, large, stored):
+            return True
+    for method in METHOD.finditer(line):
+        receiver = operand(line[:method.start()], backwards=True)
+        argument = operand(line[method.end():], backwards=False)
+        small, large = (receiver, argument) if method.group(1) in ("lt", "le") else (argument, receiver)
+        if holds_below(small, large, stored):
+            return True
+    for macro in MACRO.finditer(line):
+        first = operand(line[macro.end():], backwards=False)
+        rest = line[macro.end() + len(first) + 1:]
+        second = operand(rest, backwards=False)
+        small, large = (first, second) if macro.group(1) in ("lt", "le") else (second, first)
+        if holds_below(small, large, stored):
             return True
     return False
+
+
+def stored_measurements(text: str) -> re.Pattern | None:
+    """The variables `text` sets from a measured time, as one pattern."""
+    names = {name for name, value in STORED.findall(text) if MEASURED.search(value)}
+    return re.compile(rf"^\W*(?:{'|'.join(map(re.escape, sorted(names)))})\b") if names else None
 
 
 def milliseconds(expression: str, constants: dict[str, float]) -> float | None:
@@ -151,15 +189,20 @@ def budgets(text: str) -> list[int]:
     found = []
     function = ""
     clock = CLOCK.search(text)
+    stored = stored_measurements(text) if clock else None
+    previous = ""
     for number, line in enumerate(text.splitlines(), 1):
         if line.lstrip().startswith("//"):
             continue
+        # rustfmt starts a broken comparison's line with its operator.
+        compared = f"{previous} {line}" if OPERATOR_FIRST.match(line) else line
+        previous = line
         named = FUNCTION.search(line)
         if named:
             function = named.group(1)
         if function.startswith("perf_"):
             continue
-        if PERF_CALL.search(line) or (clock and compares_a_budget(line)):
+        if PERF_CALL.search(line) or (clock and compares_a_budget(compared, stored)):
             found.append(number)
     return sorted({*found, *short_needed_waits(text)})
 
