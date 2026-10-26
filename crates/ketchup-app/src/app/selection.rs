@@ -1175,6 +1175,7 @@ impl KetchupApp {
                 | ActiveTool::ExtendUnderlayLine
                 | ActiveTool::OffsetUnderlayLine
                 | ActiveTool::UnderlayText
+                | ActiveTool::ExtrudeUnderlayArea
         ) {
             self.clear_ephemeral_edit_state();
             self.active_tool = ActiveTool::Select;

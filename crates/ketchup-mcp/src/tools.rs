@@ -246,14 +246,15 @@ impl Tools {
                 let action = take_action(
                     &mut args,
                     &[
-                        "remove", "draw", "move", "trim", "extend", "offset", "export",
+                        "remove", "draw", "move", "trim", "extend", "offset", "export", "extrude",
                     ],
                 )?;
-                // An export reads the source drawing again in the program worker.
-                let wait = if action == "export" {
-                    OPEN_WAIT
-                } else {
-                    DEFAULT_WAIT
+                // An export reads the source drawing again in the program worker; an
+                // extrusion may be planned as a program.
+                let wait = match action.as_str() {
+                    "export" => OPEN_WAIT,
+                    "extrude" => APPLY_PROGRAM_WAIT,
+                    _ => DEFAULT_WAIT,
                 };
                 self.send(&format!("drawing_{action}"), args, wait)
             }

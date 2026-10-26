@@ -537,3 +537,90 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
     );
     assert!(!refused.exists());
 }
+
+/// `drawing action=extrude`: the walls around a room are pulled up with the room cut out,
+/// and the room's hatch by its id, each one Undo step written into the program bound to the
+/// drawing; a point in nothing closed, both selectors or no height change nothing.
+#[test]
+fn a_client_pulls_closed_areas_of_a_drawing_up_into_solids() {
+    let (mut app, mut bridge, offset) = imported(&super::underlay_objects::walled_room());
+    let digest = app.canonical_digest();
+    let undo = app.undo_step_count();
+    let in_wall = [150.0 - offset[0], 3_000.0 - offset[1]];
+
+    let walls = bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_extrude",
+                json!({"at_mm": in_wall, "height_mm": 2600}),
+            ),
+            false,
+        )
+        .unwrap();
+    assert_eq!(walls["name"], "AREA_1", "{walls}");
+    assert_eq!(walls["bound_to_drawing"], true);
+    assert_eq!(app.undo_step_count(), undo + 1);
+    let hatch = bridge
+        .execute(
+            &mut app,
+            ask("underlay_objects", json!({"object_kind": "HATCH"})),
+            false,
+        )
+        .unwrap()["objects"][0]["id"]
+        .clone();
+    let floor = bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_extrude",
+                json!({"object_id": hatch, "height_mm": 30}),
+            ),
+            false,
+        )
+        .unwrap();
+    assert_eq!(floor["name"], "AREA_2", "{floor}");
+    assert_eq!(app.undo_step_count(), undo + 2);
+    let source = app.document.current_rule_program().unwrap().source.clone();
+    for expected in [
+        "AREA_1_SOLID = extrude(\"AREA_1\", profile = AREA_1, distance = 2600)",
+        "AREA_2_SOLID = extrude(\"AREA_2\", profile = AREA_2, distance = 30)",
+    ] {
+        assert!(source.contains(expected), "{expected} in {source}");
+    }
+    let walls_data = &source[source.find("AREA_1_HOLES = [").unwrap()..];
+    assert!(
+        walls_data.starts_with("AREA_1_HOLES = [\n    [\n"),
+        "the room is a hole: {source}"
+    );
+
+    for (arguments, field) in [
+        (
+            json!({"at_mm": [-50_000, -50_000], "height_mm": 100}),
+            "at_mm",
+        ),
+        (
+            json!({"at_mm": in_wall, "object_id": hatch, "height_mm": 100}),
+            "at_mm",
+        ),
+        (json!({"at_mm": in_wall, "height_mm": 0}), "height_mm"),
+    ] {
+        assert_eq!(
+            bridge
+                .execute(&mut app, ask("drawing_extrude", arguments.clone()), false)
+                .unwrap_err(),
+            "invalid_params",
+            "{arguments}"
+        );
+        let details = take_error_details().unwrap();
+        assert_eq!(details["target"], field, "{details}");
+    }
+    assert_eq!(app.undo_step_count(), undo + 2);
+
+    for _ in 0..2 {
+        bridge
+            .execute(&mut app, Request::Undo { expected: None }, false)
+            .unwrap();
+    }
+    assert_eq!(app.canonical_digest(), digest);
+}

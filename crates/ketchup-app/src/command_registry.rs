@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 144] = [
+    pub(crate) const COMMANDS: [CommandSpec; 145] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -404,6 +404,12 @@ impl CommandRegistry {
             id: AppCommand::OffsetUnderlayLine,
             label_key: "tool-offset-underlay-line",
             tool: Some(ActiveTool::OffsetUnderlayLine),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExtrudeUnderlayArea,
+            label_key: "tool-extrude-underlay-area",
+            tool: Some(ActiveTool::ExtrudeUnderlayArea),
             implemented: true,
         },
         CommandSpec {

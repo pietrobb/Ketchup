@@ -1,0 +1,297 @@
+//! Tools > Pull drawing area up and `drawing action=extrude`: a closed area of a drawing
+//! (around a point, or one closed polyline or hatch of it) extruded by a height into a
+//! solid, with its holes cut through, as one Undo step. Where a program owns the document
+//! (or there is nothing in it yet) the solid is written into the program as
+//! `program action=from_underlay` writes it, so it follows the drawing when the drawing is
+//! edited; otherwise it is added as a part of its own.
+
+use crate::live_bridge::take_error_details;
+use crate::live_bridge::underlay_program::{
+    Ring, free_area_name, underlay_area_outline, underlay_extrusion_program,
+};
+use crate::*;
+use ketchup_application::RuleProgramApplyError;
+use ketchup_model::underlay::UnderlayId;
+use std::fmt;
+
+/// A closed area of a drawing: on which drawing, by a point in it or by its object.
+pub(crate) struct ChosenArea {
+    underlay: UnderlayId,
+    point_mm: Option<[f64; 2]>,
+    object_id: Option<u32>,
+    outline: Ring,
+    holes: Vec<Ring>,
+}
+
+/// What pulling an area up made: the name of its data or part, and whether the program
+/// keeps it bound to the drawing.
+pub(crate) struct PulledArea {
+    pub name: String,
+    pub bound: bool,
+}
+
+/// Why an area of a drawing was not pulled up.
+#[derive(Debug)]
+pub(crate) enum AreaPullError {
+    /// The height is not a positive length.
+    Height,
+    /// The area cannot be written as program data (e.g. it has too many corners).
+    NotWritable { code: &'static str },
+    /// The program owning the document refused the extruded area.
+    Program(RuleProgramApplyError),
+    /// The document refused the new part.
+    Part(WorkRecoveryMutationError<CanonicalError>),
+}
+
+impl fmt::Display for AreaPullError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Height => f.write_str("the height must be a positive length"),
+            Self::NotWritable { code } => {
+                write!(f, "the area cannot be written into the program ({code})")
+            }
+            Self::Program(error) => write!(f, "the program refused the area: {error}"),
+            Self::Part(error) => write!(f, "the part was refused: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for AreaPullError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Height | Self::NotWritable { .. } => None,
+            Self::Program(error) => Some(error),
+            Self::Part(error) => Some(error),
+        }
+    }
+}
+
+impl KetchupApp {
+    /// One click of the Pull area tool.
+    pub(crate) fn click_underlay_extrude(&mut self, pointer: Pos2, rect: Rect) {
+        let Some(height_mm) =
+            parse_distance_mm(self.value_box.input.trim(), self.value_box.decimal)
+        else {
+            self.digest = self.catalog.text("digest-underlay-extrude-height");
+            return;
+        };
+        let Some(area) = self.underlay_area_at(pointer, rect) else {
+            self.digest = self.catalog.text("digest-underlay-extrude-no-area");
+            return;
+        };
+        self.digest = match self.pull_underlay_area(&area, height_mm) {
+            Ok(pulled) => self.catalog.format(
+                if pulled.bound {
+                    "digest-underlay-extruded"
+                } else {
+                    "digest-underlay-extruded-part"
+                },
+                &BTreeMap::from([("height", format_height(height_mm)), ("name", pulled.name)]),
+            ),
+            Err(AreaPullError::Height) => self.catalog.text("digest-underlay-extrude-height"),
+            Err(AreaPullError::Program(error)) => error.rejection().reason_text().to_owned(),
+            Err(error) => self.catalog.format(
+                "digest-underlay-edit-failed",
+                &BTreeMap::from([("reason", error.to_string())]),
+            ),
+        };
+    }
+
+    /// The area under `pointer`: the innermost closed region of a drawing around the
+    /// point (the selected drawing first, then the one drawn last), else the closed object
+    /// whose line or fill is under it.
+    fn underlay_area_at(&self, pointer: Pos2, rect: Rect) -> Option<ChosenArea> {
+        let point = self.screen_to_plane(pointer, rect, 0.0)?;
+        let snapshot = self.document.current();
+        let mut underlays = snapshot
+            .underlays()
+            .map(|underlay| underlay.id)
+            .collect::<Vec<_>>();
+        underlays.reverse();
+        if let Some(selected) = self.selected_underlay() {
+            underlays.retain(|id| *id != selected);
+            underlays.insert(0, selected);
+        }
+        let by_object = self
+            .underlay_line_at_screen(pointer, rect)
+            .map(|(underlay, object, _)| (underlay, object))
+            .into_iter()
+            .chain(self.underlay_object_at_screen(pointer, rect));
+        underlays
+            .into_iter()
+            .map(|underlay| (underlay, Some([point.x, point.y]), None))
+            .chain(by_object.map(|(underlay, object)| (underlay, None, Some(object))))
+            .find_map(|(underlay, point_mm, object_id)| {
+                self.underlay_area(underlay, point_mm, object_id)
+            })
+    }
+
+    /// The innermost closed region of the shown layers of `underlay` around the document
+    /// point `point_mm`, or the outline of its closed object `object_id`.
+    pub(crate) fn underlay_area(
+        &self,
+        underlay: UnderlayId,
+        point_mm: Option<[f64; 2]>,
+        object_id: Option<u32>,
+    ) -> Option<ChosenArea> {
+        let found = underlay_area_outline(self, underlay, point_mm, object_id);
+        // A refusal records its cause for an MCP answer; the caller says it itself.
+        take_error_details();
+        let (outline, holes) = found.ok()?;
+        Some(ChosenArea {
+            underlay,
+            point_mm,
+            object_id,
+            outline,
+            holes,
+        })
+    }
+
+    /// Extrudes `area` up `height_mm` from the ground, as one Undo step.
+    pub(crate) fn pull_underlay_area(
+        &mut self,
+        area: &ChosenArea,
+        height_mm: f64,
+    ) -> Result<PulledArea, AreaPullError> {
+        if !(height_mm.is_finite() && height_mm > limits::MIN_LENGTH_MM) {
+            return Err(AreaPullError::Height);
+        }
+        let name = free_area_name(self);
+        let bound = self.document.current_rule_program().is_some()
+            || self.document.current().definitions().next().is_none();
+        if bound {
+            let source = underlay_extrusion_program(
+                self,
+                area.underlay,
+                area.point_mm,
+                area.object_id,
+                name.clone(),
+                height_mm,
+            );
+            take_error_details();
+            let source = source.map_err(|code| AreaPullError::NotWritable { code })?;
+            self.apply_program_source_with(source, false, Vec::new())
+                .map_err(AreaPullError::Program)?;
+        } else {
+            let batch = self
+                .area_part_batch(area, height_mm, &name)
+                .ok_or(AreaPullError::Height)?;
+            self.apply_batch_with_work_recovery(&batch)
+                .map_err(AreaPullError::Part)?;
+        }
+        Ok(PulledArea { name, bound })
+    }
+
+    /// A part of its own: the outline extruded `height_mm` up from the ground, each hole
+    /// cut through it by a prism a millimetre longer at both ends.
+    fn area_part_batch(
+        &self,
+        area: &ChosenArea,
+        height_mm: f64,
+        name: &str,
+    ) -> Option<CommandBatch> {
+        let snapshot = self.document.current();
+        let definition_id = DefinitionId(
+            snapshot
+                .definitions()
+                .map(|definition| definition.id().0)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        let occurrence_id = OccurrenceId(
+            snapshot
+                .occurrences()
+                .map(|occurrence| occurrence.id().0)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        let mut next_feature = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0);
+        let mut feature_id = || {
+            next_feature += 1;
+            FeatureId(next_feature)
+        };
+        let height = |mm: f64| Dimension::new(format_height(mm), mm);
+        let feature = |id, kind| CanonicalCommand::CreateFeature {
+            id,
+            definition_id,
+            name: name.to_owned(),
+            kind,
+        };
+        let (profile, solid) = (feature_id(), feature_id());
+        let mut commands = vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: name.to_owned(),
+            },
+            feature(profile, FeatureKind::polygon(&area.outline)),
+            feature(
+                solid,
+                FeatureKind::extrusion(profile, height(height_mm).ok()?),
+            ),
+        ];
+        let mut target = solid;
+        // A new definition's own body is its first.
+        let own_body = BodyId(1);
+        for (index, hole) in area.holes.iter().enumerate() {
+            let tool_height = height(height_mm + 2.0).ok()?;
+            let lowered = Transform::from_translation(0.0, 0.0, -1.0).ok()?;
+            let tool_body = BodyId(own_body.0 + 1 + index as u64);
+            let [hole_profile, prism, placed, cut] = [(); 4].map(|()| feature_id());
+            commands.extend([
+                CanonicalCommand::CreateBody {
+                    definition_id,
+                    id: tool_body,
+                    name: name.to_owned(),
+                    visible: false,
+                },
+                CanonicalCommand::SetActiveBody {
+                    definition_id,
+                    id: tool_body,
+                },
+                feature(hole_profile, FeatureKind::polygon(hole)),
+                feature(prism, FeatureKind::extrusion(hole_profile, tool_height)),
+                feature(
+                    placed,
+                    FeatureKind::RigidTransform {
+                        target: prism,
+                        transform: lowered,
+                    },
+                ),
+                CanonicalCommand::SetActiveBody {
+                    definition_id,
+                    id: own_body,
+                },
+                feature(
+                    cut,
+                    FeatureKind::Boolean {
+                        operation: BooleanOperation::Cut,
+                        target,
+                        tool: placed,
+                    },
+                ),
+                CanonicalCommand::ConsumeBody {
+                    definition_id,
+                    id: tool_body,
+                    by_feature_id: cut,
+                },
+            ]);
+            target = cut;
+        }
+        commands.push(CanonicalCommand::CreateOccurrence {
+            id: occurrence_id,
+            definition_id,
+            name: name.to_owned(),
+            transform: Transform::identity(),
+            parent: None,
+            tags: Default::default(),
+            visible: true,
+        });
+        Some(CommandBatch::new(commands))
+    }
+}

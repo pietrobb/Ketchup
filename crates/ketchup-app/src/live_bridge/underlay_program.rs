@@ -77,6 +77,119 @@ impl LiveBridge {
     }
 }
 
+/// The program the window's Pull area tool applies: the outline of the closed region of
+/// `underlay` around the document point `point_mm`, or of its closed object `object_id`,
+/// extruded `height_mm` as data named `name`, written as `program action=from_underlay`
+/// writes it, so the solid follows the drawing. The cause of a refusal is left for
+/// `take_error_details`.
+pub(crate) fn underlay_extrusion_program(
+    app: &KetchupApp,
+    underlay: ketchup_model::underlay::UnderlayId,
+    point_mm: Option<[f64; 2]>,
+    object_id: Option<u32>,
+    name: String,
+    height_mm: f64,
+) -> Result<ketchup_model::document::RuleProgramSource, &'static str> {
+    let request = Request::ProgramFromUnderlay {
+        expected: app.live_bridge_stamp(),
+        name,
+        underlay_id: Some(underlay.0),
+        point_mm,
+        label: None,
+        layers: None,
+        tolerance_mm: None,
+        closing_segments_mm: Vec::new(),
+        object_id,
+        block: None,
+        thickness_mm: Some(height_mm),
+    };
+    let Request::ApplyProgram {
+        source,
+        overrides,
+        file_name,
+        ..
+    } = LiveBridge::expand_program_from_underlay(app, request)?
+    else {
+        return Err("invalid_params");
+    };
+    let file_name = file_name.unwrap_or_else(|| FILE_NAME.to_owned());
+    let current = app.document.current_rule_program();
+    Ok(ketchup_model::document::RuleProgramSource {
+        variants: current
+            .filter(|program| program.file_name == file_name)
+            .map(|program| program.variants.clone())
+            .unwrap_or_default(),
+        overrides: overrides.unwrap_or_default(),
+        file_name,
+        source,
+    })
+}
+
+/// The outline (counterclockwise) and holes (clockwise) in document millimetres of what
+/// [`underlay_extrusion_program`] extrudes, for a document no program owns.
+pub(crate) fn underlay_area_outline(
+    app: &KetchupApp,
+    underlay: ketchup_model::underlay::UnderlayId,
+    point_mm: Option<[f64; 2]>,
+    object_id: Option<u32>,
+) -> Result<(Ring, Vec<Ring>), &'static str> {
+    let snapshot = app.document.current();
+    let underlay = super::underlay_regions::one_underlay(&snapshot, Some(underlay.0))?;
+    let lines = app
+        .cached_underlay_lines(underlay)
+        .ok_or("entity_not_found")?;
+    let (outline, holes) = match (point_mm, object_id) {
+        (Some(point), None) => {
+            let region = super::underlay_regions::region_at(
+                &snapshot,
+                underlay,
+                &lines,
+                None,
+                point,
+                None,
+                &[],
+            )?;
+            (region.outline, region.holes)
+        }
+        (None, Some(id)) => object_outline(&ObjectIndex::new(&lines), id)?,
+        _ => return Err("invalid_params"),
+    };
+    let placed = |ring: Ring, outer: bool| {
+        let mut ring = ring
+            .into_iter()
+            .map(|point| underlay.to_document(point))
+            .collect::<Ring>();
+        // A mirrored placement turns the rings round.
+        if (signed_area(&ring) > 0.0) != outer {
+            ring.reverse();
+        }
+        ring
+    };
+    Ok((
+        placed(outline, true),
+        holes.into_iter().map(|hole| placed(hole, false)).collect(),
+    ))
+}
+
+/// A name neither a section of the window's program nor a part uses yet: `AREA_1`,
+/// `AREA_2`, …
+pub(crate) fn free_area_name(app: &KetchupApp) -> String {
+    let source = app
+        .document
+        .current_rule_program()
+        .map_or("", |program| program.source.as_str());
+    let snapshot = app.document.current();
+    (1..)
+        .map(|n| format!("AREA_{n}"))
+        .find(|name| {
+            !source.contains(&format!("{BEGIN} {name}:"))
+                && snapshot
+                    .definitions()
+                    .all(|definition| definition.name() != name)
+        })
+        .unwrap_or_default()
+}
+
 pub(super) fn binding_data(
     app: &KetchupApp,
     snapshot: &Snapshot,
@@ -328,7 +441,7 @@ fn signed_area(ring: &[[f64; 2]]) -> f64 {
         / 2.0
 }
 
-type Ring = Vec<[f64; 2]>;
+pub(crate) type Ring = Vec<[f64; 2]>;
 
 /// The outline (counterclockwise) and holes (clockwise) of object `id`: a hatch's
 /// boundary, or the closed polylines it draws, the largest as the outline.

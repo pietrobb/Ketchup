@@ -1,7 +1,7 @@
 //! Clicked in a headless window: a click on a line of an underlay picks the object that drew
 //! it, Shift+click picks more or drops one, Delete takes them out of the drawing in one Undo
 //! step, and the drawing no longer snaps where they were.
-use super::underlay_snapping_tests::imported_with;
+use super::underlay_snapping_tests::{imported_alone_with, imported_with};
 use super::underlay_transform_tests::{click, double_click, press, shell, shell_of};
 use crate::*;
 use egui_kittest::Harness;
@@ -583,4 +583,147 @@ fn tools_export_drawing_writes_the_edited_drawing_as_dxf() {
     )
     .unwrap();
     assert_eq!(again.lines.segment_count(), 1);
+}
+
+/// A room with a column in it (two closed polylines) and a solid hatch with no boundary.
+const ROOM_AND_FLOOR: &str = concat!(
+    "0\nLWPOLYLINE\n8\nrooms\n90\n4\n70\n1\n",
+    "10\n200\n20\n160\n10\n290\n20\n160\n10\n290\n20\n280\n10\n200\n20\n280\n",
+    "0\nLWPOLYLINE\n8\nrooms\n90\n4\n70\n1\n",
+    "10\n230\n20\n200\n10\n250\n20\n200\n10\n250\n20\n220\n10\n230\n20\n220\n",
+    "0\nHATCH\n8\nfloor\n10\n0\n20\n0\n30\n0\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n3\n",
+    "72\n0\n73\n1\n93\n4\n10\n100\n20\n180\n10\n180\n20\n180\n10\n180\n20\n240\n",
+    "10\n100\n20\n240\n97\n0\n75\n0\n76\n1\n98\n0\n",
+);
+const IN_ROOM: Vec3 = Vec3::new(215.0, 260.0, 0.0);
+const IN_FLOOR: Vec3 = Vec3::new(140.0, 210.0, 0.0);
+
+fn pull_up(harness: &mut Harness<'_, KetchupApp>, height: &str, at: Vec3) {
+    harness.state_mut().value_box.input = height.to_owned();
+    click(harness, at);
+}
+
+fn program_source(harness: &Harness<'_, KetchupApp>) -> String {
+    harness
+        .state()
+        .document
+        .current_rule_program()
+        .map(|program| program.source.clone())
+        .unwrap_or_default()
+}
+
+/// 2D-4: Tools > Pull drawing area up next to a part of the window's own: a click inside
+/// the room pulls it up the typed height as a part with the column cut through, a click
+/// in the hatch pulls the hatch up; one Undo step each, and a click on nothing closed, or
+/// with no height, changes nothing.
+#[test]
+fn a_clicked_closed_area_of_a_drawing_is_pulled_up_into_a_part() {
+    let mut harness = shell_of(imported_with(ROOM_AND_FLOOR));
+    let undo = harness.state().undo_step_count();
+    let digest = harness.state().canonical_digest();
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    assert_eq!(harness.state().active_tool, ActiveTool::ExtrudeUnderlayArea);
+
+    pull_up(&mut harness, "300", IN_ROOM);
+    pull_up(&mut harness, "50", IN_FLOOR);
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 2, "{}", app.digest);
+    assert!(app.digest.contains("AREA_2"), "{}", app.digest);
+    let snapshot = app.document.current();
+    let features = |name: &str| {
+        let definition = snapshot
+            .definitions()
+            .find(|definition| definition.name() == name)
+            .unwrap_or_else(|| panic!("no part {name}"));
+        assert_eq!(
+            snapshot
+                .occurrences()
+                .filter(|occurrence| occurrence.definition_id() == definition.id())
+                .count(),
+            1
+        );
+        snapshot
+            .features()
+            .filter(|feature| feature.definition_id() == definition.id())
+            .map(|feature| (definition.id(), feature.id(), feature.kind().clone()))
+            .collect::<Vec<_>>()
+    };
+    let room = features("AREA_1");
+    let heights = |features: &[(DefinitionId, FeatureId, FeatureKind)]| {
+        features
+            .iter()
+            .filter_map(|(_, _, kind)| match kind {
+                FeatureKind::Pad(PadSpec {
+                    extent: FeatureExtent::Blind(height),
+                    ..
+                }) => Some(height.millimetres()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        heights(&room),
+        [300.0, 302.0],
+        "the room, the column's tool"
+    );
+    let (definition, cut, _) = room
+        .iter()
+        .find(|(_, _, kind)| matches!(kind, FeatureKind::Boolean { .. }))
+        .cloned()
+        .expect("the column is cut out");
+    assert!(
+        ExactBRepGraph::from_snapshot(&snapshot, definition, cut).is_ok(),
+        "the room with the column cut out builds"
+    );
+    assert_eq!(heights(&features("AREA_2")), [50.0]);
+    assert!(program_source(&harness).is_empty(), "no program was made");
+
+    pull_up(&mut harness, "300", Vec3::new(20.0, -100.0, 0.0));
+    assert_eq!(harness.state().undo_step_count(), undo + 2);
+    assert!(
+        harness.state().digest.contains("closed area"),
+        "{}",
+        harness.state().digest
+    );
+    pull_up(&mut harness, "", IN_ROOM);
+    assert_eq!(harness.state().undo_step_count(), undo + 2);
+
+    harness.state_mut().undo();
+    harness.state_mut().undo();
+    assert_eq!(harness.state().canonical_digest(), digest);
+}
+
+/// 2D-4 in a document with only the drawing: the pulled areas are written into the program
+/// as `program action=from_underlay` writes them, bound to the drawing.
+#[test]
+fn a_pulled_area_of_a_drawing_alone_is_written_into_the_program() {
+    let mut harness = shell_of(imported_alone_with(ROOM_AND_FLOOR));
+    let undo = harness.state().undo_step_count();
+    let digest = harness.state().canonical_digest();
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", IN_ROOM);
+    pull_up(&mut harness, "50", IN_FLOOR);
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 2, "{}", app.digest);
+    assert!(app.digest.contains("follows the drawing"), "{}", app.digest);
+    let written = program_source(&harness);
+    for expected in [
+        "# underlay binding ",
+        "AREA_1_SOLID = extrude(\"AREA_1\", profile = AREA_1, distance = 300)",
+        "(200, 160)",
+        "(230, 200)",
+        "AREA_2_SOLID = extrude(\"AREA_2\", profile = AREA_2, distance = 50)",
+        "(100, 180)",
+    ] {
+        assert!(written.contains(expected), "{expected} in {written}");
+    }
+    assert!(harness.state().document.current().occurrences().count() >= 2);
+
+    harness.state_mut().undo();
+    harness.state_mut().undo();
+    assert_eq!(harness.state().canonical_digest(), digest);
 }

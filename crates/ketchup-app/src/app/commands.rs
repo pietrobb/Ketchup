@@ -293,6 +293,9 @@ impl KetchupApp {
             } else if tool == ActiveTool::OffsetUnderlayLine {
                 self.gesture.underlay_offset = None;
                 self.status_key = "status-underlay-offset-line";
+            } else if tool == ActiveTool::ExtrudeUnderlayArea {
+                self.value_box.input = "200".to_owned();
+                self.status_key = "status-underlay-extrude";
             } else if matches!(
                 tool,
                 ActiveTool::SolidSubtract
@@ -537,6 +540,7 @@ impl KetchupApp {
             | AppCommand::ExtendUnderlayLine
             | AppCommand::OffsetUnderlayLine
             | AppCommand::TextIntoUnderlay
+            | AppCommand::ExtrudeUnderlayArea
             | AppCommand::Orbit
             | AppCommand::Pan
             | AppCommand::ZoomWindow => {}

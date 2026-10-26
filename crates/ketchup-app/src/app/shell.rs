@@ -1129,6 +1129,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::TrimUnderlayLine);
                 self.menu_command(ui, AppCommand::ExtendUnderlayLine);
                 self.menu_command(ui, AppCommand::OffsetUnderlayLine);
+                self.menu_command(ui, AppCommand::ExtrudeUnderlayArea);
                 self.menu_command(ui, AppCommand::ExportUnderlayDxf);
                 self.menu_command(ui, AppCommand::ExportUnderlayDwg);
                 self.menu_command(ui, AppCommand::Orbit);

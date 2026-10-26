@@ -27,12 +27,24 @@ pub(super) fn imported_with(entities: &str) -> KetchupApp {
     imported_dxf(&PLAN_DXF.replace("0\nENDSEC\n0\nEOF", &format!("{entities}0\nENDSEC\n0\nEOF")))
 }
 
+/// [`imported_with`] into a document with nothing else in it.
+pub(super) fn imported_alone_with(entities: &str) -> KetchupApp {
+    imported_dxf_into(
+        KetchupApp::with_catalog_and_initial_box(LocaleCatalog::english(), false),
+        &PLAN_DXF.replace("0\nENDSEC\n0\nEOF", &format!("{entities}0\nENDSEC\n0\nEOF")),
+    )
+}
+
 fn imported_dxf(dxf: &str) -> KetchupApp {
+    imported_dxf_into(KetchupApp::new(), dxf)
+}
+
+fn imported_dxf_into(app: KetchupApp, dxf: &str) -> KetchupApp {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("plan.dxf");
     std::fs::write(&path, dxf).unwrap();
     let dialogs = dialogs::ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &path);
-    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    let mut app = app.with_dialogs(Box::new(dialogs));
     app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
     assert_eq!(
         app.document.current().underlays().count(),

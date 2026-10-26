@@ -12,7 +12,7 @@ use ketchup_model::underlay::objects::Affine;
 impl KetchupApp {
     /// The drawing, the object of it whose line is nearest `pointer`, and the point of
     /// that line under it in the millimetres of the drawing's lines.
-    fn underlay_line_at_screen(
+    pub(crate) fn underlay_line_at_screen(
         &self,
         pointer: Pos2,
         rect: Rect,

@@ -191,6 +191,7 @@ fn response_wait(request: &Request) -> Duration {
         | Request::SetProgramParams { .. }
         | Request::UseProgramVariant { .. }
         | Request::ProgramFromUnderlay { .. }
+        | Request::DrawingExtrude { .. }
         | Request::SaveProgramVariant { .. }
         | Request::DeleteProgramVariant { .. }
         | Request::ExportProgramVariants { .. }
@@ -268,6 +269,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::DrawingExtend { .. }
         | Request::DrawingOffset { .. }
         | Request::DrawingExport { .. }
+        | Request::DrawingExtrude { .. }
         | Request::Export { .. }
         | Request::Selection { .. }
         | Request::View { .. }

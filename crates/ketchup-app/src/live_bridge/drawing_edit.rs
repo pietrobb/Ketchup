@@ -7,6 +7,7 @@
 use super::*;
 use crate::app::underlay_edit::UnderlayEditError;
 use crate::app::underlay_export::UnderlayExportError;
+use crate::app::underlay_extrude::AreaPullError;
 use ketchup_model::underlay::drawn::{in_lines, inverse, similarity};
 use ketchup_model::underlay::edits::UnderlayObjectError;
 use ketchup_model::underlay::line_edit::LineEdit;
@@ -351,6 +352,73 @@ impl LiveBridge {
 
 /// The rejection of a removal, with the object to remove instead of one an insert or
 /// dimension placed. The whole error is kept as the rejection's cause.
+impl LiveBridge {
+    /// `drawing_extrude`: a closed area of the drawing pulled up into a solid.
+    pub(super) fn drawing_extrude(
+        &mut self,
+        app: &mut KetchupApp,
+        request: &Request,
+        ui_busy: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Value, &'static str> {
+        let Request::DrawingExtrude {
+            expected,
+            underlay_id,
+            at_mm,
+            object_id,
+            height_mm,
+        } = request
+        else {
+            return Err("invalid_request");
+        };
+        Self::guard(app, expected)?;
+        Self::available(app, ui_busy)?;
+        if at_mm.is_some() == object_id.is_some() {
+            return Err(super::program_access::invalid(
+                "at_mm",
+                "Give exactly one of at_mm or object_id.",
+                "at_mm for the closed region around a point, object_id for one closed polyline or hatch.",
+            ));
+        }
+        let snapshot = app.document.current();
+        let id = super::underlay_regions::one_underlay(&snapshot, *underlay_id)?.id;
+        let area = app.underlay_area(id, *at_mm, *object_id).ok_or_else(|| {
+            super::program_access::invalid(
+                if at_mm.is_some() { "at_mm" } else { "object_id" },
+                "No closed area of the shown layers is there.",
+                "Ask inspect action=underlay_regions with point_mm, or underlay_objects for a closed polyline or hatch.",
+            )
+        })?;
+        Self::require_request_authority(cancelled)?;
+        let pulled = app
+            .pull_underlay_area(&area, *height_mm)
+            .map_err(|error| match error {
+                AreaPullError::Height => super::program_access::invalid(
+                    "height_mm",
+                    "The height must be a positive length.",
+                    "Give the height in millimetres, e.g. 2600.",
+                ),
+                AreaPullError::NotWritable { code } => {
+                    record_rejection(&rejected(code).caused_by(error), json!({}));
+                    code
+                }
+                error => {
+                    record_rejection(&rejected("commit_rejected").caused_by(error), json!({}));
+                    "commit_rejected"
+                }
+            })?;
+        self.query.invalidate();
+        Ok(json!({
+            "name": pulled.name,
+            "bound_to_drawing": pulled.bound,
+            "height_mm": height_mm,
+            "underlay_id": id.0,
+            "undo_steps": app.undo_step_count(),
+            "dirty": app.is_dirty(),
+        }))
+    }
+}
+
 fn edit_failure(error: UnderlayEditError) -> &'static str {
     let code = match &error {
         UnderlayEditError::Commit(..) => "commit_rejected",
