@@ -8,6 +8,13 @@ of its own is enough to lint. A new crate must be added to a job's crate list.
 Only `cargo clippy` lints and only `cargo test` tests: `-p` in `cargo build`,
 `cargo tree` or after `--` does not count, nor does a job or step whose `if:` is
 `false` (review 2026-10-19 P3).
+
+A run counts only if it can fail a pull request's CI and runs all the tests it
+names (review 2026-10-24 CI-20): not a job or step whose `if:` asks for the nightly
+`schedule` or a manual `workflow_dispatch` (directly or through an env variable
+set from it) without naming `pull_request` or `push`, not one with
+`continue-on-error` other than `false`, and not a `cargo test` given a test name
+filter, `--ignored` or `--list` after `--`.
 """
 
 import re
@@ -24,8 +31,19 @@ STEP = re.compile(r"\n {6}- ")
 NEVER = re.compile(r"^\s*(?:- )?if:\s*(?:false|\$\{\{\s*false\s*\}\})\s*$", re.MULTILINE)
 # A line ending in `\` (bash) or a backtick (PowerShell) continues on the next one.
 CONTINUATION = re.compile(r"[\\`][ \t]*\n[ \t]*")
-# The cargo arguments of a command: up to `--`, the end of the line or the next shell command.
-CARGO = re.compile(r"\bcargo\s+(?:\+\S+\s+)?(clippy|test)\b((?:(?!\s--(?:\s|$))[^\n;|&])*)")
+# The cargo arguments of a command: up to `--`, the end of the line or the next shell
+# command; then what follows `--`, the arguments of the test binary.
+CARGO = re.compile(
+    r"\bcargo\s+(?:\+\S+\s+)?(clippy|test)\b((?:(?!\s--(?:\s|$))[^\n;|&])*)(?:\s--(?=\s|$)([^\n;|&]*))?"
+)
+CONDITION = re.compile(r"^\s*(?:- )?if:(.*)$", re.MULTILINE)
+TOLERATED = re.compile(r"^\s*(?:- )?continue-on-error:\s*(?!false\s*$)\S", re.MULTILINE)
+NOT_A_PULL_REQUEST = re.compile(r"event_name\s*==\s*'(?:schedule|workflow_dispatch)'")
+A_PULL_REQUEST = re.compile(r"event_name\s*==\s*'(?:pull_request|pull_request_target|push)'")
+ENVIRONMENT = re.compile(r"^\s+(\w+):\s*\$\{\{(.*)\}\}\s*$", re.MULTILINE)
+FOLDED = re.compile(r"^(\s*)(?:- )?run:\s*>-?\s*$")
+# libtest options that take the next word as their value.
+VALUE_OPTIONS = {"--skip", "--test-threads", "--format", "--color", "--logfile", "-Z", "--shuffle-seed"}
 
 
 def without_comments(workflow):
@@ -62,26 +80,81 @@ def jobs(workflow):
     return [text[start:end] for start, end in zip(starts, starts[1:])]
 
 
-def running_steps(job):
-    """The steps of a job that can run: none when the job's own `if:` is false."""
+def nightly_variables(workflow):
+    """The env variables set from an expression that holds only outside a pull request."""
+    return {
+        name
+        for name, expression in ENVIRONMENT.findall(without_comments(workflow))
+        if NOT_A_PULL_REQUEST.search(expression) and not A_PULL_REQUEST.search(expression)
+    }
+
+
+def fails_a_pull_request(text, nightly):
+    """Whether a job head or step can run in a pull request's CI and fail it."""
+    if NEVER.search(text) or TOLERATED.search(text):
+        return False
+    for condition in CONDITION.findall(text):
+        outside = NOT_A_PULL_REQUEST.search(condition) or any(
+            re.search(rf"\benv\.{re.escape(name)}\s*==\s*'true'", condition) for name in nightly
+        )
+        if outside and not A_PULL_REQUEST.search(condition):
+            return False
+    return True
+
+
+def running_steps(job, nightly=frozenset()):
+    """The steps of a job that can fail a pull request: none when the job's own head cannot."""
     head, *steps = STEP.split(job)
-    if NEVER.search(head.split("\n    steps:", 1)[0]):
+    if not fails_a_pull_request(head.split("\n    steps:", 1)[0], nightly):
         return []
-    return [step for step in steps if not NEVER.search(step)]
+    return [step for step in steps if fails_a_pull_request(step, nightly)]
+
+
+def folded(step):
+    """The step with each `run: >` block on one line, as YAML folds it."""
+    lines, joined, index = step.split("\n"), [], 0
+    while index < len(lines):
+        line, index = lines[index], index + 1
+        match = FOLDED.match(line)
+        if not match:
+            joined.append(line)
+            continue
+        # The first line of a step has lost its `      - ` to the split.
+        indent = len(match.group(1)) if joined else 8
+        block = []
+        while index < len(lines) and (not lines[index].strip() or len(lines[index]) - len(lines[index].lstrip()) > indent):
+            block.append(lines[index].strip())
+            index += 1
+        joined.append(line[: line.index("run:")] + "run: " + " ".join(part for part in block if part))
+    return "\n".join(joined)
+
+
+def narrowed(test_arguments):
+    """Whether the test binary's arguments run only some of the tests."""
+    words = test_arguments.split()
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word in ("--ignored", "--list") or not word.startswith("-"):
+            return True
+        index += 2 if word in VALUE_OPTIONS else 1
+    return False
 
 
 def cargo_crates(workflows, subcommand):
     """Every crate a running `cargo <subcommand>` names, directly or through its job's CRATES list."""
     crates = set()
     for workflow in workflows:
+        nightly = nightly_variables(workflow)
         for job in jobs(workflow):
             listed = set(PACKAGE_FLAG.findall("".join(CRATE_LIST.findall(job))))
-            for step in running_steps(job):
-                for name, arguments in CARGO.findall(CONTINUATION.sub(" ", step)):
-                    if name == subcommand:
-                        crates |= set(PACKAGE_FLAG.findall(arguments))
-                        if "CRATES" in arguments:
-                            crates |= listed
+            for step in running_steps(job, nightly):
+                for name, arguments, test_arguments in CARGO.findall(CONTINUATION.sub(" ", folded(step))):
+                    if name != subcommand or (name == "test" and narrowed(test_arguments)):
+                        continue
+                    crates |= set(PACKAGE_FLAG.findall(arguments))
+                    if "CRATES" in arguments:
+                        crates |= listed
     return crates
 
 

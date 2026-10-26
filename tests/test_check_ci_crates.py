@@ -54,7 +54,7 @@ jobs:
       - run: cargo test -p alpha
   running:
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: always()
     steps:
       - name: Lint beta
         if: ${{ false }}
@@ -74,7 +74,8 @@ jobs:
 
 def test_build_tree_test_arguments_and_steps_that_never_run_do_not_count():
     assert checker.linted_crates([DISABLED]) == {"iota", "kappa"}
-    assert checker.tested_crates([DISABLED]) == {"delta", "lambda"}
+    # `-p eta` after `--` names no crate; `eta` there is a test filter, so delta counts neither.
+    assert checker.tested_crates([DISABLED]) == {"lambda"}
 
 
 COMMENTED = """name: CI
@@ -95,6 +96,48 @@ jobs:
 def test_a_crate_named_only_in_a_comment_is_not_checked():
     assert checker.linted_crates([COMMENTED]) == set()
     assert checker.tested_crates([COMMENTED]) == {"alpha", "epsilon"}
+
+
+PULL_REQUEST_ONLY_FAILS = """name: CI
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - run: cargo test -p alpha
+  tolerant:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - run: cargo clippy -p beta
+      - run: cargo test -p beta
+  per-step:
+    runs-on: ubuntu-latest
+    env:
+      NIGHTLY: ${{ github.event_name == 'schedule' }}
+    steps:
+      - if: env.NIGHTLY == 'true'
+        run: cargo test -p gamma
+      - if: runner.os == 'Linux' && github.event_name == 'schedule'
+        run: cargo test -p delta
+      - continue-on-error: true
+        run: cargo test -p epsilon
+      - run: cargo test -p zeta -- --exact zeta::one
+      - run: cargo test -p eta -- --ignored
+      - run: >-
+          cargo test -p theta --
+          only_these
+      - run: cargo test -p iota --no-fail-fast -- --skip slow --test-threads 2
+      - if: github.event_name != 'schedule'
+        continue-on-error: false
+        run: cargo clippy -p kappa && cargo test -p kappa
+"""
+
+
+def test_a_run_that_cannot_fail_a_pull_request_or_runs_some_tests_only_does_not_count():
+    # Review 2026-10-24 CI-20: nightly only, allowed to fail, or narrowed by a filter.
+    assert checker.tested_crates([PULL_REQUEST_ONLY_FAILS]) == {"iota", "kappa"}
+    assert checker.linted_crates([PULL_REQUEST_ONLY_FAILS]) == {"kappa"}
 
 
 def test_every_workspace_crate_is_checked_in_ci():
