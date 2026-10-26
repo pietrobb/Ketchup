@@ -150,45 +150,59 @@ pub(crate) type SetTargets = BTreeMap<PathBuf, String>;
 /// is the one `targets` holds for it (none: no file may be there), so a file
 /// saved there while the set was drawn is never overwritten. When one file
 /// cannot be written, those this export wrote are removed again and those it
-/// replaced are written back: a set is written whole or not at all.
+/// replaced are written back: a set is written whole or not at all. The old
+/// sheets in `targets` beyond the new set's last are removed with it, each only
+/// while it still holds the SHA-256 `targets` has for it, so no stale sheet is
+/// left beside the set as one of it.
 pub(crate) fn publish_project_drawings(
     path: &Path,
     format: SetFileFormat,
     files: &[Vec<u8>],
     targets: &SetTargets,
 ) -> Result<Vec<PathBuf>, ProjectDrawingsError> {
+    use crate::export_bundle::{ExportTransactionError, write_export_artifact_if_unchanged};
     let paths = set_file_paths(path, format, files.len());
     let mut written = Vec::<(&Path, &[u8], Option<Vec<u8>>)>::with_capacity(paths.len());
-    for (target, bytes) in paths.iter().zip(files) {
-        let replacing = targets.get(target).map(String::as_str);
-        let written_now = replacing
-            .map(|_| std::fs::read(target))
-            .transpose()
-            .map_err(crate::export_bundle::ExportTransactionError::io(target))
-            .and_then(|previous| {
-                crate::export_bundle::write_export_artifact_if_unchanged(target, bytes, replacing)
-                    .map(|()| previous)
-            });
-        match written_now {
-            Ok(previous) => written.push((target, bytes, previous)),
-            Err(error) => {
-                for (done, bytes, previous) in written {
-                    match previous {
-                        Some(previous) => {
-                            let _ = crate::export_bundle::write_export_artifact_if_unchanged(
-                                done,
-                                &previous,
-                                Some(&ketchup_model::graph::sha256_hex(bytes)),
-                            );
-                        }
-                        None => {
-                            let _ = std::fs::remove_file(done);
-                        }
-                    }
+    let mut removed = Vec::<(&Path, Vec<u8>)>::new();
+    let mut publish = || -> Result<(), ExportTransactionError> {
+        for (target, bytes) in paths.iter().zip(files) {
+            let replacing = targets.get(target).map(String::as_str);
+            let previous = replacing
+                .map(|_| std::fs::read(target))
+                .transpose()
+                .map_err(ExportTransactionError::io(target))?;
+            write_export_artifact_if_unchanged(target, bytes, replacing)?;
+            written.push((target, bytes, previous));
+        }
+        for (stale, sha256) in targets.iter().filter(|(stale, _)| !paths.contains(stale)) {
+            let previous = std::fs::read(stale).map_err(ExportTransactionError::io(stale))?;
+            if ketchup_model::graph::sha256_hex(&previous) != *sha256 {
+                return Err(ExportTransactionError::changed(stale));
+            }
+            std::fs::remove_file(stale).map_err(ExportTransactionError::io(stale))?;
+            removed.push((stale, previous));
+        }
+        Ok(())
+    };
+    if let Err(error) = publish() {
+        for (stale, previous) in removed {
+            let _ = write_export_artifact_if_unchanged(stale, &previous, None);
+        }
+        for (done, bytes, previous) in written {
+            match previous {
+                Some(previous) => {
+                    let _ = write_export_artifact_if_unchanged(
+                        done,
+                        &previous,
+                        Some(&ketchup_model::graph::sha256_hex(bytes)),
+                    );
                 }
-                return Err(ProjectDrawingsError::Write(std::io::Error::other(error)));
+                None => {
+                    let _ = std::fs::remove_file(done);
+                }
             }
         }
+        return Err(ProjectDrawingsError::Write(std::io::Error::other(error)));
     }
     Ok(paths)
 }

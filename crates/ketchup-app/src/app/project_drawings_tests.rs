@@ -800,3 +800,49 @@ fn a_set_exported_again_under_its_name_replaces_the_sheets_it_wrote() {
         (b"second 1".to_vec(), b"saved meanwhile".to_vec())
     );
 }
+
+/// A set exported again with fewer sheets leaves none of the old sheets beyond
+/// its last beside it, unless one was saved meanwhile: then the export is
+/// refused and the set stays as it was (review 2026-10-24 MF-27, run 323).
+#[test]
+fn a_set_exported_again_with_fewer_sheets_removes_the_sheets_beyond_its_last() {
+    use crate::app::project_drawings::{
+        SetFileFormat, project_drawings_targets, publish_project_drawings,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("plan.dxf");
+    let sheet = |number: u8| directory.path().join(format!("plan-0{number}.dxf"));
+    let publish = |files: &[&[u8]]| {
+        let targets = project_drawings_targets(&path, SetFileFormat::Dxf).unwrap();
+        let files: Vec<Vec<u8>> = files.iter().map(|file| file.to_vec()).collect();
+        publish_project_drawings(&path, SetFileFormat::Dxf, &files, &targets)
+    };
+    publish(&[b"a 1", b"a 2", b"a 3", b"a 4"]).unwrap();
+
+    let paths = publish(&[b"b 1", b"b 2", b"b 3"]).unwrap();
+    assert_eq!(paths, [sheet(1), sheet(2), sheet(3)]);
+    assert!(!sheet(4).exists());
+
+    let targets = project_drawings_targets(&path, SetFileFormat::Dxf).unwrap();
+    std::fs::write(sheet(3), b"saved meanwhile").unwrap();
+    let error = publish_project_drawings(
+        &path,
+        SetFileFormat::Dxf,
+        &[b"c 1".to_vec(), b"c 2".to_vec()],
+        &targets,
+    )
+    .unwrap_err();
+    let crate::app::project_drawings::ProjectDrawingsError::Write(error) = error else {
+        panic!("{error:?}");
+    };
+    assert!(error.to_string().contains("plan-03.dxf"), "{error}");
+    let read = |number| std::fs::read(sheet(number)).unwrap();
+    assert_eq!(
+        (read(1), read(2), read(3)),
+        (
+            b"b 1".to_vec(),
+            b"b 2".to_vec(),
+            b"saved meanwhile".to_vec()
+        )
+    );
+}

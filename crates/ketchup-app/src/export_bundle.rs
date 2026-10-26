@@ -57,7 +57,7 @@ impl ExportTransactionError {
         }
     }
 
-    fn changed(path: &Path) -> Self {
+    pub(crate) fn changed(path: &Path) -> Self {
         Self::TargetChanged {
             path: path.to_path_buf(),
         }
