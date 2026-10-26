@@ -418,13 +418,35 @@ impl DocumentStore {
         Ok(())
     }
 
+    /// Publishes a compiled program and its external-input edits in the same revision.
+    /// View-only input edits may inherit the old source; replace that inherited binding too.
+    pub fn commit_verified_rule_program_proposal(
+        &mut self,
+        proposal: &Proposal,
+        source: RuleProgramSource,
+    ) -> Result<VerifiedProposalCommit, ProposalCommitError> {
+        Self::validate_rule_program_source(&source)
+            .map_err(|error| ProposalCommitError::Canonical(error.into()))?;
+        let committed = self.commit_verified_proposal(proposal)?;
+        Arc::make_mut(&mut self.revisions[self.cursor]).rule_program =
+            Some(BoundRuleProgram::new(Arc::new(source)));
+        Ok(committed)
+    }
+
     /// Publishes a source-only edit as a canonical revision without changing any geometry or IDs.
-    /// Only an already source-owned document can be edited this way.
+    /// Only an already source-owned document can be edited this way, or one without a model
+    /// (at most underlays), which a program that builds nothing yet then owns.
     pub fn replace_rule_program_source(
         &mut self,
         source: RuleProgramSource,
     ) -> Result<(), CanonicalError> {
-        if self.current_rule_program().is_none() {
+        if self.current_rule_program().is_none()
+            && self.revisions[self.cursor]
+                .snapshot
+                .definitions()
+                .next()
+                .is_some()
+        {
             return Err(RuleProgramError::NotProgramOwned.into());
         }
         Self::validate_rule_program_source(&source)?;

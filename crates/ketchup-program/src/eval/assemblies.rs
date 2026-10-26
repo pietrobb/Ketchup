@@ -192,6 +192,15 @@ fn copied_item(item: &str, source: &str, name: &str) -> String {
 }
 
 pub(super) fn validate(model: &ProgramModel) -> anyhow::Result<()> {
+    for part in model.parts.iter().filter(|p| !p.is_solid()) {
+        if !part.operations.is_empty() || model.joints.iter().any(|j| j.parts.contains(&part.name))
+        {
+            anyhow::bail!(
+                "profile_part {:?}: planar members cannot carry solid operations or joints; use an extruded solid for machining and joints",
+                part.name
+            );
+        }
+    }
     for component in &model.components {
         for part in &component.parts {
             if model.part(&part.name) != Some(part) {
@@ -367,11 +376,18 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] at: Option<Value<'v>>,
         #[starlark(require = named)] x: Option<Value<'v>>,
         #[starlark(require = named)] z: Option<Value<'v>>,
+        #[starlark(require = named)] matrix: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
         let component_name = part_name(component, heap)?;
-        let at_mm = given(at)
+        let matrix = given(matrix)
+            .map(|m| numbers::<16>(m, heap, "instance matrix"))
+            .transpose()?;
+        if matrix.is_some() && [at, x, z].into_iter().any(|v| given(v).is_some()) {
+            anyhow::bail!("instance {name:?}: use matrix or at/x/z, not both");
+        }
+        let mut at_mm = given(at)
             .map(|value| numbers::<3>(value, heap, "instance at"))
             .transpose()?
             .unwrap_or([0.0; 3]);
@@ -383,9 +399,22 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             .map(|value| numbers::<3>(value, heap, "instance z"))
             .transpose()?
             .unwrap_or([0.0, 0.0, 1.0]);
-        let rotation = frame::from_axes(x, z).ok_or_else(|| {
+        let mut rotation = frame::from_axes(x, z).ok_or_else(|| {
             anyhow::anyhow!("instance {name:?}: x and z must be non-zero and not parallel")
         })?;
+        if let Some(m) = matrix {
+            if m[12..] != [0.0, 0.0, 0.0, 1.0] {
+                anyhow::bail!("instance {name:?}: matrix must be affine with last row [0,0,0,1]");
+            }
+            let transform = ketchup_model::document::Transform::from_matrix(m)?;
+            if transform.inverse().is_none() {
+                anyhow::bail!(
+                    "instance {name:?}: matrix must be invertible; use nonzero scales and independent axes"
+                );
+            }
+            at_mm = [m[3], m[7], m[11]];
+            rotation = std::array::from_fn(|r| std::array::from_fn(|c| m[r * 4 + c]));
+        }
         let instance = ProgramInstance {
             name: name.to_owned(),
             component: component_name.clone(),
@@ -402,6 +431,28 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
                 anyhow::anyhow!("unknown component {component_name:?}; declare component() first")
             })?
             .clone();
+        let metric = frame::multiply(&frame::transposed(&rotation), &rotation);
+        let rigid = (0..3).all(|r| {
+            (0..3).all(|c| {
+                (metric[r][c] - if r == c { 1.0 } else { 0.0 }).abs()
+                    < ketchup_model::tolerance::ROUNDING
+            })
+        }) && ketchup_geometry::linalg::dot(
+            rotation[0],
+            ketchup_geometry::linalg::cross(rotation[1], rotation[2]),
+        ) > 0.0;
+        if !rigid
+            && (component
+                .parts
+                .iter()
+                .any(|p| p.is_solid() || !p.operations.is_empty())
+                || !component.joints.is_empty()
+                || !component.motions.is_empty())
+        {
+            anyhow::bail!(
+                "instance {name:?}: nonrigid matrices require planar profile members without solid operations, joints or motion; use at/x/z for solids"
+            );
+        }
         let parts = component
             .parts
             .iter()

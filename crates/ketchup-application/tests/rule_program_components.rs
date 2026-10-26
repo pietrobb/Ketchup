@@ -374,3 +374,128 @@ fn unsupported_structure_changes_do_not_flatten_components_or_replace_user_work(
     assert_eq!(session.rule_program(), Some(&source));
     assert_eq!(identities(&session.snapshot()), identities(&before));
 }
+
+#[test]
+fn planar_program_component_add_remove_preserves_an_existing_solid() {
+    let _turn = crate::integration_support::file_turn();
+    let source = |text: &str| RuleProgramSource {
+        source: text.into(),
+        file_name: "mixed.star".into(),
+        overrides: BTreeMap::new(),
+        variants: Default::default(),
+    };
+    let base = "box(\"kept\",(3,4,5))\n";
+    let mut session = DocumentSession::new(SessionSettings::default());
+    let before = session
+        .apply_rule_program(source(base), false)
+        .unwrap()
+        .snapshot;
+    let kept = before
+        .occurrences()
+        .find(|o| o.name() == "kept")
+        .unwrap()
+        .clone();
+    let added_source = format!(
+        "{base}\np=profile_part(\"wire\",points=[(0,0),(4,3)])\nc=component(\"drawing\",[p])\ninstance(\"other\",c,at=(10,0,0))\n"
+    );
+    let added = session
+        .apply_rule_program(source(&added_source), false)
+        .unwrap();
+    assert_eq!(added.snapshot.occurrence(kept.id()), Some(&kept));
+    assert_eq!(
+        added.snapshot.definition(kept.definition_id()),
+        before.definition(kept.definition_id())
+    );
+    let removed = session.apply_rule_program(source(base), false).unwrap();
+    assert_eq!(removed.snapshot.occurrences().count(), 1);
+    assert_eq!(removed.snapshot.occurrence(kept.id()), Some(&kept));
+    assert_eq!(
+        removed.snapshot.definition(kept.definition_id()),
+        before.definition(kept.definition_id())
+    );
+    assert_eq!(
+        removed.snapshot.features().count(),
+        before.features().count()
+    );
+    let grouped = format!("{added_source}\ngroup(\"outer\",[c])\n");
+    assert!(session.apply_rule_program(source(&grouped), false).is_err());
+    assert_eq!(
+        session.snapshot().scene_query(),
+        removed.snapshot.scene_query()
+    );
+    assert_eq!(session.rule_program(), Some(&source(base)));
+}
+
+#[test]
+fn planar_program_components_native_affine_incremental() {
+    let _turn = crate::integration_support::file_turn();
+    use ketchup_model::document::FeatureKind;
+    let source = |text: &str| RuleProgramSource {
+        source: text.into(),
+        file_name: "planar.star".into(),
+        overrides: BTreeMap::new(),
+        variants: Default::default(),
+    };
+    let base = "# data-only program\n";
+    let geometry = r#"
+a=profile_part("open",points=[(1,2),(4,2),(4,5)])
+b=profile_part("closed",points=[(0,0),(3,0),(3,3)],closed=True)
+c=component("drawing",[a,b])
+instance("affine",c,matrix=[-2,0.5,0,20,0,3,0,10,0,0,1,0,0,0,0,1])
+"#;
+    let mut session = DocumentSession::new(SessionSettings::default());
+    session.apply_rule_program(source(base), false).unwrap();
+    let first = session.apply_rule_program(source(geometry), false).unwrap();
+    assert!(!first.replaced_document);
+    assert_eq!(first.snapshot.features().count(), 2);
+    assert!(
+        first
+            .snapshot
+            .features()
+            .all(|f| matches!(f.kind(), FeatureKind::Profile { .. }))
+    );
+    assert_eq!(first.snapshot.local_occurrences().count(), 2);
+    let open = first.model.part("affine/open").unwrap();
+    assert_eq!(open.to_world([1.0, 2.0, 0.0]), [19.0, 16.0, 0.0]);
+    assert_eq!(open.to_world([4.0, 5.0, 0.0]), [14.5, 25.0, 0.0]);
+    assert_eq!(open.size_mm[2], 0.0);
+    let profiles = first
+        .snapshot
+        .features()
+        .map(|f| match f.kind() {
+            FeatureKind::Profile { segments, closed } => (segments.len(), *closed),
+            _ => panic!("solid feature"),
+        })
+        .collect::<Vec<_>>();
+    assert!(profiles.contains(&(2, false)));
+    assert!(profiles.contains(&(3, true)));
+    let closed_id = first
+        .snapshot
+        .definitions()
+        .find(|d| d.name() == "closed")
+        .unwrap()
+        .id();
+    let edited = session
+        .apply_rule_program(source(&geometry.replace("(4,5)", "(7,5)")), false)
+        .unwrap();
+    assert_eq!(
+        edited
+            .snapshot
+            .definitions()
+            .find(|d| d.name() == "closed")
+            .unwrap()
+            .id(),
+        closed_id
+    );
+    assert_eq!(
+        edited
+            .model
+            .part("affine/open")
+            .unwrap()
+            .to_world([7.0, 5.0, 0.0]),
+        [8.5, 25.0, 0.0]
+    );
+    let removed = session.apply_rule_program(source(base), false).unwrap();
+    assert_eq!(removed.snapshot.features().count(), 0);
+    assert_eq!(removed.snapshot.occurrences().count(), 0);
+}

@@ -50,7 +50,8 @@ pub(super) fn claim(
     blocks: Option<&BTreeMap<String, BlockDefinition>>,
     units: ImportUnitDecision,
 ) -> Result<(), DxfImportError> {
-    let placement = output.placement.take();
+    let placements = std::mem::take(&mut output.placements);
+    let placement = placements.first().map(|(map, _)| *map);
     let Some(object_kind) = ObjectKind::from_dxf(kind) else {
         return Ok(());
     };
@@ -81,46 +82,69 @@ pub(super) fn claim(
         },
         _ => ObjectDetail::None,
     };
-    let own = count(output.objects.len())?;
-    output.objects.push(SourceObject {
-        kind: object_kind,
-        handle,
-        layer: parse_layer(record)?,
-        parent: None,
-        detail,
-    });
-    let children = own + 1;
     let block = text(2)
         .and_then(|name| block_name_key(name).ok())
         .and_then(|key| blocks?.get(&key));
-    if let (true, Some(map), Some(block)) = (places, placement, block) {
-        for child in &block.objects {
-            output.objects.push(SourceObject {
-                parent: Some(child.parent.map_or(own, |parent| parent + children)),
-                detail: child.detail.transformed(&map),
-                ..child.clone()
+    // Each array copy owns its own child tree and geometry ranges. Nested inserts
+    // then compose with that copy's map, not the first placement of the array.
+    for copy in 0..placements.len().max(1) {
+        let map = placements.get(copy).map(|(map, _)| *map);
+        let start = placements.get(copy).map_or(counts, |(_, offset)| {
+            std::array::from_fn(|axis| counts[axis] + offset[axis])
+        });
+        let end = placements
+            .get(copy + 1)
+            .map_or(output.counts(), |(_, offset)| {
+                std::array::from_fn(|axis| counts[axis] + offset[axis])
             });
+        let own = count(output.objects.len())?;
+        let mut detail = detail.clone();
+        if let ObjectDetail::Insert {
+            transform, copies, ..
+        } = &mut detail
+        {
+            if let Some(map) = map {
+                *transform = map;
+            }
+            *copies = [1, 1];
         }
-    }
-    let assign = |object: &mut u32| {
-        *object = if *object == UNCLAIMED {
-            own
-        } else {
-            *object + children
+        output.objects.push(SourceObject {
+            kind: object_kind,
+            handle,
+            layer: parse_layer(record)?,
+            parent: None,
+            detail,
+        });
+        let children = own + 1;
+        if let (true, Some(map), Some(block)) = (places, map, block) {
+            for child in &block.objects {
+                output.objects.push(SourceObject {
+                    parent: Some(child.parent.map_or(own, |parent| parent + children)),
+                    detail: child.detail.transformed(&map),
+                    ..child.clone()
+                });
+            }
+        }
+        let assign = |object: &mut u32| {
+            *object = if *object == UNCLAIMED {
+                own
+            } else {
+                *object + children
+            };
         };
-    };
-    output.loose[counts[0]..]
-        .iter_mut()
-        .for_each(|loose| assign(&mut loose.style.object));
-    output.explicit_profiles[counts[1]..]
-        .iter_mut()
-        .for_each(|profile| assign(&mut profile.style.object));
-    output.texts[counts[2]..]
-        .iter_mut()
-        .for_each(|text| assign(&mut text.style.object));
-    output.fills[counts[3]..]
-        .iter_mut()
-        .for_each(|fill| assign(&mut fill.style.object));
+        output.loose[start[0]..end[0]]
+            .iter_mut()
+            .for_each(|loose| assign(&mut loose.style.object));
+        output.explicit_profiles[start[1]..end[1]]
+            .iter_mut()
+            .for_each(|profile| assign(&mut profile.style.object));
+        output.texts[start[2]..end[2]]
+            .iter_mut()
+            .for_each(|text| assign(&mut text.style.object));
+        output.fills[start[3]..end[3]]
+            .iter_mut()
+            .for_each(|fill| assign(&mut fill.style.object));
+    }
     Ok(())
 }
 

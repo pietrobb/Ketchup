@@ -26,10 +26,38 @@ impl ProgramEdit {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum WorkRecoveryMutationError<E> {
+    Mutation(E),
+    Recovery(ketchup_model::persistence::FilePersistenceError),
+    Program(Box<RuleProgramApplyError>),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for WorkRecoveryMutationError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mutation(error) => error.fmt(formatter),
+            Self::Recovery(error) => error.fmt(formatter),
+            Self::Program(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<E: std::error::Error> std::error::Error for WorkRecoveryMutationError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Mutation(error) => error.source(),
+            Self::Recovery(error) => error.source(),
+            Self::Program(error) => Some(error.as_ref()),
+        }
+    }
+}
+
 fn session_error(error: WorkRecoveryMutationError<SessionError>) -> RuleProgramApplyError {
     RuleProgramApplyError::Session(match error {
         WorkRecoveryMutationError::Mutation(error) => error,
         WorkRecoveryMutationError::Recovery(error) => SessionError::Persistence(error),
+        WorkRecoveryMutationError::Program(error) => return *error,
     })
 }
 
@@ -67,6 +95,24 @@ impl KetchupApp {
         also: Vec<CanonicalCommand>,
         plan: ketchup_application::RuleProgramPlan,
     ) -> Result<(ProgramEdit, ketchup_program::Evaluated), RuleProgramApplyError> {
+        self.publish_program_plan_with_commit(source, replace, also, plan)
+            .map(|(edit, evaluated, _)| (edit, evaluated))
+    }
+
+    fn publish_program_plan_with_commit(
+        &mut self,
+        source: RuleProgramSource,
+        replace: bool,
+        also: Vec<CanonicalCommand>,
+        plan: ketchup_application::RuleProgramPlan,
+    ) -> Result<
+        (
+            ProgramEdit,
+            ketchup_program::Evaluated,
+            Option<ketchup_model::document::VerifiedProposalCommit>,
+        ),
+        RuleProgramApplyError,
+    > {
         let change = match plan.change {
             RuleProgramChange::Unchanged | RuleProgramChange::SourceOnly if !also.is_empty() => {
                 RuleProgramChange::Incremental(CommandBatch::new(Vec::new()))
@@ -81,18 +127,12 @@ impl KetchupApp {
         let (edit, batch) = match change {
             RuleProgramChange::Unchanged => {
                 self.program_evaluations.seed(&source, &plan.evaluated);
-                return Ok((ProgramEdit::Unchanged, plan.evaluated));
+                return Ok((ProgramEdit::Unchanged, plan.evaluated, None));
             }
             RuleProgramChange::SourceOnly => {
-                self.program_evaluations.seed(&source, &plan.evaluated);
-                self.complete_mutation_with_work_recovery(|document| {
-                    document
-                        .replace_rule_program_source(source)
-                        .map_err(SessionError::Canonical)
-                })
-                .map_err(session_error)?;
-                self.finish_program_edit();
-                return Ok((ProgramEdit::SourceOnly, plan.evaluated));
+                return self
+                    .publish_program_source_only(source, plan.evaluated)
+                    .map(|(edit, evaluated)| (edit, evaluated, None));
             }
             RuleProgramChange::Incremental(batch) => {
                 let mut commands = batch.commands().to_vec();
@@ -107,12 +147,21 @@ impl KetchupApp {
                     if self.is_dirty() {
                         return Err(RuleProgramApplyError::UnsavedChanges);
                     }
-                    return self.publish_program_replacement(source, plan.evaluated);
+                    return self
+                        .publish_program_replacement(source, plan.evaluated)
+                        .map(|(edit, evaluated)| (edit, evaluated, None));
                 }
                 let batch = ketchup_application::plan_rule_model_batch(
                     &self.document,
                     plan.evaluated.reference_model(),
                 )?;
+                if batch.commands().is_empty() {
+                    // A program that builds nothing yet (e.g. only data an underlay wrote)
+                    // owns the empty document, its underlays kept.
+                    return self
+                        .publish_program_source_only(source, plan.evaluated)
+                        .map(|(edit, evaluated)| (edit, evaluated, None));
+                }
                 (ProgramEdit::Created, batch)
             }
         };
@@ -121,15 +170,7 @@ impl KetchupApp {
             .document
             .prepare_proposal_with_context(batch, ProposalContext::rule_program())
             .map_err(|error| RuleProgramApplyError::Session(SessionError::Prepare(error)))?;
-        self.complete_mutation_with_work_recovery(|document| {
-            document
-                .commit_verified_proposal(&proposal)
-                .map_err(SessionError::Commit)?;
-            document
-                .bind_rule_program(source)
-                .map_err(SessionError::Canonical)
-        })
-        .map_err(session_error)?;
+        let committed = self.commit_program_proposal(&proposal, source)?;
         self.finish_program_edit();
         if edit == ProgramEdit::Created {
             // Framed quietly, as on opening a document: a fit that lands a few
@@ -137,7 +178,48 @@ impl KetchupApp {
             self.camera.zoom_fit_pending = true;
             self.camera.zoom_fit_pending_quiet = true;
         }
-        Ok((edit, plan.evaluated))
+        Ok((edit, plan.evaluated, Some(committed)))
+    }
+
+    pub(crate) fn commit_program_proposal(
+        &mut self,
+        proposal: &Proposal,
+        source: RuleProgramSource,
+    ) -> Result<ketchup_model::document::VerifiedProposalCommit, RuleProgramApplyError> {
+        self.complete_mutation_with_work_recovery(|document| {
+            document
+                .commit_verified_rule_program_proposal(proposal, source)
+                .map_err(SessionError::Commit)
+        })
+        .map_err(session_error)
+    }
+
+    pub(crate) fn publish_underlay_program_update(
+        &mut self,
+        batch: &CommandBatch,
+        source: RuleProgramSource,
+        plan: ketchup_application::RuleProgramPlan,
+    ) -> Result<ketchup_model::document::VerifiedProposalCommit, RuleProgramApplyError> {
+        let (_, _, committed) =
+            self.publish_program_plan_with_commit(source, false, batch.commands().to_vec(), plan)?;
+        Ok(committed.expect("an underlay edit always publishes a nonempty batch"))
+    }
+
+    /// Publishes `source` without changing the model, as one Undo step.
+    fn publish_program_source_only(
+        &mut self,
+        source: RuleProgramSource,
+        evaluated: ketchup_program::Evaluated,
+    ) -> Result<(ProgramEdit, ketchup_program::Evaluated), RuleProgramApplyError> {
+        self.program_evaluations.seed(&source, &evaluated);
+        self.complete_mutation_with_work_recovery(|document| {
+            document
+                .replace_rule_program_source(source)
+                .map_err(SessionError::Canonical)
+        })
+        .map_err(session_error)?;
+        self.finish_program_edit();
+        Ok((ProgramEdit::SourceOnly, evaluated))
     }
 
     /// Publishes the model of `evaluated`, built in a document of its own, in place of

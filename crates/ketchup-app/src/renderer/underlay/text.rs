@@ -132,6 +132,21 @@ pub(super) fn lay_out(text: &UnderlayText, letter: &mut impl FnMut(PlacedLetter)
     }
 }
 
+/// Layout-cell centres of visible letters, using the same alignment, wrapping and rotation as rendering.
+pub(crate) fn letter_centres(text: &UnderlayText) -> Vec<[f64; 2]> {
+    let mut points = Vec::new();
+    lay_out(text, &mut |letter| {
+        if text_font().font.outline(GlyphId(letter.glyph)).is_some() {
+            points.push([0, 1].map(|axis| {
+                letter.origin_mm[axis]
+                    + letter.x_axis[axis] * letter.advance / 2.0
+                    + letter.y_axis[axis] * cap_units() / 2.0
+            }));
+        }
+    });
+    points
+}
+
 /// The outline of a glyph in font units, two points per straight piece; empty for one
 /// that draws nothing, such as a space.
 pub(super) fn glyph_outline(glyph: u16) -> Vec<[f32; 2]> {

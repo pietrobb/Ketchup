@@ -238,7 +238,7 @@ pub fn measured_pairs(model: &ProgramModel) -> BTreeSet<(String, String)> {
 pub fn exact_candidates(model: &ProgramModel) -> BTreeSet<String> {
     let parts = &model.parts;
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
-    let mut order: Vec<usize> = (0..parts.len()).collect();
+    let mut order: Vec<usize> = (0..parts.len()).filter(|i| parts[*i].is_solid()).collect();
     order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
     let mut names: BTreeSet<String> = measured_pairs(model)
         .into_iter()

@@ -14,6 +14,9 @@ impl Part {
     /// fillet).
     #[must_use]
     pub fn face_at(&self, point: [f64; 3], normal: [f64; 3], role: Option<&str>) -> Option<String> {
+        if !self.is_solid() {
+            return None;
+        }
         let (min, max) = self.local_bounds();
         let extent = (0..3).map(|i| max[i] - min[i]).fold(1.0, f64::max);
         let on_plane = |value: f64, plane: f64| (value - plane).abs() <= APPROXIMATION * extent;
@@ -31,7 +34,8 @@ impl Part {
             _ => ["start", "end"],
         };
         let segments = match &self.body {
-            ProgramPartBody::Extrusion { segments, .. }
+            ProgramPartBody::Profile { segments, .. }
+            | ProgramPartBody::Extrusion { segments, .. }
             | ProgramPartBody::Revolve { segments, .. }
             | ProgramPartBody::Sweep { segments, .. } => segments.as_slice(),
             ProgramPartBody::Loft { sections } => sections

@@ -338,12 +338,12 @@ fn a_refused_rule_program_names_why() {
             RuleProgramError::NoNewHeadRevision
         ))
     );
-    assert_eq!(
-        store.replace_rule_program_source(source(100.0)),
-        Err(CanonicalError::RuleProgram(
-            RuleProgramError::NotProgramOwned
-        ))
-    );
+    // A document without a model is owned by a program that builds nothing yet, as one
+    // Undo step.
+    store.replace_rule_program_source(source(100.0)).unwrap();
+    assert_eq!(store.current_rule_program(), Some(&source(100.0)));
+    store.undo().unwrap();
+    assert!(store.current_rule_program().is_none());
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateEvaluatorNode {

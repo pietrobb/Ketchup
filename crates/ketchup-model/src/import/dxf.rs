@@ -698,16 +698,16 @@ struct ParsedEntities {
     /// Read for an underlay only: the entities read here and what they placed.
     objects: Vec<objects::SourceObject>,
     /// Where the last insert or dimension placed its block, until its object takes it.
-    placement: Option<crate::underlay::objects::Affine>,
+    placements: Vec<(crate::underlay::objects::Affine, [usize; 4])>,
 }
 
-/// What an insert or a dimension places of its block, and where (the first of an array).
+/// What an insert or a dimension places of its block, with each copy's map and range starts.
 #[derive(Default)]
 struct Placed {
     profiles: Vec<OrderedProfile>,
     texts: Vec<OrderedText>,
     fills: Vec<OrderedFill>,
-    placement: Option<crate::underlay::objects::Affine>,
+    placements: Vec<(crate::underlay::objects::Affine, [usize; 4])>,
 }
 
 impl ParsedEntities {
@@ -732,7 +732,7 @@ impl ParsedEntities {
     }
 
     fn push_placed(&mut self, placed: Placed) {
-        self.placement = placed.placement;
+        self.placements = placed.placements;
         for profile in placed.profiles {
             self.layers.insert(profile.layer.clone());
             self.explicit_profiles.push(profile);
@@ -3627,13 +3627,10 @@ fn parse_dimension(
         profiles,
         texts,
         fills,
-        placement: Some(objects::placement(
-            [0.0; 2],
-            clone_offset_mm,
-            [1.0; 2],
-            0.0,
-            1.0,
-        )),
+        placements: vec![(
+            objects::placement([0.0; 2], clone_offset_mm, [1.0; 2], 0.0, 1.0),
+            [0; 4],
+        )],
     })
 }
 
@@ -3771,6 +3768,7 @@ fn parse_insert(
     let insertion_mm = [flip(insertion_x), insertion_y];
     let (rotation_sin, rotation_cos) = deterministic_sin_cos_degrees(rotation_degrees);
     let mut profiles = Vec::with_capacity(expanded_profile_count);
+    let mut placements = Vec::new();
     let mut texts = Vec::new();
     let mut fills = Vec::new();
     for row in 0..row_count {
@@ -3790,6 +3788,18 @@ fn parse_insert(
                         + array_offset_mm[1] * rotation_cos,
                 )?,
             ];
+            if diagnostics.reading.styles {
+                placements.push((
+                    objects::placement(
+                        block.base_mm,
+                        array_insertion_mm,
+                        [scale_x, scale_y],
+                        rotation_sin,
+                        rotation_cos,
+                    ),
+                    [0, profiles.len(), texts.len(), fills.len()],
+                ));
+            }
             for profile in &block.profiles {
                 profiles.push(OrderedProfile {
                     layer: if profile.layer == "0" {
@@ -3845,18 +3855,11 @@ fn parse_insert(
         u32::try_from(placement_count)
             .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyEntities)?,
     )?;
-    let scale = [scale_x, scale_y];
     Ok(Placed {
         profiles,
         texts,
         fills,
-        placement: Some(objects::placement(
-            block.base_mm,
-            insertion_mm,
-            scale,
-            rotation_sin,
-            rotation_cos,
-        )),
+        placements,
     })
 }
 

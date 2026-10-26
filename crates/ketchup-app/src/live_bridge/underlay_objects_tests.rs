@@ -4,7 +4,7 @@
 
 use super::*;
 
-const DRAWING: &str = concat!(
+pub(super) const DRAWING: &str = concat!(
     "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
     "0\nSECTION\n2\nBLOCKS\n",
     "0\nBLOCK\n8\n0\n2\nDOOR_80\n70\n0\n10\n0\n20\n0\n",
@@ -30,7 +30,7 @@ fn objects(arguments: Value) -> Request {
     ask("underlay_objects", arguments)
 }
 
-fn ask(method: &str, arguments: Value) -> Request {
+pub(super) fn ask(method: &str, arguments: Value) -> Request {
     let mut request = json!({ "method": method });
     request
         .as_object_mut()
@@ -39,12 +39,15 @@ fn ask(method: &str, arguments: Value) -> Request {
     serde_json::from_value(request).unwrap()
 }
 
-/// `source` imported as an underlay, and how far the import moved it.
-fn imported(source: &str) -> (KetchupApp, LiveBridge, [f64; 2]) {
+/// `source` imported as an underlay into an empty window, as the application starts, and
+/// how far the import moved it.
+pub(super) fn imported(source: &str) -> (KetchupApp, LiveBridge, [f64; 2]) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("plan.dxf");
     std::fs::write(&path, source).unwrap();
-    let (mut app, mut bridge) = setup();
+    let (_, mut bridge) = setup();
+    let mut app = KetchupApp::with_catalog_and_initial_box(crate::LocaleCatalog::english(), false);
+    app.selection.clear();
     let import = Request::Import {
         expected: None,
         path: path.display().to_string(),
@@ -213,7 +216,7 @@ fn outline(layer: &str, corners: &[[f64; 2]]) -> String {
 
 /// A room 9.4 × 5.4 m inside walls 300 mm thick, drawn as two outlines, with its name in
 /// it, a hatch over it and a loose furniture line.
-fn walled_room() -> String {
+pub(super) fn walled_room() -> String {
     let rectangle = |low: f64, high_x: f64, high_y: f64| {
         [[low, low], [high_x, low], [high_x, high_y], [low, high_y]]
     };
@@ -231,6 +234,49 @@ fn walled_room() -> String {
         outline("walls", &rectangle(0.0, 10_000.0, 6_000.0)),
         outline("walls", &rectangle(300.0, 9_700.0, 5_700.0)),
     )
+}
+
+#[test]
+fn rotated_text_is_located_by_its_letters_and_crossing_text_is_ambiguous() {
+    let drawing = walled_room().replace(
+        "0\nENDSEC\n0\nEOF\n",
+        "0\nMTEXT\n8\nrooms\n10\n2000\n20\n290\n40\n100\n50\n90\n71\n1\n1\nAB\\PCD\n0\nMTEXT\n8\nrooms\n10\n9600\n20\n2000\n40\n100\n71\n1\n1\nABCDE\n0\nENDSEC\n0\nEOF\n",
+    );
+    let (mut app, mut bridge, offset) = imported(&drawing);
+    let found = bridge
+        .execute(&mut app, objects(json!({"text": "AB\nCD"})), false)
+        .unwrap();
+    assert_eq!(found["matched"], 1, "{found}");
+    let row = &found["objects"][0];
+    assert!((row["text_anchor_mm"][1].as_f64().unwrap() + offset[1] - 290.0).abs() < 1e-6);
+    assert!(
+        row["text_point_mm"][1].as_f64().unwrap() + offset[1] > 300.0,
+        "{row}"
+    );
+    let regions = bridge
+        .execute(&mut app, ask("underlay_regions", json!({})), false)
+        .unwrap();
+    assert!(
+        regions["regions"][0]["texts"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("AB\nCD")),
+        "{regions}"
+    );
+    assert!(
+        !regions["regions"][1]["texts"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("AB\nCD")),
+        "{regions}"
+    );
+    let ambiguous = regions["ambiguous_texts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["text"] == "ABCDE")
+        .unwrap();
+    assert_eq!(ambiguous["candidate_regions"], json!([0, 1]), "{ambiguous}");
 }
 
 #[test]

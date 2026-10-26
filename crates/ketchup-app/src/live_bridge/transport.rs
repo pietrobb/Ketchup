@@ -190,6 +190,7 @@ fn response_wait(request: &Request) -> Duration {
         | Request::PatchProgram { .. }
         | Request::SetProgramParams { .. }
         | Request::UseProgramVariant { .. }
+        | Request::ProgramFromUnderlay { .. }
         | Request::SaveProgramVariant { .. }
         | Request::DeleteProgramVariant { .. }
         | Request::ExportProgramVariants { .. }
@@ -244,6 +245,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::PatchProgram { .. }
         | Request::SetProgramParams { .. }
         | Request::UseProgramVariant { .. }
+        | Request::ProgramFromUnderlay { .. }
         | Request::SaveProgramVariant { .. }
         | Request::DeleteProgramVariant { .. }
         | Request::ExportProgramVariants { .. }

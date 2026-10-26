@@ -170,3 +170,51 @@ fn invalid_component_edits_and_names_fail_instead_of_diverging_from_shared_geome
         assert!(error.message.contains(message), "{suffix}: {error}");
     }
 }
+
+#[test]
+fn planar_program_profiles_preserve_open_runs_and_reject_nonrigid_solids() {
+    let evaluated = evaluate(
+        "planar.star",
+        r#"
+a=profile_part("wire",points=[(0,0),(4,0),(4,3)])
+c=component("drawing",[a])
+instance("same",c)
+instance("copy",c,matrix=[-2,1,0,10,0,3,0,20,0,0,1,0,0,0,0,1])
+"#,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(ketchup_program::exact::exact_candidates(&evaluated.model).is_empty());
+    let copy = evaluated.model.part("copy/wire").unwrap();
+    assert_eq!(copy.to_world([4.0, 3.0, 0.0]), [5.0, 29.0, 0.0]);
+    assert_eq!(copy.to_local([5.0, 29.0, 0.0]), [4.0, 3.0, 0.0]);
+    assert_eq!(copy.world_bounds(), ([2.0, 20.0, 0.0], [10.0, 29.0, 0.0]));
+    let singular = evaluate(
+        "singular.star",
+        r#"
+p=profile_part("p",points=[(0,0),(4,3)])
+c=component("c",[p])
+instance("flat",c,matrix=[0,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1])
+"#,
+        &BTreeMap::new(),
+    )
+    .unwrap_err();
+    assert!(singular.message.contains("invertible"), "{singular}");
+    let ketchup_program::model::ProgramPartBody::Profile { segments, closed } = &copy.body else {
+        panic!("not a profile")
+    };
+    assert!(!closed);
+    assert_eq!(segments.len(), 2);
+    assert!(
+        evaluate(
+            "bad.star",
+            r#"
+a=box("solid",(2,3,4))
+c=component("assembly",[a])
+instance("copy",c,matrix=[2,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1])
+"#,
+            &BTreeMap::new()
+        )
+        .is_err()
+    );
+}

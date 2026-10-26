@@ -55,10 +55,14 @@
 #     canonical membership and native contacts even when the program has been detached.
 #     Physical joint declarations also persist through detachment and Save/Open; the validator
 #     reports exact distance and max_gap in mm. Motion-only joints do not require contact.
+#   profile_part(name, points=[(x,y),...], closed=False) -> planar member, no thickness.
+#     Open runs stay open; closed adds the closing edge. Not a solid or a cut-list item.
 #   component(name, members) -> shared assembly, including its first instance.
 #     Finish members' machining/placement first; members are parts, groups or component instances.
 #   instance(name, component, at=(0,0,0), x=(1,0,0), z=(0,0,1)) -> instance.
 #     at/x/z transform the entire assembly about the PROGRAM ORIGIN, not its centre.
+#     Alternatively matrix=[16 row-major numbers] supplies an invertible affine map.
+#     Nonrigid maps require planar profiles without solid operations, joints or motion.
 #     Read copied parts as "instance-name/original-part-name"; edit shared members
 #     before component(), or copy() a part for independent machining. Internal
 #     joints/fasteners are copied; external joints and expect() conditions are not.
@@ -66,7 +70,8 @@
 #     Shared dimension edits, instance placement/add/remove and regrouping preserve surviving IDs.
 #     Nested edits update shared geometry once, including rebuilds, local copies and local groups.
 #     Incremental apply keeps the component definitions and member owners; move members only
-#     between groups of the same component. Changing owners or the component set needs a new build.
+#     between groups of the same component. Independent root components may be added/removed;
+#     changing owners or adding/removing nested components needs a new build.
 #   continue_part(part, was="previous-name") -> part; explicitly retain a previous part's ID.
 #     Use on one surviving piece after a rename/split. Other pieces are new parts.
 #     Keep the declaration on later edits; a fresh build uses the new names normally.

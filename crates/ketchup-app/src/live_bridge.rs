@@ -93,7 +93,9 @@ mod program_variants;
 #[cfg(test)]
 mod tests;
 mod transport;
+mod underlay_binding;
 mod underlay_objects;
+mod underlay_program;
 mod underlay_regions;
 mod underlay_snap;
 mod validator_catalog;
@@ -490,6 +492,8 @@ pub enum Request {
         #[serde(default)]
         tolerance_mm: Option<f64>,
         #[serde(default)]
+        closing_segments_mm: Vec<[[f64; 2]; 2]>,
+        #[serde(default)]
         include_outline: Option<bool>,
         #[serde(default)]
         limit: Option<usize>,
@@ -516,6 +520,26 @@ pub enum Request {
         angle_deg: Option<f64>,
         #[serde(default)]
         limit: Option<usize>,
+    },
+    /// Writes the outline of an underlay's region or object, or the placements of one of
+    /// its blocks, into the window's program as data named `name`, as one program apply.
+    ProgramFromUnderlay {
+        expected: Stamp,
+        name: String,
+        #[serde(default)]
+        underlay_id: Option<u64>,
+        #[serde(default)]
+        point_mm: Option<[f64; 2]>,
+        #[serde(default)]
+        layers: Option<Vec<String>>,
+        #[serde(default)]
+        tolerance_mm: Option<f64>,
+        #[serde(default)]
+        closing_segments_mm: Vec<[[f64; 2]; 2]>,
+        #[serde(default)]
+        object_id: Option<u32>,
+        #[serde(default)]
+        block: Option<String>,
     },
     /// Writes the visible model in one File menu export format.
     Export {
@@ -843,6 +867,7 @@ fn shortened_message(message: &str) -> String {
 fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'static str {
     use ketchup_application::RuleProgramApplyError as Error;
     let (reason, hint) = match &error {
+        Error::Rejected(rejection) => return program_write_failure(rejection),
         Error::Program { code, .. } => (
             code.clone(),
             "Fix the line named in details.location (its excerpt is the evaluated text) and apply or patch again.",
@@ -1249,6 +1274,9 @@ impl OccurrenceBatchDocument for KetchupApp {
                 crate::WorkRecoveryMutationError::Recovery(error) => {
                     OccurrenceBatchError::host_transaction(error)
                 }
+                crate::WorkRecoveryMutationError::Program(error) => {
+                    OccurrenceBatchError::host_transaction(error)
+                }
             })
     }
 }
@@ -1475,7 +1503,8 @@ impl KetchupApp {
                 request @ (Request::ApplyProgram { .. }
                 | Request::PatchProgram { .. }
                 | Request::SetProgramParams { .. }
-                | Request::UseProgramVariant { .. }) => {
+                | Request::UseProgramVariant { .. }
+                | Request::ProgramFromUnderlay { .. }) => {
                     bridge.start_queued_apply_program(
                         self,
                         context,
@@ -2475,6 +2504,7 @@ impl LiveBridge {
             .map_err(|error| match error {
                 WorkRecoveryMutationError::Mutation(code) => code,
                 WorkRecoveryMutationError::Recovery(_) => "recovery_rejected",
+                WorkRecoveryMutationError::Program(error) => program_failure(*error),
             })?;
         let after = app.live_bridge_stamp();
         app.exact.source = Some(exact_source(candidate));
@@ -2810,6 +2840,7 @@ impl LiveBridge {
                 |error: WorkRecoveryMutationError<ProposalCommitError>| match error {
                     WorkRecoveryMutationError::Mutation(_) => "commit_rejected",
                     WorkRecoveryMutationError::Recovery(_) => "recovery_rejected",
+                    WorkRecoveryMutationError::Program(error) => program_failure(*error),
                 },
             )?;
         self.pending.take().expect("committed pending proposal");
@@ -2854,7 +2885,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -3066,7 +3097,8 @@ impl LiveBridge {
             request @ (Request::ApplyProgram { .. }
             | Request::PatchProgram { .. }
             | Request::SetProgramParams { .. }
-            | Request::UseProgramVariant { .. }) => self
+            | Request::UseProgramVariant { .. }
+            | Request::ProgramFromUnderlay { .. }) => self
                 .apply_program(app, request, ui_busy, cancelled)
                 .map(|applied| applied.result(None)),
             request @ (Request::SaveProgramVariant { .. }

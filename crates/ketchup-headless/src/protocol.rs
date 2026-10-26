@@ -239,6 +239,12 @@ impl From<PdmWorkflowError> for Error {
 impl From<RuleProgramApplyError> for Error {
     fn from(error: RuleProgramApplyError) -> Self {
         match error {
+            RuleProgramApplyError::Rejected(rejection) => Self {
+                code: rejection.code().to_owned(),
+                message: rejection.reason_text().to_owned(),
+                details: Some(json!(rejection)),
+                causes: rejection.causes(),
+            },
             RuleProgramApplyError::Program {
                 code,
                 message,
@@ -1836,6 +1842,23 @@ pub fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn underlay_binding_rejection_keeps_its_structured_repair_and_cause() {
+        let rejection = ketchup_application::rejections::host_rejection("invalid_params")
+            .unwrap()
+            .rejection()
+            .target("program.underlay_binding")
+            .reason("The source selection is not valid JSON.")
+            .fix_hint("Restore the generated source section.")
+            .caused_by(serde_json::from_str::<Value>("{").unwrap_err());
+        let error = Error::from(RuleProgramApplyError::Rejected(Box::new(rejection.clone())));
+        assert_eq!(error.code, rejection.code());
+        assert_eq!(error.message, rejection.reason_text());
+        assert_eq!(error.details, Some(json!(rejection)));
+        assert_eq!(error.causes, rejection.causes());
+    }
+
     fn request(server: &mut Server, method: &str, mut params: Value) -> Value {
         if params.get("expected_revision").is_some()
             && params.get("expected_mutation_epoch").is_none()

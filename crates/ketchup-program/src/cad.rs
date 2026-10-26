@@ -48,7 +48,7 @@ pub fn profile_entities(segments: &[ProgramProfileSegment]) -> Vec<AssistantSket
 /// A part's body, plus the holes and pockets it drills itself
 /// (`Part::panel_machining`); the planner subtracts its other operations in
 /// program order.
-pub fn part(part: &Part) -> AssistantCadEditOperation {
+pub fn part(part: &Part) -> Option<AssistantCadEditOperation> {
     let drilled = &part.operations[..part.panel_machining()];
     let holes = drilled
         .iter()
@@ -85,6 +85,7 @@ pub fn part(part: &Part) -> AssistantCadEditOperation {
         })
         .collect();
     let (segments, feature) = match &part.body {
+        ProgramPartBody::Profile { .. } => return None,
         ProgramPartBody::Extrusion {
             segments,
             distance_mm,
@@ -122,7 +123,7 @@ pub fn part(part: &Part) -> AssistantCadEditOperation {
             AssistantCadPartFeature::Extrusion { distance_mm: 1.0 },
         ),
     };
-    AssistantCadEditOperation::CreatePart {
+    Some(AssistantCadEditOperation::CreatePart {
         name: part.name.clone(),
         workplane: AssistantWorkplaneSpec::Principal {
             plane: AssistantPrincipalPlane::Xy,
@@ -134,11 +135,11 @@ pub fn part(part: &Part) -> AssistantCadEditOperation {
         pockets,
         translation_mm: part.at_mm,
         rotation: None,
-    }
+    })
 }
 
 /// One independent part creation operation per part, in program order.
 #[must_use]
 pub fn part_operations(model: &ProgramModel) -> Vec<AssistantCadEditOperation> {
-    model.parts.iter().map(part).collect()
+    model.parts.iter().filter_map(part).collect()
 }

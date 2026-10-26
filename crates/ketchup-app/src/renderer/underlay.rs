@@ -8,7 +8,7 @@
 //! changes which segment ranges are drawn and which layers' letters the GPU keeps.
 
 mod letters;
-mod text;
+pub(crate) mod text;
 
 use super::{linear_rgba, single_precision};
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};

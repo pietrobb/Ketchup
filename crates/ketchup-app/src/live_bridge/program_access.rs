@@ -203,6 +203,9 @@ impl LiveBridge {
             Request::UseProgramVariant { expected, name } => {
                 return Self::expand_use_variant(app, expected, &name);
             }
+            request @ Request::ProgramFromUnderlay { .. } => {
+                return Self::expand_program_from_underlay(app, request);
+            }
             request => return Ok(request),
         };
         Self::guard(app, &Some(expected.clone()))?;

@@ -128,7 +128,7 @@ pub enum ObjectDetail {
         block: String,
         /// From the block's coordinates to the underlay's, in millimetres.
         transform: Affine,
-        /// Columns and rows of a placement repeated in an array, `[1, 1]` for one.
+        /// Columns and rows; new imports expand arrays into separate `[1, 1]` objects.
         copies: [u32; 2],
         /// Tag and value of each attribute, in the drawing's order.
         attributes: Vec<(String, String)>,

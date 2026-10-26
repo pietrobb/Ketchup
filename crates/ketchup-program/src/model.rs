@@ -499,6 +499,11 @@ impl ProgramOperation {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProgramPartBody {
+    /// A connected planar wire, without thickness or a solid body.
+    Profile {
+        segments: Vec<ProgramProfileSegment>,
+        closed: bool,
+    },
     /// The closed profile padded along local +z by `distance_mm`; `caps`
     /// name the faces at z = 0 and z = distance.
     Extrusion {
@@ -733,7 +738,7 @@ pub struct Part {
     pub grounded: bool,
     /// World position of the local origin.
     pub at_mm: [f64; 3],
-    /// Row-major rotation of the local frame; columns are the local axes in world.
+    /// Row-major local frame; columns are world axes. Profiles may use an affine frame.
     #[serde(
         default = "frame::identity",
         skip_serializing_if = "frame::is_exact_identity"
@@ -759,6 +764,10 @@ pub struct Part {
 }
 
 impl Part {
+    #[must_use]
+    pub fn is_solid(&self) -> bool {
+        !matches!(self.body, ProgramPartBody::Profile { .. })
+    }
     /// The designation a bought part is ordered by (attribute `designation`,
     /// e.g. a library fastener's "ISO 4017 M8x40"): it belongs to the hardware
     /// list, not to the cut list of made parts, unless it is a bar.
@@ -788,7 +797,7 @@ impl Part {
     /// designation nor cut from bar stock.
     #[must_use]
     pub fn made(&self) -> bool {
-        self.designation().is_none() && self.cut_length_mm().is_none()
+        self.is_solid() && self.designation().is_none() && self.cut_length_mm().is_none()
     }
 
     pub fn holes(&self) -> impl Iterator<Item = &Hole> {
@@ -890,7 +899,9 @@ impl Part {
                 .map(str::to_owned)
                 .chain(segments.iter().map(|segment| segment.name.clone()))
                 .collect(),
-            ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => Vec::new(),
+            ProgramPartBody::Profile { .. }
+            | ProgramPartBody::Sweep { .. }
+            | ProgramPartBody::Loft { .. } => Vec::new(),
         }
     }
 
@@ -1011,7 +1022,9 @@ impl Part {
                     .map(|index| segment_label(segments, index))
                     .ok_or_else(unknown)
             }
-            ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => Err(unknown()),
+            ProgramPartBody::Profile { .. }
+            | ProgramPartBody::Sweep { .. }
+            | ProgramPartBody::Loft { .. } => Err(unknown()),
         }
     }
 
@@ -1082,6 +1095,10 @@ impl Part {
 
     fn body_bounds(&self) -> ([f64; 3], [f64; 3]) {
         match &self.body {
+            ProgramPartBody::Profile { segments, .. } => {
+                let (min, max) = profile_bounds(segments);
+                ([min[0], min[1], 0.0], [max[0], max[1], 0.0])
+            }
             ProgramPartBody::Extrusion {
                 segments,
                 distance_mm,
@@ -1255,6 +1272,9 @@ impl Part {
         let largest =
             |values: &mut dyn Iterator<Item = f64>| values.fold(f64::NEG_INFINITY, f64::max);
         let body = match &self.body {
+            ProgramPartBody::Profile { segments, .. } => {
+                largest(&mut segments.iter().map(|s| s.support([local[0], local[1]])))
+            }
             ProgramPartBody::Extrusion {
                 segments,
                 distance_mm,
@@ -1294,6 +1314,10 @@ impl Part {
 
     #[must_use]
     pub fn obb(&self) -> Obb {
+        if !self.is_solid() {
+            let (min, max) = self.world_bounds();
+            return Obb::new([0.0; 3], &frame::IDENTITY, min, max);
+        }
         let (min, max) = self.local_bounds();
         Obb::new(self.at_mm, &self.rotation, min, max)
     }
@@ -1301,6 +1325,15 @@ impl Part {
     /// World axis-aligned bounds as (min, max).
     #[must_use]
     pub fn world_bounds(&self) -> ([f64; 3], [f64; 3]) {
+        if !self.is_solid() {
+            let reach = |axis: usize, sign: f64| {
+                sign * self.reach(std::array::from_fn(|i| if i == axis { sign } else { 0.0 }))
+            };
+            return (
+                std::array::from_fn(|i| reach(i, -1.0)),
+                std::array::from_fn(|i| reach(i, 1.0)),
+            );
+        }
         self.obb().world_bounds()
     }
 
@@ -1359,6 +1392,20 @@ impl Part {
     /// Part-local point for a world point.
     #[must_use]
     pub fn to_local(&self, world: [f64; 3]) -> [f64; 3] {
+        if !self.is_solid() {
+            let [a, b, c] = self.rotation;
+            let cross = ketchup_geometry::linalg::cross;
+            let determinant = dot(a, cross(b, c));
+            let inverse = frame::transposed(&[
+                cross(b, c).map(|v| v / determinant),
+                cross(c, a).map(|v| v / determinant),
+                cross(a, b).map(|v| v / determinant),
+            ]);
+            return frame::apply(
+                &inverse,
+                std::array::from_fn(|axis| world[axis] - self.at_mm[axis]),
+            );
+        }
         frame::apply_transposed(
             &self.rotation,
             std::array::from_fn(|axis| world[axis] - self.at_mm[axis]),
@@ -1471,6 +1518,11 @@ impl Part {
                     parameters,
                 ));
             }
+            ProgramPartBody::Profile { .. } => features.push(feature(
+                format!("{} profile", self.name),
+                ProgramFeatureKind::Sketch,
+                Vec::new(),
+            )),
             // Any change rebuilds a swept or lofted part, so its tree names
             // the body only.
             ProgramPartBody::Sweep { .. } => features.push(feature(

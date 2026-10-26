@@ -216,6 +216,24 @@ fn object_row(
         "text": (!quoted.is_empty()).then_some(quoted),
     });
     let fields = row.as_object_mut().expect("a JSON object");
+    if texts.len() == 1 {
+        let centres = crate::renderer::underlay::text::letter_centres(texts[0]);
+        if let Some(first) = centres.first() {
+            let bounds = centres.iter().fold([*first, *first], |mut bounds, point| {
+                for axis in 0..2 {
+                    bounds[0][axis] = bounds[0][axis].min(point[axis]);
+                    bounds[1][axis] = bounds[1][axis].max(point[axis]);
+                }
+                bounds
+            });
+            let centre = [0, 1].map(|axis| (bounds[0][axis] + bounds[1][axis]) / 2.0);
+            fields.insert("text_point_mm".into(), json!(place.document(centre)));
+            fields.insert(
+                "text_anchor_mm".into(),
+                json!(place.document(texts[0].anchor_mm)),
+            );
+        }
+    }
     match &object.detail {
         ObjectDetail::Insert {
             block,

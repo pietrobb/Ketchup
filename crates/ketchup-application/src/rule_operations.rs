@@ -20,6 +20,85 @@ use ketchup_program::model::{
     ProgramPathSegment, ProgramProfileSegment, ProgramShell,
 };
 
+pub(crate) fn append_profiles(
+    document: &ketchup_model::document::DocumentStore,
+    parts: &[&Part],
+    commands: &mut Vec<CanonicalCommand>,
+) -> Result<(), AssistantRejection> {
+    let snapshot = document.current();
+    let mut definition = snapshot
+        .definitions()
+        .map(|d| d.id().0)
+        .chain(commands.iter().filter_map(|c| match c {
+            CanonicalCommand::CreateDefinition { id, .. } => Some(id.0),
+            _ => None,
+        }))
+        .max()
+        .unwrap_or(0);
+    let mut feature = snapshot
+        .features()
+        .map(|d| d.id().0)
+        .chain(commands.iter().filter_map(|c| match c {
+            CanonicalCommand::CreateFeature { id, .. } => Some(id.0),
+            _ => None,
+        }))
+        .max()
+        .unwrap_or(0);
+    let mut occurrence = snapshot
+        .occurrences()
+        .map(|d| d.id().0)
+        .chain(commands.iter().filter_map(|c| match c {
+            CanonicalCommand::CreateOccurrence { id, .. } => Some(id.0),
+            _ => None,
+        }))
+        .max()
+        .unwrap_or(0);
+    for part in parts {
+        let ProgramPartBody::Profile { segments, closed } = &part.body else {
+            continue;
+        };
+        if !part.operations.is_empty() {
+            return Err(assistant_planning_rejection(
+                "planning.profile_not_solid",
+                "rule_part",
+                &part.name,
+                "A planar member cannot carry solid operations.",
+                "Remove the solid operations or extrude a separate solid part.",
+            ));
+        }
+        let exhausted =
+            || assistant_canonical_rejection(CanonicalError::IdExhausted, "rule_part", &part.name);
+        definition = definition.checked_add(1).ok_or_else(exhausted)?;
+        feature = feature.checked_add(1).ok_or_else(exhausted)?;
+        occurrence = occurrence.checked_add(1).ok_or_else(exhausted)?;
+        let definition_id = DefinitionId(definition);
+        commands.push(CanonicalCommand::CreateDefinition {
+            id: definition_id,
+            name: part.name.clone(),
+        });
+        commands.push(CanonicalCommand::CreateFeature {
+            id: FeatureId(feature),
+            definition_id,
+            name: format!("{} profile", part.name),
+            kind: FeatureKind::Profile {
+                segments: segments.iter().map(profile_segment).collect(),
+                closed: *closed,
+            },
+        });
+        commands.push(CanonicalCommand::CreateOccurrence {
+            id: ketchup_model::document::OccurrenceId(occurrence),
+            definition_id,
+            name: part.name.clone(),
+            transform: Transform::from_matrix(part.transform_matrix())
+                .map_err(|e| assistant_canonical_rejection(e, "rule_part", &part.name))?,
+            parent: None,
+            tags: Default::default(),
+            visible: true,
+        });
+    }
+    Ok(())
+}
+
 /// The canonical segment of one program profile segment.
 pub(crate) fn profile_segment(segment: &ProgramProfileSegment) -> ProfileSegment {
     if let Some([control_1_mm, control_2_mm]) = segment.bezier {
@@ -485,6 +564,15 @@ impl<'a> OperationPlanner<'a> {
             id: body,
         });
         let segments = match &tool.body {
+            ProgramPartBody::Profile { .. } => {
+                return Err(assistant_planning_rejection(
+                    "planning.profile_not_solid",
+                    "rule_part",
+                    &tool.name,
+                    "A planar profile cannot be used as a solid tool.",
+                    "Extrude the profile before using a solid operation.",
+                ));
+            }
             ProgramPartBody::Extrusion { segments, .. }
             | ProgramPartBody::Revolve { segments, .. }
             | ProgramPartBody::Sweep { segments, .. } => {
@@ -520,7 +608,9 @@ impl<'a> OperationPlanner<'a> {
                 path: self.feature(format!("{prefix} tool path"), spatial_path(path))?,
                 up: *up,
             },
-            ProgramPartBody::Loft { .. } => unreachable!("built above"),
+            ProgramPartBody::Profile { .. } | ProgramPartBody::Loft { .. } => {
+                unreachable!("handled above")
+            }
             ProgramPartBody::Extrusion { distance_mm, .. } => {
                 self.extrusion(profile, *distance_mm)?
             }

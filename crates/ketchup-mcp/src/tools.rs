@@ -276,6 +276,7 @@ impl Tools {
                 "report",
                 "docs",
                 "validate",
+                "from_underlay",
             ],
         )?
         .as_str()
@@ -317,6 +318,7 @@ impl Tools {
                 self.send("program_report", args, APPLY_PROGRAM_WAIT)
             }
             "validate" => self.send("validate_program", args, APPLY_PROGRAM_WAIT),
+            "from_underlay" => self.send("program_from_underlay", args, APPLY_PROGRAM_WAIT),
             action @ ("apply" | "check") => {
                 if let Some(path) = take_text(&mut args, "source_path")? {
                     if args.contains_key("source") {

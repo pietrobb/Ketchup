@@ -349,9 +349,135 @@ fn reconcile_members(
     Ok(commands)
 }
 
+/// Reconciles independent component additions/removals around the existing member path.
+pub(crate) fn incremental(
+    document: &DocumentStore,
+    old: &ProgramModel,
+    new: &ProgramModel,
+) -> Result<CommandBatch, RuleProgramApplyError> {
+    let old_names = old
+        .components
+        .iter()
+        .map(|c| c.name.clone())
+        .collect::<BTreeSet<_>>();
+    let new_names = new
+        .components
+        .iter()
+        .map(|c| c.name.clone())
+        .collect::<BTreeSet<_>>();
+    let removed = old_names
+        .difference(&new_names)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let added = new_names
+        .difference(&old_names)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if removed.is_empty() && added.is_empty() {
+        return incremental_existing(document, old, new);
+    }
+    // Moving an existing member between owners remains an explicit continuity operation.
+    for (model, names) in [(old, &removed), (new, &added)] {
+        let direct = crate::rule_assembly_members::direct_model(model);
+        if names
+            .iter()
+            .any(|name| crate::rule_assembly_members::owner(&direct, name).is_some())
+        {
+            return Err(RuleProgramApplyError::IncrementalUnsupported);
+        }
+    }
+    for component in new.components.iter().filter(|c| added.contains(&c.name)) {
+        let grouped = new.groups.iter().any(|g| {
+            g.members.contains(&component.name)
+                || new
+                    .instances
+                    .iter()
+                    .any(|i| i.component == component.name && g.members.contains(&i.name))
+        });
+        if grouped || component.parts.iter().any(|p| old.part(&p.name).is_some()) {
+            return Err(RuleProgramApplyError::IncrementalUnsupported);
+        }
+    }
+    if old
+        .components
+        .iter()
+        .filter(|c| removed.contains(&c.name))
+        .any(|c| c.parts.iter().any(|p| new.part(&p.name).is_some()))
+    {
+        return Err(RuleProgramApplyError::IncrementalUnsupported);
+    }
+    let subset = |model: &ProgramModel, names: &BTreeSet<String>, keep: bool| {
+        let mut selected = names.clone();
+        for c in model.components.iter().filter(|c| names.contains(&c.name)) {
+            selected.extend(c.parts.iter().map(|p| p.name.clone()));
+            selected.extend(c.groups.iter().map(|g| g.name.clone()));
+            for i in model.instances.iter().filter(|i| i.component == c.name) {
+                selected.insert(i.name.clone());
+                selected.extend(c.parts.iter().map(|p| format!("{}/{}", i.name, p.name)));
+                selected.extend(c.groups.iter().map(|g| format!("{}/{}", i.name, g.name)));
+            }
+        }
+        let mut result = model.clone();
+        result.parts.retain(|p| selected.contains(&p.name) == keep);
+        result.groups.retain(|g| selected.contains(&g.name) == keep);
+        for g in &mut result.groups {
+            g.members.retain(|n| selected.contains(n) == keep);
+        }
+        result
+            .components
+            .retain(|c| names.contains(&c.name) == keep);
+        result
+            .instances
+            .retain(|i| names.contains(&i.component) == keep);
+        result
+    };
+    let before = subset(old, &removed, false);
+    let after = subset(new, &added, false);
+    let mut staged = document.fork_for_planning();
+    let snapshot = staged.current();
+    let mut commands = Vec::new();
+    for c in old.components.iter().filter(|c| removed.contains(&c.name)) {
+        let definition = snapshot
+            .definitions()
+            .find(|d| d.name() == c.name)
+            .ok_or(RuleProgramApplyError::IncrementalUnsupported)?;
+        for occurrence in snapshot
+            .occurrences()
+            .filter(|o| o.definition_id() == definition.id())
+        {
+            commands.push(CanonicalCommand::DeleteOccurrence {
+                id: occurrence.id(),
+            });
+        }
+        commands.push(CanonicalCommand::DeleteDefinition {
+            id: definition.id(),
+        });
+        for p in &c.parts {
+            if let Some(d) = snapshot.definitions().find(|d| d.name() == p.name) {
+                commands.push(CanonicalCommand::DeleteDefinition { id: d.id() });
+            }
+        }
+    }
+    if !commands.is_empty() {
+        staged
+            .apply_batch(&CommandBatch::new(commands.clone()))
+            .map_err(SessionError::Canonical)?;
+    }
+    let existing = incremental_existing(&staged, &before, &after)?;
+    if !existing.commands().is_empty() {
+        staged
+            .apply_batch(&existing)
+            .map_err(SessionError::Canonical)?;
+    }
+    commands.extend(existing.commands().iter().cloned());
+    let additions = build(&staged, &subset(new, &added, true))?;
+    commands.extend(additions.commands().iter().cloned());
+    Ok(CommandBatch::new(commands))
+}
+
 /// Updates shared geometry once and reconciles root instances without duplicating definitions.
 /// Rebuilt member geometry is repointed beneath the existing local occurrence identity.
-pub(crate) fn incremental(
+fn incremental_existing(
     document: &DocumentStore,
     old: &ProgramModel,
     new: &ProgramModel,

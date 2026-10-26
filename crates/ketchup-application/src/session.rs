@@ -518,6 +518,9 @@ impl DocumentSession {
         batch: CommandBatch,
         source: ketchup_model::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
+        if batch.commands().is_empty() {
+            return self.replace_rule_program_source(source);
+        }
         let proposal = self
             .document
             .prepare_proposal_with_context(batch, ProposalContext::rule_program())

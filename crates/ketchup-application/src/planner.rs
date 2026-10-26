@@ -4097,9 +4097,16 @@ pub fn plan_rule_part_batch(
     document: &DocumentStore,
     parts: &[ProgramPart],
 ) -> Result<CommandBatch, Box<AssistantRejectionDiagnostic>> {
+    let solids = parts
+        .iter()
+        .filter(|p| p.is_solid())
+        .cloned()
+        .collect::<Vec<_>>();
+    let profiles = parts.iter().filter(|p| !p.is_solid()).collect::<Vec<_>>();
+    let parts = &solids;
     let operations = parts
         .iter()
-        .map(ketchup_program::cad::part)
+        .filter_map(ketchup_program::cad::part)
         .collect::<Vec<_>>();
     let base = plan_part_batch(document, &operations)?;
     let snapshot = document.current();
@@ -4167,6 +4174,7 @@ pub fn plan_rule_part_batch(
         OperationPlanner::new(&mut commands, definition_id, &mut next_feature, &part.name)
             .apply(part, target)?;
     }
+    crate::rule_operations::append_profiles(document, &profiles, &mut commands)?;
     Ok(CommandBatch::new(commands))
 }
 

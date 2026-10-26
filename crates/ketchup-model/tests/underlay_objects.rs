@@ -144,6 +144,79 @@ fn an_insert_keeps_its_block_placement_attributes_and_nested_children() {
 }
 
 #[test]
+fn array_insert_copies_keep_distinct_affine_children_and_geometry() {
+    let source = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+        "0\nSECTION\n2\nBLOCKS\n",
+        "0\nBLOCK\n8\n0\n2\nleaf\n70\n0\n10\n2\n20\n3\n",
+        "0\nLINE\n5\nA1\n8\n0\n10\n2\n20\n3\n11\n12\n21\n8\n0\nENDBLK\n",
+        "0\nBLOCK\n8\n0\n2\narray\n70\n0\n10\n0\n20\n0\n",
+        "0\nINSERT\n5\nB1\n8\n0\n2\nleaf\n10\n10\n20\n20\n50\n30\n",
+        "70\n2\n71\n2\n44\n40\n45\n60\n0\nENDBLK\n0\nENDSEC\n",
+        "0\nSECTION\n2\nENTITIES\n",
+        "0\nINSERT\n5\nC1\n8\ncopies\n2\narray\n10\n1000\n20\n2000\n",
+        "41\n-2\n42\n3\n50\n90\n70\n2\n71\n1\n44\n200\n",
+        "0\nENDSEC\n0\nEOF\n"
+    );
+    let drawing = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
+    let lines = UnderlayLines::decode(&drawing.lines.encode()).unwrap();
+    let roots: Vec<_> = lines
+        .objects()
+        .objects
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| object.parent.is_none())
+        .collect();
+    assert_eq!(roots.len(), 2);
+    let (sin, cos) = 30.0_f64.to_radians().sin_cos();
+    let mut seen = Vec::new();
+    for (outer, (root_id, _)) in roots.iter().enumerate() {
+        let children: Vec<_> = lines
+            .objects()
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|(_, object)| object.parent == Some(*root_id as u32))
+            .collect();
+        assert_eq!(children.len(), 4);
+        for (copy, (id, object)) in children.iter().enumerate() {
+            let ObjectDetail::Insert {
+                transform, copies, ..
+            } = &object.detail
+            else {
+                panic!("insert")
+            };
+            assert_eq!(*copies, [1, 1]);
+            let col = (copy % 2) as f64;
+            let row = (copy / 2) as f64;
+            let start = [
+                10.0 + col * 40.0 * cos - row * 60.0 * sin,
+                20.0 + col * 40.0 * sin + row * 60.0 * cos,
+            ];
+            let end = [
+                start[0] + 10.0 * cos - 5.0 * sin,
+                start[1] + 10.0 * sin + 5.0 * cos,
+            ];
+            let world = |p: [f64; 2]| {
+                [
+                    1000.0 - 3.0 * p[1],
+                    2000.0 + outer as f64 * 200.0 - 2.0 * p[0],
+                ]
+            };
+            let (_, line) = child(&lines, Some(*id as u32), 0xA1);
+            let points = drawn(&lines, line).0;
+            assert!(points.iter().any(|p| near(*p, world(start))), "{points:?}");
+            assert!(points.iter().any(|p| near(*p, world(end))), "{points:?}");
+            assert!(near(apply(transform, [2.0, 3.0]), world(start)));
+            assert!(near(apply(transform, [12.0, 8.0]), world(end)));
+            assert!(!seen.iter().any(|p| near(*p, world(start))));
+            seen.push(world(start));
+        }
+    }
+    assert_eq!(seen.len(), 8);
+}
+
+#[test]
 fn a_dimension_keeps_its_measurement_points_and_drawn_text() {
     let underlay = read();
     let lines = &underlay.lines;

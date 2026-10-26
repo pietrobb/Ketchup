@@ -17,6 +17,7 @@ pub enum RuleProgramApplyError {
         /// Where in the user's program it failed, when known.
         location: Option<Box<ketchup_program::ErrorLocation>>,
     },
+    Rejected(Box<Rejection>),
     IncrementalUnsupported,
     ReplacementConfirmationRequired,
     UnsavedChanges,
@@ -27,6 +28,7 @@ impl std::fmt::Display for RuleProgramApplyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Program { message, .. } => f.write_str(message),
+            Self::Rejected(rejection) => rejection.fmt(f),
             Self::IncrementalUnsupported => f.write_str(
                 "this change cannot yet update the existing program model; the document and undo history were not replaced",
             ),
@@ -41,7 +43,15 @@ impl std::fmt::Display for RuleProgramApplyError {
     }
 }
 
-impl std::error::Error for RuleProgramApplyError {}
+impl std::error::Error for RuleProgramApplyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Rejected(rejection) => Some(rejection.as_ref()),
+            Self::Session(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl RuleProgramApplyError {
     /// The code of the failure: the program's own for a refusal of the
@@ -50,6 +60,7 @@ impl RuleProgramApplyError {
     pub fn code(&self) -> &str {
         match self {
             Self::Program { code, .. } => code,
+            Self::Rejected(rejection) => rejection.code(),
             Self::IncrementalUnsupported => "incremental_unsupported",
             Self::ReplacementConfirmationRequired => "not_program_document",
             Self::UnsavedChanges => "unsaved_changes",
@@ -62,6 +73,9 @@ impl RuleProgramApplyError {
     /// ([`crate::rejections`]); a code it lacks is fixed as a rejected program.
     #[must_use]
     pub fn rejection(&self) -> Rejection {
+        if let Self::Rejected(rejection) = self {
+            return rejection.as_ref().clone();
+        }
         let (phase, target, fix_hint) = crate::rejections::host_rejection(self.code())
             .or_else(|| crate::rejections::host_rejection("program_rejected"))
             .map_or(
@@ -352,7 +366,10 @@ fn incremental_batch(
     };
     if snapshot
         .occurrences()
-        .filter(|occurrence| !drawing_only(occurrence.definition_id()))
+        .filter(|occurrence| {
+            old.parts.iter().any(|p| p.name == occurrence.name())
+                || !drawing_only(occurrence.definition_id())
+        })
         .count()
         != old.parts.len()
     {
@@ -663,7 +680,8 @@ pub(crate) fn program_feature_references_match(
         ) => segment_names(left) == segment_names(right),
         // Swept and lofted bodies have no editable parameters: equal or rebuilt.
         (
-            ketchup_program::model::ProgramPartBody::Sweep { .. }
+            ketchup_program::model::ProgramPartBody::Profile { .. }
+            | ketchup_program::model::ProgramPartBody::Sweep { .. }
             | ketchup_program::model::ProgramPartBody::Loft { .. },
             _,
         ) => before.body == after.body,

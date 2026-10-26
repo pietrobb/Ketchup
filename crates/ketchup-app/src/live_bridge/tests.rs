@@ -60,6 +60,8 @@ pub(super) mod program_access;
 mod program_edit;
 #[path = "underlay_objects_tests.rs"]
 mod underlay_objects;
+#[path = "underlay_program_tests.rs"]
+mod underlay_program;
 #[test]
 fn z6_named_views_are_orthographic_and_iso_keeps_positive_z_up() {
     let (mut app, mut bridge) = setup();

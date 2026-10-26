@@ -76,8 +76,13 @@ fn check(
                 &scratch,
                 plan.evaluated.reference_model(),
             )?;
-            build(&mut scratch, batch)?;
-            ("created", scratch.current())
+            if batch.commands().is_empty() && before.definitions().next().is_none() {
+                // As an apply: a program that builds nothing owns the document as it is.
+                ("source_only", before.clone())
+            } else {
+                build(&mut scratch, batch)?;
+                ("created", scratch.current())
+            }
         }
     };
     let model = plan.evaluated.model;

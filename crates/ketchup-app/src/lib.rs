@@ -2071,29 +2071,7 @@ enum MutationReadiness {
     Pending,
 }
 
-#[derive(Debug)]
-enum WorkRecoveryMutationError<E> {
-    Mutation(E),
-    Recovery(ketchup_model::persistence::FilePersistenceError),
-}
-
-impl<E: std::fmt::Display> std::fmt::Display for WorkRecoveryMutationError<E> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Mutation(error) => error.fmt(formatter),
-            Self::Recovery(error) => error.fmt(formatter),
-        }
-    }
-}
-
-impl<E: std::error::Error> std::error::Error for WorkRecoveryMutationError<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Mutation(error) => error.source(),
-            Self::Recovery(error) => error.source(),
-        }
-    }
-}
+use program_edit::WorkRecoveryMutationError;
 
 pub struct KetchupApp {
     document: DocumentStore,

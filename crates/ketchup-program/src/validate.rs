@@ -374,7 +374,8 @@ pub(crate) fn is_box(part: &Part) -> bool {
                     .sum();
                 (doubled_area.abs() / 2.0 - width * depth).abs() <= CONTACT_FIT_MM * (width + depth)
             }
-            ProgramPartBody::Extrusion { .. }
+            ProgramPartBody::Profile { .. }
+            | ProgramPartBody::Extrusion { .. }
             | ProgramPartBody::Revolve { .. }
             | ProgramPartBody::Sweep { .. }
             | ProgramPartBody::Loft { .. } => false,
@@ -414,7 +415,9 @@ fn round(value: f64) -> f64 {
 
 fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
     let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
-    let mut order: Vec<usize> = (0..model.parts.len()).collect();
+    let mut order: Vec<usize> = (0..model.parts.len())
+        .filter(|i| model.parts[*i].is_solid())
+        .collect();
     order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
     for (position, &left) in order.iter().enumerate() {
         let a = &model.parts[left];
@@ -742,7 +745,7 @@ fn support<'a>(
     // spreads through it from the parts that stand.
     let mut neighbours: Vec<Vec<usize>> = vec![Vec::new(); count];
     let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
-    let mut order: Vec<usize> = (0..count).collect();
+    let mut order: Vec<usize> = (0..count).filter(|i| model.parts[*i].is_solid()).collect();
     order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
     for (position, &left) in order.iter().enumerate() {
         for &right in &order[position + 1..] {
@@ -805,7 +808,7 @@ fn support<'a>(
         }
     }
     for (index, part) in model.parts.iter().enumerate() {
-        if !supported[index] {
+        if part.is_solid() && !supported[index] {
             issues.push(Issue {
                 source_lines: Vec::new(),
                 severity: Severity::Warning,

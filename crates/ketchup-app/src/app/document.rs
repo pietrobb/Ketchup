@@ -1358,7 +1358,10 @@ impl KetchupApp {
                 }
                 Ok((value, publication_error))
             }
-            Err(error @ WorkRecoveryMutationError::Mutation(_)) => Err(error),
+            Err(
+                error @ (WorkRecoveryMutationError::Mutation(_)
+                | WorkRecoveryMutationError::Program(_)),
+            ) => Err(error),
             Err(WorkRecoveryMutationError::Recovery(error)) => {
                 let path = document_path
                     .as_deref()
@@ -1384,6 +1387,15 @@ impl KetchupApp {
         &mut self,
         batch: &CommandBatch,
     ) -> Result<(), WorkRecoveryMutationError<CanonicalError>> {
+        if let Some((source, plan)) = self
+            .plan_underlay_program_update(batch)
+            .map_err(|error| WorkRecoveryMutationError::Program(Box::new(error)))?
+        {
+            return self
+                .publish_underlay_program_update(batch, source, plan)
+                .map(|_| ())
+                .map_err(|error| WorkRecoveryMutationError::Program(Box::new(error)));
+        }
         self.complete_mutation_with_work_recovery(|document| {
             document.apply_batch(batch).map(|_| ())
         })
@@ -1393,9 +1405,8 @@ impl KetchupApp {
         &mut self,
         proposal: &Proposal,
     ) -> Result<(), WorkRecoveryMutationError<ProposalCommitError>> {
-        self.complete_mutation_with_work_recovery(|document| {
-            document.commit_proposal(proposal).map(|_| ())
-        })
+        self.commit_verified_proposal_with_work_recovery(proposal)
+            .map(|_| ())
     }
 
     pub(crate) fn commit_verified_proposal_with_work_recovery(
@@ -1405,6 +1416,20 @@ impl KetchupApp {
         ketchup_model::document::VerifiedProposalCommit,
         WorkRecoveryMutationError<ProposalCommitError>,
     > {
+        if let Some((source, plan)) = self
+            .plan_underlay_program_update(proposal.batch())
+            .map_err(|error| WorkRecoveryMutationError::Program(Box::new(error)))?
+        {
+            // Verify the original proposal (including authority/staleness) before
+            // extending it with deterministic program-derived commands.
+            self.document
+                .fork_for_planning()
+                .commit_verified_proposal(proposal)
+                .map_err(WorkRecoveryMutationError::Mutation)?;
+            return self
+                .publish_underlay_program_update(proposal.batch(), source, plan)
+                .map_err(|error| WorkRecoveryMutationError::Program(Box::new(error)));
+        }
         self.complete_mutation_with_work_recovery(|document| {
             document.commit_verified_proposal(proposal)
         })
@@ -1421,12 +1446,22 @@ impl KetchupApp {
         let previous_container = std::mem::replace(&mut self.file.container_data, staged_container);
         let result = self.commit_verified_proposal_with_work_recovery(proposal);
         if result.as_ref().is_err_and(|error| {
-            !matches!(
-                error,
-                WorkRecoveryMutationError::Recovery(
+            let published = match error {
+                WorkRecoveryMutationError::Recovery(error) => matches!(
+                    error,
                     ketchup_model::persistence::FilePersistenceError::Published { .. }
-                )
-            )
+                ),
+                WorkRecoveryMutationError::Program(error) => matches!(
+                    error.as_ref(),
+                    ketchup_application::RuleProgramApplyError::Session(
+                        ketchup_application::SessionError::Persistence(
+                            ketchup_model::persistence::FilePersistenceError::Published { .. }
+                        )
+                    )
+                ),
+                WorkRecoveryMutationError::Mutation(_) => false,
+            };
+            !published
         }) {
             self.file.container_data = previous_container;
         }

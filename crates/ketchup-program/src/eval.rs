@@ -1133,7 +1133,9 @@ fn insert_profile_part(
             let radius = max[0].abs().max(min[0].abs());
             [radius * 2.0, max[1] - min[1], radius * 2.0]
         }
-        ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => {
+        ProgramPartBody::Profile { .. }
+        | ProgramPartBody::Sweep { .. }
+        | ProgramPartBody::Loft { .. } => {
             let (min, max) = new_part(name, [0.0; 3], at_mm, body.clone()).local_bounds();
             std::array::from_fn(|axis| max[axis] - min[axis])
         }
@@ -1669,6 +1671,50 @@ fn boolean_builtins(builder: &mut GlobalsBuilder) {
             inherited.entry(target).or_default().extend(lines);
         }
         Ok(result)
+    }
+}
+
+#[starlark_module]
+fn planar_builtins(builder: &mut GlobalsBuilder) {
+    /// A connected planar wire; closed adds the final edge, never thickness.
+    fn profile_part<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] points: Value<'v>,
+        #[starlark(require = named, default = false)] closed: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        check_part_name(name)?;
+        let mut points = items(points, heap, "profile_part points")?
+            .into_iter()
+            .map(|p| numbers::<2>(p, heap, "profile_part point"))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        if points.len() < 2 || (closed && points.len() < 3) {
+            anyhow::bail!(
+                "profile_part {name:?}: provide at least two points, or three for a closed profile"
+            );
+        }
+        if closed && points.first() != points.last() {
+            points.push(points[0]);
+        }
+        let segments = points.windows(2).enumerate().map(|(i, pair)| {
+            if pair[0] == pair[1] { anyhow::bail!("profile_part {name:?}: consecutive points must differ; remove the duplicate point"); }
+            Ok(ProgramProfileSegment::line(format!("edge_{}", i + 1), pair[0], pair[1]))
+        }).collect::<anyhow::Result<Vec<_>>>()?;
+        let (min, max) = profile_bounds(&segments);
+        let state = state(eval)?;
+        let part = insert_part(
+            &state,
+            new_part(
+                name,
+                [max[0] - min[0], max[1] - min[1], 0.0],
+                [0.0; 3],
+                ProgramPartBody::Profile { segments, closed },
+            ),
+            false,
+        )?;
+        record_source(eval, &state, &[name]);
+        Ok(part_value(&part, heap))
     }
 }
 
@@ -2425,6 +2471,7 @@ fn globals() -> Globals {
     ])
     .with(builtins)
     .with(params::builtins)
+    .with(planar_builtins)
     .with(machining::builtins)
     .with(assemblies::builtins)
     .with(conditions::builtins)

@@ -41,6 +41,7 @@ impl LiveBridge {
             point_mm,
             min_area_m2,
             tolerance_mm,
+            closing_segments_mm,
             include_outline,
             limit,
             offset,
@@ -70,14 +71,16 @@ impl LiveBridge {
             &chosen,
             within_mm.map(|area| local_area(underlay, area)),
         );
-        let segments = pieces.iter().map(|piece| piece.ends).collect::<Vec<_>>();
+        let mut segments = pieces.iter().map(|piece| piece.ends).collect::<Vec<_>>();
+        add_closures(&mut segments, underlay, closing_segments_mm)?;
         let scale = underlay.scale();
         // The tolerance is document millimetres; the lines are the underlay's.
         let mut regions = find_regions(&segments, tolerance / scale)
             .map_err(|error| failed_because("invalid_params", error))?;
         let area_scale = scale * scale;
         regions.retain(|region| region.area_mm2 * area_scale / 1e6 >= min_area_m2);
-        let texts = texts_in(&lines, &chosen_text_layers(&snapshot, underlay), &regions);
+        let (texts, ambiguous_texts) =
+            texts_in(&lines, &chosen_text_layers(&snapshot, underlay), &regions);
         let local_point = point_mm.map(|point| underlay.to_local(point));
         let mut order = (0..regions.len()).collect::<Vec<_>>();
         if let Some(point) = local_point {
@@ -106,8 +109,11 @@ impl LiveBridge {
             "layers": chosen.iter().map(|index| &underlay.layers[*index].name).collect::<Vec<_>>(),
             "pieces": segments.len(),
             "tolerance_mm": tolerance,
+            "closing_segments_mm": closing_segments_mm,
             "matched": order.len(),
             "regions": rows,
+            "ambiguous_texts": ambiguous_texts,
+            "interpretation": "Geometric regions, not classified rooms. Text association uses rendered letter centres; verify boundaries and layers before modeling.",
             "next_offset": (next < order.len()).then_some(next),
         }))
     }
@@ -206,6 +212,70 @@ impl LiveBridge {
     }
 }
 
+/// The innermost region of the shown (or named) layers of `underlay` that holds the
+/// document point `point`, in the underlay's millimetres.
+pub(super) fn region_at(
+    snapshot: &Snapshot,
+    underlay: &Underlay,
+    lines: &UnderlayLines,
+    layers: Option<&[String]>,
+    point: [f64; 2],
+    tolerance_mm: Option<f64>,
+    closing_segments_mm: &[[[f64; 2]; 2]],
+) -> Result<Region, &'static str> {
+    let tolerance = tolerance_mm.unwrap_or(DEFAULT_JOIN_MM);
+    if !(tolerance > 0.0 && tolerance <= MAX_JOIN_MM)
+        || !point.iter().all(|value| value.is_finite())
+    {
+        return Err("invalid_params");
+    }
+    let chosen = chosen_layers(snapshot, underlay, layers)?;
+    let mut segments = pieces(lines, &chosen, None)
+        .iter()
+        .map(|piece| piece.ends)
+        .collect::<Vec<_>>();
+    add_closures(&mut segments, underlay, closing_segments_mm)?;
+    let local = underlay.to_local(point);
+    find_regions(&segments, tolerance / underlay.scale())
+        .map_err(|error| failed_because("invalid_params", error))?
+        .into_iter()
+        .filter(|region| region.contains(local))
+        .min_by(|a, b| a.area_mm2.total_cmp(&b.area_mm2))
+        .ok_or_else(|| {
+            super::program_access::invalid(
+                "point_mm",
+                "No closed region of the chosen layers holds the point.",
+                "Ask inspect action=underlay_regions with point_mm, or name the layers whose lines close around it.",
+            )
+        })
+}
+
+fn add_closures(
+    segments: &mut Vec<[[f64; 2]; 2]>,
+    underlay: &Underlay,
+    closures: &[[[f64; 2]; 2]],
+) -> Result<(), &'static str> {
+    if closures.len() > MAX_LIMIT
+        || closures
+            .iter()
+            .flatten()
+            .flatten()
+            .any(|value| !value.is_finite())
+    {
+        return Err(super::program_access::invalid(
+            "closing_segments_mm",
+            "Closing segments must contain finite document coordinates, at most 100 segments.",
+            "Supply only the explicit boundary gaps to close, as pairs of [x, y] endpoints.",
+        ));
+    }
+    segments.extend(
+        closures
+            .iter()
+            .map(|ends| ends.map(|point| underlay.to_local(point))),
+    );
+    Ok(())
+}
+
 /// The underlay `id` names, or the document's only one.
 pub(super) fn one_underlay(
     snapshot: &Snapshot,
@@ -225,7 +295,7 @@ pub(super) fn one_underlay(
 }
 
 /// The indices of the layers named (any case), or of every shown one.
-fn chosen_layers(
+pub(super) fn chosen_layers(
     snapshot: &Snapshot,
     underlay: &Underlay,
     names: Option<&[String]>,
@@ -336,26 +406,46 @@ fn pieces(lines: &UnderlayLines, layers: &[usize], area: Option<[[f64; 2]; 2]>) 
     pieces
 }
 
-/// For each region, the texts of `layers` whose anchor it is the innermost region of.
-fn texts_in(lines: &UnderlayLines, layers: &[usize], regions: &[Region]) -> Vec<Vec<String>> {
+/// Associate only when every visible letter centre lies in the same region.
+/// A text crossing boundaries is evidence for several candidates, not a region name.
+fn texts_in(
+    lines: &UnderlayLines,
+    layers: &[usize],
+    regions: &[Region],
+) -> (Vec<Vec<String>>, Vec<Value>) {
     let mut texts = vec![Vec::new(); regions.len()];
+    let mut ambiguous = Vec::new();
     for &layer in layers {
         let Some(drawn) = lines.layers().get(layer) else {
             continue;
         };
         for text in drawn.texts() {
-            let innermost = regions
-                .iter()
-                .enumerate()
-                .filter(|(_, region)| region.contains(text.anchor_mm))
-                .min_by(|a, b| a.1.area_mm2.total_cmp(&b.1.area_mm2))
-                .map(|(index, _)| index);
-            if let Some(index) = innermost {
-                texts[index].push(text.text.clone());
+            let centres = crate::renderer::underlay::text::letter_centres(text);
+            let mut candidates = std::collections::BTreeSet::new();
+            let mut outside = false;
+            for point in centres {
+                let innermost = regions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, region)| region.contains(point))
+                    .min_by(|a, b| a.1.area_mm2.total_cmp(&b.1.area_mm2))
+                    .map(|(index, _)| index);
+                if let Some(index) = innermost {
+                    candidates.insert(index);
+                } else {
+                    outside = true;
+                }
+            }
+            if candidates.len() == 1 && !outside {
+                if let Some(index) = candidates.first() {
+                    texts[*index].push(text.text.clone());
+                }
+            } else if !candidates.is_empty() {
+                ambiguous.push(json!({"text": text.text, "candidate_regions": candidates, "partly_outside": outside}));
             }
         }
     }
-    texts
+    (texts, ambiguous)
 }
 
 fn region_row(
