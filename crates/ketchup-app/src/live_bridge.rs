@@ -530,6 +530,9 @@ pub enum Request {
         underlay_id: Option<u64>,
         #[serde(default)]
         point_mm: Option<[f64; 2]>,
+        /// The text inside the region, instead of a point in it.
+        #[serde(default)]
+        label: Option<String>,
         #[serde(default)]
         layers: Option<Vec<String>>,
         #[serde(default)]
@@ -540,6 +543,9 @@ pub enum Request {
         object_id: Option<u32>,
         #[serde(default)]
         block: Option<String>,
+        /// Also extrude the outline this far, with its holes cut through.
+        #[serde(default)]
+        thickness_mm: Option<f64>,
     },
     /// Writes the visible model in one File menu export format.
     Export {

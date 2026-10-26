@@ -167,6 +167,118 @@ fn underlay_binding_updates_the_profile_and_exact_slab_from_changed_source() {
     assert!((exact_volume(&app, "floor") - 4.0 * area * 200.0).abs() < 1.0);
 }
 
+/// The floor of a room named in the drawing in one call: no lookup of the text or the
+/// region first, no second apply for the extrusion; it follows the room when it grows.
+#[test]
+fn a_labelled_room_becomes_a_slab_in_one_call_and_follows_the_drawing() {
+    let drawing = walled_room();
+    let (mut app, mut bridge, offset) = imported(&drawing);
+    let steps = app.undo_step_count();
+    let answer = from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "label":"KITCHEN", "layers":["walls"], "thickness_mm":200}),
+    );
+    assert_eq!(app.undo_step_count(), steps + 1, "one Undo step");
+    let written = source(&app);
+    assert!(
+        written.contains("the region labelled \"KITCHEN\"")
+            && written.contains("area 50.760 m², perimeter 29.600 m, 0 holes"),
+        "{written}"
+    );
+    assert!(
+        answer["source_diff"].to_string().contains("area 50.760 m²"),
+        "the answer shows what was found: {answer}"
+    );
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 9_400.0 * 5_400.0 * 200.0).abs() < 1.0);
+
+    // In the walls' ring the room is a hole, cut through the slab.
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"RING", "point_mm":[150.0 - offset[0], 3_000.0 - offset[1]], "layers":["walls"], "thickness_mm":100}),
+    );
+    assert!(source(&app).contains("RING_SOLID = extrude(\"RING\""));
+    evaluate_exact(&mut app);
+    let ring = |x: f64| (x * 6_000.0 - (x - 600.0) * 5_400.0) * 100.0;
+    assert!((exact_volume(&app, "RING") - ring(10_000.0)).abs() < 1.0);
+
+    replace_drawing(
+        &mut app,
+        &drawing.replace("9700", "10700").replace("10000", "11000"),
+    )
+    .unwrap();
+    evaluate_exact(&mut app);
+    assert!(
+        (exact_volume(&app, "ROOM") - 10_400.0 * 5_400.0 * 200.0).abs() < 1.0,
+        "the slab follows the labelled room"
+    );
+    assert!((exact_volume(&app, "RING") - ring(11_000.0)).abs() < 1.0);
+
+    let digest = app.canonical_digest();
+    for (arguments, field) in [
+        (json!({"name":"X", "label":"Bathroom"}), "label"),
+        (json!({"name":"X", "label":"  "}), "label"),
+        (
+            json!({"name":"X", "label":"Kitchen", "point_mm":[0, 0]}),
+            "point_mm",
+        ),
+        (
+            json!({"name":"X", "label":"Kitchen", "thickness_mm":-1}),
+            "thickness_mm",
+        ),
+    ] {
+        let mut request = arguments.clone();
+        request["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+        let code = bridge
+            .execute(&mut app, ask("program_from_underlay", request), false)
+            .unwrap_err();
+        assert_eq!(code, "invalid_params", "{arguments}");
+        let details = take_error_details().unwrap_or_default().to_string();
+        assert!(details.contains(field), "{arguments}: {details}");
+    }
+    assert_eq!(
+        app.canonical_digest(),
+        digest,
+        "a refused call changes nothing"
+    );
+}
+
+/// Two rooms with the same text: refused with both, until the whole label names one.
+#[test]
+fn a_label_in_several_regions_is_refused_with_the_candidates() {
+    let drawing = walled_room().replace(
+        "0\nENDSEC\n0\nEOF\n",
+        "0\nLWPOLYLINE\n8\nwalls\n90\n4\n70\n1\n10\n20000\n20\n0\n10\n23000\n20\n0\n10\n23000\n20\n2000\n10\n20000\n20\n2000\n\
+         0\nMTEXT\n8\nrooms\n10\n21000\n20\n1000\n40\n100\n1\nKitchen\\P2\n0\nENDSEC\n0\nEOF\n",
+    );
+    let (mut app, mut bridge, _) = imported(&drawing);
+    let mut request = json!({"name":"ROOM", "label":"kitch", "layers":["walls"]});
+    request["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+    let code = bridge
+        .execute(&mut app, ask("program_from_underlay", request), false)
+        .unwrap_err();
+    assert_eq!(code, "invalid_params");
+    let details = take_error_details().unwrap_or_default().to_string();
+    assert!(details.contains("2 regions"), "{details}");
+    // The exact text wins over the one that only contains it.
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "label":"kitchen 2", "layers":["walls"], "thickness_mm":200}),
+    );
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 3_000.0 * 2_000.0 * 200.0).abs() < 1.0);
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "label":"Kitchen", "layers":["walls"], "thickness_mm":200}),
+    );
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 9_400.0 * 5_400.0 * 200.0).abs() < 1.0);
+}
+
 #[test]
 fn underlay_binding_without_handle_never_retargets_a_replaced_drawing() {
     use std::error::Error;

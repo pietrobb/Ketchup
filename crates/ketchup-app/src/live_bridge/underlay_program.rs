@@ -1,7 +1,8 @@
 //! `program action=from_underlay`: what an underlay draws, written into the window's
 //! program as named data in document millimetres, so the program builds on the drawing
 //! without anyone copying coordinates: the outline and holes of the closed region around a
-//! point or of one closed object (`extrude("floor", profile = NAME, …)`), or every
+//! point or holding a text, or of one closed object (`extrude("floor", profile = NAME, …)`,
+//! or extruded right away with a thickness), or every
 //! affine instance of a shared block's sampled linework. Declarations sit between two comment lines
 //! with a persistent selector in drawing coordinates. Underlay edits regenerate these sections
 //! through the same planner as `program apply`, publishing input and derived geometry in one Undo
@@ -30,6 +31,7 @@ impl LiveBridge {
             name,
             underlay_id,
             point_mm,
+            label,
             closing_segments_mm,
             ..
         } = &request
@@ -37,11 +39,11 @@ impl LiveBridge {
             return Ok(request);
         };
         Self::guard(app, &Some(expected.clone()))?;
-        if !closing_segments_mm.is_empty() && point_mm.is_none() {
+        if !closing_segments_mm.is_empty() && point_mm.is_none() && label.is_none() {
             return Err(invalid(
                 "closing_segments_mm",
-                "Closing segments apply only to a point-selected region.",
-                "Use point_mm with closing_segments_mm, not block or object_id.",
+                "Closing segments apply only to a region chosen by point or label.",
+                "Use point_mm or label with closing_segments_mm, not block or object_id.",
             ));
         }
         if !is_identifier(name) {
@@ -98,47 +100,85 @@ pub(super) fn binding_data(
         .cached_underlay_lines(underlay)
         .ok_or("entity_not_found")?;
     let object_id = binding.object(&lines)?;
-    let (origin, data) = match (point_mm, object_id, binding.block.as_deref()) {
-        (Some(point), None, None) => {
-            let region = super::underlay_regions::region_at(
-                snapshot,
-                underlay,
-                &lines,
-                layers.as_deref(),
-                point,
-                tolerance_mm,
-                &closing_segments_mm,
-            )?;
+    let label = binding.label.as_deref();
+    let (origin, data) = match (point_mm, label, object_id, binding.block.as_deref()) {
+        (Some(_), None, None, None) | (None, Some(_), None, None) => {
+            let (region, selected) = match point_mm {
+                Some(point) => (
+                    super::underlay_regions::region_at(
+                        snapshot,
+                        underlay,
+                        &lines,
+                        layers.as_deref(),
+                        point,
+                        tolerance_mm,
+                        &closing_segments_mm,
+                    )?,
+                    format!("around ({})", point_text(point)),
+                ),
+                None => {
+                    let label = label.unwrap_or_default();
+                    (
+                        super::underlay_regions::region_labelled(
+                            snapshot,
+                            underlay,
+                            &lines,
+                            layers.as_deref(),
+                            label,
+                            tolerance_mm,
+                            &closing_segments_mm,
+                        )?,
+                        format!("labelled {}", quoted(label)),
+                    )
+                }
+            };
             (
                 format!(
-                    "the region around ({}) of {}; layers {layers:?}; closing_segments_mm {closing_segments_mm:?}",
-                    point_text(point),
-                    underlay.name
+                    "the region {selected} of {}, {}; layers {layers:?}; closing_segments_mm {closing_segments_mm:?}",
+                    underlay.name,
+                    measured(underlay, &region.outline, &region.holes),
                 ),
-                outline_data(name, underlay, &region.outline, &region.holes)?,
+                outline_data(
+                    name,
+                    underlay,
+                    &region.outline,
+                    &region.holes,
+                    binding.thickness,
+                )?,
             )
         }
-        (None, Some(id), None) => {
+        (None, None, Some(id), None) => {
             let index = ObjectIndex::new(&lines);
             let (outline, holes) = object_outline(&index, id)?;
             let handle = index.object(id).map_or(0, |object| object.handle);
             (
-                format!("object {id} (handle {handle:X}) of {}", underlay.name),
-                outline_data(name, underlay, &outline, &holes)?,
+                format!(
+                    "object {id} (handle {handle:X}) of {}, {}",
+                    underlay.name,
+                    measured(underlay, &outline, &holes)
+                ),
+                outline_data(name, underlay, &outline, &holes, binding.thickness)?,
             )
         }
-        (None, None, Some(block)) => (
+        (None, None, None, Some(block)) if binding.thickness.is_none() => (
             format!(
                 "the shared linework of block {block:?} in {}",
                 underlay.name
             ),
             block_data(name, underlay, &ObjectIndex::new(&lines), block)?,
         ),
+        (None, None, None, Some(_)) => {
+            return Err(invalid(
+                "thickness_mm",
+                "A block's linework is not one closed outline to extrude.",
+                "Leave out thickness_mm for block, or extrude a region or closed object.",
+            ));
+        }
         _ => {
             return Err(invalid(
                 "point_mm",
-                "Give exactly one of point_mm, object_id or block.",
-                "point_mm for the region around a point, object_id for one closed object, block for every placement of a block.",
+                "Give exactly one of point_mm, label, object_id or block.",
+                "point_mm for the region around a point, label for the region holding a text, object_id for one closed object, block for every placement of a block.",
             ));
         }
     };
@@ -208,13 +248,46 @@ fn ring_text(underlay: &Underlay, ring: &[[f64; 2]], indent: &str) -> String {
         .collect()
 }
 
-/// `NAME` the outline and `NAME_HOLES` its holes, in document millimetres.
+/// Area, perimeter and holes in document units, for checking the outline is the one meant.
+fn measured(underlay: &Underlay, outline: &[[f64; 2]], holes: &[Vec<[f64; 2]>]) -> String {
+    let scale = underlay.scale();
+    let perimeter = outline
+        .iter()
+        .zip(outline.iter().cycle().skip(1))
+        .map(|(a, b)| (b[0] - a[0]).hypot(b[1] - a[1]))
+        .sum::<f64>()
+        * scale;
+    let area = (signed_area(outline).abs()
+        - holes
+            .iter()
+            .map(|hole| signed_area(hole).abs())
+            .sum::<f64>())
+        * scale
+        * scale;
+    format!(
+        "area {:.3} m², perimeter {:.3} m, {} holes",
+        area / 1e6,
+        perimeter / 1e3,
+        holes.len()
+    )
+}
+
+/// `NAME` the outline and `NAME_HOLES` its holes, in document millimetres; with a
+/// thickness also the solid `NAME` extruded from them.
 fn outline_data(
     name: &str,
     underlay: &Underlay,
     outline: &[[f64; 2]],
     holes: &[Vec<[f64; 2]>],
+    thickness: Option<f64>,
 ) -> Result<String, &'static str> {
+    if thickness.is_some_and(|value| !(value.is_finite() && value > 0.0)) {
+        return Err(invalid(
+            "thickness_mm",
+            "The thickness must be a positive number of millimetres.",
+            "Give the extrusion distance in millimetres, e.g. 200.",
+        ));
+    }
     let total = outline.len() + holes.iter().map(Vec::len).sum::<usize>();
     if total > MAX_ITEMS {
         return Err(invalid(
@@ -236,6 +309,14 @@ fn outline_data(
         ));
     }
     data.push_str(&format!("]\ncomponent({}, [profile_part({}, points={name}, closed=True)] + [profile_part({} % (i + 1), points=hole, closed=True) for i, hole in enumerate({name}_HOLES)])\n", quoted(&format!("{name}_sketch")), quoted(&format!("{name}/outline")), quoted(&format!("{name}/hole%d"))));
+    if let Some(thickness) = thickness {
+        data.push_str(&format!(
+            "{name}_SOLID = extrude({}, profile = {name}, distance = {})\n[cut({name}_SOLID, profile = hole, through = True, name = {} % (i + 1)) for i, hole in enumerate({name}_HOLES)]\n",
+            quoted(name),
+            number(thickness),
+            quoted(&format!("{name}/cut%d")),
+        ));
+    }
     Ok(data)
 }
 

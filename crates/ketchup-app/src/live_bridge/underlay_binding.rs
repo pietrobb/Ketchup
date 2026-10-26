@@ -14,12 +14,17 @@ pub(super) struct Binding {
     pub name: String,
     pub underlay_id: u64,
     pub point: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub layers: Option<Vec<String>>,
     pub tolerance: Option<f64>,
     pub closures: Vec<[[f64; 2]; 2]>,
     object_id: Option<u32>,
     handle: Option<u64>,
     pub block: Option<String>,
+    /// Document millimetres, not scaled with the drawing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thickness: Option<f64>,
 }
 
 impl Binding {
@@ -32,11 +37,13 @@ impl Binding {
         let Request::ProgramFromUnderlay {
             name,
             point_mm: point,
+            label,
             layers,
             tolerance_mm: tolerance,
             closing_segments_mm: closures,
             object_id,
             block,
+            thickness_mm: thickness,
             ..
         } = request
         else {
@@ -68,6 +75,7 @@ impl Binding {
             name,
             underlay_id: underlay.id.0,
             point: point.map(drawing_point),
+            label,
             layers: Some(layers),
             tolerance: Some(
                 tolerance.unwrap_or(ketchup_model::underlay::regions::DEFAULT_JOIN_MM)
@@ -80,6 +88,7 @@ impl Binding {
             object_id,
             handle,
             block,
+            thickness,
         })
     }
 

@@ -223,10 +223,119 @@ pub(super) fn region_at(
     tolerance_mm: Option<f64>,
     closing_segments_mm: &[[[f64; 2]; 2]],
 ) -> Result<Region, &'static str> {
+    if !point.iter().all(|value| value.is_finite()) {
+        return Err("invalid_params");
+    }
+    let local = underlay.to_local(point);
+    closed_regions(
+        snapshot,
+        underlay,
+        lines,
+        layers,
+        tolerance_mm,
+        closing_segments_mm,
+    )?
+    .into_iter()
+    .filter(|region| region.contains(local))
+    .min_by(|a, b| a.area_mm2.total_cmp(&b.area_mm2))
+    .ok_or_else(|| {
+        super::program_access::invalid(
+            "point_mm",
+            "No closed region of the chosen layers holds the point.",
+            "Ask inspect action=underlay_regions with point_mm, or name the layers whose lines close around it.",
+        )
+    })
+}
+
+/// The one region of the shown (or named) layers whose texts (on the shown layers)
+/// include `label`: a text equal to it, ignoring case and line breaks, or failing that
+/// one containing it. Several regions or none are an error naming what was found.
+pub(super) fn region_labelled(
+    snapshot: &Snapshot,
+    underlay: &Underlay,
+    lines: &UnderlayLines,
+    layers: Option<&[String]>,
+    label: &str,
+    tolerance_mm: Option<f64>,
+    closing_segments_mm: &[[[f64; 2]; 2]],
+) -> Result<Region, &'static str> {
+    let wanted = folded(label);
+    if wanted.is_empty() {
+        return Err(super::program_access::invalid(
+            "label",
+            "The label is empty.",
+            "Give the text written inside the region, e.g. \"1.02 WC\".",
+        ));
+    }
+    let mut regions = closed_regions(
+        snapshot,
+        underlay,
+        lines,
+        layers,
+        tolerance_mm,
+        closing_segments_mm,
+    )?;
+    let (texts, _) = texts_in(lines, &chosen_text_layers(snapshot, underlay), &regions);
+    let holding = |matches: &dyn Fn(&str) -> bool| {
+        (0..regions.len())
+            .filter(|index| texts[*index].iter().any(|text| matches(&folded(text))))
+            .collect::<Vec<_>>()
+    };
+    let mut found = holding(&|text| text == wanted);
+    if found.is_empty() {
+        found = holding(&|text| text.contains(&wanted));
+    }
+    match found.as_slice() {
+        [index] => Ok(regions.swap_remove(*index)),
+        [] => Err(super::program_access::invalid(
+            "label",
+            format!("No closed region of the chosen layers holds a text {label:?} entirely."),
+            "Check the text with inspect action=underlay_objects text=…; if the room is open at a doorway, pass closing_segments_mm across it; or name the layers whose lines close around it.",
+        )),
+        several => {
+            let scale = underlay.scale();
+            let candidates = several
+                .iter()
+                .take(ROW_TEXTS)
+                .map(|index| {
+                    format!(
+                        "{:.2} m² holding {:?}",
+                        regions[*index].area_mm2 * scale * scale / 1e6,
+                        texts[*index]
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            Err(super::program_access::invalid(
+                "label",
+                format!(
+                    "{} regions hold a text {label:?}: {candidates}.",
+                    several.len()
+                ),
+                "Give the whole text of one label, or point_mm inside the intended region.",
+            ))
+        }
+    }
+}
+
+/// Lower case, every run of white space (line breaks included) one space.
+fn folded(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn closed_regions(
+    snapshot: &Snapshot,
+    underlay: &Underlay,
+    lines: &UnderlayLines,
+    layers: Option<&[String]>,
+    tolerance_mm: Option<f64>,
+    closing_segments_mm: &[[[f64; 2]; 2]],
+) -> Result<Vec<Region>, &'static str> {
     let tolerance = tolerance_mm.unwrap_or(DEFAULT_JOIN_MM);
-    if !(tolerance > 0.0 && tolerance <= MAX_JOIN_MM)
-        || !point.iter().all(|value| value.is_finite())
-    {
+    if !(tolerance > 0.0 && tolerance <= MAX_JOIN_MM) {
         return Err("invalid_params");
     }
     let chosen = chosen_layers(snapshot, underlay, layers)?;
@@ -235,19 +344,8 @@ pub(super) fn region_at(
         .map(|piece| piece.ends)
         .collect::<Vec<_>>();
     add_closures(&mut segments, underlay, closing_segments_mm)?;
-    let local = underlay.to_local(point);
     find_regions(&segments, tolerance / underlay.scale())
-        .map_err(|error| failed_because("invalid_params", error))?
-        .into_iter()
-        .filter(|region| region.contains(local))
-        .min_by(|a, b| a.area_mm2.total_cmp(&b.area_mm2))
-        .ok_or_else(|| {
-            super::program_access::invalid(
-                "point_mm",
-                "No closed region of the chosen layers holds the point.",
-                "Ask inspect action=underlay_regions with point_mm, or name the layers whose lines close around it.",
-            )
-        })
+        .map_err(|error| failed_because("invalid_params", error))
 }
 
 fn add_closures(
