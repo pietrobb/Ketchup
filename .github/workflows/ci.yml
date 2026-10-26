@@ -224,8 +224,11 @@ jobs:
           key: ${{ steps.occt.outputs.cache-primary-key }}
       - name: clippy
         run: cargo clippy --locked $env:CRATES.Split(' ') --all-targets -- -D warnings
-      - name: workers and the headless CLI for the tests
-        run: cargo build --locked -p ketchup-scheduler -p ketchup-headless --bins
+      # The live MCP tests launch the debug application beside its worker.
+      - name: workers, the headless CLI and the application for the tests
+        run: |
+          cargo build --locked -p ketchup-scheduler -p ketchup-headless --bins
+          cargo build --locked -p ketchup-app --bin ketchup-app
       - name: tests
         env:
           # Two OCCT test threads fit the runner's memory.

@@ -1,8 +1,10 @@
 """Build and run the required native Python production tests without skips.
 
-`--prebuilt` runs only the native tests against the debug `ketchup-headless` and
-`ketchup-exact-worker` a CI job already built, without the workspace build and
-the release window check.
+`--prebuilt` runs only the native tests against the debug `ketchup-headless`,
+`ketchup-exact-worker` and `ketchup-app` a CI job already built, without the
+workspace build and the release window check. The live MCP tests launch the debug
+`ketchup-app` as `KETCHUP_APP`, beside its worker; before, nothing set it and they
+ran nowhere (review 2026-10-24 CI-22).
 """
 
 from __future__ import annotations
@@ -24,15 +26,26 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 # A native test reads the built CLI from this variable and skips without it.
 NATIVE_MARKER = 'os.environ.get("KETCHUP_HEADLESS")'
+# A live MCP test reads the built application from this variable and skips without it.
+APP_MARKER = 'os.environ.get("KETCHUP_APP")'
+
+
+def tests_reading(marker: str) -> list[str]:
+    return sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "tests").glob("test_*.py")
+        if marker in path.read_text(encoding="utf-8")
+    )
 
 
 def native_tests() -> list[str]:
     """Every test file that needs the built CLI, so a new one cannot stay out."""
-    return sorted(
-        path.relative_to(ROOT).as_posix()
-        for path in (ROOT / "tests").glob("test_*.py")
-        if NATIVE_MARKER in path.read_text(encoding="utf-8")
-    )
+    return tests_reading(NATIVE_MARKER)
+
+
+def app_tests() -> list[str]:
+    """Every test file that needs the built application."""
+    return tests_reading(APP_MARKER)
 
 
 class RunnerError(RuntimeError):
@@ -132,6 +145,12 @@ def native_paths(target_directory: Path) -> tuple[Path, Path]:
     )
 
 
+def app_path(target_directory: Path) -> Path:
+    """The debug application, which finds the debug worker beside it."""
+    suffix = ".exe" if os.name == "nt" else ""
+    return target_directory / "debug" / f"ketchup-app{suffix}"
+
+
 def require_component(path: Path, label: str) -> Path:
     resolved = path.resolve()
     if not resolved.is_file():
@@ -173,7 +192,7 @@ def verify_app(cargo: str, target_directory: Path) -> None:
         expected = "Ketchup production-test verified"
         if verification != expected or not persistence_path.is_file():
             raise RunnerError("ketchup-app startup/persistence verification failed")
-    print(f"KETCHUP_APP={app} sha256={sha256(app)}")
+    print(f"release ketchup-app={app} sha256={sha256(app)}")
 
 
 def main() -> int:
@@ -192,23 +211,27 @@ def main() -> int:
     target_directory = cargo_target_directory(cargo)
     if not prebuilt:
         run([cargo, "test", "--locked", "--workspace", "--all-targets", "--no-run"])
+        run([cargo, "build", "--locked", "-p", "ketchup-app", "--bin", "ketchup-app"])
         verify_app(cargo, target_directory)
 
     headless_path, worker_path = native_paths(target_directory)
     headless = require_component(headless_path, "ketchup-headless executable")
     worker = require_component(worker_path, "ketchup-exact-worker executable")
+    app = require_component(app_path(target_directory), "ketchup-app debug executable")
     worker_handshake(worker)
 
     os.environ["KETCHUP_HEADLESS"] = str(headless)
     os.environ["KETCHUP_EXACT_WORKER"] = str(worker)
+    os.environ["KETCHUP_APP"] = str(app)
     os.environ["KETCHUP_PYTHON"] = str(Path(sys.executable).resolve())
     print(f"Python: {Path(sys.executable).resolve()}")
     print(f"KETCHUP_HEADLESS={headless} sha256={sha256(headless)}")
     print(f"KETCHUP_EXACT_WORKER={worker} sha256={sha256(worker)}")
+    print(f"KETCHUP_APP={app} sha256={sha256(app)}")
 
-    tests = native_tests()
-    if not tests:
+    if not native_tests():
         raise RunnerError(f"No test file reads {NATIVE_MARKER}")
+    tests = sorted({*native_tests(), *app_tests()})
     print("Native tests:", " ".join(tests))
     plugin = FailOnSkipPlugin()
     return int(pytest.main([*tests, "-ra"], plugins=[plugin]))

@@ -24,6 +24,19 @@ def test_native_paths_are_explicit_debug_artifacts(tmp_path):
     )
 
 
+def test_the_live_mcp_tests_get_the_debug_app_beside_its_worker(tmp_path):
+    # Review 2026-10-24 CI-22: nothing set KETCHUP_APP, so these tests ran nowhere.
+    assert runner.app_tests() == ["tests/test_mcp_live_measurement.py"]
+    for path in (ROOT / "tests").glob("test_*.py"):
+        if "KETCHUP_APP" in path.read_text(encoding="utf-8") and path.name != Path(__file__).name:
+            assert path.relative_to(ROOT).as_posix() in runner.app_tests(), path
+    assert runner.app_path(tmp_path).parent == runner.native_paths(tmp_path)[1].parent
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "cargo build --locked -p ketchup-app --bin ketchup-app" in workflow
+    # The live tests stop the window the server started through psutil.
+    assert "psutil==" in (ROOT / "tests" / "requirements-ci.txt").read_text(encoding="utf-8")
+
+
 def test_missing_required_component_fails_closed(tmp_path):
     missing = tmp_path / "ketchup-headless"
     with pytest.raises(runner.RunnerError, match="Missing required headless"):
