@@ -1,9 +1,12 @@
 //! Round edges back from a drawing's outline. The importer draws arcs and circles as runs
 //! of short chords; written as such a run, a circle of a plan is a polygon of a hundred
 //! and more sides, more than a profile's sketch solves. A run of corners on one circle,
-//! turning one way in steps of at most [`MAX_STEP`], is written as arcs through it instead,
-//! split at the circle's quarter points so that each arc's ends bound it.
+//! turning one way in steps no longer than the import cuts an arc of its radius into (or
+//! [`MAX_STEP`], whichever is longer), is written as arcs through it instead, split at the
+//! circle's quarter points so that each arc's ends bound it. The ring is in document
+//! millimetres, the drawing's scaled by its placement's scale.
 
+use ketchup_model::underlay::arc_chord_step;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 /// One side of a ring: straight, or an arc from `start` to `end` through `through`.
@@ -20,13 +23,20 @@ pub(super) enum Piece {
     },
 }
 
-/// The largest angle one chord of a drawn arc spans; a polygon with sides this short is
+/// An angle one chord of a drawn arc may always span; a polygon with sides this short is
 /// drawn as a curve.
 const MAX_STEP: f64 = 10.0 * std::f64::consts::PI / 180.0;
 /// The fewest chords a run takes to be an arc.
 const MIN_CHORDS: usize = 4;
 /// A quarter point this close to an end of an arc does not split it.
 const MIN_PIECE: f64 = 0.5 * std::f64::consts::PI / 180.0;
+
+/// The longest chord of a drawn arc of `radius` in a drawing scaled by `scale`: its step as
+/// the import cut it, a small circle's in a few long chords (Ø15 in 20), or [`MAX_STEP`].
+fn max_chord(radius: f64, scale: f64) -> f64 {
+    let step = (arc_chord_step(radius / scale) * (1.0 + 1e-3)).max(MAX_STEP);
+    2.0 * radius * (step.min(FRAC_PI_2) / 2.0).sin()
+}
 
 /// How far off its circle a corner of an arc may lie.
 fn tolerance(radius: f64) -> f64 {
@@ -62,7 +72,8 @@ fn circle(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<([f64; 2], f64)> {
 }
 
 /// The ring's sides, runs of chords along one circle as arcs; `None` when it has none.
-pub(super) fn pieces(ring: &[[f64; 2]]) -> Option<Vec<Piece>> {
+/// `scale`: how much larger the ring is than the drawing the import cut.
+pub(super) fn pieces(ring: &[[f64; 2]], scale: f64) -> Option<Vec<Piece>> {
     let mut ring = ring.to_vec();
     if ring.len() > 1 && ring.first() == ring.last() {
         ring.pop();
@@ -80,7 +91,7 @@ pub(super) fn pieces(ring: &[[f64; 2]]) -> Option<Vec<Piece>> {
             sub(at(start + 1), at(start)),
             sub(at(start + 2), at(start + 1)),
         );
-        let max_chord = 2.0 * radius * (MAX_STEP / 2.0).sin();
+        let max_chord = max_chord(radius, scale);
         let mut sweep = 0.0;
         let mut chords = 0;
         while chords < limit {
@@ -109,8 +120,7 @@ pub(super) fn pieces(ring: &[[f64; 2]]) -> Option<Vec<Piece>> {
     let bends = |index: usize| {
         let (before, here, after) = (at(index + n - 1), at(index), at(index + 1));
         circle(before, here, after).is_some_and(|(_, radius)| {
-            distance(before, here).max(distance(here, after))
-                <= 2.0 * radius * (MAX_STEP / 2.0).sin()
+            distance(before, here).max(distance(here, after)) <= max_chord(radius, scale)
         })
     };
     let mut pieces = Vec::new();
@@ -246,7 +256,7 @@ mod tests {
     fn a_drawn_circle_is_four_arcs_between_its_quarter_points() {
         let mut ring = polygon([6570.0, 5646.0], 400.0, 142, 0.3, 0.3 + TAU);
         ring.pop();
-        let pieces = pieces(&ring).unwrap();
+        let pieces = pieces(&ring, 1.0).unwrap();
         assert!(
             pieces
                 .iter()
@@ -261,7 +271,7 @@ mod tests {
         );
         // Clockwise as a hole: the same arcs, the other way.
         ring.reverse();
-        let hole = super::pieces(&ring).unwrap();
+        let hole = super::pieces(&ring, 1.0).unwrap();
         assert!((area(&hole) + disc).abs() < 1e-6 * disc);
     }
 
@@ -270,7 +280,7 @@ mod tests {
         // 200 long, ends of radius 50, each drawn as 36 chords.
         let mut ring = polygon([200.0, 50.0], 50.0, 36, -FRAC_PI_2, FRAC_PI_2);
         ring.extend(polygon([0.0, 50.0], 50.0, 36, FRAC_PI_2, 3.0 * FRAC_PI_2));
-        let pieces = pieces(&ring).unwrap();
+        let pieces = pieces(&ring, 1.0).unwrap();
         let lines = pieces
             .iter()
             .filter(|piece| matches!(piece, Piece::Line { .. }))
@@ -290,18 +300,37 @@ mod tests {
         }
     }
 
+    /// A hole Ø15 on a sheet: the import cuts it in 20 chords of 18°. Read at the
+    /// drawing's size or at twice it, it is a circle; a 20-gon Ø30 drawn at full size, whose
+    /// sides the import would have cut finer, stays one.
+    #[test]
+    fn a_small_circle_in_few_chords_is_round_at_the_drawings_scale() {
+        let mut small = polygon([0.0, 0.0], 7.5, 20, 0.0, TAU);
+        small.pop();
+        let disc = std::f64::consts::PI * 7.5 * 7.5;
+        let read = pieces(&small, 1.0).unwrap();
+        assert!((area(&read) - disc).abs() < 1e-9 * disc);
+        let doubled = small
+            .iter()
+            .map(|[x, y]| [2.0 * x, 2.0 * y])
+            .collect::<Vec<_>>();
+        let read = pieces(&doubled, 2.0).unwrap();
+        assert!((area(&read) - 4.0 * disc).abs() < 1e-9 * disc);
+        assert_eq!(pieces(&doubled, 1.0), None);
+    }
+
     #[test]
     fn polygons_drawn_as_such_stay_polygons() {
         let mut octagon = polygon([0.0, 0.0], 100.0, 8, 0.0, TAU);
         octagon.pop();
-        assert_eq!(pieces(&octagon), None);
+        assert_eq!(pieces(&octagon, 1.0), None);
         let square = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
-        assert_eq!(pieces(&square), None);
+        assert_eq!(pieces(&square, 1.0), None);
         // A wave of short chords turning both ways is no arc.
         let wave = (0..40)
             .map(|index| [f64::from(index), if index % 2 == 0 { 0.0 } else { 0.01 }])
             .chain([[39.0, -50.0], [0.0, -50.0]])
             .collect::<Vec<_>>();
-        assert_eq!(pieces(&wave), None);
+        assert_eq!(pieces(&wave, 1.0), None);
     }
 }

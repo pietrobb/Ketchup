@@ -247,7 +247,7 @@ fn tools_drawing_view_stands_a_drawing_up_and_the_solid_follows_it() {
     assert!((exact_volume(harness.state(), "BRACKET") - BRACKET_MM3).abs() < 1.0);
 }
 
-/// A real sheet: the DXF Kečup writes for a drawing of an L piece 100 × 80, 60 thick, a
+/// A round trip: the DXF Kečup writes for a drawing of an L piece 100 × 80, 60 thick, a
 /// 20 × 10 slot through its foot: its front, top and right views drawn at the sheet's
 /// scale on VISIBLE, the slot's hidden edges on HIDDEN; the right view split inside by
 /// the edge where the foot meets the upright. Returns the sheet and the piece's volume.
@@ -315,7 +315,7 @@ fn view_bounds(app: &mut KetchupApp, bridge: &mut LiveBridge, id: u64) -> Vec<[[
         .collect()
 }
 
-/// 2D-5 on a real sheet: three copies of it, one per view; the AI finds each view as a
+/// 2D-5 on a sheet Kečup exported: three copies of it, one per view; the AI finds each view as a
 /// whole figure (the right one has an edge inside it), aligns it to the part's size and
 /// stands it on its plane, then builds the solid all three show: the piece, slot and all.
 #[test]
@@ -393,6 +393,103 @@ fn the_ai_rebuilds_a_part_from_the_three_views_of_its_drawing_sheet() {
     evaluate_exact(&mut app);
     let rebuilt = exact_volume(&app, "REBUILT");
     assert!((rebuilt - volume).abs() < 1.0, "{rebuilt} != {volume}");
+}
+
+/// A part drawing Kečup did not write (ezdxf, see `tests/fixtures/drawings/stepped_plate.py`):
+/// a plate 120 × 80 × 15 with a boss 40 × 80 standing 25 above its right end and a hole Ø30
+/// through it, plan over front view at 1:2 on an A4 sheet with a border, a title block,
+/// centre lines, hidden edges and dimensions, outlines on the layer VIDITELNE.
+const STEPPED_PLATE: &str = include_str!("../../tests/fixtures/drawings/stepped-plate-1to2.dxf");
+
+/// The part's volume from its dimensions, worked by hand.
+const STEPPED_PLATE_MM3: f64 =
+    120.0 * 80.0 * 15.0 + 40.0 * 80.0 * 25.0 - std::f64::consts::PI * 15.0 * 15.0 * 15.0;
+
+/// 2D-5 on a drawing made elsewhere: the AI reads the layers, finds the two views among the
+/// outline layer's whole figures (the border, title block, centre lines and dimensions lie
+/// on their own layers), scales each to the part's size, stands the front one up and builds
+/// the solid: the plate, its boss and its round hole.
+#[test]
+fn the_ai_builds_a_part_from_a_drawing_made_outside_ketchup() {
+    let (mut app, mut bridge, _) = imported_copies(STEPPED_PLATE, 2);
+    let summary = call(
+        &mut app,
+        &mut bridge,
+        "underlay_objects",
+        json!({"underlay_id": 1}),
+    );
+    let layers = summary["layers"].as_object().unwrap();
+    for layer in ["VIDITELNE", "SKRYTE", "OSY", "KOTY", "RAMEC"] {
+        assert!(layers.contains_key(layer), "{layer}: {summary}");
+    }
+    // Every layer at once: the border holds everything, so it is the one view found.
+    let everything = call(
+        &mut app,
+        &mut bridge,
+        "underlay_regions",
+        json!({"underlay_id": 1, "whole": true, "min_area_m2": 0.0}),
+    );
+    assert!(
+        everything["regions"].as_array().unwrap().len() >= 2,
+        "{everything}"
+    );
+    let found = call(
+        &mut app,
+        &mut bridge,
+        "underlay_regions",
+        json!({"underlay_id": 1, "layers": ["VIDITELNE"], "whole": true, "min_area_m2": 0.0}),
+    );
+    let figures = found["regions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| serde_json::from_value::<[[f64; 2]; 2]>(row["bounds_mm"].clone()).unwrap())
+        .collect::<Vec<_>>();
+    let inside = |[a, b]: [[f64; 2]; 2], [c, d]: [[f64; 2]; 2]| {
+        a != c && a[0] >= c[0] && a[1] >= c[1] && b[0] <= d[0] && b[1] <= d[1]
+    };
+    let mut views = figures
+        .iter()
+        .copied()
+        .filter(|figure| !figures.iter().any(|other| inside(*figure, *other)))
+        .collect::<Vec<_>>();
+    assert_eq!(views.len(), 2, "plan and front: {found}");
+    // The plan is drawn above the front view.
+    views.sort_by(|a, b| b[0][1].total_cmp(&a[0][1]));
+    let (plan, front) = (views[0], views[1]);
+    for (id, [low, high]) in [(1, plan), (2, front)] {
+        // At 1:2 the sheet draws the part's 120 as 60.
+        assert!((high[0] - low[0] - 60.0).abs() < 1e-6, "{views:?}");
+        call(
+            &mut app,
+            &mut bridge,
+            "fit_underlay",
+            json!({"underlay_id": id, "from_mm": [low, [high[0], low[1]]], "to_mm": [[0.0, 0.0], [120.0, 0.0]], "scale": true}),
+        );
+    }
+    call(
+        &mut app,
+        &mut bridge,
+        "drawing_view",
+        json!({"underlay_id": 2, "plane": "front"}),
+    );
+    let steps = app.undo_step_count();
+    call(
+        &mut app,
+        &mut bridge,
+        "drawing_solid_from_views",
+        json!({"name": "PLATE", "views": [
+            {"underlay_id": 1, "at_mm": [10.0, 10.0], "layers": ["VIDITELNE"]},
+            {"underlay_id": 2, "at_mm": [10.0, 5.0], "layers": ["VIDITELNE"]},
+        ]}),
+    );
+    assert_eq!(app.undo_step_count(), steps + 1);
+    evaluate_exact(&mut app);
+    let volume = exact_volume(&app, "PLATE");
+    assert!(
+        (volume - STEPPED_PLATE_MM3).abs() < 1.0,
+        "{volume} != {STEPPED_PLATE_MM3}"
+    );
 }
 
 /// As a soakaway pit's sheet draws it: in plan the filter as a CIRCLE 800 across, under it

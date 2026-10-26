@@ -1141,7 +1141,8 @@ fn push_oriented(points: &mut Vec<[f64; 2]>, piece: &[[f64; 2]], reversed: bool,
 /// The angle an arc of `radius` turns by from chord to chord at most: its chords stay
 /// within [`UNDERLAY_ARC_CHORD_MM`] of it, and a whole circle has at most
 /// [`MAX_CIRCLE_CHORDS`] of them.
-pub(crate) fn arc_chord_step(radius: f64) -> f64 {
+#[must_use]
+pub fn arc_chord_step(radius: f64) -> f64 {
     let tau = std::f64::consts::TAU;
     let step = if radius > UNDERLAY_ARC_CHORD_MM {
         2.0 * (1.0 - UNDERLAY_ARC_CHORD_MM / radius).acos()

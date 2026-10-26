@@ -376,7 +376,10 @@ fn ring_text(underlay: &Underlay, ring: &[[f64; 2]], indent: &str) -> String {
         .iter()
         .map(|point| underlay.to_document(*point))
         .collect::<Vec<_>>();
-    if let Some(pieces) = super::underlay_arcs::pieces(&ring) {
+    // The placement scales uniformly: by how much, to read the arcs as the import cut them.
+    let [origin, unit] = [[0.0, 0.0], [1.0, 0.0]].map(|point| underlay.to_document(point));
+    let scale = (unit[0] - origin[0]).hypot(unit[1] - origin[1]);
+    if let Some(pieces) = super::underlay_arcs::pieces(&ring, scale) {
         let at = |point: [f64; 2]| format!("({})", point_text(point));
         return pieces
             .iter()
