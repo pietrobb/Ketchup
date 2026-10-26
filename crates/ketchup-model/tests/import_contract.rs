@@ -255,6 +255,54 @@ fn exact_step_import_rejects_worker_evidence_from_another_source() {
     assert_eq!(document.visible_undo_steps(), 0);
 }
 
+/// ADR 0009: a part saved where libm rounded its volume one bit away (the
+/// Hettich rail 9117663_3 of the drawer example, MSVC against CORE-MATH) is
+/// the same body; a measure or a topology further off is another one.
+#[test]
+fn imported_evidence_a_few_last_bits_away_is_the_same_body() {
+    use ketchup_model::import::{IMPORTED_MEASURE_ULPS, ulps_from};
+    let recorded = StepImportEvidence {
+        source_sha256: [7; 32],
+        source_byte_len: 281_205,
+        source_unit: ImportLengthUnit::Millimetre,
+        result_fingerprint: "fnv1a64:6b9e8a10cebef52a".to_owned(),
+        body_kind: ketchup_model::document::BodyKind::Solid,
+        solid_count: 1,
+        topology_counts: [140, 212, 74, 1, 1],
+        area_mm2: 70_410.298_543_028_37,
+        volume_mm3: 74_890.358_324_392_06,
+        bounds_mm: [
+            [518.25, -31.0, -40.75],
+            [562.000_000_1, 387.6, 9.050_000_000_000_004],
+        ],
+        backend: "occt-test".to_owned(),
+        tolerance: "test-tolerance".to_owned(),
+    };
+    let mut evaluated = recorded.clone();
+    evaluated.result_fingerprint = "fnv1a64:7bb317a07566e095".to_owned();
+    evaluated.volume_mm3 = 74_890.358_324_392_07;
+    assert!(evaluated.is_same_body_as(&recorded));
+    evaluated.bounds_mm[0][1] = ulps_from(-31.0, 1).unwrap();
+    assert!(evaluated.is_same_body_as(&recorded));
+
+    let further = IMPORTED_MEASURE_ULPS as i64 + 1;
+    let mut volume = evaluated.clone();
+    volume.volume_mm3 = ulps_from(recorded.volume_mm3, further).unwrap();
+    let mut area = evaluated.clone();
+    area.area_mm2 = ulps_from(recorded.area_mm2, -further).unwrap();
+    let mut bounds = evaluated.clone();
+    bounds.bounds_mm[1][2] = ulps_from(recorded.bounds_mm[1][2], 2).unwrap();
+    let mut topology = evaluated.clone();
+    topology.topology_counts[2] += 1;
+    let mut backend = evaluated.clone();
+    backend.backend = "occt-other".to_owned();
+    for other in [volume, area, bounds, topology, backend] {
+        assert!(!other.is_same_body_as(&recorded), "{other:?}");
+    }
+    assert_eq!(ulps_from(0.0, -1).map(f64::is_sign_negative), Some(true));
+    assert_eq!(ulps_from(f64::MAX, 1), None);
+}
+
 #[test]
 fn exact_iges_import_is_deterministic_persistent_and_explicit_about_losses() {
     let source = b"IGES exact source";

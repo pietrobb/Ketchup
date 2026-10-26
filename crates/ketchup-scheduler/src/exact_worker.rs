@@ -1539,7 +1539,7 @@ fn exact_brep_imported_body(
             xde_documents[read].1.part(*part_index)?
         }
     };
-    if step_import_result_fingerprint(&source_sha256, &output) != *result_fingerprint {
+    if !imported_result_matches(&source_sha256, &output, result_fingerprint) {
         return Err(exact_brep_graph_error(
             graph,
             "imported exact graph result fingerprint does not match its source",
@@ -3003,9 +3003,27 @@ fn step_import_result_fingerprint(
     source_sha256: &str,
     output: &ketchup_exact::ExactOpOutput,
 ) -> String {
+    let [min, max] = bounds_mm(output);
+    let measures = [
+        output.body.topology.volume_mm3,
+        min[0],
+        min[1],
+        min[2],
+        max[0],
+        max[1],
+        max[2],
+    ];
+    imported_fingerprint(
+        &imported_fingerprint_topology(source_sha256, output),
+        &measures,
+    )
+}
+
+/// What an imported result fingerprint hashes ahead of the volume and bounds.
+fn imported_fingerprint_topology(source_sha256: &str, output: &ExactOpOutput) -> String {
     let topology = &output.body.topology;
-    let signature = format!(
-        "{source_sha256}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+    format!(
+        "{source_sha256}:{}:{}:{}:{}:{}:{}:{}",
         output.backend_fingerprint,
         output.tolerance_report.profile,
         topology.vertex_count,
@@ -3013,15 +3031,79 @@ fn step_import_result_fingerprint(
         topology.face_count,
         topology.shell_count,
         topology.solid_count,
-        topology.volume_mm3.to_bits(),
-        topology.bounds_mm.min.x.to_bits(),
-        topology.bounds_mm.min.y.to_bits(),
-        topology.bounds_mm.min.z.to_bits(),
-        topology.bounds_mm.max.x.to_bits(),
-        topology.bounds_mm.max.y.to_bits(),
-        topology.bounds_mm.max.z.to_bits(),
-    );
+    )
+}
+
+/// `measures` are the volume, then the bounds' min and max corners.
+fn imported_fingerprint(topology: &str, measures: &[f64; 7]) -> String {
+    let mut signature = topology.to_owned();
+    for measure in measures {
+        signature.push_str(&format!(":{}", measure.to_bits()));
+    }
     ketchup_geometry::reference::fnv1a64_fingerprint(&signature)
+}
+
+/// Whether `expected` names this imported body: its own fingerprint, or the
+/// one of the same topology whose volume and bounds lie a few last bits away,
+/// as a document saved where libm rounded differently recorded it (ADR 0009).
+/// The fingerprint hashes those bits, so the neighbours are searched.
+fn imported_result_matches(source_sha256: &str, output: &ExactOpOutput, expected: &str) -> bool {
+    let [min, max] = bounds_mm(output);
+    let measures = [
+        output.body.topology.volume_mm3,
+        min[0],
+        min[1],
+        min[2],
+        max[0],
+        max[1],
+        max[2],
+    ];
+    imported_fingerprint_near(
+        &imported_fingerprint_topology(source_sha256, output),
+        &measures,
+        expected,
+    )
+}
+
+fn imported_fingerprint_near(topology: &str, measures: &[f64; 7], expected: &str) -> bool {
+    use ketchup_model::import::{IMPORTED_BOUNDS_ULPS, IMPORTED_MEASURE_ULPS, ulps_from};
+    if imported_fingerprint(topology, measures) == expected {
+        return true;
+    }
+    let reach = |slot: usize| {
+        (if slot == 0 {
+            IMPORTED_MEASURE_ULPS
+        } else {
+            IMPORTED_BOUNDS_ULPS
+        }) as i64
+    };
+    let mut steps = [0_i64; 7];
+    for (slot, step) in steps.iter_mut().enumerate() {
+        *step = -reach(slot);
+    }
+    loop {
+        let mut candidate = *measures;
+        let reachable = candidate.iter_mut().zip(steps).all(|(measure, step)| {
+            ulps_from(*measure, step)
+                .map(|near| *measure = near)
+                .is_some()
+        });
+        if reachable && imported_fingerprint(topology, &candidate) == expected {
+            return true;
+        }
+        let mut slot = 0;
+        loop {
+            if slot == steps.len() {
+                return false;
+            }
+            if steps[slot] < reach(slot) {
+                steps[slot] += 1;
+                break;
+            }
+            steps[slot] = -reach(slot);
+            slot += 1;
+        }
+    }
 }
 
 /// Copies a declared source into a private file after proving its SHA-256.
@@ -3589,7 +3671,7 @@ fn m21_step_xde_part_export_response(
         Some(part_index),
         "export_step_xde_part",
     )?;
-    if step_import_result_fingerprint(&source.sha256, &output) != result_fingerprint {
+    if !imported_result_matches(&source.sha256, &output, result_fingerprint) {
         return Err(WorkerFailure::code("invalid_shape"));
     }
     backend
@@ -3794,6 +3876,72 @@ fn backend_failure(operation: &str, diagnostic: &str) -> WorkerFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR 0009: the drawer example's rail 9117663_3, saved on Windows with
+    /// MSVC's libm, evaluates one bit away in volume under CORE-MATH. The
+    /// fingerprint the document recorded still names it; one further off not.
+    #[test]
+    fn an_imported_fingerprint_a_few_last_bits_away_still_names_the_body() {
+        let topology = "d18b54c6b8b5bcee522ab01167d04ee82dc04d01ae01ae1e8265779ced1038be:\
+             occt-8.0.1:b8f597c677811d1f9f4d8a97f5ae2825c0353a42:r0-v1:\
+             r0-v1:bbox=1e-6mm:volume_abs=1e-6mm3:volume_rel=1e-10:140:212:74:1:1";
+        let bounds = [
+            518.25,
+            -31.0,
+            -40.75,
+            562.000_000_1,
+            387.6,
+            9.050_000_000_000_004,
+        ];
+        let measures = |volume: f64| {
+            let mut measures = [volume; 7];
+            measures[1..].copy_from_slice(&bounds);
+            measures
+        };
+        let recorded = measures(74_890.358_324_392_06);
+        let evaluated = measures(74_890.358_324_392_07);
+        let recorded_fingerprint = "fnv1a64:6b9e8a10cebef52a";
+        assert_eq!(
+            imported_fingerprint(topology, &recorded),
+            recorded_fingerprint
+        );
+        assert_eq!(
+            imported_fingerprint(topology, &evaluated),
+            "fnv1a64:7bb317a07566e095"
+        );
+        assert!(imported_fingerprint_near(
+            topology,
+            &evaluated,
+            recorded_fingerprint
+        ));
+
+        let mut both = evaluated;
+        both[3] = ketchup_model::import::ulps_from(both[3], -1).unwrap();
+        assert!(imported_fingerprint_near(
+            topology,
+            &both,
+            recorded_fingerprint
+        ));
+        let mut far = recorded;
+        far[0] = ketchup_model::import::ulps_from(far[0], 9).unwrap();
+        assert!(!imported_fingerprint_near(
+            topology,
+            &far,
+            recorded_fingerprint
+        ));
+        let mut far = recorded;
+        far[6] = ketchup_model::import::ulps_from(far[6], 2).unwrap();
+        assert!(!imported_fingerprint_near(
+            topology,
+            &far,
+            recorded_fingerprint
+        ));
+        assert!(!imported_fingerprint_near(
+            &topology.replace(":74:", ":75:"),
+            &evaluated,
+            recorded_fingerprint
+        ));
+    }
 
     #[test]
     fn step_output_reader_reads_a_file_past_32_mib_whole() {
