@@ -105,8 +105,13 @@ fn every_committed_document_migrates_to_the_current_schema_without_change() {
         });
         assert_eq!(
             reopened.source_schema(),
-            if !snapshot.annotations().is_empty() {
+            if snapshot
+                .underlays()
+                .any(|underlay| !underlay.edits.is_empty())
+            {
                 persistence::CURRENT_SCHEMA
+            } else if !snapshot.annotations().is_empty() {
+                105
             } else if snapshot.underlays().next().is_some() {
                 104
             } else {
