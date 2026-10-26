@@ -262,16 +262,19 @@ pub fn drawing_set(
     for (index, plan) in options.plans.iter().enumerate() {
         let (view, frame) = view_frames(min, max, plan.storey.cut_mm, options.plan_only)[0];
         let mut drawn = draw_view(view, frame, solids, &edges);
-        let below = plan
-            .storey
-            .floor_mm
-            .filter(|_| index > 0)
-            .unwrap_or(f64::NEG_INFINITY);
+        // A plan draws the annotations from its floor up to the next plan's;
+        // without a floor, two plans part at the lower one's cut (review
+        // 2026-10-24 MF-29: they parted nowhere, so each drew them all).
+        let parting = |lower: &PlanSheet, upper: &PlanSheet| {
+            upper.storey.floor_mm.unwrap_or(lower.storey.cut_mm)
+        };
+        let below = index.checked_sub(1).map_or(f64::NEG_INFINITY, |lower| {
+            parting(&options.plans[lower], plan)
+        });
         let above = options
             .plans
             .get(index + 1)
-            .and_then(|next| next.storey.floor_mm)
-            .unwrap_or(f64::INFINITY);
+            .map_or(f64::INFINITY, |upper| parting(plan, upper));
         let annotations = options
             .annotations
             .iter()

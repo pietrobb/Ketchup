@@ -1455,6 +1455,22 @@ mod tests {
             assert!(texts.contains(&title.as_str()), "{texts:?}");
             assert!(texts.contains(&number.as_str()), "{texts:?}");
         }
+
+        // Review 2026-10-24 MF-29: plans given by their cuts alone have no
+        // floor, and each drew the annotations of every storey.
+        options.plans = plans(
+            [1400.0, 4100.0]
+                .map(|cut_mm| Storey {
+                    floor_mm: None,
+                    cut_mm,
+                })
+                .to_vec(),
+        );
+        let set = drawing_set(&house, &options).unwrap();
+        for sheet in &set.sheets[..2] {
+            assert_eq!(sheet.annotations.dimensions, 1, "sheet {}", sheet.number);
+        }
+        assert_eq!(set.annotations().dimensions, 2);
     }
 
     #[test]
