@@ -178,13 +178,25 @@ public class ViewerActivity extends NativeActivity {
             return file.detachFd();
         } catch (java.io.FileNotFoundException error) {
             lastError = error.toString();
-            return -2;
+            // A provider that still lists the document only cannot reach it
+            // now (a cloud offline): not gone (review 2026-10-24 VW-21).
+            return listed(uri) ? -1 : -2;
         } catch (SecurityException error) {
             lastError = error.toString();
             return -3;
         } catch (Throwable error) {
             lastError = error.toString();
             return -1;
+        }
+    }
+
+    /** Whether the provider holding {@code uri} answers a query with its row. */
+    private boolean listed(String uri) {
+        try (Cursor cursor = getContentResolver().query(Uri.parse(uri),
+                new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            return cursor != null && cursor.moveToFirst();
+        } catch (Throwable error) {
+            return false;
         }
     }
 

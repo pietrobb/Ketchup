@@ -30,6 +30,15 @@ const STARTS: &str = "starts";
 /// 2026-10-17 D-7, 2026-10-18 VW-14); a document out of reach for a while
 /// is not counted (VW-13).
 const MAX_STARTS: u32 = 3;
+/// How long the starts must have found a document gone or no longer
+/// granted before it is given up ([`MAX_STARTS`]).
+const GONE_FOR: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+fn seconds_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
 
 /// The length and checksum of some bytes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -253,7 +262,7 @@ pub(crate) enum Interrupted {
         error: io::Error,
     },
     /// [`MAX_STARTS`] starts found the kept bytes not matching their record,
-    /// or the document gone or no longer granted: the old bytes are set
+    /// or, over [`GONE_FOR`], the document gone or no longer granted: the old bytes are set
     /// aside at `kept` and it is no longer tried.
     GivenUp {
         target: String,
@@ -394,13 +403,27 @@ fn recover<R: Read, W: Write>(
                 error,
             };
         }
+        // The count and the time of the first start counted.
         let count = backup.with_extension(STARTS);
-        let starts = std::fs::read_to_string(&count)
-            .ok()
-            .and_then(|text| text.trim().parse::<u32>().ok())
+        let text = std::fs::read_to_string(&count).unwrap_or_default();
+        let mut fields = text.split_whitespace();
+        let starts = fields
+            .next()
+            .and_then(|starts| starts.parse::<u32>().ok())
             .unwrap_or(0)
             + 1;
+        let now = seconds_now();
+        let first = fields
+            .next()
+            .and_then(|first| first.parse::<u64>().ok())
+            .unwrap_or(now);
+        // A document gone or not granted may only be out of reach (an SD
+        // card taken out, a cloud offline: review 2026-10-24 VW-21), so it
+        // is given up only once that has lasted a while.
+        let lasted = error.kind() == io::ErrorKind::InvalidData
+            || now.saturating_sub(first) >= GONE_FOR.as_secs();
         if starts >= MAX_STARTS
+            && lasted
             && let Some(kept) = put_aside(backup)
         {
             return Interrupted::GivenUp {
@@ -410,7 +433,7 @@ fn recover<R: Read, W: Write>(
             };
         }
         // Not counted when it cannot be written: the next start tries again.
-        drop(std::fs::write(&count, starts.to_string()));
+        drop(std::fs::write(&count, format!("{starts} {first}")));
         Interrupted::Kept {
             target: record.target.clone(),
             backup: backup.to_owned(),
@@ -918,9 +941,9 @@ mod tests {
     }
 
     /// Review 2026-10-18 VW-14: a document deleted, or whose grant was taken
-    /// back, never gets through; after three starts its old bytes are set
-    /// aside and offered, and its write grant is let go. Before, every such
-    /// failure came as "other" and was tried at every start for ever.
+    /// back, never gets through; after three starts over a week its old bytes
+    /// are set aside and offered, and its write grant is let go. Before, every
+    /// such failure came as "other" and was tried at every start for ever.
     #[test]
     fn a_document_gone_or_no_longer_granted_is_given_up_after_three_starts() {
         for (name, kind) in [
@@ -932,7 +955,10 @@ mod tests {
             document.replace_ending_after(&backup, b"new comments", 4);
             let private = backup.parent().unwrap();
             let gone = |_: &str| Err::<io::Cursor<Vec<u8>>, _>(io::Error::from(kind));
-            for _ in 1..MAX_STARTS {
+            // Review 2026-10-24 VW-21: a provider out of reach (an SD card
+            // taken out, a cloud offline) reports the same, so starts close
+            // together never give a document up.
+            for _ in 0..MAX_STARTS + 2 {
                 let outcomes = recover_interrupted(private, gone, |_| document.open_write());
                 assert!(
                     matches!(outcomes.as_slice(), [Interrupted::Kept { .. }]),
@@ -940,6 +966,19 @@ mod tests {
                 );
                 assert_eq!(pending_targets(private), [TARGET]);
             }
+            // Starts that have found it gone for a week give it up.
+            let count = backup.with_extension(STARTS);
+            let text = std::fs::read_to_string(&count).unwrap();
+            let (starts, first) = text.trim().split_once(' ').unwrap();
+            let first: u64 = first.parse().unwrap();
+            let week_ago = first - GONE_FOR.as_secs();
+            std::fs::write(&count, format!("{starts} {}", week_ago + 60)).unwrap();
+            let outcomes = recover_interrupted(private, gone, |_| document.open_write());
+            assert!(
+                matches!(outcomes.as_slice(), [Interrupted::Kept { .. }]),
+                "{outcomes:?}"
+            );
+            std::fs::write(&count, format!("{starts} {week_ago}")).unwrap();
             let outcomes = recover_interrupted(private, gone, |_| document.open_write());
             let [
                 Interrupted::GivenUp {
