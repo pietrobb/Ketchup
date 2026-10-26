@@ -50,7 +50,7 @@ pub(crate) enum JournalDefect {
 }
 
 impl ExportTransactionError {
-    fn io(path: &Path) -> impl FnOnce(std::io::Error) -> Self + '_ {
+    pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> Self + '_ {
         move |cause| Self::Io {
             path: path.to_path_buf(),
             cause,

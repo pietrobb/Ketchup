@@ -164,11 +164,10 @@ pub(crate) fn publish_project_drawings(
         let written_now = replacing
             .map(|_| std::fs::read(target))
             .transpose()
-            .map_err(|error| error.to_string())
+            .map_err(crate::export_bundle::ExportTransactionError::io(target))
             .and_then(|previous| {
                 crate::export_bundle::write_export_artifact_if_unchanged(target, bytes, replacing)
                     .map(|()| previous)
-                    .map_err(|error| error.to_string())
             });
         match written_now {
             Ok(previous) => written.push((target, bytes, previous)),
