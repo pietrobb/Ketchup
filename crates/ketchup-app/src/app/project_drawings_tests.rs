@@ -185,10 +185,24 @@ fn a_part_whose_bodies_do_not_resolve_stops_the_sheet() {
         "the fixture must make the part's bodies unresolvable"
     );
     let error = app.visible_drawing_solids(&snapshot).unwrap_err();
-    let ProjectDrawingsError::NotEvaluated(parts) = &error else {
+    // Review 2026-10-19 P3 (0c7c426): the cause was dropped and the part
+    // reported as one waiting for its exact solid, which no wait would bring.
+    let ProjectDrawingsError::UnresolvedBodies(part, cause) = &error else {
         panic!("the sheet must not leave wall C out: {error:?}");
     };
-    assert!(parts.contains(&"wall C".to_owned()), "{parts:?}");
+    assert_eq!(part, "wall C");
+    assert!(
+        matches!(
+            cause,
+            ketchup_model::exact_product::ExactProductError::ConflictingBodyTerminals { .. }
+        ),
+        "{cause:?}"
+    );
+    let text = app.project_drawings_error_text(&error);
+    assert!(
+        text.contains("wall C") && text.contains(&cause.to_string()),
+        "{text}"
+    );
 }
 
 /// The plan cut height and the scale of the automatic format are document

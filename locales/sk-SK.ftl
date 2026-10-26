@@ -1909,6 +1909,7 @@ drawings-title-value-does-not-fit = Hodnota poľa „{ $field }“ sa do bunky p
     } z { $length }. Skráť ju; hodnota sa nikdy neoreže.
 drawings-parts-not-evaluated = Viditeľné diely bez presného telesa ({ $count }) by vo výkrese chýbali: { $parts }. Oprav ich alebo skry, prípadne počkaj, kým sa model vyhodnotí.
 drawings-settings-unreadable = Rohová pečiatka a formát výkresu uložené v dokumente sa nedajú prečítať ({ $reason }); ostávajú, ako sú. Vyplň pečiatku znova v okne Projektové výkresy, tým ich nahradíš.
+drawings-part-bodies-unresolved = Telesá dielu { $part } sa nedajú určiť každé ako jedno presné teleso ({ $reason }), takže by ho výkres vynechal. Daj každému vytiahnutiu vlastné teleso alebo jedno potlač a exportuj znova.
 drawings-cosmetic-threads-failed = Vymodelované závity dielu { $part } sa nedajú nakresliť podľa ISO 6410 ({ $reason }); výkres by ukázal všetky hrany ich skrutkovíc. Exportuj znova alebo prepni závity na kozmetické.
 drawings-settings-unreadable-edit = Rohová pečiatka uložená v dokumente sa nedá prečítať ({ $reason }). Každá zmena tu ju nahradí.
 digest-exported-project-drawings = Projektové výkresy ({ $sheets ->

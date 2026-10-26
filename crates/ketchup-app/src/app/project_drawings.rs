@@ -33,6 +33,9 @@ pub(crate) enum ProjectDrawingsError {
     /// Visible parts with no current exact solid, by name: the sheet would
     /// leave them out.
     NotEvaluated(Vec<String>),
+    /// The named part's bodies do not resolve to one exact output each (two
+    /// extrusions ending in one body); evaluating again does not help.
+    UnresolvedBodies(String, ketchup_model::exact_product::ExactProductError),
     /// The program is still being evaluated: the threads of its parts are
     /// not known yet, and the sheet would leave them out.
     ProgramPlanning,
@@ -358,13 +361,13 @@ impl KetchupApp {
             else {
                 continue;
             };
-            let Ok(terminal_bodies) = ketchup_model::exact_product::exact_body_terminal_features(
+            let terminal_bodies = ketchup_model::exact_product::exact_body_terminal_features(
                 snapshot,
                 occurrence.definition_id,
-            ) else {
-                missing.push(occurrence.occurrence_name.clone());
-                continue;
-            };
+            )
+            .map_err(|cause| {
+                ProjectDrawingsError::UnresolvedBodies(occurrence.occurrence_name.clone(), cause)
+            })?;
             let terminal_bodies = terminal_bodies.into_keys().collect::<Vec<_>>();
             let mut packages = Vec::new();
             for body_id in terminal_bodies {
@@ -721,6 +724,10 @@ impl KetchupApp {
                     ("count", parts.len().to_string()),
                     ("parts", missing_parts_list(parts)),
                 ]),
+            ),
+            ProjectDrawingsError::UnresolvedBodies(part, cause) => self.catalog.format(
+                "drawings-part-bodies-unresolved",
+                &BTreeMap::from([("part", part.clone()), ("reason", cause.to_string())]),
             ),
             ProjectDrawingsError::ProgramPlanning => self.catalog.text("status-program-planning"),
             ProjectDrawingsError::SettingsUnreadable(reason) => self.catalog.format(

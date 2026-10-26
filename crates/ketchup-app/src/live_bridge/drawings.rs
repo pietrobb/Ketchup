@@ -337,6 +337,13 @@ fn drawings_failed(error: ProjectDrawingsError) -> &'static str {
             ),
             json!({"parts_without_exact_solid": parts}),
         ),
+        ProjectDrawingsError::UnresolvedBodies(part, cause) => failure(
+            "drawings_unavailable",
+            format!(
+                "The bodies of {part} do not resolve to one exact solid each ({cause}), so the sheet would leave it out. Give each extrusion its own body, or suppress one, then export again."
+            ),
+            json!({"part": part}),
+        ),
         ProjectDrawingsError::ProgramPlanning => failure(
             "drawings_unavailable",
             "The program is still being evaluated, so the threads of its parts are not known yet. Export again when it is done.",
