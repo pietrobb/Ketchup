@@ -109,6 +109,7 @@ pub(crate) mod underlay_edit;
 #[path = "app/underlay_edit_tests.rs"]
 mod underlay_edit_tests;
 pub(crate) mod underlay_fit_tool;
+mod underlay_line_tool;
 pub(crate) mod underlay_snapping;
 #[cfg(test)]
 #[path = "app/underlay_snapping_tests.rs"]

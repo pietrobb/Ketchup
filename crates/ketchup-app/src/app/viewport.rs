@@ -2089,6 +2089,10 @@ impl KetchupApp {
                     ui.input(|input| input.modifiers.command),
                 );
             }
+        } else if self.active_tool == ActiveTool::Mirror && self.picked_underlay_objects().is_some()
+        {
+            let copy = ui.input(|input| input.modifiers.command);
+            self.click_underlay_mirror(pointer, response.rect, copy);
         } else if self.active_tool == ActiveTool::Mirror {
             self.gesture.mirror = self.mirror_plane_at_screen(pointer, response.rect);
             self.commit_mirror();
@@ -2114,6 +2118,13 @@ impl KetchupApp {
             }
         } else if self.active_tool == ActiveTool::FitUnderlay {
             self.pick_underlay_fit_point(pointer, response.rect);
+        } else if matches!(
+            self.active_tool,
+            ActiveTool::TrimUnderlayLine
+                | ActiveTool::ExtendUnderlayLine
+                | ActiveTool::OffsetUnderlayLine
+        ) {
+            self.click_underlay_line_tool(pointer, response.rect);
         }
     }
 

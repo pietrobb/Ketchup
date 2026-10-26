@@ -243,7 +243,10 @@ impl Tools {
                 self.send(&action, args, wait)
             }
             "drawing" => {
-                let action = take_action(&mut args, &["remove", "draw", "move"])?;
+                let action = take_action(
+                    &mut args,
+                    &["remove", "draw", "move", "trim", "extend", "offset"],
+                )?;
                 self.send(&format!("drawing_{action}"), args, DEFAULT_WAIT)
             }
             "view" => self.view(args),

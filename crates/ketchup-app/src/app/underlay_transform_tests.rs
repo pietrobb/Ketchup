@@ -34,6 +34,9 @@ pub(super) fn shell() -> Harness<'static, KetchupApp> {
 }
 
 pub(super) fn point(harness: &mut Harness<'_, KetchupApp>, world: Vec3) -> Pos2 {
+    // A drawing's snaps are indexed in the background after each edit; a click snaps once
+    // they are in.
+    harness.state().wait_for_underlay_snaps();
     let screen = harness.state().viewport_position(world).unwrap() + Vec2::new(2.0, 1.0);
     let rect = harness.state().camera.viewport_rect.unwrap();
     assert!(

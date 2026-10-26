@@ -9,6 +9,7 @@ use ketchup_model::underlay::edits::{
     UnderlayEdits, UnderlayObjectError, plan_underlay_drawing, plan_underlay_object_removal,
     plan_underlay_object_transform,
 };
+use ketchup_model::underlay::line_edit::{LineEdit, plan_underlay_line_edit};
 use ketchup_model::underlay::object_query::{ObjectFilter, ObjectIndex};
 use ketchup_model::underlay::plan_underlay;
 use ketchup_model::underlay::{UnderlayId, UnderlayLines};
@@ -480,4 +481,148 @@ fn a_removal_is_one_undo_step_that_names_new_lines() {
     );
     document.undo().unwrap();
     assert_eq!(document.current().underlay(underlay_id), Some(&before));
+}
+
+/// The straight lines a drawing's object `id` draws now.
+fn own_lines(document: &DocumentStore, id: UnderlayId, object: u32) -> Vec<Vec<[f64; 2]>> {
+    let edited = drawn(document, id);
+    ObjectIndex::new(&edited)
+        .own_polylines(object)
+        .into_iter()
+        .map(<[[f64; 2]]>::to_vec)
+        .collect()
+}
+
+/// 2D-2: a line of the drawing is trimmed back to the line that crosses it, extended to
+/// the next line ahead of an end, or offset beside itself; one Undo step each, on its
+/// layer, and an object that is not one straight line is refused by name.
+#[test]
+fn a_line_of_the_drawing_is_trimmed_extended_and_offset() {
+    let (mut document, id) = document();
+    let read = u32::try_from(lines().objects().objects.len()).unwrap();
+    let top = id_of(&lines(), 0x12); // (100, 100) to (0, 100) on walls
+    let line = |points: &[[f64; 2]]| DrawnShape::Polyline {
+        points_mm: points.to_vec(),
+        closed: false,
+    };
+    // A cross line at x = 50 and a short one inside the walls.
+    let crossing = vec![
+        line(&[[50.0, -50.0], [50.0, 150.0]]),
+        line(&[[60.0, 50.0], [80.0, 50.0]]),
+    ];
+    let snapshot = document.current();
+    document
+        .apply_batch(&plan_underlay_drawing(&snapshot, id, "walls", crossing).unwrap())
+        .unwrap();
+    let short = read + 1;
+    let steps = document.visible_undo_steps();
+    let edit = |document: &mut DocumentStore, object: u32, edit: LineEdit| {
+        let snapshot = document.current();
+        let batch = plan_underlay_line_edit(&snapshot, id, &drawn(document, id), object, edit)?;
+        document.apply_batch(&batch).unwrap();
+        Ok::<_, UnderlayObjectError>(())
+    };
+
+    // Trimmed at (80, 100): the piece from the wall's end to the cross line goes.
+    edit(
+        &mut document,
+        top,
+        LineEdit::Trim {
+            pick_mm: [80.0, 100.0],
+        },
+    )
+    .unwrap();
+    assert_eq!(document.visible_undo_steps(), steps + 1);
+    assert!(own_lines(&document, id, top).is_empty());
+    assert_eq!(
+        own_lines(&document, id, read + 2),
+        vec![vec![[50.0, 100.0], [0.0, 100.0]]]
+    );
+    let edited = drawn(&document, id);
+    let index = ObjectIndex::new(&edited);
+    let layer = edited.objects().layer_name(index.object(read + 2).unwrap());
+    assert_eq!(layer, "walls");
+
+    // The short line reaches on to the wall at x = 100, or back to the cross line.
+    edit(
+        &mut document,
+        short,
+        LineEdit::Extend {
+            pick_mm: [79.0, 51.0],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        own_lines(&document, id, read + 3),
+        vec![vec![[60.0, 50.0], [100.0, 50.0]]]
+    );
+    edit(
+        &mut document,
+        read + 3,
+        LineEdit::Extend {
+            pick_mm: [61.0, 50.0],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        own_lines(&document, id, read + 4),
+        vec![vec![[50.0, 50.0], [100.0, 50.0]]]
+    );
+
+    // Offset 25 above the trimmed wall, and through a point below it; the wall stays.
+    let offset = |distance_mm, side_mm| LineEdit::Offset {
+        distance_mm,
+        side_mm,
+    };
+    edit(&mut document, read + 2, offset(Some(25.0), [10.0, 300.0])).unwrap();
+    assert_eq!(
+        own_lines(&document, id, read + 5),
+        vec![vec![[50.0, 125.0], [0.0, 125.0]]]
+    );
+    edit(&mut document, read + 2, offset(None, [20.0, 60.0])).unwrap();
+    assert_eq!(
+        own_lines(&document, id, read + 6),
+        vec![vec![[50.0, 60.0], [0.0, 60.0]]]
+    );
+    assert_eq!(own_lines(&document, id, read + 2).len(), 1);
+    assert_eq!(document.visible_undo_steps(), steps + 5);
+
+    // Refused by name: a text, nothing ahead of an end, an offset onto the line.
+    let text = id_of(&lines(), 0x30);
+    let refused = |document: &mut DocumentStore, object, line_edit| {
+        edit(document, object, line_edit).unwrap_err()
+    };
+    assert_eq!(
+        refused(
+            &mut document,
+            text,
+            LineEdit::Trim {
+                pick_mm: [50.0, 50.0]
+            }
+        ),
+        UnderlayObjectError::NotALine(text)
+    );
+    assert_eq!(
+        refused(
+            &mut document,
+            read + 5,
+            LineEdit::Extend {
+                pick_mm: [1.0, 125.0]
+            }
+        ),
+        UnderlayObjectError::NoCrossing(read + 5)
+    );
+    assert_eq!(
+        refused(&mut document, read + 5, offset(None, [20.0, 125.0])),
+        UnderlayObjectError::InvalidDistance
+    );
+    assert_eq!(document.visible_undo_steps(), steps + 5);
+
+    for _ in 0..5 {
+        document.undo().unwrap();
+    }
+    assert_eq!(
+        own_lines(&document, id, top),
+        vec![vec![[100.0, 100.0], [0.0, 100.0]]]
+    );
 }

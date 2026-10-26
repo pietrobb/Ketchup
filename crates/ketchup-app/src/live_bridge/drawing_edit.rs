@@ -8,7 +8,9 @@ use super::*;
 use crate::app::underlay_edit::UnderlayEditError;
 use ketchup_model::underlay::drawn::{in_lines, inverse, similarity};
 use ketchup_model::underlay::edits::UnderlayObjectError;
+use ketchup_model::underlay::line_edit::LineEdit;
 use ketchup_model::underlay::object_query::{ObjectFilter, ObjectIndex};
+use ketchup_model::underlay::objects::apply;
 
 impl LiveBridge {
     /// `drawing_remove`: takes `object_ids` out of the underlay's drawing.
@@ -192,6 +194,86 @@ impl LiveBridge {
         }
         Ok(answer)
     }
+
+    /// `drawing_trim`, `drawing_extend` and `drawing_offset`: one straight line of the
+    /// drawing trimmed back, extended or offset; the lines it gave are new objects.
+    pub(super) fn drawing_line_edit(
+        &mut self,
+        app: &mut KetchupApp,
+        request: &Request,
+        ui_busy: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Value, &'static str> {
+        let (expected, underlay_id, object_id, at_mm, distance_mm, action) = match request {
+            Request::DrawingTrim {
+                expected,
+                underlay_id,
+                object_id,
+                at_mm,
+            } => (expected, underlay_id, *object_id, *at_mm, None, "trim"),
+            Request::DrawingExtend {
+                expected,
+                underlay_id,
+                object_id,
+                at_mm,
+            } => (expected, underlay_id, *object_id, *at_mm, None, "extend"),
+            Request::DrawingOffset {
+                expected,
+                underlay_id,
+                object_id,
+                at_mm,
+                distance_mm,
+            } => (
+                expected,
+                underlay_id,
+                *object_id,
+                *at_mm,
+                *distance_mm,
+                "offset",
+            ),
+            _ => return Err("invalid_request"),
+        };
+        Self::guard(app, expected)?;
+        Self::available(app, ui_busy)?;
+        let snapshot = app.document.current();
+        let underlay = super::underlay_regions::one_underlay(&snapshot, *underlay_id)?;
+        let id = underlay.id;
+        let to_lines = inverse(&underlay.plane_map()).ok_or("invalid_params")?;
+        let at = apply(&to_lines, at_mm);
+        let scale = underlay.scale();
+        let edit = match action {
+            "trim" => LineEdit::Trim { pick_mm: at },
+            "extend" => LineEdit::Extend { pick_mm: at },
+            _ => LineEdit::Offset {
+                distance_mm: distance_mm.map(|distance| distance / scale),
+                side_mm: at,
+            },
+        };
+        let first = app
+            .cached_underlay_lines(underlay)
+            .ok_or("entity_not_found")?
+            .objects()
+            .objects
+            .len();
+        Self::require_request_authority(cancelled)?;
+        app.edit_underlay_line(id, object_id, edit)
+            .map_err(edit_failure)?;
+        self.query.invalidate();
+        let after = app
+            .document
+            .current()
+            .underlay(id)
+            .and_then(|underlay| app.cached_underlay_lines(underlay))
+            .map_or(first, |lines| lines.objects().objects.len());
+        Ok(json!({
+            "action": action,
+            "object_id": object_id,
+            "removed": action != "offset",
+            "new_object_ids": (first..after).collect::<Vec<_>>(),
+            "underlay_id": id.0,
+            "dirty": app.is_dirty(),
+        }))
+    }
 }
 
 /// The rejection of a removal, with the object to remove instead of one an insert or
@@ -206,7 +288,11 @@ fn edit_failure(error: UnderlayEditError) -> &'static str {
         UnderlayEditError::Plan(UnderlayObjectError::Placed { object, parent }) => {
             json!({"object_id": object, "remove_instead": parent})
         }
-        UnderlayEditError::Plan(UnderlayObjectError::NotFound(object)) => {
+        UnderlayEditError::Plan(
+            UnderlayObjectError::NotFound(object)
+            | UnderlayObjectError::NotALine(object)
+            | UnderlayObjectError::NoCrossing(object),
+        ) => {
             json!({"object_id": object})
         }
         UnderlayEditError::Plan(UnderlayObjectError::UnknownLayer(layer)) => {

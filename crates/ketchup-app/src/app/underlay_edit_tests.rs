@@ -283,3 +283,110 @@ fn the_drawing_tools_draw_into_the_drawing_on_the_picked_objects_layer() {
     );
     assert!(drawn_shapes(&harness).is_empty());
 }
+
+/// 2D-2: Trim, Extend and Offset drawing line, clicked: Trim cuts the wall back to the
+/// line crossing it, Extend takes a short line up to the axes line, Offset draws a
+/// parallel line a typed distance away on the side clicked, and Mirror flips a picked
+/// line across a line of two clicks; one Undo step each.
+#[test]
+fn trim_extend_offset_and_mirror_edit_lines_of_a_drawing() {
+    let mut harness = shell();
+    let id = harness
+        .state()
+        .document
+        .current()
+        .underlays()
+        .next()
+        .unwrap()
+        .id;
+    let digest = harness.state().canonical_digest();
+    let line = |points: [[f64; 2]; 2]| DrawnShape::Polyline {
+        points_mm: points.to_vec(),
+        closed: false,
+    };
+    // Across the wall and the axes line at x = 140, and a short line at x = 180 between.
+    harness
+        .state_mut()
+        .draw_into_underlay(
+            id,
+            "axes",
+            vec![
+                line([[140.0, 0.0], [140.0, 140.0]]),
+                line([[180.0, 40.0], [180.0, 100.0]]),
+            ],
+        )
+        .unwrap();
+    let undo = harness.state().undo_step_count();
+
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::TrimUnderlayLine);
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    // The drawing's line at x = 60 crosses the wall too: the piece between goes.
+    assert!(
+        end_at(&mut harness, [60.0, 20.0]),
+        "the wall is cut at x = 60"
+    );
+    assert!(
+        end_at(&mut harness, [140.0, 20.0]),
+        "the wall ends at x = 140"
+    );
+    assert!(end_at(&mut harness, [240.0, 20.0]));
+    assert!(end_at(&mut harness, [40.0, 20.0]));
+
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtendUnderlayLine);
+    click(&mut harness, Vec3::new(180.0, 90.0, 0.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 2, "{}", app.digest);
+    assert!(end_at(&mut harness, [180.0, 120.0]), "up to the axes line");
+    assert!(end_at(&mut harness, [180.0, 40.0]), "the other end stays");
+
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::OffsetUnderlayLine);
+    click(&mut harness, Vec3::new(200.0, 20.0, 0.0));
+    assert_eq!(
+        harness.state().undo_step_count(),
+        undo + 2,
+        "a pick changes nothing"
+    );
+    harness.state_mut().value_box.input = "30".to_owned();
+    click(&mut harness, Vec3::new(210.0, 70.0, 0.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 3, "{}", app.digest);
+    assert!(end_at(&mut harness, [140.0, 50.0]), "30 above the wall");
+    assert!(end_at(&mut harness, [240.0, 50.0]));
+    assert!(end_at(&mut harness, [140.0, 20.0]), "the wall stays");
+
+    // A click off every line of the drawing changes nothing.
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::TrimUnderlayLine);
+    click(&mut harness, Vec3::new(60.0, 260.0, 0.0));
+    assert_eq!(harness.state().undo_step_count(), undo + 3);
+
+    // Mirror with the short line picked: across x = 240, through the ends of the wall and
+    // its offset, it goes to x = 300.
+    harness.state_mut().dispatch_command(AppCommand::Select);
+    click(&mut harness, Vec3::new(180.0, 60.0, 0.0));
+    assert_eq!(picked(&harness), 1, "{}", harness.state().digest);
+    harness.state_mut().dispatch_command(AppCommand::Mirror);
+    assert_eq!(harness.state().active_tool, ActiveTool::Mirror);
+    click(&mut harness, Vec3::new(240.0, 20.0, 0.0));
+    click(&mut harness, Vec3::new(240.0, 50.0, 0.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 4, "{}", app.digest);
+    assert!(end_at(&mut harness, [300.0, 120.0]), "mirrored");
+    assert!(end_at(&mut harness, [300.0, 40.0]));
+    assert!(!end_at(&mut harness, [180.0, 40.0]), "moved, not copied");
+
+    harness.state_mut().dispatch_command(AppCommand::Select);
+    for _ in 0..5 {
+        harness.state_mut().undo();
+    }
+    assert_eq!(harness.state().canonical_digest(), digest);
+}

@@ -102,7 +102,9 @@ impl KetchupApp {
                         .count()
                         >= 2
                 }
-                AppCommand::Mirror => self.mirror_sources().is_some(),
+                AppCommand::Mirror => {
+                    self.mirror_sources().is_some() || self.picked_underlay_objects().is_some()
+                }
                 AppCommand::Group => self.group_selection_source_plan().is_some(),
                 AppCommand::Ungroup => self.ungroup_selection_source_plan().is_some(),
                 AppCommand::MakeComponent => self.make_component_source_plan().is_some(),
@@ -263,7 +265,12 @@ impl KetchupApp {
                     self.value_box.input = self.gesture.sketch.polygon_sides().to_string();
                 }
             } else if tool == ActiveTool::Mirror {
-                self.status_key = "status-mirror-face";
+                self.gesture.underlay_mirror_from = None;
+                self.status_key = if self.picked_underlay_objects().is_some() {
+                    "status-underlay-mirror-first"
+                } else {
+                    "status-mirror-face"
+                };
             } else if tool == ActiveTool::Hole {
                 self.value_box.input = "6".to_owned();
                 self.status_key = "status-hole-face";
@@ -274,6 +281,13 @@ impl KetchupApp {
                 self.status_key = "status-measure-first-point";
             } else if tool == ActiveTool::FitUnderlay {
                 self.status_key = "status-fit-underlay-first-line";
+            } else if tool == ActiveTool::TrimUnderlayLine {
+                self.status_key = "status-underlay-trim";
+            } else if tool == ActiveTool::ExtendUnderlayLine {
+                self.status_key = "status-underlay-extend";
+            } else if tool == ActiveTool::OffsetUnderlayLine {
+                self.gesture.underlay_offset = None;
+                self.status_key = "status-underlay-offset-line";
             } else if matches!(
                 tool,
                 ActiveTool::SolidSubtract
@@ -512,6 +526,9 @@ impl KetchupApp {
             | AppCommand::Scale
             | AppCommand::Measure
             | AppCommand::FitUnderlay
+            | AppCommand::TrimUnderlayLine
+            | AppCommand::ExtendUnderlayLine
+            | AppCommand::OffsetUnderlayLine
             | AppCommand::Orbit
             | AppCommand::Pan
             | AppCommand::ZoomWindow => {}

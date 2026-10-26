@@ -14,6 +14,7 @@
 pub mod drawn;
 pub mod edits;
 pub mod fill;
+pub mod line_edit;
 pub mod object_query;
 pub mod objects;
 pub mod placement;

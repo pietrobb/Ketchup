@@ -297,6 +297,13 @@ pub enum UnderlayObjectError {
     InvalidShape(usize),
     /// The map is not a move, turn, mirror or uniform scale above zero.
     InvalidMap,
+    /// The object is not one straight line, so it cannot be trimmed, extended or offset.
+    NotALine(u32),
+    /// No line of the drawing crosses the line where it was to be trimmed, or lies
+    /// ahead of the end it was to be extended from.
+    NoCrossing(u32),
+    /// An offset distance not finite and above zero, or a side on the line itself.
+    InvalidDistance,
 }
 
 impl std::fmt::Display for UnderlayObjectError {
@@ -319,6 +326,17 @@ impl std::fmt::Display for UnderlayObjectError {
             ),
             Self::InvalidMap => formatter.write_str(
                 "the map must move, turn, mirror or scale uniformly by more than zero",
+            ),
+            Self::NotALine(id) => write!(
+                formatter,
+                "object {id} is not one straight line; only a line is trimmed, extended or offset"
+            ),
+            Self::NoCrossing(id) => write!(
+                formatter,
+                "no line of the drawing crosses object {id} there, or lies ahead of that end"
+            ),
+            Self::InvalidDistance => formatter.write_str(
+                "the offset needs a distance above zero and a side off the line",
             ),
         }
     }
@@ -450,7 +468,10 @@ pub fn plan_underlay_object_transform(
 const IDENTITY: Affine = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
 
 /// Object `id` of `objects` when it is there and placed by none.
-fn top_level(objects: &[UnderlayObject], id: u32) -> Result<&UnderlayObject, UnderlayObjectError> {
+pub(super) fn top_level(
+    objects: &[UnderlayObject],
+    id: u32,
+) -> Result<&UnderlayObject, UnderlayObjectError> {
     let object = objects
         .get(super::index(id))
         .filter(|object| !object.removed)
@@ -464,7 +485,7 @@ fn top_level(objects: &[UnderlayObject], id: u32) -> Result<&UnderlayObject, Und
     Ok(object)
 }
 
-fn with_edits(underlay: &Underlay, edits: UnderlayEdits) -> CommandBatch {
+pub(super) fn with_edits(underlay: &Underlay, edits: UnderlayEdits) -> CommandBatch {
     CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(Underlay {
         edits,
         ..underlay.clone()

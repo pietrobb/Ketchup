@@ -262,6 +262,9 @@ fn has_effect(request: &Request) -> bool {
         | Request::DrawingRemove { .. }
         | Request::DrawingDraw { .. }
         | Request::DrawingMove { .. }
+        | Request::DrawingTrim { .. }
+        | Request::DrawingExtend { .. }
+        | Request::DrawingOffset { .. }
         | Request::Export { .. }
         | Request::Selection { .. }
         | Request::View { .. }

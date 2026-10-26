@@ -1166,6 +1166,9 @@ impl KetchupApp {
                 | ActiveTool::Hole
                 | ActiveTool::Draft
                 | ActiveTool::FitUnderlay
+                | ActiveTool::TrimUnderlayLine
+                | ActiveTool::ExtendUnderlayLine
+                | ActiveTool::OffsetUnderlayLine
         ) {
             self.clear_ephemeral_edit_state();
             self.active_tool = ActiveTool::Select;
@@ -1173,6 +1176,7 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-cancelled");
         } else if self.active_tool == ActiveTool::Mirror {
             self.gesture.mirror = None;
+            self.gesture.underlay_mirror_from = None;
             self.active_tool = ActiveTool::Select;
             self.status_key = "status-ready";
             self.digest = self.catalog.text("digest-cancelled");

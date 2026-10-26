@@ -11,6 +11,7 @@ use ketchup_model::underlay::edits::{
     UnderlayObjectError, plan_underlay_drawing, plan_underlay_object_removal,
     plan_underlay_object_transform,
 };
+use ketchup_model::underlay::line_edit::{LineEdit, plan_underlay_line_edit};
 use ketchup_model::underlay::object_query::ObjectIndex;
 use ketchup_model::underlay::objects::Affine;
 use ketchup_model::underlay::{UnderlayId, UnderlayLines, UnderlayPlanError};
@@ -134,6 +135,19 @@ impl KetchupApp {
     ) -> Result<(), UnderlayEditError> {
         self.edit_underlay_drawing(underlay, |snapshot, lines| {
             plan_underlay_object_transform(snapshot, underlay, lines, ids, map, copy)
+        })
+    }
+
+    /// Trims, extends or offsets the straight line `object` of the drawing of `underlay`,
+    /// in the millimetres of its lines, as one Undo step.
+    pub(crate) fn edit_underlay_line(
+        &mut self,
+        underlay: UnderlayId,
+        object: u32,
+        edit: LineEdit,
+    ) -> Result<(), UnderlayEditError> {
+        self.edit_underlay_drawing(underlay, |snapshot, lines| {
+            plan_underlay_line_edit(snapshot, underlay, lines, object, edit)
         })
     }
 

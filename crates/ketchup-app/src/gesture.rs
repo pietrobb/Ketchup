@@ -29,6 +29,11 @@ pub(crate) struct Gesture {
     /// The drawing and layer the Line, Rectangle, Circle and Arc tools draw into instead
     /// of the model, while on.
     pub(crate) underlay_draw: Option<crate::app::underlay_draw::UnderlayDrawTarget>,
+    /// The drawing and its line the Offset line tool picked, until the side is clicked.
+    pub(crate) underlay_offset: Option<(ketchup_model::underlay::UnderlayId, u32)>,
+    /// The first point, in document XY, of the line Mirror flips objects picked in a
+    /// drawing across.
+    pub(crate) underlay_mirror_from: Option<[f64; 2]>,
 }
 
 /// A point on a picked face and the face's outward normal; the Mirror tool

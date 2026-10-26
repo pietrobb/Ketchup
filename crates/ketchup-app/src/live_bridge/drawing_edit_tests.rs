@@ -333,3 +333,90 @@ fn a_client_draws_moves_and_copies_objects_of_a_drawing_in_document_millimetres(
     }
     assert_eq!(top_level(&mut bridge, &mut app), before);
 }
+
+/// 2D-2: `drawing action=trim/extend/offset` on straight lines, in document millimetres:
+/// trim cuts back to the crossing line, extend reaches on to it, offset adds a parallel
+/// line; one Undo step each, and anything but a straight line is refused with its id.
+#[test]
+fn a_client_trims_extends_and_offsets_lines_of_a_drawing() {
+    let (mut app, mut bridge, _) = imported(DRAWING);
+    let before = top_level(&mut bridge, &mut app);
+    let undo = app.undo_step_count();
+    let drawn = bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_draw",
+                json!({"layer": "walls", "shapes": [
+                    {"shape": "line", "points_mm": [[5000, 5000], [6000, 5000]]},
+                    {"shape": "line", "points_mm": [[5500, 4500], [5500, 5500]]},
+                    {"shape": "line", "points_mm": [[5100, 5300], [5200, 5300]]},
+                ]}),
+            ),
+            false,
+        )
+        .unwrap();
+    let [long, cross, short] = [0, 1, 2].map(|index| drawn["object_ids"][index].clone());
+    let mut edit = |app: &mut KetchupApp, method: &str, args: Value| {
+        bridge.execute(app, ask(method, args), false)
+    };
+    let one_new = |answer: &Value| {
+        let new = answer["new_object_ids"].as_array().unwrap();
+        assert_eq!(new.len(), 1, "{answer}");
+        new[0].clone()
+    };
+
+    let trimmed = edit(
+        &mut app,
+        "drawing_trim",
+        json!({"object_id": long, "at_mm": [5800, 5000]}),
+    )
+    .unwrap();
+    assert_eq!(trimmed["removed"], true, "{trimmed}");
+    let left = one_new(&trimmed);
+    let extended = edit(
+        &mut app,
+        "drawing_extend",
+        json!({"object_id": short, "at_mm": [5190, 5301]}),
+    )
+    .unwrap();
+    let reached = one_new(&extended);
+    let offset = edit(
+        &mut app,
+        "drawing_offset",
+        json!({"object_id": cross, "at_mm": [5900, 5000], "distance_mm": 100}),
+    )
+    .unwrap();
+    assert_eq!(offset["removed"], false, "{offset}");
+    let parallel = one_new(&offset);
+    let door = id_of(&before, "1F");
+    assert_eq!(
+        edit(
+            &mut app,
+            "drawing_trim",
+            json!({"object_id": door, "at_mm": [0, 0]})
+        )
+        .unwrap_err(),
+        "invalid_params"
+    );
+    assert_eq!(take_error_details().unwrap()["details"]["object_id"], door);
+    assert_eq!(app.undo_step_count(), undo + 4);
+
+    for (id, want) in [
+        (&left, [[5000.0, 5000.0], [5500.0, 5000.0]]),
+        (&reached, [[5100.0, 5300.0], [5500.0, 5300.0]]),
+        (&parallel, [[5600.0, 4500.0], [5600.0, 5500.0]]),
+    ] {
+        let found = row(&mut bridge, &mut app, id);
+        assert_eq!(found["kind"], "LINE", "{found}");
+        assert_eq!(found["layer"], "walls");
+        assert!(close(&found["bounds_mm"], want), "{found}");
+    }
+
+    for _ in 0..4 {
+        bridge
+            .execute(&mut app, Request::Undo { expected: None }, false)
+            .unwrap();
+    }
+    assert_eq!(top_level(&mut bridge, &mut app), before);
+}
