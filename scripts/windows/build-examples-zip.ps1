@@ -61,8 +61,18 @@ try {
     }
     Copy-Item (Join-Path $root "examples\programs\*.star") (Join-Path $folder "programs")
     [void](New-Item $OutputDir -ItemType Directory -Force)
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [IO.Compression.ZipFile]::CreateFromDirectory($folder, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $true)
+    # Entry names with "/", as unzip on macOS and Linux needs; ZipFile.CreateFromDirectory
+    # under Windows PowerShell 5.1 writes "\" (review 2026-10-24 DOC-20).
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in Get-ChildItem $folder -Recurse -File | Sort-Object FullName) {
+            $entry = "$name/" + $file.FullName.Substring($folder.Length + 1).Replace("\", "/")
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $entry, [IO.Compression.CompressionLevel]::Optimal)
+        }
+    } finally {
+        $archive.Dispose()
+    }
 } finally {
     if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 }

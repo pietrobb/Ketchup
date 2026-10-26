@@ -5,8 +5,12 @@ release, but no script made it.
 """
 
 import re
+import shutil
+import subprocess
 import zipfile
 from pathlib import Path
+
+import pytest
 
 from test_release_version import ROOT, WINDOWS, powershell, workspace_version
 
@@ -50,6 +54,28 @@ def test_the_zip_holds_every_readme_example_and_every_program(tmp_path):
             source = downloads / name if target.startswith("https://") else ROOT / target
             assert archive.read(f"{folder}/{name}") == source.read_bytes(), name
     assert len(examples) >= 8 and len(programs) >= 8
+
+
+@pytest.mark.parametrize("shell", ["pwsh", "powershell"])
+def test_every_powershell_writes_the_entry_names_with_forward_slashes(tmp_path, shell):
+    # Review 2026-10-24 DOC-20: Windows PowerShell 5.1 wrote Ketchup-0.2.0-Examples.zip
+    # with backslashes, so unzip on macOS and Linux made no folder. zipfile on Windows
+    # turns them into slashes, so only the raw names show it.
+    found = shutil.which(shell)
+    if found is None:
+        pytest.skip(f"no {shell}")
+    downloads = downloads_in(tmp_path)
+    result = subprocess.run(
+        [found, "-NoProfile", "-NonInteractive", "-Command",
+         f"& '{SCRIPT}' -OutputDir '{(tmp_path / 'out').as_posix()}' -DownloadedExamples '{downloads.as_posix()}'"],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    folder = f"Ketchup-{workspace_version()}-Examples"
+    with zipfile.ZipFile(tmp_path / "out" / f"{folder}.zip") as archive:
+        raw = [info.orig_filename for info in archive.infolist()]
+    assert raw and all("\\" not in name and name.startswith(f"{folder}/") for name in raw), raw
+    assert f"{folder}/programs/table.star" in raw
 
 
 def test_a_missing_download_names_the_file_and_where_to_get_it(tmp_path):
