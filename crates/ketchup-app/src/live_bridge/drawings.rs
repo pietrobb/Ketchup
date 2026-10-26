@@ -483,7 +483,8 @@ mod tests {
                 &pdf,
                 SetFileFormat::Pdf,
                 &[b"%PDF-".to_vec()],
-                &Default::default()
+                &Default::default(),
+                ketchup_model::document::DocumentId(1),
             )
             .is_err()
         );

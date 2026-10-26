@@ -147,6 +147,49 @@ pub(crate) struct ExportedSet {
 /// The SHA-256 of each file of a set an export may replace, by its path.
 pub(crate) type SetTargets = BTreeMap<PathBuf, String>;
 
+/// The first line of the list a DXF or DWG set is written with.
+const SET_LIST_HEADER: &str = "Ketchup drawing set";
+
+/// The list written beside a DXF or DWG set for `path`, `plan.dxf` as
+/// `plan.dxf.sheets.txt`: the project the set was drawn from and the name and
+/// SHA-256 of each sheet. Only the sheets it lists are taken for the set's own
+/// when it is exported again; a file merely named like a sheet is not
+/// (review 2026-10-24 MF-27, run 325).
+pub(crate) fn set_list_path(path: &Path, format: SetFileFormat) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    path.with_file_name(format!("{stem}.{}.sheets.txt", format.extension()))
+}
+
+fn set_list(document: DocumentId, sheets: &[PathBuf], files: &[Vec<u8>]) -> Vec<u8> {
+    let mut list = format!("{SET_LIST_HEADER}\ndocument {}\n", document.0);
+    for (sheet, bytes) in sheets.iter().zip(files) {
+        let name = sheet
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        let sha256 = ketchup_model::graph::sha256_hex(bytes);
+        list.push_str(&format!("{name} {sha256}\n"));
+    }
+    list.into_bytes()
+}
+
+/// The sheet names and SHA-256s `list` holds when it is the list of a set of
+/// `document`; none when it is another project's or no list at all.
+fn listed_sheets(list: &[u8], document: DocumentId) -> Option<BTreeMap<String, String>> {
+    let mut lines = std::str::from_utf8(list).ok()?.lines();
+    (lines.next() == Some(SET_LIST_HEADER)
+        && lines.next() == Some(format!("document {}", document.0).as_str()))
+    .then(|| {
+        lines
+            .filter_map(|line| {
+                let (name, sha256) = line.rsplit_once(' ')?;
+                Some((name.to_owned(), sha256.to_owned()))
+            })
+            .collect()
+    })
+}
+
 /// Writes the set's `files` for `path`, each through a temporary file and a
 /// rename, so a failed write never leaves a half-written sheet and a link is
 /// replaced, not followed. A file there may be replaced only when its SHA-256
@@ -156,19 +199,38 @@ pub(crate) type SetTargets = BTreeMap<PathBuf, String>;
 /// replaced are written back: a set is written whole or not at all. The old
 /// sheets in `targets` beyond the new set's last are removed with it, each only
 /// while it still holds the SHA-256 `targets` has for it, so no stale sheet is
-/// left beside the set as one of it.
+/// left beside the set as one of it; any other file named like a sheet beyond
+/// the last refuses the export. A DXF or DWG set is written with its list
+/// ([`set_list_path`]) naming `document` and each sheet.
 pub(crate) fn publish_project_drawings(
     path: &Path,
     format: SetFileFormat,
     files: &[Vec<u8>],
     targets: &SetTargets,
+    document: DocumentId,
 ) -> Result<Vec<PathBuf>, ProjectDrawingsError> {
     use crate::export_bundle::{ExportTransactionError, write_export_artifact_if_unchanged};
     let paths = set_file_paths(path, format, files.len());
-    let mut written = Vec::<(&Path, &[u8], Option<Vec<u8>>)>::with_capacity(paths.len());
+    let list = (format != SetFileFormat::Pdf).then(|| {
+        let list_path = set_list_path(path, format);
+        let bytes = set_list(document, &paths, files);
+        (list_path, bytes)
+    });
+    let list_path = list.as_ref().map(|(list_path, _)| list_path);
+    let mut written = Vec::<(&Path, &[u8], Option<Vec<u8>>)>::with_capacity(paths.len() + 1);
     let mut removed = Vec::<(&Path, Vec<u8>)>::new();
     let mut publish = || -> Result<(), ExportTransactionError> {
-        for (target, bytes) in paths.iter().zip(files) {
+        // A file named like a sheet beyond the set's last that is not one the
+        // set wrote would be left beside it as one of its sheets.
+        if let Some(stray) = list.as_ref().and_then(|_| {
+            numbered_sheet_files(path, format)
+                .into_iter()
+                .find(|sheet| !paths.contains(sheet) && !targets.contains_key(sheet))
+        }) {
+            return Err(ExportTransactionError::changed(&stray));
+        }
+        let list = list.iter().map(|(list_path, bytes)| (list_path, bytes));
+        for (target, bytes) in paths.iter().zip(files).chain(list) {
             let replacing = targets.get(target).map(String::as_str);
             let previous = replacing
                 .map(|_| std::fs::read(target))
@@ -177,7 +239,10 @@ pub(crate) fn publish_project_drawings(
             write_export_artifact_if_unchanged(target, bytes, replacing)?;
             written.push((target, bytes, previous));
         }
-        for (stale, sha256) in targets.iter().filter(|(stale, _)| !paths.contains(stale)) {
+        let stale = targets
+            .iter()
+            .filter(|(stale, _)| !paths.contains(stale) && Some(*stale) != list_path);
+        for (stale, sha256) in stale {
             let previous = std::fs::read(stale).map_err(ExportTransactionError::io(stale))?;
             if ketchup_model::graph::sha256_hex(&previous) != *sha256 {
                 return Err(ExportTransactionError::changed(stale));
@@ -212,22 +277,41 @@ pub(crate) fn publish_project_drawings(
 
 /// The files of a set as `format` for `path` an export started now may
 /// replace, with their SHA-256: the PDF at `path`, or the numbered DXF or DWG
-/// sheets an earlier export wrote beside it, so the set exports again under
-/// the same name (review 2026-10-24 MF-27).
+/// sheets an earlier export of `document` wrote beside it, so the set exports
+/// again under the same name (review 2026-10-24 MF-27). A sheet is the set's
+/// only while its list names it with the bytes it holds now; any other file
+/// named like a sheet, such as another project's, is not replaced or removed
+/// (run 325).
 pub(crate) fn project_drawings_targets(
     path: &Path,
     format: SetFileFormat,
+    document: DocumentId,
 ) -> Result<SetTargets, ProjectDrawingsError> {
-    let candidates = if format == SetFileFormat::Pdf {
-        vec![path.to_path_buf()]
-    } else {
-        numbered_sheet_files(path, format)
+    let sha256 = |candidate: &Path| {
+        crate::export_bundle::export_target_sha256(candidate)
+            .map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))
     };
     let mut targets = SetTargets::new();
-    for candidate in candidates {
-        if let Some(sha256) = crate::export_bundle::export_target_sha256(&candidate)
-            .map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))?
-        {
+    if format == SetFileFormat::Pdf {
+        if let Some(sha256) = sha256(path)? {
+            targets.insert(path.to_path_buf(), sha256);
+        }
+        return Ok(targets);
+    }
+    let list_path = set_list_path(path, format);
+    let list = match std::fs::read(&list_path) {
+        Ok(list) => list,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(targets),
+        Err(error) => return Err(ProjectDrawingsError::Write(error)),
+    };
+    let Some(listed) = listed_sheets(&list, document) else {
+        return Ok(targets);
+    };
+    targets.insert(list_path, ketchup_model::graph::sha256_hex(&list));
+    for candidate in numbered_sheet_files(path, format) {
+        let name = candidate.file_name().and_then(|name| name.to_str());
+        let listed = name.and_then(|name| listed.get(name));
+        if let Some(sha256) = sha256(&candidate)?.filter(|sha256| Some(sha256) == listed) {
             targets.insert(candidate, sha256);
         }
     }
@@ -754,7 +838,8 @@ impl KetchupApp {
         targets: &SetTargets,
     ) -> Result<ExportedSet, ProjectDrawingsError> {
         let (set, files) = self.project_drawings_job_for(request)?.render(format)?;
-        let paths = publish_project_drawings(path, format, &files, targets)?;
+        let document = self.document.current().document_id();
+        let paths = publish_project_drawings(path, format, &files, targets, document)?;
         Ok(ExportedSet { set, paths })
     }
 
@@ -762,7 +847,8 @@ impl KetchupApp {
     /// none) and reports it in the digest.
     pub fn export_project_drawings_to(&mut self, path: &Path) -> bool {
         let format = SetFileFormat::of_path(path).unwrap_or(SetFileFormat::Pdf);
-        let result = project_drawings_targets(path, format).and_then(|targets| {
+        let document = self.document.current().document_id();
+        let result = project_drawings_targets(path, format, document).and_then(|targets| {
             self.write_project_drawings(path, format, SheetRequest::default(), &targets)
         });
         self.report_project_drawings(path, &result);

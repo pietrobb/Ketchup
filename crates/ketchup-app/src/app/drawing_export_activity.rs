@@ -38,6 +38,8 @@ pub(crate) struct DrawingExportTask {
     /// The SHA-256 of each file the export may replace, taken when it
     /// started; a file saved there meanwhile is not overwritten.
     replacing: SetTargets,
+    /// The project the drawing is made from.
+    document: DocumentId,
     receiver: Receiver<MadeDrawing>,
 }
 
@@ -93,8 +95,9 @@ impl KetchupApp {
         context: &egui::Context,
         work: DrawingWork,
     ) {
+        let document = self.document.current().document_id();
         let replacing = match export {
-            DrawingExport::Project(format) => project_drawings_targets(&path, format)
+            DrawingExport::Project(format) => project_drawings_targets(&path, format, document)
                 .map_err(|error| self.report_project_drawings(&path, &Err(error))),
             DrawingExport::Sheet(_, format) => drawing_sheet_target(&path)
                 .map(|sha256| {
@@ -119,6 +122,7 @@ impl KetchupApp {
             export,
             path,
             replacing,
+            document,
             receiver,
         });
         context.request_repaint();
@@ -154,7 +158,8 @@ impl KetchupApp {
                     _ => Err(ProjectDrawingsError::Write(ended())),
                 }
                 .and_then(|(set, files)| {
-                    publish_project_drawings(&task.path, format, &files, &task.replacing)
+                    let document = task.document;
+                    publish_project_drawings(&task.path, format, &files, &task.replacing, document)
                         .map(|paths| ExportedSet { set, paths })
                 });
                 self.report_project_drawings(&task.path, &result);
