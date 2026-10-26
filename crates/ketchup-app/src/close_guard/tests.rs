@@ -166,9 +166,16 @@ fn save_on_close_remains_responsive_while_disk_is_locked_and_protects_new_edits(
     for concurrent_edit in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("close-locked.ketchup");
-        let lock = std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap();
+        let lock = std::sync::Arc::new(
+            std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap(),
+        );
         lock.lock().unwrap();
-        let _hang = hang_guard("a save on close waiting for its locked file");
+        let _hang = hang_guard("a save on close waiting for its locked file", {
+            let lock = std::sync::Arc::clone(&lock);
+            move || {
+                let _ = lock.unlock();
+            }
+        });
         let mut harness = shell(ScriptedFileDialogs::new().queue_save(&path), true);
         close_event(&mut harness);
         harness.run();
@@ -182,7 +189,7 @@ fn save_on_close_remains_responsive_while_disk_is_locked_and_protects_new_edits(
             |app| app.native_save_is_writing(),
         );
         // The save waits for `lock`, released below: a frame that waited for
-        // it would end only when `_hang` ends the run.
+        // it would end only when `_hang` lets the lock go and fails the test.
         for _ in 0..8 {
             harness.step();
             let label = harness.state().file_activity_label().unwrap();

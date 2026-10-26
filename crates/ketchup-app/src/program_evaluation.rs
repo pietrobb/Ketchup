@@ -40,17 +40,22 @@ struct Pending {
 }
 
 /// A test's hold on an evaluation ([`ProgramEvaluations::hold`]), with the
-/// guard that ends a hung test run until the evaluation is sent.
+/// guard that, if a frame waits for it too long, drops the sender (the frame
+/// then evaluates by itself) and fails the test.
 #[cfg(test)]
 pub(crate) struct Held {
-    sender: mpsc::SyncSender<Evaluation>,
+    sender: std::sync::Arc<std::sync::Mutex<Option<mpsc::SyncSender<Evaluation>>>>,
     _hang: crate::tests::shell::HangGuard,
 }
 
 #[cfg(test)]
 impl Held {
     pub(crate) fn send(self, evaluation: Evaluation) -> Result<(), mpsc::SendError<Evaluation>> {
-        self.sender.send(evaluation)
+        let sender = self.sender.lock().unwrap().take();
+        match sender {
+            Some(sender) => sender.send(evaluation),
+            None => Err(mpsc::SendError(evaluation)),
+        }
     }
 }
 
@@ -156,10 +161,12 @@ impl ProgramEvaluations {
 
     /// Makes `source` pending until the test sends its evaluation, as after an
     /// Open or Undo of a program that takes long to evaluate. A tool that
-    /// waited for it would hang; the hold's guard ends the test run instead.
+    /// waited for it would hang; the hold's guard lets it go and fails the test.
     #[cfg(test)]
     pub(crate) fn hold(&self, source: &RuleProgramSource) -> Held {
         let (sender, receiver) = mpsc::sync_channel(1);
+        let sender = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+        let release = std::sync::Arc::clone(&sender);
         self.ready.borrow_mut().take();
         *self.pending.borrow_mut() = Some(Pending {
             source: source.clone(),
@@ -168,7 +175,9 @@ impl ProgramEvaluations {
         });
         Held {
             sender,
-            _hang: crate::tests::shell::hang_guard("a held program evaluation"),
+            _hang: crate::tests::shell::hang_guard("a held program evaluation", move || {
+                release.lock().unwrap().take();
+            }),
         }
     }
 

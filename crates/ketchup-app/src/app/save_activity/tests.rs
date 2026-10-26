@@ -106,9 +106,16 @@ fn preparation_is_responsive_and_cancel_or_close_never_writes() {
 fn actual_locked_write_keeps_ui_alive_then_reopens_saved_geometry() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("locked.ketchup");
-    let lock = std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap();
+    let lock = std::sync::Arc::new(
+        std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap(),
+    );
     lock.lock().unwrap();
-    let _hang = hang_guard("a save waiting for its locked file");
+    let _hang = hang_guard("a save waiting for its locked file", {
+        let lock = std::sync::Arc::clone(&lock);
+        move || {
+            let _ = lock.unlock();
+        }
+    });
     let mut harness = shell(ScriptedFileDialogs::new());
     assert!(harness.state_mut().create_box());
     let expected_count = harness.state().document.current().occurrences().count();
@@ -151,9 +158,16 @@ fn actual_locked_write_keeps_ui_alive_then_reopens_saved_geometry() {
 fn an_edit_during_write_stays_dirty_and_is_not_in_the_saved_file() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("edited.ketchup");
-    let lock = std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap();
+    let lock = std::sync::Arc::new(
+        std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap(),
+    );
     lock.lock().unwrap();
-    let _hang = hang_guard("a save waiting for its locked file");
+    let _hang = hang_guard("a save waiting for its locked file", {
+        let lock = std::sync::Arc::clone(&lock);
+        move || {
+            let _ = lock.unlock();
+        }
+    });
     let mut harness = shell(ScriptedFileDialogs::new());
     let before = harness.state().document.current().occurrences().count();
     let context = harness.ctx.clone();
@@ -203,9 +217,16 @@ fn background_save_refuses_unapproved_overwrite_and_preserves_existing_bytes() {
 fn a_destination_conflict_is_reported_even_after_an_edit_during_write() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("conflict.ketchup");
-    let lock = std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap();
+    let lock = std::sync::Arc::new(
+        std::fs::File::create(path.with_extension("ketchup.save-lock")).unwrap(),
+    );
     lock.lock().unwrap();
-    let _hang = hang_guard("a save waiting for its locked file");
+    let _hang = hang_guard("a save waiting for its locked file", {
+        let lock = std::sync::Arc::clone(&lock);
+        move || {
+            let _ = lock.unlock();
+        }
+    });
     let mut harness = shell(ScriptedFileDialogs::new());
     assert!(harness.state_mut().create_box());
     let context = harness.ctx.clone();

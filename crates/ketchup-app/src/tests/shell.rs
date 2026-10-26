@@ -27,28 +27,83 @@ pub(crate) fn step_until(
 /// hung: far longer than any frame, far shorter than a CI job's timeout.
 const HANG_PATIENCE: Duration = Duration::from_secs(120);
 
-/// While alive, ends the test process naming `what` once [`HANG_PATIENCE`] has
-/// passed. A test that holds work with no deadline of its own (a locked file, a
-/// held program evaluation) arms one, so a frame that waits for that work fails
-/// the run instead of blocking it until the CI job is cancelled.
+/// While alive, lets go of the held work through `release` once
+/// [`HANG_PATIENCE`] has passed, and then fails its test when dropped, naming
+/// `what`. A test that holds work with no deadline of its own (a locked file, a
+/// held program evaluation) arms one, so a frame that waits for that work ends
+/// and fails that test alone instead of blocking the run until the CI job is
+/// cancelled; the other tests in the binary still report (review 2026-10-24:
+/// ending the process lost their results).
 pub(crate) struct HangGuard {
-    _disarm: std::sync::mpsc::Sender<()>,
+    what: &'static str,
+    disarm: Option<std::sync::mpsc::Sender<()>>,
+    watcher: Option<std::thread::JoinHandle<bool>>,
 }
 
-pub(crate) fn hang_guard(what: &'static str) -> HangGuard {
+pub(crate) fn hang_guard(what: &'static str, release: impl FnOnce() + Send + 'static) -> HangGuard {
+    hang_guard_within(what, HANG_PATIENCE, release)
+}
+
+fn hang_guard_within(
+    what: &'static str,
+    patience: Duration,
+    release: impl FnOnce() + Send + 'static,
+) -> HangGuard {
     let (disarm, armed) = std::sync::mpsc::channel::<()>();
-    std::thread::spawn(move || {
-        if armed.recv_timeout(HANG_PATIENCE) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+    let watcher = std::thread::spawn(move || {
+        let hung = armed.recv_timeout(patience) == Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+        if hung {
             use std::io::Write as _;
-            // Straight to stderr: the test's captured output is lost on exit.
+            // Straight to stderr: whatever the frame does next, the cause is named.
             let _ = writeln!(
                 std::io::stderr(),
-                "hung: {what} was still held after {HANG_PATIENCE:?}; a frame waited for it"
+                "hung: {what} was still held after {patience:?}; a frame waited for it, so it is let go"
             );
-            std::process::exit(101);
+            release();
         }
+        hung
     });
-    HangGuard { _disarm: disarm }
+    HangGuard {
+        what,
+        disarm: Some(disarm),
+        watcher: Some(watcher),
+    }
+}
+
+impl Drop for HangGuard {
+    fn drop(&mut self) {
+        drop(self.disarm.take());
+        let hung = self
+            .watcher
+            .take()
+            .is_some_and(|watcher| watcher.join().unwrap_or(true));
+        if hung && !std::thread::panicking() {
+            panic!(
+                "hung: {} was still held past the guard's patience; a frame waited for it",
+                self.what
+            );
+        }
+    }
+}
+
+#[test]
+fn a_hung_guard_lets_the_work_go_and_fails_only_its_own_test() {
+    let (unblock, blocked) = std::sync::mpsc::channel::<()>();
+    let guard = hang_guard_within("a test's own hold", Duration::from_millis(50), move || {
+        drop(unblock)
+    });
+    // The frame that waits for the held work ends once the guard lets it go.
+    assert!(blocked.recv().is_err());
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(guard)))
+        .expect_err("a hung guard fails its test");
+    let message = failure.downcast_ref::<String>().expect("message");
+    assert!(message.contains("hung: a test's own hold"), "{message}");
+    // A guard dropped in time neither lets go nor fails anything.
+    drop(hang_guard_within(
+        "quick work",
+        Duration::from_secs(60),
+        || panic!("let go in time"),
+    ));
 }
 
 #[test]
