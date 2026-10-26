@@ -132,6 +132,39 @@ pub(super) fn lay_out(text: &UnderlayText, letter: &mut impl FnMut(PlacedLetter)
     }
 }
 
+/// Whether `point_mm` lies in the cell of one of its letters, spaces too, from the bottom
+/// of the descenders to the top of the capitals, laid out as it is drawn.
+pub(crate) fn holds(text: &UnderlayText, point_mm: [f64; 2]) -> bool {
+    let font = text_font();
+    let below = -font.descent_units / font.cap_units;
+    let mut found = false;
+    lay_out(text, &mut |letter| {
+        if found {
+            return;
+        }
+        let along = [
+            letter.x_axis[0] * letter.advance,
+            letter.x_axis[1] * letter.advance,
+        ];
+        let up = [
+            letter.y_axis[0] * font.cap_units,
+            letter.y_axis[1] * font.cap_units,
+        ];
+        let determinant = along[0] * up[1] - along[1] * up[0];
+        if determinant.abs() < f64::EPSILON {
+            return;
+        }
+        let offset = [
+            point_mm[0] - letter.origin_mm[0],
+            point_mm[1] - letter.origin_mm[1],
+        ];
+        let s = (offset[0] * up[1] - offset[1] * up[0]) / determinant;
+        let t = (along[0] * offset[1] - along[1] * offset[0]) / determinant;
+        found = (0.0..=1.0).contains(&s) && (below..=1.0).contains(&t);
+    });
+    found
+}
+
 /// Layout-cell centres of visible letters, using the same alignment, wrapping and rotation as rendering.
 pub(crate) fn letter_centres(text: &UnderlayText) -> Vec<[f64; 2]> {
     let mut points = Vec::new();

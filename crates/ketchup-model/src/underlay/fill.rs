@@ -51,6 +51,24 @@ impl UnderlayFill {
             .map(|(start, end)| &self.points_mm[start..end])
     }
 
+    /// Whether it paints `point_mm`: inside an odd number of its rings, as
+    /// [`Self::triangles`] paints them.
+    #[must_use]
+    pub fn contains(&self, point_mm: [f64; 2]) -> bool {
+        let [x, y] = point_mm;
+        let mut inside = false;
+        for ring in self.rings() {
+            for (index, a) in ring.iter().enumerate() {
+                let b = ring[(index + 1) % ring.len()];
+                if (a[1] > y) != (b[1] > y) && x < a[0] + (y - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+                {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
+
     /// How many edge crossings [`Self::triangles`] visits: its work.
     #[must_use]
     pub fn sweep_crossings(&self) -> usize {

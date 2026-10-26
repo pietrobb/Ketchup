@@ -7,10 +7,14 @@ use egui_kittest::Harness;
 use ketchup_model::underlay::snap::UnderlaySnapKind;
 
 pub(super) fn shell() -> Harness<'static, KetchupApp> {
+    shell_of(imported())
+}
+
+pub(super) fn shell_of(app: KetchupApp) -> Harness<'static, KetchupApp> {
     let mut harness = Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
         .with_step_dt(1.0 / 60.0)
-        .build_state(|context, app: &mut KetchupApp| app.ui(context), imported());
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.step();
     harness.state_mut().dispatch_command(AppCommand::ViewTop);
     harness.step();

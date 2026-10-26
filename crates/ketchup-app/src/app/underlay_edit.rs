@@ -1,5 +1,5 @@
-//! Editing an underlay's drawing as a 2D CAD does: a click on one of its lines picks the
-//! object that drew it (a line, polyline, arc, text, the whole insert of a block, a
+//! Editing an underlay's drawing as a 2D CAD does: a click on one of its lines, the letters
+//! of a text or inside a fill picks the object that drew it (a line, polyline, arc, text, the whole insert of a block, a
 //! dimension, a hatch), Shift adds or takes one away, the picked ones are drawn in the
 //! accent color, and Delete takes them out of the drawing as one Undo step. The blob of
 //! the drawing is not touched: the underlay carries the ids it took out
@@ -66,6 +66,45 @@ impl KetchupApp {
         let Some(object) = self.underlay_object_at(underlay, segment) else {
             return;
         };
+        self.selection.pick_underlay_object(object, keep);
+        self.digest = self.picked_underlay_objects_readout(underlay);
+    }
+
+    /// The top-level object of a shown underlay whose text or fill lies under `pointer`,
+    /// of the underlay drawn last where several do. A text or a hatch draws no straight
+    /// piece, so no line snap leads to it.
+    pub(crate) fn underlay_object_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+    ) -> Option<(UnderlayId, u32)> {
+        let point = self.screen_to_plane(pointer, rect, 0.0)?;
+        let snapshot = self.document.current();
+        let underlays = snapshot.underlays().collect::<Vec<_>>();
+        underlays.into_iter().rev().find_map(|underlay| {
+            let lines = self.cached_underlay_lines(underlay)?;
+            let index = ObjectIndex::new(&lines);
+            let local = underlay.to_local([point.x, point.y]);
+            let object = index.object_with_area_at(
+                local,
+                |layer| Self::underlay_layer_shown(&snapshot, underlay, layer),
+                crate::renderer::underlay::text::holds,
+            )?;
+            Some((underlay.id, index.top_level_of(object)))
+        })
+    }
+
+    /// Selects `underlay` and picks its object `object`, as a click on a line of it does.
+    pub(crate) fn pick_underlay_object_id(
+        &mut self,
+        underlay: UnderlayId,
+        object: u32,
+        additive: bool,
+    ) {
+        let keep = additive && self.selected_underlay() == Some(underlay);
+        if !keep {
+            self.select_underlay(underlay);
+        }
         self.selection.pick_underlay_object(object, keep);
         self.digest = self.picked_underlay_objects_readout(underlay);
     }

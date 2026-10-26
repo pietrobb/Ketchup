@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use ketchup_geometry::linalg::dot2;
 
 use super::UnderlayLines;
-use super::objects::{ObjectDetail, UnderlayObject};
+use super::objects::{ObjectDetail, ObjectPart, UnderlayObject};
 use super::text::UnderlayText;
 
 /// The children and bounds of every object of an underlay, worked out once.
@@ -184,6 +184,49 @@ impl<'a> ObjectIndex<'a> {
                 })
             })
             .and_then(|index| u32::try_from(index).ok())
+    }
+
+    /// The object drawn last of those that draw a text `text_holds` says holds `point_mm`
+    /// on a layer `shown` keeps, or else of those that paint a fill there: a click on a
+    /// label inside a hatched room picks the label. Texts and fills draw no straight
+    /// pieces, so [`Self::object_drawing`] never finds them.
+    #[must_use]
+    pub fn object_with_area_at(
+        &self,
+        point_mm: [f64; 2],
+        shown: impl Fn(usize) -> bool,
+        text_holds: impl Fn(&UnderlayText, [f64; 2]) -> bool,
+    ) -> Option<u32> {
+        let objects = &self.lines.objects().objects;
+        let layers = self.lines.layers();
+        let hit = |holds: &dyn Fn(&super::LayerLines, &ObjectPart) -> bool| {
+            objects
+                .iter()
+                .rposition(|object| {
+                    !object.removed
+                        && object.parts.iter().any(|part| {
+                            let layer = as_index(part.layer);
+                            shown(layer)
+                                && layers.get(layer).is_some_and(|lines| holds(lines, part))
+                        })
+                })
+                .and_then(|index| u32::try_from(index).ok())
+        };
+        let range = |range: &std::ops::Range<u32>| as_index(range.start)..as_index(range.end);
+        hit(&|layer, part| {
+            layer
+                .texts()
+                .get(range(&part.texts))
+                .is_some_and(|texts| texts.iter().any(|text| text_holds(text, point_mm)))
+        })
+        .or_else(|| {
+            hit(&|layer, part| {
+                layer
+                    .fills()
+                    .get(range(&part.fills))
+                    .is_some_and(|fills| fills.iter().any(|fill| fill.contains(point_mm)))
+            })
+        })
     }
 
     /// The ids of the objects `filter` keeps, in order.

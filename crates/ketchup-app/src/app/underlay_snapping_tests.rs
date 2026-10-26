@@ -19,9 +19,18 @@ fn viewport() -> Rect {
 }
 
 pub(super) fn imported() -> KetchupApp {
+    imported_dxf(PLAN_DXF)
+}
+
+/// The plan with `entities` added after its lines.
+pub(super) fn imported_with(entities: &str) -> KetchupApp {
+    imported_dxf(&PLAN_DXF.replace("0\nENDSEC\n0\nEOF", &format!("{entities}0\nENDSEC\n0\nEOF")))
+}
+
+fn imported_dxf(dxf: &str) -> KetchupApp {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("plan.dxf");
-    std::fs::write(&path, PLAN_DXF).unwrap();
+    std::fs::write(&path, dxf).unwrap();
     let dialogs = dialogs::ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &path);
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
     app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);

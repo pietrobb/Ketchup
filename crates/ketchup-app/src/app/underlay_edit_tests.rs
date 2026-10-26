@@ -1,7 +1,8 @@
 //! Clicked in a headless window: a click on a line of an underlay picks the object that drew
 //! it, Shift+click picks more or drops one, Delete takes them out of the drawing in one Undo
 //! step, and the drawing no longer snaps where they were.
-use super::underlay_transform_tests::{click, double_click, press, shell};
+use super::underlay_snapping_tests::imported_with;
+use super::underlay_transform_tests::{click, double_click, press, shell, shell_of};
 use crate::*;
 use egui_kittest::Harness;
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape};
@@ -88,6 +89,58 @@ fn clicked_objects_of_a_drawing_are_picked_and_deleted_in_one_undo_step() {
     assert_eq!(harness.state().canonical_digest(), digest);
     assert!(end_at(&mut harness, [40.0, 20.0]));
     assert!(end_at(&mut harness, [290.0, 70.0]));
+}
+
+/// A room label and a solid hatch with no boundary object draw no line to click: a click
+/// on the label's letters or inside the hatch picks them, and Delete takes them out.
+#[test]
+fn a_clicked_text_or_hatch_of_a_drawing_is_picked_and_deleted() {
+    let mut harness = shell_of(imported_with(concat!(
+        "0\nTEXT\n8\nlabels\n10\n120\n20\n60\n40\n10\n1\n1.02 WC\n",
+        "0\nHATCH\n8\nfloor\n10\n0\n20\n0\n30\n0\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n3\n",
+        "72\n0\n73\n1\n93\n4\n10\n100\n20\n180\n10\n180\n20\n180\n10\n180\n20\n240\n",
+        "10\n100\n20\n240\n97\n0\n75\n0\n76\n1\n98\n0\n",
+    )));
+    let undo = harness.state().undo_step_count();
+    let digest = harness.state().canonical_digest();
+    let label = Vec3::new(130.0, 64.0, 0.0);
+    let floor = Vec3::new(140.0, 210.0, 0.0);
+
+    click(&mut harness, label);
+    assert_eq!(picked(&harness), 1, "{}", harness.state().digest);
+    let app = harness.state();
+    assert!(
+        app.digest.contains("TEXT") && app.digest.contains("labels"),
+        "{}",
+        app.digest
+    );
+    click(&mut harness, floor);
+    assert_eq!(picked(&harness), 1, "{}", harness.state().digest);
+    let app = harness.state();
+    assert!(
+        app.digest.contains("HATCH") && app.digest.contains("floor"),
+        "{}",
+        app.digest
+    );
+    shift_click(&mut harness, label);
+    assert_eq!(picked(&harness), 2, "{}", harness.state().digest);
+    // Nothing there: the picks are dropped.
+    click(&mut harness, Vec3::new(260.0, 250.0, 0.0));
+    assert_eq!(picked(&harness), 0, "{}", harness.state().digest);
+
+    click(&mut harness, floor);
+    shift_click(&mut harness, label);
+    press(&mut harness, egui::Key::Delete);
+    assert_eq!(harness.state().undo_step_count(), undo + 1);
+    for at in [label, floor] {
+        click(&mut harness, at);
+        assert_eq!(picked(&harness), 0, "deleted, {}", harness.state().digest);
+    }
+
+    harness.state_mut().undo();
+    assert_eq!(harness.state().canonical_digest(), digest);
+    click(&mut harness, label);
+    assert_eq!(picked(&harness), 1, "back after Undo");
 }
 
 /// 2D-2: Move and Rotate on picked objects of a drawing move those objects, not the

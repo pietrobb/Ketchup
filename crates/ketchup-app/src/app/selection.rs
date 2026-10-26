@@ -363,6 +363,11 @@ impl KetchupApp {
 
     pub(crate) fn complete_selection_window(&mut self, drag: SelectionWindowDrag, viewport: Rect) {
         if drag.start.distance(drag.cursor) < 4.0 {
+            // A click on a text or inside a hatch of a drawing, where no line is.
+            if let Some((underlay, object)) = self.underlay_object_at_screen(drag.start, viewport) {
+                self.pick_underlay_object_id(underlay, object, drag.additive);
+                return;
+            }
             if !drag.additive {
                 self.clear_selection();
             }

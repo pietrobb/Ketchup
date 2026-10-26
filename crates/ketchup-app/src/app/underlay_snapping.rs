@@ -135,7 +135,11 @@ impl KetchupApp {
     }
 
     /// Whether `underlay` and its layer `layer` are shown.
-    fn underlay_layer_shown(snapshot: &Snapshot, underlay: &Underlay, layer: usize) -> bool {
+    pub(super) fn underlay_layer_shown(
+        snapshot: &Snapshot,
+        underlay: &Underlay,
+        layer: usize,
+    ) -> bool {
         let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
         shown(underlay.tag)
             && underlay
