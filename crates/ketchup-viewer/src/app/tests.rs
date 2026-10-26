@@ -1,6 +1,6 @@
 use super::*;
 use crate::model::tests::package;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_view_format::{Camera as SceneCamera, Projection, Scene};
 
 pub(crate) fn scene_package() -> ketchup_view_format::Package {
@@ -153,7 +153,8 @@ fn scene_dimensions_drawn(perspective: bool) {
         .renderer(renderer)
         .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
     ui.run();
-    if !perspective {
+    // The orthographic start scene opens orthographic (VW-22).
+    if perspective {
         ui.get_by_label("Perspective").click();
         ui.run();
     }
@@ -212,39 +213,63 @@ fn perspective_is_on_by_default_and_the_switch_holds_for_fit_views_and_scenes() 
     scene_package().write(&mut bytes).unwrap();
     let mut app = ViewerApp::new(None).with_language(Language::ENGLISH);
     app.open(bytes.as_slice()).unwrap();
+    // Review 2026-10-24 VW-22: a scene the author saved orthographic (a
+    // plan, an elevation) is shown so until the customer switches; before,
+    // the default perspective was forced onto it.
     assert!(
-        app.camera.as_ref().unwrap().is_perspective(),
-        "the orthographic start scene opens in perspective"
+        !app.camera.as_ref().unwrap().is_perspective(),
+        "the orthographic start scene opens orthographic"
     );
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(900.0, 600.0))
         .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
     harness.run();
+    let projection = |harness: &egui_kittest::Harness<'_, ViewerApp>| {
+        harness.state().camera.as_ref().unwrap().is_perspective()
+    };
+    let switched = |harness: &egui_kittest::Harness<'_, ViewerApp>| {
+        harness
+            .get_by_label("Perspective")
+            .accesskit_node()
+            .toggled()
+            == Some(egui::accesskit::Toggled::True)
+    };
+    assert!(
+        !switched(&harness),
+        "the switch shows the scene's projection"
+    );
+    // A fitted view is in perspective by default; a scene in its own.
+    for (button, perspective) in [("Fit", true), ("Second scene", false), ("Fit", true)] {
+        harness.get_by_label(button).click();
+        harness.run();
+        assert_eq!(projection(&harness), perspective, "{button}");
+        assert_eq!(switched(&harness), perspective, "{button} switch");
+    }
+    harness.get_by_label("First scene").click();
+    harness.run();
     let before = harness.state().camera.clone().unwrap();
+    // Once the customer switches, the choice holds for every view.
     harness.get_by_label("Perspective").click();
     harness.run();
     let camera = harness.state().camera.clone().unwrap();
-    assert!(!harness.state().perspective && !camera.is_perspective());
+    assert!(camera.is_perspective());
     assert_eq!(
         (camera.center, camera.scale),
         (before.center, before.scale),
         "switching keeps the view"
     );
-    let projection = |harness: &egui_kittest::Harness<'_, ViewerApp>| {
-        harness.state().camera.as_ref().unwrap().is_perspective()
-    };
-    for button in ["Fit", "Front", "Second scene"] {
-        harness.get_by_label(button).click();
-        harness.run();
-        assert!(!projection(&harness), "{button} stays orthographic");
-    }
-    harness.get_by_label("Perspective").click();
-    harness.run();
-    assert!(projection(&harness));
-    for button in ["First scene", "Iso", "Fit"] {
+    for button in ["Second scene", "Front", "Fit"] {
         harness.get_by_label(button).click();
         harness.run();
         assert!(projection(&harness), "{button} stays in perspective");
+    }
+    harness.get_by_label("Perspective").click();
+    harness.run();
+    assert!(!projection(&harness));
+    for button in ["First scene", "Iso", "Fit"] {
+        harness.get_by_label(button).click();
+        harness.run();
+        assert!(!projection(&harness), "{button} stays orthographic");
     }
 }
 
