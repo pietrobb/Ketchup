@@ -1492,7 +1492,8 @@ fn collision_report(
             .collect::<Vec<_>>();
         let mut pairs = Vec::new();
         // Every visible solid must pass native validation, even with no neighbors.
-        // These self-queries never contribute issues or checked pair counts.
+        // These self-queries never contribute issues or checked pair counts;
+        // solids that get a worker pair below drop theirs.
         for (index, body) in bodies.iter().enumerate() {
             if !scoped_indices.contains(&index) {
                 continue;
@@ -1669,6 +1670,14 @@ fn collision_report(
             ));
         }
         report["hull_decided_pair_count"] = json!(hull_decided);
+        // The worker answers a pair only for two valid solids, so a solid in one
+        // needs no self-query of its own.
+        let paired = pairs
+            .iter()
+            .filter(|(left, right, _)| left != right)
+            .flat_map(|(left, right, _)| [*left, *right])
+            .collect::<BTreeSet<_>>();
+        pairs.retain(|(left, right, _)| left != right || !paired.contains(left));
         let path = crate::evaluation::exact_worker_or_installed(worker_path);
         match (sources, path) {
             (Err(error), _) => failures.push(json!({"reason": error.code()})),
@@ -1697,9 +1706,11 @@ fn collision_report(
                                 .into_iter()
                                 .filter_map(|entry| answered(&bodies, entry, &mut failures))
                             {
-                                if left == right {
-                                    checked_bodies.insert(left);
-                                }
+                                checked_bodies.extend(
+                                    [left, right]
+                                        .into_iter()
+                                        .filter(|index| scoped_indices.contains(index)),
+                                );
                                 if left != right {
                                     checked += 1;
                                     if collect_gravity_contacts {
